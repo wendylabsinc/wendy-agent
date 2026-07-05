@@ -2705,10 +2705,16 @@ type OSUpdateEngineStatus struct {
 	// Platform connector driving the A/B scheme, e.g. "tegrauefi" or "ubootenv".
 	Connector string `protobuf:"bytes,1,opt,name=connector,proto3" json:"connector,omitempty"`
 	// Slot the device is currently booted from ("A" or "B").
-	CurrentSlot   string                              `protobuf:"bytes,2,opt,name=current_slot,json=currentSlot,proto3" json:"current_slot,omitempty"`
-	Slots         []*OSUpdateEngineStatus_Slot        `protobuf:"bytes,3,rep,name=slots,proto3" json:"slots,omitempty"`
-	System        []*OSUpdateEngineStatus_SystemEntry `protobuf:"bytes,4,rep,name=system,proto3" json:"system,omitempty"`
-	Pending       *OSUpdateEngineStatus_PendingUpdate `protobuf:"bytes,5,opt,name=pending,proto3" json:"pending,omitempty"`
+	CurrentSlot string                              `protobuf:"bytes,2,opt,name=current_slot,json=currentSlot,proto3" json:"current_slot,omitempty"`
+	Slots       []*OSUpdateEngineStatus_Slot        `protobuf:"bytes,3,rep,name=slots,proto3" json:"slots,omitempty"`
+	System      []*OSUpdateEngineStatus_SystemEntry `protobuf:"bytes,4,rep,name=system,proto3" json:"system,omitempty"`
+	Pending     *OSUpdateEngineStatus_PendingUpdate `protobuf:"bytes,5,opt,name=pending,proto3" json:"pending,omitempty"`
+	// Raw, display-only engine diagnostics from `wendyos-update status
+	// --verbose` (the connector's Diagnostics map: e.g. the tegra
+	// RootfsStatusSlot{A,B} bytes, boot-chain and capsule EFI variables, or
+	// the uboot env). Present only when the caller asked for engine status;
+	// keys and values are connector-specific and additive.
+	Diagnostics   map[string]string `protobuf:"bytes,6,rep,name=diagnostics,proto3" json:"diagnostics,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2774,6 +2780,13 @@ func (x *OSUpdateEngineStatus) GetSystem() []*OSUpdateEngineStatus_SystemEntry {
 func (x *OSUpdateEngineStatus) GetPending() *OSUpdateEngineStatus_PendingUpdate {
 	if x != nil {
 		return x.Pending
+	}
+	return nil
+}
+
+func (x *OSUpdateEngineStatus) GetDiagnostics() map[string]string {
+	if x != nil {
+		return x.Diagnostics
 	}
 	return nil
 }
@@ -4155,7 +4168,7 @@ type GetOSUpdateStatusResponse_ServiceResult struct {
 
 func (x *GetOSUpdateStatusResponse_ServiceResult) Reset() {
 	*x = GetOSUpdateStatusResponse_ServiceResult{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[67]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4167,7 +4180,7 @@ func (x *GetOSUpdateStatusResponse_ServiceResult) String() string {
 func (*GetOSUpdateStatusResponse_ServiceResult) ProtoMessage() {}
 
 func (x *GetOSUpdateStatusResponse_ServiceResult) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[67]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4446,13 +4459,14 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x05level\x18\x02 \x01(\x05R\x05level\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\"N\n" +
 	"\x18GetOSUpdateStatusRequest\x122\n" +
-	"\x15include_engine_status\x18\x01 \x01(\bR\x13includeEngineStatus\"\xf1\x05\n" +
+	"\x15include_engine_status\x18\x01 \x01(\bR\x13includeEngineStatus\"\x93\a\n" +
 	"\x14OSUpdateEngineStatus\x12\x1c\n" +
 	"\tconnector\x18\x01 \x01(\tR\tconnector\x12!\n" +
 	"\fcurrent_slot\x18\x02 \x01(\tR\vcurrentSlot\x12H\n" +
 	"\x05slots\x18\x03 \x03(\v22.wendy.agent.services.v1.OSUpdateEngineStatus.SlotR\x05slots\x12Q\n" +
 	"\x06system\x18\x04 \x03(\v29.wendy.agent.services.v1.OSUpdateEngineStatus.SystemEntryR\x06system\x12U\n" +
-	"\apending\x18\x05 \x01(\v2;.wendy.agent.services.v1.OSUpdateEngineStatus.PendingUpdateR\apending\x1a\xd3\x01\n" +
+	"\apending\x18\x05 \x01(\v2;.wendy.agent.services.v1.OSUpdateEngineStatus.PendingUpdateR\apending\x12`\n" +
+	"\vdiagnostics\x18\x06 \x03(\v2>.wendy.agent.services.v1.OSUpdateEngineStatus.DiagnosticsEntryR\vdiagnostics\x1a\xd3\x01\n" +
 	"\x04Slot\x12\x12\n" +
 	"\x04slot\x18\x01 \x01(\tR\x04slot\x12\x16\n" +
 	"\x06booted\x18\x02 \x01(\bR\x06booted\x12\x1c\n" +
@@ -4470,7 +4484,10 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x10artifact_version\x18\x02 \x01(\tR\x0fartifactVersion\x12\x14\n" +
 	"\x05phase\x18\x03 \x01(\tR\x05phase\x12\x1f\n" +
 	"\vtarget_slot\x18\x04 \x01(\tR\n" +
-	"targetSlot\"\xa6\a\n" +
+	"targetSlot\x1a>\n" +
+	"\x10DiagnosticsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xa6\a\n" +
 	"\x19GetOSUpdateStatusResponse\x12\x1d\n" +
 	"\n" +
 	"has_result\x18\x01 \x01(\bR\thasResult\x12T\n" +
@@ -4546,7 +4563,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDescGZIP() []b
 }
 
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 68)
+var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 69)
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_goTypes = []any{
 	(WiFiSecurityType)(0),                                       // 0: wendy.agent.services.v1.WiFiSecurityType
 	(GetOSUpdateStatusResponse_Outcome)(0),                      // 1: wendy.agent.services.v1.GetOSUpdateStatusResponse.Outcome
@@ -4611,15 +4628,16 @@ var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_goTypes = []any{
 	(*ListWiFiNetworksResponse_WiFiNetwork)(nil),                // 60: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork
 	(*ListKnownWiFiNetworksResponse_KnownWiFiNetwork)(nil),      // 61: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork
 	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 62: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability
-	nil,                                             // 63: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	(*UpdateOSResponse_Progress)(nil),               // 64: wendy.agent.services.v1.UpdateOSResponse.Progress
-	(*UpdateOSResponse_Completed)(nil),              // 65: wendy.agent.services.v1.UpdateOSResponse.Completed
-	(*UpdateOSResponse_Failed)(nil),                 // 66: wendy.agent.services.v1.UpdateOSResponse.Failed
-	(*OSUpdateEngineStatus_Slot)(nil),               // 67: wendy.agent.services.v1.OSUpdateEngineStatus.Slot
-	(*OSUpdateEngineStatus_SystemEntry)(nil),        // 68: wendy.agent.services.v1.OSUpdateEngineStatus.SystemEntry
-	(*OSUpdateEngineStatus_PendingUpdate)(nil),      // 69: wendy.agent.services.v1.OSUpdateEngineStatus.PendingUpdate
-	(*GetOSUpdateStatusResponse_ServiceResult)(nil), // 70: wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult
-	(*RestartPolicy)(nil),                           // 71: RestartPolicy
+	nil,                                        // 63: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	(*UpdateOSResponse_Progress)(nil),          // 64: wendy.agent.services.v1.UpdateOSResponse.Progress
+	(*UpdateOSResponse_Completed)(nil),         // 65: wendy.agent.services.v1.UpdateOSResponse.Completed
+	(*UpdateOSResponse_Failed)(nil),            // 66: wendy.agent.services.v1.UpdateOSResponse.Failed
+	(*OSUpdateEngineStatus_Slot)(nil),          // 67: wendy.agent.services.v1.OSUpdateEngineStatus.Slot
+	(*OSUpdateEngineStatus_SystemEntry)(nil),   // 68: wendy.agent.services.v1.OSUpdateEngineStatus.SystemEntry
+	(*OSUpdateEngineStatus_PendingUpdate)(nil), // 69: wendy.agent.services.v1.OSUpdateEngineStatus.PendingUpdate
+	nil, // 70: wendy.agent.services.v1.OSUpdateEngineStatus.DiagnosticsEntry
+	(*GetOSUpdateStatusResponse_ServiceResult)(nil), // 71: wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult
+	(*RestartPolicy)(nil),                           // 72: RestartPolicy
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_depIdxs = []int32{
 	49, // 0: wendy.agent.services.v1.RunContainerRequest.header:type_name -> wendy.agent.services.v1.RunContainerRequest.Header
@@ -4648,60 +4666,61 @@ var file_wendy_agent_services_v1_wendy_agent_v1_service_proto_depIdxs = []int32{
 	67, // 23: wendy.agent.services.v1.OSUpdateEngineStatus.slots:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus.Slot
 	68, // 24: wendy.agent.services.v1.OSUpdateEngineStatus.system:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus.SystemEntry
 	69, // 25: wendy.agent.services.v1.OSUpdateEngineStatus.pending:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus.PendingUpdate
-	1,  // 26: wendy.agent.services.v1.GetOSUpdateStatusResponse.outcome:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.Outcome
-	70, // 27: wendy.agent.services.v1.GetOSUpdateStatusResponse.services:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult
-	45, // 28: wendy.agent.services.v1.GetOSUpdateStatusResponse.engine_status:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus
-	71, // 29: wendy.agent.services.v1.ControlCommand.Run.restart_policy:type_name -> RestartPolicy
-	58, // 30: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.update:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
-	0,  // 31: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
-	0,  // 32: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
-	63, // 33: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	2,  // 34: wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult.status:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult.Status
-	3,  // 35: wendy.agent.services.v1.WendyAgentService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerRequest
-	6,  // 36: wendy.agent.services.v1.WendyAgentService.UpdateAgent:input_type -> wendy.agent.services.v1.UpdateAgentRequest
-	8,  // 37: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:input_type -> wendy.agent.services.v1.GetAgentVersionRequest
-	12, // 38: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:input_type -> wendy.agent.services.v1.ListWiFiNetworksRequest
-	14, // 39: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:input_type -> wendy.agent.services.v1.ConnectToWiFiRequest
-	16, // 40: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:input_type -> wendy.agent.services.v1.GetWiFiStatusRequest
-	18, // 41: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:input_type -> wendy.agent.services.v1.DisconnectWiFiRequest
-	20, // 42: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ListKnownWiFiNetworksRequest
-	22, // 43: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:input_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
-	24, // 44: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
-	26, // 45: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:input_type -> wendy.agent.services.v1.ForgetWiFiNetworkRequest
-	28, // 46: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:input_type -> wendy.agent.services.v1.ListHardwareCapabilitiesRequest
-	30, // 47: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:input_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
-	33, // 48: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
-	35, // 49: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
-	37, // 50: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:input_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
-	39, // 51: wendy.agent.services.v1.WendyAgentService.UpdateOS:input_type -> wendy.agent.services.v1.UpdateOSRequest
-	41, // 52: wendy.agent.services.v1.WendyAgentService.DumpKernelLog:input_type -> wendy.agent.services.v1.DumpKernelLogRequest
-	44, // 53: wendy.agent.services.v1.WendyAgentService.GetOSUpdateStatus:input_type -> wendy.agent.services.v1.GetOSUpdateStatusRequest
-	47, // 54: wendy.agent.services.v1.WendyAgentService.SetHostname:input_type -> wendy.agent.services.v1.SetHostnameRequest
-	5,  // 55: wendy.agent.services.v1.WendyAgentService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerResponse
-	7,  // 56: wendy.agent.services.v1.WendyAgentService.UpdateAgent:output_type -> wendy.agent.services.v1.UpdateAgentResponse
-	9,  // 57: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:output_type -> wendy.agent.services.v1.GetAgentVersionResponse
-	13, // 58: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:output_type -> wendy.agent.services.v1.ListWiFiNetworksResponse
-	15, // 59: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:output_type -> wendy.agent.services.v1.ConnectToWiFiResponse
-	17, // 60: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:output_type -> wendy.agent.services.v1.GetWiFiStatusResponse
-	19, // 61: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:output_type -> wendy.agent.services.v1.DisconnectWiFiResponse
-	21, // 62: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse
-	23, // 63: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:output_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
-	25, // 64: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
-	27, // 65: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:output_type -> wendy.agent.services.v1.ForgetWiFiNetworkResponse
-	29, // 66: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:output_type -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse
-	32, // 67: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:output_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
-	34, // 68: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
-	36, // 69: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
-	38, // 70: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:output_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
-	40, // 71: wendy.agent.services.v1.WendyAgentService.UpdateOS:output_type -> wendy.agent.services.v1.UpdateOSResponse
-	42, // 72: wendy.agent.services.v1.WendyAgentService.DumpKernelLog:output_type -> wendy.agent.services.v1.DumpKernelLogResponse
-	46, // 73: wendy.agent.services.v1.WendyAgentService.GetOSUpdateStatus:output_type -> wendy.agent.services.v1.GetOSUpdateStatusResponse
-	48, // 74: wendy.agent.services.v1.WendyAgentService.SetHostname:output_type -> wendy.agent.services.v1.SetHostnameResponse
-	55, // [55:75] is the sub-list for method output_type
-	35, // [35:55] is the sub-list for method input_type
-	35, // [35:35] is the sub-list for extension type_name
-	35, // [35:35] is the sub-list for extension extendee
-	0,  // [0:35] is the sub-list for field type_name
+	70, // 26: wendy.agent.services.v1.OSUpdateEngineStatus.diagnostics:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus.DiagnosticsEntry
+	1,  // 27: wendy.agent.services.v1.GetOSUpdateStatusResponse.outcome:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.Outcome
+	71, // 28: wendy.agent.services.v1.GetOSUpdateStatusResponse.services:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult
+	45, // 29: wendy.agent.services.v1.GetOSUpdateStatusResponse.engine_status:type_name -> wendy.agent.services.v1.OSUpdateEngineStatus
+	72, // 30: wendy.agent.services.v1.ControlCommand.Run.restart_policy:type_name -> RestartPolicy
+	58, // 31: wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.update:type_name -> wendy.agent.services.v1.UpdateAgentRequest.ControlCommand.Update
+	0,  // 32: wendy.agent.services.v1.ListWiFiNetworksResponse.WiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
+	0,  // 33: wendy.agent.services.v1.ListKnownWiFiNetworksResponse.KnownWiFiNetwork.security:type_name -> wendy.agent.services.v1.WiFiSecurityType
+	63, // 34: wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	2,  // 35: wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult.status:type_name -> wendy.agent.services.v1.GetOSUpdateStatusResponse.ServiceResult.Status
+	3,  // 36: wendy.agent.services.v1.WendyAgentService.RunContainer:input_type -> wendy.agent.services.v1.RunContainerRequest
+	6,  // 37: wendy.agent.services.v1.WendyAgentService.UpdateAgent:input_type -> wendy.agent.services.v1.UpdateAgentRequest
+	8,  // 38: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:input_type -> wendy.agent.services.v1.GetAgentVersionRequest
+	12, // 39: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:input_type -> wendy.agent.services.v1.ListWiFiNetworksRequest
+	14, // 40: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:input_type -> wendy.agent.services.v1.ConnectToWiFiRequest
+	16, // 41: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:input_type -> wendy.agent.services.v1.GetWiFiStatusRequest
+	18, // 42: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:input_type -> wendy.agent.services.v1.DisconnectWiFiRequest
+	20, // 43: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ListKnownWiFiNetworksRequest
+	22, // 44: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:input_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityRequest
+	24, // 45: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:input_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksRequest
+	26, // 46: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:input_type -> wendy.agent.services.v1.ForgetWiFiNetworkRequest
+	28, // 47: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:input_type -> wendy.agent.services.v1.ListHardwareCapabilitiesRequest
+	30, // 48: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:input_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsRequest
+	33, // 49: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralRequest
+	35, // 50: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:input_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralRequest
+	37, // 51: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:input_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralRequest
+	39, // 52: wendy.agent.services.v1.WendyAgentService.UpdateOS:input_type -> wendy.agent.services.v1.UpdateOSRequest
+	41, // 53: wendy.agent.services.v1.WendyAgentService.DumpKernelLog:input_type -> wendy.agent.services.v1.DumpKernelLogRequest
+	44, // 54: wendy.agent.services.v1.WendyAgentService.GetOSUpdateStatus:input_type -> wendy.agent.services.v1.GetOSUpdateStatusRequest
+	47, // 55: wendy.agent.services.v1.WendyAgentService.SetHostname:input_type -> wendy.agent.services.v1.SetHostnameRequest
+	5,  // 56: wendy.agent.services.v1.WendyAgentService.RunContainer:output_type -> wendy.agent.services.v1.RunContainerResponse
+	7,  // 57: wendy.agent.services.v1.WendyAgentService.UpdateAgent:output_type -> wendy.agent.services.v1.UpdateAgentResponse
+	9,  // 58: wendy.agent.services.v1.WendyAgentService.GetAgentVersion:output_type -> wendy.agent.services.v1.GetAgentVersionResponse
+	13, // 59: wendy.agent.services.v1.WendyAgentService.ListWiFiNetworks:output_type -> wendy.agent.services.v1.ListWiFiNetworksResponse
+	15, // 60: wendy.agent.services.v1.WendyAgentService.ConnectToWiFi:output_type -> wendy.agent.services.v1.ConnectToWiFiResponse
+	17, // 61: wendy.agent.services.v1.WendyAgentService.GetWiFiStatus:output_type -> wendy.agent.services.v1.GetWiFiStatusResponse
+	19, // 62: wendy.agent.services.v1.WendyAgentService.DisconnectWiFi:output_type -> wendy.agent.services.v1.DisconnectWiFiResponse
+	21, // 63: wendy.agent.services.v1.WendyAgentService.ListKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ListKnownWiFiNetworksResponse
+	23, // 64: wendy.agent.services.v1.WendyAgentService.SetWiFiNetworkPriority:output_type -> wendy.agent.services.v1.SetWiFiNetworkPriorityResponse
+	25, // 65: wendy.agent.services.v1.WendyAgentService.ReorderKnownWiFiNetworks:output_type -> wendy.agent.services.v1.ReorderKnownWiFiNetworksResponse
+	27, // 66: wendy.agent.services.v1.WendyAgentService.ForgetWiFiNetwork:output_type -> wendy.agent.services.v1.ForgetWiFiNetworkResponse
+	29, // 67: wendy.agent.services.v1.WendyAgentService.ListHardwareCapabilities:output_type -> wendy.agent.services.v1.ListHardwareCapabilitiesResponse
+	32, // 68: wendy.agent.services.v1.WendyAgentService.ScanBluetoothPeripherals:output_type -> wendy.agent.services.v1.ScanBluetoothPeripheralsResponse
+	34, // 69: wendy.agent.services.v1.WendyAgentService.ConnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.ConnectBluetoothPeripheralResponse
+	36, // 70: wendy.agent.services.v1.WendyAgentService.DisconnectBluetoothPeripheral:output_type -> wendy.agent.services.v1.DisconnectBluetoothPeripheralResponse
+	38, // 71: wendy.agent.services.v1.WendyAgentService.ForgetBluetoothPeripheral:output_type -> wendy.agent.services.v1.ForgetBluetoothPeripheralResponse
+	40, // 72: wendy.agent.services.v1.WendyAgentService.UpdateOS:output_type -> wendy.agent.services.v1.UpdateOSResponse
+	42, // 73: wendy.agent.services.v1.WendyAgentService.DumpKernelLog:output_type -> wendy.agent.services.v1.DumpKernelLogResponse
+	46, // 74: wendy.agent.services.v1.WendyAgentService.GetOSUpdateStatus:output_type -> wendy.agent.services.v1.GetOSUpdateStatusResponse
+	48, // 75: wendy.agent.services.v1.WendyAgentService.SetHostname:output_type -> wendy.agent.services.v1.SetHostnameResponse
+	56, // [56:76] is the sub-list for method output_type
+	36, // [36:56] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() }
@@ -4758,7 +4777,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc), len(file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   68,
+			NumMessages:   69,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

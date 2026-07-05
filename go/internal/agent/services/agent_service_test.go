@@ -673,6 +673,41 @@ func TestGetOSUpdateStatus_ZeroFinalizedAt(t *testing.T) {
 	}
 }
 
+// finishCommittedUpdate must schedule the restart before (and regardless of)
+// the ack: once the binary is committed, a client that already dropped its
+// transport must not leave the old agent running with the installer lock held
+// — that wedges every retry on "an update is already in progress" until a
+// manual reboot.
+func TestFinishCommittedUpdateRestartsEvenWhenAckFails(t *testing.T) {
+	logger := zap.NewNop()
+
+	t.Run("ack failure still schedules the restart and reports success", func(t *testing.T) {
+		exitScheduled := false
+		err := finishCommittedUpdate(logger,
+			func() error { return fmt.Errorf("transport is closing") },
+			func() { exitScheduled = true })
+		if err != nil {
+			t.Fatalf("finishCommittedUpdate = %v, want nil (the update is committed)", err)
+		}
+		if !exitScheduled {
+			t.Fatal("restart exit was not scheduled after a failed ack")
+		}
+	})
+
+	t.Run("restart is scheduled before the ack is attempted", func(t *testing.T) {
+		order := []string{}
+		err := finishCommittedUpdate(logger,
+			func() error { order = append(order, "ack"); return nil },
+			func() { order = append(order, "exit") })
+		if err != nil {
+			t.Fatalf("finishCommittedUpdate = %v, want nil", err)
+		}
+		if len(order) != 2 || order[0] != "exit" || order[1] != "ack" {
+			t.Fatalf("call order = %v, want [exit ack]", order)
+		}
+	})
+}
+
 // ---------- detectCUDAVersionIn ----------
 
 const nvccVersionOutput = `nvcc: NVIDIA (R) Cuda compiler driver

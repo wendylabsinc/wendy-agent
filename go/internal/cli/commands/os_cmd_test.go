@@ -38,6 +38,36 @@ func TestOSAlreadyCurrent(t *testing.T) {
 	}
 }
 
+// TestOSUpdateShouldSkipAlreadyCurrent pins the fix for the `os update --pr N`
+// re-flash bug: a PR's resolved version tag ("pr-N") is constant across
+// rebuilds, so before this fix a second `update --pr N` after pushing a new
+// commit to the same PR would compare "pr-N" == "pr-N" and silently no-op with
+// "already at latest" instead of re-flashing. The non-PR path (prNumber == 0)
+// must keep deferring entirely to osAlreadyCurrent.
+func TestOSUpdateShouldSkipAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name     string
+		prNumber int
+		current  string
+		latest   string
+		nightly  bool
+		want     bool
+	}{
+		{"non-PR already current still short-circuits", 0, "WendyOS-0.10.4", "0.10.4", false, true},
+		{"non-PR newer available does not short-circuit", 0, "WendyOS-0.10.4", "0.12.0", false, false},
+		{"PR re-test with identical pr-N tag never short-circuits", 123, "WendyOS-pr-123", "pr-123", false, false},
+		{"PR first-time install never short-circuits even when versions differ", 123, "WendyOS-0.10.4", "pr-123", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osUpdateShouldSkipAlreadyCurrent(tc.prNumber, tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osUpdateShouldSkipAlreadyCurrent(%d,%q,%q,%v) = %v, want %v",
+					tc.prNumber, tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecideOSUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -213,6 +243,57 @@ func TestHasOTABackend(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := hasOTABackend(tc.resp); got != tc.want {
 				t.Fatalf("hasOTABackend() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOSUpdateStackMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		features    []string
+		artifactURL string
+		wantErr     bool
+		wantSubstr  string
+	}{
+		{
+			name:        "wendy artifact on a device that predates the wendyos-update stack requires a reflash",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+			wantErr:     true,
+			wantSubstr:  "reflash",
+		},
+		{
+			name:        "wendy artifact on a wendyos-update device is fine",
+			features:    []string{"wendyos-update"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+		{
+			name:        "unknown artifact extension is not constrained",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://example.com/custom-artifact",
+		},
+		{
+			name:        "device without advertised backends is left to the agent",
+			features:    nil,
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &agentpb.GetAgentVersionResponse{Featureset: tc.features}
+			err := osUpdateStackMismatch(resp, tc.artifactURL)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("osUpdateStackMismatch() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("osUpdateStackMismatch() = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q should contain %q", err, tc.wantSubstr)
 			}
 		})
 	}

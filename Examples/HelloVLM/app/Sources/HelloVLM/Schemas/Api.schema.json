@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StateResponse",
+  "description": "Snapshot of app, camera, model, prompt, and run state served at GET /api/state.",
+  "type": "object",
+  "properties": {
+    "app": { "$ref": "#/$defs/AppInfo" },
+    "camera": { "$ref": "#/$defs/CameraInfo" },
+    "model": { "$ref": "#/$defs/ModelInfo" },
+    "prompt": { "$ref": "#/$defs/PromptInfo" },
+    "run": { "$ref": "#/$defs/RunInfo" },
+    "error": { "type": "string" }
+  },
+  "required": ["app", "camera", "model", "prompt", "run"],
+  "$defs": {
+    "CameraStatus": {
+      "description": "Lifecycle of the camera capture pipeline.",
+      "enum": ["starting", "ready", "failed"]
+    },
+    "ModelStatus": {
+      "description": "Lifecycle of the VLM backend connection.",
+      "enum": ["notConfigured", "loading", "ready", "failed"]
+    },
+    "AppInfo": {
+      "type": "object",
+      "properties": {
+        "startedAt": { "type": "string" },
+        "url": { "type": "string" }
+      },
+      "required": ["startedAt", "url"]
+    },
+    "CameraInfo": {
+      "type": "object",
+      "properties": {
+        "status": { "$ref": "#/$defs/CameraStatus" },
+        "name": { "type": "string" },
+        "lastFrameAt": { "type": "string" },
+        "frameURL": { "type": "string" }
+      },
+      "required": ["status"]
+    },
+    "ModelInfo": {
+      "type": "object",
+      "properties": {
+        "status": { "$ref": "#/$defs/ModelStatus" },
+        "name": { "type": "string" },
+        "backend": { "type": "string" }
+      },
+      "required": ["status"]
+    },
+    "PromptInfo": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["text", "updatedAt"]
+    },
+    "RunInfo": {
+      "type": "object",
+      "properties": {
+        "interval": { "type": "number" },
+        "fps": { "type": "number" },
+        "resolution": { "type": "integer" },
+        "isRunningInference": { "type": "boolean" },
+        "latestRunID": { "type": "string" },
+        "latestRunDuration": { "type": "number" },
+        "lastInferenceAt": { "type": "string" }
+      },
+      "required": ["interval", "fps", "resolution", "isRunningInference"]
+    },
+    "PersistedFrame": {
+      "type": "object",
+      "properties": {
+        "capturedAt": { "type": "string" },
+        "url": { "type": "string" }
+      },
+      "required": ["capturedAt", "url"]
+    },
+    "PersistedRun": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "prompt": { "type": "string" },
+        "response": { "type": "string" },
+        "cameraName": { "type": "string" },
+        "modelName": { "type": "string" },
+        "backend": { "type": "string" },
+        "device": { "type": "string" },
+        "interval": { "type": "number" },
+        "fps": { "type": "number" },
+        "resolution": { "type": "integer" },
+        "duration": { "type": "number" },
+        "stats": { "type": "string" },
+        "frameCount": { "type": "integer" },
+        "frames": { "type": "array", "items": { "$ref": "#/$defs/PersistedFrame" } }
+      },
+      "required": ["id", "timestamp", "prompt", "response", "interval", "fps", "frameCount", "frames"]
+    },
+    "RunsResponse": {
+      "type": "object",
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/PersistedRun" } },
+        "nextCursor": { "type": "string" }
+      },
+      "required": ["items"]
+    },
+    "PromptUpdateRequest": {
+      "type": "object",
+      "properties": {
+        "text": { "type": "string" }
+      },
+      "required": ["text"]
+    },
+    "PromptUpdateResponse": {
+      "type": "object",
+      "properties": {
+        "ok": { "type": "boolean" },
+        "prompt": { "$ref": "#/$defs/PromptInfo" }
+      },
+      "required": ["ok", "prompt"]
+    }
+  }
+}

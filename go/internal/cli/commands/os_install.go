@@ -59,6 +59,7 @@ func newOSInstallCmd() *cobra.Command {
 	var noWifi bool
 	var deviceName string
 	var enrollCloudGRPC string
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "install [image] [drive]",
@@ -89,6 +90,15 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if prNumber > 0 {
+				if nightly || versionFlag != "" || len(args) > 0 {
+					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
+				}
+				if deviceType == thorDeviceType {
+					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
+			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
 			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
 				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
@@ -115,7 +125,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC})
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
 		},
 	}
 
@@ -134,6 +144,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().StringVar(&deviceName, "device-name", "", "Set device name on first boot (e.g. brave-dolphin)")
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
 	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "Install the image built by wendyos-builder PR #N (debug build; mutually exclusive with --nightly, --version, and positional [image] [drive])")
 
 	return cmd
 }
@@ -246,7 +257,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
 	}
@@ -259,8 +270,15 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 
 	fmt.Println("Fetching available devices...")
 
-	// Fetch Linux devices from GCS manifest.
-	linuxDevices, err := getAvailableDevices()
+	// Fetch Linux devices from GCS manifest — the per-PR manifest when --pr is
+	// set, otherwise the standard release manifest.
+	var linuxDevices []deviceInfo
+	var err error
+	if prNumber > 0 {
+		linuxDevices, err = getAvailablePRDevices(prNumber)
+	} else {
+		linuxDevices, err = getAvailableDevices()
+	}
 	if err != nil {
 		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
 	}
@@ -298,7 +316,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	// When --device-type is not provided, also offer ESP32 entries in the picker.
-	if flagDeviceType == "" {
+	// Never under --pr: firmware isn't a PR build target and installESP32Firmware
+	// ignores prNumber, so offering ESP32 here would silently install release
+	// firmware instead of a PR build.
+	if flagDeviceType == "" && prNumber == 0 {
 		espVersion := "(latest)"
 		for _, esp := range []struct {
 			key, name, chip string
@@ -337,6 +358,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 				}
 			}
 			sort.Strings(available)
+			if prNumber > 0 {
+				return fmt.Errorf("device %q not built by PR %d (built: %s)", flagDeviceType, prNumber, strings.Join(available, ", "))
+			}
 			return fmt.Errorf("device type %q not found in manifest; available: %s", flagDeviceType, strings.Join(available, ", "))
 		}
 		selected = flagDeviceType

@@ -1,0 +1,30 @@
+## Component-manager dependencies for the ESP32-S31-Korvo-1 demo.
+##
+## Phase 1 (native camera -> LCD viewfinder) needs only ESP-IDF (master, for
+## esp32s31 support) and the esp32-camera driver. esp_lcd's RGB panel is an
+## IDF built-in, so no separate LCD driver package is required for a plain
+## 800x480 RGB panel.
+dependencies:
+  idf:
+    # esp32s31 support requires ESP-IDF master (currently reporting as v6.2+).
+    version: ">=6.2.0"
+
+  # Official board support package for this exact devkit. Provides the correct
+  # LCD pin map, panel timings, and bring-up sequence via bsp_display_new().
+  espressif/esp32_s31_korvo_1:
+    version: "^1"
+
+  # OV3660 driver over the LCD_CAM DVP interface.
+  # NOTE(unverified): esp32-camera must list esp32s31 in its supported
+  # targets. If the component manager rejects the target, this is a gap to
+  # file against espressif/esp32-camera (see inconveniences.md).
+  espressif/esp32-camera:
+    version: "^2.0.0"
+
+  ## Phase 2 -- uncomment to layer in the wendy-lite WASM runtime alongside the
+  ## viewfinder, then build with -DDEMO_ENABLE_WENDY_CORE=1 and add wendy_core
+  ## to main/CMakeLists.txt REQUIRES.
+  # wendy_core:
+  #   git: "https://github.com/wendylabsinc/wendy-lite.git"
+  #   path: "components/wendy_core"
+  #   version: "gab/core"

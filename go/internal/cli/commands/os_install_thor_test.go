@@ -36,6 +36,28 @@ func TestUsbUdevRuleMatchesPackagedRule(t *testing.T) {
 	}
 }
 
+func TestUsbAccessHintLines(t *testing.T) {
+	// macOS: a claim-time seize denial. The device enumerated, so the guidance must
+	// point at the two fixes that work — running as root and re-entering recovery —
+	// not the Linux udev rule.
+	mac := strings.ToLower(strings.Join(usbAccessHintLines("darwin"), "\n"))
+	if !strings.Contains(mac, "sudo") {
+		t.Errorf("darwin hint should mention sudo, got:\n%s", mac)
+	}
+	if !strings.Contains(mac, "recovery mode") {
+		t.Errorf("darwin hint should tell the user to re-enter recovery mode, got:\n%s", mac)
+	}
+	if strings.Contains(mac, usbUdevRule) {
+		t.Errorf("darwin hint should not contain the Linux udev rule, got:\n%s", mac)
+	}
+
+	// Linux: keep the udev-rule guidance verbatim so the parity test stays meaningful.
+	lin := strings.Join(usbAccessHintLines("linux"), "\n")
+	if !strings.Contains(lin, usbUdevRule) {
+		t.Errorf("linux hint should contain the udev rule %q, got:\n%s", usbUdevRule, lin)
+	}
+}
+
 func TestStopADBServer(t *testing.T) {
 	// No server listening → no-op, false.
 	if stopADBServer("127.0.0.1:1") {

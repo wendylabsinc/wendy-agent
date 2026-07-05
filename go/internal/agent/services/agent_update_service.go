@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
-	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -100,20 +98,13 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 				}
 				committed = true
 
-				if err := stream.Send(&agentpbv2.UpdateAgentResponse{
-					ResponseType: &agentpbv2.UpdateAgentResponse_Updated_{
-						Updated: &agentpbv2.UpdateAgentResponse_Updated{},
-					},
-				}); err != nil {
-					return err
-				}
-
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					os.Exit(0)
-				}()
-
-				return nil
+				return finishCommittedUpdate(s.logger, func() error {
+					return stream.Send(&agentpbv2.UpdateAgentResponse{
+						ResponseType: &agentpbv2.UpdateAgentResponse_Updated_{
+							Updated: &agentpbv2.UpdateAgentResponse_Updated{},
+						},
+					})
+				}, scheduleAgentRestartExit)
 			}
 		}
 	}

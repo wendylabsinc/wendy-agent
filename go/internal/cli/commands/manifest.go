@@ -180,6 +180,89 @@ func getAvailableDevices() ([]deviceInfo, error) {
 	return devices, nil
 }
 
+// prBasePath returns the GCS path prefix under which a PR build's manifests
+// and images are published, e.g. "pr/123/".
+func prBasePath(pr int) string {
+	return fmt.Sprintf("pr/%d/", pr)
+}
+
+// fetchPRMainManifest fetches the per-PR master manifest written by the
+// wendyos-builder publish-pr job.
+func fetchPRMainManifest(pr int) (*mainManifest, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	url := gcsBaseURL + "/" + prBasePath(pr) + "manifests/master.json"
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetching PR %d manifest: %w", pr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("no build found for PR %d — is the build still running or the PR closed?", pr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("PR %d manifest returned status %d", pr, resp.StatusCode)
+	}
+
+	var m mainManifest
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, fmt.Errorf("decoding PR %d manifest: %w", pr, err)
+	}
+	return &m, nil
+}
+
+// prDeviceVersion resolves the version tag to install/update for a PR device
+// entry: the PR's Latest version, falling back to LatestNightly when the PR
+// only published a nightly-style build. The publish-pr job always writes with
+// --nightly, so Latest is empty and LatestNightly carries the "pr-N" tag —
+// every PR device entry hits the fallback in practice. Shared by
+// getAvailablePRDevices and getPROTAInfoForDeviceType so the two stay
+// consistent.
+func prDeviceVersion(dev manifestDevice) string {
+	if dev.Latest != "" {
+		return dev.Latest
+	}
+	return dev.LatestNightly
+}
+
+// getAvailablePRDevices mirrors getAvailableDevices for a per-PR manifest.
+// The master entries' ManifestPath values are already "pr/<N>/manifests/<device>.json"
+// (written by the publish-pr job), so fetchDeviceManifest works unchanged.
+func getAvailablePRDevices(pr int) ([]deviceInfo, error) {
+	main, err := fetchPRMainManifest(pr)
+	if err != nil {
+		return nil, err
+	}
+
+	var devices []deviceInfo
+	for key, dev := range main.Devices {
+		if dev.ManifestPath == "" {
+			continue
+		}
+
+		dm, err := fetchDeviceManifest(dev.ManifestPath)
+		if err != nil {
+			// Skip devices whose manifest can't be fetched.
+			continue
+		}
+
+		info := deviceInfo{
+			Key:            key,
+			Name:           humanizeDeviceKey(key),
+			LatestVersion:  prDeviceVersion(dev),
+			NightlyVersion: dev.LatestNightly,
+			Stability:      dev.Stability,
+			Manifest:       dm,
+		}
+
+		devices = append(devices, info)
+	}
+
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
+
+	return devices, nil
+}
+
 // imageTriple is the resolved (image, bmap, zst) path set for one storage.
 type imageTriple struct {
 	imagePath string
@@ -279,6 +362,34 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 		return "", "", err
 	}
 	return u, latest, nil
+}
+
+// getPROTAInfoForDeviceType mirrors getLatestOTAInfoForDeviceType but resolves
+// against a PR build's manifest (fetchPRMainManifest) instead of the master
+// manifest. It selects the PR device's Latest version, falling back to
+// LatestNightly when the PR only published a nightly-style build.
+func getPROTAInfoForDeviceType(pr int, deviceType, storageMedium string) (artifactURL, version string, err error) {
+	main, err := fetchPRMainManifest(pr)
+	if err != nil {
+		return "", "", err
+	}
+	dev, ok := main.Devices[deviceType]
+	if !ok || dev.ManifestPath == "" {
+		return "", "", fmt.Errorf("device type %q not built by PR %d", deviceType, pr)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return "", "", err
+	}
+	ver := prDeviceVersion(dev)
+	if ver == "" {
+		return "", "", fmt.Errorf("no version for %q in PR %d", deviceType, pr)
+	}
+	u, err := getOTAUpdateURL(dm, ver, storageMedium)
+	if err != nil {
+		return "", "", err
+	}
+	return u, ver, nil
 }
 
 // thorDeviceType is the manifest key / --device-type for the AGX Thor.

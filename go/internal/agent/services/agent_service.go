@@ -486,26 +486,44 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 				}
 				committed = true
 
-				if err := stream.Send(&agentpb.UpdateAgentResponse{
-					ResponseType: &agentpb.UpdateAgentResponse_Updated_{
-						Updated: &agentpb.UpdateAgentResponse_Updated{},
-					},
-				}); err != nil {
-					return err
-				}
-
-				// Trigger process exit for systemd to restart the agent.
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					os.Exit(0)
-				}()
-
-				return nil
+				return finishCommittedUpdate(s.logger, func() error {
+					return stream.Send(&agentpb.UpdateAgentResponse{
+						ResponseType: &agentpb.UpdateAgentResponse_Updated_{
+							Updated: &agentpb.UpdateAgentResponse_Updated{},
+						},
+					})
+				}, scheduleAgentRestartExit)
 			}
 		}
 	}
 
 	return status.Error(codes.InvalidArgument, "update stream ended without update control command")
+}
+
+// finishCommittedUpdate runs the tail of an UpdateAgent stream once the binary
+// is committed: schedule the restart exit FIRST, then best-effort ack the
+// client. The restart must never depend on the ack — the client's transport
+// can already be gone by the time the update lands, and returning an error
+// here would leave the old binary running while the installer lock is held
+// forever (it is deliberately kept on success), wedging every retry on
+// "an update is already in progress" until a manual reboot. The exit delay in
+// scheduleExit gives a successful ack time to flush before the process dies.
+func finishCommittedUpdate(logger *zap.Logger, sendAck func() error, scheduleExit func()) error {
+	scheduleExit()
+	if err := sendAck(); err != nil {
+		logger.Warn("agent update committed but the ack was not delivered; restarting into the new binary anyway",
+			zap.Error(err))
+	}
+	return nil
+}
+
+// scheduleAgentRestartExit exits the process after a short grace period so
+// systemd restarts the agent on the just-committed binary.
+func scheduleAgentRestartExit() {
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+	}()
 }
 
 func (s *AgentService) ListWiFiNetworks(ctx context.Context, _ *agentpb.ListWiFiNetworksRequest) (*agentpb.ListWiFiNetworksResponse, error) {
@@ -738,7 +756,7 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	restoreUpdater := inhibitAutoUpdater(s.logger)
 	defer restoreUpdater()
 
-	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend(), req.GetArtifactUrl())
 	if err != nil {
 		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
 		return sendOSUpdateFailure(stream, err.Error())

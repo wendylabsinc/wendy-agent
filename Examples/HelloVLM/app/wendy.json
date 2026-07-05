@@ -1,0 +1,27 @@
+{
+  "appId": "sh.wendy.examples.hellovlm",
+  "platform": "linux",
+  "version": "1.0.0",
+  "language": "swift",
+  "serviceName": "app",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "camera"
+    },
+    {
+      "type": "persist",
+      "name": "hellovlm-runs",
+      "path": "/Runs"
+    }
+  ],
+  "run": {
+    "args": [
+      "--llm-url", "http://localhost:11434",
+      "--prompt", "These frames were captured at a fixed interval from a webcam. Reply in English. You are a comedian using dark humor below the waist line. Ridicule what is shown by the frames."
+    ]
+  }
+}

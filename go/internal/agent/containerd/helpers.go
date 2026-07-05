@@ -81,6 +81,16 @@ const labelKeyAppID = "sh.wendy/app.id"
 // Set whenever appCfg.ServiceName is non-empty.
 const labelKeyServiceName = "sh.wendy/service"
 
+// labelKeyIsolation persists the app's isolation mode (e.g. "isolated",
+// "shared-network", "shared-ipc") on the container. appconfig.AppConfig.Isolation
+// is otherwise only held in-memory (c.appIsolation), so without this label a
+// device reboot loses the isolation mode: the boot reconcile path
+// (ListBootContainers -> GroupRestartAppID/RestartGroup -> StartContainer)
+// would treat every restarted container as unisolated, skipping CNI ADD and
+// leaving isolated containers without networking (WDY reboot-fix). Set only
+// when the app declares an isolation mode.
+const labelKeyIsolation = "sh.wendy/isolation"
+
 // labelKeyStoppedByUser records that an app was explicitly stopped by the user
 // (wendy device apps stop). Set to "true" on stop, removed on start. The boot
 // reconcile skips containers carrying it, so a deliberate stop survives a
@@ -241,8 +251,10 @@ func sanitizeForLog(s string, maxLen int) string {
 // container. These labels are used to identify, filter, and manage containers.
 //
 // When serviceName is non-empty (multi-service app), labelKeyServiceName is
-// additionally set to serviceName.
-func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement) map[string]string {
+// additionally set to serviceName. When isolation is non-empty, labelKeyIsolation
+// is additionally set to isolation, so the isolation mode survives a reboot
+// (see labelKeyIsolation).
+func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, isolation string) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
 		labelKeyAppID:      appName,
@@ -250,6 +262,10 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 
 	if serviceName != "" {
 		labels[labelKeyServiceName] = serviceName
+	}
+
+	if isolation != "" {
+		labels[labelKeyIsolation] = isolation
 	}
 
 	if restartPolicy != nil {

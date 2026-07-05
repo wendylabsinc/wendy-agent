@@ -582,6 +582,13 @@ message OSUpdateEngineStatus {
         string target_slot = 4;
     }
     PendingUpdate pending = 5;
+
+    // Raw, display-only engine diagnostics from `wendyos-update status
+    // --verbose` (the connector's Diagnostics map: e.g. the tegra
+    // RootfsStatusSlot{A,B} bytes, boot-chain and capsule EFI variables, or
+    // the uboot env). Present only when the caller asked for engine status;
+    // keys and values are connector-specific and additive.
+    map<string, string> diagnostics = 6;
 }
 
 // Outcome of the most recent OS update attempt, produced by the agent's

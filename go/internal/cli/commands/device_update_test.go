@@ -3,9 +3,13 @@ package commands
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 )
@@ -124,5 +128,84 @@ func TestWaitForUpdatedAgentReadyHonorsCanceledContextDuringInitialDelay(t *test
 	}
 	if attempts != 0 {
 		t.Fatalf("reconnect attempts = %d, want 0", attempts)
+	}
+}
+
+// agentUpdateTerminalError turns the update stream's terminal Recv error into
+// what the user is told. A bare io.EOF / dropped transport is NOT a verdict:
+// the agent restarts itself the moment the binary lands, which tears down the
+// stream before the ack arrives, so those map to errAgentUpdateUnconfirmed for
+// the caller to verify. Real gRPC statuses are surfaced with their message.
+func TestAgentUpdateTerminalError(t *testing.T) {
+	tests := []struct {
+		name            string
+		recvErr         error
+		wantUnconfirmed bool
+		wantSubstr      string
+	}{
+		{
+			name:            "bare EOF is unconfirmed, not a failure",
+			recvErr:         io.EOF,
+			wantUnconfirmed: true,
+		},
+		{
+			name:            "transport closing is unconfirmed",
+			recvErr:         status.Error(codes.Unavailable, "transport is closing"),
+			wantUnconfirmed: true,
+		},
+		{
+			name:            "client cancel is unconfirmed",
+			recvErr:         status.Error(codes.Canceled, "context canceled"),
+			wantUnconfirmed: true,
+		},
+		{
+			name:       "update already in progress explains the stale-lock reboot",
+			recvErr:    status.Error(codes.FailedPrecondition, "an update is already in progress"),
+			wantSubstr: "reboot",
+		},
+		{
+			name:       "sha mismatch is reported verbatim",
+			recvErr:    status.Error(codes.DataLoss, "SHA256 mismatch: expected aa, got bb"),
+			wantSubstr: "SHA256 mismatch",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := agentUpdateTerminalError(tc.recvErr)
+			if err == nil {
+				t.Fatal("agentUpdateTerminalError = nil, want error")
+			}
+			if got := errors.Is(err, errAgentUpdateUnconfirmed); got != tc.wantUnconfirmed {
+				t.Fatalf("errors.Is(err, errAgentUpdateUnconfirmed) = %v, want %v (err: %v)", got, tc.wantUnconfirmed, err)
+			}
+			if tc.wantSubstr != "" && !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q should contain %q", err, tc.wantSubstr)
+			}
+		})
+	}
+}
+
+// After an unconfirmed upload the CLI reconnects and checks what the device
+// actually runs: the expected release version (or newer) proves the update
+// landed; anything else means the old agent is still in place.
+func TestAgentUpdateVerified(t *testing.T) {
+	tests := []struct {
+		name     string
+		reported string
+		expected string
+		want     bool
+	}{
+		{"exact match", "2026.07.01-223311", "2026.07.01-223311", true},
+		{"newer than expected", "2026.07.02-000001", "2026.07.01-223311", true},
+		{"older agent still running", "2026.06.30-120000", "2026.07.01-223311", false},
+		{"no expectation (--binary) passes", "dev-abc123", "", true},
+		{"unknown reported version fails", "", "2026.07.01-223311", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentUpdateVerified(tc.reported, tc.expected); got != tc.want {
+				t.Fatalf("agentUpdateVerified(%q, %q) = %v, want %v", tc.reported, tc.expected, got, tc.want)
+			}
+		})
 	}
 }

@@ -31,6 +31,25 @@ wendy install path/to/image.img /dev/disk4 --force
 
 ---
 
+## Install a pull-request build
+
+```sh
+wendy install --pr 123
+```
+
+Downloads and flashes the WendyOS image built by wendyos-builder PR #123.
+PR images are **debug builds**: SSH is enabled, root login is passwordless,
+and the serial console is active. They are for testing the PR on hardware —
+**never flash a PR image to a production device.** Artifacts are deleted when
+the PR is closed.
+
+`--pr` is supported for Linux disk-image devices (Raspberry Pi, Jetson Orin
+Nano, Jetson AGX Orin). It is not supported for Jetson AGX Thor or ESP32 targets.
+`--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
+image path.
+
+---
+
 ## ESP32 (Wendy Lite) path
 
 ### 1. Device detection
@@ -166,6 +185,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--nightly` | false | Use nightly/pre-release builds |
+| `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; Linux disk-image devices only) |
 | `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |

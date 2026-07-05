@@ -726,16 +726,23 @@ const (
 )
 
 // usbAccessHintBox explains how to regain USB access to the Jetson when the OS
-// refuses to open it: on Linux, udev permissions; on macOS, almost always
-// another process holding the device.
+// refuses to open it: on Linux, udev permissions; on macOS, its own kernel driver
+// bound to the recovery device (root needed to seize it).
 func usbAccessHintBox() string {
+	return thorHintBorder.Render(strings.Join(usbAccessHintLines(runtime.GOOS), "\n"))
+}
+
+// usbAccessHintLines builds the body of the USB-access-denied hint for the given
+// GOOS. Split out from usbAccessHintBox so both OS branches are testable without
+// depending on the runner's platform.
+func usbAccessHintLines(goos string) []string {
 	lines := []string{
 		thorHintTitle.Render("⚠  USB access denied"),
 		"",
 		"A Jetson is in recovery mode, but the OS refused wendy access to its USB device.",
 	}
-	if runtime.GOOS == "linux" {
-		lines = append(lines,
+	if goos == "linux" {
+		return append(lines,
 			"Grant access with a udev rule (one-time; the wendy deb/rpm packages install it):",
 			"",
 			thorHintCmd.Render("  echo '"+usbUdevRule+"' \\"),
@@ -746,14 +753,21 @@ func usbAccessHintBox() string {
 			"("+thorHintCmd.Render("sudo groupadd plugdev && sudo usermod -aG plugdev $USER")+", then log in",
 			"again) — replug the USB-C cable and rescan. Or re-run the flash with sudo.",
 		)
-	} else {
-		lines = append(lines,
-			"Another process is likely holding it (another flashing tool, a VM with USB",
-			"passthrough, or another wendy). Quit it, unplug/replug the USB-C cable, and",
-			"rescan.",
-		)
 	}
-	return thorHintBorder.Render(strings.Join(lines, "\n"))
+	// macOS: the device enumerated but couldn't be claimed. macOS binds its own
+	// driver to the recovery device (often re-matched after a failed RCM boot), so
+	// wendy needs root to seize it — lead with the two fixes that actually work.
+	return append(lines,
+		"It enumerated but couldn't be claimed: macOS binds its own driver to the",
+		"recovery device (often re-matched after a failed RCM boot), so wendy needs",
+		"root to seize it. Try, in order:",
+		"",
+		"  "+thorHintEmph.Render("•")+" Re-run the flash with "+thorHintCmd.Render("sudo")+".",
+		"  "+thorHintEmph.Render("•")+" Or unplug the USB-C cable, re-enter recovery mode, and flash again.",
+		"",
+		"If another process holds it (a VM with USB passthrough, another flashing",
+		"tool, or another wendy), quit that first.",
+	)
 }
 
 // readQuit reads a single line and reports whether the user asked to quit

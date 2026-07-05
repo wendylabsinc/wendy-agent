@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -65,17 +66,42 @@ func productionUpdaters(logger *zap.Logger) []osUpdater {
 }
 
 // selectUpdater chooses the backend for an update request. requested is the
-// caller's updater_backend value ("", "auto", or "wendyos"/"wendyos-update").
-func selectUpdater(logger *zap.Logger, requested string) (osUpdater, error) {
-	return chooseUpdater(requested, productionUpdaters(logger))
+// caller's `--updater`/updater_backend value ("", "auto", or
+// "wendyos"/"wendyos-update"); artifactURL constrains the choice to the backend
+// that can parse the artifact's format.
+func selectUpdater(logger *zap.Logger, requested, artifactURL string) (osUpdater, error) {
+	return chooseUpdater(requested, artifactURL, productionUpdaters(logger))
+}
+
+// requiredUpdaterForArtifact maps an artifact URL to the only backend that can
+// install it: .wendy is the wendyos-update format. Returns "" when the
+// extension is unknown (no constraint). A device that cannot run the required
+// backend is an honest, explained error rather than a silent install that dies
+// mid-stream with a parse error.
+func requiredUpdaterForArtifact(artifactURL string) string {
+	path := artifactURL
+	if u, err := url.Parse(artifactURL); err == nil && u.Path != "" {
+		path = u.Path
+	}
+	if strings.HasSuffix(path, ".wendy") {
+		return updaterNameWendyOS
+	}
+	return ""
 }
 
 // chooseUpdater applies the selection policy over candidate backends (ordered
-// by preference). An explicit backend is honored or fails — it never silently
-// falls back. "auto"/"" picks the first candidate that detects the device.
-func chooseUpdater(requested string, candidates []osUpdater) (osUpdater, error) {
+// by preference). The artifact's format is authoritative when recognized: only
+// the backend that can parse it is eligible, and an unavailable or conflicting
+// backend is an immediate, explained error — never a cross-stack fallback.
+// Otherwise an explicit backend is honored or fails (no silent fallback), and
+// "auto"/"" picks the first candidate that detects the device.
+func chooseUpdater(requested, artifactURL string, candidates []osUpdater) (osUpdater, error) {
+	required := requiredUpdaterForArtifact(artifactURL)
 	switch requested {
 	case "", "auto":
+		if required != "" {
+			return requireUpdaterForFormat(candidates, required)
+		}
 		for _, u := range candidates {
 			if u.detect() {
 				return u, nil
@@ -83,10 +109,39 @@ func chooseUpdater(requested string, candidates []osUpdater) (osUpdater, error) 
 		}
 		return nil, fmt.Errorf("no OS update backend is available on this device")
 	case updaterNameWendyOS, "wendyos":
+		if required != "" && required != updaterNameWendyOS {
+			return nil, artifactBackendMismatchError(required, requested)
+		}
 		return requireUpdater(candidates, updaterNameWendyOS)
 	default:
 		return nil, fmt.Errorf("unknown updater backend %q (expected auto, wendyos, or %s)",
 			requested, updaterNameWendyOS)
+	}
+}
+
+// artifactBackendMismatchError reports an explicit --updater choice that can
+// never parse the artifact's format.
+func artifactBackendMismatchError(required, requested string) error {
+	return fmt.Errorf("the artifact is a %s artifact and cannot be installed with the %q backend", required, requested)
+}
+
+// requireUpdaterForFormat returns the backend the artifact format demands, or a
+// stack-mismatch explanation when the device cannot run it. A device whose image
+// predates the wendyos-update stack hits the migration wall: its partition
+// layout is incompatible, so the only way forward is reflashing — say so instead
+// of streaming the artifact into a parse error.
+func requireUpdaterForFormat(candidates []osUpdater, required string) (osUpdater, error) {
+	u, err := requireUpdater(candidates, required)
+	if err == nil {
+		return u, nil
+	}
+	switch required {
+	case updaterNameWendyOS:
+		return nil, errors.New("this OS update uses the wendyos-update stack, which this device does not support " +
+			"(its image predates the wendyos-update stack, and the partition layout is incompatible); " +
+			"reflash the device with a current WendyOS image to continue receiving OS updates")
+	default:
+		return nil, err
 	}
 }
 
