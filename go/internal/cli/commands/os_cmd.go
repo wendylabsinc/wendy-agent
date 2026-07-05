@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -342,10 +341,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				return err
 			}
 
-			redial := func(c context.Context) (*grpcclient.AgentConnection, error) {
-				return connectWithAutoTLS(c, hostPort(conn.Host, defaultAgentPort))
-			}
-			if err := streamOSUpdateWithArmRetry(ctx, conn.Host, conn, redial, artifactURL, ""); err != nil {
+			if err := streamOSUpdate(ctx, conn, artifactURL, ""); err != nil {
 				return err
 			}
 
@@ -364,17 +360,6 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	return cmd
 }
-
-// errArmingRebooted is returned by streamOSUpdate when the agent armed Jetson
-// A/B rootfs redundancy and rebooted the device instead of installing. The
-// caller waits for the device to return, re-dials, and retries the update once.
-var errArmingRebooted = errors.New("device rebooting to arm rootfs redundancy")
-
-// Indirections so tests can stub the reconnect loop's dependencies.
-var (
-	streamOSUpdateFn      = streamOSUpdate
-	waitForDeviceOnlineFn = waitForDeviceOnline
-)
 
 // streamOSUpdate starts an UpdateOS stream for artifactURL on conn and reports
 // progress: a spinner when interactive, a silent drain otherwise. It does not
@@ -395,13 +380,6 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 	spin := tui.NewSpinner("Downloading update...")
 	p := tui.NewProgressProgram(spin)
 
-	// armed is set when the agent reports it armed A/B rootfs redundancy and is
-	// rebooting. It is deliberately NOT routed through SpinnerDoneMsg.Err: the
-	// spinner renders "Error: <err>" on its final frame for any non-nil err, and
-	// arming is a normal, about-to-retry-and-succeed flow, not a failure. The
-	// flag is set BEFORE the clean SpinnerDoneMsg is sent and read only after
-	// p.Run() returns, so there is no race with the render goroutine.
-	var armed atomic.Bool
 	go func() {
 		for {
 			resp, err := stream.Recv()
@@ -417,15 +395,6 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 				p.Send(tui.SpinnerUpdateMsg{Label: progressLabel(progress.GetPhase(), progress.GetPercent())})
 			}
 			if completed := resp.GetCompleted(); completed != nil {
-				p.Send(tui.SpinnerDoneMsg{})
-				return
-			}
-			if arming := resp.GetArmingRedundancy(); arming != nil {
-				// p.Println (not fmt.Println) queues the text to render safely
-				// above the still-running inline spinner program; a raw print
-				// would interleave with / be clobbered by the spinner's frame.
-				p.Println(arming.GetMessage())
-				armed.Store(true)
 				p.Send(tui.SpinnerDoneMsg{})
 				return
 			}
@@ -450,43 +419,7 @@ func streamOSUpdate(ctx context.Context, conn *grpcclient.AgentConnection, artif
 	if _, spinErr := spinModel.Result(); spinErr != nil {
 		return spinErr
 	}
-	if armed.Load() {
-		return errArmingRebooted
-	}
 	return nil
-}
-
-// streamOSUpdateWithArmRetry runs the OS update and transparently handles the
-// Jetson "arm A/B rootfs redundancy + reboot" preflight: if the agent reboots
-// to arm redundancy, it waits for the device to return, re-dials via redial,
-// and retries the update exactly once. A second arming request means the device
-// could not be armed and needs a reflash.
-func streamOSUpdateWithArmRetry(ctx context.Context, host string, conn *grpcclient.AgentConnection, redial func(context.Context) (*grpcclient.AgentConnection, error), artifactURL, updaterBackend string) error {
-	err := streamOSUpdateFn(ctx, conn, artifactURL, updaterBackend)
-	if !errors.Is(err, errArmingRebooted) {
-		return err
-	}
-	// A cloud-tunneled device's LAN address is unreachable from here, so
-	// waitForDeviceOnline/redial (both LAN-targeted) would hang for the full
-	// 10-minute poll budget before failing opaquely. Turn that into an instant,
-	// actionable message; the user reconnects through the tunnel out-of-band.
-	if _, isCloud := cloudDeviceConfigFromContext(ctx); isCloud {
-		return fmt.Errorf("A/B rootfs redundancy was armed and the device is rebooting; reconnect once it is back online and re-run the update")
-	}
-	fmt.Println("Waiting for device to come back online after arming redundancy...")
-	if err := waitForDeviceOnlineFn(ctx, host); err != nil {
-		return err
-	}
-	newConn, err := redial(ctx)
-	if err != nil {
-		return fmt.Errorf("reconnecting after arming redundancy: %w", err)
-	}
-	defer newConn.Close()
-	if err := streamOSUpdateFn(ctx, newConn, artifactURL, updaterBackend); errors.Is(err, errArmingRebooted) {
-		return fmt.Errorf("device requested arming rootfs redundancy again after a reboot; it likely needs a reflash with an A/B image")
-	} else {
-		return err
-	}
 }
 
 // resolveArtifactPath resolves a local file path or directory to an OS update
@@ -1065,10 +998,6 @@ func drainOSUpdateStream(stream agentpb.WendyAgentService_UpdateOSClient) error 
 		}
 		if resp.GetCompleted() != nil {
 			return nil
-		}
-		if arming := resp.GetArmingRedundancy(); arming != nil {
-			fmt.Fprintln(os.Stderr, arming.GetMessage())
-			return errArmingRebooted
 		}
 		if failed := resp.GetFailed(); failed != nil {
 			return fmt.Errorf("update failed: %s", failed.GetErrorMessage())

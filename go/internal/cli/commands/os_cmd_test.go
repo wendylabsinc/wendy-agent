@@ -1,8 +1,6 @@
 package commands
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +10,6 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -607,97 +604,5 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestStreamOSUpdateWithArmRetryResumesAfterArming(t *testing.T) {
-	prevStream := streamOSUpdateFn
-	prevWait := waitForDeviceOnlineFn
-	defer func() { streamOSUpdateFn = prevStream; waitForDeviceOnlineFn = prevWait }()
-
-	waitForDeviceOnlineFn = func(context.Context, string) error { return nil }
-
-	calls := 0
-	streamOSUpdateFn = func(context.Context, *grpcclient.AgentConnection, string, string) error {
-		calls++
-		if calls == 1 {
-			return errArmingRebooted // first attempt: agent armed + rebooted
-		}
-		return nil // second attempt: succeeds
-	}
-
-	redialed := 0
-	redial := func(context.Context) (*grpcclient.AgentConnection, error) {
-		redialed++
-		return &grpcclient.AgentConnection{}, nil
-	}
-
-	err := streamOSUpdateWithArmRetry(context.Background(), "dev.local", &grpcclient.AgentConnection{}, redial, "http://x/y.wendy", "")
-	if err != nil {
-		t.Fatalf("want nil after resume, got %v", err)
-	}
-	if calls != 2 || redialed != 1 {
-		t.Fatalf("calls=%d redialed=%d, want calls=2 redialed=1", calls, redialed)
-	}
-}
-
-func TestStreamOSUpdateWithArmRetryStopsOnSecondArming(t *testing.T) {
-	prevStream := streamOSUpdateFn
-	prevWait := waitForDeviceOnlineFn
-	defer func() { streamOSUpdateFn = prevStream; waitForDeviceOnlineFn = prevWait }()
-
-	waitForDeviceOnlineFn = func(context.Context, string) error { return nil }
-	calls := 0
-	streamOSUpdateFn = func(context.Context, *grpcclient.AgentConnection, string, string) error {
-		calls++
-		return errArmingRebooted // never converges
-	}
-	redial := func(context.Context) (*grpcclient.AgentConnection, error) {
-		return &grpcclient.AgentConnection{}, nil
-	}
-
-	err := streamOSUpdateWithArmRetry(context.Background(), "dev.local", &grpcclient.AgentConnection{}, redial, "http://x/y.wendy", "")
-	if err == nil || errors.Is(err, errArmingRebooted) {
-		t.Fatalf("want a terminal reflash-style error, got %v", err)
-	}
-	// Exactly two attempts: the initial stream and one retry. A regression that
-	// loops must fail here rather than hang the CLI.
-	if calls != 2 {
-		t.Fatalf("calls=%d, want 2 (initial + one retry)", calls)
-	}
-}
-
-func TestStreamOSUpdateWithArmRetryCloudDefers(t *testing.T) {
-	prevStream := streamOSUpdateFn
-	prevWait := waitForDeviceOnlineFn
-	defer func() { streamOSUpdateFn = prevStream; waitForDeviceOnlineFn = prevWait }()
-
-	waitCalls := 0
-	waitForDeviceOnlineFn = func(context.Context, string) error {
-		waitCalls++
-		return nil
-	}
-	streamOSUpdateFn = func(context.Context, *grpcclient.AgentConnection, string, string) error {
-		return errArmingRebooted
-	}
-	redialed := 0
-	redial := func(context.Context) (*grpcclient.AgentConnection, error) {
-		redialed++
-		return &grpcclient.AgentConnection{}, nil
-	}
-
-	// A context carrying a cloud device config marks the connection as
-	// cloud-tunneled: the device's LAN address is unreachable from here.
-	ctx := context.WithValue(context.Background(), cloudDeviceContextKey{}, cloudDeviceConfig{DeviceName: "dev"})
-
-	err := streamOSUpdateWithArmRetry(ctx, "dev.local", &grpcclient.AgentConnection{}, redial, "http://x/y.wendy", "")
-	if err == nil || errors.Is(err, errArmingRebooted) {
-		t.Fatalf("want a non-nil deferral error that is not errArmingRebooted, got %v", err)
-	}
-	if waitCalls != 0 {
-		t.Fatalf("waitForDeviceOnline called %d times, want 0 (must not poll a LAN address for a cloud device)", waitCalls)
-	}
-	if redialed != 0 {
-		t.Fatalf("redial called %d times, want 0 (must not re-dial a LAN address for a cloud device)", redialed)
 	}
 }

@@ -763,7 +763,7 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	}
 	s.logger.Info("UpdateOS using backend", zap.String("backend", updater.name()))
 
-	if handled, err := armRedundancyPreflightV1(s.logger, stream); handled {
+	if handled, err := redundancyPreflightV1(stream); handled {
 		return err
 	}
 
@@ -812,32 +812,15 @@ func sendOSUpdateFailure(stream grpc.ServerStreamingServer[agentpb.UpdateOSRespo
 	})
 }
 
-// armRedundancyPreflightV1 is the v1 twin of armRedundancyPreflightV2. See that
-// function for semantics.
-func armRedundancyPreflightV1(logger *zap.Logger, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) (bool, error) {
-	armer := makeRedundancyArmer(logger)
-	switch armer.decide() {
-	case armImpossibleNoSlot:
-		return true, sendOSUpdateFailure(stream, redundancyNoSlotMessage)
-	case armFailedPreviously:
-		return true, sendOSUpdateFailure(stream, redundancyArmFailedMessage)
-	case armPossible:
-		if err := stream.Send(&agentpb.UpdateOSResponse{
-			ResponseType: &agentpb.UpdateOSResponse_ArmingRedundancy_{
-				ArmingRedundancy: &agentpb.UpdateOSResponse_ArmingRedundancy{
-					Message: redundancyArmingMessage, WillReboot: true,
-				},
-			},
-		}); err != nil {
-			return true, err
-		}
-		if err := armer.arm(); err != nil {
-			return true, sendOSUpdateFailure(stream, "arming rootfs A/B redundancy failed: "+err.Error())
-		}
-		return true, nil
-	default:
-		return false, nil
+// redundancyPreflightV1 refuses an OS update on a Jetson whose firmware A/B
+// rootfs redundancy is not enabled (it can't be enabled from the running OS — see
+// redundancyGate). Returns handled=true with a terminal Failed when it blocks.
+// The v2 twin is redundancyPreflightV2.
+func redundancyPreflightV1(stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) (bool, error) {
+	if makeRedundancyGate().blocksUpdate() {
+		return true, sendOSUpdateFailure(stream, redundancyNotEnabledMessage)
 	}
+	return false, nil
 }
 
 // envWithPath returns os.Environ() with the PATH entry replaced by the given value.

@@ -1,145 +1,58 @@
 package services
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-
-	"go.uber.org/zap"
 )
 
-// Jetson A/B rootfs redundancy is gated by a UEFI variable the firmware reads
-// at boot. When it is missing or zero the device runs single-slot: an OTA
-// writes the inactive slot and requests a slot switch the firmware ignores, so
-// the update silently rolls back. These values mirror wendyos-update's
-// tegrauefi connector and the builder's wendyos-tegra-arm-rootfs-redundancy
-// boot service byte-for-byte.
-const (
-	rootfsRedundancyEfivar    = "/sys/firmware/efi/efivars/RootfsRedundancyLevel-781e084c-a330-417c-b678-38e696380cb9"
-	rootfsRetryCountMaxEfivar = "/sys/firmware/efi/efivars/RootfsRetryCountMax-781e084c-a330-417c-b678-38e696380cb9"
+// rootfsRedundancyEfivar is the NVIDIA UEFI variable that gates Jetson A/B rootfs
+// switching. A missing or zero level means the firmware runs single-slot: an OTA
+// writes the inactive slot, the slot switch is ignored, and the device boots back
+// into the old slot (a phantom rollback).
+const rootfsRedundancyEfivar = "/sys/firmware/efi/efivars/RootfsRedundancyLevel-781e084c-a330-417c-b678-38e696380cb9"
 
-	// appBPartition exists only on an A/B-flashed device. Its absence means the
-	// device is genuinely single-slot and cannot be armed in software.
-	appBPartition = "/dev/disk/by-partlabel/APP_b"
+// redundancyNotEnabledMessage is the honest failure for a Jetson whose firmware
+// has A/B rootfs redundancy disabled. Redundancy is a flash-time (device-tree)
+// setting NVIDIA firmware owns; the OS cannot enable it at runtime
+// (RootfsRedundancyLevel is firmware-locked — efivarfs writes return EINVAL), so
+// the only fix is a reflash with an A/B-enabled image.
+const redundancyNotEnabledMessage = "cannot update: this Jetson's firmware does not have A/B rootfs redundancy enabled, so an OS update would install and then roll back. A/B redundancy is set at flash time and cannot be enabled from the running OS — reflash with an A/B-enabled WendyOS image, then retry."
 
-	// armAttemptMarker is the reboot-loop guard, shared with the boot service.
-	armAttemptMarker = "/data/wendyos-update/rootfs-redundancy-arm-attempted"
-)
-
-// efivar payload = 4 attribute bytes (0x07 = NV|BS|RT) + a UINT32 value.
-var (
-	rootfsRedundancyArmedBytes = []byte{0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}
-	rootfsRetryCountMaxBytes   = []byte{0x07, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00}
-)
-
-const (
-	redundancyArmingMessage    = "Arming A/B rootfs redundancy and rebooting device; the update will resume automatically once it is back online."
-	redundancyNoSlotMessage    = "cannot update: this Jetson has no B rootfs slot (no APP_b partition), so A/B redundancy cannot be armed in software. Reflash the device with an A/B image, then retry."
-	redundancyArmFailedMessage = "cannot update: rootfs A/B redundancy was armed on a previous attempt but the firmware still reports it inactive. This device needs a reflash with an A/B image."
-)
-
-type armDecision int
-
-const (
-	// armNotNeeded: not a Jetson, or already armed — proceed with the install.
-	armNotNeeded armDecision = iota
-	// armPossible: unarmed, APP_b present, no prior attempt — arm and reboot.
-	armPossible
-	// armImpossibleNoSlot: unarmed with no APP_b — needs a reflash.
-	armImpossibleNoSlot
-	// armFailedPreviously: attempt marker set but still unarmed — needs a reflash.
-	armFailedPreviously
-)
-
-// redundancyArmer decides whether Jetson A/B rootfs redundancy must be armed
-// before an OTA and performs the arm+reboot. All OS interactions are seams so
-// the decision logic is unit-testable.
-type redundancyArmer struct {
-	logger *zap.Logger
-
-	isJetson    func() bool
-	readEfivar  func(path string) ([]byte, error)
-	statPath    func(path string) error
-	writeEfivar func(path string, data []byte) error
-	writeMarker func(path string) error
-	reboot      func() error
+// redundancyGate decides whether an OS update must be refused because Jetson A/B
+// rootfs redundancy is not enabled in firmware. OS interactions are seams so the
+// decision is unit-testable.
+type redundancyGate struct {
+	isJetson   func() bool
+	readEfivar func(path string) ([]byte, error)
 }
 
-func newRedundancyArmer(logger *zap.Logger) *redundancyArmer {
-	return &redundancyArmer{
-		logger:      logger,
-		isJetson:    jetsonDetected,
-		readEfivar:  os.ReadFile,
-		statPath:    func(p string) error { _, err := os.Stat(p); return err },
-		writeEfivar: writeEfivarFile,
-		writeMarker: writeMarkerFile,
-		reboot:      rebootSystem,
+func newRedundancyGate() redundancyGate {
+	return redundancyGate{isJetson: jetsonDetected, readEfivar: os.ReadFile}
+}
+
+// makeRedundancyGate is an indirection so UpdateOS handler tests can inject a
+// stubbed gate without real OS access.
+var makeRedundancyGate = newRedundancyGate
+
+// blocksUpdate reports true when the OS update must be refused: a Jetson whose
+// firmware A/B rootfs redundancy is not armed. Non-Jetson devices and armed
+// Jetsons return false (the update proceeds normally).
+func (g redundancyGate) blocksUpdate() bool {
+	if !g.isJetson() {
+		return false
 	}
+	return !g.armed()
 }
 
-// makeRedundancyArmer is an indirection so UpdateOS handler tests can inject a
-// stubbed armer without real OS access.
-var makeRedundancyArmer = newRedundancyArmer
-
-func (a *redundancyArmer) armed() bool {
-	raw, err := a.readEfivar(rootfsRedundancyEfivar)
+func (g redundancyGate) armed() bool {
+	raw, err := g.readEfivar(rootfsRedundancyEfivar)
 	if err != nil {
 		return false
 	}
 	return len(raw) >= 8 && (raw[4]|raw[5]|raw[6]|raw[7]) != 0
 }
 
-func (a *redundancyArmer) decide() armDecision {
-	if !a.isJetson() || a.armed() {
-		return armNotNeeded
-	}
-	if a.statPath(appBPartition) != nil {
-		return armImpossibleNoSlot
-	}
-	if a.statPath(armAttemptMarker) == nil {
-		return armFailedPreviously
-	}
-	return armPossible
-}
-
-// arm arms A/B rootfs redundancy and reboots. Call only when decide() returned
-// armPossible. It writes the attempt marker, arms both efivars, and reboots. A
-// non-nil return means arming failed before any reboot was triggered.
-func (a *redundancyArmer) arm() error {
-	a.logger.Info("arming rootfs A/B redundancy directly")
-	if err := a.writeMarker(armAttemptMarker); err != nil {
-		return fmt.Errorf("writing arm attempt marker: %w", err)
-	}
-	if err := a.writeEfivar(rootfsRedundancyEfivar, rootfsRedundancyArmedBytes); err != nil {
-		return fmt.Errorf("arming RootfsRedundancyLevel: %w", err)
-	}
-	if err := a.writeEfivar(rootfsRetryCountMaxEfivar, rootfsRetryCountMaxBytes); err != nil {
-		return fmt.Errorf("writing RootfsRetryCountMax: %w", err)
-	}
-	return a.reboot()
-}
-
 func jetsonDetected() bool {
 	_, err := exec.LookPath("nvbootctrl")
 	return err == nil
-}
-
-// writeEfivarFile writes attribute-header+value bytes to an efivarfs file.
-// efivarfs marks existing variables immutable, so clear the flag first (best
-// effort); a not-yet-existing variable is created by the write. The single
-// os.WriteFile call performs one write() of the whole payload, as efivarfs
-// requires — mirroring the boot service's `cp` into efivarfs.
-func writeEfivarFile(path string, data []byte) error {
-	if _, err := os.Stat(path); err == nil {
-		_ = exec.Command("chattr", "-i", path).Run()
-	}
-	return os.WriteFile(path, data, 0o644)
-}
-
-func writeMarkerFile(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, []byte("arm attempted by wendy-agent\n"), 0o644)
 }
