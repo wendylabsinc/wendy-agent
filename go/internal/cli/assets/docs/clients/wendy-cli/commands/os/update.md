@@ -10,6 +10,9 @@ wendy os update
 # Use the latest nightly build
 wendy os update --nightly
 
+# OTA update to a pull-request build
+wendy os update --pr 123
+
 # Provide a specific artifact URL
 wendy os update --artifact-url https://example.com/update.wendy
 
@@ -83,10 +86,30 @@ Use `--nightly` to select nightly (pre-release) artifacts instead of stable ones
 
 ---
 
+## Update to a pull-request build
+
+```sh
+wendy os update --pr 123
+```
+
+OTA-updates the connected device to the WendyOS image built by wendyos-builder
+PR #123. PR images are **debug builds**: SSH is enabled, root login is
+passwordless, and the serial console is active. They are for testing the PR on
+hardware — **never install a PR image on a production device.** Artifacts are
+deleted when the PR is closed.
+
+`--pr` is supported for Linux disk-image devices (Raspberry Pi, Jetson Orin
+Nano, Jetson AGX Orin) with OTA support. It is not supported for Jetson AGX
+Thor or ESP32 targets. `--pr` is mutually exclusive with `--nightly`,
+`--artifact-url`, and a positional artifact file path.
+
+---
+
 ## Flags reference
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--pr` | — | Update to wendyos-builder PR #N (mutually exclusive with `--nightly`, `--artifact-url`, positional path; Linux disk-image devices only) |
 | `--artifact-url` | — | URL of an artifact (`.wendy`) to install directly |
 | `--nightly` | false | Use nightly/pre-release builds for auto-selection |
 
