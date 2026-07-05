@@ -186,6 +186,7 @@ func decideOSUpdate(currentOSVersion, latestVersion string, nightly, assumeYes, 
 func newOSUpdateCmd() *cobra.Command {
 	var artifactURL string
 	var nightly bool
+	var prNumber int
 
 	cmd := &cobra.Command{
 		Use:   "update [artifact-path]",
@@ -204,6 +205,13 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 			// Determine the artifact URL: local path, remote URL, or manifest picker.
 			if len(args) > 0 && artifactURL != "" {
 				return fmt.Errorf("provide either a local artifact path or --artifact-url, not both")
+			}
+
+			if prNumber > 0 {
+				if len(args) > 0 || artifactURL != "" {
+					return fmt.Errorf("--pr cannot be combined with a local artifact path or --artifact-url")
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), "⚠ PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production.")
 			}
 
 			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
@@ -254,10 +262,20 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 					if deviceType == "" {
 						return "", "", fmt.Errorf("device type not reported")
 					}
+					if prNumber > 0 {
+						return getPROTAInfoForDeviceType(prNumber, deviceType, storageMedium)
+					}
 					return getLatestOTAInfoForDeviceType(deviceType, storageMedium, nightly)
 				}()
 
 				if autoErr != nil {
+					// A --pr update must resolve to that PR's build or fail outright —
+					// falling back to the interactive (non-PR) device picker below would
+					// silently serve a stable/nightly artifact instead of the requested
+					// PR build.
+					if prNumber > 0 {
+						return autoErr
+					}
 					// Device type is missing or not in the update catalog — fall back to
 					// a device picker so the user can force the correct device type.
 					// The latest version (or latest nightly with --nightly) is then chosen
@@ -357,6 +375,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 
 	cmd.Flags().StringVar(&artifactURL, "artifact-url", "", "OS update artifact URL (remote)")
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use the latest nightly (prerelease) build for both agent and OS")
+	cmd.Flags().IntVar(&prNumber, "pr", 0, "OTA-update to the image built by wendyos-builder PR #N (debug build; mutually exclusive with a positional artifact path and --artifact-url)")
 
 	return cmd
 }

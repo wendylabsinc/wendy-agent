@@ -350,6 +350,37 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 	return u, latest, nil
 }
 
+// getPROTAInfoForDeviceType mirrors getLatestOTAInfoForDeviceType but resolves
+// against a PR build's manifest (fetchPRMainManifest) instead of the master
+// manifest. It selects the PR device's Latest version, falling back to
+// LatestNightly when the PR only published a nightly-style build.
+func getPROTAInfoForDeviceType(pr int, deviceType, storageMedium string) (artifactURL, version string, err error) {
+	main, err := fetchPRMainManifest(pr)
+	if err != nil {
+		return "", "", err
+	}
+	dev, ok := main.Devices[deviceType]
+	if !ok || dev.ManifestPath == "" {
+		return "", "", fmt.Errorf("device type %q not built by PR %d", deviceType, pr)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return "", "", err
+	}
+	ver := dev.Latest
+	if ver == "" {
+		ver = dev.LatestNightly
+	}
+	if ver == "" {
+		return "", "", fmt.Errorf("no version for %q in PR %d", deviceType, pr)
+	}
+	u, err := getOTAUpdateURL(dm, ver, storageMedium)
+	if err != nil {
+		return "", "", err
+	}
+	return u, ver, nil
+}
+
 // thorDeviceType is the manifest key / --device-type for the AGX Thor.
 const thorDeviceType = "jetson-agx-thor"
 
