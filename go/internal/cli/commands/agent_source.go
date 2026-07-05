@@ -29,8 +29,8 @@ type agentManifestVersion struct {
 }
 
 type agentManifestArtifact struct {
-	Path      string `json:"path"`       // bucket-relative, joined as gcsBaseURL + "/" + Path
-	Checksum  string `json:"checksum"`   // sha256 hex of the .tar.gz
+	Path      string `json:"path"`     // bucket-relative, joined as gcsBaseURL + "/" + Path
+	Checksum  string `json:"checksum"` // sha256 hex of the .tar.gz
 	SizeBytes int64  `json:"size_bytes"`
 }
 
