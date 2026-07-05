@@ -97,7 +97,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 				if deviceType == thorDeviceType {
 					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
 				}
-				fmt.Fprintln(cmd.ErrOrStderr(), "⚠ PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production.")
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
 			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {

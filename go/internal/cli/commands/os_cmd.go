@@ -222,7 +222,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 				if len(args) > 0 || artifactURL != "" {
 					return fmt.Errorf("--pr cannot be combined with a local artifact path or --artifact-url")
 				}
-				fmt.Fprintln(cmd.ErrOrStderr(), "⚠ PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production.")
+				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 
 			conn, err := connectToAgent(ctx, SuppressUpdateCheck())
