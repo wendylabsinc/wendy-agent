@@ -94,6 +94,9 @@ Flags can be provided progressively — omitted values trigger interactive picke
 				if nightly || versionFlag != "" || len(args) > 0 {
 					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
 				}
+				if deviceType == thorDeviceType {
+					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
+				}
 				fmt.Fprintln(cmd.ErrOrStderr(), "⚠ PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production.")
 			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
@@ -313,7 +316,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	}
 
 	// When --device-type is not provided, also offer ESP32 entries in the picker.
-	if flagDeviceType == "" {
+	// Never under --pr: firmware isn't a PR build target and installESP32Firmware
+	// ignores prNumber, so offering ESP32 here would silently install release
+	// firmware instead of a PR build.
+	if flagDeviceType == "" && prNumber == 0 {
 		espVersion := "(latest)"
 		for _, esp := range []struct {
 			key, name, chip string
