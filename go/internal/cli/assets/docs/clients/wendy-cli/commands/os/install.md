@@ -34,7 +34,7 @@ wendy install path/to/image.img /dev/disk4 --force
 ## Install a pull-request build
 
 ```sh
-wendy install --pr 123
+wendy os install --pr 123
 ```
 
 Downloads and flashes the WendyOS image built by wendyos-builder PR #123.
