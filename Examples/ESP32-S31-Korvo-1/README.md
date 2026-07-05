@@ -8,14 +8,10 @@ Goal: stream the on-board **OV3660 camera** to the **4.3" 800×480 LCD** — the
 "screen and camera work" demo — and (Phase 2) boot the wendy-lite WASM runtime
 alongside it.
 
-> **Status (authored with no board attached):**
-> - ✅ **Screen path builds & links for `esp32s31`** and is flashable today. The
->   default build shows an **animated color-bar test pattern** on the LCD.
-> - 🟥 **Camera path does NOT build for `esp32s31` yet** — `esp32-camera` v2.1.7
->   compiles no driver for this target (see `inconveniences.md` #8). It's behind
->   the `DEMO_ENABLE_CAMERA` flag (default off).
-> - ⏳ **Nothing has run on hardware.** The pin map is a placeholder — see the
->   ⚠️ section below.
+> **Status:**
+> - ✅ **Screen demo runs on hardware** (via the official BSP) and the default build links/flashes for `esp32s31`. The default build shows the **animated color-bar test pattern** on the LCD.
+> - 🟥 **Camera path does NOT build for `esp32s31` yet** — `esp32-camera` compiles no driver for this target (see `inconveniences.md` #8). It's behind the `DEMO_ENABLE_CAMERA` flag (default off).
+> - ⚠️ Flashing requires manual BOOT→RST (see `inconveniences.md` #12).
 
 ## Build modes
 

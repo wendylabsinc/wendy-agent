@@ -15,13 +15,13 @@
 // Phase 2 (opt-in): DEMO_ENABLE_WENDY_CORE=1 boots the wendy-lite WASM runtime
 // alongside the panel (see idf_component.yml / CMakeLists.txt).
 //
-// !!! PIN MAP IS UNVERIFIED !!!
-// The ESP32-S31-Korvo-1 schematic was not public at authoring time. The GPIOs
-// below are PLACEHOLDERS from the ESP32-S3-LCD-EV-Board / Korvo-2 conventions
-// (same LCD_CAM-class imaging path) and will need correcting against the real
-// board schematic before anything appears on screen. See inconveniences.md.
+// NOTE: LCD GPIOs/timings are configured by the official `espressif/esp32_s31_korvo_1` BSP.
+// The camera GPIOs below are only used when DEMO_ENABLE_CAMERA=1 and may need revisiting.
+// For esp32s31 the recommended camera path is `esp_video` via the BSP (see inconveniences.md).
 
 #include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
 #include "esp_check.h"

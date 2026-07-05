@@ -99,16 +99,15 @@ No board is connected. Therefore:
 4. `README.md` gives a copy-paste path from clone → flash → viewfinder for when the
    board is plugged in.
 
-## Outcomes (2026-07-03, no board attached)
+## Outcomes (2026-07-03)
 
 - ✅ ESP-IDF `master` (v6.2) + `esp32s31` preview toolchain installed at
   `~/esp/esp-idf-master`.
 - ✅ `esp32s31` confirmed as a real (preview) IDF target; `idf.py --preview
   set-target esp32s31` configures cleanly.
-- ✅ **Default build links and flashes** for `esp32s31`
-  (`build/esp32s31-korvo-demo.bin`, ~209 KB): LCD RGB path + animated
-  test pattern. The screen pipeline is sound; only pin map / panel timings need
-  on-hardware confirmation.
+- ✅ **Default build links, flashes, and drives the LCD on hardware** for `esp32s31`
+  (`build/esp32s31-korvo-demo.bin`, ~209 KB): RGB LCD via the official BSP +
+  `esp_lcd_panel_disp_on_off(true)`.
 - 🟥 **Camera blocked upstream**: `esp32-camera` v2.1.7 compiles no driver for
   `esp32s31` (empty archive → link failure). Camera path is behind
   `DEMO_ENABLE_CAMERA` (default off); the blocker and two resolution routes are

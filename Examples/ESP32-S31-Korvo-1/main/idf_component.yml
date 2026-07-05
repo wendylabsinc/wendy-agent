@@ -6,8 +6,8 @@
 ## 800x480 RGB panel.
 dependencies:
   idf:
-    # esp32s31 support only exists on IDF master (reports as 6.x).
-    version: ">=6.0.0"
+    # esp32s31 support requires ESP-IDF master (currently reporting as v6.2+).
+    version: ">=6.2.0"
 
   # Official board support package for this exact devkit. Provides the correct
   # LCD pin map, panel timings, and bring-up sequence via bsp_display_new().
@@ -25,6 +25,6 @@ dependencies:
   ## viewfinder, then build with -DDEMO_ENABLE_WENDY_CORE=1 and add wendy_core
   ## to main/CMakeLists.txt REQUIRES.
   # wendy_core:
-  #   git: "git@github.com:wendylabsinc/wendy-lite.git"
+  #   git: "https://github.com/wendylabsinc/wendy-lite.git"
   #   path: "components/wendy_core"
   #   version: "gab/core"
