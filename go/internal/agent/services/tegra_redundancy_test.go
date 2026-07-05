@@ -15,8 +15,6 @@ func newTestArmer() *redundancyArmer {
 		isJetson:    func() bool { return true },
 		readEfivar:  func(string) ([]byte, error) { return nil, errors.New("missing") },
 		statPath:    func(string) error { return nil },
-		lookPath:    func(string) (string, bool) { return "", false },
-		runScript:   func(string) error { return nil },
 		writeEfivar: func(string, []byte) error { return nil },
 		writeMarker: func(string) error { return nil },
 		reboot:      func() error { return nil },
@@ -75,30 +73,11 @@ func TestDecideArmable(t *testing.T) {
 	}
 }
 
-func TestArmDelegatesToScriptWhenPresent(t *testing.T) {
-	a := newTestArmer()
-	ran := ""
-	a.lookPath = func(f string) (string, bool) { return f, true }
-	a.runScript = func(p string) error { ran = p; return nil }
-	wroteEfivar := false
-	a.writeEfivar = func(string, []byte) error { wroteEfivar = true; return nil }
-	if err := a.arm(); err != nil {
-		t.Fatalf("arm() error = %v", err)
-	}
-	if ran != armScript {
-		t.Fatalf("ran = %q, want %q", ran, armScript)
-	}
-	if wroteEfivar {
-		t.Fatal("arm() wrote efivar directly despite script being present")
-	}
-}
-
-func TestArmFallbackWritesEfivarAndReboots(t *testing.T) {
+func TestArmWritesEfivarAndReboots(t *testing.T) {
 	a := newTestArmer()
 	writes := map[string][]byte{}
 	markerWritten := false
 	rebooted := false
-	a.lookPath = func(string) (string, bool) { return "", false } // no script
 	a.writeMarker = func(string) error { markerWritten = true; return nil }
 	a.writeEfivar = func(p string, d []byte) error { writes[p] = d; return nil }
 	a.reboot = func() error { rebooted = true; return nil }
@@ -107,7 +86,7 @@ func TestArmFallbackWritesEfivarAndReboots(t *testing.T) {
 		t.Fatalf("arm() error = %v", err)
 	}
 	if !markerWritten {
-		t.Fatal("fallback did not write the attempt marker")
+		t.Fatal("arm() did not write the attempt marker")
 	}
 	if got := writes[rootfsRedundancyEfivar]; string(got) != string([]byte{0x07, 0, 0, 0, 0x01, 0, 0, 0}) {
 		t.Fatalf("RootfsRedundancyLevel bytes = % x, want 07 00 00 00 01 00 00 00", got)
@@ -116,6 +95,6 @@ func TestArmFallbackWritesEfivarAndReboots(t *testing.T) {
 		t.Fatalf("RootfsRetryCountMax bytes = % x, want 07 00 00 00 03 00 00 00", got)
 	}
 	if !rebooted {
-		t.Fatal("fallback did not reboot")
+		t.Fatal("arm() did not reboot")
 	}
 }

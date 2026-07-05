@@ -25,10 +25,6 @@ const (
 
 	// armAttemptMarker is the reboot-loop guard, shared with the boot service.
 	armAttemptMarker = "/data/wendyos-update/rootfs-redundancy-arm-attempted"
-
-	// armScript is the image-native arm-and-reboot helper (present on current
-	// images, absent on older ones — the case the agent must handle itself).
-	armScript = "/usr/sbin/wendyos-tegra-arm-rootfs-redundancy"
 )
 
 // efivar payload = 4 attribute bytes (0x07 = NV|BS|RT) + a UINT32 value.
@@ -65,8 +61,6 @@ type redundancyArmer struct {
 	isJetson    func() bool
 	readEfivar  func(path string) ([]byte, error)
 	statPath    func(path string) error
-	lookPath    func(file string) (string, bool)
-	runScript   func(path string) error
 	writeEfivar func(path string, data []byte) error
 	writeMarker func(path string) error
 	reboot      func() error
@@ -78,8 +72,6 @@ func newRedundancyArmer(logger *zap.Logger) *redundancyArmer {
 		isJetson:    jetsonDetected,
 		readEfivar:  os.ReadFile,
 		statPath:    func(p string) error { _, err := os.Stat(p); return err },
-		lookPath:    func(f string) (string, bool) { p, err := exec.LookPath(f); return p, err == nil },
-		runScript:   runArmScript,
 		writeEfivar: writeEfivarFile,
 		writeMarker: writeMarkerFile,
 		reboot:      rebootSystem,
@@ -112,15 +104,10 @@ func (a *redundancyArmer) decide() armDecision {
 }
 
 // arm arms A/B rootfs redundancy and reboots. Call only when decide() returned
-// armPossible. On the delegate path the on-device script writes the marker,
-// arms the efivar, and reboots itself; on the fallback path the agent does all
-// three. A non-nil return means arming failed before any reboot was triggered.
+// armPossible. It writes the attempt marker, arms both efivars, and reboots. A
+// non-nil return means arming failed before any reboot was triggered.
 func (a *redundancyArmer) arm() error {
-	if path, ok := a.lookPath(armScript); ok {
-		a.logger.Info("arming rootfs A/B redundancy via on-device script", zap.String("script", path))
-		return a.runScript(path)
-	}
-	a.logger.Info("on-device arm script absent; arming rootfs A/B redundancy directly")
+	a.logger.Info("arming rootfs A/B redundancy directly")
 	if err := a.writeMarker(armAttemptMarker); err != nil {
 		return fmt.Errorf("writing arm attempt marker: %w", err)
 	}
@@ -136,12 +123,6 @@ func (a *redundancyArmer) arm() error {
 func jetsonDetected() bool {
 	_, err := exec.LookPath("nvbootctrl")
 	return err == nil
-}
-
-func runArmScript(path string) error {
-	cmd := exec.Command(path)
-	cmd.Env = envWithPath("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	return cmd.Run()
 }
 
 // writeEfivarFile writes attribute-header+value bytes to an efivarfs file.

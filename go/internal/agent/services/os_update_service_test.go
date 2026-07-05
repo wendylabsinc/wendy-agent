@@ -33,7 +33,6 @@ func installArmPossibleArmer(t *testing.T, rebooted *bool) {
 				}
 				return nil // APP_b present
 			},
-			lookPath:    func(string) (string, bool) { return "", false },
 			writeMarker: func(string) error { return nil },
 			writeEfivar: func(string, []byte) error { return nil },
 			reboot:      func() error { *rebooted = true; return nil },
