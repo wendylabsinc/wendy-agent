@@ -156,6 +156,17 @@ func osAlreadyCurrent(currentOSVersion, latestVersion string, nightly bool) bool
 		!nightly && version.CompareVersions(latestVersion, normalized) <= 0
 }
 
+// osUpdateShouldSkipAlreadyCurrent reports whether `os update`'s auto-detect
+// path should treat the device as already up to date and skip flashing. It
+// never short-circuits for --pr requests (prNumber > 0): a PR's resolved
+// version tag ("pr-N") is constant across rebuilds, so honoring
+// osAlreadyCurrent there would silently no-op a re-test after pushing a new
+// commit to the same PR and re-running `os update --pr N`. Non-PR behavior is
+// unchanged — it defers entirely to osAlreadyCurrent.
+func osUpdateShouldSkipAlreadyCurrent(prNumber int, currentOSVersion, latestVersion string, nightly bool) bool {
+	return prNumber == 0 && osAlreadyCurrent(currentOSVersion, latestVersion, nightly)
+}
+
 // osUpdateAction is the decision for the OS-update step of `device update`.
 type osUpdateAction int
 
@@ -294,7 +305,7 @@ The device uses its in-house wendyos-update engine to apply the update.`,
 					artifactURL = picked
 				} else {
 					if osVer := versionResp.GetOsVersion(); osVer != "" && latestVer != "" {
-						if osAlreadyCurrent(osVer, latestVer, nightly) {
+						if osUpdateShouldSkipAlreadyCurrent(prNumber, osVer, latestVer, nightly) {
 							fmt.Printf("OS is already at the latest version (%s).\n", osVer)
 							return nil
 						}

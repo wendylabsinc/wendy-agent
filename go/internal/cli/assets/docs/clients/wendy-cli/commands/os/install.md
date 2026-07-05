@@ -45,8 +45,8 @@ the PR is closed.
 
 `--pr` is supported for Linux disk-image devices (Raspberry Pi, Jetson Orin
 Nano, Jetson AGX Orin). It is not supported for Jetson AGX Thor or ESP32 targets.
-`--pr` is mutually exclusive with `--nightly`, `--version`, a positional image
-path, and `--artifact-url`.
+`--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
+image path.
 
 ---
 
@@ -185,7 +185,7 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--nightly` | false | Use nightly/pre-release builds |
-| `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path, `--artifact-url`; Linux disk-image devices only) |
+| `--pr` | — | Install from wendyos-builder PR #N (mutually exclusive with `--nightly`, `--version`, positional path; Linux disk-image devices only) |
 | `--device-type` | — | Device type from manifest (Linux targets only, e.g. `raspberry-pi-5`) |
 | `--version` | latest | WendyOS version to install (Linux only) |
 | `--drive` | interactive | Target drive path (e.g. `/dev/disk4`) |

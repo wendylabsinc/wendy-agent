@@ -211,6 +211,20 @@ func fetchPRMainManifest(pr int) (*mainManifest, error) {
 	return &m, nil
 }
 
+// prDeviceVersion resolves the version tag to install/update for a PR device
+// entry: the PR's Latest version, falling back to LatestNightly when the PR
+// only published a nightly-style build. The publish-pr job always writes with
+// --nightly, so Latest is empty and LatestNightly carries the "pr-N" tag —
+// every PR device entry hits the fallback in practice. Shared by
+// getAvailablePRDevices and getPROTAInfoForDeviceType so the two stay
+// consistent.
+func prDeviceVersion(dev manifestDevice) string {
+	if dev.Latest != "" {
+		return dev.Latest
+	}
+	return dev.LatestNightly
+}
+
 // getAvailablePRDevices mirrors getAvailableDevices for a per-PR manifest.
 // The master entries' ManifestPath values are already "pr/<N>/manifests/<device>.json"
 // (written by the publish-pr job), so fetchDeviceManifest works unchanged.
@@ -235,7 +249,7 @@ func getAvailablePRDevices(pr int) ([]deviceInfo, error) {
 		info := deviceInfo{
 			Key:            key,
 			Name:           humanizeDeviceKey(key),
-			LatestVersion:  dev.Latest,
+			LatestVersion:  prDeviceVersion(dev),
 			NightlyVersion: dev.LatestNightly,
 			Stability:      dev.Stability,
 			Manifest:       dm,
@@ -367,10 +381,7 @@ func getPROTAInfoForDeviceType(pr int, deviceType, storageMedium string) (artifa
 	if err != nil {
 		return "", "", err
 	}
-	ver := dev.Latest
-	if ver == "" {
-		ver = dev.LatestNightly
-	}
+	ver := prDeviceVersion(dev)
 	if ver == "" {
 		return "", "", fmt.Errorf("no version for %q in PR %d", deviceType, pr)
 	}

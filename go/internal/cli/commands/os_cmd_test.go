@@ -38,6 +38,36 @@ func TestOSAlreadyCurrent(t *testing.T) {
 	}
 }
 
+// TestOSUpdateShouldSkipAlreadyCurrent pins the fix for the `os update --pr N`
+// re-flash bug: a PR's resolved version tag ("pr-N") is constant across
+// rebuilds, so before this fix a second `update --pr N` after pushing a new
+// commit to the same PR would compare "pr-N" == "pr-N" and silently no-op with
+// "already at latest" instead of re-flashing. The non-PR path (prNumber == 0)
+// must keep deferring entirely to osAlreadyCurrent.
+func TestOSUpdateShouldSkipAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name     string
+		prNumber int
+		current  string
+		latest   string
+		nightly  bool
+		want     bool
+	}{
+		{"non-PR already current still short-circuits", 0, "WendyOS-0.10.4", "0.10.4", false, true},
+		{"non-PR newer available does not short-circuit", 0, "WendyOS-0.10.4", "0.12.0", false, false},
+		{"PR re-test with identical pr-N tag never short-circuits", 123, "WendyOS-pr-123", "pr-123", false, false},
+		{"PR first-time install never short-circuits even when versions differ", 123, "WendyOS-0.10.4", "pr-123", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osUpdateShouldSkipAlreadyCurrent(tc.prNumber, tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osUpdateShouldSkipAlreadyCurrent(%d,%q,%q,%v) = %v, want %v",
+					tc.prNumber, tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecideOSUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
