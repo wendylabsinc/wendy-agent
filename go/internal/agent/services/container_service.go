@@ -488,6 +488,40 @@ func (s *ContainerService) registerContainerWithMonitor(ctx context.Context, app
 	}
 }
 
+// guaranteeOutputDrain wires outputCh — a running task's only output drain —
+// to a consumer that lives for the full task lifetime, independent of the RPC
+// handler that started the task. If outputCh is ever abandoned, back-pressure
+// propagates through the agent's io.Pipes into the container's stdout FIFO and
+// the app freezes in pipe_write once the buffers fill (WDY-1822). Callers must
+// invoke this immediately after a successful start, before anything that can
+// return early (monitor bookkeeping, sends to a client that may already be
+// gone). It returns the channel the handler should stream from and a cleanup
+// function to defer.
+func (s *ContainerService) guaranteeOutputDrain(appName string, outputCh <-chan ContainerOutput) (<-chan ContainerOutput, func()) {
+	if s.logManager != nil {
+		subID, subCh := s.logManager.Subscribe(appName)
+		// Pump containerd output into the log manager (which never blocks:
+		// slow subscribers drop) until the task exits and closes outputCh.
+		go func() {
+			for output := range outputCh {
+				s.logManager.Publish(appName, output)
+			}
+			// When the containerd channel closes, publish a Done marker.
+			s.logManager.Publish(appName, ContainerOutput{Done: true})
+		}()
+		return subCh, func() { s.logManager.Unsubscribe(appName, subID) }
+	}
+	// Without a log manager the handler is the only consumer: hand whatever it
+	// has not consumed to a background drainer when it returns, so a client
+	// disconnect cannot leave the task's output pipeline undrained.
+	return outputCh, func() {
+		go func() {
+			for range outputCh {
+			}
+		}()
+	}
+}
+
 // When a ContainerLogManager is configured, reads from the log manager subscription
 // instead of directly from containerd, enabling multi-subscriber fan-out and telemetry bridging.
 func (s *ContainerService) streamContainerOutput(
@@ -501,6 +535,11 @@ func (s *ContainerService) streamContainerOutput(
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
+
+	// Attach the task-lifetime drainer before any early return below can
+	// abandon outputCh and wedge the app (WDY-1822).
+	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
+	defer releaseDrain()
 
 	// The container started successfully. If it was previously explicitly
 	// stopped, clear that mark so automatic restarts are re-enabled.
@@ -526,23 +565,6 @@ func (s *ContainerService) streamContainerOutput(
 		},
 	}); err != nil {
 		return err
-	}
-
-	var readCh <-chan ContainerOutput
-	if s.logManager != nil {
-		subID, subCh := s.logManager.Subscribe(appName)
-		defer s.logManager.Unsubscribe(appName, subID)
-		readCh = subCh
-
-		go func() {
-			for output := range outputCh {
-				s.logManager.Publish(appName, output)
-			}
-			// When containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
-		}()
-	} else {
-		readCh = outputCh
 	}
 
 	for {
@@ -620,6 +642,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
 
+	// Attach the task-lifetime drainer before any early return below can
+	// abandon outputCh and wedge the app (WDY-1822).
+	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
+	defer releaseDrain()
+
 	// Mirror the same monitor bookkeeping as streamContainerOutput: clear any
 	// prior explicit-stop mark and register with the persisted restart policy.
 	if s.monitor != nil {
@@ -637,22 +664,6 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		},
 	}); err != nil {
 		return err
-	}
-
-	var readCh <-chan ContainerOutput
-	if s.logManager != nil {
-		subID, subCh := s.logManager.Subscribe(appName)
-		defer s.logManager.Unsubscribe(appName, subID)
-		readCh = subCh
-
-		go func() {
-			for output := range outputCh {
-				s.logManager.Publish(appName, output)
-			}
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
-		}()
-	} else {
-		readCh = outputCh
 	}
 
 	for {

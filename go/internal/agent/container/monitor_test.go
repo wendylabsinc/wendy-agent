@@ -17,8 +17,10 @@ import (
 // group restarts. It records which appIDs were group-restarted.
 type fakeContainerdClient struct {
 	services.ContainerdClient
-	groupOf       map[string]string // full container name -> bare appID for grouped members
-	groupRestarts []string
+	groupOf           map[string]string // full container name -> bare appID for grouped members
+	groupRestarts     []string
+	restartGroupChans map[string]<-chan services.ContainerOutput
+	restartGroupErr   error
 }
 
 func (f *fakeContainerdClient) GroupRestartAppID(_ context.Context, appName string) (string, bool) {
@@ -28,7 +30,7 @@ func (f *fakeContainerdClient) GroupRestartAppID(_ context.Context, appName stri
 
 func (f *fakeContainerdClient) RestartGroup(_ context.Context, appID string) (map[string]<-chan services.ContainerOutput, error) {
 	f.groupRestarts = append(f.groupRestarts, appID)
-	return nil, nil
+	return f.restartGroupChans, f.restartGroupErr
 }
 
 func TestRestartPolicy_String(t *testing.T) {

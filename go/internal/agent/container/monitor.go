@@ -293,15 +293,19 @@ func (m *ContainerMonitor) restartGroup(ctx context.Context, appID string) {
 		m.mu.Unlock()
 	}()
 	channels, err := gr.RestartGroup(ctx, appID)
+	// RestartGroup can return partially-started services together with an
+	// error (e.g. the primary started but a secondary failed). Drain every
+	// returned channel even on error: an abandoned channel back-pressures
+	// through the agent's pipes into the service's stdout FIFO and freezes
+	// the process in pipe_write once the buffers fill (WDY-1822).
+	for name, ch := range channels {
+		go m.drainOutput(name, ch)
+	}
 	if err != nil {
 		m.logger.Error("Failed to restart app group",
 			zap.String("app_id", appID),
 			zap.Error(err),
 		)
-		return
-	}
-	for name, ch := range channels {
-		go m.drainOutput(name, ch)
 	}
 }
 
