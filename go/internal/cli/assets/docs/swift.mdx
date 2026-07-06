@@ -1,0 +1,141 @@
+---
+title: Swift on WendyOS
+description: Write robotics apps in Swift and deploy them to real edge hardware with one command. The fastest path from your Mac to a running device.
+---
+
+import { Rocket, Cpu, Camera, Mic, Globe, Boxes, Puzzle } from 'lucide-react';
+
+Swift is a first-class language on WendyOS. You write your app in the same Swift you use for iPhone, iPad, and Vision Pro, and Wendy cross-compiles it, ships it over USB-C or the network, and runs it on your device — no flashing, no toolchains, no manual cross-compilation setup.
+
+WendyOS is built by people who have spent a decade taking Swift beyond Apple's platforms: our team chairs the [Swift Android Workgroup](https://www.swift.org/android-workgroup/) and sits on the [Swift Server Workgroup](https://www.swift.org/sswg/). The language, the tooling, and the deploy loop are treated as a product, not an afterthought.
+
+## Quickstart
+
+Get a Swift app running on a device in a few minutes.
+
+### Prerequisites
+
+- The **Wendy CLI** installed on your development machine — see [Developer machine setup](/docs/installation/developer-machine-setup).
+- **Swift 6.2 or later**, installed via [swiftly](/docs/installation/developer-machine-setup#install-swift). Xcode's bundled Swift is not supported for device builds.
+- A WendyOS device plugged in over USB-C, or reachable over Wi-Fi. See the [installation guides](/docs/installation) to flash a NVIDIA Jetson or Raspberry Pi.
+
+<Steps>
+  <Step>
+    ### Scaffold a Swift app
+
+    The `simple-api` template generates a small, long-running HTTP server built on [Hummingbird](https://hummingbird.codes/):
+
+    ```bash
+    wendy init hello-world \
+      --target wendyos \
+      --language swift \
+      --template simple-api \
+      --var APP_ID=hello-world \
+      --var PORT=6001 \
+      --var SWIFT_VERSION=6.3 \
+      --assistant skip \
+      --git-init no
+    cd hello-world
+    ```
+
+    This creates a ready-to-run project with `Package.swift`, a multi-stage `Dockerfile`, `wendy.json`, and your app code in `Sources/hello-world/App.swift`.
+  </Step>
+
+  <Step>
+    ### Build and run on your device
+
+    ```bash
+    wendy run
+    ```
+
+    Wendy cross-compiles the binary with Swift 6.3 for your device's architecture, deploys it, and streams the logs. If you have not selected a device yet, it will ask you to pick one. Because `simple-api` is a long-running server, the app keeps running after deploy and opens the response in your browser automatically.
+
+    You can also run the server locally first to confirm it builds:
+
+    ```bash
+    swift run
+    # in another terminal:
+    curl http://localhost:6001
+    # {"message":"hello-world"}
+    ```
+  </Step>
+
+  <Step>
+    ### Confirm it is running
+
+    ```bash
+    wendy device apps list
+    ```
+
+    You should see `hello-world` in the `Running` state with `0` failures.
+  </Step>
+</Steps>
+
+<Callout type="info">
+  **`swift run` vs `wendy run`**: `swift run` compiles and runs on your development machine. `wendy run` cross-compiles with Swift 6.3 for the target device and deploys it automatically.
+</Callout>
+
+## What a Wendy Swift app looks like
+
+Swift on WendyOS is plain SwiftPM. A minimal app is just an executable target — here, blinking an LED on a GPIO pin:
+
+```swift
+import WendyLite
+
+let ledPin: Int32 = 8
+
+@_cdecl("_start")
+func start() {
+    GPIO.configure(pin: ledPin, mode: .output)
+
+    while true {
+        GPIO.write(pin: ledPin, level: 1)
+        System.sleepMs(500)
+        GPIO.write(pin: ledPin, level: 0)
+        System.sleepMs(500)
+    }
+}
+```
+
+For a networked service, the `simple-api` template gives you a Hummingbird server with routing, structured logging, and OpenTelemetry tracing already wired up. See the [Hello World in Swift](/docs/guides/tutorials/swift/hello-world) tutorial for a full walkthrough of the generated files.
+
+## Why Swift for edge and robotics
+
+- **One language across the stack.** The same Swift you ship to iPhone and Vision Pro runs on the robot — useful when your data-collection app and your on-device policy share types and logic.
+- **Native performance, memory safety.** Swift compiles to native ARM64 or x86 binaries with no garbage collector, so it suits tight control loops and high-rate telemetry while staying memory-safe.
+- **Modern concurrency.** `async`/`await`, actors, and structured concurrency map cleanly onto sensor pipelines and device I/O.
+- **A real ecosystem.** Server-grade Swift packages — Hummingbird, swift-nio, swift-otel, and more — already run on Linux and deploy to WendyOS unchanged.
+
+## Swift tutorials
+
+<Cards>
+  <Card icon={<Rocket />} title="Hello World in Swift" href="/docs/guides/tutorials/swift/hello-world">
+    Scaffold, build, and deploy your first Swift app, with a full breakdown of the generated project.
+  </Card>
+  <Card icon={<Globe />} title="Simple Web Server" href="/docs/guides/tutorials/swift/simple-web-server">
+    Add routes and handle requests with a Hummingbird server on the device.
+  </Card>
+  <Card icon={<Boxes />} title="Full Web App" href="/docs/guides/tutorials/swift/web-app">
+    Serve a complete web application from your device.
+  </Card>
+  <Card icon={<Camera />} title="Camera" href="/docs/guides/tutorials/swift/camera">
+    Capture and process a camera feed in Swift.
+  </Card>
+  <Card icon={<Mic />} title="Audio" href="/docs/guides/tutorials/swift/audio">
+    Record and play audio from a Swift app.
+  </Card>
+  <Card icon={<Puzzle />} title="Wrapping a C Library" href="/docs/guides/tutorials/swift/wrapping-c-library">
+    Bridge to existing C libraries to reach hardware and native APIs.
+  </Card>
+</Cards>
+
+## Next steps
+
+<Cards>
+  <Card icon={<Cpu />} title="Hardware access" href="/docs/hardware">
+    Wire up GPU, camera, microphone, and other peripherals with entitlements.
+  </Card>
+  <Card icon={<Rocket />} title="Deploy to a device" href="/docs/installation">
+    Flash WendyOS onto a NVIDIA Jetson or Raspberry Pi to run your Swift apps.
+  </Card>
+</Cards>
