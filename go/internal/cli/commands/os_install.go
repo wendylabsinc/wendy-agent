@@ -606,12 +606,27 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 	wp := tui.NewProgressProgram(writeProg)
 
+	// Track how far the fast path got and which path ran, so a failure can
+	// report the offset it reached and frame the primary error (WDY-1841).
+	var lastWritten atomic.Int64
+	var writeTotal int64
+	var fastPathLabel string
+	switch {
+	case seekableZst != "":
+		writeTotal, fastPathLabel = seekableTotal, "seekable block-map write"
+	case bmapPath != "":
+		writeTotal, fastPathLabel = stream.uncompressedSize, "block-map write"
+	default:
+		writeTotal, fastPathLabel = stream.uncompressedSize, "image write"
+	}
+
 	go func() {
 		var writeErr error
 		switch {
 		case seekableZst != "":
 			fmt.Println("Using seekable block map for faster flashing.")
 			writeErr = writeImageWithBmapSeekable(seekableZst, seekableBmap, targetDrive, func(written int64) {
+				lastWritten.Store(written)
 				var pct float64
 				if seekableTotal > 0 {
 					pct = float64(written) / float64(seekableTotal)
@@ -625,12 +640,14 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		case bmapPath != "":
 			fmt.Println("Using block map for faster flashing.")
 			writeErr = writeImageWithBmap(stream, stream.uncompressedSize, targetDrive, bmapPath, func(written int64) {
+				lastWritten.Store(written)
 				if msg, ok := stream.writeProgressMsg(written); ok {
 					wp.Send(msg)
 				}
 			})
 		default:
 			writeErr = writeImageToDisk(stream, stream.uncompressedSize, targetDrive, func(written int64) {
+				lastWritten.Store(written)
 				if msg, ok := stream.writeProgressMsg(written); ok {
 					wp.Send(msg)
 				}
@@ -645,7 +662,21 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	writeModel := writeFinal.(tui.ProgressModel)
-	if writeModel.Err() != nil {
+	if primaryErr := writeModel.Err(); primaryErr != nil {
+		// Frame the primary (fast-path) error with the offset it reached. This
+		// error is never discarded again below — it is the real failure, and
+		// WDY-1841 was caused by dropping it in favor of the fallback's error.
+		primary := framePrimaryFlashError(fastPathLabel, lastWritten.Load(), writeTotal, primaryErr)
+
+		// A device-level failure (permissions, a read-only card lock, no space,
+		// the device vanished, an I/O error, a short write) means the dd fallback
+		// writes to the same broken device and cannot succeed — skip it and fail
+		// fast with the real error plus actionable hints. Integrity failures
+		// (bmap checksum/size mismatch) and unrecognized causes still fall back.
+		if isDeviceFlashFailure(primaryErr) {
+			return fmt.Errorf("%w\n%s", primary, flashDeviceFailureHint)
+		}
+
 		// Bmap write failed (typically a checksum mismatch between the published
 		// bmap and the actual image). Fall back to a full sequential dd write.
 		// For the seekable-zstd path the .zst is already on disk — open it as a
@@ -658,17 +689,19 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		case seekableZst != "":
 			si, ferr := openSeekableZstd(seekableZst)
 			if ferr != nil {
-				return fmt.Errorf("writing image: %w", writeModel.Err())
+				return fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr)
 			}
 			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
 		case bmapPath != "":
 			fs, ferr := openOSImageStream(deviceKey, imgInfo)
 			if ferr != nil {
-				return fmt.Errorf("writing image: %w", writeModel.Err())
+				return fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr)
 			}
 			fallbackReader, fallbackSize, fallbackCloser = fs, fs.uncompressedSize, fs
 		default:
-			return fmt.Errorf("writing image: %w", writeModel.Err())
+			// Plain dd primary (no bmap): there is no faster path to fall back
+			// from, so surface the framed primary error directly.
+			return primary
 		}
 		defer fallbackCloser.Close()
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
@@ -689,7 +722,9 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			return fmt.Errorf("progress TUI: %w", ferr)
 		}
 		if fm := fallbackFinal.(tui.ProgressModel); fm.Err() != nil {
-			return fmt.Errorf("writing image: %w", fm.Err())
+			// Both writes failed: surface the primary (real) error AND the
+			// fallback's, clearly labeled, so we never again debug the wrong one.
+			return combineFlashFailure(primary, fm.Err())
 		}
 	}
 
