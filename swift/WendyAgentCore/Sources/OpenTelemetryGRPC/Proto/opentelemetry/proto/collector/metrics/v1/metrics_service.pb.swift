@@ -29,12 +29,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -51,7 +51,7 @@ public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceReque
   public init() {}
 }
 
-public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -87,7 +87,7 @@ public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRespo
   fileprivate var _partialSuccess: Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSuccess? = nil
 }
 
-public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSuccess: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSuccess: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -114,9 +114,9 @@ public struct Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSucce
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "opentelemetry.proto.collector.metrics.v1"
+fileprivate nonisolated let _protobuf_package = "opentelemetry.proto.collector.metrics.v1"
 
-extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportMetricsServiceRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}resource_metrics\0")
 
@@ -146,7 +146,7 @@ extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest: 
   }
 }
 
-extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportMetricsServiceResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}partial_success\0")
 
@@ -180,7 +180,7 @@ extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse:
   }
 }
 
-extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSuccess: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsPartialSuccess: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportMetricsPartialSuccess"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}rejected_data_points\0\u{3}error_message\0")
 

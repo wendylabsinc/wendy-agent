@@ -241,6 +241,45 @@ public enum Wendy_Agent_Services_V1_WendyAgentService: Sendable {
                 type: .serverStreaming
             )
         }
+        /// Namespace for "DumpKernelLog" metadata.
+        public enum DumpKernelLog: Sendable {
+            /// Request type for "DumpKernelLog".
+            public typealias Input = Wendy_Agent_Services_V1_DumpKernelLogRequest
+            /// Response type for "DumpKernelLog".
+            public typealias Output = Wendy_Agent_Services_V1_DumpKernelLogResponse
+            /// Descriptor for "DumpKernelLog".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyAgentService"),
+                method: "DumpKernelLog",
+                type: .serverStreaming
+            )
+        }
+        /// Namespace for "GetOSUpdateStatus" metadata.
+        public enum GetOSUpdateStatus: Sendable {
+            /// Request type for "GetOSUpdateStatus".
+            public typealias Input = Wendy_Agent_Services_V1_GetOSUpdateStatusRequest
+            /// Response type for "GetOSUpdateStatus".
+            public typealias Output = Wendy_Agent_Services_V1_GetOSUpdateStatusResponse
+            /// Descriptor for "GetOSUpdateStatus".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyAgentService"),
+                method: "GetOSUpdateStatus",
+                type: .unary
+            )
+        }
+        /// Namespace for "SetHostname" metadata.
+        public enum SetHostname: Sendable {
+            /// Request type for "SetHostname".
+            public typealias Input = Wendy_Agent_Services_V1_SetHostnameRequest
+            /// Response type for "SetHostname".
+            public typealias Output = Wendy_Agent_Services_V1_SetHostnameResponse
+            /// Descriptor for "SetHostname".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyAgentService"),
+                method: "SetHostname",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "wendy.agent.services.v1.WendyAgentService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             RunContainer.descriptor,
@@ -259,7 +298,10 @@ public enum Wendy_Agent_Services_V1_WendyAgentService: Sendable {
             ConnectBluetoothPeripheral.descriptor,
             DisconnectBluetoothPeripheral.descriptor,
             ForgetBluetoothPeripheral.descriptor,
-            UpdateOS.descriptor
+            UpdateOS.descriptor,
+            DumpKernelLog.descriptor,
+            GetOSUpdateStatus.descriptor,
+            SetHostname.descriptor
         ]
     }
 }
@@ -554,7 +596,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Update the operating system using a Mender artifact
+        /// > Update the operating system using an OS update artifact
         ///
         /// - Parameters:
         ///   - request: A streaming request of `Wendy_Agent_Services_V1_UpdateOSRequest` messages.
@@ -567,6 +609,70 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_UpdateOSRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_UpdateOSResponse>
+
+        /// Handle the "DumpKernelLog" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+        /// > the agent streams the buffered records and then keeps following new
+        /// > kernel messages until the client disconnects (like `dmesg -w`); set
+        /// > follow=false for a one-shot dump that completes once the buffer drains.
+        /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+        /// > connected to their own device, distinct from the DPIA-gated OTel
+        /// > kernel-log streaming path.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_DumpKernelLogRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_DumpKernelLogResponse` messages.
+        func dumpKernelLog(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>
+
+        /// Handle the "GetOSUpdateStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Report the outcome of the most recent OS update attempt: committed
+        /// > after post-reboot healthchecks passed, or rolled back with details on
+        /// > which critical services failed and why.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_GetOSUpdateStatusResponse` messages.
+        func getOSUpdateStatus(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>
+
+        /// Handle the "SetHostname" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+        /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+        /// > is applied exactly as given. The value is persisted so it survives reboots.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_SetHostnameRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_SetHostnameResponse` messages.
+        func setHostname(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse>
     }
 
     /// Service protocol for the "wendy.agent.services.v1.WendyAgentService" service.
@@ -846,7 +952,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Update the operating system using a Mender artifact
+        /// > Update the operating system using an OS update artifact
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendy_Agent_Services_V1_UpdateOSRequest` message.
@@ -859,6 +965,70 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
             request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_UpdateOSRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_UpdateOSResponse>
+
+        /// Handle the "DumpKernelLog" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+        /// > the agent streams the buffered records and then keeps following new
+        /// > kernel messages until the client disconnects (like `dmesg -w`); set
+        /// > follow=false for a one-shot dump that completes once the buffer drains.
+        /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+        /// > connected to their own device, distinct from the DPIA-gated OTel
+        /// > kernel-log streaming path.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_DumpKernelLogRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_DumpKernelLogResponse` messages.
+        func dumpKernelLog(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>
+
+        /// Handle the "GetOSUpdateStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Report the outcome of the most recent OS update attempt: committed
+        /// > after post-reboot healthchecks passed, or rolled back with details on
+        /// > which critical services failed and why.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_GetOSUpdateStatusResponse` message.
+        func getOSUpdateStatus(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>
+
+        /// Handle the "SetHostname" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+        /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+        /// > is applied exactly as given. The value is persisted so it survives reboots.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_SetHostnameRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_SetHostnameResponse` message.
+        func setHostname(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v1.WendyAgentService" service.
@@ -1139,7 +1309,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Update the operating system using a Mender artifact
+        /// > Update the operating system using an OS update artifact
         ///
         /// - Parameters:
         ///   - request: A `Wendy_Agent_Services_V1_UpdateOSRequest` message.
@@ -1153,6 +1323,71 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
             response: GRPCCore.RPCWriter<Wendy_Agent_Services_V1_UpdateOSResponse>,
             context: GRPCCore.ServerContext
         ) async throws
+
+        /// Handle the "DumpKernelLog" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+        /// > the agent streams the buffered records and then keeps following new
+        /// > kernel messages until the client disconnects (like `dmesg -w`); set
+        /// > follow=false for a one-shot dump that completes once the buffer drains.
+        /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+        /// > connected to their own device, distinct from the DPIA-gated OTel
+        /// > kernel-log streaming path.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_DumpKernelLogRequest` message.
+        ///   - response: A response stream of `Wendy_Agent_Services_V1_DumpKernelLogResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func dumpKernelLog(
+            request: Wendy_Agent_Services_V1_DumpKernelLogRequest,
+            response: GRPCCore.RPCWriter<Wendy_Agent_Services_V1_DumpKernelLogResponse>,
+            context: GRPCCore.ServerContext
+        ) async throws
+
+        /// Handle the "GetOSUpdateStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Report the outcome of the most recent OS update attempt: committed
+        /// > after post-reboot healthchecks passed, or rolled back with details on
+        /// > which critical services failed and why.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_GetOSUpdateStatusResponse` to respond with.
+        func getOSUpdateStatus(
+            request: Wendy_Agent_Services_V1_GetOSUpdateStatusRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_GetOSUpdateStatusResponse
+
+        /// Handle the "SetHostname" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+        /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+        /// > is applied exactly as given. The value is persisted so it survives reboots.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_SetHostnameRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_SetHostnameResponse` to respond with.
+        func setHostname(
+            request: Wendy_Agent_Services_V1_SetHostnameRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_SetHostnameResponse
     }
 }
 
@@ -1347,6 +1582,39 @@ extension Wendy_Agent_Services_V1_WendyAgentService.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyAgentService.Method.DumpKernelLog.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_DumpKernelLogRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_DumpKernelLogResponse>(),
+            handler: { request, context in
+                try await self.dumpKernelLog(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyAgentService.Method.GetOSUpdateStatus.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>(),
+            handler: { request, context in
+                try await self.getOSUpdateStatus(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyAgentService.Method.SetHostname.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_SetHostnameRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_SetHostnameResponse>(),
+            handler: { request, context in
+                try await self.setHostname(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -1505,6 +1773,39 @@ extension Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
             context: context
         )
         return response
+    }
+
+    public func dumpKernelLog(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse> {
+        let response = try await self.dumpKernelLog(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return response
+    }
+
+    public func getOSUpdateStatus(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse> {
+        let response = try await self.getOSUpdateStatus(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func setHostname(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse> {
+        let response = try await self.setHostname(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
     }
 }
 
@@ -1745,6 +2046,49 @@ extension Wendy_Agent_Services_V1_WendyAgentService.SimpleServiceProtocol {
                 )
                 return [:]
             }
+        )
+    }
+
+    public func dumpKernelLog(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse> {
+        return GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.dumpKernelLog(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
+        )
+    }
+
+    public func getOSUpdateStatus(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>(
+            message: try await self.getOSUpdateStatus(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func setHostname(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse>(
+            message: try await self.setHostname(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
         )
     }
 }
@@ -2107,7 +2451,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Update the operating system using a Mender artifact
+        /// > Update the operating system using an OS update artifact
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendy_Agent_Services_V1_UpdateOSRequest` message.
@@ -2124,6 +2468,85 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
             deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_UpdateOSResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_UpdateOSResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "DumpKernelLog" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+        /// > the agent streams the buffered records and then keeps following new
+        /// > kernel messages until the client disconnects (like `dmesg -w`); set
+        /// > follow=false for a one-shot dump that completes once the buffer drains.
+        /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+        /// > connected to their own device, distinct from the DPIA-gated OTel
+        /// > kernel-log streaming path.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_DumpKernelLogRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_DumpKernelLogRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_DumpKernelLogResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func dumpKernelLog<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_DumpKernelLogResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetOSUpdateStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Report the outcome of the most recent OS update attempt: committed
+        /// > after post-reboot healthchecks passed, or rolled back with details on
+        /// > which critical services failed and why.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetOSUpdateStatusResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getOSUpdateStatus<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "SetHostname" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+        /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+        /// > is applied exactly as given. The value is persisted so it survives reboots.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_SetHostnameRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_SetHostnameRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_SetHostnameResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func setHostname<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_SetHostnameResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_SetHostnameResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -2662,7 +3085,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
         ///
         /// > Source IDL Documentation:
         /// >
-        /// > Update the operating system using a Mender artifact
+        /// > Update the operating system using an OS update artifact
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendy_Agent_Services_V1_UpdateOSRequest` message.
@@ -2683,6 +3106,116 @@ extension Wendy_Agent_Services_V1_WendyAgentService {
             try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendy_Agent_Services_V1_WendyAgentService.Method.UpdateOS.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "DumpKernelLog" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+        /// > the agent streams the buffered records and then keeps following new
+        /// > kernel messages until the client disconnects (like `dmesg -w`); set
+        /// > follow=false for a one-shot dump that completes once the buffer drains.
+        /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+        /// > connected to their own device, distinct from the DPIA-gated OTel
+        /// > kernel-log streaming path.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_DumpKernelLogRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_DumpKernelLogRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_DumpKernelLogResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func dumpKernelLog<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_DumpKernelLogResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.serverStreaming(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyAgentService.Method.DumpKernelLog.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "GetOSUpdateStatus" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Report the outcome of the most recent OS update attempt: committed
+        /// > after post-reboot healthchecks passed, or rolled back with details on
+        /// > which critical services failed and why.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetOSUpdateStatusResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getOSUpdateStatus<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyAgentService.Method.GetOSUpdateStatus.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "SetHostname" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+        /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+        /// > is applied exactly as given. The value is persisted so it survives reboots.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_SetHostnameRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_SetHostnameRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_SetHostnameResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func setHostname<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_SetHostnameRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_SetHostnameResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_SetHostnameResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyAgentService.Method.SetHostname.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -3134,7 +3667,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Update the operating system using a Mender artifact
+    /// > Update the operating system using an OS update artifact
     ///
     /// - Parameters:
     ///   - request: A request containing a single `Wendy_Agent_Services_V1_UpdateOSRequest` message.
@@ -3152,6 +3685,101 @@ extension Wendy_Agent_Services_V1_WendyAgentService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_UpdateOSRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_UpdateOSResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "DumpKernelLog" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+    /// > the agent streams the buffered records and then keeps following new
+    /// > kernel messages until the client disconnects (like `dmesg -w`); set
+    /// > follow=false for a one-shot dump that completes once the buffer drains.
+    /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+    /// > connected to their own device, distinct from the DPIA-gated OTel
+    /// > kernel-log streaming path.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_DumpKernelLogRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func dumpKernelLog<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.dumpKernelLog(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_DumpKernelLogRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_DumpKernelLogResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetOSUpdateStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Report the outcome of the most recent OS update attempt: committed
+    /// > after post-reboot healthchecks passed, or rolled back with details on
+    /// > which critical services failed and why.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetOSUpdateStatusRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getOSUpdateStatus<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getOSUpdateStatus(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SetHostname" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+    /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+    /// > is applied exactly as given. The value is persisted so it survives reboots.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_SetHostnameRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func setHostname<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_SetHostnameResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.setHostname(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_SetHostnameRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_SetHostnameResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -3667,7 +4295,7 @@ extension Wendy_Agent_Services_V1_WendyAgentService.ClientProtocol {
     ///
     /// > Source IDL Documentation:
     /// >
-    /// > Update the operating system using a Mender artifact
+    /// > Update the operating system using an OS update artifact
     ///
     /// - Parameters:
     ///   - message: request message to send.
@@ -3688,6 +4316,113 @@ extension Wendy_Agent_Services_V1_WendyAgentService.ClientProtocol {
             metadata: metadata
         )
         return try await self.updateOS(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "DumpKernelLog" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Dump the current kernel ring buffer (dmesg) for inspection. By default
+    /// > the agent streams the buffered records and then keeps following new
+    /// > kernel messages until the client disconnects (like `dmesg -w`); set
+    /// > follow=false for a one-shot dump that completes once the buffer drains.
+    /// > Records are NOT PII-redacted; this is a local diagnostic for an operator
+    /// > connected to their own device, distinct from the DPIA-gated OTel
+    /// > kernel-log streaming path.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func dumpKernelLog<Result>(
+        _ message: Wendy_Agent_Services_V1_DumpKernelLogRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.dumpKernelLog(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetOSUpdateStatus" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Report the outcome of the most recent OS update attempt: committed
+    /// > after post-reboot healthchecks passed, or rolled back with details on
+    /// > which critical services failed and why.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getOSUpdateStatus<Result>(
+        _ message: Wendy_Agent_Services_V1_GetOSUpdateStatusRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getOSUpdateStatus(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "SetHostname" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Set the device's hostname (and mDNS name) to a literal value. Unlike the
+    /// > first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+    /// > is applied exactly as given. The value is persisted so it survives reboots.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func setHostname<Result>(
+        _ message: Wendy_Agent_Services_V1_SetHostnameRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_SetHostnameResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_SetHostnameRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.setHostname(
             request: request,
             options: options,
             onResponse: handleResponse

@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Wendycloud_V1_User: Sendable {
+public nonisolated struct Wendycloud_V1_User: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -59,7 +59,7 @@ public struct Wendycloud_V1_User: Sendable {
   fileprivate var _updatedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_CreateUserRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateUserRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -75,7 +75,7 @@ public struct Wendycloud_V1_CreateUserRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetUserRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetUserRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -87,7 +87,7 @@ public struct Wendycloud_V1_GetUserRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_UpdateUserRequest: Sendable {
+public nonisolated struct Wendycloud_V1_UpdateUserRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -120,7 +120,7 @@ public struct Wendycloud_V1_UpdateUserRequest: Sendable {
   fileprivate var _isSuperAdmin: Bool? = nil
 }
 
-public struct Wendycloud_V1_ListUsersRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListUsersRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -134,7 +134,7 @@ public struct Wendycloud_V1_ListUsersRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListUsersResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListUsersResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -150,9 +150,9 @@ public struct Wendycloud_V1_ListUsersResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_User: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_User: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".User"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}email\0\u{1}name\0\u{3}is_super_admin\0\u{3}created_at\0\u{3}updated_at\0")
 
@@ -211,7 +211,7 @@ extension Wendycloud_V1_User: SwiftProtobuf.Message, SwiftProtobuf._MessageImple
   }
 }
 
-extension Wendycloud_V1_CreateUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateUserRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}email\0\u{1}name\0\u{3}is_super_admin\0")
 
@@ -251,7 +251,7 @@ extension Wendycloud_V1_CreateUserRequest: SwiftProtobuf.Message, SwiftProtobuf.
   }
 }
 
-extension Wendycloud_V1_GetUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetUserRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -281,7 +281,7 @@ extension Wendycloud_V1_GetUserRequest: SwiftProtobuf.Message, SwiftProtobuf._Me
   }
 }
 
-extension Wendycloud_V1_UpdateUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateUserRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateUserRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{3}is_super_admin\0")
 
@@ -325,7 +325,7 @@ extension Wendycloud_V1_UpdateUserRequest: SwiftProtobuf.Message, SwiftProtobuf.
   }
 }
 
-extension Wendycloud_V1_ListUsersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListUsersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListUsersRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}page_size\0\u{3}page_token\0")
 
@@ -360,7 +360,7 @@ extension Wendycloud_V1_ListUsersRequest: SwiftProtobuf.Message, SwiftProtobuf._
   }
 }
 
-extension Wendycloud_V1_ListUsersResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListUsersResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListUsersResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}users\0\u{3}next_page_token\0")
 

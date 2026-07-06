@@ -20,13 +20,13 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// FileSyncEntry describes a single file in a manifest.
-public struct Wendy_Agent_Services_V1_FileSyncEntry: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncEntry: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -47,7 +47,7 @@ public struct Wendy_Agent_Services_V1_FileSyncEntry: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -96,7 +96,7 @@ public struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public enum OneOf_RequestType: Equatable, Sendable {
+  public nonisolated enum OneOf_RequestType: Equatable, Sendable {
     case start(Wendy_Agent_Services_V1_FileSyncStart)
     case chunk(Wendy_Agent_Services_V1_FileSyncChunk)
     case commit(Wendy_Agent_Services_V1_FileSyncCommit)
@@ -110,7 +110,7 @@ public struct Wendy_Agent_Services_V1_FileSyncRequest: Sendable {
 
 /// FileSyncStart opens a sync session for the given app. The CLI sends its
 /// local manifest so the agent can reply with what it already has.
-public struct Wendy_Agent_Services_V1_FileSyncStart: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncStart: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -135,7 +135,7 @@ public struct Wendy_Agent_Services_V1_FileSyncStart: Sendable {
 
 /// FileSyncChunk carries a slice of a file being transferred along with the
 /// cumulative post-chunk state for immediate validation.
-public struct Wendy_Agent_Services_V1_FileSyncChunk: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncChunk: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -158,7 +158,7 @@ public struct Wendy_Agent_Services_V1_FileSyncChunk: Sendable {
 }
 
 /// FileSyncCommit signals the end of a single file transfer.
-public struct Wendy_Agent_Services_V1_FileSyncCommit: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncCommit: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -176,7 +176,7 @@ public struct Wendy_Agent_Services_V1_FileSyncCommit: Sendable {
 }
 
 /// FileSyncChmod applies a metadata-only mode change for an unchanged file.
-public struct Wendy_Agent_Services_V1_FileSyncChmod: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncChmod: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -196,7 +196,7 @@ public struct Wendy_Agent_Services_V1_FileSyncChmod: Sendable {
 }
 
 /// FileSyncDelete removes the listed stale files from the app working directory.
-public struct Wendy_Agent_Services_V1_FileSyncDelete: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncDelete: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -208,7 +208,7 @@ public struct Wendy_Agent_Services_V1_FileSyncDelete: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_FileSyncResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -241,7 +241,7 @@ public struct Wendy_Agent_Services_V1_FileSyncResponse: Sendable {
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public enum OneOf_ResponseType: Equatable, Sendable {
+  public nonisolated enum OneOf_ResponseType: Equatable, Sendable {
     case manifest(Wendy_Agent_Services_V1_FileSyncManifest)
     case ack(Wendy_Agent_Services_V1_FileSyncAck)
     case complete(Wendy_Agent_Services_V1_FileSyncComplete)
@@ -252,7 +252,7 @@ public struct Wendy_Agent_Services_V1_FileSyncResponse: Sendable {
 }
 
 /// FileSyncManifest is the agent's reply to FileSyncStart: what it already has.
-public struct Wendy_Agent_Services_V1_FileSyncManifest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncManifest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -265,7 +265,7 @@ public struct Wendy_Agent_Services_V1_FileSyncManifest: Sendable {
 }
 
 /// FileSyncAck confirms a file was written successfully.
-public struct Wendy_Agent_Services_V1_FileSyncAck: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncAck: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -279,7 +279,7 @@ public struct Wendy_Agent_Services_V1_FileSyncAck: Sendable {
 
 /// FileSyncComplete signals that the agent has applied all requested file
 /// operations and the session is done.
-public struct Wendy_Agent_Services_V1_FileSyncComplete: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_FileSyncComplete: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -291,9 +291,9 @@ public struct Wendy_Agent_Services_V1_FileSyncComplete: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendy.agent.services.v1"
+fileprivate nonisolated let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_FileSyncEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncEntry"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0\u{1}size\0\u{1}sha256\0\u{1}mode\0")
 
@@ -338,7 +338,7 @@ extension Wendy_Agent_Services_V1_FileSyncEntry: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}start\0\u{1}chunk\0\u{1}commit\0\u{1}chmod\0\u{1}delete\0")
 
@@ -456,7 +456,7 @@ extension Wendy_Agent_Services_V1_FileSyncRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncStart: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncStart: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncStart"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_id\0\u{1}manifest\0")
 
@@ -495,7 +495,7 @@ extension Wendy_Agent_Services_V1_FileSyncStart: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncChunk"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0\u{1}data\0\u{1}sequence\0\u{3}cumulative_size\0\u{1}sha256\0")
 
@@ -545,7 +545,7 @@ extension Wendy_Agent_Services_V1_FileSyncChunk: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncCommit: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncCommit: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncCommit"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0\u{1}sha256\0\u{1}size\0")
 
@@ -585,7 +585,7 @@ extension Wendy_Agent_Services_V1_FileSyncCommit: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncChmod: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncChmod: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncChmod"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0\u{1}mode\0\u{1}size\0\u{1}sha256\0")
 
@@ -630,7 +630,7 @@ extension Wendy_Agent_Services_V1_FileSyncChmod: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncDelete: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncDelete: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncDelete"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}paths\0")
 
@@ -660,7 +660,7 @@ extension Wendy_Agent_Services_V1_FileSyncDelete: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}manifest\0\u{1}ack\0\u{1}complete\0")
 
@@ -744,7 +744,7 @@ extension Wendy_Agent_Services_V1_FileSyncResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncManifest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncManifest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncManifest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}files\0")
 
@@ -774,7 +774,7 @@ extension Wendy_Agent_Services_V1_FileSyncManifest: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncAck: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncAck: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncAck"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}path\0")
 
@@ -804,7 +804,7 @@ extension Wendy_Agent_Services_V1_FileSyncAck: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Wendy_Agent_Services_V1_FileSyncComplete: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_FileSyncComplete: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".FileSyncComplete"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
