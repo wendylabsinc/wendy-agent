@@ -305,7 +305,7 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 	}
 
 	if state == agentpb.AppRunningState_RUNNING {
-		cliLogln("No changes detected; %s is already up to date and running.", appCfg.AppID)
+		cliLogln("No changes detected; %s is already up to date and running.", containerDisplayName(appCfg))
 		// The container is untouched, so the agent-side (in-container) hook can't
 		// be re-run, but fire the host-side postStart hook so `wendy run` behaves
 		// the same whether or not it took the fast path (e.g. re-opening the URL).
@@ -324,7 +324,7 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		// Could not start the existing container; fall back to a full deploy.
 		return false, nil
 	}
-	cliLogln("No changes detected; started existing %s.", appCfg.AppID)
+	cliLogln("No changes detected; started existing %s.", containerDisplayName(appCfg))
 	runPostStartHostHook(ctx, conn, appCfg)
 	return true, nil
 }
