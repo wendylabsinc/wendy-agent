@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// ResolveESP32SerialPort finds the serial port for an ESP32-C6 device on
-// Windows. It queries Win32_PnPEntity via PowerShell for Ports-class entries
-// matching the Espressif VID/PID and extracts the COMN identifier from the
-// device's Name or Caption field.
-func ResolveESP32SerialPort() (string, error) {
+// ResolveESP32SerialPorts returns all connected serial ports whose USB VID/PID
+// match the ESP32 constants. ConnectionTime is not available on Windows and is
+// left as the zero value.
+func ResolveESP32SerialPorts() ([]SerialPortInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -30,26 +30,26 @@ func ResolveESP32SerialPort() (string, error) {
 		vid, pid,
 	)
 
-	cmd := exec.CommandContext(ctx, powershellExe, "-NoProfile", "-NonInteractive", "-Command", script)
+	cmd := exec.CommandContext(ctx, env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("querying Win32_PnPEntity for ESP32 serial port: %w", err)
+		return nil, fmt.Errorf("querying Win32_PnPEntity for ESP32 serial port: %w", err)
 	}
 
-	return parseESP32SerialPortJSON(string(out))
+	return parseESP32SerialPortsJSON(string(out))
 }
 
 // serialPortRegex matches a parenthesized COM port suffix such as "(COM5)".
 var serialPortRegex = regexp.MustCompile(`\(COM\d+\)`)
 
-// parseESP32SerialPortJSON extracts the first COMN port name from a JSON blob
+// parseESP32SerialPortsJSON extracts all COMN port names from a JSON blob
 // produced by `Get-CimInstance Win32_PnPEntity | Select-Object Name,
-// PNPDeviceID, Caption | ConvertTo-Json`. Returns the bare "COMN" string
-// (matching what os_install.go and esptool expect on Windows).
-func parseESP32SerialPortJSON(jsonOut string) (string, error) {
+// PNPDeviceID, Caption | ConvertTo-Json`. Returns bare "COMN" strings with
+// zero ConnectionTime (not available via Win32_PnPEntity).
+func parseESP32SerialPortsJSON(jsonOut string) ([]SerialPortInfo, error) {
 	trimmed := strings.TrimSpace(jsonOut)
 	if trimmed == "" {
-		return "", noESP32SerialPortErr()
+		return nil, nil
 	}
 	// PowerShell returns a single object (not an array) when there's one result.
 	if !strings.HasPrefix(trimmed, "[") {
@@ -62,18 +62,34 @@ func parseESP32SerialPortJSON(jsonOut string) (string, error) {
 		Caption     string `json:"Caption"`
 	}
 	if err := json.Unmarshal([]byte(trimmed), &entries); err != nil {
-		return "", fmt.Errorf("parsing PowerShell JSON output: %w", err)
+		return nil, fmt.Errorf("parsing PowerShell JSON output: %w", err)
 	}
 
+	var result []SerialPortInfo
 	for _, entry := range entries {
 		for _, field := range []string{entry.Name, entry.Caption} {
 			if match := serialPortRegex.FindString(field); match != "" {
-				return strings.Trim(match, "()"), nil
+				result = append(result, SerialPortInfo{Port: strings.Trim(match, "()")})
+				break
 			}
 		}
 	}
+	return result, nil
+}
 
-	return "", noESP32SerialPortErr()
+// parseESP32SerialPortJSON extracts the first COMN port name from a JSON blob
+// produced by `Get-CimInstance Win32_PnPEntity | Select-Object Name,
+// PNPDeviceID, Caption | ConvertTo-Json`. Returns the bare "COMN" string
+// (matching what os_install.go and esptool expect on Windows).
+func parseESP32SerialPortJSON(jsonOut string) (string, error) {
+	devices, err := parseESP32SerialPortsJSON(jsonOut)
+	if err != nil {
+		return "", err
+	}
+	if len(devices) == 0 {
+		return "", noESP32SerialPortErr()
+	}
+	return devices[0].Port, nil
 }
 
 func noESP32SerialPortErr() error {

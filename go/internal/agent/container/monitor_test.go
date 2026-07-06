@@ -2,6 +2,7 @@ package container
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -11,14 +12,19 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+// errRestartGroup is a stand-in for a partial group-restart failure.
+var errRestartGroup = errors.New("secondary failed to start")
+
 // fakeContainerdClient implements services.ContainerdClient by embedding it
 // (so unimplemented methods panic if called) and also satisfies the
 // groupRestarter capability the monitor type-asserts for shared-namespace
 // group restarts. It records which appIDs were group-restarted.
 type fakeContainerdClient struct {
 	services.ContainerdClient
-	groupOf       map[string]string // full container name -> bare appID for grouped members
-	groupRestarts []string
+	groupOf           map[string]string // full container name -> bare appID for grouped members
+	groupRestarts     []string
+	restartGroupChans map[string]<-chan services.ContainerOutput
+	restartGroupErr   error
 }
 
 func (f *fakeContainerdClient) GroupRestartAppID(_ context.Context, appName string) (string, bool) {
@@ -28,7 +34,7 @@ func (f *fakeContainerdClient) GroupRestartAppID(_ context.Context, appName stri
 
 func (f *fakeContainerdClient) RestartGroup(_ context.Context, appID string) (map[string]<-chan services.ContainerOutput, error) {
 	f.groupRestarts = append(f.groupRestarts, appID)
-	return nil, nil
+	return f.restartGroupChans, f.restartGroupErr
 }
 
 func TestRestartPolicy_String(t *testing.T) {
@@ -308,6 +314,50 @@ func TestRestartGroup_RunsAndClearsFlag(t *testing.T) {
 	m.mu.Unlock()
 	if inProgress {
 		t.Error("groupRestarting flag not cleared after restartGroup returned")
+	}
+}
+
+// TestRestartGroup_DrainsChannelsOnError is the WDY-1822 regression guard.
+// RestartGroup can return partially-started services together with an error
+// (e.g. the primary started but a secondary failed). If the monitor returns
+// early on error instead of draining the returned channels, the abandoned
+// channel back-pressures through the agent's pipes into the service's stdout
+// FIFO and freezes the process in pipe_write once the buffers fill. This test
+// hands restartGroup a live channel alongside an error and asserts the channel
+// is fully consumed; it fails (times out) if the drain-on-error fix is reverted.
+func TestRestartGroup_DrainsChannelsOnError(t *testing.T) {
+	// Unbuffered: the sender only completes if a drain consumes every item, so
+	// an undrained channel leaves the sender blocked and the test detects it.
+	ch := make(chan services.ContainerOutput)
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for i := 0; i < 3; i++ {
+			ch <- services.ContainerOutput{Stdout: []byte("line")}
+		}
+		close(ch)
+	}()
+
+	fake := &fakeContainerdClient{
+		groupOf: map[string]string{},
+		restartGroupChans: map[string]<-chan services.ContainerOutput{
+			"app_talker": ch,
+		},
+		restartGroupErr: errRestartGroup,
+	}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+
+	m.restartGroup(context.Background(), "app")
+
+	select {
+	case <-drained:
+		// Channel fully consumed: the monitor drained output despite the error.
+	case <-time.After(2 * time.Second):
+		t.Fatal("restartGroup did not drain the returned channel on error (WDY-1822 back-pressure regression)")
+	}
+
+	if len(fake.groupRestarts) != 1 || fake.groupRestarts[0] != "app" {
+		t.Errorf("RestartGroup calls = %v; want [app]", fake.groupRestarts)
 	}
 }
 

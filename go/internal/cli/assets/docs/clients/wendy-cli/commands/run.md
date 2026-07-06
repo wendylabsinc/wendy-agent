@@ -7,6 +7,21 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
+## Reachable app URLs
+
+After the app starts, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
+
+```text
+App reachable at http://192.168.123.222:3000
+```
+
+The CLI derives this URL from either:
+
+- `hooks.postStart.openURL`, when the URL contains `WENDY_HOSTNAME`
+- `readiness.tcpSocket.port`
+
+The printed URL uses a routable IP address reported by the device instead of the `.local` hostname, which makes it easier to open from browsers that do not resolve mDNS names reliably. If neither an `openURL` hook nor a TCP readiness port is configured, or if the device cannot report an IP address, `wendy run` skips this line.
+
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
 ## Headless Mac — supported project types
@@ -29,21 +44,31 @@ The error explains the project/target mismatch and tells you to set `platform: "
 
 When building a Dockerfile or Containerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the build file can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
 
-On Apple silicon Macs with Apple's `container` runtime started, Wendy tries
+On Apple silicon Macs with Apple's `container` runtime, Wendy tries
 Apple Container first when `--builder` is omitted. If Apple Container is
 unavailable or the build fails, Wendy falls back to Docker. Use
 `--builder docker` to force Docker, or `--builder apple-container` to require
 Apple Container:
 
 ```sh
-container system start
 wendy --device my-wendy.local run
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
+
+If Apple Container reports an empty build context for a project under `/tmp` or
+`/private/tmp`, Wendy returns an error with the known workaround: move the
+project to a non-`/tmp` directory and retry.
 
 For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
 apple-container` instead. Compose projects still require the Docker provider for
 local runs, but compose service builds targeting a WendyOS device can use
 `--builder apple-container`.
+
+The interactive device picker hides local run targets (this machine,
+Docker/OrbStack, Apple Container) by default so it lists separate WendyOS
+devices first. Select one explicitly with `--device` (as above), or set
+`WENDY_SHOW_LOCAL_DEVICES=1` to list them in the picker.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -129,7 +154,6 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
-| `--all` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker. Hidden by default so the picker lists WendyOS devices first. |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |

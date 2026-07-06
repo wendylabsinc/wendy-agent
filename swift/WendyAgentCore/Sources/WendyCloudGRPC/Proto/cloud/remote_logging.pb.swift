@@ -15,13 +15,13 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// Log severity levels aligned with common syslog/Cloud Logging values.
-public enum Wendycloud_V1_LogSeverity: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_LogSeverity: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
   case debug // = 1
@@ -85,7 +85,7 @@ public enum Wendycloud_V1_LogSeverity: SwiftProtobuf.Enum, Swift.CaseIterable {
 
 /// A single log record. Designed to map cleanly to Google Cloud Logging's
 /// LogEntry (textPayload/jsonPayload), plus trace context fields.
-public struct Wendycloud_V1_LogEntry: Sendable {
+public nonisolated struct Wendycloud_V1_LogEntry: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -186,7 +186,7 @@ public struct Wendycloud_V1_LogEntry: Sendable {
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   /// Payload (choose one). text_payload maps to textPayload; json_payload to jsonPayload.
-  public enum OneOf_Payload: Equatable, Sendable {
+  public nonisolated enum OneOf_Payload: Equatable, Sendable {
     case textPayload(String)
     case jsonPayload(SwiftProtobuf.Google_Protobuf_Struct)
 
@@ -205,7 +205,7 @@ public struct Wendycloud_V1_LogEntry: Sendable {
 /// Batch write request for log entries originating from a specific app running
 /// on an asset within an organization. All fields must be set and the
 /// caller is authenticated via mTLS client certificates.
-public struct Wendycloud_V1_WriteLogEntriesRequest: Sendable {
+public nonisolated struct Wendycloud_V1_WriteLogEntriesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -258,7 +258,7 @@ public struct Wendycloud_V1_WriteLogEntriesRequest: Sendable {
   fileprivate var _logName: String? = nil
 }
 
-public struct Wendycloud_V1_WriteLogEntriesResponse: Sendable {
+public nonisolated struct Wendycloud_V1_WriteLogEntriesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -277,7 +277,7 @@ public struct Wendycloud_V1_WriteLogEntriesResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_RejectedEntry: Sendable {
+public nonisolated struct Wendycloud_V1_RejectedEntry: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -294,7 +294,7 @@ public struct Wendycloud_V1_RejectedEntry: Sendable {
 }
 
 /// Request to tail logs for a specific app running on an asset.
-public struct Wendycloud_V1_TailLogEntriesRequest: Sendable {
+public nonisolated struct Wendycloud_V1_TailLogEntriesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -366,7 +366,7 @@ public struct Wendycloud_V1_TailLogEntriesRequest: Sendable {
   fileprivate var _deploymentID: Int32? = nil
 }
 
-public struct Wendycloud_V1_TailLogEntriesResponse: Sendable {
+public nonisolated struct Wendycloud_V1_TailLogEntriesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -392,13 +392,13 @@ public struct Wendycloud_V1_TailLogEntriesResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_LogSeverity: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_LogSeverity: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0LOG_SEVERITY_UNSPECIFIED\0\u{1}LOG_SEVERITY_DEBUG\0\u{1}LOG_SEVERITY_INFO\0\u{1}LOG_SEVERITY_NOTICE\0\u{1}LOG_SEVERITY_WARNING\0\u{1}LOG_SEVERITY_ERROR\0\u{1}LOG_SEVERITY_CRITICAL\0\u{1}LOG_SEVERITY_ALERT\0\u{1}LOG_SEVERITY_EMERGENCY\0")
 }
 
-extension Wendycloud_V1_LogEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_LogEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".LogEntry"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}timestamp\0\u{3}observed_at\0\u{1}severity\0\u{3}trace_id\0\u{3}span_id\0\u{3}trace_sampled\0\u{3}logger_name\0\u{1}file\0\u{1}function\0\u{1}line\0\u{1}labels\0\u{3}text_payload\0\u{3}json_payload\0\u{3}deployment_id\0")
 
@@ -520,7 +520,7 @@ extension Wendycloud_V1_LogEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageI
   }
 }
 
-extension Wendycloud_V1_WriteLogEntriesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_WriteLogEntriesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WriteLogEntriesRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}asset_id\0\u{3}app_id\0\u{1}collector\0\u{3}collector_version\0\u{1}entries\0\u{3}log_name\0")
 
@@ -584,7 +584,7 @@ extension Wendycloud_V1_WriteLogEntriesRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_WriteLogEntriesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_WriteLogEntriesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WriteLogEntriesResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}accepted_count\0\u{1}rejections\0\u{3}ingestion_id\0")
 
@@ -624,7 +624,7 @@ extension Wendycloud_V1_WriteLogEntriesResponse: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_RejectedEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RejectedEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RejectedEntry"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}index\0\u{1}reason\0")
 
@@ -659,7 +659,7 @@ extension Wendycloud_V1_RejectedEntry: SwiftProtobuf.Message, SwiftProtobuf._Mes
   }
 }
 
-extension Wendycloud_V1_TailLogEntriesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_TailLogEntriesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TailLogEntriesRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}asset_id\0\u{3}app_id\0\u{3}start_time\0\u{3}poll_interval_seconds\0\u{3}page_size\0\u{3}log_name\0\u{3}deployment_id\0")
 
@@ -728,7 +728,7 @@ extension Wendycloud_V1_TailLogEntriesRequest: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Wendycloud_V1_TailLogEntriesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_TailLogEntriesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TailLogEntriesResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}entries\0\u{3}read_through\0")
 

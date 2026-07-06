@@ -63,15 +63,63 @@ func TestParseWendyOSProgress(t *testing.T) {
 	}
 }
 
+func TestParseWendyOSRebootRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "reboot required",
+			output: `{"phase":"rollback","origin_slot":"a","reboot_required":true}`,
+			want:   true,
+		},
+		{
+			name:   "already on origin slot, no reboot needed",
+			output: `{"phase":"rollback","origin_slot":"a","reboot_required":false}`,
+			want:   false,
+		},
+		{
+			name: "summary line among other output",
+			output: "wendyos-update: rollback\n" +
+				`{"phase":"rollback","origin_slot":"b","reboot_required":false}` + "\n",
+			want: false,
+		},
+		{
+			name:   "no JSON line: fails safe to reboot",
+			output: "wendyos-update: rolled back",
+			want:   true,
+		},
+		{
+			name:   "malformed JSON: fails safe to reboot",
+			output: `{"phase":"rollback","reboot_required":`,
+			want:   true,
+		},
+		{
+			name:   "empty output: fails safe to reboot",
+			output: "",
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseWendyOSRebootRequired(tt.output); got != tt.want {
+				t.Errorf("parseWendyOSRebootRequired(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommitStatusForExitCode(t *testing.T) {
 	tests := []struct {
 		code int
-		want oshealth.MenderStatus
+		want oshealth.UpdaterStatus
 	}{
-		{code: 0, want: oshealth.MenderOK},
-		{code: 2, want: oshealth.MenderNothingPending}, // mirrors mender-update
-		{code: 1, want: oshealth.MenderError},
-		{code: 4, want: oshealth.MenderError}, // verify failed at commit
+		{code: 0, want: oshealth.UpdaterOK},
+		{code: 2, want: oshealth.UpdaterNothingPending},
+		{code: 1, want: oshealth.UpdaterError},
+		{code: 4, want: oshealth.UpdaterError}, // verify failed at commit
 	}
 	for _, tt := range tests {
 		if got := commitStatusForExitCode(tt.code); got != tt.want {
@@ -101,6 +149,45 @@ func TestWendyOSInstallErrorMessage(t *testing.T) {
 			// The captured tail must be surfaced so failures are diagnosable.
 			if !strings.Contains(msg, "checksum mismatch") {
 				t.Fatalf("wendyOSInstallErrorMessage(%d) = %q, want it to include the output tail", tt.exitCode, msg)
+			}
+		})
+	}
+}
+
+func TestIsStaleDeploymentError(t *testing.T) {
+	tests := []struct {
+		name string
+		tail []string
+		want bool
+	}{
+		{
+			name: "the in-flight rejection wendyos-update actually prints",
+			tail: []string{
+				"wendyos-update: install: downloading url=https://example/img.wendy status=200 OK",
+				`wendyos-update: an update is already in flight (phase "failed", artifact wendyos-image-jetson-orin-nano-devkit-nvme-wendyos-0.16.1); run rollback or mark-good first`,
+			},
+			want: true,
+		},
+		{
+			name: "match is case-insensitive",
+			tail: []string{`An update is Already In Flight (phase "failed")`},
+			want: true,
+		},
+		{
+			name: "an artifact rejection is not a stale-deployment error",
+			tail: []string{"wendyos-update: checksum mismatch", "wendyos-update: artifact rejected"},
+			want: false,
+		},
+		{
+			name: "empty tail",
+			tail: nil,
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleDeploymentError(tt.tail); got != tt.want {
+				t.Fatalf("isStaleDeploymentError(%q) = %v, want %v", tt.tail, got, tt.want)
 			}
 		})
 	}

@@ -4,6 +4,7 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -74,6 +75,15 @@ func (d LANDevice) HumanReadable() string {
 	return strings.TrimSpace(s)
 }
 
+// HostKey returns this device's stable cross-transport identity: its lowercased
+// mDNS hostname without the trailing ".local" (or ".local.") suffix. This is the
+// value BLE advertises verbatim as its local name, so it lets a LAN entry merge
+// with the same physical device seen over Bluetooth. Empty when the hostname is
+// unknown.
+func (d LANDevice) HostKey() string {
+	return normalizeHostKey(d.Hostname)
+}
+
 // BluetoothDevice represents a Bluetooth-discovered Wendy device.
 type BluetoothDevice struct {
 	ID              string `json:"id"`
@@ -93,6 +103,15 @@ type BluetoothDevice struct {
 // protobuf-over-L2CAP protocol (as opposed to Wendy Lite GATT provisioning).
 func (d BluetoothDevice) IsWendyAgent() bool {
 	return d.L2CAPPSM > 0
+}
+
+// HostKey returns this device's stable cross-transport identity derived from the
+// advertised BLE local name, which WendyOS sets to the raw os.Hostname(). It
+// matches LANDevice.HostKey for the same physical device. Empty when no usable
+// name was advertised (e.g. the "WendyOS Device" fallback normalizes to a value
+// that simply won't match any LAN hostname, leaving the device as its own row).
+func (d BluetoothDevice) HostKey() string {
+	return normalizeHostKey(d.DisplayName)
 }
 
 func (d BluetoothDevice) HumanReadable() string {
@@ -153,11 +172,11 @@ type DiscoveredDevice struct {
 
 	LAN       *LANDevice
 	Bluetooth *BluetoothDevice
-	External  *ExternalDevice
+	Externals []*ExternalDevice
 }
 
 // ConnectionTypes returns a human-readable list of available transports,
-// e.g. "LAN", "BLE", or "LAN, BLE".
+// e.g. "LAN", "BLE", "USB", "LAN, BLE", "LAN, USB", ...
 func (d *DiscoveredDevice) ConnectionTypes() string {
 	var types []string
 	if d.LAN != nil {
@@ -170,8 +189,14 @@ func (d *DiscoveredDevice) ConnectionTypes() string {
 			types = append(types, "BLE (Lite)")
 		}
 	}
-	if d.External != nil {
-		types = append(types, "LAN (Lite)")
+	for _, ext := range d.Externals {
+		if ct := ext.ConnectionType(); ct != "" {
+			if ext.ProviderKey == "wendy-lite" {
+				types = append(types, ct+" (Lite)")
+			} else {
+				types = append(types, ct)
+			}
+		}
 	}
 	return strings.Join(types, ", ")
 }
@@ -185,8 +210,11 @@ func (d *DiscoveredDevice) Address() string {
 		}
 		return d.LAN.Hostname
 	}
-	if d.External != nil {
-		if ip := d.External.ConnectionInfo["ip"]; ip != "" {
+	for _, ext := range d.Externals {
+		if ext == nil || ext.ConnectionInfo == nil {
+			continue
+		}
+		if ip := ext.ConnectionInfo["ip"]; ip != "" {
 			return ip
 		}
 	}
@@ -204,17 +232,50 @@ func (d *DiscoveredDevice) Port() int {
 	return 0
 }
 
-// MergedDevices returns a deduplicated slice of DiscoveredDevice by merging
-// LAN and Bluetooth entries that share the same DisplayName (case-insensitive).
-// LAN metadata takes precedence; BLE backfills missing fields.
+// normalizeHostKey lowercases a name and strips the mDNS ".local" (or ".local.")
+// suffix so an mDNS hostname and a BLE local name for the same device produce the
+// same key.
+func normalizeHostKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimSuffix(s, ".local.")
+	s = strings.TrimSuffix(s, ".local")
+	return s
+}
+
+// MergedDevices returns a deduplicated slice of DiscoveredDevice by merging LAN,
+// Bluetooth, and wendy-lite entries that refer to the same physical device. Two
+// transports match when they share a normalized hostname (the stable identity
+// BLE and mDNS both carry) or, failing that, a case-insensitive DisplayName. LAN
+// metadata takes precedence; other transports backfill missing fields.
 func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
-	// Index by normalized (lower-case) display name.
-	byName := make(map[string]*DiscoveredDevice)
-	var order []string // preserve insertion order
+	// A device is indexed under every key it can be matched by (hostname and
+	// display name), so a later transport finds it regardless of which key it
+	// shares. order holds one pointer per physical device to preserve insertion
+	// order without double-counting multi-keyed entries.
+	byKey := make(map[string]*DiscoveredDevice)
+	var order []*DiscoveredDevice
+
+	register := func(d *DiscoveredDevice, keys ...string) {
+		for _, k := range keys {
+			if k != "" {
+				byKey[k] = d
+			}
+		}
+	}
+	lookup := func(keys ...string) *DiscoveredDevice {
+		for _, k := range keys {
+			if k == "" {
+				continue
+			}
+			if d, ok := byKey[k]; ok {
+				return d
+			}
+		}
+		return nil
+	}
 
 	for i := range c.LANDevices {
 		d := &c.LANDevices[i]
-		key := strings.ToLower(d.DisplayName)
 		merged := &DiscoveredDevice{
 			DisplayName:     d.DisplayName,
 			AgentVersion:    d.AgentVersion,
@@ -223,17 +284,19 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			CPUArchitecture: d.CPUArchitecture,
 			LAN:             d,
 		}
-		byName[key] = merged
-		order = append(order, key)
+		register(merged, d.HostKey(), strings.ToLower(d.DisplayName))
+		order = append(order, merged)
 	}
 
 	for i := range c.BluetoothDevices {
 		d := &c.BluetoothDevices[i]
-		key := strings.ToLower(d.DisplayName)
-		if existing, ok := byName[key]; ok {
-			// Merge BLE into existing LAN entry.
+		if existing := lookup(d.HostKey(), strings.ToLower(d.DisplayName)); existing != nil {
+			// Merge BLE into the existing entry.
 			existing.Bluetooth = d
-			// Backfill any fields the LAN entry is missing.
+			// Index the existing device under the BLE key too so a later
+			// transport can still find it by hostname.
+			register(existing, d.HostKey())
+			// Backfill any fields the existing entry is missing.
 			if existing.AgentVersion == "" {
 				existing.AgentVersion = d.AgentVersion
 			}
@@ -246,19 +309,19 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 			if existing.CPUArchitecture == "" {
 				existing.CPUArchitecture = d.CPUArchitecture
 			}
-		} else {
-			// BLE-only device.
-			merged := &DiscoveredDevice{
-				DisplayName:     d.DisplayName,
-				AgentVersion:    d.AgentVersion,
-				OS:              d.OS,
-				OSVersion:       d.OSVersion,
-				CPUArchitecture: d.CPUArchitecture,
-				Bluetooth:       d,
-			}
-			byName[key] = merged
-			order = append(order, key)
+			continue
 		}
+		// BLE-only device.
+		merged := &DiscoveredDevice{
+			DisplayName:     d.DisplayName,
+			AgentVersion:    d.AgentVersion,
+			OS:              d.OS,
+			OSVersion:       d.OSVersion,
+			CPUArchitecture: d.CPUArchitecture,
+			Bluetooth:       d,
+		}
+		register(merged, d.HostKey(), strings.ToLower(d.DisplayName))
+		order = append(order, merged)
 	}
 
 	// Merge wendy-lite external devices by name. These represent the same
@@ -268,26 +331,28 @@ func (c *DevicesCollection) MergedDevices() []DiscoveredDevice {
 		if d.ProviderKey != "wendy-lite" {
 			continue
 		}
-		key := strings.ToLower(d.DisplayName)
-		if existing, ok := byName[key]; ok {
-			existing.External = d
+		if existing := lookup(strings.ToLower(d.DisplayName)); existing != nil {
+			existing.Externals = append(existing.Externals, d)
+			sort.Slice(existing.Externals, func(i, j int) bool {
+				return existing.Externals[i].Rank() > existing.Externals[j].Rank()
+			})
 			if existing.CPUArchitecture == "" {
 				existing.CPUArchitecture = d.CPUArchitecture
 			}
-		} else {
-			merged := &DiscoveredDevice{
-				DisplayName:     d.DisplayName,
-				CPUArchitecture: d.CPUArchitecture,
-				External:        d,
-			}
-			byName[key] = merged
-			order = append(order, key)
+			continue
 		}
+		merged := &DiscoveredDevice{
+			DisplayName:     d.DisplayName,
+			CPUArchitecture: d.CPUArchitecture,
+			Externals:       []*ExternalDevice{d},
+		}
+		register(merged, strings.ToLower(d.DisplayName))
+		order = append(order, merged)
 	}
 
 	result := make([]DiscoveredDevice, 0, len(order))
-	for _, key := range order {
-		result = append(result, *byName[key])
+	for _, d := range order {
+		result = append(result, *d)
 	}
 	return result
 }

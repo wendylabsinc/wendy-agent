@@ -1,6 +1,8 @@
 // Package oshealth implements post-OS-update healthchecks for critical
-// system services and the commit-or-rollback decision for pending Mender
-// A/B updates.
+// system services and the commit-or-rollback decision for pending A/B
+// updates. A backend that runs its own health gate inside commit
+// (wendyos-update runs /etc/wendyos-update/health.d) delegates the verdict to
+// its commit result instead.
 package oshealth
 
 import (
@@ -38,9 +40,13 @@ type PendingMarker struct {
 	// and reboot).
 	BootID string `json:"boot_id,omitempty"`
 	// Backend identifies the OS update backend that installed this update
-	// ("wendyos-update" or "mender"), so the next boot's gate commits or rolls
-	// back with the same backend. Empty on markers written before multi-backend
-	// support; the gate then auto-selects (see requestedBackendFromMarker).
+	// (currently only "wendyos-update"), so the next boot's gate commits or
+	// rolls back with the same backend. Empty on markers written before
+	// multi-backend support; the gate then auto-selects (see
+	// requestedBackendFromMarker). A marker can still carry a legacy value
+	// such as "mender" if it was written by an old agent shortly before an
+	// upgrade; an unrecognized value resolves to no backend, so the gate
+	// degrades to keep-marker-and-retry until the marker goes stale.
 	Backend string `json:"backend,omitempty"`
 }
 

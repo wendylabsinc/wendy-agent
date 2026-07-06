@@ -37,4 +37,10 @@ message AppContainer {
     // (single- or multi-service services-map apps). Empty for single-container
     // apps and flattened single-service apps (those with no service name).
     repeated ServiceEntry services = 6;
+    // Exit diagnostics for the last run, only meaningful when running_state is
+    // STOPPED. Fields 7-10 are left for the in-flight provenance PR #1234, so
+    // these start at 11 to guarantee no wire-number collision on either merge
+    // order.
+    int32 exit_code = 11;            // process exit code of the last run; -1 = task never started.
+    string termination_reason = 12;  // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
 }

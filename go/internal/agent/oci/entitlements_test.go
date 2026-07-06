@@ -2,6 +2,8 @@ package oci
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -1493,6 +1495,91 @@ func TestApplyCamera_NonJetsonOmitsNvhost(t *testing.T) {
 	}
 }
 
+// installFakeDriGlobs redirects driGlobs at a tempdir of fake /dev/dri nodes and
+// stubs statMajor to report their majors, mirroring installFakeCameraGlobs.
+func installFakeDriGlobs(t *testing.T, files map[string]int64) {
+	t.Helper()
+	dir := t.TempDir()
+	majorsByPath := map[string]int64{}
+	for name, major := range files {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+		majorsByPath[p] = major
+	}
+	origGlobs := driGlobs
+	origStat := statMajor
+	t.Cleanup(func() {
+		driGlobs = origGlobs
+		statMajor = origStat
+	})
+	driGlobs = []string{filepath.Join(dir, "*")}
+	statMajor = func(p string) (int64, error) {
+		if m, ok := majorsByPath[p]; ok {
+			return m, nil
+		}
+		return 0, os.ErrNotExist
+	}
+}
+
+func TestApplyDisplay_AllowsDrmMajor(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"card0": 226, "renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 0, false }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMajorRule(spec, 226) {
+		t.Error("expected cgroup allow for DRM major 226")
+	}
+	if countMajorRule(spec, 226) != 1 {
+		t.Errorf("DRM major rule should be deduplicated, got %d", countMajorRule(spec, 226))
+	}
+}
+
+func TestApplyDisplay_AddsVideoAndRenderGIDs(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	origRender := lookupRenderGID
+	t.Cleanup(func() { lookupRenderGID = origRender })
+	lookupRenderGID = func() (uint32, bool) { return 107, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasGID(spec, videoGroupGID) {
+		t.Error("expected video GID in AdditionalGids")
+	}
+	if !hasGID(spec, 107) {
+		t.Error("expected resolved render GID in AdditionalGids")
+	}
+}
+
+func TestApplyDisplay_NonDisplayAppUnchanged(t *testing.T) {
+	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMajorRule(spec, 226) {
+		t.Error("non-display app must not get the DRM major rule")
+	}
+	if hasGID(spec, 107) {
+		t.Error("non-display app must not get a render GID")
+	}
+}
+
 // TestApplyCamera_DeviceRulesOmitMknod locks in least privilege: every cgroup
 // device rule the camera entitlement adds — the static v4l2 major and every
 // dynamically-discovered media/dma-heap/v4l-subdev/nvhost/nvmap major — must
@@ -1525,6 +1612,267 @@ func TestApplyCamera_DeviceRulesOmitMknod(t *testing.T) {
 		}
 		if acc != "rw" {
 			t.Errorf("camera major %d Access = %q, want %q", major, acc, "rw")
+		}
+	}
+}
+
+func hasMount(spec *Spec, dest string) bool {
+	for _, m := range spec.Mounts {
+		if m.Destination == dest {
+			return true
+		}
+	}
+	return false
+}
+
+func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "s")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer l.Close()
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = sock
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("expected /run/wendy/agent.sock bind mount")
+	}
+	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("expected WENDY_AGENT_SOCKET env")
+	}
+}
+
+func TestApplyAdmin_NoSocketWhenAbsent(t *testing.T) {
+	origPath := adminAgentSocketPath
+	t.Cleanup(func() { adminAgentSocketPath = origPath })
+	adminAgentSocketPath = filepath.Join(t.TempDir(), "missing.sock")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAdmin}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") {
+		t.Error("must not mount a missing socket")
+	}
+}
+
+func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/agent.sock") || hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent.sock") {
+		t.Error("non-admin app must not get the agent socket")
+	}
+}
+
+// ---------- GPU fallback device derivation (WDY-1804) ----------
+
+// installFakeNvidiaDevTree builds a fake /dev with the Jetson AGX Thor
+// (JetPack 7.2) NVIDIA node layout and injects each node's real-world
+// major:minor via statCharDevice (plain files can't carry device numbers
+// without root/mknod). Restored on cleanup.
+func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string {
+	t.Helper()
+	dev := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dev, "nvidia-caps"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name := range numbers {
+		if err := os.WriteFile(filepath.Join(dev, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	origGlobs := nvidiaDeviceGlobs
+	origStat := statCharDevice
+	origBoard := boardDetect
+	t.Cleanup(func() {
+		nvidiaDeviceGlobs = origGlobs
+		statCharDevice = origStat
+		boardDetect = origBoard
+	})
+
+	nvidiaDeviceGlobs = []string{
+		filepath.Join(dev, "nvidia*"),
+		filepath.Join(dev, "nvidia-caps", "*"),
+	}
+	statCharDevice = func(p string) (int64, int64, error) {
+		rel, err := filepath.Rel(dev, p)
+		if err != nil {
+			return 0, 0, err
+		}
+		if nums, ok := numbers[rel]; ok {
+			return nums[0], nums[1], nil
+		}
+		// e.g. the nvidia-caps directory itself, matched by the nvidia* glob.
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	return dev
+}
+
+func gpuSpec(t *testing.T) *Spec {
+	t.Helper()
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+	return spec
+}
+
+func deviceForPath(spec *Spec, path string) (LinuxDevice, bool) {
+	for _, d := range spec.Linux.Devices {
+		if d.Path == path {
+			return d, true
+		}
+	}
+	return LinuxDevice{}, false
+}
+
+func TestApplyGPU_DerivesDevicesFromLiveNodes(t *testing.T) {
+	// Ground truth from a Jetson AGX Thor (WendyOS-0.16.1, JetPack 7.2,
+	// driver 595.78): uvm/uvm-tools live on dynamic major 487, the caps
+	// nodes on 501, and a second GPU node nvidia1 exists.
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":                 {195, 0},
+		"nvidia1":                 {195, 1},
+		"nvidiactl":               {195, 255},
+		"nvidia-modeset":          {195, 254},
+		"nvidia-uvm":              {487, 0},
+		"nvidia-uvm-tools":        {487, 1},
+		"nvidia-caps/nvidia-cap1": {501, 1},
+		"nvidia-caps/nvidia-cap2": {501, 2},
+	})
+
+	spec := gpuSpec(t)
+
+	// Every live node must be added with its real major:minor.
+	for name, want := range map[string][2]int64{
+		"nvidia1":                 {195, 1},
+		"nvidiactl":               {195, 255},
+		"nvidia-uvm":              {487, 0},
+		"nvidia-uvm-tools":        {487, 1},
+		"nvidia-caps/nvidia-cap1": {501, 1},
+	} {
+		d, ok := deviceForPath(spec, filepath.Join(dev, name))
+		if !ok {
+			t.Errorf("GPU entitlement did not add %s", name)
+			continue
+		}
+		if d.Major != want[0] || d.Minor != want[1] || d.Type != "c" {
+			t.Errorf("%s = c %d:%d, want c %d:%d", name, d.Major, d.Minor, want[0], want[1])
+		}
+	}
+
+	// One rw (no mknod) allow rule per discovered major:minor pair — never a
+	// whole-major rule: dynamic majors (487) come from a shared kernel pool,
+	// so an unscoped rule could cover unrelated drivers on another boot.
+	wantRules := map[[2]int64]bool{
+		{195, 0}: true, {195, 1}: true, {195, 255}: true, {195, 254}: true,
+		{487, 0}: true, {487, 1}: true, {501, 1}: true, {501, 2}: true,
+	}
+	gotRules := map[[2]int64]int{}
+	for _, d := range spec.Linux.Resources.Devices {
+		if !d.Allow || d.Major == nil {
+			continue
+		}
+		if d.Minor == nil {
+			t.Errorf("major %d rule has no minor; whole-major rules are forbidden on the derived path", *d.Major)
+			continue
+		}
+		if d.Access != "rw" {
+			t.Errorf("rule %d:%d Access = %q, want %q (mknod must be withheld)", *d.Major, *d.Minor, d.Access, "rw")
+		}
+		gotRules[[2]int64{*d.Major, *d.Minor}]++
+	}
+	for pair := range wantRules {
+		if gotRules[pair] != 1 {
+			t.Errorf("rule %d:%d count = %d, want exactly 1", pair[0], pair[1], gotRules[pair])
+		}
+	}
+
+	// The nvidia-caps directory itself (matched by the nvidia* glob) must not
+	// become a device.
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps")); ok {
+		t.Error("GPU entitlement added the nvidia-caps directory as a device")
+	}
+
+	// The static list must not leak in alongside the derived nodes.
+	if _, ok := deviceForPath(spec, "/dev/nvidia0"); ok {
+		t.Error("GPU entitlement added static /dev/nvidia0 despite live nodes")
+	}
+}
+
+func TestApplyGPU_StaticFallbackWhenNoLiveNodes(t *testing.T) {
+	// Empty fake /dev: the glob finds nothing (e.g. driver module not yet
+	// loaded), so the historical static major-195 list must be preserved.
+	installFakeNvidiaDevTree(t, map[string][2]int64{})
+
+	spec := gpuSpec(t)
+
+	for _, path := range []string{
+		"/dev/nvidia0",
+		"/dev/nvidiactl",
+		"/dev/nvidia-uvm",
+		"/dev/nvidia-uvm-tools",
+		"/dev/nvidia-modeset",
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("static fallback did not add %s", path)
+			continue
+		}
+		if d.Major != 195 || d.Minor != 0 {
+			t.Errorf("%s = %d:%d, want 195:0", path, d.Major, d.Minor)
+		}
+	}
+	if got := countMajorRule(spec, 195); got != 1 {
+		t.Errorf("major 195 allow rules = %d, want exactly 1", got)
+	}
+}
+
+func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
+	// A character device planted under a matching glob but with a non-NVIDIA
+	// name must not be granted to the container.
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":                     {195, 0},
+		"nvidia":                      {195, 3}, // bare "nvidia" is not a real node name
+		"nvidia-evil":                 {8, 0},   // e.g. a block-ish major smuggled behind a char node
+		"nvidia-caps/nvidia-backdoor": {501, 99},
+	})
+
+	spec := gpuSpec(t)
+
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-evil")); ok {
+		t.Error("GPU entitlement granted a node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia")); ok {
+		t.Error("GPU entitlement granted the bare 'nvidia' name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia-caps", "nvidia-backdoor")); ok {
+		t.Error("GPU entitlement granted a caps node with an unexpected name")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "nvidia0")); !ok {
+		t.Error("GPU entitlement dropped the legitimate nvidia0 node")
+	}
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && *d.Major == 8 {
+			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
 		}
 	}
 }

@@ -82,7 +82,7 @@ public enum Wendycloud_V1_AssetService: Sendable {
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.AssetService"),
                 method: "ListAssets",
-                type: .unary
+                type: .serverStreaming
             )
         }
         /// Namespace for "ListAssetChildren" metadata.
@@ -95,7 +95,7 @@ public enum Wendycloud_V1_AssetService: Sendable {
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.AssetService"),
                 method: "ListAssetChildren",
-                type: .unary
+                type: .serverStreaming
             )
         }
         /// Namespace for "GetAssetLineage" metadata.
@@ -316,11 +316,11 @@ extension Wendycloud_V1_AssetService {
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListAssetsResponse` message.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListAssetsResponse` messages.
         func listAssets(
             request: GRPCCore.ServerRequest<Wendycloud_V1_ListAssetsRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListAssetsResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetsResponse>
 
         /// Handle the "ListAssetChildren" method.
         ///
@@ -330,11 +330,11 @@ extension Wendycloud_V1_AssetService {
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListAssetChildrenResponse` message.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListAssetChildrenResponse` messages.
         func listAssetChildren(
             request: GRPCCore.ServerRequest<Wendycloud_V1_ListAssetChildrenRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListAssetChildrenResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetChildrenResponse>
 
         /// Handle the "GetAssetLineage" method.
         ///
@@ -417,29 +417,31 @@ extension Wendycloud_V1_AssetService {
         ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_ListAssetsRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListAssetsResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListAssetsResponse` to respond with.
         func listAssets(
             request: Wendycloud_V1_ListAssetsRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListAssetsResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListAssetsResponse
+        ) async throws
 
         /// Handle the "ListAssetChildren" method.
         ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_ListAssetChildrenRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListAssetChildrenResponse` messages.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListAssetChildrenResponse` to respond with.
         func listAssetChildren(
             request: Wendycloud_V1_ListAssetChildrenRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListAssetChildrenResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListAssetChildrenResponse
+        ) async throws
 
         /// Handle the "GetAssetLineage" method.
         ///
@@ -596,7 +598,7 @@ extension Wendycloud_V1_AssetService.ServiceProtocol {
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
-        return GRPCCore.StreamingServerResponse(single: response)
+        return response
     }
 
     public func listAssetChildren(
@@ -607,7 +609,7 @@ extension Wendycloud_V1_AssetService.ServiceProtocol {
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
-        return GRPCCore.StreamingServerResponse(single: response)
+        return response
     }
 
     public func getAssetLineage(
@@ -680,26 +682,34 @@ extension Wendycloud_V1_AssetService.SimpleServiceProtocol {
     public func listAssets(
         request: GRPCCore.ServerRequest<Wendycloud_V1_ListAssetsRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListAssetsResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListAssetsResponse>(
-            message: try await self.listAssets(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetsResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetsResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listAssets(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 
     public func listAssetChildren(
         request: GRPCCore.ServerRequest<Wendycloud_V1_ListAssetChildrenRequest>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListAssetChildrenResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListAssetChildrenResponse>(
-            message: try await self.listAssetChildren(
-                request: request.message,
-                context: context
-            ),
-            metadata: [:]
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetChildrenResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListAssetChildrenResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listAssetChildren(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 
@@ -818,7 +828,7 @@ extension Wendycloud_V1_AssetService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAssetsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAssetsResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "ListAssetChildren" method.
@@ -837,7 +847,7 @@ extension Wendycloud_V1_AssetService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAssetChildrenRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAssetChildrenResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "GetAssetLineage" method.
@@ -1012,11 +1022,9 @@ extension Wendycloud_V1_AssetService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAssetsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAssetsResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendycloud_V1_AssetService.Method.ListAssets.descriptor,
                 serializer: serializer,
@@ -1042,11 +1050,9 @@ extension Wendycloud_V1_AssetService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListAssetChildrenRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListAssetChildrenResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendycloud_V1_AssetService.Method.ListAssetChildren.descriptor,
                 serializer: serializer,
@@ -1203,9 +1209,7 @@ extension Wendycloud_V1_AssetService.ClientProtocol {
     public func listAssets<Result>(
         request: GRPCCore.ClientRequest<Wendycloud_V1_ListAssetsRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         try await self.listAssets(
             request: request,
@@ -1228,9 +1232,7 @@ extension Wendycloud_V1_AssetService.ClientProtocol {
     public func listAssetChildren<Result>(
         request: GRPCCore.ClientRequest<Wendycloud_V1_ListAssetChildrenRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         try await self.listAssetChildren(
             request: request,
@@ -1400,9 +1402,7 @@ extension Wendycloud_V1_AssetService.ClientProtocol {
         _ message: Wendycloud_V1_ListAssetsRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         let request = GRPCCore.ClientRequest<Wendycloud_V1_ListAssetsRequest>(
             message: message,
@@ -1429,9 +1429,7 @@ extension Wendycloud_V1_AssetService.ClientProtocol {
         _ message: Wendycloud_V1_ListAssetChildrenRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListAssetChildrenResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         let request = GRPCCore.ClientRequest<Wendycloud_V1_ListAssetChildrenRequest>(
             message: message,

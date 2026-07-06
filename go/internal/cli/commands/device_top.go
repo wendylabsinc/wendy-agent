@@ -218,19 +218,28 @@ func listAppContainers(ctx context.Context, conn *grpcclient.AgentConnection) ([
 }
 
 type topJSONHost struct {
-	CPUPercent    float64      `json:"cpuPercent"`
-	CPUCount      uint32       `json:"cpuCount"`
-	MemUsedBytes  int64        `json:"memUsedBytes"`
-	MemTotalBytes int64        `json:"memTotalBytes"`
-	GPUs          []topJSONGPU `json:"gpus,omitempty"`
+	CPUPercent    float64          `json:"cpuPercent"`
+	CPUCount      uint32           `json:"cpuCount"`
+	MemUsedBytes  int64            `json:"memUsedBytes"`
+	MemTotalBytes int64            `json:"memTotalBytes"`
+	GPUs          []topJSONGPU     `json:"gpus,omitempty"`
+	ThermalZones  []topJSONThermal `json:"thermalZones,omitempty"`
+}
+
+type topJSONThermal struct {
+	Name  string  `json:"name"`
+	TempC float64 `json:"tempC"`
 }
 
 type topJSONGPU struct {
-	Index         uint32   `json:"index"`
-	Name          string   `json:"name"`
-	UtilPercent   float64  `json:"utilPercent"`
-	MemUsedBytes  int64    `json:"memUsedBytes"`
-	MemTotalBytes int64    `json:"memTotalBytes"`
+	Index       uint32  `json:"index"`
+	Name        string  `json:"name"`
+	UtilPercent float64 `json:"utilPercent"`
+	// Omitted (zero) when the device cannot report per-GPU memory (e.g.
+	// Jetson unified memory, where the GPU shares host RAM) — absent means
+	// "not applicable", never a real size.
+	MemUsedBytes  int64    `json:"memUsedBytes,omitempty"`
+	MemTotalBytes int64    `json:"memTotalBytes,omitempty"`
 	TempC         *float64 `json:"tempC,omitempty"`
 	PowerW        *float64 `json:"powerW,omitempty"`
 }
@@ -265,6 +274,12 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				PowerW:        g.PowerW,
 			})
 		}
+		for _, z := range cur.host.GetThermalZones() {
+			out.Host.ThermalZones = append(out.Host.ThermalZones, topJSONThermal{
+				Name:  z.GetName(),
+				TempC: z.GetTempC(),
+			})
+		}
 	}
 	cpuCount := uint32(1)
 	if cur.host != nil && cur.host.GetCpuCount() > 0 {
@@ -286,6 +301,16 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 		})
 	}
 	return out
+}
+
+// formatGPUMem renders a GPU's memory as "used / total", or "shared" when the
+// device reports no per-GPU figure (Jetson unified memory: the GPU shares host
+// RAM, so nvidia-smi answers "[N/A]" — the host Mem line is the real number).
+func formatGPUMem(g *agentpb.GpuStats) string {
+	if g.GetMemTotalBytes() == 0 {
+		return "shared"
+	}
+	return fmt.Sprintf("%s / %s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
 }
 
 func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSON bool) error {
@@ -325,8 +350,11 @@ func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSO
 			formatBytes(cur.host.GetMemTotalBytes()-cur.host.GetMemAvailableBytes()),
 			formatBytes(cur.host.GetMemTotalBytes()))
 		for _, g := range cur.host.GetGpus() {
-			fmt.Printf("GPU%d %s: %.0f%%  %s / %s\n", g.GetIndex(), g.GetName(),
-				g.GetUtilPercent(), formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			fmt.Printf("GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
+				g.GetUtilPercent(), formatGPUMem(g))
+		}
+		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
+			fmt.Printf("TEMP: %s\n", formatThermalZones(zones))
 		}
 	}
 	cpuByID := map[string]float64{}
@@ -742,11 +770,19 @@ func (m topModel) View() string {
 			val := fmt.Sprintf("%.0f%%", g.GetUtilPercent())
 			if g.GetMemTotalBytes() > 0 {
 				val += fmt.Sprintf(" %s/%s", formatBytes(g.GetMemUsedBytes()), formatBytes(g.GetMemTotalBytes()))
+			} else {
+				// No per-GPU figure exists (Jetson unified memory): the GPU
+				// shares host RAM — the Mem meter above is the real number.
+				val += " shared"
 			}
 			if g.TempC != nil {
 				val += fmt.Sprintf(" %.0f°C", *g.TempC)
 			}
 			top = append(top, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
+		}
+
+		if zones := h.GetThermalZones(); len(zones) > 0 {
+			top = append(top, topValDim.Render(" Temp: "+formatThermalZones(zones)))
 		}
 	} else {
 		top = append(top, topValDim.Render(" Connecting…"))
@@ -917,4 +953,19 @@ func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, inte
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+// formatThermalZones renders thermal zones (already sorted hottest-first by the
+// agent) as a compact one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C".
+// Zone names are shortened by trimming the conventional "-thermal"/"-therm"
+// suffix for readability.
+func formatThermalZones(zones []*agentpb.ThermalZone) string {
+	parts := make([]string, 0, len(zones))
+	for _, z := range zones {
+		name := z.GetName()
+		name = strings.TrimSuffix(name, "-thermal")
+		name = strings.TrimSuffix(name, "-therm")
+		parts = append(parts, fmt.Sprintf("%s %.0f°C", name, z.GetTempC()))
+	}
+	return strings.Join(parts, "  ")
 }

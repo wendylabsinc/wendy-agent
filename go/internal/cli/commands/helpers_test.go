@@ -352,6 +352,113 @@ func TestResolveLANAgentVersionFallsBackAcrossAddresses(t *testing.T) {
 	}
 }
 
+// TestResolveLANAgentVersionAllowsMTLSHandshakeTime guards against the
+// nested-timeout inversion that left provisioned devices stuck on the failure
+// glyph in the discover picker: the per-address probe budget
+// (lanAddressProbeBudget) must comfortably contain a single autoTLS
+// connect+probe, whose own budget is mtlsProbeTimeout. A provisioned device's
+// handshake takes ~2.2s, so a per-address budget shorter than mtlsProbeTimeout
+// cancelled the mTLS probe before it could answer — even though `wendy device
+// info` (which connects with the un-capped root context) succeeded.
+func TestResolveLANAgentVersionAllowsMTLSHandshakeTime(t *testing.T) {
+	orig := getAgentVersionAtAddress
+	defer func() { getAgentVersionAtAddress = orig }()
+
+	// Simulate a provisioned device whose autoTLS handshake takes longer than
+	// the old 1500ms budget but well within a single mtlsProbeTimeout.
+	const handshake = 2200 * time.Millisecond
+	getAgentVersionAtAddress = func(ctx context.Context, _ string) (bool, *agentpb.GetAgentVersionResponse, error) {
+		select {
+		case <-time.After(handshake):
+			return true, &agentpb.GetAgentVersionResponse{Version: "9.9.9"}, nil
+		case <-ctx.Done():
+			return false, nil, ctx.Err()
+		}
+	}
+
+	dev := models.LANDevice{IPAddress: "192.168.1.50", Port: defaultAgentPort}
+
+	_, _, resp, err := resolveLANAgentVersion(context.Background(), dev)
+	if err != nil {
+		t.Fatalf("resolveLANAgentVersion() error = %v; per-address probe budget too short to complete an mTLS handshake", err)
+	}
+	if resp.GetVersion() != "9.9.9" {
+		t.Fatalf("resolveLANAgentVersion() version = %q, want %q", resp.GetVersion(), "9.9.9")
+	}
+}
+
+// TestMTLSBudgetInvariants guards the timeout-budget relationships explained
+// in the comments on mtlsProbeTimeout/lanAddressProbeBudget, so a future edit
+// can't silently invert or shrink them below what a slow post-quantum ML-DSA
+// handshake on constrained hardware (Jetson, Raspberry Pi) needs. Regressing
+// any of these was the direct cause of two prior flakes: provisioned LAN rows
+// stuck on the failure glyph (PR #1297/#1309) and, most recently, direct
+// `wendy device` commands intermittently reporting a spurious "Unauthorized"
+// for a device that was actually up and holding a valid certificate.
+func TestMTLSBudgetInvariants(t *testing.T) {
+	const minTolerableHandshake = 6 * time.Second
+
+	if mtlsProbeTimeout < minTolerableHandshake {
+		t.Fatalf("mtlsProbeTimeout = %s, want >= %s to tolerate a slow ML-DSA handshake on constrained hardware", mtlsProbeTimeout, minTolerableHandshake)
+	}
+	// Evaluate the single-cert budget (the old lanAddressProbeTimeout) against
+	// mtlsProbeTimeout — a single mTLS probe must never be cancelled before it
+	// can answer.
+	singleCertBudget := lanAddressProbeBudget(1)
+	if singleCertBudget <= mtlsProbeTimeout {
+		t.Fatalf("lanAddressProbeBudget(1) (%s) must be strictly greater than mtlsProbeTimeout (%s), or a single mTLS probe can be cancelled before it answers", singleCertBudget, mtlsProbeTimeout)
+	}
+	if headroom := singleCertBudget - mtlsProbeTimeout; headroom < time.Second {
+		t.Fatalf("lanAddressProbeBudget(1) headroom over mtlsProbeTimeout = %s, want >= 1s so the two budgets can't converge to the point of flaking again", headroom)
+	}
+
+	// A truly-unreachable device must still fail in a bounded time, not
+	// minutes. Note the total is NOT a fixed wall-clock number: a single
+	// connectWithAutoTLSDiagnostics attempt probes 2 address candidates
+	// (plaintextAddr and port+1) for *each* stored certificate and then makes
+	// one agentPlaintextProbeTimeout-bounded plaintext probe, so the true worst
+	// case scales with len(loadAllCLICerts()). retryOnHandshakeTimeout only
+	// multiplies that by (maxHandshakeTimeoutRetries+1). Guard the two factors
+	// this change actually controls: the retry multiplier stays small, and a
+	// single-certificate attempt (the common case) stays well under a minute.
+	if maxHandshakeTimeoutRetries > 3 {
+		t.Fatalf("maxHandshakeTimeoutRetries = %d, want <= 3 so a genuinely-down device isn't retried into a multi-minute stall", maxHandshakeTimeoutRetries)
+	}
+	const maxSanePerCertBudget = 60 * time.Second
+	singleCertAttempt := 2*mtlsProbeTimeout + agentPlaintextProbeTimeout
+	worstCasePerCert := time.Duration(maxHandshakeTimeoutRetries+1) * singleCertAttempt
+	if worstCasePerCert > maxSanePerCertBudget {
+		t.Fatalf("worst-case per-certificate direct-connect budget = %s ((retries+1) * (2*mtlsProbeTimeout + agentPlaintextProbeTimeout)), want <= %s so a genuinely-down device with one stored cert fails in bounded time", worstCasePerCert, maxSanePerCertBudget)
+	}
+}
+
+// TestLANAddressProbeBudgetScalesWithOrgCount pins the multi-org fix:
+// connectWithAutoTLSDiagnostics tries every stored org cert in turn, so the
+// per-address budget must grow with the number of orgs. A user logged into
+// orgs [57, 2] whose device is in org 2 has its matching cert tried *second*;
+// with the old fixed single-probe budget the org-2 probe was cancelled before
+// it answered, so the picker showed a failure glyph even though `wendy device
+// info` (uncapped) connected fine.
+func TestLANAddressProbeBudgetScalesWithOrgCount(t *testing.T) {
+	single := lanAddressProbeBudget(1)
+	if want := mtlsProbeTimeout + 2*time.Second; single != want {
+		t.Fatalf("lanAddressProbeBudget(1) = %v, want %v", single, want)
+	}
+	// Zero/negative cert counts clamp to the single-probe budget.
+	if got := lanAddressProbeBudget(0); got != single {
+		t.Fatalf("lanAddressProbeBudget(0) = %v, want %v (clamped)", got, single)
+	}
+	// Each additional org must add at least one mTLS probe of headroom, so the
+	// last cert tried still has a full mtlsProbeTimeout to answer.
+	if got := lanAddressProbeBudget(2); got < single+mtlsProbeTimeout {
+		t.Fatalf("lanAddressProbeBudget(2) = %v, want >= %v", got, single+mtlsProbeTimeout)
+	}
+	// Budget must be strictly monotonic in the org count.
+	if lanAddressProbeBudget(3) <= lanAddressProbeBudget(2) {
+		t.Fatal("lanAddressProbeBudget must increase with org count")
+	}
+}
+
 // setTempConfig points HOME at a temp dir and writes cfg via config.Save so
 // the test uses the same serialisation path as production code. t.Setenv
 // automatically restores the original HOME when the test finishes.
@@ -881,4 +988,41 @@ func TestUpdateCheckTTLCache(t *testing.T) {
 	if updateCheckRecentlyPassed(host) {
 		t.Fatal("stale: expected marker older than TTL to fail the check")
 	}
+}
+
+// TestHideLocalProviders verifies the device picker hides local run targets by
+// default, preserves any caller-supplied excludes, leaves the input map
+// untouched, and reveals local targets when WENDY_SHOW_LOCAL_DEVICES is set.
+func TestHideLocalProviders(t *testing.T) {
+	t.Run("hidden by default", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "")
+		got := hideLocalProviders(nil)
+		for _, k := range providers.LocalProviderKeys() {
+			if !got[k] {
+				t.Errorf("hideLocalProviders(nil)[%q] = false; want true", k)
+			}
+		}
+	})
+
+	t.Run("preserves caller excludes and does not mutate input", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "")
+		in := map[string]bool{"wendy-lite": true}
+		got := hideLocalProviders(in)
+		if !got["wendy-lite"] {
+			t.Error("hideLocalProviders dropped caller-supplied exclude wendy-lite")
+		}
+		if len(in) != 1 {
+			t.Errorf("hideLocalProviders mutated input map: len = %d, want 1", len(in))
+		}
+	})
+
+	t.Run("reveals local targets when opted in", func(t *testing.T) {
+		t.Setenv(providers.ShowLocalDevicesEnv, "1")
+		got := hideLocalProviders(nil)
+		for _, k := range providers.LocalProviderKeys() {
+			if got[k] {
+				t.Errorf("hideLocalProviders(nil)[%q] = true with opt-in set; want false", k)
+			}
+		}
+	})
 }

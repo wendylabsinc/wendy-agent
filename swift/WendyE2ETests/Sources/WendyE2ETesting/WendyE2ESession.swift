@@ -430,15 +430,28 @@ public actor WendyE2ESession {
             workingDirectory: nil
         )
         let duration = start.duration(to: .now)
+        let standardOutput = self.machine.os == .macOS
+            ? Self.trimmingLeadingPTYEOFControlEcho(output.standardOutput)
+            : output.standardOutput
         return WendyE2EShellResult(
             machine: self.machine,
             command: command,
             processID: output.processIdentifier,
             status: WendyE2EShellStatus(output.terminationStatus),
             duration: duration,
-            stdout: output.standardOutput,
+            stdout: standardOutput,
             stderr: output.standardError
         )
+    }
+
+    private static func trimmingLeadingPTYEOFControlEcho(_ output: String) -> String {
+        if output.hasPrefix("^D\u{8}\u{8}") {
+            return String(output.dropFirst(4))
+        }
+        if output.hasPrefix("\u{4}") {
+            return String(output.dropFirst())
+        }
+        return output
     }
 
     private func powerPTY(

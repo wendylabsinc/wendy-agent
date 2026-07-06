@@ -600,6 +600,18 @@ func (b *TelemetryBuffer) SaveCursor(sig SignalType, cursor flushCursor) error {
 // It reads segment files newest-to-oldest and prepends older frames.
 // n is capped at maxReplayFrames to bound per-call disk I/O.
 func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
+	return b.ReadLastNMatching(sig, n, nil)
+}
+
+// ReadLastNMatching returns up to the last n entries for sig that match, in
+// ascending time order. match maps a frame to the (possibly reduced) message
+// to return, or nil to drop the frame; a nil match keeps every frame as-is.
+// Counting matching frames (rather than matching the last n frames overall)
+// keeps tail semantics per-filter: a chatty co-tenant cannot push the
+// requested entries out of the window. Segments are read newest-to-oldest and
+// reading stops once n matches are collected, so sparse matches cost at most
+// one pass over the buffer's bounded retention.
+func (b *TelemetryBuffer) ReadLastNMatching(sig SignalType, n int, match func(proto.Message) proto.Message) []proto.Message {
 	if b == nil {
 		return nil
 	}
@@ -614,6 +626,15 @@ func (b *TelemetryBuffer) ReadLastN(sig SignalType, n int) []proto.Message {
 	for i := len(segs) - 1; i >= 0 && len(result) < n; i-- {
 		// Read all frames in the segment so we can correctly take the trailing ones.
 		frames, _, _ := readFramesFrom(filepath.Join(b.cfg.Dir, segs[i]), 0, sig, math.MaxInt32)
+		if match != nil {
+			matched := make([]proto.Message, 0, len(frames))
+			for _, f := range frames {
+				if m := match(f); m != nil {
+					matched = append(matched, m)
+				}
+			}
+			frames = matched
+		}
 		need := n - len(result)
 		if len(frames) > need {
 			frames = frames[len(frames)-need:]

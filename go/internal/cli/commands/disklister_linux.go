@@ -47,6 +47,10 @@ type drive struct {
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
 	StorageType StorageType // underlying storage protocol
+	// MediaFixed is positive evidence that the media is fixed, solid-state
+	// (an SSD) rather than removable (an SD card / thumb drive). Used to
+	// disambiguate a USB-attached SSD enclosure from an SD-card reader.
+	MediaFixed bool
 }
 
 // lsblkOutput is the JSON output from lsblk.
@@ -61,6 +65,7 @@ type lsblkDevice struct {
 	Removable  flexBool      `json:"rm"`
 	Hotplug    flexBool      `json:"hotplug"`
 	Transport  string        `json:"tran"`
+	Rotational flexBool      `json:"rota"`
 	Mountpoint string        `json:"mountpoint"`
 	Children   []lsblkDevice `json:"children"`
 }
@@ -79,7 +84,7 @@ func listExternalDrives() ([]drive, error) {
 }
 
 func listDrivesLinux() ([]drive, error) {
-	out, err := exec.Command("lsblk", "--json", "--bytes", "-o", "NAME,SIZE,TYPE,RM,HOTPLUG,TRAN,MOUNTPOINT").Output()
+	out, err := exec.Command("lsblk", "--json", "--bytes", "-o", "NAME,SIZE,TYPE,RM,HOTPLUG,TRAN,ROTA,MOUNTPOINT").Output()
 	if err != nil {
 		return nil, fmt.Errorf("running lsblk: %w", err)
 	}
@@ -123,6 +128,9 @@ func listDrivesLinux() ([]drive, error) {
 			// sees the same classification used to include this device.
 			IsRemovable: isExternal,
 			StorageType: storageType,
+			// Non-removable, non-rotational media is an SSD, not an SD card or
+			// thumb drive (both report RM=1).
+			MediaFixed: !bool(dev.Removable) && !bool(dev.Rotational),
 		})
 	}
 

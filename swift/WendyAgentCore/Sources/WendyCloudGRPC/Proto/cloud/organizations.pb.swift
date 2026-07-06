@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public enum Wendycloud_V1_OrganizationRole: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_OrganizationRole: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
   case owner // = 1
@@ -70,7 +70,7 @@ public enum Wendycloud_V1_OrganizationRole: SwiftProtobuf.Enum, Swift.CaseIterab
 
 }
 
-public struct Wendycloud_V1_Organization: Sendable {
+public nonisolated struct Wendycloud_V1_Organization: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -117,7 +117,7 @@ public struct Wendycloud_V1_Organization: Sendable {
   fileprivate var _updatedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_OrganizationMember: Sendable {
+public nonisolated struct Wendycloud_V1_OrganizationMember: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -156,7 +156,7 @@ public struct Wendycloud_V1_OrganizationMember: Sendable {
   fileprivate var _updatedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_CreateOrganizationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateOrganizationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -181,7 +181,7 @@ public struct Wendycloud_V1_CreateOrganizationRequest: Sendable {
   fileprivate var _domain: String? = nil
 }
 
-public struct Wendycloud_V1_GetOrganizationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetOrganizationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -193,7 +193,7 @@ public struct Wendycloud_V1_GetOrganizationRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_UpdateOrganizationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_UpdateOrganizationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -236,7 +236,7 @@ public struct Wendycloud_V1_UpdateOrganizationRequest: Sendable {
   fileprivate var _domain: String? = nil
 }
 
-public struct Wendycloud_V1_DeleteOrganizationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteOrganizationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -248,7 +248,7 @@ public struct Wendycloud_V1_DeleteOrganizationRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_DeleteOrganizationResponse: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteOrganizationResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -260,7 +260,7 @@ public struct Wendycloud_V1_DeleteOrganizationResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListOrganizationsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListOrganizationsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -291,7 +291,7 @@ public struct Wendycloud_V1_ListOrganizationsRequest: Sendable {
   fileprivate var _limit: Int32? = nil
 }
 
-public struct Wendycloud_V1_ListOrganizationsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListOrganizationsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -314,7 +314,7 @@ public struct Wendycloud_V1_ListOrganizationsResponse: Sendable {
   fileprivate var _organization: Wendycloud_V1_Organization? = nil
 }
 
-public struct Wendycloud_V1_AddMemberRequest: Sendable {
+public nonisolated struct Wendycloud_V1_AddMemberRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -330,7 +330,7 @@ public struct Wendycloud_V1_AddMemberRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_UpdateMemberRoleRequest: Sendable {
+public nonisolated struct Wendycloud_V1_UpdateMemberRoleRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -344,7 +344,7 @@ public struct Wendycloud_V1_UpdateMemberRoleRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_RemoveMemberRequest: Sendable {
+public nonisolated struct Wendycloud_V1_RemoveMemberRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -356,7 +356,7 @@ public struct Wendycloud_V1_RemoveMemberRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_RemoveMemberResponse: Sendable {
+public nonisolated struct Wendycloud_V1_RemoveMemberResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -368,7 +368,7 @@ public struct Wendycloud_V1_RemoveMemberResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListMembersRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListMembersRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -384,7 +384,7 @@ public struct Wendycloud_V1_ListMembersRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListMembersResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListMembersResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -398,7 +398,7 @@ public struct Wendycloud_V1_ListMembersResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_EmailWithRole: Sendable {
+public nonisolated struct Wendycloud_V1_EmailWithRole: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -412,7 +412,7 @@ public struct Wendycloud_V1_EmailWithRole: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_AddMembersByEmailsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_AddMembersByEmailsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -426,7 +426,7 @@ public struct Wendycloud_V1_AddMembersByEmailsRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_AddMemberResult: Sendable {
+public nonisolated struct Wendycloud_V1_AddMemberResult: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -453,7 +453,7 @@ public struct Wendycloud_V1_AddMemberResult: Sendable {
   fileprivate var _member: Wendycloud_V1_OrganizationMember? = nil
 }
 
-public struct Wendycloud_V1_AddMembersByEmailsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_AddMembersByEmailsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -467,13 +467,13 @@ public struct Wendycloud_V1_AddMembersByEmailsResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_OrganizationRole: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_OrganizationRole: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ORGANIZATION_ROLE_UNSPECIFIED\0\u{1}ORGANIZATION_ROLE_OWNER\0\u{1}ORGANIZATION_ROLE_ADMIN\0\u{1}ORGANIZATION_ROLE_BILLING_MANAGER\0\u{1}ORGANIZATION_ROLE_MEMBER\0\u{1}ORGANIZATION_ROLE_VIEWER\0")
 }
 
-extension Wendycloud_V1_Organization: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Organization: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Organization"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}details\0\u{1}domain\0\u{3}created_at\0\u{3}updated_at\0")
 
@@ -532,7 +532,7 @@ extension Wendycloud_V1_Organization: SwiftProtobuf.Message, SwiftProtobuf._Mess
   }
 }
 
-extension Wendycloud_V1_OrganizationMember: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_OrganizationMember: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".OrganizationMember"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}organization_id\0\u{3}user_id\0\u{1}role\0\u{3}created_at\0\u{3}updated_at\0")
 
@@ -591,7 +591,7 @@ extension Wendycloud_V1_OrganizationMember: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_CreateOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateOrganizationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}details\0\u{1}domain\0")
 
@@ -635,7 +635,7 @@ extension Wendycloud_V1_CreateOrganizationRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_GetOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetOrganizationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -665,7 +665,7 @@ extension Wendycloud_V1_GetOrganizationRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_UpdateOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateOrganizationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}details\0\u{1}domain\0")
 
@@ -714,7 +714,7 @@ extension Wendycloud_V1_UpdateOrganizationRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_DeleteOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteOrganizationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteOrganizationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -744,7 +744,7 @@ extension Wendycloud_V1_DeleteOrganizationRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_DeleteOrganizationResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteOrganizationResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteOrganizationResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0")
 
@@ -774,7 +774,7 @@ extension Wendycloud_V1_DeleteOrganizationResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListOrganizationsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}offset\0\u{1}limit\0")
 
@@ -813,7 +813,7 @@ extension Wendycloud_V1_ListOrganizationsRequest: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendycloud_V1_ListOrganizationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListOrganizationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListOrganizationsResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}organization\0\u{1}total\0")
 
@@ -852,7 +852,7 @@ extension Wendycloud_V1_ListOrganizationsResponse: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_AddMemberRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_AddMemberRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddMemberRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}user_id\0\u{1}role\0")
 
@@ -892,7 +892,7 @@ extension Wendycloud_V1_AddMemberRequest: SwiftProtobuf.Message, SwiftProtobuf._
   }
 }
 
-extension Wendycloud_V1_UpdateMemberRoleRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateMemberRoleRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateMemberRoleRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}role\0")
 
@@ -927,7 +927,7 @@ extension Wendycloud_V1_UpdateMemberRoleRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_RemoveMemberRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RemoveMemberRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RemoveMemberRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -957,7 +957,7 @@ extension Wendycloud_V1_RemoveMemberRequest: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Wendycloud_V1_RemoveMemberResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RemoveMemberResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RemoveMemberResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0")
 
@@ -987,7 +987,7 @@ extension Wendycloud_V1_RemoveMemberResponse: SwiftProtobuf.Message, SwiftProtob
   }
 }
 
-extension Wendycloud_V1_ListMembersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListMembersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListMembersRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}page_size\0\u{3}page_token\0")
 
@@ -1027,7 +1027,7 @@ extension Wendycloud_V1_ListMembersRequest: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_ListMembersResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListMembersResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListMembersResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}members\0\u{3}next_page_token\0")
 
@@ -1062,7 +1062,7 @@ extension Wendycloud_V1_ListMembersResponse: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Wendycloud_V1_EmailWithRole: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_EmailWithRole: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".EmailWithRole"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}email\0\u{1}role\0")
 
@@ -1097,7 +1097,7 @@ extension Wendycloud_V1_EmailWithRole: SwiftProtobuf.Message, SwiftProtobuf._Mes
   }
 }
 
-extension Wendycloud_V1_AddMembersByEmailsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_AddMembersByEmailsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddMembersByEmailsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{1}members\0")
 
@@ -1132,7 +1132,7 @@ extension Wendycloud_V1_AddMembersByEmailsRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_AddMemberResult: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_AddMemberResult: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddMemberResult"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}email\0\u{1}success\0\u{1}error\0\u{1}member\0")
 
@@ -1181,7 +1181,7 @@ extension Wendycloud_V1_AddMemberResult: SwiftProtobuf.Message, SwiftProtobuf._M
   }
 }
 
-extension Wendycloud_V1_AddMembersByEmailsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_AddMembersByEmailsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AddMembersByEmailsResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}results\0")
 

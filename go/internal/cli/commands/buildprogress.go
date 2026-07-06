@@ -34,12 +34,28 @@ func setBuildProgressOut(w io.Writer) func() {
 // maxRawBuildCapture bounds the raw buildx log retained for failure replay.
 const maxRawBuildCapture = 256 << 10
 
+// runAppleContainerBuildWithProgress builds a local image with the Apple
+// Container CLI, rendering its --progress=plain output through the shared build
+// progress UI (the same renderer used by the buildx/buildctl paths).
+func runAppleContainerBuildWithProgress(ctx context.Context, dir, imageName, platform, dockerfile string) error {
+	title := fmt.Sprintf("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
+	return runBuildWithProgress(ctx, title, dumpRawAlways, func(stream, logw io.Writer) error {
+		return buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, stream, logw)
+	})
+}
+
+// dumpRawAlways is the dumpRawOnFailure predicate for build paths whose
+// failures are always surfaced to the user (no fallback rebuild follows).
+func dumpRawAlways(error) bool { return true }
+
 // runBuildWithProgress runs build, rendering its buildx output as a clean live
 // step list (interactive) or concise per-step lines (non-interactive). The raw
-// buildx output is retained and printed if the build fails AND dumpRawOnFailure
-// is true (but never on cancellation). Setup-log chatter written to logw is
-// buffered and surfaced only on failure (when dumpRawOnFailure is true).
-func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bool, build func(stream, logw io.Writer) error) error {
+// buildx output is retained and printed if the build fails AND
+// dumpRawOnFailure(err) is true (but never on cancellation). Setup-log chatter
+// written to logw is buffered and surfaced under the same condition. Callers
+// whose failures can trigger a fallback rebuild (which would replay the same
+// output) use the predicate to stay quiet in exactly those cases.
+func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure func(error) bool, build func(stream, logw io.Writer) error) error {
 	start := time.Now()
 	raw := &boundedBuffer{max: maxRawBuildCapture}
 	var setupLog bytes.Buffer
@@ -51,7 +67,7 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bo
 		fmt.Fprintf(buildProgressOut, "%s\n", title)
 		err := build(stream, &setupLog)
 		if err != nil {
-			if dumpRawOnFailure && ctx.Err() == nil {
+			if ctx.Err() == nil && dumpRawOnFailure(err) {
 				buildProgressOut.Write(raw.Bytes())
 				buildProgressOut.Write(setupLog.Bytes())
 			}
@@ -86,7 +102,7 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure bo
 	}
 	buildErr := <-buildErrC
 	if buildErr != nil {
-		if dumpRawOnFailure && ctx.Err() == nil {
+		if ctx.Err() == nil && dumpRawOnFailure(buildErr) {
 			buildProgressOut.Write(raw.Bytes())
 			buildProgressOut.Write(setupLog.Bytes())
 		}

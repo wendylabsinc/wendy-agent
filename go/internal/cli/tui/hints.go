@@ -19,14 +19,14 @@ var ProgressHints = []string{
 	"Tip: 'wendy run --watch' rebuilds and redeploys automatically as you edit files",
 	"Tip: Inspect a device's hardware and capabilities with 'wendy device info'",
 	"Tip: Update the device agent with 'wendy device update'",
-	"Tip: Discover devices on your network with 'wendy device discover'",
-	"Tip: List and manage running apps with 'wendy device ps'",
+	"Tip: Discover devices on your network with 'wendy discover'",
+	"Tip: List and manage running apps with 'wendy device apps'",
+	"Tip: Watch live CPU, memory, and GPU usage with 'wendy device top'",
 	"Tip: Scaffold a new project in seconds with 'wendy init'",
 	"Tip: Grant hardware access (GPU, camera, GPIO) via entitlements in wendy.json",
-	"Tip: Validate your wendy.json against the schema with 'wendy json'",
-	"Tip: Reach a device behind NAT with 'wendy cloud run'",
-	"Tip: Let Claude/Codex drive your devices - set up the MCP server with 'wendy mcp setup'",
-	"Tip: Let Claude/Codex help you debug - set up the MCP server with 'wendy mcp setup'",
+	"Tip: Validate your wendy.json against the schema with 'wendy json validate'",
+	"Tip: Reach a device behind NAT by forwarding a port with 'wendy cloud tunnel'",
+	"Tip: Let Claude/Codex drive and debug your devices - set up the MCP server with 'wendy mcp setup'",
 }
 
 // hintTickMsg is emitted on each hint rotation tick.

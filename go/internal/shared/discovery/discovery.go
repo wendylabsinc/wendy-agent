@@ -74,8 +74,9 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 		go func() {
 			defer wg.Done()
 			if devices, err := discoverUSB(ctx); err == nil {
+				filtered := filterUSBDevices(devices)
 				mu.Lock()
-				collection.USBDevices = devices
+				collection.USBDevices = filtered
 				mu.Unlock()
 			}
 		}()
@@ -124,7 +125,18 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 
 // DiscoverUSB discovers USB-connected Wendy devices.
 func DiscoverUSB(ctx context.Context) ([]models.USBDevice, error) {
-	return discoverUSB(ctx)
+	devices, err := discoverUSB(ctx)
+	return filterUSBDevices(devices), err
+}
+
+func filterUSBDevices(devices []models.USBDevice) []models.USBDevice {
+	result := make([]models.USBDevice, 0, len(devices))
+	for _, d := range devices {
+		if !d.IsESP32 {
+			result = append(result, d)
+		}
+	}
+	return result
 }
 
 // DiscoverEthernet discovers Ethernet interfaces connected to Wendy devices.

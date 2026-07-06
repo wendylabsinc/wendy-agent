@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public enum Wendycloud_V1_Running: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_Running: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case absent // = 0
   case running // = 1
@@ -59,7 +59,7 @@ public enum Wendycloud_V1_Running: SwiftProtobuf.Enum, Swift.CaseIterable {
 }
 
 /// ==================== App Releases ====================
-public struct Wendycloud_V1_AppRelease: Sendable {
+public nonisolated struct Wendycloud_V1_AppRelease: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -110,7 +110,7 @@ public struct Wendycloud_V1_AppRelease: Sendable {
   fileprivate var _updatedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_CreateAppReleaseRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateAppReleaseRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -130,7 +130,7 @@ public struct Wendycloud_V1_CreateAppReleaseRequest: Sendable {
 
 /// Use this to assign a image_digest to an app_release after it has been pushed to the registry
 /// Note, verify that the image_digest exists in the registry before updating the app_release
-public struct Wendycloud_V1_UpdateAppReleaseRequest: Sendable {
+public nonisolated struct Wendycloud_V1_UpdateAppReleaseRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -148,7 +148,7 @@ public struct Wendycloud_V1_UpdateAppReleaseRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListAppReleasesRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListAppReleasesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -166,7 +166,7 @@ public struct Wendycloud_V1_ListAppReleasesRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListAppReleasesResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListAppReleasesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -182,7 +182,7 @@ public struct Wendycloud_V1_ListAppReleasesResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetPushImageCredentialsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetPushImageCredentialsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -196,7 +196,7 @@ public struct Wendycloud_V1_GetPushImageCredentialsRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetPushImageCredentialsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_GetPushImageCredentialsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -225,7 +225,7 @@ public struct Wendycloud_V1_GetPushImageCredentialsResponse: Sendable {
   fileprivate var _expiresAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_Deployment: Sendable {
+public nonisolated struct Wendycloud_V1_Deployment: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -259,7 +259,7 @@ public struct Wendycloud_V1_Deployment: Sendable {
 }
 
 /// infer the created_by_user_id from the authService
-public struct Wendycloud_V1_CreateDeploymentRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateDeploymentRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -288,7 +288,7 @@ public struct Wendycloud_V1_CreateDeploymentRequest: Sendable {
   fileprivate var _jqFilter: String? = nil
 }
 
-public struct Wendycloud_V1_GetDeploymentRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetDeploymentRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -300,7 +300,7 @@ public struct Wendycloud_V1_GetDeploymentRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListDeploymentsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListDeploymentsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -318,7 +318,7 @@ public struct Wendycloud_V1_ListDeploymentsRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListDeploymentsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListDeploymentsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -334,7 +334,7 @@ public struct Wendycloud_V1_ListDeploymentsResponse: Sendable {
 
 /// this is to be called by the wendy-agent to update the reported state of an apps on an asset
 /// asset_id and organization_id are derived from the client certificate
-public struct Wendycloud_V1_UpdateReportedStateRequest: Sendable {
+public nonisolated struct Wendycloud_V1_UpdateReportedStateRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -346,7 +346,7 @@ public struct Wendycloud_V1_UpdateReportedStateRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_CurrentState: Sendable {
+public nonisolated struct Wendycloud_V1_CurrentState: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -377,7 +377,7 @@ public struct Wendycloud_V1_CurrentState: Sendable {
 
 /// this is to be called by the wendy-agent to get the desired state of an app on an asset
 /// if the app_id does not exist, wendy-agent should remove the container from the asset
-public struct Wendycloud_V1_DesiredStateResponse: Sendable {
+public nonisolated struct Wendycloud_V1_DesiredStateResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -389,7 +389,7 @@ public struct Wendycloud_V1_DesiredStateResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_DesiredAppState: Sendable {
+public nonisolated struct Wendycloud_V1_DesiredAppState: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -416,13 +416,13 @@ public struct Wendycloud_V1_DesiredAppState: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_Running: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Running: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0ABSENT\0\u{1}RUNNING\0\u{1}STOPPED\0")
 }
 
-extension Wendycloud_V1_AppRelease: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_AppRelease: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppRelease"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}organization_id\0\u{3}app_id\0\u{1}name\0\u{1}details\0\u{3}image_digest\0\u{3}created_at\0\u{3}updated_at\0")
 
@@ -491,7 +491,7 @@ extension Wendycloud_V1_AppRelease: SwiftProtobuf.Message, SwiftProtobuf._Messag
   }
 }
 
-extension Wendycloud_V1_CreateAppReleaseRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateAppReleaseRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateAppReleaseRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_id\0\u{3}organization_id\0\u{1}name\0\u{1}details\0")
 
@@ -536,7 +536,7 @@ extension Wendycloud_V1_CreateAppReleaseRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_UpdateAppReleaseRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateAppReleaseRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateAppReleaseRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}details\0\u{3}image_digest\0")
 
@@ -581,7 +581,7 @@ extension Wendycloud_V1_UpdateAppReleaseRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_ListAppReleasesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAppReleasesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAppReleasesRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}app_id\0\u{1}offset\0\u{1}limit\0")
 
@@ -626,7 +626,7 @@ extension Wendycloud_V1_ListAppReleasesRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_ListAppReleasesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAppReleasesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAppReleasesResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_releases\0\u{1}total\0\u{1}offset\0")
 
@@ -666,7 +666,7 @@ extension Wendycloud_V1_ListAppReleasesResponse: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_GetPushImageCredentialsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetPushImageCredentialsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetPushImageCredentialsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}app_id\0")
 
@@ -701,7 +701,7 @@ extension Wendycloud_V1_GetPushImageCredentialsRequest: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendycloud_V1_GetPushImageCredentialsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetPushImageCredentialsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetPushImageCredentialsResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}registry_url\0\u{3}full_image_path\0\u{3}access_token\0\u{3}expires_at\0\u{1}username\0")
 
@@ -755,7 +755,7 @@ extension Wendycloud_V1_GetPushImageCredentialsResponse: SwiftProtobuf.Message, 
   }
 }
 
-extension Wendycloud_V1_Deployment: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Deployment: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Deployment"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}organization_id\0\u{3}jq_filter\0\u{3}app_release_id\0\u{1}details\0\u{3}created_by_user_id\0\u{3}created_at\0")
 
@@ -819,7 +819,7 @@ extension Wendycloud_V1_Deployment: SwiftProtobuf.Message, SwiftProtobuf._Messag
   }
 }
 
-extension Wendycloud_V1_CreateDeploymentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateDeploymentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateDeploymentRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}jq_filter\0\u{3}app_release_id\0\u{1}details\0\u{1}running\0")
 
@@ -873,7 +873,7 @@ extension Wendycloud_V1_CreateDeploymentRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_GetDeploymentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetDeploymentRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetDeploymentRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -903,7 +903,7 @@ extension Wendycloud_V1_GetDeploymentRequest: SwiftProtobuf.Message, SwiftProtob
   }
 }
 
-extension Wendycloud_V1_ListDeploymentsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListDeploymentsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListDeploymentsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}app_id\0\u{1}offset\0\u{1}limit\0")
 
@@ -948,7 +948,7 @@ extension Wendycloud_V1_ListDeploymentsRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_ListDeploymentsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListDeploymentsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListDeploymentsResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}deployments\0\u{1}total\0")
 
@@ -983,7 +983,7 @@ extension Wendycloud_V1_ListDeploymentsResponse: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_UpdateReportedStateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateReportedStateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateReportedStateRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}current_states\0")
 
@@ -1013,7 +1013,7 @@ extension Wendycloud_V1_UpdateReportedStateRequest: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendycloud_V1_CurrentState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CurrentState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CurrentState"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_id\0\u{3}app_release_id\0\u{3}reported_state\0\u{3}reported_restart_count\0\u{3}reported_last_exit_signal\0")
 
@@ -1067,7 +1067,7 @@ extension Wendycloud_V1_CurrentState: SwiftProtobuf.Message, SwiftProtobuf._Mess
   }
 }
 
-extension Wendycloud_V1_DesiredStateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DesiredStateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DesiredStateResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}desired_app_states\0")
 
@@ -1097,7 +1097,7 @@ extension Wendycloud_V1_DesiredStateResponse: SwiftProtobuf.Message, SwiftProtob
   }
 }
 
-extension Wendycloud_V1_DesiredAppState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DesiredAppState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DesiredAppState"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_id\0\u{3}app_release_id\0\u{3}desired_state\0")
 

@@ -60,7 +60,10 @@
         "agentOS": { "type": ["string", "null"] },
         "agentAddress": { "type": ["string", "null"] },
         "agentUser": { "type": ["string", "null"] },
-        "transport": { "type": ["string", "null"] }
+        "transport": { "type": ["string", "null"] },
+        "agentInfo": {
+          "description": "Optional agent response captured for preflight debugging; shape may evolve with the agent API."
+        }
       }
     },
     "paths": {
@@ -96,7 +99,8 @@
           "type": "string",
           "enum": ["per-test", "per-run", "none"]
         },
-        "parallel": { "type": "boolean" }
+        "parallel": { "type": "boolean" },
+        "managedAgent": { "type": "boolean" }
       }
     },
     "tools": {
@@ -108,6 +112,18 @@
         "go": { "type": ["string", "null"] },
         "wendy": { "type": ["string", "null"] },
         "wendyPath": { "type": ["string", "null"] }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "phase", "message"],
+      "properties": {
+        "kind": { "type": "string" },
+        "phase": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 0 },
+        "message": { "type": "string" },
+        "evidence": { "type": "string" }
       }
     }
   }

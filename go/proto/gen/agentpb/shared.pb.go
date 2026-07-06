@@ -237,9 +237,15 @@ type AppContainer struct {
 	// One entry per service container for apps that declare named services
 	// (single- or multi-service services-map apps). Empty for single-container
 	// apps and flattened single-service apps (those with no service name).
-	Services      []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Services []*ServiceEntry `protobuf:"bytes,6,rep,name=services,proto3" json:"services,omitempty"`
+	// Exit diagnostics for the last run, only meaningful when running_state is
+	// STOPPED. Fields 7-10 are left for the in-flight provenance PR #1234, so
+	// these start at 11 to guarantee no wire-number collision on either merge
+	// order.
+	ExitCode          int32  `protobuf:"varint,11,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`                           // process exit code of the last run; -1 = task never started.
+	TerminationReason string `protobuf:"bytes,12,opt,name=termination_reason,json=terminationReason,proto3" json:"termination_reason,omitempty"` // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AppContainer) Reset() {
@@ -314,6 +320,20 @@ func (x *AppContainer) GetServices() []*ServiceEntry {
 	return nil
 }
 
+func (x *AppContainer) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *AppContainer) GetTerminationReason() string {
+	if x != nil {
+		return x.TerminationReason
+	}
+	return ""
+}
+
 var File_wendy_agent_services_v1_shared_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
@@ -324,7 +344,7 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"\x16on_failure_max_retries\x18\x02 \x01(\x05R\x13onFailureMaxRetries\"Y\n" +
 	"\fServiceEntry\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
-	"\rrunning_state\x18\x02 \x01(\x0e2\x10.AppRunningStateR\frunningState\"\xec\x01\n" +
+	"\rrunning_state\x18\x02 \x01(\x0e2\x10.AppRunningStateR\frunningState\"\xb8\x02\n" +
 	"\fAppContainer\x12\x19\n" +
 	"\bapp_name\x18\x01 \x01(\tR\aappName\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
@@ -332,7 +352,9 @@ const file_wendy_agent_services_v1_shared_proto_rawDesc = "" +
 	"\rrunning_state\x18\x03 \x01(\x0e2\x10.AppRunningStateR\frunningState\x12#\n" +
 	"\rfailure_count\x18\x04 \x01(\rR\ffailureCount\x12\x19\n" +
 	"\bmcp_port\x18\x05 \x01(\rR\amcpPort\x12)\n" +
-	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices*L\n" +
+	"\bservices\x18\x06 \x03(\v2\r.ServiceEntryR\bservices\x12\x1b\n" +
+	"\texit_code\x18\v \x01(\x05R\bexitCode\x12-\n" +
+	"\x12termination_reason\x18\f \x01(\tR\x11terminationReason*L\n" +
 	"\x11RestartPolicyMode\x12\v\n" +
 	"\aDEFAULT\x10\x00\x12\x12\n" +
 	"\x0eUNLESS_STOPPED\x10\x01\x12\x06\n" +

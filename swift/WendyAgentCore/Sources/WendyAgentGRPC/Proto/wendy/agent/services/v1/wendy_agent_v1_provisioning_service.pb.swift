@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Wendy_Agent_Services_V1_IsProvisionedRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_IsProvisionedRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -30,7 +30,7 @@ public struct Wendy_Agent_Services_V1_IsProvisionedRequest: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_IsProvisionedResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_IsProvisionedResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -55,7 +55,7 @@ public struct Wendy_Agent_Services_V1_IsProvisionedResponse: Sendable {
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public enum OneOf_Response: Equatable, Sendable {
+  public nonisolated enum OneOf_Response: Equatable, Sendable {
     case notProvisioned(Wendy_Agent_Services_V1_NotProvisionedResponse)
     case provisioned(Wendy_Agent_Services_V1_ProvisionedResponse)
 
@@ -64,7 +64,7 @@ public struct Wendy_Agent_Services_V1_IsProvisionedResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_NotProvisionedResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_NotProvisionedResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -74,7 +74,7 @@ public struct Wendy_Agent_Services_V1_NotProvisionedResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_ProvisionedResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_ProvisionedResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -90,7 +90,7 @@ public struct Wendy_Agent_Services_V1_ProvisionedResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -108,7 +108,27 @@ public struct Wendy_Agent_Services_V1_StartProvisioningRequest: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_StartProvisioningResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StartProvisioningResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Wendy_Agent_Services_V1_UnprovisionRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Wendy_Agent_Services_V1_UnprovisionResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -120,9 +140,9 @@ public struct Wendy_Agent_Services_V1_StartProvisioningResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendy.agent.services.v1"
+fileprivate nonisolated let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_IsProvisionedRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_IsProvisionedRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".IsProvisionedRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -141,7 +161,7 @@ extension Wendy_Agent_Services_V1_IsProvisionedRequest: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_IsProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_IsProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".IsProvisionedResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}not_provisioned\0\u{1}provisioned\0")
 
@@ -208,7 +228,7 @@ extension Wendy_Agent_Services_V1_IsProvisionedResponse: SwiftProtobuf.Message, 
   }
 }
 
-extension Wendy_Agent_Services_V1_NotProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_NotProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".NotProvisionedResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -227,7 +247,7 @@ extension Wendy_Agent_Services_V1_NotProvisionedResponse: SwiftProtobuf.Message,
   }
 }
 
-extension Wendy_Agent_Services_V1_ProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_ProvisionedResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ProvisionedResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}cloud_host\0\u{3}organization_id\0\u{3}asset_id\0")
 
@@ -267,7 +287,7 @@ extension Wendy_Agent_Services_V1_ProvisionedResponse: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StartProvisioningRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}enrollment_token\0\u{3}cloud_host\0\u{3}asset_id\0")
 
@@ -312,7 +332,7 @@ extension Wendy_Agent_Services_V1_StartProvisioningRequest: SwiftProtobuf.Messag
   }
 }
 
-extension Wendy_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StartProvisioningResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -326,6 +346,44 @@ extension Wendy_Agent_Services_V1_StartProvisioningResponse: SwiftProtobuf.Messa
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StartProvisioningResponse, rhs: Wendy_Agent_Services_V1_StartProvisioningResponse) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_UnprovisionRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".UnprovisionRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_UnprovisionRequest, rhs: Wendy_Agent_Services_V1_UnprovisionRequest) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_UnprovisionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".UnprovisionResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    // Load everything into unknown fields
+    while try decoder.nextFieldNumber() != nil {}
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_UnprovisionResponse, rhs: Wendy_Agent_Services_V1_UnprovisionResponse) -> Bool {
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

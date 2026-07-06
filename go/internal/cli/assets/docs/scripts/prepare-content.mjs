@@ -24,6 +24,7 @@ const skipDirs = new Set([
 const publicAssetExtensions = new Set([
   '.gif',
   '.ico',
+  '.js',
   '.jpeg',
   '.jpg',
   '.json',

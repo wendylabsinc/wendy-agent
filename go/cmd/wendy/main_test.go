@@ -267,6 +267,7 @@ func TestTrackCommand_IsDevBuildReflectsVersion(t *testing.T) {
 		want string
 	}{
 		{"dev", "true"},
+		{"2026.04.27-103045-dev", "true"},
 		{"2026.04.27-103045", "false"},
 		{"v0.10.0", "false"},
 	} {

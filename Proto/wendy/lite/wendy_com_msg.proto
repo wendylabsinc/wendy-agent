@@ -30,18 +30,27 @@ message WendyComAppPushEndParams {}
 message WendyComAppStartParams {}
 message WendyComAppStopParams {}
 
+message WendyComGetDeviceIdentityParams {}
+
+message WendyComDeviceIdentity {
+    string id           = 1;
+    string name         = 2;
+    string display_name = 3;
+}
+
 // Top-level command message — the oneof variant identifies the command.
 message WendyComCommand {
     uint32 request_id = 1;
     oneof params {
-        WendyComProtocolVersionParams protocol_version = 2;
-        WendyComPingParams            ping             = 3;
-        WendyComRebootParams          reboot           = 4;
-        WendyComAppPushBeginParams    app_push_begin   = 5;
-        WendyComAppPushDataParams     app_push_data    = 6;
-        WendyComAppPushEndParams      app_push_end     = 7;
-        WendyComAppStartParams        app_start        = 8;
-        WendyComAppStopParams         app_stop         = 9;
+        WendyComProtocolVersionParams      protocol_version      = 2;
+        WendyComPingParams                 ping                  = 3;
+        WendyComRebootParams               reboot                = 4;
+        WendyComAppPushBeginParams         app_push_begin        = 5;
+        WendyComAppPushDataParams          app_push_data         = 6;
+        WendyComAppPushEndParams           app_push_end          = 7;
+        WendyComAppStartParams             app_start             = 8;
+        WendyComAppStopParams              app_stop              = 9;
+        WendyComGetDeviceIdentityParams    get_device_identity   = 10;
     }
 }
 
@@ -58,6 +67,7 @@ message WendyComResponse {
     uint32         request_id = 1;
     WendyComResult result     = 2;
     oneof data {
-        WendyComProtocolVersion protocol_version = 3;
+        WendyComProtocolVersion  protocol_version  = 3;
+        WendyComDeviceIdentity   device_identity   = 4;
     }
 }

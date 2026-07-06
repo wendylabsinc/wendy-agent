@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public enum Wendycloud_V1_NotificationSeverity: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_NotificationSeverity: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
   case info // = 1
@@ -66,7 +66,7 @@ public enum Wendycloud_V1_NotificationSeverity: SwiftProtobuf.Enum, Swift.CaseIt
 
 }
 
-public struct Wendycloud_V1_Notification: Sendable {
+public nonisolated struct Wendycloud_V1_Notification: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -117,7 +117,7 @@ public struct Wendycloud_V1_Notification: Sendable {
   fileprivate var _deletedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
 }
 
-public struct Wendycloud_V1_CreateNotificationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateNotificationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -146,7 +146,7 @@ public struct Wendycloud_V1_CreateNotificationRequest: Sendable {
   fileprivate var _relatedEntities: SwiftProtobuf.Google_Protobuf_Struct? = nil
 }
 
-public struct Wendycloud_V1_ListNotificationsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListNotificationsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -177,7 +177,7 @@ public struct Wendycloud_V1_ListNotificationsRequest: Sendable {
   fileprivate var _severityFilter: Wendycloud_V1_NotificationSeverity? = nil
 }
 
-public struct Wendycloud_V1_ListNotificationsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListNotificationsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -193,7 +193,7 @@ public struct Wendycloud_V1_ListNotificationsResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetNotificationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetNotificationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -205,7 +205,7 @@ public struct Wendycloud_V1_GetNotificationRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_DeleteNotificationRequest: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteNotificationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -217,7 +217,7 @@ public struct Wendycloud_V1_DeleteNotificationRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_DeleteNotificationResponse: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteNotificationResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -229,7 +229,7 @@ public struct Wendycloud_V1_DeleteNotificationResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_MarkAsReadRequest: Sendable {
+public nonisolated struct Wendycloud_V1_MarkAsReadRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -241,7 +241,7 @@ public struct Wendycloud_V1_MarkAsReadRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_MarkAsReadResponse: Sendable {
+public nonisolated struct Wendycloud_V1_MarkAsReadResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -255,7 +255,7 @@ public struct Wendycloud_V1_MarkAsReadResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetUnreadCountRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetUnreadCountRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -269,7 +269,7 @@ public struct Wendycloud_V1_GetUnreadCountRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetUnreadCountResponse: Sendable {
+public nonisolated struct Wendycloud_V1_GetUnreadCountResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -283,13 +283,13 @@ public struct Wendycloud_V1_GetUnreadCountResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_NotificationSeverity: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_NotificationSeverity: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0NOTIFICATION_SEVERITY_UNSPECIFIED\0\u{1}NOTIFICATION_SEVERITY_INFO\0\u{1}NOTIFICATION_SEVERITY_WARNING\0\u{1}NOTIFICATION_SEVERITY_ERROR\0\u{1}NOTIFICATION_SEVERITY_CRITICAL\0")
 }
 
-extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Notification"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}user_id\0\u{3}organization_id\0\u{1}body\0\u{1}severity\0\u{3}related_entities\0\u{3}created_at\0\u{3}deleted_at\0")
 
@@ -358,7 +358,7 @@ extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftProtobuf._Mess
   }
 }
 
-extension Wendycloud_V1_CreateNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateNotificationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}user_id\0\u{3}organization_id\0\u{1}body\0\u{1}severity\0\u{3}related_entities\0")
 
@@ -412,7 +412,7 @@ extension Wendycloud_V1_CreateNotificationRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListNotificationsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}user_id\0\u{3}page_size\0\u{3}page_token\0\u{3}severity_filter\0\u{3}include_deleted\0")
 
@@ -471,7 +471,7 @@ extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendycloud_V1_ListNotificationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListNotificationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListNotificationsResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}notifications\0\u{3}next_page_token\0\u{3}total_count\0")
 
@@ -511,7 +511,7 @@ extension Wendycloud_V1_ListNotificationsResponse: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_GetNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetNotificationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -541,7 +541,7 @@ extension Wendycloud_V1_GetNotificationRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_DeleteNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteNotificationRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteNotificationRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -571,7 +571,7 @@ extension Wendycloud_V1_DeleteNotificationRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_DeleteNotificationResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteNotificationResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteNotificationResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0")
 
@@ -601,7 +601,7 @@ extension Wendycloud_V1_DeleteNotificationResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendycloud_V1_MarkAsReadRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_MarkAsReadRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".MarkAsReadRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}notification_ids\0")
 
@@ -631,7 +631,7 @@ extension Wendycloud_V1_MarkAsReadRequest: SwiftProtobuf.Message, SwiftProtobuf.
   }
 }
 
-extension Wendycloud_V1_MarkAsReadResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_MarkAsReadResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".MarkAsReadResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}marked_count\0")
 
@@ -666,7 +666,7 @@ extension Wendycloud_V1_MarkAsReadResponse: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_GetUnreadCountRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetUnreadCountRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetUnreadCountRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}user_id\0")
 
@@ -701,7 +701,7 @@ extension Wendycloud_V1_GetUnreadCountRequest: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Wendycloud_V1_GetUnreadCountResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetUnreadCountResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetUnreadCountResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}unread_count\0")
 

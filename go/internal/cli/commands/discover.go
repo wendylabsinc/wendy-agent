@@ -31,7 +31,6 @@ import (
 func newDiscoverCmd() *cobra.Command {
 	var discoverType string
 	var timeout time.Duration
-	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "discover",
@@ -68,30 +67,30 @@ func newDiscoverCmd() *cobra.Command {
 				}
 				opts.Timeout = timeout
 				// JSON output always lists every target so scripts/MCP keep the
-				// full set regardless of --all.
+				// full set regardless of WENDY_SHOW_LOCAL_DEVICES.
 				return discoverJSON(cmd.Context(), opts)
 			}
 
 			if timeoutSet {
 				opts.Timeout = timeout
-				return discoverOnce(cmd.Context(), opts, all)
+				return discoverOnce(cmd.Context(), opts, providers.ShowLocalDevices())
 			}
-			return discoverContinuous(cmd.Context(), opts, all)
+			return discoverContinuous(cmd.Context(), opts, providers.ShowLocalDevices())
 		},
 	}
 
 	cmd.Flags().StringVar(&discoverType, "type", "all", "Discovery type: usb, lan, bluetooth, external, all")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Scan once for this duration then exit")
-	cmd.Flags().BoolVar(&all, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the results; hidden by default")
 
 	return cmd
 }
 
 // discoverExternalDevices queries registered providers for their devices. This
 // uses AllProviders (not just available ones) so devices are discoverable even
-// when the build toolchain isn't installed. Unless includeLocal is set, local
-// run targets (this machine, Docker/OrbStack, Apple Container) are skipped so
-// the table lists separate WendyOS devices by default.
+// when the build toolchain isn't installed. Unless includeLocal is set (see
+// providers.ShowLocalDevices), local run targets (this machine, Docker/OrbStack,
+// Apple Container) are skipped so the table lists separate WendyOS devices by
+// default.
 func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range providers.AllProviders() {
@@ -451,7 +450,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashIsError = true
 				return m, clearFlashAfter(3 * time.Second)
 			}
-			if item.info.Version == "" || version.CompareVersions(version.Version, item.info.Version) <= 0 {
+			if !agentBehindCLI(version.Version, item.info.Version) {
 				m.flashMessage = "Device is already up to date."
 				m.flashIsError = false
 				return m, clearFlashAfter(3 * time.Second)
@@ -803,29 +802,10 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
 
-		release, err := fetchAgentRelease(false)
+		binaryData, _, _, err := resolveAgentBinary(arch, false)
 		if err != nil {
 			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("fetching release: %w", err)}
-		}
-
-		assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-		var matchedAsset *githubReleaseAsset
-		for _, a := range release.Assets {
-			if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-				matchedAsset = &a
-				break
-			}
-		}
-		if matchedAsset == nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("no asset for linux/%s in release %s", arch, release.TagName)}
-		}
-
-		binaryData, err := downloadAgentBinary(*matchedAsset)
-		if err != nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("downloading binary: %w", err)}
+			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
 		}
 
 		h := sha256.Sum256(binaryData)
@@ -924,10 +904,31 @@ func lanNoAccessHint(lan *models.LANDevice, agentVersion string) string {
 	return ""
 }
 
+// agentBehindCLI reports whether agentVer is an older release than cliVer and
+// should be flagged as outdated. A dev build on either side (see version.IsDev)
+// is treated as the latest version, so a dev CLI never flags real agents and a
+// dev agent is never flagged (WDY-1770). An empty agentVer is treated as
+// unknown (not behind).
+func agentBehindCLI(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) > 0
+}
+
+// cliBehindAgent reports whether cliVer is an older release than agentVer, with
+// the same dev-build handling as agentBehindCLI.
+func cliBehindAgent(cliVer, agentVer string) bool {
+	if agentVer == "" || version.IsDev(cliVer) || version.IsDev(agentVer) {
+		return false
+	}
+	return version.CompareVersions(cliVer, agentVer) < 0
+}
+
 // markOutdated prefixes the version string with "* " when the agent is behind
 // the CLI, serving as a visible indicator in discover-style tables.
 func markOutdated(agentVer string) string {
-	if agentVer != "" && version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		return "* " + agentVer
 	}
 	return agentVer
@@ -1060,7 +1061,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      d.Hostname,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, d.USBVersion),
+				SortKey:      deviceSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -1099,7 +1100,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Provisioned:  provisioned,
 				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, usb),
+				SortKey:      deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:        d.DisplayName,
@@ -1165,7 +1166,7 @@ func discoverAgentVersionDisplay(agentVer string) string {
 	if displayVersion == "" {
 		return ""
 	}
-	if version.CompareVersions(version.Version, agentVer) > 0 {
+	if agentBehindCLI(version.Version, agentVer) {
 		displayVersion += " ⚠"
 	}
 	return displayVersion

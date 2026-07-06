@@ -248,6 +248,22 @@
           "required": ["type", "device"],
           "additionalProperties": false,
           "description": "Serial tty device access (USB-attached servo buses, sensors, microcontrollers)."
+        },
+        {
+          "properties": {
+            "type": { "const": "display" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Present to a locally-attached monitor as a Wayland client: GPU render nodes (/dev/dri) plus the WendyOS compositor's Wayland socket. At most one per app; requires a display-enabled WendyOS image."
+        },
+        {
+          "properties": {
+            "type": { "const": "admin" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Full local control of the agent over its unix socket, with no authentication. The entitlement-gated socket mount is the entire trust boundary — grant only to fully-trusted first-party apps. At most one per app."
         }
       ]
     },

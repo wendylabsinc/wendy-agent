@@ -130,6 +130,76 @@ struct `run overview` {
     }
 
     @Test
+    func `collapses truncated xunit attempts into one infrastructure failure`() throws {
+        let rootURL = e2eTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+
+        let runURL = rootURL.appendingPathComponent("Run", isDirectory: true)
+        let target = "local-ubuntu-24"
+        let attempt = "0001"
+        let firstObservationURL =
+            runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-info", isDirectory: true)
+            .appendingPathComponent("prints-human-readable-device-information", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+        let secondObservationURL =
+            runURL
+            .appendingPathComponent("observations", isDirectory: true)
+            .appendingPathComponent("wendy-device-camera-view", isDirectory: true)
+            .appendingPathComponent("prints-command-help", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+        let attemptURL =
+            runURL
+            .appendingPathComponent("attempts", isDirectory: true)
+            .appendingPathComponent(target, isDirectory: true)
+            .appendingPathComponent(attempt, isDirectory: true)
+
+        try FileManager.default.createDirectory(
+            at: firstObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: secondObservationURL,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: attemptURL, withIntermediateDirectories: true)
+        try writeTestMetadata(to: firstObservationURL)
+        try writeTestMetadata(
+            to: secondObservationURL,
+            sourceFilePath: "Tests/WendyE2ETests/WendyDeviceCameraViewTests.swift",
+            sourceFileName: "WendyDeviceCameraViewTests",
+            suiteName: "wendy device camera view",
+            testName: "prints command help"
+        )
+        try """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuites>
+        """.write(
+            to: attemptURL.appendingPathComponent("test-results-swift-testing.xml"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let overview = try writeRunOverview(in: runURL)
+
+        #expect(overview.summary.tests == 0)
+        #expect(overview.summary.testTargets == 0)
+        #expect(overview.summary.attemptResults == 1)
+        #expect(overview.summary.failed == 1)
+        #expect(overview.summary.unknown == 0)
+        #expect(overview.noteworthy.unknowns.isEmpty)
+
+        let targetOverview = try #require(overview.targets.first)
+        #expect(targetOverview.name == target)
+        #expect(targetOverview.outcome == .failed)
+        #expect(targetOverview.failed == 1)
+        #expect(targetOverview.unknown == 0)
+    }
+
+    @Test
     func `uses test metadata to distinguish duplicate test names`() throws {
         let rootURL = e2eTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: rootURL) }

@@ -97,19 +97,29 @@ func newCacheListCmd() *cobra.Command {
 						return fmt.Errorf("reading os-images cache directory: %w", err)
 					}
 					for _, img := range imgs {
-						if img.IsDir() {
-							continue
-						}
 						imgPath := filepath.Join(path, img.Name())
-						imgInfo, err := img.Info()
-						if err != nil {
-							return fmt.Errorf("reading os-images cache entry info for %q: %w", img.Name(), err)
+						// Files report their own size; directories (e.g. an extracted
+						// Thor flashpack tree) are sized recursively so they show up and
+						// can be selected for deletion like any other cache entry.
+						var sz int64
+						if img.IsDir() {
+							s, err := entrySize(imgPath)
+							if err != nil {
+								return fmt.Errorf("sizing os-images cache entry %q: %w", img.Name(), err)
+							}
+							sz = s
+						} else {
+							imgInfo, err := img.Info()
+							if err != nil {
+								return fmt.Errorf("reading os-images cache entry info for %q: %w", img.Name(), err)
+							}
+							sz = imgInfo.Size()
 						}
 						items = append(items, cacheEntry{
 							Name:      "os-images/" + img.Name(),
 							Path:      imgPath,
-							SizeBytes: imgInfo.Size(),
-							Size:      formatSize(imgInfo.Size()),
+							SizeBytes: sz,
+							Size:      formatSize(sz),
 						})
 					}
 					continue

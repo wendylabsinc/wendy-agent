@@ -43,6 +43,7 @@ func newAuthCmd() *cobra.Command {
 		newAuthStatusCmd(),
 		newAuthUseCmd(),
 		newAuthDefaultCmd(),
+		newAuthListOrgsCmd(),
 	)
 
 	return cmd
@@ -396,19 +397,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		Certificates: []config.CertificateInfo{certInfo},
 	}
 
-	// Prepend so local cert is tried first by connectWithAutoTLS.
-	cfg.Auth = append([]config.AuthConfig{authEntry}, cfg.Auth...)
-	// Deduplicate: remove older entry for the same cloudGRPC if any.
-	seen := make(map[string]bool)
-	filtered := cfg.Auth[:0]
-	for _, a := range cfg.Auth {
-		if seen[a.CloudGRPC] {
-			continue
-		}
-		seen[a.CloudGRPC] = true
-		filtered = append(filtered, a)
-	}
-	cfg.Auth = filtered
+	cfg.AddAuth(authEntry)
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)

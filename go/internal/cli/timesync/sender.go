@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/roughtime"
@@ -14,16 +15,46 @@ const (
 	multicastTTL  = 1
 )
 
-// BroadcastTime fetches a Roughtime proof and multicasts it as a WendyDatagram
-// on all active network interfaces. Best-effort: interface errors are skipped.
-// Returns an error only if all Roughtime servers are unreachable.
-func BroadcastTime(ctx context.Context) (roughtime.Result, error) {
-	result, err := roughtime.Query(ctx, timesync.Servers)
-	if err != nil {
-		return roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
-	}
+// roughtimeQueryFn is indirected for tests.
+var roughtimeQueryFn = roughtime.Query
 
-	// Find server index for the result so the agent can look up the public key.
+// Process-lifetime cache (no TTL): the CLI is one-shot, so one proof per run.
+var (
+	proofMu     sync.Mutex
+	proofPkt    []byte
+	proofResult roughtime.Result
+	proofCached bool
+)
+
+// resetProofCache clears the per-process proof cache (test helper).
+func resetProofCache() {
+	proofMu.Lock()
+	defer proofMu.Unlock()
+	proofPkt, proofResult, proofCached = nil, roughtime.Result{}, false
+}
+
+// FetchProofPacket queries a Roughtime server and returns the encoded
+// WendyDatagram packet plus the raw result. The result is memoized for the
+// life of the process so fixing several devices in one CLI run issues at most
+// one Roughtime query.
+func FetchProofPacket(ctx context.Context) ([]byte, roughtime.Result, error) {
+	proofMu.Lock()
+	defer proofMu.Unlock()
+	if proofCached {
+		return proofPkt, proofResult, nil
+	}
+	result, err := roughtimeQueryFn(ctx, timesync.Servers)
+	if err != nil {
+		return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
+	}
+	proofPkt = encodeProofPacket(result)
+	proofResult = result
+	proofCached = true
+	return proofPkt, proofResult, nil
+}
+
+// encodeProofPacket builds the WendyDatagram packet the agent verifies.
+func encodeProofPacket(result roughtime.Result) []byte {
 	serverIdx := uint8(0)
 	for i, s := range timesync.Servers {
 		if s.Name == result.Server {
@@ -31,17 +62,25 @@ func BroadcastTime(ctx context.Context) (roughtime.Result, error) {
 			break
 		}
 	}
-
 	payload := roughtime.EncodeRoughtimePayload(roughtime.RoughtimePayload{
 		ServerIndex: serverIdx,
 		Nonce:       result.Nonce,
 		Response:    result.RawResponse,
 	})
-	pkt := roughtime.Encode(roughtime.Datagram{
+	return roughtime.Encode(roughtime.Datagram{
 		MsgType: roughtime.MsgTypeRoughtime,
 		Payload: payload,
 	})
+}
 
+// BroadcastTime fetches a Roughtime proof and multicasts it as a WendyDatagram
+// on all active network interfaces. Best-effort: interface errors are skipped.
+// Returns an error only if all Roughtime servers are unreachable.
+func BroadcastTime(ctx context.Context) (roughtime.Result, error) {
+	pkt, result, err := FetchProofPacket(ctx)
+	if err != nil {
+		return roughtime.Result{}, err
+	}
 	sendMulticast(pkt) // best-effort
 	return result, nil
 }

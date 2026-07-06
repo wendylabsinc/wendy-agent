@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Wendycloud_V1_Asset: @unchecked Sendable {
+public nonisolated struct Wendycloud_V1_Asset: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -214,7 +214,7 @@ public struct Wendycloud_V1_Asset: @unchecked Sendable {
   fileprivate var _storage = _StorageClass.defaultInstance
 }
 
-public struct Wendycloud_V1_CreateAssetRequest: @unchecked Sendable {
+public nonisolated struct Wendycloud_V1_CreateAssetRequest: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -382,7 +382,7 @@ public struct Wendycloud_V1_CreateAssetRequest: @unchecked Sendable {
   fileprivate var _storage = _StorageClass.defaultInstance
 }
 
-public struct Wendycloud_V1_GetAssetRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetAssetRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -394,7 +394,7 @@ public struct Wendycloud_V1_GetAssetRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_UpdateAssetRequest: @unchecked Sendable {
+public nonisolated struct Wendycloud_V1_UpdateAssetRequest: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -551,7 +551,7 @@ public struct Wendycloud_V1_UpdateAssetRequest: @unchecked Sendable {
   fileprivate var _storage = _StorageClass.defaultInstance
 }
 
-public struct Wendycloud_V1_DeleteAssetRequest: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteAssetRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -563,7 +563,7 @@ public struct Wendycloud_V1_DeleteAssetRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_DeleteAssetResponse: Sendable {
+public nonisolated struct Wendycloud_V1_DeleteAssetResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -575,7 +575,7 @@ public struct Wendycloud_V1_DeleteAssetResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListAssetsRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListAssetsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -591,9 +591,23 @@ public struct Wendycloud_V1_ListAssetsRequest: Sendable {
   /// Clears the value of `isComputeDevice`. Subsequent reads from it will return its default value.
   public mutating func clearIsComputeDevice() {self._isComputeDevice = nil}
 
-  public var pageSize: Int32 = 0
+  public var offset: Int32 {
+    get {_offset ?? 0}
+    set {_offset = newValue}
+  }
+  /// Returns true if `offset` has been explicitly set.
+  public var hasOffset: Bool {self._offset != nil}
+  /// Clears the value of `offset`. Subsequent reads from it will return its default value.
+  public mutating func clearOffset() {self._offset = nil}
 
-  public var pageToken: String = String()
+  public var limit: Int32 {
+    get {_limit ?? 0}
+    set {_limit = newValue}
+  }
+  /// Returns true if `limit` has been explicitly set.
+  public var hasLimit: Bool {self._limit != nil}
+  /// Clears the value of `limit`. Subsequent reads from it will return its default value.
+  public mutating func clearLimit() {self._limit = nil}
 
   /// Filter by name, details, asset_type, device_type, or tags
   public var filter: String {
@@ -605,59 +619,107 @@ public struct Wendycloud_V1_ListAssetsRequest: Sendable {
   /// Clears the value of `filter`. Subsequent reads from it will return its default value.
   public mutating func clearFilter() {self._filter = nil}
 
+  /// If true, only return assets with active broker presence
+  public var onlineOnly: Bool {
+    get {_onlineOnly ?? false}
+    set {_onlineOnly = newValue}
+  }
+  /// Returns true if `onlineOnly` has been explicitly set.
+  public var hasOnlineOnly: Bool {self._onlineOnly != nil}
+  /// Clears the value of `onlineOnly`. Subsequent reads from it will return its default value.
+  public mutating func clearOnlineOnly() {self._onlineOnly = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
   fileprivate var _isComputeDevice: Bool? = nil
+  fileprivate var _offset: Int32? = nil
+  fileprivate var _limit: Int32? = nil
   fileprivate var _filter: String? = nil
+  fileprivate var _onlineOnly: Bool? = nil
 }
 
-public struct Wendycloud_V1_ListAssetsResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListAssetsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var assets: [Wendycloud_V1_Asset] = []
+  public var asset: Wendycloud_V1_Asset {
+    get {_asset ?? Wendycloud_V1_Asset()}
+    set {_asset = newValue}
+  }
+  /// Returns true if `asset` has been explicitly set.
+  public var hasAsset: Bool {self._asset != nil}
+  /// Clears the value of `asset`. Subsequent reads from it will return its default value.
+  public mutating func clearAsset() {self._asset = nil}
 
-  public var nextPageToken: String = String()
+  public var total: Int32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _asset: Wendycloud_V1_Asset? = nil
 }
 
-public struct Wendycloud_V1_ListAssetChildrenRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListAssetChildrenRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
   public var parentAssetID: Int32 = 0
 
-  public var pageSize: Int32 = 0
+  public var offset: Int32 {
+    get {_offset ?? 0}
+    set {_offset = newValue}
+  }
+  /// Returns true if `offset` has been explicitly set.
+  public var hasOffset: Bool {self._offset != nil}
+  /// Clears the value of `offset`. Subsequent reads from it will return its default value.
+  public mutating func clearOffset() {self._offset = nil}
 
-  public var pageToken: String = String()
+  public var limit: Int32 {
+    get {_limit ?? 0}
+    set {_limit = newValue}
+  }
+  /// Returns true if `limit` has been explicitly set.
+  public var hasLimit: Bool {self._limit != nil}
+  /// Clears the value of `limit`. Subsequent reads from it will return its default value.
+  public mutating func clearLimit() {self._limit = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _offset: Int32? = nil
+  fileprivate var _limit: Int32? = nil
 }
 
-public struct Wendycloud_V1_ListAssetChildrenResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListAssetChildrenResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var assets: [Wendycloud_V1_Asset] = []
+  public var asset: Wendycloud_V1_Asset {
+    get {_asset ?? Wendycloud_V1_Asset()}
+    set {_asset = newValue}
+  }
+  /// Returns true if `asset` has been explicitly set.
+  public var hasAsset: Bool {self._asset != nil}
+  /// Clears the value of `asset`. Subsequent reads from it will return its default value.
+  public mutating func clearAsset() {self._asset = nil}
 
-  public var nextPageToken: String = String()
+  public var total: Int32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _asset: Wendycloud_V1_Asset? = nil
 }
 
-public struct Wendycloud_V1_GetAssetLineageRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetAssetLineageRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -669,7 +731,7 @@ public struct Wendycloud_V1_GetAssetLineageRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetAssetLineageResponse: Sendable {
+public nonisolated struct Wendycloud_V1_GetAssetLineageResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -699,9 +761,9 @@ public struct Wendycloud_V1_GetAssetLineageResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_Asset: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Asset: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Asset"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}organization_id\0\u{3}parent_asset_id\0\u{1}name\0\u{1}details\0\u{3}asset_type\0\u{3}blob_storage_url\0\u{3}blob_content_type\0\u{3}blob_size_bytes\0\u{3}blob_metadata\0\u{3}is_compute_device\0\u{3}device_type\0\u{1}architecture\0\u{3}cpu_cores\0\u{3}ram_mb\0\u{3}storage_gb\0\u{3}os_type\0\u{3}os_version\0\u{3}ip_address\0\u{3}mac_address\0\u{3}created_at\0\u{3}updated_at\0\u{1}tags\0")
 
@@ -925,7 +987,7 @@ extension Wendycloud_V1_Asset: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
   }
 }
 
-extension Wendycloud_V1_CreateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateAssetRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}parent_asset_id\0\u{1}name\0\u{1}details\0\u{3}asset_type\0\u{3}blob_storage_url\0\u{3}blob_content_type\0\u{3}blob_size_bytes\0\u{3}blob_metadata\0\u{3}is_compute_device\0\u{3}device_type\0\u{1}architecture\0\u{3}cpu_cores\0\u{3}ram_mb\0\u{3}storage_gb\0\u{3}os_type\0\u{3}os_version\0\u{3}ip_address\0\u{3}mac_address\0\u{1}tags\0")
 
@@ -1128,7 +1190,7 @@ extension Wendycloud_V1_CreateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_GetAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAssetRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -1158,7 +1220,7 @@ extension Wendycloud_V1_GetAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._M
   }
 }
 
-extension Wendycloud_V1_UpdateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_UpdateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".UpdateAssetRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}details\0\u{3}blob_storage_url\0\u{3}blob_content_type\0\u{3}blob_size_bytes\0\u{3}blob_metadata\0\u{3}device_type\0\u{1}architecture\0\u{3}cpu_cores\0\u{3}ram_mb\0\u{3}storage_gb\0\u{3}os_type\0\u{3}os_version\0\u{3}ip_address\0\u{3}mac_address\0\u{1}tags\0")
 
@@ -1340,7 +1402,7 @@ extension Wendycloud_V1_UpdateAssetRequest: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_DeleteAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteAssetRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteAssetRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0")
 
@@ -1370,7 +1432,7 @@ extension Wendycloud_V1_DeleteAssetRequest: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_DeleteAssetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_DeleteAssetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".DeleteAssetResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0")
 
@@ -1400,9 +1462,9 @@ extension Wendycloud_V1_DeleteAssetResponse: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Wendycloud_V1_ListAssetsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAssetsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAssetsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}is_compute_device\0\u{3}page_size\0\u{3}page_token\0\u{1}filter\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}is_compute_device\0\u{1}offset\0\u{1}limit\0\u{1}filter\0\u{3}online_only\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1412,9 +1474,10 @@ extension Wendycloud_V1_ListAssetsRequest: SwiftProtobuf.Message, SwiftProtobuf.
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
       case 2: try { try decoder.decodeSingularBoolField(value: &self._isComputeDevice) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self.pageSize) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
+      case 3: try { try decoder.decodeSingularInt32Field(value: &self._offset) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self._limit) }()
       case 5: try { try decoder.decodeSingularStringField(value: &self._filter) }()
+      case 6: try { try decoder.decodeSingularBoolField(value: &self._onlineOnly) }()
       default: break
       }
     }
@@ -1431,14 +1494,17 @@ extension Wendycloud_V1_ListAssetsRequest: SwiftProtobuf.Message, SwiftProtobuf.
     try { if let v = self._isComputeDevice {
       try visitor.visitSingularBoolField(value: v, fieldNumber: 2)
     } }()
-    if self.pageSize != 0 {
-      try visitor.visitSingularInt32Field(value: self.pageSize, fieldNumber: 3)
-    }
-    if !self.pageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.pageToken, fieldNumber: 4)
-    }
+    try { if let v = self._offset {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 3)
+    } }()
+    try { if let v = self._limit {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 4)
+    } }()
     try { if let v = self._filter {
       try visitor.visitSingularStringField(value: v, fieldNumber: 5)
+    } }()
+    try { if let v = self._onlineOnly {
+      try visitor.visitSingularBoolField(value: v, fieldNumber: 6)
     } }()
     try unknownFields.traverse(visitor: &visitor)
   }
@@ -1446,17 +1512,18 @@ extension Wendycloud_V1_ListAssetsRequest: SwiftProtobuf.Message, SwiftProtobuf.
   public static func ==(lhs: Wendycloud_V1_ListAssetsRequest, rhs: Wendycloud_V1_ListAssetsRequest) -> Bool {
     if lhs.organizationID != rhs.organizationID {return false}
     if lhs._isComputeDevice != rhs._isComputeDevice {return false}
-    if lhs.pageSize != rhs.pageSize {return false}
-    if lhs.pageToken != rhs.pageToken {return false}
+    if lhs._offset != rhs._offset {return false}
+    if lhs._limit != rhs._limit {return false}
     if lhs._filter != rhs._filter {return false}
+    if lhs._onlineOnly != rhs._onlineOnly {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendycloud_V1_ListAssetsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAssetsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAssetsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}assets\0\u{3}next_page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}asset\0\u{1}total\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1464,34 +1531,38 @@ extension Wendycloud_V1_ListAssetsResponse: SwiftProtobuf.Message, SwiftProtobuf
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.assets) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.nextPageToken) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._asset) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self.total) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.assets.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.assets, fieldNumber: 1)
-    }
-    if !self.nextPageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.nextPageToken, fieldNumber: 2)
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._asset {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    if self.total != 0 {
+      try visitor.visitSingularInt32Field(value: self.total, fieldNumber: 2)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListAssetsResponse, rhs: Wendycloud_V1_ListAssetsResponse) -> Bool {
-    if lhs.assets != rhs.assets {return false}
-    if lhs.nextPageToken != rhs.nextPageToken {return false}
+    if lhs._asset != rhs._asset {return false}
+    if lhs.total != rhs.total {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendycloud_V1_ListAssetChildrenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAssetChildrenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAssetChildrenRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}parent_asset_id\0\u{3}page_size\0\u{3}page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}parent_asset_id\0\u{1}offset\0\u{1}limit\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1500,38 +1571,42 @@ extension Wendycloud_V1_ListAssetChildrenRequest: SwiftProtobuf.Message, SwiftPr
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt32Field(value: &self.parentAssetID) }()
-      case 2: try { try decoder.decodeSingularInt32Field(value: &self.pageSize) }()
-      case 3: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self._offset) }()
+      case 3: try { try decoder.decodeSingularInt32Field(value: &self._limit) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
     if self.parentAssetID != 0 {
       try visitor.visitSingularInt32Field(value: self.parentAssetID, fieldNumber: 1)
     }
-    if self.pageSize != 0 {
-      try visitor.visitSingularInt32Field(value: self.pageSize, fieldNumber: 2)
-    }
-    if !self.pageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.pageToken, fieldNumber: 3)
-    }
+    try { if let v = self._offset {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 2)
+    } }()
+    try { if let v = self._limit {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 3)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListAssetChildrenRequest, rhs: Wendycloud_V1_ListAssetChildrenRequest) -> Bool {
     if lhs.parentAssetID != rhs.parentAssetID {return false}
-    if lhs.pageSize != rhs.pageSize {return false}
-    if lhs.pageToken != rhs.pageToken {return false}
+    if lhs._offset != rhs._offset {return false}
+    if lhs._limit != rhs._limit {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendycloud_V1_ListAssetChildrenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListAssetChildrenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAssetChildrenResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}assets\0\u{3}next_page_token\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}asset\0\u{1}total\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1539,32 +1614,36 @@ extension Wendycloud_V1_ListAssetChildrenResponse: SwiftProtobuf.Message, SwiftP
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.assets) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.nextPageToken) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._asset) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self.total) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.assets.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.assets, fieldNumber: 1)
-    }
-    if !self.nextPageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.nextPageToken, fieldNumber: 2)
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._asset {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    if self.total != 0 {
+      try visitor.visitSingularInt32Field(value: self.total, fieldNumber: 2)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListAssetChildrenResponse, rhs: Wendycloud_V1_ListAssetChildrenResponse) -> Bool {
-    if lhs.assets != rhs.assets {return false}
-    if lhs.nextPageToken != rhs.nextPageToken {return false}
+    if lhs._asset != rhs._asset {return false}
+    if lhs.total != rhs.total {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendycloud_V1_GetAssetLineageRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetAssetLineageRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAssetLineageRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}asset_id\0")
 
@@ -1594,7 +1673,7 @@ extension Wendycloud_V1_GetAssetLineageRequest: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendycloud_V1_GetAssetLineageResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetAssetLineageResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetAssetLineageResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}root_asset\0\u{3}all_assets\0\u{3}requested_asset_id\0")
 

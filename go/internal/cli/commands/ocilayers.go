@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -445,6 +446,25 @@ func digestToHex(digest string) (string, error) {
 	return strings.TrimPrefix(digest, prefix), nil
 }
 
+// imageBuildFailedError marks a failure of the actual image build (the buildx
+// or Apple Container *solve* of the Dockerfile) in the chunk-diff deploy path,
+// as opposed to a builder-setup or OCI-export failure. The registry-push
+// fallback rebuilds the same image from the same Dockerfile, so a solve failure
+// there recurs identically — falling back only buries the actionable build
+// error behind a confusing secondary failure (e.g. buildx /etc/hosts setup).
+// Callers surface this error directly instead of falling back. See issue #1166.
+type imageBuildFailedError struct{ err error }
+
+func (e *imageBuildFailedError) Error() string { return e.err.Error() }
+func (e *imageBuildFailedError) Unwrap() error { return e.err }
+
+// isImageBuildFailure reports whether err (or anything it wraps) is an
+// imageBuildFailedError, i.e. the Dockerfile build itself failed.
+func isImageBuildFailure(err error) bool {
+	var bErr *imageBuildFailedError
+	return errors.As(err, &bErr)
+}
+
 // buildImageToOCILayout builds an OCI-layout tar to dest for the chunk-diff
 // deploy path. When builder is apple-container, it uses the Apple Container CLI;
 // otherwise it runs `docker buildx build` with `--output type=oci,dest=<dest>`.
@@ -574,7 +594,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	}
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("docker buildx build (OCI export) failed: %w", err)
+		return &imageBuildFailedError{fmt.Errorf("docker buildx build (OCI export) failed: %w", err)}
 	}
 	return nil
 }
@@ -606,12 +626,17 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)
 	}
+	contextMonitor := newAppleContainerBuildContextMonitor(buildContext)
+	stdout = contextMonitor.wrapStream(stdout)
+	stderr = contextMonitor.wrapStream(stderr)
 
 	// Unique per-build tag: dest is a fresh wendy-oci-* tempdir, so concurrent
 	// invocations and watch cycles never collide on the temporary image.
 	imageRef := "wendy-oci-build:" + sanitizeAppleContainerTag(filepath.Base(filepath.Dir(dest)))
 
-	args := []string{"build", "--platform", platform, "-t", imageRef}
+	// --progress plain so the shared build parser can read the output (see
+	// buildImageWithAppleContainer for the format rationale).
+	args := []string{"build", "--progress", "plain", "--platform", platform, "-t", imageRef}
 	if dockerfile != "" {
 		resolvedDockerfile, err := appleContainerBuildFilePath(cwd, dockerfile)
 		if err != nil {
@@ -635,7 +660,7 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	buildCmd.Stdout = stdout
 	buildCmd.Stderr = stderr
 	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("container build (OCI layout) failed: %w", err)
+		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", contextMonitor.wrapBuildError(err))}
 	}
 	// The image is in the store now — remove the temporary tag once we are done,
 	// even if the export below is cancelled.

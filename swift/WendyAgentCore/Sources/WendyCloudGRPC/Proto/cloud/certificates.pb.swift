@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public enum Wendycloud_V1_CertificateStatus: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_CertificateStatus: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
   case active // = 1
@@ -63,7 +63,7 @@ public enum Wendycloud_V1_CertificateStatus: SwiftProtobuf.Enum, Swift.CaseItera
 }
 
 /// Error codes for certificate operations
-public enum Wendycloud_V1_CertificateErrorCode: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendycloud_V1_CertificateErrorCode: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case certificateErrorUnspecified // = 0
 
@@ -159,7 +159,7 @@ public enum Wendycloud_V1_CertificateErrorCode: SwiftProtobuf.Enum, Swift.CaseIt
 
 }
 
-public struct Wendycloud_V1_GetCertificateMetadataRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetCertificateMetadataRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -169,7 +169,7 @@ public struct Wendycloud_V1_GetCertificateMetadataRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetCertificateMetadataResponse: Sendable {
+public nonisolated struct Wendycloud_V1_GetCertificateMetadataResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -211,7 +211,7 @@ public struct Wendycloud_V1_GetCertificateMetadataResponse: Sendable {
 /// The asset_id and user_id are mutually exclusive.
 /// If there is a certificate for `wendy-agent`, it will have an asset_id and organization_id.
 /// If there is a certificate for a user, it will have a user_id and organization_id.
-public struct Wendycloud_V1_Certificate: @unchecked Sendable {
+public nonisolated struct Wendycloud_V1_Certificate: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -329,7 +329,7 @@ public struct Wendycloud_V1_Certificate: @unchecked Sendable {
 
 /// Required for issuing a certificate for the first time for an asset
 /// you can look up the assetId and organizationId by the enrollment token
-public struct Wendycloud_V1_IssueCertificateRequest: Sendable {
+public nonisolated struct Wendycloud_V1_IssueCertificateRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -346,7 +346,7 @@ public struct Wendycloud_V1_IssueCertificateRequest: Sendable {
 }
 
 /// Response wrapper with structured error handling for certificate issuance
-public struct Wendycloud_V1_IssueCertificateResponse: Sendable {
+public nonisolated struct Wendycloud_V1_IssueCertificateResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -411,7 +411,7 @@ public struct Wendycloud_V1_IssueCertificateResponse: Sendable {
 /// The server extracts organization_id and asset_id from the client's current
 /// certificate SAN (Subject Alternative Name), so they don't need to be provided.
 /// The agent should refresh ~2/3 through the current certificate's lifetime.
-public struct Wendycloud_V1_RefreshCertificateRequest: Sendable {
+public nonisolated struct Wendycloud_V1_RefreshCertificateRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -425,7 +425,7 @@ public struct Wendycloud_V1_RefreshCertificateRequest: Sendable {
 }
 
 /// Response wrapper with structured error handling for certificate refresh
-public struct Wendycloud_V1_RefreshCertificateResponse: Sendable {
+public nonisolated struct Wendycloud_V1_RefreshCertificateResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -461,7 +461,7 @@ public struct Wendycloud_V1_RefreshCertificateResponse: Sendable {
   fileprivate var _error: Wendycloud_V1_CertificateError? = nil
 }
 
-public struct Wendycloud_V1_RevokeCertificateRequest: Sendable {
+public nonisolated struct Wendycloud_V1_RevokeCertificateRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -475,7 +475,7 @@ public struct Wendycloud_V1_RevokeCertificateRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_RevokeCertificateResponse: Sendable {
+public nonisolated struct Wendycloud_V1_RevokeCertificateResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -487,7 +487,7 @@ public struct Wendycloud_V1_RevokeCertificateResponse: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetCertificateRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetCertificateRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -499,7 +499,7 @@ public struct Wendycloud_V1_GetCertificateRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_ListCertificatesRequest: Sendable {
+public nonisolated struct Wendycloud_V1_ListCertificatesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -533,7 +533,7 @@ public struct Wendycloud_V1_ListCertificatesRequest: Sendable {
   fileprivate var _limit: Int32? = nil
 }
 
-public struct Wendycloud_V1_ListCertificatesResponse: Sendable {
+public nonisolated struct Wendycloud_V1_ListCertificatesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -557,7 +557,7 @@ public struct Wendycloud_V1_ListCertificatesResponse: Sendable {
   fileprivate var _certificate: Wendycloud_V1_Certificate? = nil
 }
 
-public struct Wendycloud_V1_GetCaBundleRequest: Sendable {
+public nonisolated struct Wendycloud_V1_GetCaBundleRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -567,7 +567,7 @@ public struct Wendycloud_V1_GetCaBundleRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_GetCaBundleResponse: Sendable {
+public nonisolated struct Wendycloud_V1_GetCaBundleResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -582,7 +582,7 @@ public struct Wendycloud_V1_GetCaBundleResponse: Sendable {
 
 /// Asset Enrollment Token RPCs
 /// This DOES use the Authorization: Bearer token since it's generated primarily by a user logged into the dashboard
-public struct Wendycloud_V1_CreateAssetEnrollmentTokenRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateAssetEnrollmentTokenRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -599,7 +599,7 @@ public struct Wendycloud_V1_CreateAssetEnrollmentTokenRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_CreateAssetEnrollmentTokenResponse: Sendable {
+public nonisolated struct Wendycloud_V1_CreateAssetEnrollmentTokenResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -635,7 +635,7 @@ public struct Wendycloud_V1_CreateAssetEnrollmentTokenResponse: Sendable {
 /// User Enrollment Token RPCs
 /// This DOES use the Authorization: Bearer token since it's generated primarily by a user logged into the dashboard
 /// The user_id is derived from the Authorization: Bearer token (Firebase ID token)
-public struct Wendycloud_V1_CreateUserEnrollmentTokenRequest: Sendable {
+public nonisolated struct Wendycloud_V1_CreateUserEnrollmentTokenRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -650,7 +650,7 @@ public struct Wendycloud_V1_CreateUserEnrollmentTokenRequest: Sendable {
   public init() {}
 }
 
-public struct Wendycloud_V1_CreateUserEnrollmentTokenResponse: Sendable {
+public nonisolated struct Wendycloud_V1_CreateUserEnrollmentTokenResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -681,7 +681,7 @@ public struct Wendycloud_V1_CreateUserEnrollmentTokenResponse: Sendable {
 }
 
 /// Structured error information for certificate operations
-public struct Wendycloud_V1_CertificateError: Sendable {
+public nonisolated struct Wendycloud_V1_CertificateError: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -702,17 +702,17 @@ public struct Wendycloud_V1_CertificateError: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendycloud.v1"
+fileprivate nonisolated let _protobuf_package = "wendycloud.v1"
 
-extension Wendycloud_V1_CertificateStatus: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CertificateStatus: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CERTIFICATE_STATUS_UNSPECIFIED\0\u{1}CERTIFICATE_STATUS_ACTIVE\0\u{1}CERTIFICATE_STATUS_REVOKED\0\u{1}CERTIFICATE_STATUS_EXPIRED\0")
 }
 
-extension Wendycloud_V1_CertificateErrorCode: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CertificateErrorCode: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0CERTIFICATE_ERROR_UNSPECIFIED\0\u{1}CERTIFICATE_ERROR_INVALID_CSR\0\u{1}CERTIFICATE_ERROR_INVALID_ENROLLMENT_TOKEN\0\u{1}CERTIFICATE_ERROR_UNAUTHORIZED\0\u{1}CERTIFICATE_ERROR_ORGANIZATION_NOT_FOUND\0\u{1}CERTIFICATE_ERROR_ASSET_NOT_FOUND\0\u{1}CERTIFICATE_ERROR_CA_SERVICE_UNAVAILABLE\0\u{1}CERTIFICATE_ERROR_QUOTA_EXCEEDED\0\u{1}CERTIFICATE_ERROR_CERTIFICATE_REVOKED\0\u{1}CERTIFICATE_ERROR_CERTIFICATE_EXPIRED\0\u{1}CERTIFICATE_ERROR_INVALID_COMMON_NAME\0\u{1}CERTIFICATE_ERROR_INTERNAL\0")
 }
 
-extension Wendycloud_V1_GetCertificateMetadataRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetCertificateMetadataRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetCertificateMetadataRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -731,7 +731,7 @@ extension Wendycloud_V1_GetCertificateMetadataRequest: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendycloud_V1_GetCertificateMetadataResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetCertificateMetadataResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetCertificateMetadataResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}asset_id\0\u{3}user_id\0")
 
@@ -775,7 +775,7 @@ extension Wendycloud_V1_GetCertificateMetadataResponse: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendycloud_V1_Certificate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_Certificate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Certificate"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}organization_id\0\u{3}asset_id\0\u{3}serial_number\0\u{3}pem_certificate\0\u{3}pem_certificate_chain\0\u{3}not_before\0\u{3}not_after\0\u{1}status\0\u{3}revoked_at\0\u{3}revocation_reason\0\u{3}created_at\0\u{3}updated_at\0\u{3}user_id\0")
 
@@ -936,7 +936,7 @@ extension Wendycloud_V1_Certificate: SwiftProtobuf.Message, SwiftProtobuf._Messa
   }
 }
 
-extension Wendycloud_V1_IssueCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_IssueCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".IssueCertificateRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{3}pem_csr\0\u{4}\u{2}enrollment_token\0")
 
@@ -971,7 +971,7 @@ extension Wendycloud_V1_IssueCertificateRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_IssueCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_IssueCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".IssueCertificateResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}certificate\0\u{1}error\0\u{1}warnings\0\u{3}organization_id\0\u{3}asset_id\0\u{3}user_id\0")
 
@@ -1030,7 +1030,7 @@ extension Wendycloud_V1_IssueCertificateResponse: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendycloud_V1_RefreshCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RefreshCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RefreshCertificateRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{3}pem_csr\0")
 
@@ -1060,7 +1060,7 @@ extension Wendycloud_V1_RefreshCertificateRequest: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_RefreshCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RefreshCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RefreshCertificateResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}certificate\0\u{1}error\0\u{1}warnings\0")
 
@@ -1104,7 +1104,7 @@ extension Wendycloud_V1_RefreshCertificateResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendycloud_V1_RevokeCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RevokeCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RevokeCertificateRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}certificate_id\0\u{1}reason\0")
 
@@ -1139,7 +1139,7 @@ extension Wendycloud_V1_RevokeCertificateRequest: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendycloud_V1_RevokeCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_RevokeCertificateResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RevokeCertificateResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0")
 
@@ -1169,7 +1169,7 @@ extension Wendycloud_V1_RevokeCertificateResponse: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendycloud_V1_GetCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetCertificateRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetCertificateRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}certificate_id\0")
 
@@ -1199,7 +1199,7 @@ extension Wendycloud_V1_GetCertificateRequest: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Wendycloud_V1_ListCertificatesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListCertificatesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListCertificatesRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}asset_id\0\u{1}offset\0\u{1}limit\0")
 
@@ -1243,7 +1243,7 @@ extension Wendycloud_V1_ListCertificatesRequest: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendycloud_V1_ListCertificatesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_ListCertificatesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListCertificatesResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}certificate\0\u{1}total\0")
 
@@ -1282,7 +1282,7 @@ extension Wendycloud_V1_ListCertificatesResponse: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Wendycloud_V1_GetCaBundleRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetCaBundleRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetCaBundleRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1301,7 +1301,7 @@ extension Wendycloud_V1_GetCaBundleRequest: SwiftProtobuf.Message, SwiftProtobuf
   }
 }
 
-extension Wendycloud_V1_GetCaBundleResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_GetCaBundleResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".GetCaBundleResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}pem_bundle\0")
 
@@ -1331,7 +1331,7 @@ extension Wendycloud_V1_GetCaBundleResponse: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateAssetEnrollmentTokenRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{1}name\0\u{3}ttl_seconds\0")
 
@@ -1371,7 +1371,7 @@ extension Wendycloud_V1_CreateAssetEnrollmentTokenRequest: SwiftProtobuf.Message
   }
 }
 
-extension Wendycloud_V1_CreateAssetEnrollmentTokenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateAssetEnrollmentTokenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateAssetEnrollmentTokenResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}enrollment_token\0\u{1}jti\0\u{3}expires_at\0\u{3}organization_id\0\u{3}asset_id\0")
 
@@ -1425,7 +1425,7 @@ extension Wendycloud_V1_CreateAssetEnrollmentTokenResponse: SwiftProtobuf.Messag
   }
 }
 
-extension Wendycloud_V1_CreateUserEnrollmentTokenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateUserEnrollmentTokenRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateUserEnrollmentTokenRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{2}ttl_seconds\0\u{3}organization_id\0")
 
@@ -1460,7 +1460,7 @@ extension Wendycloud_V1_CreateUserEnrollmentTokenRequest: SwiftProtobuf.Message,
   }
 }
 
-extension Wendycloud_V1_CreateUserEnrollmentTokenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CreateUserEnrollmentTokenResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateUserEnrollmentTokenResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}enrollment_token\0\u{1}jti\0\u{3}expires_at\0\u{4}\u{2}user_id\0")
 
@@ -1509,7 +1509,7 @@ extension Wendycloud_V1_CreateUserEnrollmentTokenResponse: SwiftProtobuf.Message
   }
 }
 
-extension Wendycloud_V1_CertificateError: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendycloud_V1_CertificateError: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CertificateError"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}code\0\u{1}message\0\u{1}details\0")
 

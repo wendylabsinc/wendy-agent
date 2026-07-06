@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -199,6 +200,47 @@ func fieldToKeyValue(f zapcore.Field) *otelpb.KeyValue {
 				Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: f.Interface.(error).Error()}},
 			}
 		}
+		return nil
+	case zapcore.TimeType:
+		// Integer holds the time in UnixNano; Interface holds *time.Location.
+		// zap.Time always sets a non-nil location, so the nil guard below is
+		// only defensive against hand-built zapcore.Field values. Without this
+		// case zap.Time falls through to default and exports the location
+		// name (e.g. "UTC") instead of the timestamp.
+		ts := time.Unix(0, f.Integer)
+		if loc, ok := f.Interface.(*time.Location); ok && loc != nil {
+			ts = ts.In(loc)
+		}
+		return stringKV(f.Key, ts.Format(time.RFC3339Nano))
+	case zapcore.TimeFullType:
+		if t, ok := f.Interface.(time.Time); ok {
+			return stringKV(f.Key, t.Format(time.RFC3339Nano))
+		}
+		return nil
+	case zapcore.ByteStringType:
+		if b, ok := f.Interface.([]byte); ok {
+			return stringKV(f.Key, string(b))
+		}
+		return nil
+	case zapcore.Complex128Type, zapcore.Complex64Type:
+		return stringKV(f.Key, fmt.Sprint(f.Interface))
+	case zapcore.UintptrType:
+		return &otelpb.KeyValue{
+			Key:   f.Key,
+			Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_IntValue{IntValue: f.Integer}},
+		}
+	case zapcore.ReflectType:
+		// Covers zap.Any(structOrSlice). JSON-encode for a faithful,
+		// queryable representation; fall back to fmt.Sprint on marshal error.
+		if f.Interface == nil {
+			return nil
+		}
+		if b, err := json.Marshal(f.Interface); err == nil {
+			return stringKV(f.Key, string(b))
+		}
+		return stringKV(f.Key, fmt.Sprint(f.Interface))
+	case zapcore.NamespaceType, zapcore.SkipType:
+		// Namespaces carry no value; Skip fields are intentionally empty.
 		return nil
 	case zapcore.StringerType:
 		if f.Interface != nil {

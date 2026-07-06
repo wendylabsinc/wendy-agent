@@ -87,16 +87,6 @@ jobs:
             goarch: arm64
             product: wendy-agent
             cmd: wendy-agent
-          - artifact-name: wendy-cli-linux-amd64
-            goos: linux
-            goarch: amd64
-            product: wendy
-            cmd: wendy
-          - artifact-name: wendy-cli-linux-arm64
-            goos: linux
-            goarch: arm64
-            product: wendy
-            cmd: wendy
           - artifact-name: wendy-cli-windows-amd64
             goos: windows
             goarch: amd64
@@ -150,17 +140,30 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  build-go-macos:
+  # The Linux CLI links libusb via cgo (Thor USB recovery flashing, gousb), so it
+  # is built natively per arch instead of cross-compiled in the CGO_ENABLED=0
+  # matrix above. libusb is compiled from a pinned source tarball against musl
+  # (--disable-udev: enumeration falls back to sysfs/usbfs, all wendy needs) and
+  # linked statically, so the binary stays fully static and runs on any distro,
+  # like the previous CGO_ENABLED=0 build.
+  build-cli-linux:
     name: ${{ matrix.artifact-name }}
-    runs-on: macos-15
+    runs-on: ${{ matrix.runner }}
     needs: [determine-version]
     strategy:
       matrix:
         include:
-          - artifact-name: wendy-cli-darwin-arm64
-            goarch: arm64
-          - artifact-name: wendy-cli-darwin-amd64
+          - artifact-name: wendy-cli-linux-amd64
             goarch: amd64
+            runner: ubuntu-24.04
+          - artifact-name: wendy-cli-linux-arm64
+            goarch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      LIBUSB_VERSION: "1.0.29"
+      # sha256 of libusb-1.0.29.tar.bz2 from the upstream GitHub release
+      # (github.com/libusb/libusb/releases/tag/v1.0.29), computed at pin time.
+      LIBUSB_SHA256: "5977fc950f8d1395ccea9bd48c06b3f808fd3c2c961b44b0c2e6e29fc3a70a85"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -170,17 +173,114 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static libusb (musl, no udev)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o libusb.tar.bz2 \
+            "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+          echo "${LIBUSB_SHA256}  libusb.tar.bz2" | sha256sum -c -
+          tar -xjf libusb.tar.bz2
+          cd "libusb-${LIBUSB_VERSION}"
+          # libusb without udev needs kernel UAPI headers (linux/netlink.h), which
+          # musl-gcc's include path lacks. Stage just linux/, asm/ and asm-generic/
+          # (libc-agnostic) rather than exposing all of glibc's /usr/include.
+          KINC="${GITHUB_WORKSPACE}/kernel-headers"
+          mkdir -p "$KINC"
+          cp -r /usr/include/linux "$KINC/linux"
+          cp -r "/usr/include/$(gcc -print-multiarch)/asm" "$KINC/asm"
+          cp -r /usr/include/asm-generic "$KINC/asm-generic"
+          CC=musl-gcc CFLAGS="-I$KINC" ./configure --disable-udev --disable-shared \
+            --enable-static --prefix="${GITHUB_WORKSPACE}/libusb-prefix"
+          make -j"$(nproc)"
+          make install
+
       - name: Build
         working-directory: go
         env:
           CGO_ENABLED: "1"
-          GOOS: darwin
+          CC: musl-gcc
           GOARCH: ${{ matrix.goarch }}
+          # gousb resolves libusb via pkg-config; point it at the static build.
+          PKG_CONFIG_PATH: ${{ github.workspace }}/libusb-prefix/lib/pkgconfig
         run: |
+          ARTIFACT="${{ matrix.artifact-name }}"
           VERSION="${{ needs.determine-version.outputs.version }}"
           LDFLAGS="-s -w -X github.com/wendylabsinc/wendy/go/internal/shared/version.Version=${VERSION}"
-          mkdir -p ../${{ matrix.artifact-name }}
-          go build -ldflags "${LDFLAGS}" -o ../${{ matrix.artifact-name }}/wendy ./cmd/wendy
+          mkdir -p "../${ARTIFACT}"
+          go build -tags netgo,osusergo \
+            -ldflags "${LDFLAGS} -linkmode external -extldflags -static" \
+            -o "../${ARTIFACT}/wendy" ./cmd/wendy
+          # libusb is statically linked (LGPL-2.1): ship its attribution/license.
+          cp ../NOTICE "../${ARTIFACT}/NOTICE"
+
+      - name: Verify static binary and smoke test
+        run: |
+          set -euo pipefail
+          ARTIFACT="${{ matrix.artifact-name }}"
+          if ldd "${ARTIFACT}/wendy" >/dev/null 2>&1; then
+            echo "ERROR: wendy is dynamically linked:"
+            ldd "${ARTIFACT}/wendy"
+            exit 1
+          fi
+          "./${ARTIFACT}/wendy" --version
+
+      - name: Create archive
+        run: |
+          ARTIFACT="${{ matrix.artifact-name }}"
+          VERSION="${{ needs.determine-version.outputs.version }}"
+          ARCHIVE="${ARTIFACT}-${VERSION}.tar.gz"
+          tar -czvf "$ARCHIVE" "${ARTIFACT}/"
+          echo "archive=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.archive }}
+          path: ${{ env.archive }}
+          retention-days: 14
+          if-no-files-found: error
+
+  build-go-macos:
+    name: ${{ matrix.artifact-name }}
+    runs-on: macos-15
+    needs: [determine-version]
+    strategy:
+      matrix:
+        include:
+          # Intel (amd64) macOS is not built: the CLI links libusb via cgo
+          # (github.com/google/gousb), and cross-compiling x86_64 on the arm64
+          # macos-15 runner fails to link the arm64-only Homebrew libusb.
+          - artifact-name: wendy-cli-darwin-arm64
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install libusb
+        run: brew list libusb >/dev/null 2>&1 || brew install libusb
+
+      # build-wendy.sh links libusb statically and fails the build if a dynamic
+      # libusb dependency sneaks in — a plain `go build` would produce a binary
+      # that only runs on Macs with Homebrew libusb installed.
+      - name: Build
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          ARTIFACT="${{ matrix.artifact-name }}"
+          mkdir -p "${ARTIFACT}"
+          # build-wendy.sh cds into go/, so the output path is relative to go/.
+          go/scripts/build-wendy.sh "../${ARTIFACT}/wendy"
+          # libusb is statically linked (LGPL-2.1): ship its attribution/license.
+          cp NOTICE "${ARTIFACT}/NOTICE"
 
       - name: Create archive
         working-directory: .
@@ -267,7 +367,7 @@ jobs:
   package-linux:
     name: Package Linux (${{ matrix.arch }})
     runs-on: ubuntu-latest
-    needs: [determine-version, build]
+    needs: [determine-version, build, build-cli-linux]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == true)
     strategy:
       matrix:
@@ -309,6 +409,8 @@ jobs:
           set -euo pipefail
 
           mkdir -p pkgroot/wendy/usr/bin
+          mkdir -p pkgroot/wendy/usr/lib/udev/rules.d
+          mkdir -p pkgroot/wendy/usr/share/doc/wendy
           mkdir -p pkgroot/wendy-agent/usr/bin
           mkdir -p pkgroot/wendy-agent/usr/lib/systemd/system
           mkdir -p pkgroot/wendy-agent/usr/lib/wendy-agent
@@ -319,6 +421,11 @@ jobs:
 
           install -m755 ./wendy-cli-linux-${{ matrix.goarch }}/wendy \
             pkgroot/wendy/usr/bin/wendy
+          # USB access for Jetson recovery flashing (`wendy os install`).
+          install -m644 packaging/linux/udev/70-wendy-jetson.rules \
+            pkgroot/wendy/usr/lib/udev/rules.d/70-wendy-jetson.rules
+          # libusb is statically linked into wendy (LGPL-2.1): ship its notice.
+          install -m644 NOTICE pkgroot/wendy/usr/share/doc/wendy/NOTICE
           install -m755 ./wendy-agent-linux-${{ matrix.goarch }}/wendy-agent \
             pkgroot/wendy-agent/usr/bin/wendy-agent
 
@@ -353,6 +460,7 @@ jobs:
             --category "devel" \
             --depends "usbutils" \
             --depends "ca-certificates" \
+            --after-install packaging/linux/fpm/wendy-postinstall.sh \
             -C pkgroot/wendy \
             .
 
@@ -406,6 +514,7 @@ jobs:
             --category "Development/Tools" \
             --depends "usbutils" \
             --depends "ca-certificates" \
+            --after-install packaging/linux/fpm/wendy-postinstall.sh \
             -C pkgroot/wendy \
             .
 
@@ -447,6 +556,8 @@ jobs:
 
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*usbutils"
           dpkg-deb -I "$WENDY_DEB" | grep -E "Depends:.*ca-certificates"
+          dpkg-deb -c "$WENDY_DEB" | grep "usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          dpkg-deb -c "$WENDY_DEB" | grep "usr/share/doc/wendy/NOTICE" > /dev/null
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*containerd"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*dbus"
           dpkg-deb -I "$WENDY_AGENT_DEB" | grep -E "Depends:.*systemd"
@@ -463,6 +574,8 @@ jobs:
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^systemd" > /dev/null
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^ca-certificates" > /dev/null
           rpm -qp --requires "$WENDY_AGENT_RPM" | grep "^avahi" > /dev/null
+          rpm -qpl "$WENDY_RPM" | grep "/usr/lib/udev/rules.d/70-wendy-jetson.rules" > /dev/null
+          rpm -qpl "$WENDY_RPM" | grep "/usr/share/doc/wendy/NOTICE" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/usr/lib/systemd/system/wendy-agent.service" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/default/wendy-agent" > /dev/null
           rpm -qpl "$WENDY_AGENT_RPM" | grep "/etc/avahi/services/wendy-agent.service" > /dev/null
@@ -648,6 +761,46 @@ jobs:
               --project=${{ vars.GCP_PROJECT_ID }} \
               --source="$rpm"
           done
+
+  publish-agent-gcs:
+    name: Publish agent to GCS
+    runs-on: ubuntu-latest
+    needs: [determine-version, build]
+    if: |
+      always() &&
+      needs.determine-version.result == 'success' &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download agent tarballs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: wendy-agent-linux-*.tar.gz
+          merge-multiple: true
+          path: agent-artifacts
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Upload agent tarballs and update manifest
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+          IS_RELEASE: ${{ needs.determine-version.outputs.is_release }}
+          BUCKET: wendyos-images-public
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: ./.github/scripts/publish-agent-gcs.sh
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)
@@ -1363,7 +1516,7 @@ jobs:
 
           **Linux/macOS**
           ```
-          curl -fsSL https://install.wendy.sh/cli.sh | bash
+          curl -fsSL https://install.wendy.dev/cli.sh | bash
           ```
 
           **Windows (install)**
@@ -1379,7 +1532,7 @@ jobs:
 
           **Linux/macOS**
           ```
-          curl -fsSL https://install.wendy.sh/agent.sh | bash
+          curl -fsSL https://install.wendy.dev/agent.sh | bash
           ```
           INSTALL_EOF
 

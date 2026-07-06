@@ -34,7 +34,7 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
@@ -53,7 +53,7 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
 /// OpenTelemetry protocol.  Older Span producers do not set this
 /// field, consequently consumers should not rely on the absence of a
 /// particular flag bit to indicate the presence of a particular feature.
-public enum Opentelemetry_Proto_Trace_V1_SpanFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Opentelemetry_Proto_Trace_V1_SpanFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// The zero value for the enum. Should not be used for comparisons.
@@ -114,7 +114,7 @@ public enum Opentelemetry_Proto_Trace_V1_SpanFlags: SwiftProtobuf.Enum, Swift.Ca
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
-public struct Opentelemetry_Proto_Trace_V1_TracesData: Sendable {
+public nonisolated struct Opentelemetry_Proto_Trace_V1_TracesData: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -132,7 +132,7 @@ public struct Opentelemetry_Proto_Trace_V1_TracesData: Sendable {
 }
 
 /// A collection of ScopeSpans from a Resource.
-public struct Opentelemetry_Proto_Trace_V1_ResourceSpans: Sendable {
+public nonisolated struct Opentelemetry_Proto_Trace_V1_ResourceSpans: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -167,7 +167,7 @@ public struct Opentelemetry_Proto_Trace_V1_ResourceSpans: Sendable {
 }
 
 /// A collection of Spans produced by an InstrumentationScope.
-public struct Opentelemetry_Proto_Trace_V1_ScopeSpans: Sendable {
+public nonisolated struct Opentelemetry_Proto_Trace_V1_ScopeSpans: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -205,7 +205,7 @@ public struct Opentelemetry_Proto_Trace_V1_ScopeSpans: Sendable {
 /// A Span represents a single operation performed by a single component of the system.
 ///
 /// The next available field id is 17.
-public struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
+public nonisolated struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -385,7 +385,7 @@ public struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
 
   /// SpanKind is the type of span. Can be used to specify additional relationships between spans
   /// in addition to a parent/child relationship.
-  public enum SpanKind: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public nonisolated enum SpanKind: SwiftProtobuf.Enum, Swift.CaseIterable {
     public typealias RawValue = Int
 
     /// Unspecified. Do NOT use as default.
@@ -457,7 +457,7 @@ public struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
 
   /// Event is a time-stamped annotation of the span, consisting of user-supplied
   /// text description and key-value pairs.
-  public struct Event: Sendable {
+  public nonisolated struct Event: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -488,7 +488,7 @@ public struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
   /// different trace. For example, this can be used in batching operations,
   /// where a single batch handler processes multiple requests from different
   /// traces or when the handler receives a request from a different project.
-  public struct Link: Sendable {
+  public nonisolated struct Link: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -544,7 +544,7 @@ public struct Opentelemetry_Proto_Trace_V1_Span: @unchecked Sendable {
 
 /// The Status type defines a logical error model that is suitable for different
 /// programming environments, including REST APIs and RPC APIs.
-public struct Opentelemetry_Proto_Trace_V1_Status: Sendable {
+public nonisolated struct Opentelemetry_Proto_Trace_V1_Status: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -559,7 +559,7 @@ public struct Opentelemetry_Proto_Trace_V1_Status: Sendable {
 
   /// For the semantics of status codes see
   /// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status
-  public enum StatusCode: SwiftProtobuf.Enum, Swift.CaseIterable {
+  public nonisolated enum StatusCode: SwiftProtobuf.Enum, Swift.CaseIterable {
     public typealias RawValue = Int
 
     /// The default status.
@@ -609,13 +609,13 @@ public struct Opentelemetry_Proto_Trace_V1_Status: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "opentelemetry.proto.trace.v1"
+fileprivate nonisolated let _protobuf_package = "opentelemetry.proto.trace.v1"
 
-extension Opentelemetry_Proto_Trace_V1_SpanFlags: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_SpanFlags: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SPAN_FLAGS_DO_NOT_USE\0\u{2}\u{7f}\u{3}SPAN_FLAGS_TRACE_FLAGS_MASK\0\u{1}SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK\0\u{2}@\u{4}SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK\0")
 }
 
-extension Opentelemetry_Proto_Trace_V1_TracesData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_TracesData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".TracesData"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}resource_spans\0")
 
@@ -645,7 +645,7 @@ extension Opentelemetry_Proto_Trace_V1_TracesData: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_ResourceSpans: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_ResourceSpans: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ResourceSpans"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}resource\0\u{3}scope_spans\0\u{3}schema_url\0\u{c}h\u{f}\u{1}")
 
@@ -689,7 +689,7 @@ extension Opentelemetry_Proto_Trace_V1_ResourceSpans: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_ScopeSpans: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_ScopeSpans: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ScopeSpans"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}scope\0\u{1}spans\0\u{3}schema_url\0")
 
@@ -733,7 +733,7 @@ extension Opentelemetry_Proto_Trace_V1_ScopeSpans: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_Span: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Span: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Span"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}trace_id\0\u{3}span_id\0\u{3}trace_state\0\u{3}parent_span_id\0\u{1}name\0\u{1}kind\0\u{3}start_time_unix_nano\0\u{3}end_time_unix_nano\0\u{1}attributes\0\u{3}dropped_attributes_count\0\u{1}events\0\u{3}dropped_events_count\0\u{1}links\0\u{3}dropped_links_count\0\u{1}status\0\u{1}flags\0")
 
@@ -908,11 +908,11 @@ extension Opentelemetry_Proto_Trace_V1_Span: SwiftProtobuf.Message, SwiftProtobu
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_Span.SpanKind: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Span.SpanKind: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SPAN_KIND_UNSPECIFIED\0\u{1}SPAN_KIND_INTERNAL\0\u{1}SPAN_KIND_SERVER\0\u{1}SPAN_KIND_CLIENT\0\u{1}SPAN_KIND_PRODUCER\0\u{1}SPAN_KIND_CONSUMER\0")
 }
 
-extension Opentelemetry_Proto_Trace_V1_Span.Event: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Span.Event: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Opentelemetry_Proto_Trace_V1_Span.protoMessageName + ".Event"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}time_unix_nano\0\u{1}name\0\u{1}attributes\0\u{3}dropped_attributes_count\0")
 
@@ -957,7 +957,7 @@ extension Opentelemetry_Proto_Trace_V1_Span.Event: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_Span.Link: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Span.Link: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Opentelemetry_Proto_Trace_V1_Span.protoMessageName + ".Link"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}trace_id\0\u{3}span_id\0\u{3}trace_state\0\u{1}attributes\0\u{3}dropped_attributes_count\0\u{1}flags\0")
 
@@ -1012,7 +1012,7 @@ extension Opentelemetry_Proto_Trace_V1_Span.Link: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_Status: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Status: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Status"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\u{2}message\0\u{1}code\0\u{c}\u{1}\u{1}")
 
@@ -1047,6 +1047,6 @@ extension Opentelemetry_Proto_Trace_V1_Status: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Opentelemetry_Proto_Trace_V1_Status.StatusCode: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Trace_V1_Status.StatusCode: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STATUS_CODE_UNSET\0\u{1}STATUS_CODE_OK\0\u{1}STATUS_CODE_ERROR\0")
 }
