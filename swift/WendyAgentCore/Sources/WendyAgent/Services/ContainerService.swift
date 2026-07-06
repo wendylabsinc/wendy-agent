@@ -1098,6 +1098,66 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         )
     }
 
+    func getResourceStats(
+        request: ServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Resource stats are currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func streamMCP(
+        request: StreamingServerRequest<Wendy_Agent_Services_V1_MCPChunk>,
+        context: ServerContext
+    ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_MCPChunk> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "MCP streaming is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func getContainerPorts(
+        request: ServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Container port lookup is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func queryChunks(
+        request: ServerRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Chunk-level layer transfer is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func writeChunks(
+        request: StreamingServerRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Chunk-level layer transfer is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func queryLayers(
+        request: ServerRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Layer content queries are currently not supported by Wendy Agent for Mac."
+        )
+    }
+
     func listLayers(
         request: ServerRequest<Wendy_Agent_Services_V1_ListLayersRequest>,
         context: ServerContext
