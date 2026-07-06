@@ -47,3 +47,23 @@ See the device-specific pages for full partition layouts:
 | Jetson AGX Orin | eMMC, NVME |
 | Jetson AGX Thor | Internal flash + NVME via USB recovery |
 | DGX Spark | Install `wendy-agent` on the existing Linux system (no image flash needed) |
+
+### x86-64 machines (Intel & AMD)
+
+Any 64-bit Intel or AMD PC, workstation, or server runs Wendy by installing `wendy-agent` on your existing Linux distribution (Ubuntu, Fedora, Arch, etc.) — no WendyOS image flash required. This is the same install path used for DGX Spark.
+
+| Machine | Setup |
+|---------|-------|
+| Intel x86-64 (Core, Xeon) | Install `wendy-agent` on existing Linux |
+| AMD x86-64 (Ryzen, EPYC) | Install `wendy-agent` on existing Linux |
+
+See [Install wendy-agent on Linux](/docs/installation/wendy-agent-linux).
+
+## GPU acceleration
+
+| GPU | Status |
+|-----|--------|
+| NVIDIA (CUDA) | Supported — Jetson and x86 systems with NVIDIA GPUs, via the `gpu` entitlement |
+| AMD (ROCm) | In progress |
+
+See [GPU Access](/docs/hardware/gpu).
