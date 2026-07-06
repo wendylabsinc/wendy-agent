@@ -1426,6 +1426,26 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// On Linux the bind-mount is used; on other platforms the fd path is the fallback.
 	if isolation == "isolated" && serviceName != "" && netnsRef != nil {
 		netnsPath, cleanupNetns := bindNetnsForCNI(appName, netnsRef)
+		// Release any stale host-local IPAM reservation for this container ID
+		// before ADD (WDY-1834). The CNI allocation is keyed by container ID
+		// (== appName, which is stable across restart/redeploy), and
+		// deleteStaleTask above removes the old containerd task but NOT the CNI
+		// reservation. A previous teardown can be skipped entirely — the health
+		// monitor's restartSingle path calls StartContainer with no intervening
+		// stopOne/CNIDel — or fail (a bridge-plugin DEL error leaves the
+		// host-local allocation behind). Either way the next ADD for the same
+		// container ID collides with "duplicate allocation is not allowed",
+		// leaving the container with no mesh netns: its resolv.conf gateway is
+		// unreachable (DNS "Temporary failure in name resolution") and the
+		// ingress DNAT points at an IP nothing answers on ("no route to host").
+		// CNIDel is idempotent and best-effort — a no-op on a clean first deploy
+		// (the fresh netns has no eth0 to remove and host-local has no
+		// reservation for this ID) — so a pre-ADD DEL makes ADD collision-proof
+		// no matter how the previous instance was (or wasn't) torn down.
+		if delErr := c.CNIDel(ctx, appID, appName, netnsPath); delErr != nil {
+			c.logger.Warn("CNI DEL before ADD (stale-allocation reclaim) failed (non-fatal)",
+				zap.String(logfields.AppID, appID), zap.Error(delErr))
+		}
 		ip, cniErr := c.CNIAdd(ctx, appID, appName, netnsPath)
 		if cniErr != nil {
 			// Roll back any partial state the failed ADD left behind (e.g. a
