@@ -127,9 +127,14 @@ func (s *foxgloveServer) handleServiceCall(ctx context.Context, frame []byte, in
 
 // handleClientPublish processes one CLIENT_MESSAGE_DATA binary frame: forward
 // the client's raw CDR payload (encapsulation header included, exactly what
-// GenericPublisher expects) to the agent's native bridge via Publish. The
-// agent falls back to the YAML `ros2 topic pub --once` path on its own if the
-// bridge is unavailable; no CDR->YAML decode is needed here.
+// GenericPublisher expects) to the agent's native bridge via Publish, and
+// best-effort decode it to YAML as fallback insurance. The agent's native
+// bridge publishes Cdr verbatim when available; if the bridge is unavailable
+// (e.g. placeholder binary, Stage() failure, unsupported distro), the agent
+// falls back to the YAML `ros2 topic pub --once` path — but only if Yaml is
+// set. The CDR->YAML decode here is therefore best-effort, not a hard gate:
+// a decode failure must never block the CDR publish, since the bridge path
+// may still work even for messages the CLI-side codec can't render.
 func (s *foxgloveServer) handleClientPublish(ctx context.Context, frame []byte, channels map[uint32]*fgClientChannel) {
 	channelID, payload, err := fgParseClientMessageData(frame)
 	if err != nil {
@@ -140,11 +145,22 @@ func (s *foxgloveServer) handleClientPublish(ctx context.Context, frame []byte, 
 		fmt.Fprintf(os.Stderr, "foxglove: publish to unknown client channel %d\n", channelID)
 		return
 	}
+	var yamlMsg string
+	if schema, root, perr := foxglovecdr.ParseSchema(ch.Schema); perr != nil {
+		fmt.Fprintf(os.Stderr, "foxglove: publish %s: yaml fallback unavailable: schema parse: %v\n", ch.Topic, perr)
+	} else if val, derr := foxglovecdr.Decode(schema, root, payload); derr != nil {
+		fmt.Fprintf(os.Stderr, "foxglove: publish %s: yaml fallback unavailable: decode: %v\n", ch.Topic, derr)
+	} else if y, yerr := foxglovecdr.ToYAML(val); yerr != nil {
+		fmt.Fprintf(os.Stderr, "foxglove: publish %s: yaml fallback unavailable: render: %v\n", ch.Topic, yerr)
+	} else {
+		yamlMsg = y
+	}
 	resp, err := s.src.Publish(ctx, &agentpbv2.PublishROS2Request{
 		DomainId: s.domainID,
 		Topic:    ch.Topic,
 		Type:     fgSchemaNameToType(ch.SchemaName),
 		Cdr:      payload,
+		Yaml:     yamlMsg,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "foxglove: publish %s: %v\n", ch.Topic, ros2RPCError(err))

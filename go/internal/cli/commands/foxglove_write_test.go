@@ -176,14 +176,45 @@ func TestFoxgloveClientPublish(t *testing.T) {
 	if src.lastPublish.GetTopic() != "/value" || src.lastPublish.GetType() != "std_msgs/msg/Float64" {
 		t.Fatalf("publish target = %s %s", src.lastPublish.GetTopic(), src.lastPublish.GetType())
 	}
-	// The client's raw CDR payload must be forwarded verbatim as Cdr — no
-	// CDR->YAML decode on the CLI side anymore; the agent's native bridge
-	// (with a YAML fallback of its own) handles the payload.
+	// The client's raw CDR payload must always be forwarded verbatim as Cdr
+	// (the native bridge fast path), AND — because the schema here is
+	// decodable — the CLI must also send the decoded Yaml as fallback
+	// insurance for when the bridge is unavailable on the agent side.
 	if !bytes.Equal(src.lastPublish.GetCdr(), cdr) {
 		t.Fatalf("publish cdr = %x, want %x", src.lastPublish.GetCdr(), cdr)
 	}
+	if src.lastPublish.GetYaml() == "" {
+		t.Fatal("publish yaml = empty, want decoded YAML fallback")
+	}
+	if !strings.Contains(src.lastPublish.GetYaml(), "data") {
+		t.Fatalf("publish yaml = %q, want it to contain the decoded field", src.lastPublish.GetYaml())
+	}
+}
+
+func TestFoxgloveClientPublish_UndecodableSchema(t *testing.T) {
+	src := &writeSource{}
+	srv := &foxgloveServer{src: src, allowControl: true}
+
+	// A schema the CLI-side codec cannot parse. handleClientPublish must
+	// still forward the raw CDR payload — the YAML fallback is best-effort
+	// insurance, never a hard gate on the native bridge publish.
+	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	channels := map[uint32]*fgClientChannel{
+		5: {ID: 5, Topic: "/value", Encoding: "cdr", SchemaName: "std_msgs/msg/Float64", Schema: "not a valid ros2msg schema {{{", SchemaEncoding: "ros2msg"},
+	}
+	frame := append([]byte{0x01, 0, 0, 0, 0}, payload...)
+	binary.LittleEndian.PutUint32(frame[1:5], 5)
+
+	srv.handleClientPublish(context.Background(), frame, channels)
+
+	if src.lastPublish == nil {
+		t.Fatal("Publish was not called")
+	}
+	if !bytes.Equal(src.lastPublish.GetCdr(), payload) {
+		t.Fatalf("publish cdr = %x, want %x", src.lastPublish.GetCdr(), payload)
+	}
 	if src.lastPublish.GetYaml() != "" {
-		t.Fatalf("publish yaml = %q, want empty (CDR path)", src.lastPublish.GetYaml())
+		t.Fatalf("publish yaml = %q, want empty (undecodable schema, CDR-only)", src.lastPublish.GetYaml())
 	}
 }
 
