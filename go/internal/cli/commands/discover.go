@@ -31,7 +31,6 @@ import (
 func newDiscoverCmd() *cobra.Command {
 	var discoverType string
 	var timeout time.Duration
-	var all bool
 
 	cmd := &cobra.Command{
 		Use:   "discover",
@@ -68,30 +67,30 @@ func newDiscoverCmd() *cobra.Command {
 				}
 				opts.Timeout = timeout
 				// JSON output always lists every target so scripts/MCP keep the
-				// full set regardless of --all.
+				// full set regardless of WENDY_SHOW_LOCAL_DEVICES.
 				return discoverJSON(cmd.Context(), opts)
 			}
 
 			if timeoutSet {
 				opts.Timeout = timeout
-				return discoverOnce(cmd.Context(), opts, all)
+				return discoverOnce(cmd.Context(), opts, providers.ShowLocalDevices())
 			}
-			return discoverContinuous(cmd.Context(), opts, all)
+			return discoverContinuous(cmd.Context(), opts, providers.ShowLocalDevices())
 		},
 	}
 
 	cmd.Flags().StringVar(&discoverType, "type", "all", "Discovery type: usb, lan, bluetooth, external, all")
 	cmd.Flags().DurationVar(&timeout, "timeout", 5*time.Second, "Scan once for this duration then exit")
-	cmd.Flags().BoolVar(&all, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the results; hidden by default")
 
 	return cmd
 }
 
 // discoverExternalDevices queries registered providers for their devices. This
 // uses AllProviders (not just available ones) so devices are discoverable even
-// when the build toolchain isn't installed. Unless includeLocal is set, local
-// run targets (this machine, Docker/OrbStack, Apple Container) are skipped so
-// the table lists separate WendyOS devices by default.
+// when the build toolchain isn't installed. Unless includeLocal is set (see
+// providers.ShowLocalDevices), local run targets (this machine, Docker/OrbStack,
+// Apple Container) are skipped so the table lists separate WendyOS devices by
+// default.
 func discoverExternalDevices(ctx context.Context, includeLocal bool) []models.ExternalDevice {
 	var all []models.ExternalDevice
 	for _, p := range providers.AllProviders() {
@@ -803,29 +802,10 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
 
-		release, err := fetchAgentRelease(false)
+		binaryData, _, _, err := resolveAgentBinary(arch, false)
 		if err != nil {
 			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("fetching release: %w", err)}
-		}
-
-		assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-		var matchedAsset *githubReleaseAsset
-		for _, a := range release.Assets {
-			if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-				matchedAsset = &a
-				break
-			}
-		}
-		if matchedAsset == nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("no asset for linux/%s in release %s", arch, release.TagName)}
-		}
-
-		binaryData, err := downloadAgentBinary(*matchedAsset)
-		if err != nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("downloading binary: %w", err)}
+			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
 		}
 
 		h := sha256.Sum256(binaryData)
@@ -1081,7 +1061,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Address:      d.Hostname,
 				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, d.USBVersion),
+				SortKey:      deviceSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -1120,7 +1100,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Provisioned:  provisioned,
 				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
 				DedupKey:     d.DisplayName,
-				SortKey:      usbFirstSortKey(d.DisplayName, usb),
+				SortKey:      deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:        d.DisplayName,

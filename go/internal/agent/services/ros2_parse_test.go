@@ -58,6 +58,103 @@ func TestParseROS2TopicInfo(t *testing.T) {
 	}
 }
 
+func TestParseROS2ActionList(t *testing.T) {
+	out := "/fibonacci [action_tutorials_interfaces/action/Fibonacci]\n/bare_action\n"
+	actions := parseROS2ActionList(out)
+	if len(actions) != 2 {
+		t.Fatalf("got %d actions, want 2: %+v", len(actions), actions)
+	}
+	if actions[0].GetName() != "/fibonacci" ||
+		!reflect.DeepEqual(actions[0].GetTypes(), []string{"action_tutorials_interfaces/action/Fibonacci"}) {
+		t.Errorf("actions[0] = %+v", actions[0])
+	}
+	if actions[1].GetName() != "/bare_action" || len(actions[1].GetTypes()) != 0 {
+		t.Errorf("actions[1] = %+v", actions[1])
+	}
+}
+
+func TestParseROS2ActionInfo(t *testing.T) {
+	out := "Action: /fibonacci\n" +
+		"Action clients: 1\n" +
+		"    /fibonacci_action_client\n" +
+		"Action servers: 1\n" +
+		"    /fibonacci_action_server\n"
+	name, clients, servers := parseROS2ActionInfo(out)
+	if name != "/fibonacci" {
+		t.Errorf("name = %q, want /fibonacci", name)
+	}
+	if !reflect.DeepEqual(clients, []string{"/fibonacci_action_client"}) {
+		t.Errorf("clients = %v", clients)
+	}
+	if !reflect.DeepEqual(servers, []string{"/fibonacci_action_server"}) {
+		t.Errorf("servers = %v", servers)
+	}
+}
+
+func TestParseROS2LifecycleState(t *testing.T) {
+	cases := []struct {
+		out       string
+		wantState string
+		wantID    uint32
+		wantOK    bool
+	}{
+		{"unconfigured [1]\n", "unconfigured", 1, true},
+		{"active [3]", "active", 3, true},
+		{"finalized", "finalized", 0, true},
+		{"\n", "", 0, false},
+	}
+	for _, c := range cases {
+		state, id, ok := parseROS2LifecycleState(c.out)
+		if state != c.wantState || id != c.wantID || ok != c.wantOK {
+			t.Errorf("parseROS2LifecycleState(%q) = (%q,%d,%v), want (%q,%d,%v)",
+				c.out, state, id, ok, c.wantState, c.wantID, c.wantOK)
+		}
+	}
+}
+
+func TestParseROS2LifecycleTransitions(t *testing.T) {
+	out := "- configure [1]\n\tStart: unconfigured\n\tGoal: configuring\n" +
+		"- shutdown [5]\n\tStart: unconfigured\n\tGoal: shuttingdown\n"
+	ts := parseROS2LifecycleTransitions(out)
+	if len(ts) != 2 {
+		t.Fatalf("got %d transitions, want 2: %+v", len(ts), ts)
+	}
+	if ts[0].GetLabel() != "configure" || ts[0].GetId() != 1 ||
+		ts[0].GetStartState() != "unconfigured" || ts[0].GetGoalState() != "configuring" {
+		t.Errorf("ts[0] = %+v", ts[0])
+	}
+	if ts[1].GetLabel() != "shutdown" || ts[1].GetId() != 5 {
+		t.Errorf("ts[1] = %+v", ts[1])
+	}
+}
+
+func TestParseROS2ComponentList(t *testing.T) {
+	out := "/ComponentManager\n  1  /talker\n  2  /listener\n/OtherContainer\n  1  /widget\n"
+	containers := parseROS2ComponentList(out)
+	if len(containers) != 2 {
+		t.Fatalf("got %d containers, want 2: %+v", len(containers), containers)
+	}
+	if containers[0].GetName() != "/ComponentManager" || len(containers[0].GetComponents()) != 2 {
+		t.Fatalf("containers[0] = %+v", containers[0])
+	}
+	if containers[0].GetComponents()[0].GetUid() != 1 || containers[0].GetComponents()[0].GetName() != "/talker" {
+		t.Errorf("components[0] = %+v", containers[0].GetComponents()[0])
+	}
+	if containers[1].GetName() != "/OtherContainer" || len(containers[1].GetComponents()) != 1 {
+		t.Errorf("containers[1] = %+v", containers[1])
+	}
+}
+
+func TestParseROS2ComponentLoad(t *testing.T) {
+	uid, node, ok := parseROS2ComponentLoad("Loaded node '/talker' as 1\n")
+	if !ok || uid != 1 || node != "/talker" {
+		t.Errorf("got (uid=%d, node=%q, ok=%v), want (1, /talker, true)", uid, node, ok)
+	}
+	if _, _, ok := parseROS2ComponentLoad("some other output\n"); ok {
+		t.Errorf("expected ok=false for non-matching output")
+	}
+}
+
 func TestParseROS2ParamList_AllNodes(t *testing.T) {
 	out := "/camera/driver:\n  exposure\n  gain\n/talker:\n  use_sim_time\n"
 	nodes := parseROS2ParamList(out, "")

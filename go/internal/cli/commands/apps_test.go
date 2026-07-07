@@ -102,3 +102,30 @@ func TestAppsList_SingleServiceNoGroupMark(t *testing.T) {
 		t.Errorf("single-service app should not be marked as group")
 	}
 }
+
+func TestStateIconPlain_CrashLooping(t *testing.T) {
+	// A crash-looping app (WDY-1826) must be visually distinct from both a
+	// running (●) and a stopped (○) app in plain, non-styled output. The state
+	// string is AppRunningState.String(), i.e. "CRASH_LOOPING".
+	state := agentpb.AppRunningState_CRASH_LOOPING.String()
+	if got := stateIconPlain(state); got != "↻" {
+		t.Fatalf("stateIconPlain(%q) = %q, want ↻", state, got)
+	}
+	if got := stateIconPlain(agentpb.AppRunningState_RUNNING.String()); got != "●" {
+		t.Fatalf("stateIconPlain(RUNNING) = %q, want ●", got)
+	}
+	if got := stateIconPlain(agentpb.AppRunningState_STOPPED.String()); got != "○" {
+		t.Fatalf("stateIconPlain(STOPPED) = %q, want ○", got)
+	}
+}
+
+func TestStateIcon_CrashLoopingDistinctFromStopped(t *testing.T) {
+	crash := stateIcon(agentpb.AppRunningState_CRASH_LOOPING.String())
+	stopped := stateIcon(agentpb.AppRunningState_STOPPED.String())
+	if crash == stopped {
+		t.Fatalf("crash-looping icon %q must differ from stopped icon %q", crash, stopped)
+	}
+	if !strings.Contains(crash, "↻") {
+		t.Fatalf("crash-looping icon %q should contain ↻", crash)
+	}
+}

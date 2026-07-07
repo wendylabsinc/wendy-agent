@@ -39,6 +39,8 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         #elseif arch(x86_64)
             response.cpuArchitecture = "amd64"
         #endif
+        response.memTotalBytes = Int64(clamping: ProcessInfo.processInfo.physicalMemory)
+        response.cpuCount = UInt32(clamping: ProcessInfo.processInfo.activeProcessorCount)
         return ServerResponse(message: response)
     }
 
@@ -185,6 +187,16 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         )
     }
 
+    func dumpKernelLog(
+        request: ServerRequest<Wendy_Agent_Services_V1_DumpKernelLogRequest>,
+        context: ServerContext
+    ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_DumpKernelLogResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Dumping the kernel log is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
     func updateOS(
         request: ServerRequest<Wendy_Agent_Services_V1_UpdateOSRequest>,
         context: ServerContext
@@ -195,6 +207,26 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
                 + "Use this machine’s normal OS update tools instead. "
                 + "To use WendyOS OTA updates, install WendyOS on supported hardware "
                 + "with wendy os install."
+        )
+    }
+
+    func getOSUpdateStatus(
+        request: ServerRequest<Wendy_Agent_Services_V1_GetOSUpdateStatusRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetOSUpdateStatusResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "OS update status is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func setHostname(
+        request: ServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
+        context: ServerContext
+    ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Setting the hostname is currently not supported by Wendy Agent for Mac."
         )
     }
 }

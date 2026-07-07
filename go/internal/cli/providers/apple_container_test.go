@@ -161,7 +161,7 @@ func TestAppleContainerBuildWithDockerfileUsesContainerBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedDockerfile, err := filepath.EvalSymlinks(dockerfile)
+	resolvedDockerfile, err := confinedProviderDockerfilePath(dir, "Dockerfile.prod")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestAppleContainerBuildWithContainerfileUsesContainerBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolvedContainerfile, err := filepath.EvalSymlinks(containerfile)
+	resolvedContainerfile, err := confinedProviderDockerfilePath(dir, "Containerfile")
 	if err != nil {
 		t.Fatal(err)
 	}

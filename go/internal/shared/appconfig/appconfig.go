@@ -49,6 +49,12 @@ const (
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
 	EntitlementAdmin = "admin"
+	// EntitlementBuild grants the namespace/mount privileges a nested container
+	// builder (BuildKit) needs — CAP_SYS_ADMIN plus the unshare/userns-clone
+	// syscalls the default seccomp profile denies. It is privileged-equivalent
+	// (container→host escape surface); grant only to fully-trusted first-party
+	// apps. See entitlements.md for the blast radius.
+	EntitlementBuild = "build"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -69,6 +75,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementMCP,
 	EntitlementDisplay,
 	EntitlementAdmin,
+	EntitlementBuild,
 }
 
 var deprecatedEntitlementReplacements = map[string]string{
@@ -93,6 +100,7 @@ var allowedKeys = map[string][]string{
 	EntitlementMCP:       {"type", "port"},
 	EntitlementDisplay:   {"type"},
 	EntitlementAdmin:     {"type"},
+	EntitlementBuild:     {"type"},
 }
 
 // Platform constants identify the target hardware family.

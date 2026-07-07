@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Wendy_Agent_Services_V1_StreamLogsRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamLogsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -55,6 +55,16 @@ public struct Wendy_Agent_Services_V1_StreamLogsRequest: Sendable {
   /// Clears the value of `appName`. Subsequent reads from it will return its default value.
   public mutating func clearAppName() {self._appName = nil}
 
+  /// Replay last N log batches before going live
+  public var lastN: Int32 {
+    get {_lastN ?? 0}
+    set {_lastN = newValue}
+  }
+  /// Returns true if `lastN` has been explicitly set.
+  public var hasLastN: Bool {self._lastN != nil}
+  /// Clears the value of `lastN`. Subsequent reads from it will return its default value.
+  public mutating func clearLastN() {self._lastN = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -62,9 +72,10 @@ public struct Wendy_Agent_Services_V1_StreamLogsRequest: Sendable {
   fileprivate var _serviceName: String? = nil
   fileprivate var _minSeverity: Int32? = nil
   fileprivate var _appName: String? = nil
+  fileprivate var _lastN: Int32? = nil
 }
 
-public struct Wendy_Agent_Services_V1_StreamLogsResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamLogsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -80,6 +91,9 @@ public struct Wendy_Agent_Services_V1_StreamLogsResponse: Sendable {
   /// Clears the value of `logs`. Subsequent reads from it will return its default value.
   public mutating func clearLogs() {self._logs = nil}
 
+  /// true for replayed records; false for live
+  public var isHistory: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -87,7 +101,7 @@ public struct Wendy_Agent_Services_V1_StreamLogsResponse: Sendable {
   fileprivate var _logs: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest? = nil
 }
 
-public struct Wendy_Agent_Services_V1_StreamMetricsRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamMetricsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -122,6 +136,16 @@ public struct Wendy_Agent_Services_V1_StreamMetricsRequest: Sendable {
   /// Clears the value of `appName`. Subsequent reads from it will return its default value.
   public mutating func clearAppName() {self._appName = nil}
 
+  /// Replay last N metric batches before going live
+  public var lastN: Int32 {
+    get {_lastN ?? 0}
+    set {_lastN = newValue}
+  }
+  /// Returns true if `lastN` has been explicitly set.
+  public var hasLastN: Bool {self._lastN != nil}
+  /// Clears the value of `lastN`. Subsequent reads from it will return its default value.
+  public mutating func clearLastN() {self._lastN = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -129,9 +153,10 @@ public struct Wendy_Agent_Services_V1_StreamMetricsRequest: Sendable {
   fileprivate var _serviceName: String? = nil
   fileprivate var _metricNamePrefix: String? = nil
   fileprivate var _appName: String? = nil
+  fileprivate var _lastN: Int32? = nil
 }
 
-public struct Wendy_Agent_Services_V1_StreamMetricsResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamMetricsResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -147,6 +172,9 @@ public struct Wendy_Agent_Services_V1_StreamMetricsResponse: Sendable {
   /// Clears the value of `metrics`. Subsequent reads from it will return its default value.
   public mutating func clearMetrics() {self._metrics = nil}
 
+  /// true for replayed records; false for live
+  public var isHistory: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -154,7 +182,7 @@ public struct Wendy_Agent_Services_V1_StreamMetricsResponse: Sendable {
   fileprivate var _metrics: Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest? = nil
 }
 
-public struct Wendy_Agent_Services_V1_StreamTracesRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamTracesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -189,6 +217,16 @@ public struct Wendy_Agent_Services_V1_StreamTracesRequest: Sendable {
   /// Clears the value of `spanNamePrefix`. Subsequent reads from it will return its default value.
   public mutating func clearSpanNamePrefix() {self._spanNamePrefix = nil}
 
+  /// Replay last N trace batches before going live
+  public var lastN: Int32 {
+    get {_lastN ?? 0}
+    set {_lastN = newValue}
+  }
+  /// Returns true if `lastN` has been explicitly set.
+  public var hasLastN: Bool {self._lastN != nil}
+  /// Clears the value of `lastN`. Subsequent reads from it will return its default value.
+  public mutating func clearLastN() {self._lastN = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -196,9 +234,10 @@ public struct Wendy_Agent_Services_V1_StreamTracesRequest: Sendable {
   fileprivate var _serviceName: String? = nil
   fileprivate var _appName: String? = nil
   fileprivate var _spanNamePrefix: String? = nil
+  fileprivate var _lastN: Int32? = nil
 }
 
-public struct Wendy_Agent_Services_V1_StreamTracesResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamTracesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -214,6 +253,9 @@ public struct Wendy_Agent_Services_V1_StreamTracesResponse: Sendable {
   /// Clears the value of `traces`. Subsequent reads from it will return its default value.
   public mutating func clearTraces() {self._traces = nil}
 
+  /// true for replayed records; false for live
+  public var isHistory: Bool = false
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -223,11 +265,11 @@ public struct Wendy_Agent_Services_V1_StreamTracesResponse: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendy.agent.services.v1"
+fileprivate nonisolated let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_StreamLogsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamLogsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamLogsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}min_severity\0\u{3}app_name\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}min_severity\0\u{3}app_name\0\u{3}last_n\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -238,6 +280,7 @@ extension Wendy_Agent_Services_V1_StreamLogsRequest: SwiftProtobuf.Message, Swif
       case 1: try { try decoder.decodeSingularStringField(value: &self._serviceName) }()
       case 2: try { try decoder.decodeSingularInt32Field(value: &self._minSeverity) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._appName) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self._lastN) }()
       default: break
       }
     }
@@ -257,6 +300,9 @@ extension Wendy_Agent_Services_V1_StreamLogsRequest: SwiftProtobuf.Message, Swif
     try { if let v = self._appName {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
+    try { if let v = self._lastN {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 4)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -264,14 +310,15 @@ extension Wendy_Agent_Services_V1_StreamLogsRequest: SwiftProtobuf.Message, Swif
     if lhs._serviceName != rhs._serviceName {return false}
     if lhs._minSeverity != rhs._minSeverity {return false}
     if lhs._appName != rhs._appName {return false}
+    if lhs._lastN != rhs._lastN {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamLogsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamLogsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamLogsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}logs\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}logs\0\u{3}is_history\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -280,6 +327,7 @@ extension Wendy_Agent_Services_V1_StreamLogsResponse: SwiftProtobuf.Message, Swi
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularMessageField(value: &self._logs) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.isHistory) }()
       default: break
       }
     }
@@ -293,19 +341,23 @@ extension Wendy_Agent_Services_V1_StreamLogsResponse: SwiftProtobuf.Message, Swi
     try { if let v = self._logs {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
     } }()
+    if self.isHistory != false {
+      try visitor.visitSingularBoolField(value: self.isHistory, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StreamLogsResponse, rhs: Wendy_Agent_Services_V1_StreamLogsResponse) -> Bool {
     if lhs._logs != rhs._logs {return false}
+    if lhs.isHistory != rhs.isHistory {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamMetricsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamMetricsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamMetricsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}metric_name_prefix\0\u{3}app_name\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}metric_name_prefix\0\u{3}app_name\0\u{3}last_n\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -316,6 +368,7 @@ extension Wendy_Agent_Services_V1_StreamMetricsRequest: SwiftProtobuf.Message, S
       case 1: try { try decoder.decodeSingularStringField(value: &self._serviceName) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._metricNamePrefix) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._appName) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self._lastN) }()
       default: break
       }
     }
@@ -335,6 +388,9 @@ extension Wendy_Agent_Services_V1_StreamMetricsRequest: SwiftProtobuf.Message, S
     try { if let v = self._appName {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
+    try { if let v = self._lastN {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 4)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -342,14 +398,15 @@ extension Wendy_Agent_Services_V1_StreamMetricsRequest: SwiftProtobuf.Message, S
     if lhs._serviceName != rhs._serviceName {return false}
     if lhs._metricNamePrefix != rhs._metricNamePrefix {return false}
     if lhs._appName != rhs._appName {return false}
+    if lhs._lastN != rhs._lastN {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamMetricsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamMetricsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamMetricsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}metrics\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}metrics\0\u{3}is_history\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -358,6 +415,7 @@ extension Wendy_Agent_Services_V1_StreamMetricsResponse: SwiftProtobuf.Message, 
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularMessageField(value: &self._metrics) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.isHistory) }()
       default: break
       }
     }
@@ -371,19 +429,23 @@ extension Wendy_Agent_Services_V1_StreamMetricsResponse: SwiftProtobuf.Message, 
     try { if let v = self._metrics {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
     } }()
+    if self.isHistory != false {
+      try visitor.visitSingularBoolField(value: self.isHistory, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StreamMetricsResponse, rhs: Wendy_Agent_Services_V1_StreamMetricsResponse) -> Bool {
     if lhs._metrics != rhs._metrics {return false}
+    if lhs.isHistory != rhs.isHistory {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamTracesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamTracesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamTracesRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}app_name\0\u{3}span_name_prefix\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}service_name\0\u{3}app_name\0\u{3}span_name_prefix\0\u{3}last_n\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -394,6 +456,7 @@ extension Wendy_Agent_Services_V1_StreamTracesRequest: SwiftProtobuf.Message, Sw
       case 1: try { try decoder.decodeSingularStringField(value: &self._serviceName) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self._appName) }()
       case 3: try { try decoder.decodeSingularStringField(value: &self._spanNamePrefix) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self._lastN) }()
       default: break
       }
     }
@@ -413,6 +476,9 @@ extension Wendy_Agent_Services_V1_StreamTracesRequest: SwiftProtobuf.Message, Sw
     try { if let v = self._spanNamePrefix {
       try visitor.visitSingularStringField(value: v, fieldNumber: 3)
     } }()
+    try { if let v = self._lastN {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 4)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -420,14 +486,15 @@ extension Wendy_Agent_Services_V1_StreamTracesRequest: SwiftProtobuf.Message, Sw
     if lhs._serviceName != rhs._serviceName {return false}
     if lhs._appName != rhs._appName {return false}
     if lhs._spanNamePrefix != rhs._spanNamePrefix {return false}
+    if lhs._lastN != rhs._lastN {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamTracesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamTracesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamTracesResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}traces\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}traces\0\u{3}is_history\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -436,6 +503,7 @@ extension Wendy_Agent_Services_V1_StreamTracesResponse: SwiftProtobuf.Message, S
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularMessageField(value: &self._traces) }()
+      case 2: try { try decoder.decodeSingularBoolField(value: &self.isHistory) }()
       default: break
       }
     }
@@ -449,11 +517,15 @@ extension Wendy_Agent_Services_V1_StreamTracesResponse: SwiftProtobuf.Message, S
     try { if let v = self._traces {
       try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
     } }()
+    if self.isHistory != false {
+      try visitor.visitSingularBoolField(value: self.isHistory, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_StreamTracesResponse, rhs: Wendy_Agent_Services_V1_StreamTracesResponse) -> Bool {
     if lhs._traces != rhs._traces {return false}
+    if lhs.isHistory != rhs.isHistory {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

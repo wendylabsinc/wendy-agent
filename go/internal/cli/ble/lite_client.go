@@ -14,7 +14,6 @@ const (
 	litePassCharUUID = "4E57454E-4459-0001-0002-000000000000"
 	liteCmdCharUUID  = "4E57454E-4459-0001-0003-000000000000"
 	liteStatusUUID   = "4E57454E-4459-0001-0004-000000000000"
-	liteDevNameUUID  = "4E57454E-4459-0001-0005-000000000000"
 )
 
 // Wendy Lite command bytes
@@ -64,14 +63,6 @@ func ConnectLite(device *models.BluetoothDevice) (*LiteClient, error) {
 // Close disconnects from the Wendy Lite device.
 func (c *LiteClient) Close() {
 	c.conn.Close()
-}
-
-func (c *LiteClient) DeviceName() (string, error) {
-	data, err := c.conn.ReadCharacteristic(liteServiceUUID, liteDevNameUUID)
-	if err != nil {
-		return "", fmt.Errorf("reading device name: %w", err)
-	}
-	return string(data), nil
 }
 
 type WifiProvisionResult struct {

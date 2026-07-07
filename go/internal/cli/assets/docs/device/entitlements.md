@@ -136,3 +136,17 @@ Example for a Python ML app:
     "path": "/app/.cache/huggingface"
 }
 ```
+
+## Build
+
+The build entitlement runs a container image builder (BuildKit) inside the app container.
+
+```json
+{
+    "type": "build"
+}
+```
+
+Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` syscalls a nested builder needs (the kernel-module and `kexec` denials are kept).
+
+> **Warning: Privileged-equivalent: a container→host escape surface.** Used so a device can build apps for itself (see the `claude-on-device` example). Grant only to fully-trusted, first-party apps. At most one per app.

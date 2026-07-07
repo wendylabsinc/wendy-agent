@@ -38,7 +38,7 @@ func notifyCLIUpdate(cmd *cobra.Command) (shown bool, err error) {
 	case "darwin":
 		updateShellCmd = "brew update && brew install wendy"
 	default:
-		updateShellCmd = "curl -fsSL https://install.wendy.sh/cli.sh | bash"
+		updateShellCmd = "curl -fsSL https://install.wendy.dev/cli.sh | bash"
 	}
 
 	if jsonOutput || !isInteractiveTerminal() {
@@ -80,7 +80,7 @@ func notifyCLIUpdate(cmd *cobra.Command) (shown bool, err error) {
 		}
 	default:
 		// Pipe the installer script directly into bash without shell interpolation.
-		curl := exec.Command("curl", "-fsSL", "https://install.wendy.sh/cli.sh")
+		curl := exec.Command("curl", "-fsSL", "https://install.wendy.dev/cli.sh")
 		bash := exec.Command("bash")
 		curl.Stderr = os.Stderr
 		bash.Stdout, bash.Stderr = os.Stdout, os.Stderr

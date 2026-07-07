@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -77,6 +78,32 @@ func TestDeviceCmd_HasPs(t *testing.T) {
 	}
 }
 
+// TestDeviceCmd_HasHiddenListAlias verifies `wendy device list` exists as a
+// hidden alias for `wendy discover`: it must be registered, hidden from the
+// help listing, and carry the discover command's flags (proving it delegates
+// to the same flow rather than being a stub).
+func TestDeviceCmd_HasHiddenListAlias(t *testing.T) {
+	cmd := newDeviceCmd()
+	var list *cobra.Command
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == "list" {
+			list = sub
+			break
+		}
+	}
+	if list == nil {
+		t.Fatal("expected hidden 'list' subcommand on device command")
+	}
+	if !list.Hidden {
+		t.Error("'device list' should be hidden")
+	}
+	// The alias reuses the discover command, so its distinctive --type flag
+	// must be present.
+	if list.Flags().Lookup("type") == nil {
+		t.Error("'device list' should expose discover's --type flag")
+	}
+}
+
 func TestDefaultEnrollmentName(t *testing.T) {
 	cases := map[string]string{
 		"playful-reed.local": "playful-reed",
@@ -100,17 +127,22 @@ func TestMaybeCheckOSUpdateSkips(t *testing.T) {
 	}{
 		{"nil version", nil},
 		{"non-wendyos darwin", &agentpb.GetAgentVersionResponse{Os: "darwin", OsVersion: strp("14.4")}},
-		{"wendyos without mender",
+		{"wendyos without an OTA backend",
 			&agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), DeviceType: strp("raspberry-pi-5")}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// These inputs must return from the cheap pre-reconnect gate, before
-			// any reconnect/manifest/network call. (WendyOS+mender devices do
-			// reconnect to re-read the version, so they're not covered here.)
-			// A nil connection is safe because the gate returns before it is used.
-			if err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, ""); err != nil {
+			// any reconnect/manifest/network call. (WendyOS devices with an OTA
+			// backend do reconnect to re-read the version, so they're not covered
+			// here.) A nil connection is safe because the gate returns before it
+			// is used.
+			outcome, err := maybeCheckOSUpdate(context.Background(), tc.version, nil, false, false, "")
+			if err != nil {
 				t.Fatalf("maybeCheckOSUpdate() error = %v, want nil", err)
+			}
+			if outcome.applied || outcome.online {
+				t.Fatalf("maybeCheckOSUpdate() outcome = %+v, want zero (skipped)", outcome)
 			}
 		})
 	}

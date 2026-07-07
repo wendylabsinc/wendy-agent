@@ -80,15 +80,15 @@ func TestOfferCertRefreshAndRetry(t *testing.T) {
 	setup := func(interactive, accept bool, refreshErr error) (restore func(), refreshCalls, retryCalls *int) {
 		origInteractive := isInteractiveTerminalFn
 		origJSON := jsonOutput
-		origPrompt := promptYesNoFn
-		origPromptNo := promptYesNoDefaultNoFn
+		origPrompt := confirmFn
+		origPromptNo := confirmDefaultNoFn
 		origRefresh := refreshAllCertsFn
 		refreshCalls = new(int)
 		retryCalls = new(int)
 		isInteractiveTerminalFn = func() bool { return interactive }
 		jsonOutput = false
-		promptYesNoFn = func(string) bool { return accept }
-		promptYesNoDefaultNoFn = func(string) bool { return accept }
+		confirmFn = func(string) bool { return accept }
+		confirmDefaultNoFn = func(string) bool { return accept }
 		refreshAllCertsFn = func(context.Context) error {
 			*refreshCalls++
 			return refreshErr
@@ -96,8 +96,8 @@ func TestOfferCertRefreshAndRetry(t *testing.T) {
 		return func() {
 			isInteractiveTerminalFn = origInteractive
 			jsonOutput = origJSON
-			promptYesNoFn = origPrompt
-			promptYesNoDefaultNoFn = origPromptNo
+			confirmFn = origPrompt
+			confirmDefaultNoFn = origPromptNo
 			refreshAllCertsFn = origRefresh
 		}, refreshCalls, retryCalls
 	}

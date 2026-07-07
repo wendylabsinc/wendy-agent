@@ -15,12 +15,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public enum RestartPolicyMode: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum RestartPolicyMode: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// Agent chooses default (unless-stopped for normal runs)
@@ -70,10 +70,17 @@ public enum RestartPolicyMode: SwiftProtobuf.Enum, Swift.CaseIterable {
 
 }
 
-public enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case stopped // = 0
   case running // = 1
+
+  /// The app is not running right now, but the agent's restart policy is
+  /// actively restart-looping it: it has already been auto-restarted at least
+  /// once (see failure_count) and will be started again. Reported instead of
+  /// STOPPED so a crash loop is visible rather than masquerading as an
+  /// ordinary stop; exit_code/termination_reason carry the last crash's cause.
+  case crashLooping // = 2
   case UNRECOGNIZED(Int)
 
   public init() {
@@ -84,6 +91,7 @@ public enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
     switch rawValue {
     case 0: self = .stopped
     case 1: self = .running
+    case 2: self = .crashLooping
     default: self = .UNRECOGNIZED(rawValue)
     }
   }
@@ -92,6 +100,7 @@ public enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
     switch self {
     case .stopped: return 0
     case .running: return 1
+    case .crashLooping: return 2
     case .UNRECOGNIZED(let i): return i
     }
   }
@@ -100,11 +109,12 @@ public enum AppRunningState: SwiftProtobuf.Enum, Swift.CaseIterable {
   public static let allCases: [AppRunningState] = [
     .stopped,
     .running,
+    .crashLooping,
   ]
 
 }
 
-public struct RestartPolicy: Sendable {
+public nonisolated struct RestartPolicy: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -119,18 +129,53 @@ public struct RestartPolicy: Sendable {
   public init() {}
 }
 
-public struct AppContainer: Sendable {
+/// ServiceEntry describes a single container within a services-map app group.
+/// Present in AppContainer.services for any app that declares named services
+/// (single- or multi-service); see AppContainer.services.
+public nonisolated struct ServiceEntry: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
+  public var name: String = String()
+
+  public var runningState: AppRunningState = .stopped
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct AppContainer: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// app ID (bare, without service suffix)
   public var appName: String = String()
 
   public var appVersion: String = String()
 
+  /// aggregate: RUNNING if any service is running
   public var runningState: AppRunningState = .stopped
 
   public var failureCount: UInt32 = 0
+
+  public var mcpPort: UInt32 = 0
+
+  /// One entry per service container for apps that declare named services
+  /// (single- or multi-service services-map apps). Empty for single-container
+  /// apps and flattened single-service apps (those with no service name).
+  public var services: [ServiceEntry] = []
+
+  /// Exit diagnostics for the last run, only meaningful when running_state is
+  /// STOPPED. Fields 7-10 are left for the in-flight provenance PR #1234, so
+  /// these start at 11 to guarantee no wire-number collision on either merge
+  /// order.
+  public var exitCode: Int32 = 0
+
+  /// exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
+  public var terminationReason: String = String()
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -139,15 +184,15 @@ public struct AppContainer: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-extension RestartPolicyMode: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension RestartPolicyMode: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DEFAULT\0\u{1}UNLESS_STOPPED\0\u{1}NO\0\u{1}ON_FAILURE\0")
 }
 
-extension AppRunningState: SwiftProtobuf._ProtoNameProviding {
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STOPPED\0\u{1}RUNNING\0")
+nonisolated extension AppRunningState: SwiftProtobuf._ProtoNameProviding {
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0STOPPED\0\u{1}RUNNING\0\u{1}CRASH_LOOPING\0")
 }
 
-extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = "RestartPolicy"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}mode\0\u{3}on_failure_max_retries\0")
 
@@ -182,9 +227,44 @@ extension RestartPolicy: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementa
   }
 }
 
-extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension ServiceEntry: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = "ServiceEntry"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{3}running_state\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.name) }()
+      case 2: try { try decoder.decodeSingularEnumField(value: &self.runningState) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.name.isEmpty {
+      try visitor.visitSingularStringField(value: self.name, fieldNumber: 1)
+    }
+    if self.runningState != .stopped {
+      try visitor.visitSingularEnumField(value: self.runningState, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: ServiceEntry, rhs: ServiceEntry) -> Bool {
+    if lhs.name != rhs.name {return false}
+    if lhs.runningState != rhs.runningState {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = "AppContainer"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{3}running_state\0\u{3}failure_count\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{3}running_state\0\u{3}failure_count\0\u{3}mcp_port\0\u{1}services\0\u{4}\u{5}exit_code\0\u{3}termination_reason\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -196,6 +276,10 @@ extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementat
       case 2: try { try decoder.decodeSingularStringField(value: &self.appVersion) }()
       case 3: try { try decoder.decodeSingularEnumField(value: &self.runningState) }()
       case 4: try { try decoder.decodeSingularUInt32Field(value: &self.failureCount) }()
+      case 5: try { try decoder.decodeSingularUInt32Field(value: &self.mcpPort) }()
+      case 6: try { try decoder.decodeRepeatedMessageField(value: &self.services) }()
+      case 11: try { try decoder.decodeSingularInt32Field(value: &self.exitCode) }()
+      case 12: try { try decoder.decodeSingularStringField(value: &self.terminationReason) }()
       default: break
       }
     }
@@ -214,6 +298,18 @@ extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementat
     if self.failureCount != 0 {
       try visitor.visitSingularUInt32Field(value: self.failureCount, fieldNumber: 4)
     }
+    if self.mcpPort != 0 {
+      try visitor.visitSingularUInt32Field(value: self.mcpPort, fieldNumber: 5)
+    }
+    if !self.services.isEmpty {
+      try visitor.visitRepeatedMessageField(value: self.services, fieldNumber: 6)
+    }
+    if self.exitCode != 0 {
+      try visitor.visitSingularInt32Field(value: self.exitCode, fieldNumber: 11)
+    }
+    if !self.terminationReason.isEmpty {
+      try visitor.visitSingularStringField(value: self.terminationReason, fieldNumber: 12)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -222,6 +318,10 @@ extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementat
     if lhs.appVersion != rhs.appVersion {return false}
     if lhs.runningState != rhs.runningState {return false}
     if lhs.failureCount != rhs.failureCount {return false}
+    if lhs.mcpPort != rhs.mcpPort {return false}
+    if lhs.services != rhs.services {return false}
+    if lhs.exitCode != rhs.exitCode {return false}
+    if lhs.terminationReason != rhs.terminationReason {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

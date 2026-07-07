@@ -43,6 +43,13 @@ func (h *halfCloseConn) CloseRead() {
 	h.mu.Lock()
 	h.readEOF = true
 	h.mu.Unlock()
+	// The readEOF flag is only checked at the top of Read, so it cannot
+	// interrupt a Read already parked inside the underlying net.Pipe. A real
+	// TCP half-close makes the peer's blocked Read return; mirror that here by
+	// expiring the read deadline, which unblocks any in-flight underlying Read.
+	// Without this, a relay goroutine that entered net.Pipe.Read before this
+	// flag was set would block forever (flaky "relay did not finish" hang).
+	_ = h.Conn.SetReadDeadline(time.Now().Add(-time.Second))
 }
 
 // CloseWrite signals an error to future Write calls without closing the underlying conn.

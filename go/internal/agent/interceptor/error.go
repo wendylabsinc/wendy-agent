@@ -48,8 +48,6 @@ func UnaryErrorInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 
 type wrappedStream struct {
 	grpc.ServerStream
-	logger *zap.Logger
-	method string
 }
 
 func (w *wrappedStream) RecvMsg(m interface{}) error {
@@ -75,8 +73,6 @@ func StreamErrorInterceptor(logger *zap.Logger) grpc.StreamServerInterceptor {
 
 		wrapped := &wrappedStream{
 			ServerStream: ss,
-			logger:       logger,
-			method:       info.FullMethod,
 		}
 
 		err = handler(srv, wrapped)

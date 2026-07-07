@@ -27,7 +27,6 @@ ROS2/
 ```jsonc
 {
   "appId": "sh.wendy.examples.ros2",
-  "platform": "linux",
   "version": "1.0.0",
   "isolation": "shared-ipc",
   "frameworks": {
@@ -81,6 +80,28 @@ wendy device ros2 services       # list services
 wendy device ros2 graph          # full node/topic/service graph
 wendy device ros2 echo /chatter  # stream messages published by talker
 wendy device ros2 hz /chatter    # measure publish rate (~10 Hz)
+```
+
+Action, lifecycle, and component workflows have first-class subcommands too
+(all honor `--json` for scripting):
+
+```sh
+# Actions (nav2, manipulation, any long-running goal)
+wendy device ros2 action list
+wendy device ros2 action info /fibonacci
+wendy device ros2 action send_goal /fibonacci action_tutorials_interfaces/action/Fibonacci "{order: 5}" --feedback
+wendy device ros2 action cancel /fibonacci   # wendy-specific: cancels all in-flight goals
+
+# Lifecycle / managed nodes (start unconfigured; must be activated)
+wendy device ros2 lifecycle nodes
+wendy device ros2 lifecycle get /lc_talker
+wendy device ros2 lifecycle list /lc_talker  # available transitions
+wendy device ros2 lifecycle set /lc_talker configure
+
+# Composable-node component containers
+wendy device ros2 component list
+wendy device ros2 component load /ComponentManager composition composition::Talker
+wendy device ros2 component unload /ComponentManager 1
 ```
 
 ## See also

@@ -28,6 +28,11 @@ Options:
 
 Environment:
   WENDY_VERSION   Install a specific version (e.g. v0.2.0) instead of latest
+  WENDY_ENROLLMENT_TOKEN
+                  Pre-enroll this device into a Wendy Cloud org on first start.
+                  Obtain it from 'wendy install' → "Linux Desktop".
+  WENDY_CLOUD_HOST
+                  Wendy Cloud gRPC host (required when WENDY_ENROLLMENT_TOKEN is set).
 EOF
   exit 0
 }
@@ -134,6 +139,34 @@ confirm() {
     [yY]|[yY][eE][sS]) return 0 ;;
     *) echo "Aborted."; exit 1 ;;
   esac
+}
+
+# --- Stage a pre-enrollment token for the agent to self-enroll on startup ---
+stage_enrollment() {
+  local token="${WENDY_ENROLLMENT_TOKEN:-}"
+  local cloud_host="${WENDY_CLOUD_HOST:-}"
+  if [[ -z "$token" ]]; then
+    return 0
+  fi
+  if [[ -z "$cloud_host" ]]; then
+    echo "Warning: WENDY_ENROLLMENT_TOKEN is set but WENDY_CLOUD_HOST is not; skipping pre-enrollment." >&2
+    return 0
+  fi
+  $SUDO mkdir -p /etc/wendy-agent
+  # Write via printf | tee (not a heredoc) so the token is not echoed to
+  # stdout. The values are JSON-encoded assuming no embedded quotes/backslashes
+  # (tokens are base64url + dots; cloud host is a hostname[:port]).
+  # Create the file 0600 from birth (umask in the subshell applies to the
+  # file tee creates), so the bearer token is never world-readable. The
+  # chmod below is a defensive backstop, not the sole protection.
+  ( umask 077; printf '{"token":"%s","cloudHost":"%s"}\n' "$token" "$cloud_host" \
+      | $SUDO tee /etc/wendy-agent/enrollment.json >/dev/null )
+  $SUDO chmod 600 /etc/wendy-agent/enrollment.json
+  echo "Enrollment token staged; the device will enroll on startup."
+  # Nudge an already-running (package-installed) agent to re-read it.
+  if command -v systemctl &>/dev/null; then
+    $SUDO systemctl try-restart wendy-agent >/dev/null 2>&1 || true
+  fi
 }
 
 ARCH=$(detect_arch)
@@ -501,3 +534,5 @@ if command -v "$BINARY_NAME" &>/dev/null; then
 else
   echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}."
 fi
+
+stage_enrollment

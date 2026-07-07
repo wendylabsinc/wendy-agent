@@ -28,5 +28,19 @@ func Listen(path string) (net.Listener, error) {
 		lis.Close()
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
+	// Defence in depth: the socket carries the agent's full gRPC with no auth,
+	// so its file permissions ARE the access control. Assert the mode is not
+	// world-accessible before serving — a stray umask, a filesystem that ignored
+	// the chmod, or a future edit that widened it must fail loudly rather than
+	// silently expose the control plane to every host UID.
+	fi, err := os.Stat(path)
+	if err != nil {
+		lis.Close()
+		return nil, fmt.Errorf("stat socket: %w", err)
+	}
+	if fi.Mode().Perm()&0o007 != 0 {
+		lis.Close()
+		return nil, fmt.Errorf("socket %s is world-accessible (mode %#o); refusing to serve", path, fi.Mode().Perm())
+	}
 	return lis, nil
 }

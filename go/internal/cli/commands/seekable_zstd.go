@@ -58,6 +58,42 @@ func newSeekableImage(rs io.ReadSeeker) (*seekableImage, error) {
 	return &seekableImage{r: r, dec: dec, size: int64(table.Size())}, nil
 }
 
+// zstdMagic is the 4-byte little-endian magic that begins every zstd frame,
+// and therefore every seekable-zstd image (its first frame is an ordinary zstd
+// frame). RFC 8878 §3.1.1.
+var zstdMagic = [4]byte{0x28, 0xB5, 0x2F, 0xFD}
+
+// isZstdFile reports whether path begins with the zstd magic. Detection is by
+// content, not extension — the publisher's OS image is a seekable .zst that may
+// be cached under an .img name, mirroring isGzipFile.
+func isZstdFile(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return magic == zstdMagic
+}
+
+// streamZstdImage opens a seekable-zstd image as a sequential stream for the
+// full-image (non-bmap) flash path — --no-bmap, `wendy os download` then
+// install, or when no bmap is published. The seek table reports the exact
+// decompressed size up front, so no measuring pass is needed.
+func streamZstdImage(path string) (*imageStream, error) {
+	si, err := openSeekableZstd(path)
+	if err != nil {
+		return nil, err
+	}
+	return &imageStream{
+		ReadCloser:       si,
+		uncompressedSize: si.Size(),
+	}, nil
+}
+
 func (s *seekableImage) Size() int64 { return s.size }
 
 func (s *seekableImage) ReadAt(p []byte, off int64) (int, error) { return s.r.ReadAt(p, off) }

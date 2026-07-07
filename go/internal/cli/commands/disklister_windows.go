@@ -8,13 +8,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
 	"unsafe"
 
 	"github.com/dustin/go-humanize"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 )
 
 // Windows IOCTL codes for volume management.
@@ -24,35 +24,6 @@ const (
 	fsctlAllowExtendedDASDIO = 0x00090083
 	ioctlDiskGetDriveLayout  = 0x00070050
 )
-
-// powershellExe is the absolute path to powershell.exe, resolved once at
-// package init time. Looking it up via PATH is unsafe: in a 32-bit wendy.exe
-// process running on 64-bit Windows, PATH-resolved `powershell` lands in
-// SysWOW64, which ships a legacy Storage module that rejects modern parameters
-// like -Confirm on Set-Disk. Resolving through System32 (or Sysnative when
-// running under WoW64) ensures we always invoke the host-architecture
-// PowerShell with the current Storage module.
-var powershellExe = resolvePowershellExe()
-
-func resolvePowershellExe() string {
-	systemRoot := os.Getenv("SystemRoot")
-	if systemRoot == "" {
-		systemRoot = `C:\Windows`
-	}
-	// Sysnative is a virtual alias that exists only inside a 32-bit (WoW64)
-	// process and points at the real System32. Prefer it so 32-bit builds of
-	// wendy.exe still launch 64-bit PowerShell.
-	candidates := []string{
-		filepath.Join(systemRoot, "Sysnative", "WindowsPowerShell", "v1.0", "powershell.exe"),
-		filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return "powershell"
-}
 
 // drive represents an external disk suitable for image writing.
 type drive struct {
@@ -99,7 +70,7 @@ func listDrivesWindows(externalOnly bool) ([]drive, error) {
 		"[PSCustomObject]@{ Number=$_.Number; FriendlyName=$_.FriendlyName; Size=$_.Size; " +
 		"BusType=$_.BusType; IsSystem=$_.IsSystem; IsReadOnly=$_.IsReadOnly; MediaType=$mt } " +
 		"} | ConvertTo-Json -Compress"
-	out, err := exec.Command(powershellExe, "-NoProfile", "-Command", script).Output()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return nil, fmt.Errorf("running Get-Disk: %w", err)
 	}
@@ -203,7 +174,7 @@ func getVolumesForDisk(diskNumber int) ([]string, error) {
 			"Select-Object -ExpandProperty DriveLetter",
 		diskNumber,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-Command", script).Output()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-Command", script).Output()
 	if err != nil {
 		return nil, nil // no partitions is fine
 	}
@@ -294,7 +265,7 @@ func clearDiskPartitions(diskNum int) error {
 			"}",
 		diskNum, diskNum,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-Command", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("clearing disk %d: %s: %w", diskNum, strings.TrimSpace(string(out)), err)
 	}
@@ -375,7 +346,7 @@ func (ld *lockedDisk) close() {
 	if !ld.isRemovable {
 		cleanupScript += fmt.Sprintf("; Set-Disk -Number %d -IsOffline $true", ld.diskNum)
 	}
-	if output, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
+	if output, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", cleanupScript).CombinedOutput(); err != nil {
 		msg := strings.TrimSpace(string(output))
 		if msg != "" {
 			fmt.Fprintf(os.Stderr, "warning: failed to set disk %d offline: %v: %s\n", ld.diskNum, err, msg)
@@ -399,7 +370,7 @@ func openLockedDisk(d drive) (*lockedDisk, error) {
 	// no -Confirm switch is required (and the legacy Storage module rejects
 	// it outright).
 	onlineScript := fmt.Sprintf("Set-Disk -Number %d -IsOffline $false", diskNum)
-	_ = exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", onlineScript).Run()
+	_ = exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", onlineScript).Run()
 
 	// Clear all partitions on the disk first. This is necessary because
 	// disks (e.g. from a prior Jetson flash) may contain many partitions

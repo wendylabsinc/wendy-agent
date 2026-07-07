@@ -12,6 +12,11 @@ service WendyContainerService {
     rpc RunContainer(RunContainerLayersRequest) returns (stream RunContainerLayersResponse);
     rpc StartContainer(StartContainerRequest) returns (stream RunContainerLayersResponse);
     rpc AttachContainer(stream AttachContainerRequest) returns (stream RunContainerLayersResponse);
+    // ExecContainer runs a process inside an existing container with an
+    // interactive PTY (docker `exec -it` style). The first client message MUST
+    // be ExecStart; subsequent messages carry stdin or window resizes. The
+    // server streams stdout/stderr and a final exit_code.
+    rpc ExecContainer(stream ExecContainerRequest) returns (stream ExecContainerResponse);
     rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
     rpc DeleteContainer(DeleteContainerRequest) returns (DeleteContainerResponse);
     rpc ListContainers(ListContainersRequest) returns (stream ListContainersResponse);
@@ -173,6 +178,35 @@ message AttachContainerRequest {
     oneof request_type {
         string app_name = 1;
         bytes stdin_data = 2;
+    }
+}
+
+message WindowSize {
+    uint32 rows = 1;
+    uint32 cols = 2;
+}
+
+// ExecContainer runs a process in a container with an interactive PTY. The
+// first message MUST be ExecStart; subsequent messages carry stdin or resizes.
+message ExecContainerRequest {
+    message ExecStart {
+        string app_name = 1;
+        repeated string command = 2;
+        bool tty = 3;
+        WindowSize term_size = 4;
+    }
+    oneof request_type {
+        ExecStart start = 1;
+        bytes stdin_data = 2;
+        WindowSize resize = 3;
+    }
+}
+
+message ExecContainerResponse {
+    oneof response_type {
+        bytes stdout_data = 1;
+        bytes stderr_data = 2;
+        int32 exit_code = 3;
     }
 }
 

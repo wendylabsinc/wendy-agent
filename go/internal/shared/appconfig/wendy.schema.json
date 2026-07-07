@@ -264,6 +264,14 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "Full local control of the agent over its unix socket, with no authentication. The entitlement-gated socket mount is the entire trust boundary — grant only to fully-trusted first-party apps. At most one per app."
+        },
+        {
+          "properties": {
+            "type": { "const": "build" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Run a container image builder (BuildKit) inside the app container. Privileged-equivalent: grants CAP_SYS_ADMIN and the namespace syscalls a nested builder needs — a container→host escape surface. Grant only to fully-trusted first-party apps. At most one per app."
         }
       ]
     },

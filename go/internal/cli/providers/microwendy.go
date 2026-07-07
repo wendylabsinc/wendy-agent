@@ -55,6 +55,9 @@ func (p *MicroWendyProvider) CheckRequirements(ctx context.Context) error {
 }
 
 func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
+	sd := discovery.GetSerialDiscovery()
+	sd.StartScan(0)
+
 	services, err := discovery.BrowseMDNSServices(ctx, microWendyServiceType, 3*time.Second)
 	if err != nil {
 		return nil, err
@@ -71,10 +74,27 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 			DisplayName: displayName,
 			ProviderKey: p.Key(),
 			ConnectionInfo: map[string]string{
+				"type":     "LAN",
+				"name":     svc.TXTRecords["name"],
 				"hostname": svc.Hostname,
 				"ip":       svc.IPAddress,
 				"port":     fmt.Sprintf("%d", svc.Port),
 				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
+			},
+			IsWendyDevice:   true,
+			CPUArchitecture: "wasm32",
+		})
+	}
+
+	for _, dev := range sd.Devices() {
+		devices = append(devices, models.ExternalDevice{
+			ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
+			DisplayName: dev.DisplayName,
+			ProviderKey: p.Key(),
+			ConnectionInfo: map[string]string{
+				"type":       "USB",
+				"name":       dev.Name,
+				"serialPort": dev.Port,
 			},
 			IsWendyDevice:   true,
 			CPUArchitecture: "wasm32",
@@ -162,53 +182,64 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	ip := app.Device.ConnectionInfo["ip"]
-	port := app.Device.ConnectionInfo["port"]
-	if ip == "" || port == "" {
-		return fmt.Errorf("wendy-lite provider: missing device address in connection info")
-	}
-
-	addr := net.JoinHostPort(ip, port)
 	client := liteclient.NewWendyLiteClient()
-	if app.Device.ConnectionInfo["mtls"] == "true" {
-		certInfos, err := loadAllCLICerts()
-		if err != nil {
-			return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
+	if app.Device.ConnectionInfo["type"] == "USB" {
+		serialPort := app.Device.ConnectionInfo["serialPort"]
+		if serialPort == "" {
+			return fmt.Errorf("wendy-lite provider: missing serial port in connection info")
 		}
-		var connectErrs []error
-		connected := false
-		for _, certInfo := range certInfos {
-			cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+		if err := client.ConnectToSerial(serialPort); err != nil {
+			return fmt.Errorf("connect to device via serial: %w", err)
+		}
+	} else if app.Device.ConnectionInfo["type"] == "LAN" {
+		ip := app.Device.ConnectionInfo["ip"]
+		port := app.Device.ConnectionInfo["port"]
+		if ip == "" || port == "" {
+			return fmt.Errorf("wendy-lite provider: missing IP or port in connection info")
+		}
+		addr := net.JoinHostPort(ip, port)
+		if app.Device.ConnectionInfo["mtls"] == "true" {
+			certInfos, err := loadAllCLICerts()
 			if err != nil {
-				return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+				return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
 			}
-			rootCAs := x509.NewCertPool()
-			if certInfo.PemCertificateChain != "" {
-				rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
-			}
-			if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
-				connectErrs = append(connectErrs, err)
-			} else {
-				connected = true
-				break
-			}
-		}
-		if !connected {
-			var b strings.Builder
-			fmt.Fprintf(&b, "Wendy Lite connection error")
-			for i, e := range connectErrs {
-				if i == 0 {
-					fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+			var connectErrs []error
+			connected := false
+			for _, certInfo := range certInfos {
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				if err != nil {
+					return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+				}
+				rootCAs := x509.NewCertPool()
+				if certInfo.PemCertificateChain != "" {
+					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+				}
+				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
+					connectErrs = append(connectErrs, err)
 				} else {
-					fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+					connected = true
+					break
 				}
 			}
-			return errors.New(b.String())
+			if !connected {
+				var b strings.Builder
+				fmt.Fprintf(&b, "Wendy Lite connection error")
+				for i, e := range connectErrs {
+					if i == 0 {
+						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+					} else {
+						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+					}
+				}
+				return errors.New(b.String())
+			}
+		} else {
+			if err := client.ConnectInsecure(addr); err != nil {
+				return fmt.Errorf("connect to device: %w", err)
+			}
 		}
 	} else {
-		if err := client.ConnectInsecure(addr); err != nil {
-			return fmt.Errorf("connect to device: %w", err)
-		}
+		return fmt.Errorf("wendy-lite provider: unsupported connection type: %s", app.Device.ConnectionInfo["type"])
 	}
 	defer client.Close()
 

@@ -4,7 +4,10 @@ package providers
 
 import (
 	"context"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -57,10 +60,10 @@ const (
 
 // LocalProviderKeys are the providers whose "devices" are really this computer
 // or a local container runtime (the local machine, Docker/OrbStack, Apple
-// Container) rather than a separate WendyOS device. `wendy run` and
-// `wendy discover` hide these from the default device list unless --all is
-// given. Real external hardware providers (e.g. android, wendy-lite) are not
-// local and are always shown.
+// Container) rather than a separate WendyOS device. The interactive device
+// picker and `wendy discover` hide these from the default device list unless
+// ShowLocalDevices reports true. Real external hardware providers (e.g.
+// android, wendy-lite) are not local and are always shown.
 func LocalProviderKeys() []string {
 	return []string{ProviderKeyLocal, ProviderKeyDocker, ProviderKeyAppleContainer}
 }
@@ -69,6 +72,24 @@ func LocalProviderKeys() []string {
 // LocalProviderKeys).
 func IsLocalProviderKey(key string) bool {
 	return slices.Contains(LocalProviderKeys(), key)
+}
+
+// ShowLocalDevicesEnv is the environment variable that opts local run targets
+// (see LocalProviderKeys) back into the device picker and `wendy discover`.
+// They are hidden by default so those surfaces list separate WendyOS devices.
+const ShowLocalDevicesEnv = "WENDY_SHOW_LOCAL_DEVICES"
+
+// ShowLocalDevices reports whether local run targets should be shown in the
+// interactive device picker and non-JSON `wendy discover` output. It is false
+// unless ShowLocalDevicesEnv is set to a truthy value ("1", "true", "yes", "on";
+// case-insensitive).
+func ShowLocalDevices() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ShowLocalDevicesEnv))) {
+	case "yes", "on":
+		return true
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(ShowLocalDevicesEnv)))
+	return err == nil && b
 }
 
 const (

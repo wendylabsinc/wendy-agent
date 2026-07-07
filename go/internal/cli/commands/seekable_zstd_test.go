@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	seekable "github.com/SaveTheRbtz/zstd-seekable-format-go/pkg"
@@ -62,5 +64,63 @@ func TestSeekableImageReadAtAndSize(t *testing.T) {
 		if !bytes.Equal(got, data[tc.off:tc.off+tc.n]) {
 			t.Fatalf("ReadAt(%d,%d) mismatch", tc.off, tc.n)
 		}
+	}
+}
+
+// TestIsZstdFile checks content-based detection against the zstd magic, and
+// that gzip/raw files are not misclassified.
+func TestIsZstdFile(t *testing.T) {
+	dir := t.TempDir()
+	zst := filepath.Join(dir, "image.img") // .img name on purpose (cached form)
+	if err := os.WriteFile(zst, encodeSeekable(t, []byte("hello wendyos image"), 8), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !isZstdFile(zst) {
+		t.Errorf("isZstdFile(seekable-zst) = false, want true")
+	}
+	gz := filepath.Join(dir, "g.bin")
+	if err := os.WriteFile(gz, []byte{0x1f, 0x8b, 0x08, 0x00}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isZstdFile(gz) {
+		t.Errorf("isZstdFile(gzip) = true, want false")
+	}
+	raw := filepath.Join(dir, "raw.bin")
+	if err := os.WriteFile(raw, bytes.Repeat([]byte{0}, 16), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if isZstdFile(raw) {
+		t.Errorf("isZstdFile(raw) = true, want false")
+	}
+}
+
+// TestStreamZstdImage verifies the full-image stream path decompresses a
+// seekable-zstd file back to the exact source and reports the exact size.
+func TestStreamZstdImage(t *testing.T) {
+	data := make([]byte, 20_000)
+	for i := range data {
+		data[i] = byte((i * 7) % 253)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "image.img.zst")
+	if err := os.WriteFile(path, encodeSeekable(t, data, 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := streamZstdImage(path)
+	if err != nil {
+		t.Fatalf("streamZstdImage: %v", err)
+	}
+	defer stream.Close()
+
+	if stream.uncompressedSize != int64(len(data)) {
+		t.Errorf("uncompressedSize = %d, want %d", stream.uncompressedSize, len(data))
+	}
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatalf("read stream: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatalf("streamed bytes != source (%d vs %d)", len(got), len(data))
 	}
 }

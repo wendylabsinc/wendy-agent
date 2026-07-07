@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
 )
 
@@ -86,7 +87,7 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 // -Confirm as unknown — see WINDOWS_REGRESSION_REVIEW.md section 1.1).
 func setDiskOnline(diskNum int) error {
 	script := fmt.Sprintf("Set-Disk -Number %d -IsOffline $false -ErrorAction Stop", diskNum)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -98,7 +99,7 @@ func setDiskOnline(diskNum int) error {
 // rescan failure still triggers the deferred cleanup of the now-online disk.
 func updateDisk(diskNum int) error {
 	script := fmt.Sprintf("Update-Disk -Number %d -ErrorAction Stop", diskNum)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -138,7 +139,7 @@ func unmountAndOfflineDisk(diskNum int, removable bool) error {
 	if !removable {
 		script += fmt.Sprintf("; Set-Disk -Number %d -IsOffline $true -ErrorAction Stop", diskNum)
 	}
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -159,7 +160,7 @@ func findConfigPartitionNumber(diskNum int) (int, error) {
 			"} | ConvertTo-Json -Compress -Depth 3",
 		diskNum,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return 0, fmt.Errorf("enumerating partitions on disk %d: %w", diskNum, err)
 	}
@@ -192,7 +193,7 @@ func readPartitionDriveLetter(diskNum, partNum int) (string, error) {
 			"if ($p.DriveLetter) { [string]$p.DriveLetter }",
 		diskNum, partNum,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).Output()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).Output()
 	if err != nil {
 		return "", err
 	}
@@ -204,7 +205,7 @@ func assignPartitionDriveLetter(diskNum, partNum int) error {
 		"Add-PartitionAccessPath -DiskNumber %d -PartitionNumber %d -AssignDriveLetter -ErrorAction Stop",
 		diskNum, partNum,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(out)), err)
 	}
@@ -220,7 +221,7 @@ func flushVolume(mountPath string) {
 	}
 	letter := string(mountPath[0])
 	script := fmt.Sprintf("Write-VolumeCache -DriveLetter %s -ErrorAction SilentlyContinue", letter)
-	_ = exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).Run()
+	_ = exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).Run()
 }
 
 func ejectDisk(d drive) {
@@ -263,7 +264,7 @@ func ejectDisk(d drive) {
 			"if (-not $d.IsOffline) { Set-Disk -Number %d -IsOffline $true -ErrorAction Stop }",
 		diskNum, diskNum,
 	)
-	out, err := exec.Command(powershellExe, "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
+	out, err := exec.Command(env.PowershellExe(), "-NoProfile", "-NonInteractive", "-Command", script).CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to take disk %d offline (it may still be online with assigned drive letters): %v: %s\n", diskNum, err, strings.TrimSpace(string(out)))
 	}

@@ -26,6 +26,8 @@ type dashboardRow struct {
 	volumeCount   int
 	volumeBytes   int64
 	failures      uint32
+	termReason    string // exit reason for a stopped app; "" otherwise
+	exitCode      int32
 	hasStats      bool
 	hasVolumes    bool
 	isGroupHeader bool
@@ -78,6 +80,8 @@ func buildDashboardRows(
 				version:       c.GetAppVersion(),
 				state:         c.GetRunningState().String(),
 				failures:      c.GetFailureCount(),
+				termReason:    c.GetTerminationReason(),
+				exitCode:      c.GetExitCode(),
 				volumeCount:   volCount[appName],
 				volumeBytes:   volBytes[appName],
 				hasStats:      hasStats,
@@ -110,6 +114,8 @@ func buildDashboardRows(
 				version:     c.GetAppVersion(),
 				state:       c.GetRunningState().String(),
 				failures:    c.GetFailureCount(),
+				termReason:  c.GetTerminationReason(),
+				exitCode:    c.GetExitCode(),
 				volumeCount: volCount[appName],
 				volumeBytes: volBytes[appName],
 			}
@@ -425,13 +431,17 @@ func (m *appsDashboardModel) refreshTable() {
 		{Title: "Vols", Width: 5},
 		{Title: "Vol. Usage", Width: 10},
 		{Title: "Failures", Width: 8},
+		{Title: "Reason", Width: 18},
 	}
 
 	rows := make([]bubbleTable.Row, len(m.rows))
 	for i, r := range m.rows {
 		icon := "○"
-		if r.state == "RUNNING" {
+		switch r.state {
+		case "RUNNING":
 			icon = "●"
+		case "CRASH_LOOPING":
+			icon = "↻"
 		}
 		ram := "—"
 		if r.hasStats {
@@ -442,7 +452,7 @@ func (m *appsDashboardModel) refreshTable() {
 			storage = formatBytes(r.storageBytes)
 		}
 		if r.isSubrow {
-			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", ""}
+			rows[i] = bubbleTable.Row{icon, r.displayName, "", ram, storage, "", "", "", ""}
 			continue
 		}
 		vols := "—"
@@ -460,6 +470,7 @@ func (m *appsDashboardModel) refreshTable() {
 			vols,
 			volUsage,
 			fmt.Sprintf("%d", r.failures),
+			terminationSummary(r.termReason, r.exitCode),
 		}
 	}
 
@@ -676,20 +687,26 @@ func (m appsDashboardModel) View() string {
 	}
 
 	// Status line (sub-rows don't count as separate apps).
-	running, stopped, total := 0, 0, 0
+	running, stopped, crashLooping, total := 0, 0, 0, 0
 	for _, r := range m.rows {
 		if r.isSubrow {
 			continue
 		}
 		total++
-		if r.state == "RUNNING" {
+		switch r.state {
+		case "RUNNING":
 			running++
-		} else {
+		case "CRASH_LOOPING":
+			crashLooping++
+		default:
 			stopped++
 		}
 	}
-	status := fmt.Sprintf("\n  %d apps  ● %d running  ○ %d stopped  (refreshes every 2s)",
-		total, running, stopped)
+	status := fmt.Sprintf("\n  %d apps  ● %d running  ○ %d stopped", total, running, stopped)
+	if crashLooping > 0 {
+		status += fmt.Sprintf("  ↻ %d crash-looping", crashLooping)
+	}
+	status += "  (refreshes every 2s)"
 	sb.WriteString(m.viewLine(dashDimStyle.Render(status)) + "\n")
 
 	// Flash / confirm line

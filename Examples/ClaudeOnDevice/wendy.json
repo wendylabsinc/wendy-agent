@@ -1,0 +1,31 @@
+{
+  "appId": "sh.wendy.examples.claude-on-device",
+  "version": "1.0.0",
+  "platform": "linux",
+  "entitlements": [
+    {
+      "type": "admin"
+    },
+    {
+      "type": "persist",
+      "name": "home",
+      "path": "/root"
+    },
+    {
+      "type": "persist",
+      "name": "workspace",
+      "path": "/workspace"
+    },
+    {
+      "type": "network"
+    },
+    {
+      "type": "build"
+    },
+    {
+      "type": "persist",
+      "name": "buildkit-cache",
+      "path": "/var/lib/buildkit"
+    }
+  ]
+}

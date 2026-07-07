@@ -145,14 +145,24 @@ func buildOrgPickerItems(orgs []*cloudpb.Organization, credIDs map[int32]bool) [
 	return items
 }
 
-// pickOrgInteractive shows the interactive org picker. Key bindings:
+// newOrgPicker builds the interactive org picker and the rows to feed it. The
+// picker construction is separated from running the Bubble Tea program so it can
+// be driven directly in unit tests (which have no TTY).
+//
+// Key bindings:
 //
 //   - d: mark highlighted org as the persisted default.
 //   - x: clear the default.
 //   - r: remove stored credentials for the highlighted org (if any).
-//   - enter: copy the org ID to the clipboard and show a confirmation flash.
+//   - enter: select the highlighted org and close the picker.
 //   - q / esc / ctrl+c: quit without selecting.
-func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config) (int32, string, error) {
+//
+// When copyOnEnter is true, Enter instead copies the highlighted org's ID to the
+// clipboard and keeps the picker open (see PickerModel.OnCopyItem). Only the
+// management view ('wendy auth list-orgs') sets this; selection flows leave it
+// false so Enter selects and proceeds — otherwise the wizard dead-ends with no
+// way to resolve an org (WDY-1840).
+func newOrgPicker(orgs []*cloudpb.Organization, cfg *config.Config, copyOnEnter bool) (tui.PickerModel, []tui.PickerItem) {
 	credIDs := authOrgIDs(cfg)
 	items := buildOrgPickerItems(orgs, credIDs)
 
@@ -222,11 +232,25 @@ func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config) (int32
 		return fmt.Sprintf("Credentials removed for %s.", item.Name), false, &updated
 	}
 
-	picker.OnCopyItem = func(item tui.PickerItem) string {
-		idStr, _ := item.Value.(string)
-		_ = clipboardWriter(idStr)
-		return fmt.Sprintf("Org ID %s (%s) copied to clipboard.", idStr, item.Name)
+	// Copy-on-Enter is opt-in: only the management view ('wendy auth list-orgs')
+	// wants Enter to copy an ID and stay open. Selection flows must leave this
+	// unset so Enter selects and closes; otherwise the picker can never resolve a
+	// selection and the install/enroll wizards dead-end (WDY-1840).
+	if copyOnEnter {
+		picker.OnCopyItem = func(item tui.PickerItem) string {
+			idStr, _ := item.Value.(string)
+			_ = clipboardWriter(idStr)
+			return fmt.Sprintf("Org ID %s (%s) copied to clipboard.", idStr, item.Name)
+		}
 	}
+
+	return picker, items
+}
+
+// pickOrgInteractive shows the interactive org picker (see newOrgPicker for key
+// bindings and the copyOnEnter semantics) and returns the chosen org.
+func pickOrgInteractive(orgs []*cloudpb.Organization, cfg *config.Config, copyOnEnter bool) (int32, string, error) {
+	picker, items := newOrgPicker(orgs, cfg, copyOnEnter)
 
 	p := tea.NewProgram(picker)
 	go func() {
@@ -321,8 +345,9 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 		// Default no longer valid (org removed from membership); fall through to picker.
 	}
 
-	// Scenarios 2 and 4: show the interactive picker.
-	id, name, err := pickOrgInteractiveFn(orgs, cfg)
+	// Scenarios 2 and 4: show the interactive picker. copyOnEnter is false so
+	// Enter selects an org and lets the wizard proceed (WDY-1840).
+	id, name, err := pickOrgInteractiveFn(orgs, cfg, false)
 	if err != nil {
 		return OrgResolution{}, err
 	}

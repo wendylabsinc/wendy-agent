@@ -80,7 +80,6 @@ type ContainerMonitor struct {
 	groupRestarting map[string]bool
 	mu              sync.Mutex
 	interval        time.Duration
-	stopCh          chan struct{}
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -94,7 +93,6 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
 		interval:        interval,
-		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -139,9 +137,21 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	}
 }
 
-// Start begins the monitoring loop in a goroutine.
-func (m *ContainerMonitor) Start(ctx context.Context) {
-	go m.Run(ctx)
+// RestartStatuses returns the monitor's per-container restart bookkeeping,
+// keyed by the monitored container name (bare appID, or "{appID}_{serviceName}"
+// for services-map apps). It implements services.RestartStatusProvider so the
+// container list can report a crash-looping app truthfully instead of STOPPED.
+func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]services.RestartStatus, len(m.states))
+	for name, state := range m.states {
+		out[name] = services.RestartStatus{
+			FailureCount: state.FailureCount,
+			WillRestart:  m.shouldRestart(state),
+		}
+	}
+	return out
 }
 
 // ReconcileBootContainers brings apps back after a device boot. containerd
@@ -191,11 +201,6 @@ func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
 	m.checkContainers(ctx)
 }
 
-// Stop signals the monitor to stop.
-func (m *ContainerMonitor) Stop() {
-	close(m.stopCh)
-}
-
 // Run is the main monitoring loop that checks container health and restarts as needed.
 func (m *ContainerMonitor) Run(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
@@ -204,8 +209,6 @@ func (m *ContainerMonitor) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-m.stopCh:
 			return
 		case <-ticker.C:
 			m.checkContainers(ctx)
@@ -307,15 +310,19 @@ func (m *ContainerMonitor) restartGroup(ctx context.Context, appID string) {
 		m.mu.Unlock()
 	}()
 	channels, err := gr.RestartGroup(ctx, appID)
+	// RestartGroup can return partially-started services together with an
+	// error (e.g. the primary started but a secondary failed). Drain every
+	// returned channel even on error: an abandoned channel back-pressures
+	// through the agent's pipes into the service's stdout FIFO and freezes
+	// the process in pipe_write once the buffers fill (WDY-1822).
+	for name, ch := range channels {
+		go m.drainOutput(name, ch)
+	}
 	if err != nil {
 		m.logger.Error("Failed to restart app group",
 			zap.String("app_id", appID),
 			zap.Error(err),
 		)
-		return
-	}
-	for name, ch := range channels {
-		go m.drainOutput(name, ch)
 	}
 }
 

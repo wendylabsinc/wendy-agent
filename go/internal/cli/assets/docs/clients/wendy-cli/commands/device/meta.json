@@ -14,6 +14,7 @@
     "bluetooth",
     "---Reference---",
     "enroll",
+    "rename",
     "setup",
     "get-default",
     "provision",

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -27,7 +29,12 @@ func stubListOrgs(t *testing.T, orgs []*cloudpb.Organization, err error) {
 func stubOrgPicker(t *testing.T, retID int32, retName string, retErr error) {
 	t.Helper()
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config, copyOnEnter bool) (int32, string, error) {
+		// Selection flows must never ask the picker to copy on Enter — that is
+		// what dead-ended the wizard (WDY-1840).
+		if copyOnEnter {
+			t.Errorf("resolveOrg selection flow must call the picker with copyOnEnter=false")
+		}
 		return retID, retName, retErr
 	}
 	t.Cleanup(func() { pickOrgInteractiveFn = orig })
@@ -36,7 +43,7 @@ func stubOrgPicker(t *testing.T, retID int32, retName string, retErr error) {
 func noPickerAllowed(t *testing.T) {
 	t.Helper()
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config, _ bool) (int32, string, error) {
 		t.Fatal("picker should not be called")
 		return 0, "", nil
 	}
@@ -97,6 +104,71 @@ func TestBuildOrgPickerItems_IDAscWithinGroup(t *testing.T) {
 	}
 }
 
+// TestOrgPickerSelectionFlowEnterSelects is the WDY-1840 regression guard.
+//
+// resolveOrgWithConfig shows this picker when there is no valid default and the
+// account belongs to multiple orgs, then requires Selected() != nil to proceed.
+// In a selection flow (copyOnEnter=false) pressing Enter must select the
+// highlighted org and close the picker, so the install/enroll wizards get a
+// concrete org back. On the pre-fix code the org picker wired OnCopyItem
+// unconditionally, so Enter only copied and left the picker open — Selected()
+// stayed nil and the wizard dead-ended. This test fails on that code.
+func TestOrgPickerSelectionFlowEnterSelects(t *testing.T) {
+	cfg := &config.Config{} // no default org -> selection scenario
+	orgs := []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}
+
+	picker, items := newOrgPicker(orgs, cfg, false)
+	updated, _ := picker.Update(tui.PickerAddMsg{Items: items})
+	pm := updated.(tui.PickerModel)
+
+	// Highlight the second org, then select it with Enter.
+	updated, _ = pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+	pm = updated.(tui.PickerModel)
+	updated, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(tui.PickerModel)
+
+	if cmd == nil {
+		t.Fatal("Enter should close the picker (quit command) in a selection flow")
+	}
+	if pm.Selected() == nil {
+		t.Fatal("Enter must select an org in a selection flow; got no selection (WDY-1840 dead-end)")
+	}
+	// Both orgs are unauthenticated, so rows sort by ID ascending: 3 then 9.
+	if got := pm.Selected().Value.(string); got != "9" {
+		t.Fatalf("selected org id = %q, want %q", got, "9")
+	}
+}
+
+// TestOrgPickerManagementViewEnterCopies confirms the management view
+// ('wendy auth list-orgs', copyOnEnter=true) keeps copy-on-Enter: Enter copies
+// the highlighted org's ID and leaves the picker open without selecting.
+func TestOrgPickerManagementViewEnterCopies(t *testing.T) {
+	var copied string
+	orig := clipboardWriter
+	clipboardWriter = func(text string) error { copied = text; return nil }
+	t.Cleanup(func() { clipboardWriter = orig })
+
+	cfg := &config.Config{}
+	orgs := []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}
+
+	picker, items := newOrgPicker(orgs, cfg, true)
+	updated, _ := picker.Update(tui.PickerAddMsg{Items: items})
+	pm := updated.(tui.PickerModel)
+
+	updated, cmd := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(tui.PickerModel)
+
+	if cmd != nil {
+		t.Fatal("Enter should not close the management-view picker")
+	}
+	if pm.Selected() != nil {
+		t.Fatal("Enter should copy, not select, in the management view")
+	}
+	if copied != "3" {
+		t.Fatalf("clipboard got %q, want %q (highlighted org's ID)", copied, "3")
+	}
+}
+
 // TestResolveOrgSingleOrg: one org -> use it, no picker.
 func TestResolveOrgSingleOrg(t *testing.T) {
 	stubListOrgs(t, []*cloudpb.Organization{makeOrg(5, "Only Org")}, nil)
@@ -144,7 +216,7 @@ func TestResolveOrgAlwaysPickOrg(t *testing.T) {
 	stubListOrgs(t, []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}, nil)
 	called := false
 	orig := pickOrgInteractiveFn
-	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config) (int32, string, error) {
+	pickOrgInteractiveFn = func(_ []*cloudpb.Organization, _ *config.Config, _ bool) (int32, string, error) {
 		called = true
 		return 3, "Org A", nil
 	}

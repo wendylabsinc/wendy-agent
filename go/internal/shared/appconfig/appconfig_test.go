@@ -1792,3 +1792,17 @@ func TestAdminEntitlementJSONUnknownKeyWarns(t *testing.T) {
 		t.Fatal("expected warning for unknown key on admin entitlement")
 	}
 }
+
+func TestValidateJSON_BuildEntitlement(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"build"}]}`))
+	if len(warnings) != 0 {
+		t.Fatalf("expected build entitlement to validate, got warnings: %v", warnings)
+	}
+}
+
+func TestValidateJSON_BuildEntitlementRejectsExtraKeys(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"build","bogus":1}]}`))
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for an unknown key on the build entitlement")
+	}
+}

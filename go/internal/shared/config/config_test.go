@@ -199,6 +199,27 @@ func TestAddAuth_DifferentOrgAppends(t *testing.T) {
 	}
 }
 
+func TestCrashReportConfigRoundTrip(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &Config{CrashReport: &CrashReportConfig{
+		Suppressed:        true,
+		SubscribedReports: []string{"WDY-ABC123"},
+		PendingFixNotices: []FixNotice{{TrackingID: "WDY-ABC123", FixedInRelease: "v1.4.0"}},
+	}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.CrashReport == nil || !loaded.CrashReport.Suppressed ||
+		len(loaded.CrashReport.SubscribedReports) != 1 ||
+		len(loaded.CrashReport.PendingFixNotices) != 1 {
+		t.Errorf("round-trip mismatch: %+v", loaded.CrashReport)
+	}
+}
+
 func TestConfigDir(t *testing.T) {
 	home := overrideHome(t)
 

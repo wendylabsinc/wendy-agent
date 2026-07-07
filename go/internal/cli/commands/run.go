@@ -156,6 +156,15 @@ func contextWithPostStartAgentHook(ctx context.Context, appCfg *appconfig.AppCon
 	return metadata.AppendToOutgoingContext(ctx, appconfig.PostStartAgentHookMetadataKey, hook)
 }
 
+// containerDisplayName returns the container identity for CLI lifecycle
+// messages (created/started/stopped), styled for terminal output. It is the
+// real container name — "{appID}_{serviceName}" when appCfg describes a single
+// service of a multi-service app — because printing the bare appID obscures
+// which service container a deploy just acted on (WDY-1828).
+func containerDisplayName(appCfg *appconfig.AppConfig) string {
+	return tui.App(appCfg.ContainerName())
+}
+
 func cliLog(format string, args ...any) {
 	fmt.Print(cliStyle.Render(fmt.Sprintf(format, args...)))
 }
@@ -486,23 +495,16 @@ type runOptions struct {
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
 	// chunkingOff skips chunk-diff entirely (registry push only).
 	chunking string
-	// allTargets shows local run targets (the local machine, Docker/OrbStack,
-	// Apple Container) in the interactive device picker. They are hidden by
-	// default so the picker lists WendyOS devices first.
-	allTargets bool
 }
 
 // runResolveOptions builds the resolveTarget options shared by every `wendy run`
-// device-selection path. By default the interactive picker hides local run
-// targets (LocalProviderKeys); --all (opts.allTargets) surfaces them again.
-// --yes suppresses the picker entirely.
+// device-selection path. The interactive picker hides local run targets (the
+// local machine, Docker/OrbStack, Apple Container) unless
+// WENDY_SHOW_LOCAL_DEVICES is set; --yes suppresses the picker entirely.
 func runResolveOptions(opts runOptions) []resolveOption {
 	var resolveOpts []resolveOption
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
-	}
-	if !opts.allTargets {
-		resolveOpts = append(resolveOpts, ExcludeProviders(providers.LocalProviderKeys()...))
 	}
 	return resolveOpts
 }
@@ -551,7 +553,7 @@ func newRunCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
-	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
@@ -566,7 +568,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
-	cmd.Flags().BoolVar(&opts.allTargets, "all", false, "Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker; hidden by default")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
@@ -869,7 +870,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if appCfg.Brewfile != "" {
 			cliLogln("Brewfile applied.")
 		}
-		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+		cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -879,11 +880,11 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if appCfg.Brewfile != "" {
 		cliLogln("Brewfile applied.")
 	}
-	cliLogln("Container %s created.", tui.App(appCfg.AppID))
+	cliLogln("Container %s created.", containerDisplayName(appCfg))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -891,7 +892,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -899,13 +900,13 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	defer runCancel()
 
 	stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-		AppName: appCfg.AppID,
+		AppName: appCfg.ContainerName(),
 	})
 	if err != nil {
 		return fmt.Errorf("starting container: %w", err)
 	}
 
-	cliLogln("Application %s started.", tui.App(appCfg.AppID))
+	cliLogln("Application %s started.", containerDisplayName(appCfg))
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -913,7 +914,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -937,7 +938,7 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
@@ -989,7 +990,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	defer proxyCleanup()
 
 	cliLogln("Building Swift container image for %s (%s)...", tui.App(product), tui.Value(architecture))
-	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, swiftUseMTLS, &dimWriter{}, os.Stderr); err != nil {
+	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, swiftUseMTLS, opts.debug, &dimWriter{}, os.Stderr); err != nil {
 		return fmt.Errorf("building Swift container image: %w", err)
 	}
 	cliLogln("Build and push completed.")
@@ -1004,12 +1005,26 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	restartPolicy := resolveRestartPolicy(opts)
 
+	// wendy.json run.args are the default arguments; explicit `wendy run -- ...`
+	// args take precedence. The agent replaces the image entrypoint whenever
+	// Cmd/UserArgs are set, so pass the product binary as Cmd alongside them —
+	// swift-container-plugin images use /<product> as their entrypoint.
+	userArgs := opts.userArgs
+	if len(userArgs) == 0 && appCfg.Run != nil {
+		userArgs = appCfg.Run.Args
+	}
+	var cmd string
+	if len(userArgs) > 0 {
+		cmd = "/" + product
+	}
+
 	createReq := &agentpb.CreateContainerRequest{
 		ImageName:     deviceImage,
 		AppName:       appCfg.AppID,
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
-		UserArgs:      opts.userArgs,
+		Cmd:           cmd,
+		UserArgs:      userArgs,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1473,9 +1488,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
 	if !opts.deploy && opts.chunking != chunkingOff {
-		if err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
-				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version})
+				// Record the layer diff IDs we deployed so the next run's fast path
+				// can verify the device still holds this content before skipping the
+				// build (WDY-1824).
+				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
 		} else if ctx.Err() != nil {
@@ -1494,6 +1512,14 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// real error behind an unrelated builder-setup failure. Surface the
 			// actionable build error directly instead of falling back. (#1166)
 			return err
+		} else if shouldUseBuildkitOnDevice() {
+			// On-device (inside the agent container: WENDY_AGENT_SOCKET set, no
+			// Docker), the registry-push fallback below cannot run — it shells out
+			// to the Docker CLI, which is absent. Chunk-diff over the agent socket
+			// is the only supported on-device deploy path, so surface ITS real
+			// error instead of masking it behind a guaranteed "docker CLI is not on
+			// PATH" failure from the fallback.
+			return fmt.Errorf("on-device deploy failed and no Docker fallback is possible inside the container; the chunk-diff error was: %w", err)
 		} else {
 			cliLogln("Fast deploy unavailable; using registry push.")
 		}
@@ -1510,7 +1536,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Single-service build: no concurrency, so keep the shared local cache dir
 	// (empty cache key) for cross-run cache reuse.
 	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
-	if err := runBuildWithProgress(ctx, buildTitle, true, func(stream, logw io.Writer) error {
+	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
 		return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
 	}); err != nil {
 		return fmt.Errorf("building and pushing image: %w", err)
@@ -1545,7 +1571,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if err != nil {
 			return fmt.Errorf("creating container: %w", err)
 		}
-		cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+		cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 		return nil
 	}
 
@@ -1553,11 +1579,11 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if err := createContainerWithProgress(ctx, conn.ContainerService, createReq); err != nil {
 		return err
 	}
-	cliLogln("Container %s created.", tui.App(appCfg.AppID))
+	cliLogln("Container %s created.", containerDisplayName(appCfg))
 
 	if opts.detach {
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		if err != nil {
 			return fmt.Errorf("starting container: %w", err)
@@ -1565,11 +1591,12 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
-		cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 		// Wait for readiness before firing hook.
 		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-			cliLogln("Warning: %v", err)
+			warnReadiness(ctx, conn, appCfg.AppID, err)
 		}
+		announceReachableURL(ctx, conn, appCfg)
 		// Fire-and-forget: post-start hook outlives the CLI process.
 		startPostStartHook(context.Background(), appCfg, conn.Host)
 		return nil
@@ -1579,12 +1606,12 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
-	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.AppID, appCfg)
+	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.ContainerName(), appCfg)
 	if err != nil {
 		return err
 	}
 
-	cliLogln("Application %s started.", tui.App(appCfg.AppID))
+	cliLogln("Application %s started.", containerDisplayName(appCfg))
 
 	// Set up Ctrl+C handler first so readiness polling is cancellable.
 	sigCh := make(chan os.Signal, 1)
@@ -1593,7 +1620,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		<-sigCh
 		cliLogln("\nStopping container...")
 		_, _ = conn.ContainerService.StopContainer(context.Background(), &agentpb.StopContainerRequest{
-			AppName: appCfg.AppID,
+			AppName: appCfg.ContainerName(),
 		})
 		runCancel()
 	}()
@@ -1601,8 +1628,11 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	// Wait for readiness before firing hook.
 	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
 		if runCtx.Err() == nil {
-			cliLogln("Warning: %v", err)
+			warnReadiness(runCtx, conn, appCfg.AppID, err)
 		}
+	}
+	if runCtx.Err() == nil {
+		announceReachableURL(runCtx, conn, appCfg)
 	}
 
 	// Post-start hook tied to runCtx so Ctrl+C kills it.
@@ -1623,7 +1653,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			if stdinAttempted && !gotFirstResponse && status.Code(recvErr) == codes.Unimplemented {
 				cliNotice("Notice: stdin not attached (not supported by agent)")
 				startStream, startErr := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
-					AppName: appCfg.AppID,
+					AppName: appCfg.ContainerName(),
 				})
 				if startErr != nil {
 					return fmt.Errorf("starting container: %w", startErr)
@@ -1649,7 +1679,7 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
 	}
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
@@ -1726,6 +1756,34 @@ func expandHookEnv(s, hostname, appID string) string {
 // browserOpen is the cross-platform browser opener used by openURL hooks.
 // Indirected through a var so tests can swap it out.
 var browserOpen = browseropen.Open
+
+// announceReachableURL prints an IP-based URL the developer can open to reach a
+// freshly started app. `wendy run` otherwise only surfaces the device's .local
+// hostname, which frequently fails to resolve in a browser (see issue #1301);
+// this asks the agent for the device's routable IPs and prints a URL built
+// from one of them. It is best-effort: it only queries the device when there is
+// something to show (a postStart openURL or a readiness TCP port) and stays
+// silent on any error or when no reachable address can be determined.
+func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
+	var hookURL string
+	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
+		hookURL = appCfg.Hooks.PostStart.OpenURL
+	}
+	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
+	if hookURL == "" && !hasPort {
+		return
+	}
+
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return
+	}
+	url := reachableAppURL(hookURL, appCfg.AppID, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
+	if url == "" {
+		return
+	}
+	cliLogln("App reachable at %s", tui.Value(url))
+}
 
 // startPostStartHook fires the postStart hook actions for appCfg.
 //
@@ -1808,8 +1866,23 @@ func resolveRestartPolicy(opts runOptions) *agentpb.RestartPolicy {
 // streamRunContainer drains a RunContainer server stream, writing stdout/stderr
 // to the corresponding OS streams. When opts.deploy or opts.detach is set the
 // function returns as soon as the Started message is received (mirroring the
-// behaviour of startAndStreamContainer for those flags).
+// behaviour of startAndStreamContainer for those flags). In attached mode the
+// Started message triggers readiness + the host-side postStart hook (again
+// mirroring startAndStreamContainer), then log streaming continues.
 func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, stream grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse], appCfg *appconfig.AppConfig, opts runOptions) error {
+	// The attached-mode postStart hook is tied to hookCtx so it is terminated
+	// when the stream ends (matching startAndStreamContainer's runCtx handling).
+	// Cleanup runs in a defer so the hook is killed and reaped on every exit
+	// path, including stream errors.
+	hookCtx, hookCancel := context.WithCancel(ctx)
+	var postStartCmd *exec.Cmd
+	defer func() {
+		hookCancel()
+		if postStartCmd != nil {
+			_ = postStartCmd.Wait()
+		}
+	}()
+	hookFired := false
 	for {
 		resp, err := stream.Recv()
 		if err == io.EOF {
@@ -1820,7 +1893,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 		}
 		if resp.GetStarted() != nil {
 			if opts.deploy {
-				cliLogln("Container %s created (not started).", tui.App(appCfg.AppID))
+				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
 			}
 			if opts.detach {
@@ -1828,12 +1901,26 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// is started; wait for readiness, fire the host post-start hook,
 				// then return without tailing logs. The container keeps running
 				// independently of this (now-abandoned) output stream.
-				cliLogln("Application %s running in detached mode.", tui.App(appCfg.AppID))
+				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
 				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					cliLogln("Warning: %v", err)
+					warnReadiness(ctx, conn, appCfg.AppID, err)
 				}
+				announceReachableURL(ctx, conn, appCfg)
 				startPostStartHook(context.Background(), appCfg, conn.Host)
 				return nil
+			}
+			// Attached: mirror startAndStreamContainer's attached branch — wait
+			// for readiness, announce the URL, and fire the host-side postStart
+			// hook — then keep streaming logs. (#1300: this used to be skipped,
+			// so the hook only fired on runs that took the registry-push path.)
+			// hookFired guards against a malformed stream sending Started twice.
+			if !hookFired {
+				hookFired = true
+				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+					warnReadiness(ctx, conn, appCfg.AppID, err)
+				}
+				announceReachableURL(ctx, conn, appCfg)
+				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host)
 			}
 			continue
 		}
@@ -1844,7 +1931,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			_, _ = os.Stderr.Write(out.GetData())
 		}
 	}
-	cliLogln("\nApplication %s stopped.", tui.App(appCfg.AppID))
+	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
 }
 
@@ -1863,14 +1950,30 @@ func phaseTimer() func(label string) {
 	}
 }
 
+// shouldDumpChunkDiffBuildLog decides whether the chunk-diff build replays its
+// captured build log when the build fails. The log must be shown whenever the
+// error is surfaced to the user directly: always under --chunking=force (no
+// fallback), and for image-build failures under auto chunking, which skip the
+// registry-push fallback (#1166). Only builder-setup failures under auto
+// chunking stay quiet — those fall back to a registry push whose own build
+// output supersedes the discarded log.
+func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
+	return func(err error) bool {
+		return chunking == chunkingForce || isImageBuildFailure(err)
+	}
+}
+
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
-// calls RunContainer with the resulting layer headers.
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) error {
+// calls RunContainer with the resulting layer headers. On success it returns the
+// uncompressed layer diff IDs it deployed, so the caller can record them in the
+// deploy fingerprint and later verify the device still holds this content before
+// skipping a rebuild (WDY-1824).
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
 	tmp, err := os.MkdirTemp("", "wendy-oci-*")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(tmp)
 	ociTar := filepath.Join(tmp, "image.tar")
@@ -1884,32 +1987,32 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			if ctx.Err() == nil {
 				_, _ = os.Stderr.Write(buildLog.Bytes())
 			}
-			return err
+			return nil, err
 		}
 	} else {
-		if err := runBuildWithProgress(ctx, buildTitle, opts.chunking == chunkingForce, func(stream, logw io.Writer) error {
+		if err := runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	mark("build (oci export)")
 	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mark("read+decompress layers")
 
 	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
 	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	mark("chunk+query+write")
 
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
@@ -1925,9 +2028,26 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		UserArgs:      opts.userArgs,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = streamRunContainer(ctx, conn, stream, appCfg, opts)
+	if err := streamRunContainer(ctx, conn, stream, appCfg, opts); err != nil {
+		mark("runcontainer (assemble+create+start[+readiness])")
+		return nil, err
+	}
 	mark("runcontainer (assemble+create+start[+readiness])")
-	return err
+	return layerDiffIDs(headers), nil
+}
+
+// layerDiffIDs extracts the ordered uncompressed diff IDs from the reassembly
+// headers that were deployed, for recording in the deploy fingerprint. Each
+// header's DiffId is the same content identity QueryLayers reports, so the next
+// run can verify the device still holds every layer before skipping (WDY-1824).
+func layerDiffIDs(headers []*agentpb.RunContainerLayerHeader) []string {
+	ids := make([]string, 0, len(headers))
+	for _, h := range headers {
+		if id := h.GetDiffId(); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

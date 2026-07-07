@@ -26,6 +26,7 @@ const (
 	WendyContainerService_RunContainer_FullMethodName                = "/wendy.agent.services.v1.WendyContainerService/RunContainer"
 	WendyContainerService_StartContainer_FullMethodName              = "/wendy.agent.services.v1.WendyContainerService/StartContainer"
 	WendyContainerService_AttachContainer_FullMethodName             = "/wendy.agent.services.v1.WendyContainerService/AttachContainer"
+	WendyContainerService_ExecContainer_FullMethodName               = "/wendy.agent.services.v1.WendyContainerService/ExecContainer"
 	WendyContainerService_StopContainer_FullMethodName               = "/wendy.agent.services.v1.WendyContainerService/StopContainer"
 	WendyContainerService_DeleteContainer_FullMethodName             = "/wendy.agent.services.v1.WendyContainerService/DeleteContainer"
 	WendyContainerService_ListContainers_FullMethodName              = "/wendy.agent.services.v1.WendyContainerService/ListContainers"
@@ -51,6 +52,11 @@ type WendyContainerServiceClient interface {
 	RunContainer(ctx context.Context, in *RunContainerLayersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunContainerLayersResponse], error)
 	StartContainer(ctx context.Context, in *StartContainerRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[RunContainerLayersResponse], error)
 	AttachContainer(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[AttachContainerRequest, RunContainerLayersResponse], error)
+	// ExecContainer runs a process inside an existing container with an
+	// interactive PTY (docker `exec -it` style). The first client message MUST
+	// be ExecStart; subsequent messages carry stdin or window resizes. The
+	// server streams stdout/stderr and a final exit_code.
+	ExecContainer(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecContainerRequest, ExecContainerResponse], error)
 	StopContainer(ctx context.Context, in *StopContainerRequest, opts ...grpc.CallOption) (*StopContainerResponse, error)
 	DeleteContainer(ctx context.Context, in *DeleteContainerRequest, opts ...grpc.CallOption) (*DeleteContainerResponse, error)
 	ListContainers(ctx context.Context, in *ListContainersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListContainersResponse], error)
@@ -189,6 +195,19 @@ func (c *wendyContainerServiceClient) AttachContainer(ctx context.Context, opts 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_AttachContainerClient = grpc.BidiStreamingClient[AttachContainerRequest, RunContainerLayersResponse]
 
+func (c *wendyContainerServiceClient) ExecContainer(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ExecContainerRequest, ExecContainerResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[6], WendyContainerService_ExecContainer_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ExecContainerRequest, ExecContainerResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyContainerService_ExecContainerClient = grpc.BidiStreamingClient[ExecContainerRequest, ExecContainerResponse]
+
 func (c *wendyContainerServiceClient) StopContainer(ctx context.Context, in *StopContainerRequest, opts ...grpc.CallOption) (*StopContainerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StopContainerResponse)
@@ -211,7 +230,7 @@ func (c *wendyContainerServiceClient) DeleteContainer(ctx context.Context, in *D
 
 func (c *wendyContainerServiceClient) ListContainers(ctx context.Context, in *ListContainersRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListContainersResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[6], WendyContainerService_ListContainers_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[7], WendyContainerService_ListContainers_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -280,7 +299,7 @@ func (c *wendyContainerServiceClient) GetContainerPorts(ctx context.Context, in 
 
 func (c *wendyContainerServiceClient) StreamMCP(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[MCPChunk, MCPChunk], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[7], WendyContainerService_StreamMCP_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[8], WendyContainerService_StreamMCP_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +322,7 @@ func (c *wendyContainerServiceClient) QueryChunks(ctx context.Context, in *Query
 
 func (c *wendyContainerServiceClient) WriteChunks(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[WriteChunksRequest, WriteChunksResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[8], WendyContainerService_WriteChunks_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WendyContainerService_ServiceDesc.Streams[9], WendyContainerService_WriteChunks_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +354,11 @@ type WendyContainerServiceServer interface {
 	RunContainer(*RunContainerLayersRequest, grpc.ServerStreamingServer[RunContainerLayersResponse]) error
 	StartContainer(*StartContainerRequest, grpc.ServerStreamingServer[RunContainerLayersResponse]) error
 	AttachContainer(grpc.BidiStreamingServer[AttachContainerRequest, RunContainerLayersResponse]) error
+	// ExecContainer runs a process inside an existing container with an
+	// interactive PTY (docker `exec -it` style). The first client message MUST
+	// be ExecStart; subsequent messages carry stdin or window resizes. The
+	// server streams stdout/stderr and a final exit_code.
+	ExecContainer(grpc.BidiStreamingServer[ExecContainerRequest, ExecContainerResponse]) error
 	StopContainer(context.Context, *StopContainerRequest) (*StopContainerResponse, error)
 	DeleteContainer(context.Context, *DeleteContainerRequest) (*DeleteContainerResponse, error)
 	ListContainers(*ListContainersRequest, grpc.ServerStreamingServer[ListContainersResponse]) error
@@ -381,6 +405,9 @@ func (UnimplementedWendyContainerServiceServer) StartContainer(*StartContainerRe
 }
 func (UnimplementedWendyContainerServiceServer) AttachContainer(grpc.BidiStreamingServer[AttachContainerRequest, RunContainerLayersResponse]) error {
 	return status.Error(codes.Unimplemented, "method AttachContainer not implemented")
+}
+func (UnimplementedWendyContainerServiceServer) ExecContainer(grpc.BidiStreamingServer[ExecContainerRequest, ExecContainerResponse]) error {
+	return status.Error(codes.Unimplemented, "method ExecContainer not implemented")
 }
 func (UnimplementedWendyContainerServiceServer) StopContainer(context.Context, *StopContainerRequest) (*StopContainerResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopContainer not implemented")
@@ -514,6 +541,13 @@ func _WendyContainerService_AttachContainer_Handler(srv interface{}, stream grpc
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyContainerService_AttachContainerServer = grpc.BidiStreamingServer[AttachContainerRequest, RunContainerLayersResponse]
+
+func _WendyContainerService_ExecContainer_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WendyContainerServiceServer).ExecContainer(&grpc.GenericServerStream[ExecContainerRequest, ExecContainerResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyContainerService_ExecContainerServer = grpc.BidiStreamingServer[ExecContainerRequest, ExecContainerResponse]
 
 func _WendyContainerService_StopContainer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(StopContainerRequest)
@@ -780,6 +814,12 @@ var WendyContainerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "AttachContainer",
 			Handler:       _WendyContainerService_AttachContainer_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "ExecContainer",
+			Handler:       _WendyContainerService_ExecContainer_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

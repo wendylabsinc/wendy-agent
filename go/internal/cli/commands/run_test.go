@@ -4,10 +4,36 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
+
+// containerDisplayName must print the real container identity in deploy
+// output: "{appID}_{serviceName}" when the config describes one service of a
+// multi-service app, not the bare appID (WDY-1828). Assertions use
+// strings.Contains so terminal styling (tui.App) cannot break them.
+func TestContainerDisplayName(t *testing.T) {
+	t.Run("single-container app prints bare appID", func(t *testing.T) {
+		cfg := &appconfig.AppConfig{AppID: "sh.wendy.examples.hellovlm"}
+		got := containerDisplayName(cfg)
+		if !strings.Contains(got, "sh.wendy.examples.hellovlm") {
+			t.Fatalf("containerDisplayName = %q, want it to contain %q", got, "sh.wendy.examples.hellovlm")
+		}
+		if strings.Contains(got, "_") {
+			t.Fatalf("containerDisplayName = %q, single-container app must not gain a service suffix", got)
+		}
+	})
+
+	t.Run("service of multi-service app prints appID_service", func(t *testing.T) {
+		cfg := &appconfig.AppConfig{AppID: "sh.wendy.examples.hellovlm", ServiceName: "llm"}
+		got := containerDisplayName(cfg)
+		if !strings.Contains(got, "sh.wendy.examples.hellovlm_llm") {
+			t.Fatalf("containerDisplayName = %q, want the full container name %q, not the bare appID", got, "sh.wendy.examples.hellovlm_llm")
+		}
+	})
+}
 
 func TestWendyPlatform(t *testing.T) {
 	cases := []struct {

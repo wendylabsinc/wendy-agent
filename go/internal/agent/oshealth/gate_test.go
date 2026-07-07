@@ -14,41 +14,32 @@ import (
 
 var gateNow = time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 
-// gateFixture wires a Gate with recorders for every side effect.
+// gateFixture wires a Gate with recorders for every side effect. It defaults
+// to the delegated-health path (the real wendyos-update backend, the only
+// registered backend): tests that need the agent's own CheckAll instead call
+// useAgentHealthchecks.
 type gateFixture struct {
 	gate     *Gate
 	dir      string
-	systemd  *fakeSystemctl
 	commits  int
 	rollback int
 	reboots  int
 }
 
-func newGateFixture(t *testing.T, commitResult, rollbackResult MenderResult) *gateFixture {
+func newGateFixture(t *testing.T, commitResult, rollbackResult UpdaterResult) *gateFixture {
 	t.Helper()
 	fx := &gateFixture{
 		dir: t.TempDir(),
-		systemd: &fakeSystemctl{sequences: map[string][]map[string]string{
-			"a.service": {loaded("active")},
-			"b.service": {loaded("active")},
-		}},
 	}
-	checker := NewChecker(zap.NewNop())
-	checker.PollInterval = 5 * time.Millisecond
-	checker.SystemctlShow = fx.systemd.show
 	fx.gate = &Gate{
-		Logger:   zap.NewNop(),
-		StateDir: fx.dir,
-		Services: []CriticalService{
-			{Unit: "a.service", Timeout: 50 * time.Millisecond},
-			{Unit: "b.service", Timeout: 50 * time.Millisecond},
-		},
-		Checker: checker,
-		Commit: func() MenderResult {
+		Logger:          zap.NewNop(),
+		StateDir:        fx.dir,
+		DelegatedHealth: true,
+		Commit: func() UpdaterResult {
 			fx.commits++
 			return commitResult
 		},
-		Rollback: func() MenderResult {
+		Rollback: func() UpdaterResult {
 			fx.rollback++
 			return rollbackResult
 		},
@@ -63,12 +54,27 @@ func newGateFixture(t *testing.T, commitResult, rollbackResult MenderResult) *ga
 	return fx
 }
 
+// useAgentHealthchecks switches a fixture's gate to the non-delegated path:
+// the agent runs CheckAll against the given fake systemd responses before
+// deciding commit vs rollback. Returns the fake so tests can assert call
+// counts or mutate sequences mid-test.
+func (fx *gateFixture) useAgentHealthchecks(sequences map[string][]map[string]string, services []CriticalService) *fakeSystemctl {
+	systemd := &fakeSystemctl{sequences: sequences}
+	checker := NewChecker(zap.NewNop())
+	checker.PollInterval = 5 * time.Millisecond
+	checker.SystemctlShow = systemd.show
+	fx.gate.DelegatedHealth = false
+	fx.gate.Services = services
+	fx.gate.Checker = checker
+	return systemd
+}
+
 func (fx *gateFixture) writeFreshMarker(t *testing.T) {
 	t.Helper()
 	err := WritePendingMarker(fx.dir, PendingMarker{
 		CreatedAt:    gateNow.Add(-2 * time.Minute),
 		OldOSVersion: "WendyOS-0.10.4",
-		ArtifactURL:  "http://example/artifact.mender",
+		ArtifactURL:  "http://example/artifact.wendy",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +100,7 @@ func (fx *gateFixture) readResult(t *testing.T) (UpdateResult, bool) {
 }
 
 func TestGateNoMarkerPlainCommit(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 
 	fx.gate.Run(context.Background())
 
@@ -107,13 +113,10 @@ func TestGateNoMarkerPlainCommit(t *testing.T) {
 	if _, found := fx.readResult(t); found {
 		t.Error("no result record should be written on a plain boot")
 	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("healthchecks ran on a plain boot (%d calls)", n)
-	}
 }
 
 func TestGateNoMarkerFinalizesRolledBackRecord(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	seed := UpdateResult{
 		Outcome:      OutcomeRolledBack,
 		OldOSVersion: "WendyOS-0.10.4",
@@ -143,7 +146,7 @@ func TestGateNoMarkerFinalizesRolledBackRecord(t *testing.T) {
 }
 
 func TestGateNoMarkerDoesNotRefinalize(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	finalized := gateNow.Add(-time.Hour)
 	seed := UpdateResult{
 		Outcome:     OutcomeRolledBack,
@@ -163,7 +166,7 @@ func TestGateNoMarkerDoesNotRefinalize(t *testing.T) {
 }
 
 func TestGateStaleMarker(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
 	err := WritePendingMarker(fx.dir, PendingMarker{CreatedAt: gateNow.Add(-2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -177,16 +180,13 @@ func TestGateStaleMarker(t *testing.T) {
 	if fx.commits != 1 {
 		t.Errorf("commits = %d, want 1 (plain commit)", fx.commits)
 	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("healthchecks should not run for a stale marker (%d calls)", n)
-	}
 	if _, found := fx.readResult(t); found {
 		t.Error("no result record should be written for a stale marker")
 	}
 }
 
 func TestGateCorruptMarker(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	if err := os.MkdirAll(fx.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestGateCorruptMarker(t *testing.T) {
 }
 
 func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{Status: MenderOK})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{Status: UpdaterOK})
 	err := WritePendingMarker(fx.dir, PendingMarker{
 		CreatedAt:    gateNow.Add(-2 * time.Minute),
 		OldOSVersion: "WendyOS-0.10.4",
@@ -224,16 +224,13 @@ func TestGateSameBootLeavesMarkerUntouched(t *testing.T) {
 	if !fx.markerExists(t) {
 		t.Error("marker must be left pending for the boot that runs the updated OS")
 	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("healthchecks must not run before the reboot (%d calls)", n)
-	}
 	if _, found := fx.readResult(t); found {
 		t.Error("no result record should be written before the reboot")
 	}
 }
 
 func TestGateStaleSameBootLeavesMarker(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{Status: MenderOK})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{Status: UpdaterOK})
 	// The marker is old enough to look stale, but it was written in the current
 	// boot — the device never rebooted into the new slot (e.g. the reboot
 	// failed, or a caller that does not reboot left it behind). The same-boot
@@ -256,13 +253,20 @@ func TestGateStaleSameBootLeavesMarker(t *testing.T) {
 	if !fx.markerExists(t) {
 		t.Error("marker must be left pending for the boot that runs the updated OS")
 	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("healthchecks must not run before the reboot (%d calls)", n)
-	}
 }
 
+// The following tests exercise the agent-run CheckAll path used when the
+// backend does not delegate healthchecking to its own commit.
+
 func TestGateDifferentBootRunsHealthchecks(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	err := WritePendingMarker(fx.dir, PendingMarker{
 		CreatedAt:    gateNow.Add(-2 * time.Minute),
 		OldOSVersion: "WendyOS-0.10.4",
@@ -284,7 +288,14 @@ func TestGateDifferentBootRunsHealthchecks(t *testing.T) {
 }
 
 func TestGateHealthyCommitOK(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -314,7 +325,14 @@ func TestGateHealthyCommitOK(t *testing.T) {
 }
 
 func TestGateHealthyCommitNothingPending(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -333,8 +351,15 @@ func TestGateHealthyCommitNothingPending(t *testing.T) {
 
 func TestGateHealthyCommitError(t *testing.T) {
 	fx := newGateFixture(t,
-		MenderResult{Status: MenderError, Err: errors.New("boom"), Output: "commit exploded"},
-		MenderResult{})
+		UpdaterResult{Status: UpdaterError, Err: errors.New("boom"), Output: "commit exploded"},
+		UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {loaded("active")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -354,16 +379,25 @@ func TestGateHealthyCommitError(t *testing.T) {
 	}
 }
 
-func TestGateUnhealthyRollbackOK(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{}, MenderResult{Status: MenderOK})
-	fx.systemd.sequences["b.service"] = []map[string]string{{
-		"LoadState": "loaded", "ActiveState": "failed", "SubState": "exited",
-		"Result": "exit-code", "UnitFileState": "enabled",
-	}}
+func TestGateAgentHealthcheckRollbackOK(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterOK, RebootRequired: true})
+	systemd := fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("active")},
+		"b.service": {{
+			"LoadState": "loaded", "ActiveState": "failed", "SubState": "exited",
+			"Result": "exit-code", "UnitFileState": "enabled",
+		}},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
 
+	if systemd == nil {
+		t.Fatal("expected a fake systemd")
+	}
 	if fx.commits != 0 {
 		t.Error("must not commit when a healthcheck failed")
 	}
@@ -391,9 +425,15 @@ func TestGateUnhealthyRollbackOK(t *testing.T) {
 	}
 }
 
-func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{}, MenderResult{Status: MenderNothingPending})
-	fx.systemd.sequences["a.service"] = []map[string]string{loaded("inactive")}
+func TestGateAgentHealthcheckRollbackNothingPending(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterNothingPending})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -410,10 +450,16 @@ func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
 	}
 }
 
-func TestGateUnhealthyRollbackError(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{},
-		MenderResult{Status: MenderError, Err: errors.New("rollback exploded")})
-	fx.systemd.sequences["a.service"] = []map[string]string{loaded("inactive")}
+func TestGateAgentHealthcheckRollbackError(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{},
+		UpdaterResult{Status: UpdaterError, Err: errors.New("rollback exploded")})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -430,15 +476,21 @@ func TestGateUnhealthyRollbackError(t *testing.T) {
 	}
 }
 
-func TestGateUnhealthyMenderUnavailable(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{}, MenderResult{Status: MenderUnavailable})
-	fx.systemd.sequences["a.service"] = []map[string]string{loaded("inactive")}
+func TestGateAgentHealthcheckRollbackUnavailable(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{}, UpdaterResult{Status: UpdaterUnavailable})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {loaded("inactive")},
+		"b.service": {loaded("inactive")},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
 
 	if fx.reboots != 0 {
-		t.Error("must not reboot when mender is unavailable")
+		t.Error("must not reboot when the updater is unavailable")
 	}
 	rec, found := fx.readResult(t)
 	if !found || rec.Outcome != OutcomeRollbackFailed {
@@ -446,25 +498,109 @@ func TestGateUnhealthyMenderUnavailable(t *testing.T) {
 	}
 }
 
-// delegateHealth flips a fixture's gate to the wendyos-update path: the backend
-// runs its own health gate inside commit, so the agent gate skips CheckAll.
-func (fx *gateFixture) delegateHealth() {
-	fx.gate.DelegatedHealth = true
-	fx.gate.UpdaterLabel = "wendyos-update"
+func TestGateAllSkippedCountsAsHealthy(t *testing.T) {
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
+	fx.useAgentHealthchecks(map[string][]map[string]string{
+		"a.service": {{"LoadState": "not-found", "ActiveState": "inactive"}},
+		"b.service": {{"LoadState": "not-found", "ActiveState": "inactive"}},
+	}, []CriticalService{
+		{Unit: "a.service", Timeout: 50 * time.Millisecond},
+		{Unit: "b.service", Timeout: 50 * time.Millisecond},
+	})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 0 {
+		t.Errorf("commits=%d rollback=%d, want 1/0", fx.commits, fx.rollback)
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeCommitted {
+		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
+	}
+}
+
+// The following three tests exercise every outcome branch of rollBack() for a
+// backend that delegates healthchecking to its own commit (DelegatedHealth,
+// the default in this fixture, matching wendyos-update): UpdaterNothingPending
+// and UpdaterUnavailable here, UpdaterError (default) in
+// TestGateUnhealthyRollbackError, and UpdaterOK in
+// TestGateDelegatedCommitRejectedRollsBack. All three trigger the rollback via
+// a rejected commit — the updater runs its own health gate
+// (/etc/wendyos-update/health.d) inside commit, so there is no separate
+// CheckAll failure to trigger it on this path.
+
+func TestGateUnhealthyRollbackNothingPending(t *testing.T) {
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"), Output: "marked failed"},
+		UpdaterResult{Status: UpdaterNothingPending})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 1 {
+		t.Errorf("commits=%d rollback=%d, want 1/1", fx.commits, fx.rollback)
+	}
+	if fx.reboots != 0 {
+		t.Error("must not reboot when there is nothing to roll back (no slot change would happen)")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRollbackFailed {
+		t.Fatalf("expected rollback_failed record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.RollbackError, "nothing to roll back") {
+		t.Errorf("RollbackError = %q", rec.RollbackError)
+	}
+}
+
+func TestGateUnhealthyRollbackError(t *testing.T) {
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"), Output: "marked failed"},
+		UpdaterResult{Status: UpdaterError, Err: errors.New("rollback exploded")})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.reboots != 1 {
+		t.Error("should still reboot: the uncommitted update makes the bootloader fall back")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.RollbackError, "rollback exploded") {
+		t.Errorf("RollbackError = %q", rec.RollbackError)
+	}
+}
+
+func TestGateUnhealthyRollbackUnavailable(t *testing.T) {
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"), Output: "marked failed"},
+		UpdaterResult{Status: UpdaterUnavailable})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.reboots != 0 {
+		t.Error("must not reboot when the updater is unavailable")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRollbackFailed {
+		t.Fatalf("expected rollback_failed record, got found=%v %+v", found, rec)
+	}
+	if !strings.Contains(rec.RollbackError, "wendyos-update binary not found") {
+		t.Errorf("RollbackError = %q, want it to name the default wendyos-update label", rec.RollbackError)
+	}
 }
 
 func TestGateDelegatedHealthyCommitOK(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
-	fx.delegateHealth()
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterOK}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 || fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/0/0", fx.commits, fx.rollback, fx.reboots)
-	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
 	}
 	if fx.markerExists(t) {
 		t.Error("marker should be cleared after commit")
@@ -482,17 +618,13 @@ func TestGateDelegatedHealthyCommitOK(t *testing.T) {
 }
 
 func TestGateDelegatedCommitNothingPending(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderNothingPending}, MenderResult{})
-	fx.delegateHealth()
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterNothingPending}, UpdaterResult{})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
 
 	if fx.rollback != 0 || fx.reboots != 0 {
 		t.Errorf("rollback=%d reboots=%d, want 0/0", fx.rollback, fx.reboots)
-	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
 	}
 	if fx.markerExists(t) {
 		t.Error("marker should be cleared")
@@ -501,8 +633,8 @@ func TestGateDelegatedCommitNothingPending(t *testing.T) {
 	if !found || rec.Outcome != OutcomeCommitted {
 		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
 	}
-	if rec.Note == "" {
-		t.Error("expected a note explaining there was nothing to commit")
+	if !strings.Contains(rec.Note, "wendyos-update") {
+		t.Errorf("note should name the default wendyos-update label, got %q", rec.Note)
 	}
 }
 
@@ -510,19 +642,15 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 	// wendyos-update commit ran its health.d, the deployment is marked failed,
 	// and commit returned a non-zero exit. The agent rolls back and reboots.
 	fx := newGateFixture(t,
-		MenderResult{Status: MenderError, Err: errors.New("exit status 1"),
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"),
 			Output: "pending update wendyos-image-... is marked failed; run rollback"},
-		MenderResult{Status: MenderOK})
-	fx.delegateHealth()
+		UpdaterResult{Status: UpdaterOK, RebootRequired: true})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
 
 	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 1 {
 		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/1", fx.commits, fx.rollback, fx.reboots)
-	}
-	if n := fx.systemd.callCount("a.service"); n != 0 {
-		t.Errorf("agent healthchecks must not run for a delegated backend (%d calls)", n)
 	}
 	if fx.markerExists(t) {
 		t.Error("marker should be cleared before rebooting into the old slot")
@@ -539,12 +667,44 @@ func TestGateDelegatedCommitRejectedRollsBack(t *testing.T) {
 	}
 }
 
+func TestGateDelegatedCommitRejectedRollsBackNoRebootWhenAlreadyOnOrigin(t *testing.T) {
+	// The firmware already fell back to the previous slot on its own before
+	// this boot even started (e.g. it burned its retry budget). This boot IS
+	// the previous slot, so wendyos-update rollback reports reboot_required:
+	// false — pure bookkeeping. Rebooting anyway would just cycle an
+	// already-healthy boot for no reason.
+	fx := newGateFixture(t,
+		UpdaterResult{Status: UpdaterError, Err: errors.New("exit status 1"),
+			Output: "pending update wendyos-image-... is marked failed; run rollback"},
+		UpdaterResult{Status: UpdaterOK, RebootRequired: false})
+	fx.writeFreshMarker(t)
+
+	fx.gate.Run(context.Background())
+
+	if fx.commits != 1 || fx.rollback != 1 || fx.reboots != 0 {
+		t.Errorf("commits=%d rollback=%d reboots=%d, want 1/1/0 (no reboot needed)",
+			fx.commits, fx.rollback, fx.reboots)
+	}
+	if fx.markerExists(t) {
+		t.Error("marker should be cleared once the rollback is finalized")
+	}
+	rec, found := fx.readResult(t)
+	if !found || rec.Outcome != OutcomeRolledBack {
+		t.Fatalf("expected rolled_back record, got found=%v %+v", found, rec)
+	}
+	if rec.FinalizedAt.IsZero() {
+		t.Error("rolled_back record should be finalized immediately: no reboot is coming to do it later")
+	}
+	if rec.FinalOSVersion != "WendyOS-0.11.0" {
+		t.Errorf("FinalOSVersion = %q, want the current (already-rolled-back) OS version", rec.FinalOSVersion)
+	}
+}
+
 func TestGateDelegatedCommitUnavailableNoRollback(t *testing.T) {
 	// The recorded backend's binary is gone at commit time. No health verdict
 	// was rendered, so the gate must not roll back a real slot — keep the marker
 	// for a retry on the next start.
-	fx := newGateFixture(t, MenderResult{Status: MenderUnavailable}, MenderResult{Status: MenderOK})
-	fx.delegateHealth()
+	fx := newGateFixture(t, UpdaterResult{Status: UpdaterUnavailable}, UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -559,6 +719,9 @@ func TestGateDelegatedCommitUnavailableNoRollback(t *testing.T) {
 	if !found || rec.Outcome != OutcomeCommitFailed {
 		t.Fatalf("expected commit_failed record, got found=%v %+v", found, rec)
 	}
+	if !strings.Contains(rec.Note, "wendyos-update binary not found") {
+		t.Errorf("Note = %q, want it to name the default wendyos-update label", rec.Note)
+	}
 }
 
 func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
@@ -566,9 +729,8 @@ func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
 	// boot). That is not a health verdict, so keep the marker and retry rather
 	// than reverting a possibly-healthy slot.
 	fx := newGateFixture(t,
-		MenderResult{Status: MenderError, Err: context.DeadlineExceeded, Output: "timed out"},
-		MenderResult{Status: MenderOK})
-	fx.delegateHealth()
+		UpdaterResult{Status: UpdaterError, Err: context.DeadlineExceeded, Output: "timed out"},
+		UpdaterResult{Status: UpdaterOK})
 	fx.writeFreshMarker(t)
 
 	fx.gate.Run(context.Background())
@@ -582,22 +744,5 @@ func TestGateDelegatedCommitTimeoutRetries(t *testing.T) {
 	rec, found := fx.readResult(t)
 	if !found || rec.Outcome != OutcomeCommitFailed {
 		t.Fatalf("expected commit_failed record, got found=%v %+v", found, rec)
-	}
-}
-
-func TestGateAllSkippedCountsAsHealthy(t *testing.T) {
-	fx := newGateFixture(t, MenderResult{Status: MenderOK}, MenderResult{})
-	fx.systemd.sequences["a.service"] = []map[string]string{{"LoadState": "not-found", "ActiveState": "inactive"}}
-	fx.systemd.sequences["b.service"] = []map[string]string{{"LoadState": "not-found", "ActiveState": "inactive"}}
-	fx.writeFreshMarker(t)
-
-	fx.gate.Run(context.Background())
-
-	if fx.commits != 1 || fx.rollback != 0 {
-		t.Errorf("commits=%d rollback=%d, want 1/0", fx.commits, fx.rollback)
-	}
-	rec, found := fx.readResult(t)
-	if !found || rec.Outcome != OutcomeCommitted {
-		t.Fatalf("expected committed record, got found=%v %+v", found, rec)
 	}
 }

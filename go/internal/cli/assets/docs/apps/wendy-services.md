@@ -119,6 +119,19 @@ wendy run            # builds and starts all three services
 wendy run --service api   # builds db and api only (frontend excluded)
 ```
 
+## Crash-looping services
+
+When a service within a group crashes and the agent's restart policy is
+automatically restarting it, that service's individual entry in
+`wendy device apps list` shows a red `↻` **crash-looping** state (nested under
+the group header). The top-level app entry stays `Running` as long as at least
+one service is up; it flips to `Crash-looping` only when every service is down
+and the restart policy is still restarting at least one of them.
+
+`wendy device logs --app <appId>` surfaces crash output from all service
+members of the group, so a crash-looping service's logs are reachable without
+naming the individual service.
+
 ## Limitations
 
 - Log output is multiplexed with a `[serviceName]` prefix on each line. Per-service log stream routing is not yet available.

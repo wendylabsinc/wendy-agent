@@ -62,6 +62,14 @@ type ContainerdClient interface {
 	// the monitor before issuing a stop or delete.
 	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
+	// AppDeclaredVolumes maps every deployed app (bare appID) to the persistent
+	// volume names its containers declare via persist entitlement labels. This
+	// is the source of truth for volume ownership (volumes are shared across
+	// apps by name, so one name may appear under several apps). Apps deployed
+	// before entitlement labels existed are absent — callers must treat that as
+	// "ownership unknown" and fail safe rather than guess from name prefixes
+	// (WDY-1807).
+	AppDeclaredVolumes(ctx context.Context) (map[string][]string, error)
 	// ListBootContainers returns the containers that should be (re)started at
 	// agent boot: restart policy keeps them running (not "no") and they were not
 	// explicitly stopped by the user. Used by the boot reconcile.
@@ -82,6 +90,18 @@ type ContainerdClient interface {
 	// the container (e.g. "unless-stopped", "on-failure:5", "no"). An empty string
 	// is returned when the container exists but has no restart policy label.
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
+}
+
+// ContainerExecer is the optional capability to run a process inside a running
+// container with an interactive PTY (docker `exec -it`). The ExecContainer RPC
+// type-asserts for it; a client that does not implement it yields Unimplemented.
+// Kept separate (like GroupRestarter) so the many ContainerdClient mocks stay
+// untouched.
+type ContainerExecer interface {
+	// ExecInContainer runs command in the named app's running container. When tty
+	// is true a PTY is allocated (stderr merged into stdout) and resize events
+	// ([rows, cols]) are applied to the process. Returns the process exit code.
+	ExecInContainer(ctx context.Context, appName string, command []string, tty bool, stdin io.Reader, stdout, stderr io.Writer, resize <-chan [2]uint32) (int, error)
 }
 
 // BootContainer describes a container the boot reconcile should bring back up,
@@ -141,6 +161,30 @@ type ContainerMonitorRegistrar interface {
 	// automatic restarts for appName. Used to undo a pre-emptive mark when the
 	// stop operation itself fails.
 	ClearExplicitStop(appName string)
+}
+
+// RestartStatus is the container monitor's live bookkeeping for one monitored
+// container, keyed the same way the monitor registers state (bare appID, or
+// "{appID}_{serviceName}" for services-map apps).
+type RestartStatus struct {
+	// FailureCount is how many automatic restarts the monitor has performed.
+	FailureCount int
+	// WillRestart reports that the restart policy is still active for this
+	// container (not explicitly stopped, retry budget not exhausted): if the
+	// container is stopped, the monitor will start it again. Combined with
+	// FailureCount > 0 and a stopped container this is a crash loop.
+	WillRestart bool
+}
+
+// RestartStatusProvider is the optional capability a ContainerMonitorRegistrar
+// may provide to expose its restart bookkeeping. ListContainers type-asserts
+// for it so a crash-looping app can be reported as CRASH_LOOPING with its
+// failure count instead of a plain STOPPED (WDY-1826). A separate interface so
+// existing registrar fakes stay untouched (same pattern as GroupRestarter).
+type RestartStatusProvider interface {
+	// RestartStatuses returns the status of every monitored container, keyed by
+	// the monitored container name.
+	RestartStatuses() map[string]RestartStatus
 }
 
 type ContainerOutput struct {

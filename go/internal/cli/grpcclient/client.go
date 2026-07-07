@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 
 	"time"
 
@@ -71,6 +72,12 @@ type AgentConnection struct {
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
+	// observedServerOrg holds the org ID read from the device's server
+	// certificate during the TLS handshake (set by the OnServerIdentity sink
+	// wired in ConnectWithTLSAndPins). Written on the handshake goroutine, read
+	// by callers after the first RPC returns; atomic makes that read race-free.
+	// nil for connections that never install the sink (plaintext / NewFromConn).
+	observedServerOrg *atomic.Int32
 }
 
 func Connect(ctx context.Context, address string) (*AgentConnection, error) {
@@ -100,6 +107,38 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 	return ac, nil
 }
 
+// ConnectUnix dials the agent over a local unix domain socket with plain h2c
+// (no TLS). It is used inside an `admin`-entitled container, where the agent's
+// control socket is bind-mounted in and WENDY_AGENT_SOCKET points at it. The
+// socket itself is the entire trust boundary (see the admin entitlement); there
+// is deliberately no authentication here.
+func ConnectUnix(ctx context.Context, socketPath string) (*AgentConnection, error) {
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socketPath)
+	}
+	conn, err := grpc.NewClient(
+		"passthrough:///unix",
+		grpc.WithContextDialer(dialer),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithInitialWindowSize(grpcInitialStreamWindow),
+		grpc.WithInitialConnWindowSize(grpcInitialConnWindow),
+		grpc.WithReadBufferSize(grpcReadBufferSize),
+		grpc.WithWriteBufferSize(grpcWriteBufferSize),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                grpcKeepaliveTime,
+			Timeout:             grpcKeepaliveTimeout,
+			PermitWithoutStream: false,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to agent at unix:%s: %w", socketPath, err)
+	}
+	ac := newAgentConnection(conn)
+	ac.Host = "unix:" + socketPath
+	return ac, nil
+}
+
 func ConnectWithTLS(ctx context.Context, address string, certInfo *config.CertificateInfo) (*AgentConnection, error) {
 	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
 }
@@ -117,10 +156,16 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
+	observedOrg := new(atomic.Int32)
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
 		PinStore:      pins,
+		OnServerIdentity: func(id certs.WendyIdentity) {
+			if id.OrgID != 0 {
+				observedOrg.Store(id.OrgID)
+			}
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
@@ -157,6 +202,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	ac.Host = hostFromAddress(address)
 	ac.IsMTLS = true
 	ac.CertInfo = certInfo
+	ac.observedServerOrg = observedOrg
 	return ac, nil
 }
 
@@ -214,6 +260,21 @@ func (c *AgentConnection) Close() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ObservedServerOrg returns the org ID observed in the device's server
+// certificate during the TLS handshake, or (0, false) if none was observed
+// (plaintext connection, cert without a Wendy identity, or a handshake that
+// never reached the server certificate). Safe to call after the first RPC.
+// The value comes from the peer's leaf certificate SAN and is NOT validated
+// against any trust chain by this accessor; it is for diagnostic display only
+// and must never be used for an authorization or trust decision.
+func (c *AgentConnection) ObservedServerOrg() (int32, bool) {
+	if c.observedServerOrg == nil {
+		return 0, false
+	}
+	v := c.observedServerOrg.Load()
+	return v, v != 0
 }
 
 func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {

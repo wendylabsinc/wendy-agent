@@ -5,7 +5,9 @@ description: Enable NVIDIA GPU access for CUDA, ML inference, and accelerated vi
 
 ## GPU Access
 
-GPU access is most common on NVIDIA Jetson devices for CUDA, ML inference, image processing, DeepStream, PyTorch, TensorRT, and MLX workloads. WendyOS does not expose GPU devices to apps unless the app declares the `gpu` entitlement.
+The `gpu` entitlement exposes the host GPU to your app for CUDA, ML inference, image processing, DeepStream, PyTorch, TensorRT, and MLX workloads. WendyOS does not expose GPU devices to apps unless the app declares the entitlement.
+
+Today this covers **NVIDIA GPUs (CUDA)** — both NVIDIA Jetson devices and x86 Intel/AMD machines with an NVIDIA card. **AMD GPU acceleration via ROCm is in progress.**
 
 Add the entitlement from your project directory:
 

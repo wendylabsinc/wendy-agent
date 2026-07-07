@@ -85,7 +85,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		t.Fatalf("buildAndPushImageWithBuilder: %v", err)
 	}
 
-	resolvedDockerfile, err := confinedDockerfilePath(dir, "Dockerfile")
+	resolvedDockerfile, err := appleContainerBuildFilePath(dir, "Dockerfile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +254,7 @@ func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *
 		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
 	}
 
-	resolvedBuildFile, err := confinedDockerfilePath(dir, "Containerfile")
+	resolvedBuildFile, err := appleContainerBuildFilePath(dir, "Containerfile")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,6 +269,57 @@ func TestBuildDockerProjectWithBuilderDefaultsToAppleContainerOnAppleSilicon(t *
 	want := "container\x00build\x00--progress\x00plain\x00--platform\x00linux/arm64\x00-t\x00test-app:latest\x00-f\x00" + resolvedBuildFile + "\x00" + buildContext + "\n"
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("command log missing %q in:\n%s", want, string(data))
+	}
+}
+
+func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerSystemStoppedDoesNotPrompt(t *testing.T) {
+	oldCommand := imageBuilderCommandContext
+	oldLookPath := imageBuilderLookPath
+	oldGOOS := imageBuilderHostGOOS
+	oldGOARCH := imageBuilderHostGOARCH
+	oldDockerBuild := buildDockerProjectWithDocker
+	oldPrompt := confirmFn
+	t.Cleanup(func() {
+		imageBuilderCommandContext = oldCommand
+		imageBuilderLookPath = oldLookPath
+		imageBuilderHostGOOS = oldGOOS
+		imageBuilderHostGOARCH = oldGOARCH
+		buildDockerProjectWithDocker = oldDockerBuild
+		confirmFn = oldPrompt
+	})
+
+	logFile := filepath.Join(t.TempDir(), "commands.log")
+	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	imageBuilderLookPath = func(file string) (string, error) {
+		if file == "container" {
+			return "/usr/local/bin/container", nil
+		}
+		return "", errors.New("not found")
+	}
+	imageBuilderHostGOOS = func() string { return "darwin" }
+	imageBuilderHostGOARCH = func() string { return "arm64" }
+	confirmFn = func(string) bool {
+		t.Fatal("auto Apple Container fallback must not prompt")
+		return false
+	}
+
+	var dockerFallbackCalled bool
+	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
+		dockerFallbackCalled = true
+		return nil
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Dockerfile"); err != nil {
+		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
+	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
 	}
 }
 
@@ -321,19 +372,20 @@ func TestBuildDockerProjectWithBuilderFallsBackToDockerWhenAutoAppleContainerFai
 }
 
 // When Apple Container's CLI is installed but its system is not running, the
-// no-builder auto path now starts the system and uses Apple Container instead
-// of silently falling back to Docker.
-func TestBuildDockerProjectWithBuilderStartsAppleContainerWhenStoppedOnAppleSilicon(t *testing.T) {
+// no-builder auto path falls back to Docker without prompting or starting Apple
+// Container. Use --builder apple-container to require Apple Container.
+func TestBuildDockerProjectWithBuilderFallsBackWhenAutoAppleContainerStoppedOnAppleSilicon(t *testing.T) {
 	logFile := setupAppleContainerEnsureSeams(t)
 	isInteractiveTerminalFn = func() bool { return false }
-	promptYesNoFn = func(string) bool { t.Fatal("must not prompt in non-interactive auto path"); return false }
-	// System is down until "container system start" creates the readiness file.
+	confirmFn = func(string) bool { t.Fatal("must not prompt in auto path"); return false }
+	// System stays down because the auto path must not run "container system start".
 	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
 
 	oldDockerBuild := buildDockerProjectWithDocker
 	t.Cleanup(func() { buildDockerProjectWithDocker = oldDockerBuild })
+	var dockerFallbackCalled bool
 	buildDockerProjectWithDocker = func(dir, imageName, platform, dockerfile string) error {
-		t.Fatal("Docker fallback should not run when Apple Container can be started")
+		dockerFallbackCalled = true
 		return nil
 	}
 
@@ -345,16 +397,19 @@ func TestBuildDockerProjectWithBuilderStartsAppleContainerWhenStoppedOnAppleSili
 	if err := buildDockerProjectWithBuilder(context.Background(), "", dir, "test-app:latest", "linux/arm64", "Containerfile"); err != nil {
 		t.Fatalf("buildDockerProjectWithBuilder: %v", err)
 	}
+	if !dockerFallbackCalled {
+		t.Fatal("Docker fallback was not called")
+	}
 
 	data, err := os.ReadFile(logFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "container\x00system\x00start\x00--timeout\x0060") {
-		t.Fatalf("expected Apple Container system to be started:\n%s", data)
+	if strings.Contains(string(data), "container\x00system\x00start") {
+		t.Fatalf("did not expect Apple Container system to be started:\n%s", data)
 	}
-	if !strings.Contains(string(data), "container\x00build\x00") {
-		t.Fatalf("expected Apple Container build to run:\n%s", data)
+	if strings.Contains(string(data), "container\x00build\x00") {
+		t.Fatalf("did not expect Apple Container build to run:\n%s", data)
 	}
 }
 
@@ -454,7 +509,7 @@ func setupAppleContainerEnsureSeams(t *testing.T) string {
 	oldGOOS := imageBuilderHostGOOS
 	oldGOARCH := imageBuilderHostGOARCH
 	oldInteractive := isInteractiveTerminalFn
-	oldPrompt := promptYesNoFn
+	oldPrompt := confirmFn
 	oldTimeout := appleContainerStartTimeout
 	oldPoll := appleContainerStatusPollInterval
 	t.Cleanup(func() {
@@ -463,7 +518,7 @@ func setupAppleContainerEnsureSeams(t *testing.T) string {
 		imageBuilderHostGOOS = oldGOOS
 		imageBuilderHostGOARCH = oldGOARCH
 		isInteractiveTerminalFn = oldInteractive
-		promptYesNoFn = oldPrompt
+		confirmFn = oldPrompt
 		appleContainerStartTimeout = oldTimeout
 		appleContainerStatusPollInterval = oldPoll
 	})
@@ -500,7 +555,7 @@ func TestEnsureAppleContainerSystem_AlreadyRunning(t *testing.T) {
 func TestEnsureAppleContainerSystem_AutoStartsWhenAssumeYes(t *testing.T) {
 	logFile := setupAppleContainerEnsureSeams(t)
 	isInteractiveTerminalFn = func() bool { return false }
-	promptYesNoFn = func(string) bool { t.Fatal("must not prompt when assumeYes"); return false }
+	confirmFn = func(string) bool { t.Fatal("must not prompt when assumeYes"); return false }
 	// System is down until "container system start" creates the readiness file.
 	t.Setenv("IMAGE_BUILDER_STATUS_READY_FILE", filepath.Join(t.TempDir(), "ready"))
 
@@ -518,7 +573,7 @@ func TestEnsureAppleContainerSystem_InteractiveDeclined(t *testing.T) {
 	logFile := setupAppleContainerEnsureSeams(t)
 	t.Setenv("IMAGE_BUILDER_FAIL_STATUS", "1")
 	isInteractiveTerminalFn = func() bool { return true }
-	promptYesNoFn = func(string) bool { return false }
+	confirmFn = func(string) bool { return false }
 
 	err := ensureAppleContainerSystem(context.Background(), false)
 	if err == nil {

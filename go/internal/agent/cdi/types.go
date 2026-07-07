@@ -57,13 +57,6 @@ type CDIHook struct {
 	Timeout  *int     `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 }
 
-type CDIDeviceInfo struct {
-	Identifier  string
-	Category    string
-	Description string
-	DevicePaths []string
-}
-
 // CDIError represents errors from CDI operations.
 type CDIError struct {
 	Message string

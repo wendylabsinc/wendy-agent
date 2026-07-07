@@ -366,6 +366,92 @@ func TestBuildContainerBaseEnvIdentityVars(t *testing.T) {
 	}
 }
 
+// TestBuildContainerBaseEnvOmitsPathAndTerm guards against reintroducing
+// generic PATH/TERM into the always-wins Wendy env: buildContainerBaseEnv is
+// appended after the image env, so any PATH there clobbers image-defined
+// values under OCI last-one-wins semantics (WDY-1825). PATH/TERM defaults
+// belong in fallbackContainerEnv via appendFallbackEnv.
+func TestBuildContainerBaseEnvOmitsPathAndTerm(t *testing.T) {
+	old := deviceHostnameWithSuffix
+	t.Cleanup(func() { deviceHostnameWithSuffix = old })
+	deviceHostnameWithSuffix = func() string { return "device.local" }
+
+	env, err := buildContainerBaseEnv("demo-app", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "TERM=") {
+			t.Errorf("base env must not contain generic defaults (WDY-1825); got %q in %v", kv, env)
+		}
+	}
+}
+
+func TestAppendFallbackEnvPreservesImagePATH(t *testing.T) {
+	imagePATH := "PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	env := appendFallbackEnv([]string{imagePATH, "NVIDIA_VISIBLE_DEVICES=all"})
+
+	var paths []string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			paths = append(paths, kv)
+		}
+	}
+	if len(paths) != 1 {
+		t.Fatalf("want exactly one PATH entry, got %d: %v", len(paths), env)
+	}
+	if paths[0] != imagePATH {
+		t.Errorf("PATH = %q, want image PATH %q preserved", paths[0], imagePATH)
+	}
+	// TERM was not set by the image, so the fallback must still be appended.
+	if !envHasKey(env, "TERM") {
+		t.Errorf("env missing TERM fallback; got %v", env)
+	}
+}
+
+func TestAppendFallbackEnvAddsPATHWhenImageHasNone(t *testing.T) {
+	env := appendFallbackEnv([]string{"FOO=bar"})
+
+	wantPATH := "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+	wantTERM := "TERM=xterm"
+	foundPATH, foundTERM := false, false
+	for _, kv := range env {
+		switch kv {
+		case wantPATH:
+			foundPATH = true
+		case wantTERM:
+			foundTERM = true
+		}
+	}
+	if !foundPATH {
+		t.Errorf("env missing fallback %q; got %v", wantPATH, env)
+	}
+	if !foundTERM {
+		t.Errorf("env missing fallback %q; got %v", wantTERM, env)
+	}
+}
+
+func TestAppendFallbackEnvEmptyInput(t *testing.T) {
+	env := appendFallbackEnv(nil)
+	if !envHasKey(env, "PATH") || !envHasKey(env, "TERM") {
+		t.Errorf("fallbacks missing on empty input; got %v", env)
+	}
+}
+
+// TestAppendFallbackEnvKeyMatchIsExact ensures the presence check matches the
+// whole key, not a prefix: an image setting PATHEXT (or TERMINFO) must not
+// suppress the PATH (or TERM) fallback.
+func TestAppendFallbackEnvKeyMatchIsExact(t *testing.T) {
+	env := appendFallbackEnv([]string{"PATHEXT=.sh", "TERMINFO=/usr/share/terminfo"})
+	if !envHasKey(env, "PATH") {
+		t.Errorf("PATHEXT must not suppress the PATH fallback; got %v", env)
+	}
+	if !envHasKey(env, "TERM") {
+		t.Errorf("TERMINFO must not suppress the TERM fallback; got %v", env)
+	}
+}
+
 func hostNetworkCfg() *appconfig.AppConfig {
 	return &appconfig.AppConfig{
 		Entitlements: []appconfig.Entitlement{

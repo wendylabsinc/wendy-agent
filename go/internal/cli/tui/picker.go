@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -9,6 +11,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// displayAddress strips a trailing numeric port from an address for display in
+// the device list — the agent port (50051/50052) is an implementation detail and
+// the same for every device. The full host:port is still used to connect and is
+// copied to the clipboard. Values that aren't host:<number> (BLE UUIDs,
+// "provider: id") are returned unchanged.
+func displayAddress(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return addr
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return addr
+	}
+	return host
+}
 
 // newProbeSpinner builds the spinner that animates the Agent/OS columns while a
 // device probe is in flight. Its Style is intentionally empty so View() returns
@@ -70,8 +88,18 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 // formatOSNameVersion joins an OS/distro name and its version into a single
 // display string (e.g. "ubuntu" + "24.04" -> "ubuntu 24.04"). Either part may
 // be empty; the result never has leading or trailing space.
+//
+// When the version string already begins with the OS name (case-insensitive),
+// the name is dropped to avoid a redundant prefix. WendyOS reports the distro
+// ID "wendyos" alongside a version like "WendyOS-0.16.2", which would otherwise
+// render as the ugly "wendyos WendyOS-0.16.2"; here it becomes "WendyOS-0.16.2".
 func formatOSNameVersion(os, version string) string {
-	return strings.TrimSpace(strings.TrimSpace(os) + " " + strings.TrimSpace(version))
+	os = strings.TrimSpace(os)
+	version = strings.TrimSpace(version)
+	if os != "" && version != "" && len(version) >= len(os) && strings.EqualFold(version[:len(os)], os) {
+		return version
+	}
+	return strings.TrimSpace(os + " " + version)
 }
 
 // PickerItem represents a selectable row in the device picker.
@@ -545,7 +573,7 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
-	sb.WriteString(ColorizeProbeGlyphs(m.tableView()) + "\n")
+	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
 
 	if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
@@ -692,7 +720,7 @@ var pickerColumnDefs = []pickerColumnDef{
 		title:    "Address",
 		minWidth: 14,
 		value: func(item PickerItem) string {
-			return item.Address
+			return displayAddress(item.Address)
 		},
 	},
 	{
@@ -935,22 +963,73 @@ func withSectionHeaders(visible []PickerItem, itemRows []bubbleTable.Row, ncols,
 	return rows, rowItem
 }
 
+// sectionHeaderPrefix marks a section-header cell so it reads as a group title
+// rather than a selectable row. It is a plain-text rule (see sectionHeaderRow
+// for why styling can't live in the cell); colorizeSectionHeaders keys on it to
+// apply color after layout.
+const sectionHeaderPrefix = "── "
+
 // sectionHeaderRow builds a non-selectable header row whose first column shows
-// the section label and whose remaining columns are blank.
+// the section label prefixed with a rule (── WendyOS) and whose remaining
+// columns are blank.
 //
 // The label is intentionally plain text, not a lipgloss-styled string: the
 // underlying bubbles table truncates every cell with runewidth.Truncate, which
 // is not ANSI-aware. A styled value's escape bytes count toward the column
 // width, so truncation cuts inside the escape sequence and the terminal renders
-// garbage.
+// garbage. The rule prefix keeps the header distinguishable even on terminals
+// with no color; colorizeSectionHeaders adds color after layout for the rest.
 func sectionHeaderRow(label string, ncols, labelOffset int) bubbleTable.Row {
 	row := make(bubbleTable.Row, max(ncols, 1))
+	cell := sectionHeaderPrefix + label
 	if labelOffset < len(row) {
-		row[labelOffset] = label
+		row[labelOffset] = cell
 	} else {
-		row[0] = label
+		row[0] = cell
 	}
 	return row
+}
+
+// pickerSectionHeader styles section-header lines: a bold accent so a group
+// title (── WendyOS) stands apart from the selectable device rows below it.
+var pickerSectionHeader = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+
+// sectionLabels returns the distinct section names present in the picker, in the
+// order they first appear in the item list. Empty when no item sets a Section,
+// so a headerless picker skips colorizeSectionHeaders entirely.
+func (m PickerModel) sectionLabels() []string {
+	var labels []string
+	seen := make(map[string]bool)
+	for _, item := range m.items {
+		if item.Section != "" && !seen[item.Section] {
+			seen[item.Section] = true
+			labels = append(labels, item.Section)
+		}
+	}
+	return labels
+}
+
+// colorizeSectionHeaders applies pickerSectionHeader to the header lines of an
+// already-rendered table view, matching lines by the plain-text rule prefix and
+// a known section label. The section cell is kept plain inside the table (see
+// sectionHeaderRow); color is applied here, after layout, so it never counts
+// toward column widths or trips the table's non-ANSI-aware truncation.
+func colorizeSectionHeaders(view string, labels []string) string {
+	if len(labels) == 0 {
+		return view
+	}
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		content := strings.TrimLeft(line, " ")
+		indent := line[:len(line)-len(content)]
+		for _, label := range labels {
+			if strings.HasPrefix(content, sectionHeaderPrefix+label) {
+				lines[i] = indent + pickerSectionHeader.Render(strings.TrimRight(content, " "))
+				break
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func pickerActiveColumnsForDefs(items []PickerItem, defs []pickerColumnDef, fixed bool) []pickerColumnDef {

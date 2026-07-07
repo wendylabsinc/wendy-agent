@@ -67,6 +67,12 @@ type deviceVersion struct {
 	SDZstPath      string `json:"sd_zst_path"`
 	SDZstChecksum  string `json:"sd_zst_checksum"`
 	SDZstSizeBytes int64  `json:"sd_zst_size_bytes"`
+
+	// Thor flashpack: the USB-recovery flash artifact (a .tar.zst) wendy downloads,
+	// extracts and flashes. Only present for jetson-agx-thor.
+	FlashpackPath      string `json:"flashpack_path"`
+	FlashpackChecksum  string `json:"flashpack_checksum"`
+	FlashpackSizeBytes int64  `json:"flashpack_size_bytes"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -174,6 +180,89 @@ func getAvailableDevices() ([]deviceInfo, error) {
 	return devices, nil
 }
 
+// prBasePath returns the GCS path prefix under which a PR build's manifests
+// and images are published, e.g. "pr/123/".
+func prBasePath(pr int) string {
+	return fmt.Sprintf("pr/%d/", pr)
+}
+
+// fetchPRMainManifest fetches the per-PR master manifest written by the
+// wendyos-builder publish-pr job.
+func fetchPRMainManifest(pr int) (*mainManifest, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	url := gcsBaseURL + "/" + prBasePath(pr) + "manifests/master.json"
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetching PR %d manifest: %w", pr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("no build found for PR %d — is the build still running or the PR closed?", pr)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("PR %d manifest returned status %d", pr, resp.StatusCode)
+	}
+
+	var m mainManifest
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, fmt.Errorf("decoding PR %d manifest: %w", pr, err)
+	}
+	return &m, nil
+}
+
+// prDeviceVersion resolves the version tag to install/update for a PR device
+// entry: the PR's Latest version, falling back to LatestNightly when the PR
+// only published a nightly-style build. The publish-pr job always writes with
+// --nightly, so Latest is empty and LatestNightly carries the "pr-N" tag —
+// every PR device entry hits the fallback in practice. Shared by
+// getAvailablePRDevices and getPROTAInfoForDeviceType so the two stay
+// consistent.
+func prDeviceVersion(dev manifestDevice) string {
+	if dev.Latest != "" {
+		return dev.Latest
+	}
+	return dev.LatestNightly
+}
+
+// getAvailablePRDevices mirrors getAvailableDevices for a per-PR manifest.
+// The master entries' ManifestPath values are already "pr/<N>/manifests/<device>.json"
+// (written by the publish-pr job), so fetchDeviceManifest works unchanged.
+func getAvailablePRDevices(pr int) ([]deviceInfo, error) {
+	main, err := fetchPRMainManifest(pr)
+	if err != nil {
+		return nil, err
+	}
+
+	var devices []deviceInfo
+	for key, dev := range main.Devices {
+		if dev.ManifestPath == "" {
+			continue
+		}
+
+		dm, err := fetchDeviceManifest(dev.ManifestPath)
+		if err != nil {
+			// Skip devices whose manifest can't be fetched.
+			continue
+		}
+
+		info := deviceInfo{
+			Key:            key,
+			Name:           humanizeDeviceKey(key),
+			LatestVersion:  prDeviceVersion(dev),
+			NightlyVersion: dev.LatestNightly,
+			Stability:      dev.Stability,
+			Manifest:       dm,
+		}
+
+		devices = append(devices, info)
+	}
+
+	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })
+
+	return devices, nil
+}
+
 // imageTriple is the resolved (image, bmap, zst) path set for one storage.
 type imageTriple struct {
 	imagePath string
@@ -273,6 +362,84 @@ func getLatestOTAInfoForDeviceType(deviceType string, storageMedium string, nigh
 		return "", "", err
 	}
 	return u, latest, nil
+}
+
+// getPROTAInfoForDeviceType mirrors getLatestOTAInfoForDeviceType but resolves
+// against a PR build's manifest (fetchPRMainManifest) instead of the master
+// manifest. It selects the PR device's Latest version, falling back to
+// LatestNightly when the PR only published a nightly-style build.
+func getPROTAInfoForDeviceType(pr int, deviceType, storageMedium string) (artifactURL, version string, err error) {
+	main, err := fetchPRMainManifest(pr)
+	if err != nil {
+		return "", "", err
+	}
+	dev, ok := main.Devices[deviceType]
+	if !ok || dev.ManifestPath == "" {
+		return "", "", fmt.Errorf("device type %q not built by PR %d", deviceType, pr)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return "", "", err
+	}
+	ver := prDeviceVersion(dev)
+	if ver == "" {
+		return "", "", fmt.Errorf("no version for %q in PR %d", deviceType, pr)
+	}
+	u, err := getOTAUpdateURL(dm, ver, storageMedium)
+	if err != nil {
+		return "", "", err
+	}
+	return u, ver, nil
+}
+
+// thorDeviceType is the manifest key / --device-type for the AGX Thor.
+const thorDeviceType = "jetson-agx-thor"
+
+// thorFlashpackInfo is the resolved flashpack download for a Thor version.
+type thorFlashpackInfo struct {
+	URL       string
+	Checksum  string
+	SizeBytes int64
+	Version   string
+}
+
+// getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
+// artifact for version (or the latest stable / nightly when version is "").
+func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, error) {
+	main, err := fetchMainManifest()
+	if err != nil {
+		return nil, fmt.Errorf("fetching manifest: %w", err)
+	}
+	dev, ok := main.Devices[thorDeviceType]
+	if !ok || dev.ManifestPath == "" {
+		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
+	}
+	dm, err := fetchDeviceManifest(dev.ManifestPath)
+	if err != nil {
+		return nil, fmt.Errorf("fetching device manifest: %w", err)
+	}
+	if version == "" {
+		version = dev.Latest
+		if nightly && dev.LatestNightly != "" {
+			version = dev.LatestNightly
+		}
+	}
+	if version == "" {
+		return nil, fmt.Errorf("no version available for %s", thorDeviceType)
+	}
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, thorDeviceType)
+	}
+	if v.FlashpackPath == "" {
+		return nil, fmt.Errorf("version %s has no flashpack artifact in the manifest", version)
+	}
+	return &thorFlashpackInfo{
+		URL:       gcsBaseURL + "/" + v.FlashpackPath,
+		Checksum:  v.FlashpackChecksum,
+		SizeBytes: v.FlashpackSizeBytes,
+		Version:   version,
+	}, nil
 }
 
 // firmwareManifest contains version info for a specific chip.

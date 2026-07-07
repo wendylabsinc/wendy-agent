@@ -98,6 +98,24 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Prepare macOS build dependencies
+        if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
+
       - name: Build CLI
         if: inputs.hostname == '' || inputs.jobs == 'all' || inputs.jobs == 'discover'
         working-directory: go
@@ -234,6 +252,23 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      - name: Prepare macOS build dependencies
+        run: |
+          set -euo pipefail
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          missing=()
+          if ! command -v pkg-config >/dev/null 2>&1; then
+            missing+=(pkg-config)
+          fi
+          if ! pkg-config --exists libusb-1.0 >/dev/null 2>&1; then
+            missing+=(libusb)
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
+
       - name: Build CLI
         working-directory: go
         run: make build-cli
@@ -355,6 +390,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+
+      # The Linux CLI links libusb via cgo (Thor flashing), so the self-hosted
+      # runner needs the dev headers before `make build-cli`.
+      - name: Prepare Linux build dependencies
+        run: |
+          set -euo pipefail
+          if ! pkg-config --exists libusb-1.0 2>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y pkg-config libusb-1.0-0-dev
+          fi
 
       - name: Build CLI
         working-directory: go

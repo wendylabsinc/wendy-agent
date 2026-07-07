@@ -29,12 +29,12 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
-public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -51,7 +51,7 @@ public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: Se
   public init() {}
 }
 
-public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -87,7 +87,7 @@ public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: S
   fileprivate var _partialSuccess: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess? = nil
 }
 
-public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess: Sendable {
+public nonisolated struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -114,9 +114,9 @@ public struct Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess: Se
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "opentelemetry.proto.collector.logs.v1"
+fileprivate nonisolated let _protobuf_package = "opentelemetry.proto.collector.logs.v1"
 
-extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportLogsServiceRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}resource_logs\0")
 
@@ -146,7 +146,7 @@ extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest: SwiftP
   }
 }
 
-extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportLogsServiceResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}partial_success\0")
 
@@ -180,7 +180,7 @@ extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse: Swift
   }
 }
 
-extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Collector_Logs_V1_ExportLogsPartialSuccess: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExportLogsPartialSuccess"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}rejected_log_records\0\u{3}error_message\0")
 

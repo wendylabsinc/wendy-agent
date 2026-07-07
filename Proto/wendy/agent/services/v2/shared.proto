@@ -18,6 +18,10 @@ enum AppRunningState {
     APP_RUNNING_STATE_UNSPECIFIED = 0;
     APP_RUNNING_STATE_STOPPED = 1;
     APP_RUNNING_STATE_RUNNING = 2;
+    // Not running right now, but the agent's restart policy is actively
+    // restart-looping the app (auto-restarted at least once, will be started
+    // again). See failure_count and exit_code/termination_reason.
+    APP_RUNNING_STATE_CRASH_LOOPING = 3;
 }
 
 message AppContainer {
@@ -25,4 +29,10 @@ message AppContainer {
     string app_version = 2;
     AppRunningState running_state = 3;
     uint32 failure_count = 4;
+    // Exit diagnostics for the last run, only meaningful when running_state is
+    // STOPPED. Fields 5-8 are left for the in-flight provenance PR #1234, so
+    // these start at 9 to guarantee no wire-number collision on either merge
+    // order.
+    int32 exit_code = 9;            // process exit code of the last run; -1 = task never started.
+    string termination_reason = 10;  // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
 }

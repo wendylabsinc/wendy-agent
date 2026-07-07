@@ -64,7 +64,7 @@ when you need lower-level control:
   build the managed CLI into the CLI run directory, write per-test sandboxes
   under the CLI and agent run directories, and write recordings under
   `<output-dir>/<attempt-id>/observations/`. They accept options such as `--filter`,
-  `--agent-address`, `--agent-user`, and `--verbose`.
+  `--agent-address`, `--agent-user`, `--test-timeout`, and `--verbose`.
 - `Scripts/E2EAnalyze.sh` and `Scripts/E2EAnalyze.ps1` analyze attempt
   directories in an output directory. By default, they only consider attempts
   matching the current run ID, such as `swift-e2e-tests.local0000`. They support
@@ -89,7 +89,7 @@ Makefile E2E helpers default to the repository-local output root:
 Set `WENDY_E2E_OUTPUT_DIR` or pass `--output-dir` to the scripts when you need a
 custom artifact location. If Swift Testing writes terminal control characters
 that are invalid in XML 1.0, the harness sanitizes the xUnit file in place and
-preserves the original as `test-results-swift-testing.raw.xml`.
+preserves the original as `test-results.raw.xml`.
 
 The Makefile includes helpers for the common cases:
 

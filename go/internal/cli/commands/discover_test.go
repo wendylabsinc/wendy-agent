@@ -333,10 +333,14 @@ func TestRenderDeviceTable(t *testing.T) {
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10:8443", tui.DeviceTableLegend} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10", tui.DeviceTableLegend} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}
+	}
+	// The agent port is an implementation detail and is stripped from the list.
+	if strings.Contains(output, "192.168.1.10:8443") {
+		t.Fatalf("expected port stripped from displayed address, got %q", output)
 	}
 	if strings.Contains(output, "wendy-alpha v1.2.3") {
 		t.Fatalf("expected version in dedicated column, got suffixed name in %q", output)
@@ -527,6 +531,68 @@ func TestMergePickerItemClearsNoAccessHintWhenVersionKnown(t *testing.T) {
 	if existing.Hint != "" {
 		t.Fatalf("Hint = %q, want cleared after BLE version backfill", existing.Hint)
 	}
+}
+
+// TestMergePickerItemMergesBLEIntoLANByHostname verifies the run-picker collapses
+// a BLE row (raw hostname) into the LAN row (friendly displayname) for the same
+// physical device, regardless of which transport is discovered first. This is the
+// picker-side counterpart to the MergedDevices hostname match.
+func TestMergePickerItemMergesBLEIntoLANByHostname(t *testing.T) {
+	lanDev := models.LANDevice{DisplayName: "Agx Orin", Hostname: "wendyos-agx-orin.local", IPAddress: "192.168.1.10", Port: 50051}
+	bleDev := models.BluetoothDevice{DisplayName: "wendyos-agx-orin", Address: "EE48983F-300C-3A22-395B-290A76741CA1", L2CAPPSM: 128}
+
+	lanItem := tui.PickerItem{
+		Name:     lanDev.DisplayName,
+		Type:     "LAN",
+		Address:  preferredLANAddress(lanDev),
+		DedupKey: deviceDedupKey(lanDev.HostKey(), lanDev.DisplayName),
+		SortKey:  deviceSortKey(lanDev.DisplayName, lanDev.USB),
+		Value:    &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: lanDev.DisplayName, LAN: &lanDev}},
+	}
+	bleItem := tui.PickerItem{
+		Name:     bleDev.DisplayName,
+		Type:     "BLE",
+		Address:  bleDev.Address,
+		DedupKey: deviceDedupKey(bleDev.HostKey(), bleDev.DisplayName),
+		SortKey:  deviceSortKey(bleDev.DisplayName, ""),
+		Value:    &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: bleDev.DisplayName, Bluetooth: &bleDev}},
+	}
+
+	// The picker dedups by DedupKey, so the shared hostname key is what collapses
+	// the two rows into one.
+	if lanItem.DedupKey != bleItem.DedupKey {
+		t.Fatalf("dedup keys differ: LAN=%q BLE=%q (should both be the hostname)", lanItem.DedupKey, bleItem.DedupKey)
+	}
+
+	// LAN discovered first, then BLE merges in.
+	t.Run("LANThenBLE", func(t *testing.T) {
+		existing := lanItem
+		existing.Value = &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: lanDev.DisplayName, LAN: &lanDev}}
+		mergePickerItem(&existing, bleItem)
+		if existing.Type != "LAN, BLE" {
+			t.Errorf("Type = %q, want %q", existing.Type, "LAN, BLE")
+		}
+		if existing.Name != "Agx Orin" {
+			t.Errorf("Name = %q, want friendly LAN name %q", existing.Name, "Agx Orin")
+		}
+	})
+
+	// BLE discovered first, then LAN merges in: the friendly name and LAN address
+	// must win.
+	t.Run("BLEThenLAN", func(t *testing.T) {
+		existing := bleItem
+		existing.Value = &pickerEntry{mergedDevice: &models.DiscoveredDevice{DisplayName: bleDev.DisplayName, Bluetooth: &bleDev}}
+		mergePickerItem(&existing, lanItem)
+		if existing.Type != "LAN, BLE" {
+			t.Errorf("Type = %q, want %q", existing.Type, "LAN, BLE")
+		}
+		if existing.Name != "Agx Orin" {
+			t.Errorf("Name = %q, want friendly LAN name to win over BLE hostname", existing.Name)
+		}
+		if existing.Address != preferredLANAddress(lanDev) {
+			t.Errorf("Address = %q, want LAN address %q", existing.Address, preferredLANAddress(lanDev))
+		}
+	})
 }
 
 func TestDiscoverModelViewShowsNoAccessHintForHighlightedDevice(t *testing.T) {
@@ -878,15 +944,12 @@ func TestCopyToClipboard_NoToolsFound(t *testing.T) {
 	}
 }
 
-// TestDiscoverCmdHasAllFlag verifies `wendy discover --all` exists and defaults
-// to off, so local run targets are hidden unless explicitly requested.
-func TestDiscoverCmdHasAllFlag(t *testing.T) {
+// TestDiscoverCmdHasNoAllFlag verifies `wendy discover` no longer carries an
+// --all flag: local run targets are hidden by default and revealed only via the
+// WENDY_SHOW_LOCAL_DEVICES environment variable.
+func TestDiscoverCmdHasNoAllFlag(t *testing.T) {
 	cmd := newDiscoverCmd()
-	flag := cmd.Flags().Lookup("all")
-	if flag == nil {
-		t.Fatal("discover is missing the --all flag")
-	}
-	if flag.DefValue != "false" {
-		t.Fatalf("--all default = %q; want false", flag.DefValue)
+	if flag := cmd.Flags().Lookup("all"); flag != nil {
+		t.Fatal("discover should no longer define an --all flag")
 	}
 }

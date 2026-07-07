@@ -20,8 +20,8 @@ func newAuthListOrgsCmd() *cobra.Command {
 Press 'd' on a highlighted organization to mark it as the default for commands
 that target a specific org (such as 'wendy os install --pre-enroll' and
 'wendy device enroll'). Press 'x' to clear the default. Press 'r' to remove
-the stored credentials for the highlighted org. Enter selects an org for this
-invocation only and prints its details.`,
+the stored credentials for the highlighted org. Enter copies the highlighted
+org's ID to the clipboard; press 'q' to quit.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -58,8 +58,10 @@ invocation only and prints its details.`,
 			}
 
 			// Always show the picker: this command exists specifically to let
-			// the user inspect and change their org selection.
-			id, name, err := pickOrgInteractiveFn(orgs, cfg)
+			// the user inspect and change their org selection. copyOnEnter is
+			// true so Enter copies the highlighted org's ID and keeps the picker
+			// open — this is a management view, not a selection flow.
+			id, name, err := pickOrgInteractiveFn(orgs, cfg, true)
 			if err != nil {
 				return err
 			}

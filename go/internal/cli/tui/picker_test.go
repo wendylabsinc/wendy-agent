@@ -163,11 +163,33 @@ func TestPickerTableData_KeepsFullColumnContentForScrolling(t *testing.T) {
 			t.Fatalf("expected %s column to remain scrollable", want)
 		}
 	}
-	if width := columnWidth(cols, "Address"); width < len("wendyos-sunny-daisy.local:50052") {
+	// The port is stripped for display, so the column need only fit the host.
+	if width := columnWidth(cols, "Address"); width < len("wendyos-sunny-daisy.local") {
 		t.Fatalf("address column width = %d, want enough for full hostname", width)
 	}
 	if len(rows) != 1 || len(rows[0]) != len(cols) {
 		t.Fatalf("row/column mismatch: rows=%v cols=%v", rows, cols)
+	}
+	if addr := rows[0][columnIndex(cols, "Address")]; strings.TrimSpace(addr) != "wendyos-sunny-daisy.local" {
+		t.Fatalf("address cell = %q, want port stripped for display", addr)
+	}
+}
+
+func TestDisplayAddress(t *testing.T) {
+	cases := map[string]string{
+		"wendyos-thor.local:50051":             "wendyos-thor.local",
+		"wendyos-agx-orin.local:50052":         "wendyos-agx-orin.local",
+		"192.168.1.10:50051":                   "192.168.1.10",
+		"[fe80::1%en0]:50051":                  "fe80::1%en0",
+		"wendyos-thor.local":                   "wendyos-thor.local", // no port
+		"EE48983F-300C-3A22-395B-290A76741CA1": "EE48983F-300C-3A22-395B-290A76741CA1",
+		"docker: my-container":                 "docker: my-container", // non-numeric "port"
+		"":                                     "",
+	}
+	for in, want := range cases {
+		if got := displayAddress(in); got != want {
+			t.Errorf("displayAddress(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -343,8 +365,10 @@ func TestPickerModel_WindowWidthControlsColumns(t *testing.T) {
 			t.Fatalf("cropped line width = %d, want <= 24: %q", got, line)
 		}
 	}
-	if table := pm.table.FullView(); !strings.Contains(table, "wendyos-sunny-daisy.local:50052") {
-		t.Fatalf("underlying table should preserve full address without ellipsis, got %q", table)
+	// The port is stripped for display, but the (port-less) address must still be
+	// preserved in full without ellipsis for horizontal scrolling.
+	if table := pm.table.FullView(); !strings.Contains(table, "wendyos-sunny-daisy.local") || strings.Contains(table, ":50052") {
+		t.Fatalf("underlying table should preserve full port-less address without ellipsis, got %q", table)
 	}
 
 	updated, _ = pm.Update(tea.WindowSizeMsg{Width: 120, Height: 20})
@@ -495,6 +519,9 @@ func TestFormatOSNameVersion(t *testing.T) {
 		{name: "name only", os: "arch", version: "", want: "arch"},
 		{name: "both empty", os: "", version: "", want: ""},
 		{name: "trims surrounding space", os: " ubuntu ", version: " 24.04 ", want: "ubuntu 24.04"},
+		{name: "drops redundant distro prefix", os: "wendyos", version: "WendyOS-0.16.2", want: "WendyOS-0.16.2"},
+		{name: "drops redundant prefix case-insensitive", os: "WendyOS", version: "wendyos 1.0", want: "wendyos 1.0"},
+		{name: "keeps name when version is not a prefix match", os: "ubuntu", version: "24.04", want: "ubuntu 24.04"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -719,9 +746,10 @@ func TestPickerModel_RendersSectionHeaders(t *testing.T) {
 }
 
 // TestPickerModel_RendersSectionHeadersInColor verifies that section headers
-// render correctly in truecolor mode. Headers are plain text (no lipgloss
-// styling) to avoid ANSI truncation issues in the bubble table, but this test
-// ensures they still display correctly when the terminal supports truecolor.
+// render correctly in truecolor mode. The header cell text stays plain (no
+// lipgloss styling) to avoid ANSI truncation issues in the bubble table, but
+// this test ensures the label survives intact when the terminal supports
+// truecolor.
 func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
@@ -733,6 +761,45 @@ func TestPickerModel_RendersSectionHeadersInColor(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("expected colorized sectioned picker to render header %q intact, got %q", want, view)
 		}
+	}
+}
+
+// TestPickerModel_SectionHeadersAreVisuallyDistinct guards the two cues that set
+// a header apart from a selectable device row: the plain-text rule prefix (so it
+// reads as a header even with no color) and the accent color applied after
+// layout (so it pops on capable terminals). Without both, a header like
+// "WendyOS" is indistinguishable from a device name.
+func TestPickerModel_SectionHeadersAreVisuallyDistinct(t *testing.T) {
+	// Rule prefix survives ANSI stripping, so it's present regardless of color.
+	pm := sectionedPicker(t)
+	plain := ansi.Strip(pm.View())
+	for _, label := range []string{"WendyOS", "Wendy Lite"} {
+		if !strings.Contains(plain, sectionHeaderPrefix+label) {
+			t.Fatalf("expected header %q to carry the %q rule prefix, got %q", label, sectionHeaderPrefix, plain)
+		}
+	}
+	// A device row must NOT carry the header prefix.
+	if strings.Contains(plain, sectionHeaderPrefix+"Raspberry Pi 5") {
+		t.Fatalf("device row unexpectedly rendered as a section header: %q", plain)
+	}
+
+	// In truecolor the header line carries escape codes (accent color) that a
+	// plain device row does not.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+	colored := sectionedPicker(t).View()
+	var headerLine string
+	for _, line := range strings.Split(colored, "\n") {
+		if strings.Contains(ansi.Strip(line), sectionHeaderPrefix+"WendyOS") {
+			headerLine = line
+			break
+		}
+	}
+	if headerLine == "" {
+		t.Fatal("could not locate the WendyOS header line in the colored view")
+	}
+	if headerLine == ansi.Strip(headerLine) {
+		t.Fatalf("expected the header line to be colorized, got plain %q", headerLine)
 	}
 }
 
@@ -810,6 +877,15 @@ func columnWidth(cols []bubbleTable.Column, title string) int {
 		}
 	}
 	return 0
+}
+
+func columnIndex(cols []bubbleTable.Column, title string) int {
+	for i, col := range cols {
+		if col.Title == title {
+			return i
+		}
+	}
+	return -1
 }
 
 func lastNonEmptyLine(view string) string {

@@ -189,6 +189,84 @@ public enum Wendy_Agent_Services_V1_WendyContainerService: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "GetResourceStats" metadata.
+        public enum GetResourceStats: Sendable {
+            /// Request type for "GetResourceStats".
+            public typealias Input = Wendy_Agent_Services_V1_GetResourceStatsRequest
+            /// Response type for "GetResourceStats".
+            public typealias Output = Wendy_Agent_Services_V1_GetResourceStatsResponse
+            /// Descriptor for "GetResourceStats".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "GetResourceStats",
+                type: .unary
+            )
+        }
+        /// Namespace for "GetContainerPorts" metadata.
+        public enum GetContainerPorts: Sendable {
+            /// Request type for "GetContainerPorts".
+            public typealias Input = Wendy_Agent_Services_V1_GetContainerPortsRequest
+            /// Response type for "GetContainerPorts".
+            public typealias Output = Wendy_Agent_Services_V1_GetContainerPortsResponse
+            /// Descriptor for "GetContainerPorts".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "GetContainerPorts",
+                type: .unary
+            )
+        }
+        /// Namespace for "StreamMCP" metadata.
+        public enum StreamMCP: Sendable {
+            /// Request type for "StreamMCP".
+            public typealias Input = Wendy_Agent_Services_V1_MCPChunk
+            /// Response type for "StreamMCP".
+            public typealias Output = Wendy_Agent_Services_V1_MCPChunk
+            /// Descriptor for "StreamMCP".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "StreamMCP",
+                type: .bidirectionalStreaming
+            )
+        }
+        /// Namespace for "QueryChunks" metadata.
+        public enum QueryChunks: Sendable {
+            /// Request type for "QueryChunks".
+            public typealias Input = Wendy_Agent_Services_V1_QueryChunksRequest
+            /// Response type for "QueryChunks".
+            public typealias Output = Wendy_Agent_Services_V1_QueryChunksResponse
+            /// Descriptor for "QueryChunks".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "QueryChunks",
+                type: .unary
+            )
+        }
+        /// Namespace for "WriteChunks" metadata.
+        public enum WriteChunks: Sendable {
+            /// Request type for "WriteChunks".
+            public typealias Input = Wendy_Agent_Services_V1_WriteChunksRequest
+            /// Response type for "WriteChunks".
+            public typealias Output = Wendy_Agent_Services_V1_WriteChunksResponse
+            /// Descriptor for "WriteChunks".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "WriteChunks",
+                type: .clientStreaming
+            )
+        }
+        /// Namespace for "QueryLayers" metadata.
+        public enum QueryLayers: Sendable {
+            /// Request type for "QueryLayers".
+            public typealias Input = Wendy_Agent_Services_V1_QueryLayersRequest
+            /// Response type for "QueryLayers".
+            public typealias Output = Wendy_Agent_Services_V1_QueryLayersResponse
+            /// Descriptor for "QueryLayers".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "QueryLayers",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "wendy.agent.services.v1.WendyContainerService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             ListLayers.descriptor,
@@ -203,7 +281,13 @@ public enum Wendy_Agent_Services_V1_WendyContainerService: Sendable {
             ListContainers.descriptor,
             ListVolumes.descriptor,
             RemoveVolume.descriptor,
-            ListContainerStats.descriptor
+            ListContainerStats.descriptor,
+            GetResourceStats.descriptor,
+            GetContainerPorts.descriptor,
+            StreamMCP.descriptor,
+            QueryChunks.descriptor,
+            WriteChunks.descriptor,
+            QueryLayers.descriptor
         ]
     }
 }
@@ -410,6 +494,97 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ListContainerStatsRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse>
+
+        /// Handle the "GetResourceStats" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_GetResourceStatsRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_GetResourceStatsResponse` messages.
+        func getResourceStats(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>
+
+        /// Handle the "GetContainerPorts" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_GetContainerPortsRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_GetContainerPortsResponse` messages.
+        func getContainerPorts(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>
+
+        /// Handle the "StreamMCP" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        func streamMCP(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_MCPChunk>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_MCPChunk>
+
+        /// Handle the "QueryChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_QueryChunksRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_QueryChunksResponse` messages.
+        func queryChunks(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse>
+
+        /// Handle the "WriteChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_WriteChunksResponse` messages.
+        func writeChunks(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse>
+
+        /// Handle the "QueryLayers" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+        /// > already has in its content store, with their sizes. The CLI uses this to
+        /// > skip decompressing and content-chunking layers the device can reuse as-is
+        /// > — for those layers no dedup is possible, so chunking would be pure waste.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_QueryLayersRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_QueryLayersResponse` messages.
+        func queryLayers(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse>
     }
 
     /// Service protocol for the "wendy.agent.services.v1.WendyContainerService" service.
@@ -601,6 +776,97 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_ListContainerStatsRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse>
+
+        /// Handle the "GetResourceStats" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetResourceStatsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_GetResourceStatsResponse` message.
+        func getResourceStats(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>
+
+        /// Handle the "GetContainerPorts" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetContainerPortsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_GetContainerPortsResponse` message.
+        func getContainerPorts(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>
+
+        /// Handle the "StreamMCP" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        func streamMCP(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_MCPChunk>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_MCPChunk>
+
+        /// Handle the "QueryChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryChunksRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_QueryChunksResponse` message.
+        func queryChunks(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse>
+
+        /// Handle the "WriteChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_WriteChunksResponse` message.
+        func writeChunks(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse>
+
+        /// Handle the "QueryLayers" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+        /// > already has in its content store, with their sizes. The CLI uses this to
+        /// > skip decompressing and content-chunking layers the device can reuse as-is
+        /// > — for those layers no dedup is possible, so chunking would be pure waste.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryLayersRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_QueryLayersResponse` message.
+        func queryLayers(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v1.WendyContainerService" service.
@@ -797,6 +1063,98 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             request: Wendy_Agent_Services_V1_ListContainerStatsRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Wendy_Agent_Services_V1_ListContainerStatsResponse
+
+        /// Handle the "GetResourceStats" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_GetResourceStatsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_GetResourceStatsResponse` to respond with.
+        func getResourceStats(
+            request: Wendy_Agent_Services_V1_GetResourceStatsRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_GetResourceStatsResponse
+
+        /// Handle the "GetContainerPorts" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_GetContainerPortsRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_GetContainerPortsResponse` to respond with.
+        func getContainerPorts(
+            request: Wendy_Agent_Services_V1_GetContainerPortsRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_GetContainerPortsResponse
+
+        /// Handle the "StreamMCP" method.
+        ///
+        /// - Parameters:
+        ///   - request: A stream of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - response: A response stream of `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func streamMCP(
+            request: GRPCCore.RPCAsyncSequence<Wendy_Agent_Services_V1_MCPChunk, any Swift.Error>,
+            response: GRPCCore.RPCWriter<Wendy_Agent_Services_V1_MCPChunk>,
+            context: GRPCCore.ServerContext
+        ) async throws
+
+        /// Handle the "QueryChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_QueryChunksRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_QueryChunksResponse` to respond with.
+        func queryChunks(
+            request: Wendy_Agent_Services_V1_QueryChunksRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_QueryChunksResponse
+
+        /// Handle the "WriteChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A stream of `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_WriteChunksResponse` to respond with.
+        func writeChunks(
+            request: GRPCCore.RPCAsyncSequence<Wendy_Agent_Services_V1_WriteChunksRequest, any Swift.Error>,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_WriteChunksResponse
+
+        /// Handle the "QueryLayers" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+        /// > already has in its content store, with their sizes. The CLI uses this to
+        /// > skip decompressing and content-chunking layers the device can reuse as-is
+        /// > — for those layers no dedup is possible, so chunking would be pure waste.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_QueryLayersRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_QueryLayersResponse` to respond with.
+        func queryLayers(
+            request: Wendy_Agent_Services_V1_QueryLayersRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_QueryLayersResponse
     }
 }
 
@@ -947,6 +1305,72 @@ extension Wendy_Agent_Services_V1_WendyContainerService.StreamingServiceProtocol
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.GetResourceStats.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetResourceStatsRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetResourceStatsResponse>(),
+            handler: { request, context in
+                try await self.getResourceStats(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.GetContainerPorts.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetContainerPortsRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetContainerPortsResponse>(),
+            handler: { request, context in
+                try await self.getContainerPorts(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.StreamMCP.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_MCPChunk>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_MCPChunk>(),
+            handler: { request, context in
+                try await self.streamMCP(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.QueryChunks.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_QueryChunksRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_QueryChunksResponse>(),
+            handler: { request, context in
+                try await self.queryChunks(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.WriteChunks.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_WriteChunksRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_WriteChunksResponse>(),
+            handler: { request, context in
+                try await self.writeChunks(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.QueryLayers.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_QueryLayersRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_QueryLayersResponse>(),
+            handler: { request, context in
+                try await self.queryLayers(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -1068,6 +1492,61 @@ extension Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse> {
         let response = try await self.listContainerStats(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func getResourceStats(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse> {
+        let response = try await self.getResourceStats(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func getContainerPorts(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse> {
+        let response = try await self.getContainerPorts(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func queryChunks(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse> {
+        let response = try await self.queryChunks(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func writeChunks(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse> {
+        let response = try await self.writeChunks(
+            request: request,
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func queryLayers(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse> {
+        let response = try await self.queryLayers(
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
@@ -1268,6 +1747,88 @@ extension Wendy_Agent_Services_V1_WendyContainerService.SimpleServiceProtocol {
     ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse> {
         return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse>(
             message: try await self.listContainerStats(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func getResourceStats(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>(
+            message: try await self.getResourceStats(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func getContainerPorts(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>(
+            message: try await self.getContainerPorts(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func streamMCP(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_MCPChunk>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_MCPChunk> {
+        return GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_MCPChunk>(
+            metadata: [:],
+            producer: { writer in
+                try await self.streamMCP(
+                    request: request.messages,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
+        )
+    }
+
+    public func queryChunks(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryChunksResponse>(
+            message: try await self.queryChunks(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func writeChunks(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_WriteChunksResponse>(
+            message: try await self.writeChunks(
+                request: request.messages,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func queryLayers(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_QueryLayersResponse>(
+            message: try await self.queryLayers(
                 request: request.message,
                 context: context
             ),
@@ -1530,6 +2091,127 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_ListContainerStatsResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_ListContainerStatsResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetResourceStats" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetResourceStatsRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetResourceStatsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetResourceStatsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getResourceStats<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetResourceStatsResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "GetContainerPorts" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetContainerPortsRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetContainerPortsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetContainerPortsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func getContainerPorts<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetContainerPortsResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "StreamMCP" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func streamMCP<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_MCPChunk>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_MCPChunk>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_MCPChunk>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_MCPChunk>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "QueryChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryChunksRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_QueryChunksRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_QueryChunksResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func queryChunks<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_QueryChunksResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryChunksResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "WriteChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_WriteChunksResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func writeChunks<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_WriteChunksResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_WriteChunksResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "QueryLayers" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+        /// > already has in its content store, with their sizes. The CLI uses this to
+        /// > skip decompressing and content-chunking layers the device can reuse as-is
+        /// > — for those layers no dedup is possible, so chunking would be pure waste.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryLayersRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_QueryLayersRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_QueryLayersResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func queryLayers<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_QueryLayersResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryLayersResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -1924,6 +2606,191 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "GetResourceStats" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetResourceStatsRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetResourceStatsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetResourceStatsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getResourceStats<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetResourceStatsResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.GetResourceStats.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "GetContainerPorts" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetContainerPortsRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_GetContainerPortsRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_GetContainerPortsResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func getContainerPorts<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_GetContainerPortsResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.GetContainerPorts.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "StreamMCP" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_MCPChunk` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func streamMCP<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_MCPChunk>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_MCPChunk>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_MCPChunk>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_MCPChunk>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.bidirectionalStreaming(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.StreamMCP.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "QueryChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryChunksRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_QueryChunksRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_QueryChunksResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func queryChunks<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_QueryChunksRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_QueryChunksResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryChunksResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.QueryChunks.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "WriteChunks" method.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_WriteChunksResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func writeChunks<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_WriteChunksRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_WriteChunksResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_WriteChunksResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.clientStreaming(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.WriteChunks.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "QueryLayers" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+        /// > already has in its content store, with their sizes. The CLI uses this to
+        /// > skip decompressing and content-chunking layers the device can reuse as-is
+        /// > — for those layers no dedup is possible, so chunking would be pure waste.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryLayersRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_QueryLayersRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_QueryLayersResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func queryLayers<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_QueryLayersRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_QueryLayersResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryLayersResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.QueryLayers.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -2236,6 +3103,161 @@ extension Wendy_Agent_Services_V1_WendyContainerService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_ListContainerStatsRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_ListContainerStatsResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetResourceStats" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetResourceStatsRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getResourceStats<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getResourceStats(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetResourceStatsRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetResourceStatsResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetContainerPorts" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_GetContainerPortsRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getContainerPorts<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.getContainerPorts(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_GetContainerPortsRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_GetContainerPortsResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "StreamMCP" method.
+    ///
+    /// - Parameters:
+    ///   - request: A streaming request producing `Wendy_Agent_Services_V1_MCPChunk` messages.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func streamMCP<Result>(
+        request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_MCPChunk>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_MCPChunk>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.streamMCP(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_MCPChunk>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_MCPChunk>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "QueryChunks" method.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryChunksRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func queryChunks<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryChunksRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryChunksResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.queryChunks(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_QueryChunksRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_QueryChunksResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "WriteChunks" method.
+    ///
+    /// - Parameters:
+    ///   - request: A streaming request producing `Wendy_Agent_Services_V1_WriteChunksRequest` messages.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func writeChunks<Result>(
+        request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_WriteChunksRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_WriteChunksResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.writeChunks(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_WriteChunksRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_WriteChunksResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "QueryLayers" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+    /// > already has in its content store, with their sizes. The CLI uses this to
+    /// > skip decompressing and content-chunking layers the device can reuse as-is
+    /// > — for those layers no dedup is possible, so chunking would be pure waste.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_QueryLayersRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func queryLayers<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryLayersRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryLayersResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.queryLayers(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_QueryLayersRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_QueryLayersResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -2604,6 +3626,187 @@ extension Wendy_Agent_Services_V1_WendyContainerService.ClientProtocol {
             metadata: metadata
         )
         return try await self.listContainerStats(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetResourceStats" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getResourceStats<Result>(
+        _ message: Wendy_Agent_Services_V1_GetResourceStatsRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getResourceStats(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "GetContainerPorts" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func getContainerPorts<Result>(
+        _ message: Wendy_Agent_Services_V1_GetContainerPortsRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.getContainerPorts(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "StreamMCP" method.
+    ///
+    /// - Parameters:
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - producer: A closure producing request messages to send to the server. The request
+    ///       stream is closed when the closure returns.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func streamMCP<Result>(
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Wendy_Agent_Services_V1_MCPChunk>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_MCPChunk>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_MCPChunk>(
+            metadata: metadata,
+            producer: producer
+        )
+        return try await self.streamMCP(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "QueryChunks" method.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func queryChunks<Result>(
+        _ message: Wendy_Agent_Services_V1_QueryChunksRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryChunksResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryChunksRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.queryChunks(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "WriteChunks" method.
+    ///
+    /// - Parameters:
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - producer: A closure producing request messages to send to the server. The request
+    ///       stream is closed when the closure returns.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func writeChunks<Result>(
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Wendy_Agent_Services_V1_WriteChunksRequest>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_WriteChunksResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_WriteChunksRequest>(
+            metadata: metadata,
+            producer: producer
+        )
+        return try await self.writeChunks(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "QueryLayers" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > QueryLayers reports which uncompressed layers (by diff ID) the device
+    /// > already has in its content store, with their sizes. The CLI uses this to
+    /// > skip decompressing and content-chunking layers the device can reuse as-is
+    /// > — for those layers no dedup is possible, so chunking would be pure waste.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func queryLayers<Result>(
+        _ message: Wendy_Agent_Services_V1_QueryLayersRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_QueryLayersResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_QueryLayersRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.queryLayers(
             request: request,
             options: options,
             onResponse: handleResponse

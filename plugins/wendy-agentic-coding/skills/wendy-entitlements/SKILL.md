@@ -54,7 +54,7 @@ Use this table as the starting point, then verify against the local repo when ch
 | `input` | none | none | Adds input group, mounts `/dev/input`, and allows input event devices. |
 | `serial` | `device` | none | Binds `/dev/<device>` (e.g. `/dev/ttyACM0`) and adds the `dialout` group. USB-only; on-board UARTs (`ttyAMA*`, `ttyS*`) are not supported. |
 | `mcp` | `port` | none | Exposes an MCP server port for agentic tool access. |
-| `admin` | none | none | Grants the container the wendy-agent's local control socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`). This is the agent's **full gRPC with no authentication** — an app with `admin` can start, stop, and delete apps and read all device data locally. **Grant it only to fully-trusted first-party apps.** At most one per app. Requires an agent build that serves the local socket. |
+| `admin` | none | none | Grants the container the wendy-agent's local control socket (exposed as `WENDY_AGENT_SOCKET`, currently `/run/wendy/agent/agent.sock` — read the env var, don't hard-code). This is the agent's **full gRPC with no authentication** — an app with `admin` can start, stop, and delete apps and read all device data locally. **Grant it only to fully-trusted first-party apps.** At most one per app. Requires an agent build that serves the local socket. |
 
 `network.ports` is accepted by config validation, but the runtime path in `entitlements.go` currently acts on `mode`. Do not claim port mapping behavior without tracing the caller that consumes `ports`.
 

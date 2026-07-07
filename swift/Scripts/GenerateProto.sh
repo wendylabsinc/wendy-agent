@@ -6,7 +6,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/../WendyAgentCore"
 
-PROTO_DIR="../Proto"
+# The shared proto definitions live at the repository root, two levels up
+# from WendyAgentCore (the swift/ tree has no Proto directory of its own).
+PROTO_DIR="../../Proto"
 
 publicize_generated_imports() {
   find "$@" -name '*.swift' -print0 | xargs -0 perl -0pi -e '

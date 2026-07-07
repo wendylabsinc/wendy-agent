@@ -27,7 +27,7 @@ func TestNewOSInstallCmd_Flags(t *testing.T) {
 		t.Errorf("Use = %q; want %q", cmd.Use, "install [image] [drive]")
 	}
 
-	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name", "storage", "no-bmap"}
+	expectedFlags := []string{"nightly", "force", "yes-overwrite-internal", "device-type", "version", "drive", "wifi-ssid", "wifi-password", "wifi", "no-wifi", "device-name", "storage", "no-bmap", "pr"}
 	for _, name := range expectedFlags {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing flag %q", name)
@@ -44,6 +44,33 @@ func TestNewOSInstallCmd_NightlyVersionMutualExclusion(t *testing.T) {
 	}
 	if got := err.Error(); got != "--nightly and --version are mutually exclusive" {
 		t.Errorf("unexpected error: %q", got)
+	}
+}
+
+func TestOSInstallPRMutualExclusion(t *testing.T) {
+	const mutexErr = "--pr cannot be combined with --nightly, --version, or positional image/drive arguments"
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"pr with nightly", []string{"--pr", "123", "--nightly"}, mutexErr},
+		{"pr with version", []string{"--pr", "123", "--version", "0.10.0"}, mutexErr},
+		{"pr with positional args", []string{"--pr", "123", "image.img", "/dev/disk4"}, mutexErr},
+		{"pr with thor device", []string{"--pr", "123", "--device-type", "jetson-agx-thor"}, "--pr does not support jetson-agx-thor yet"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newOSInstallCmd()
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected error for args %v", tc.args)
+			}
+			if got := err.Error(); got != tc.wantErr {
+				t.Errorf("unexpected error: %q; want %q", got, tc.wantErr)
+			}
+		})
 	}
 }
 

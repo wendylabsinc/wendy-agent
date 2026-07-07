@@ -127,6 +127,10 @@ func (m *statefulContainerdClient) ListContainers(_ context.Context) ([]*agentpb
 	return result, nil
 }
 
+func (m *statefulContainerdClient) AppDeclaredVolumes(_ context.Context) (map[string][]string, error) {
+	return nil, nil
+}
+
 func (m *statefulContainerdClient) StopContainer(_ context.Context, appName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -396,9 +396,9 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 	id := asset.GetId()
 
 	return func() tea.Msg {
-		release, err := fetchAgentRelease(false)
+		latestVer, _, err := resolveAgentVersion(false)
 		if err != nil {
-			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("fetching release: %w", err)}
+			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("resolving agent version: %w", err)}
 		}
 
 		conn, err := connectCloudAsset(ctx, auth, asset, brokerURL)
@@ -416,7 +416,7 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 			arch = cpuArch
 		}
 		agentVer := resp.GetVersion()
-		if agentVer != "" && version.CompareVersions(release.TagName, agentVer) <= 0 {
+		if agentVer != "" && version.CompareVersions(latestVer, agentVer) <= 0 {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("device is already up to date (%s)", agentVer)}
 		}
@@ -426,23 +426,10 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
 
-		assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-		var releaseAsset *githubReleaseAsset
-		for _, a := range release.Assets {
-			if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-				releaseAsset = &a
-				break
-			}
-		}
-		if releaseAsset == nil {
-			conn.Close()
-			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("no asset for linux/%s in release %s", arch, release.TagName)}
-		}
-
-		binaryData, err := downloadAgentBinary(*releaseAsset)
+		binaryData, _, _, err := resolveAgentBinary(arch, false)
 		if err != nil {
 			conn.Close()
-			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("downloading binary: %w", err)}
+			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
 		}
 
 		h := sha256.Sum256(binaryData)

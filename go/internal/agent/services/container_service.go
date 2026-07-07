@@ -8,9 +8,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -487,6 +489,40 @@ func (s *ContainerService) registerContainerWithMonitor(ctx context.Context, app
 	}
 }
 
+// guaranteeOutputDrain wires outputCh — a running task's only output drain —
+// to a consumer that lives for the full task lifetime, independent of the RPC
+// handler that started the task. If outputCh is ever abandoned, back-pressure
+// propagates through the agent's io.Pipes into the container's stdout FIFO and
+// the app freezes in pipe_write once the buffers fill (WDY-1822). Callers must
+// invoke this immediately after a successful start, before anything that can
+// return early (monitor bookkeeping, sends to a client that may already be
+// gone). It returns the channel the handler should stream from and a cleanup
+// function to defer.
+func (s *ContainerService) guaranteeOutputDrain(appName string, outputCh <-chan ContainerOutput) (<-chan ContainerOutput, func()) {
+	if s.logManager != nil {
+		subID, subCh := s.logManager.Subscribe(appName)
+		// Pump containerd output into the log manager (which never blocks:
+		// slow subscribers drop) until the task exits and closes outputCh.
+		go func() {
+			for output := range outputCh {
+				s.logManager.Publish(appName, output)
+			}
+			// When the containerd channel closes, publish a Done marker.
+			s.logManager.Publish(appName, ContainerOutput{Done: true})
+		}()
+		return subCh, func() { s.logManager.Unsubscribe(appName, subID) }
+	}
+	// Without a log manager the handler is the only consumer: hand whatever it
+	// has not consumed to a background drainer when it returns, so a client
+	// disconnect cannot leave the task's output pipeline undrained.
+	return outputCh, func() {
+		go func() {
+			for range outputCh {
+			}
+		}()
+	}
+}
+
 // When a ContainerLogManager is configured, reads from the log manager subscription
 // instead of directly from containerd, enabling multi-subscriber fan-out and telemetry bridging.
 func (s *ContainerService) streamContainerOutput(
@@ -500,6 +536,11 @@ func (s *ContainerService) streamContainerOutput(
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
+
+	// Attach the task-lifetime drainer before any early return below can
+	// abandon outputCh and wedge the app (WDY-1822).
+	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
+	defer releaseDrain()
 
 	// The container started successfully. If it was previously explicitly
 	// stopped, clear that mark so automatic restarts are re-enabled.
@@ -525,23 +566,6 @@ func (s *ContainerService) streamContainerOutput(
 		},
 	}); err != nil {
 		return err
-	}
-
-	var readCh <-chan ContainerOutput
-	if s.logManager != nil {
-		subID, subCh := s.logManager.Subscribe(appName)
-		defer s.logManager.Unsubscribe(appName, subID)
-		readCh = subCh
-
-		go func() {
-			for output := range outputCh {
-				s.logManager.Publish(appName, output)
-			}
-			// When containerd channel closes, publish a Done marker.
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
-		}()
-	} else {
-		readCh = outputCh
 	}
 
 	for {
@@ -619,6 +643,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
 
+	// Attach the task-lifetime drainer before any early return below can
+	// abandon outputCh and wedge the app (WDY-1822).
+	readCh, releaseDrain := s.guaranteeOutputDrain(appName, outputCh)
+	defer releaseDrain()
+
 	// Mirror the same monitor bookkeeping as streamContainerOutput: clear any
 	// prior explicit-stop mark and register with the persisted restart policy.
 	if s.monitor != nil {
@@ -636,22 +665,6 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		},
 	}); err != nil {
 		return err
-	}
-
-	var readCh <-chan ContainerOutput
-	if s.logManager != nil {
-		subID, subCh := s.logManager.Subscribe(appName)
-		defer s.logManager.Unsubscribe(appName, subID)
-		readCh = subCh
-
-		go func() {
-			for output := range outputCh {
-				s.logManager.Publish(appName, output)
-			}
-			s.logManager.Publish(appName, ContainerOutput{Done: true})
-		}()
-	} else {
-		readCh = outputCh
 	}
 
 	for {
@@ -686,6 +699,140 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 			}
 		}
 	}
+}
+
+// ExecContainer runs a process inside a running container with an interactive
+// PTY (docker `exec -it`). The first client message must be ExecStart; later
+// messages carry stdin or window resizes. Output is streamed back as
+// stdout/stderr frames, followed by a final exit_code.
+func (s *ContainerService) ExecContainer(stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]) error {
+	execer, ok := s.containerd.(ContainerExecer)
+	if !ok {
+		return status.Error(codes.Unimplemented, "container exec is not supported by this agent")
+	}
+
+	first, err := stream.Recv()
+	if err == io.EOF {
+		return status.Error(codes.InvalidArgument, "missing first exec message")
+	}
+	if err != nil {
+		return err
+	}
+	start := first.GetStart()
+	if start == nil || start.GetAppName() == "" {
+		return status.Error(codes.InvalidArgument, "first message must be ExecStart with app_name")
+	}
+	command := start.GetCommand()
+	// Require an explicit command rather than defaulting to a shell: exec over
+	// the admin socket runs arbitrary commands in any container, so a caller
+	// should have to name what it runs (the wendy CLI always sends one — `claude`
+	// or the command after `--`).
+	if len(command) == 0 {
+		return status.Error(codes.InvalidArgument, "ExecStart requires a non-empty command")
+	}
+
+	// Audit: this RPC is effectively `docker exec` into any running workload via
+	// the unauthenticated admin socket. Log every invocation and its outcome so
+	// there is a forensic trail of what ran where.
+	s.logger.Info("container exec started",
+		zap.String("app_name", start.GetAppName()),
+		zap.Strings("command", command),
+		zap.Bool("tty", start.GetTty()))
+	execStartedAt := time.Now()
+
+	ctx := stream.Context()
+	stdinR, stdinW := io.Pipe()
+	defer stdinR.Close()
+
+	resize := make(chan [2]uint32, 8)
+	if ts := start.GetTermSize(); ts != nil {
+		resize <- [2]uint32{ts.GetRows(), ts.GetCols()}
+	}
+
+	// Forward stdin + resize frames from the client until it closes the stream.
+	go func() {
+		defer stdinW.Close()
+		defer close(resize)
+		for {
+			msg, recvErr := stream.Recv()
+			if recvErr != nil {
+				return
+			}
+			switch {
+			case len(msg.GetStdinData()) > 0:
+				if _, werr := stdinW.Write(msg.GetStdinData()); werr != nil {
+					return
+				}
+			case msg.GetResize() != nil:
+				select {
+				case resize <- [2]uint32{msg.GetResize().GetRows(), msg.GetResize().GetCols()}:
+				default: // drop resizes if the consumer is momentarily behind
+				}
+			}
+		}
+	}()
+
+	// gRPC forbids concurrent SendMsg on one stream. In non-TTY mode containerd
+	// copies stdout and stderr on separate goroutines, and the final exit_code
+	// frame below is sent from this goroutine, so every send is serialized
+	// through one lock.
+	sender := &execSender{stream: stream}
+	stdout := &execWriter{sender: sender, stderr: false}
+	stderr := &execWriter{sender: sender, stderr: true}
+
+	code, err := execer.ExecInContainer(ctx, start.GetAppName(), command, start.GetTty(), stdinR, stdout, stderr, resize)
+	if err != nil {
+		s.logger.Warn("container exec failed",
+			zap.String("app_name", start.GetAppName()),
+			zap.Duration("duration", time.Since(execStartedAt)),
+			zap.Error(err))
+		return status.Errorf(codes.Internal, "exec failed: %v", err)
+	}
+	s.logger.Info("container exec completed",
+		zap.String("app_name", start.GetAppName()),
+		zap.Int("exit_code", code),
+		zap.Duration("duration", time.Since(execStartedAt)))
+	// ExecInContainer drains stdout/stderr before returning, so the exit_code
+	// frame is guaranteed to follow the last output frame on the ordered stream.
+	return sender.send(&agentpb.ExecContainerResponse{
+		ResponseType: &agentpb.ExecContainerResponse_ExitCode{ExitCode: int32(code)},
+	})
+}
+
+// execSender serializes every Send on the exec bidi stream: gRPC does not allow
+// concurrent SendMsg, and the stdout writer, stderr writer, and exit_code frame
+// can all originate from different goroutines.
+type execSender struct {
+	stream grpc.BidiStreamingServer[agentpb.ExecContainerRequest, agentpb.ExecContainerResponse]
+	mu     sync.Mutex
+}
+
+func (s *execSender) send(resp *agentpb.ExecContainerResponse) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stream.Send(resp)
+}
+
+// execWriter adapts a container exec output stream to io.Writer so the PTY's
+// stdout/stderr can be forwarded over gRPC.
+type execWriter struct {
+	sender *execSender
+	stderr bool
+}
+
+func (w *execWriter) Write(p []byte) (int, error) {
+	// Copy: the PTY may reuse its read buffer once Write returns.
+	buf := append([]byte(nil), p...)
+	var resp *agentpb.ExecContainerResponse
+	if w.stderr {
+		resp = &agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StderrData{StderrData: buf}}
+	} else {
+		resp = &agentpb.ExecContainerResponse{ResponseType: &agentpb.ExecContainerResponse_StdoutData{StdoutData: buf}}
+	}
+	if err := w.sender.send(resp); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopContainerRequest) (*agentpb.StopContainerResponse, error) {
@@ -778,15 +925,19 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 		}
 	}
 
+	// Resolve which volumes the app owns BEFORE deleting its containers: the
+	// persist entitlement labels that record ownership die with the container.
+	var volumesToDelete []string
+	if req.GetDeleteVolumes() {
+		volumesToDelete = s.resolveDeletableVolumes(ctx, appName)
+	}
+
 	if err := s.containerd.DeleteContainer(ctx, appName, req.GetDeleteImage()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to delete container: %v", err)
 	}
 
 	if req.GetDeleteVolumes() {
-		// Volumes are keyed by appID, not by per-service container ID, so we
-		// call deleteVolumes once with the app name rather than once per service
-		// container (which would be "appID_serviceName" and find nothing).
-		s.deleteVolumes(appName)
+		s.deleteVolumes(volumesToDelete)
 	}
 
 	s.logger.Info("App deleted",
@@ -801,36 +952,70 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 // (not const) so tests can override it with a temp directory.
 var volumesDir = "/var/lib/wendy/volumes"
 
-func (s *ContainerService) deleteVolumes(appName string) {
-	// Guard: volumes are always keyed by plain appID (no "/"). A slash-containing
-	// name would find no matching directories, but reject it explicitly to prevent
-	// any future path-construction change from introducing a traversal vector
-	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-	if strings.Contains(appName, "/") {
-		s.logger.Warn("deleteVolumes: app name contains '/'; volumes are keyed by appID only — skipping")
-		return
-	}
-	entries, err := os.ReadDir(volumesDir)
+// resolveDeletableVolumes returns the persistent volumes to remove when
+// appName is deleted with --delete-volumes: exactly the volume names the app's
+// containers declare via persist entitlements, minus any name that another
+// deployed app also declares (volumes are shared across apps by name — see
+// oci.applyPersist). Ambiguity fails safe: when ownership cannot be resolved,
+// or for apps deployed before entitlement labels existed, nothing is deleted —
+// a leaked volume can still be removed with `wendy device volumes rm`, whereas
+// a wrongly deleted one is unrecoverable.
+func (s *ContainerService) resolveDeletableVolumes(ctx context.Context, appName string) []string {
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
-		s.logger.Warn("Failed to read volumes directory",
-			zap.String("base", volumesDir),
-			zap.String("app_name", appName),
-			zap.Error(err),
-		)
-		return
+		s.logger.Warn("Skipping volume deletion: cannot resolve volume ownership",
+			zap.String("app_name", appName), zap.Error(err))
+		return nil
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
+	owned := declared[appName]
+	if len(owned) == 0 {
+		s.logger.Info("App declares no persistent volumes; none deleted",
+			zap.String("app_name", appName))
+		return nil
+	}
+
+	otherOwners := make(map[string][]string) // volume name → other apps declaring it
+	for app, vols := range declared {
+		if app == appName {
 			continue
 		}
-		name := e.Name()
-		if name == appName || strings.HasPrefix(name, appName+"-") {
-			path := filepath.Join(volumesDir, name)
-			if err := os.RemoveAll(path); err != nil {
-				s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
-			} else {
-				s.logger.Info("Volume removed", zap.String("path", path))
-			}
+		for _, v := range vols {
+			otherOwners[v] = append(otherOwners[v], app)
+		}
+	}
+
+	var deletable []string
+	for _, v := range owned {
+		if others := otherOwners[v]; len(others) > 0 {
+			s.logger.Warn("Keeping shared volume: also declared by other apps",
+				zap.String("volume", v),
+				zap.String("app_name", appName),
+				zap.Strings("also_declared_by", others))
+			continue
+		}
+		deletable = append(deletable, v)
+	}
+	return deletable
+}
+
+// deleteVolumes removes the given volume directories under volumesDir. The
+// names come from persist entitlement labels; re-apply the same base-name
+// sanitization applyPersist used when creating them so no label value can
+// escape the volumes directory (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func (s *ContainerService) deleteVolumes(names []string) {
+	for _, name := range names {
+		if name != filepath.Base(name) || name == "." || name == ".." || name == "/" || name == "" {
+			s.logger.Warn("Skipping volume with unsafe name", zap.String("volume", name))
+			continue
+		}
+		path := filepath.Join(volumesDir, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue // declared but never materialized on disk
+		}
+		if err := os.RemoveAll(path); err != nil {
+			s.logger.Warn("Failed to remove volume", zap.String("path", path), zap.Error(err))
+		} else {
+			s.logger.Info("Volume removed", zap.String("path", path))
 		}
 	}
 }
@@ -892,30 +1077,25 @@ func (s *ContainerService) RemoveVolume(_ context.Context, req *agentpb.RemoveVo
 	return &agentpb.RemoveVolumeResponse{}, nil
 }
 
-// buildVolumeUsageMap heuristically maps volumes to apps by matching
-// container names. A volume "foo-data" is likely used by app "foo".
+// buildVolumeUsageMap maps each volume name to the apps that declare it via
+// persist entitlement labels — real ownership, not a name-prefix guess.
+// Volumes are shared across apps by name, so several apps may appear for one
+// volume. Volumes no deployed app declares (including those of apps deployed
+// before entitlement labels existed) get an empty usedBy.
 func (s *ContainerService) buildVolumeUsageMap(ctx context.Context) map[string][]string {
 	usage := make(map[string][]string)
-	containers, err := s.containerd.ListContainers(ctx)
+	declared, err := s.containerd.AppDeclaredVolumes(ctx)
 	if err != nil {
+		s.logger.Warn("Failed to resolve volume ownership", zap.Error(err))
 		return usage
 	}
-	var appNames []string
-	for _, c := range containers {
-		appNames = append(appNames, c.AppName)
+	for app, vols := range declared {
+		for _, v := range vols {
+			usage[v] = append(usage[v], app)
+		}
 	}
-
-	entries, _ := os.ReadDir(volumesDir)
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		volName := e.Name()
-		for _, app := range appNames {
-			if volName == app || strings.HasPrefix(volName, app+"-") {
-				usage[volName] = append(usage[volName], app)
-			}
-		}
+	for _, apps := range usage {
+		sort.Strings(apps)
 	}
 	return usage
 }
@@ -1027,6 +1207,7 @@ func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stre
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
+	s.applyRestartStatus(containers)
 
 	for _, c := range containers {
 		if err := stream.Send(&agentpb.ListContainersResponse{Container: c}); err != nil {
@@ -1034,6 +1215,62 @@ func (s *ContainerService) ListContainers(_ *agentpb.ListContainersRequest, stre
 		}
 	}
 	return nil
+}
+
+// applyRestartStatus merges the container monitor's live restart bookkeeping
+// into a containerd container listing. containerd only knows whether a task is
+// running right now, so a crash-looping app — dead in the ~10 s gaps between
+// automatic restarts — reads as an ordinary STOPPED with failure_count 0
+// (WDY-1826). This fills in failure_count and upgrades STOPPED to
+// CRASH_LOOPING for any app the monitor has already restarted and will keep
+// restarting. No-op when the monitor doesn't expose its bookkeeping.
+func (s *ContainerService) applyRestartStatus(containers []*agentpb.AppContainer) {
+	provider, ok := s.monitor.(RestartStatusProvider)
+	if !ok {
+		return
+	}
+	statuses := provider.RestartStatuses()
+	if len(statuses) == 0 {
+		return
+	}
+
+	for _, c := range containers {
+		var failures int
+		crashLooping := false
+
+		// Monitor state is keyed per container: bare appID for single-container
+		// apps, "{appID}_{serviceName}" for named services (see
+		// containerd.ContainerName). Aggregate across an app's members.
+		if svcs := c.GetServices(); len(svcs) > 0 {
+			for _, svc := range svcs {
+				name := c.GetAppName()
+				if svc.GetName() != "" {
+					name = c.GetAppName() + "_" + svc.GetName()
+				}
+				st, tracked := statuses[name]
+				if !tracked {
+					continue
+				}
+				failures += st.FailureCount
+				if st.WillRestart && st.FailureCount > 0 && svc.GetRunningState() != agentpb.AppRunningState_RUNNING {
+					crashLooping = true
+					svc.RunningState = agentpb.AppRunningState_CRASH_LOOPING
+				}
+			}
+		} else if st, tracked := statuses[c.GetAppName()]; tracked {
+			failures = st.FailureCount
+			crashLooping = st.WillRestart && st.FailureCount > 0 &&
+				c.GetRunningState() != agentpb.AppRunningState_RUNNING
+		}
+
+		c.FailureCount = uint32(failures) //nolint:gosec // failure counts are small non-negative ints
+		// Only upgrade the aggregate when the app isn't running: a group with one
+		// healthy and one crash-looping service stays RUNNING at the top level,
+		// with the crash loop visible on the service entry and failure_count.
+		if crashLooping && c.GetRunningState() == agentpb.AppRunningState_STOPPED {
+			c.RunningState = agentpb.AppRunningState_CRASH_LOOPING
+		}
+	}
 }
 
 // StreamMCP proxies a bidirectional gRPC stream to the container's MCP TCP port.

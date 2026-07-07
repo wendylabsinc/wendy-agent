@@ -81,12 +81,37 @@ const labelKeyAppID = "sh.wendy/app.id"
 // Set whenever appCfg.ServiceName is non-empty.
 const labelKeyServiceName = "sh.wendy/service"
 
+// labelKeyIsolation persists the app's isolation mode (e.g. "isolated",
+// "shared-network", "shared-ipc") on the container. appconfig.AppConfig.Isolation
+// is otherwise only held in-memory (c.appIsolation), so without this label a
+// device reboot loses the isolation mode: the boot reconcile path
+// (ListBootContainers -> GroupRestartAppID/RestartGroup -> StartContainer)
+// would treat every restarted container as unisolated, skipping CNI ADD and
+// leaving isolated containers without networking (WDY reboot-fix). Set only
+// when the app declares an isolation mode.
+const labelKeyIsolation = "sh.wendy/isolation"
+
 // labelKeyStoppedByUser records that an app was explicitly stopped by the user
 // (wendy device apps stop). Set to "true" on stop, removed on start. The boot
 // reconcile skips containers carrying it, so a deliberate stop survives a
 // reboot instead of being undone by the restart policy (Docker unless-stopped
 // semantics). Persisted on the container so it outlives the agent process.
 const labelKeyStoppedByUser = "sh.wendy/stopped-by-user"
+
+// Exit-diagnostics labels record why a container's last run ended, so a
+// stopped/crashed container can explain itself long after the fact (the task,
+// and any live output stream, are gone). Written when a run exits or fails to
+// start; cleared on a successful (re)start. Persisted on the container so they
+// survive the agent process and reboots.
+const (
+	// labelKeyExitCode is the process exit code of the last run as a decimal
+	// string. "-1" means the task never started (start failure).
+	labelKeyExitCode = "sh.wendy/exit.code"
+	// labelKeyExitReason is a short machine-readable cause: one of exitReason*.
+	labelKeyExitReason = "sh.wendy/exit.reason"
+	// labelKeyExitAt is the RFC3339 (UTC) time the run ended / failed to start.
+	labelKeyExitAt = "sh.wendy/exit.at"
+)
 
 // ContainerName returns the containerd container ID for the given appID and
 // optional serviceName.
@@ -226,8 +251,10 @@ func sanitizeForLog(s string, maxLen int) string {
 // container. These labels are used to identify, filter, and manage containers.
 //
 // When serviceName is non-empty (multi-service app), labelKeyServiceName is
-// additionally set to serviceName.
-func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement) map[string]string {
+// additionally set to serviceName. When isolation is non-empty, labelKeyIsolation
+// is additionally set to isolation, so the isolation mode survives a reboot
+// (see labelKeyIsolation).
+func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, isolation string) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
 		labelKeyAppID:      appName,
@@ -235,6 +262,10 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 
 	if serviceName != "" {
 		labels[labelKeyServiceName] = serviceName
+	}
+
+	if isolation != "" {
+		labels[labelKeyIsolation] = isolation
 	}
 
 	if restartPolicy != nil {

@@ -2,10 +2,29 @@ package providers
 
 import "testing"
 
-// TestLocalProviderKeys verifies the local-target classification used by
-// `wendy run`/`wendy discover` to hide on-machine run targets unless --all.
-// The local container runtimes and the local machine are in; real external
-// hardware (android phone, wendy-lite MCU) is out.
+// TestShowLocalDevices verifies the WENDY_SHOW_LOCAL_DEVICES opt-in parsing:
+// local run targets stay hidden unless the var is set to a truthy value.
+func TestShowLocalDevices(t *testing.T) {
+	truthy := []string{"1", "true", "TRUE", "yes", "Yes", "on", "ON", " true "}
+	for _, v := range truthy {
+		t.Setenv(ShowLocalDevicesEnv, v)
+		if !ShowLocalDevices() {
+			t.Errorf("ShowLocalDevices() = false for %q; want true", v)
+		}
+	}
+	falsy := []string{"", "0", "false", "no", "off", "maybe", "2"}
+	for _, v := range falsy {
+		t.Setenv(ShowLocalDevicesEnv, v)
+		if ShowLocalDevices() {
+			t.Errorf("ShowLocalDevices() = true for %q; want false", v)
+		}
+	}
+}
+
+// TestLocalProviderKeys verifies the local-target classification used by the
+// device picker and `wendy discover` to hide on-machine run targets unless
+// ShowLocalDevices. The local container runtimes and the local machine are in;
+// real external hardware (android phone, wendy-lite MCU) is out.
 func TestLocalProviderKeys(t *testing.T) {
 	want := map[string]bool{
 		ProviderKeyLocal:          true,
