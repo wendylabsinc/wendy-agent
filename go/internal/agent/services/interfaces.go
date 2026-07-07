@@ -231,6 +231,9 @@ type ROS2ExecOptions struct {
 	// runtime (ros2, python3 — the latter for the Foxglove CDR forwarder); args
 	// are still passed via "$@" with no shell interpretation.
 	Binary string
+	// BridgeBinary runs the bind-mounted wendy-ros2-bridge (data-plane fast path)
+	// instead of the ros2/python3 allowlist. Args must be empty.
+	BridgeBinary bool
 }
 
 // ROS2Runtime abstracts the containerd-side ROS 2 sidecar plumbing used by
@@ -254,4 +257,7 @@ type ROS2Runtime interface {
 	// writers, and returns the exit code. Cancelling ctx sends SIGINT first
 	// so commands like `ros2 bag record` can finalize.
 	ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)
+	// ExecROS2Stream is ExecROS2 with a stdin stream, used to drive the
+	// long-lived wendy-ros2-bridge control protocol.
+	ExecROS2Stream(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 }

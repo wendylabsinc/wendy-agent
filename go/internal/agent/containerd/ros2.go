@@ -20,6 +20,7 @@ import (
 	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/foxglovebridge"
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
@@ -355,6 +356,18 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 		Source:      ROS2BagDir,
 		Options:     []string{"rbind", "rw", "nosuid", "nodev"},
 	})
+
+	// Bind-mount the host-staged bridge binaries read-only so ExecROS2Stream can
+	// run the distro-matching wendy-ros2-bridge inside the sidecar (the data-plane
+	// fast path). Read-only + nosuid/nodev: the sidecar only executes it.
+	if _, err := os.Stat(foxglovebridge.StageRoot); err == nil {
+		spec.Mounts = append(spec.Mounts, localoci.Mount{
+			Destination: foxglovebridge.StageRoot,
+			Type:        "bind",
+			Source:      foxglovebridge.StageRoot,
+			Options:     []string{"rbind", "ro", "nosuid", "nodev"},
+		})
+	}
 
 	// Match the anchor app group's namespace topology so the sidecar can read
 	// the data plane, not just DDS discovery (WDY-1555). A shared-ipc group
@@ -781,6 +794,16 @@ func ros2ExecBinary(requested string) string {
 	}
 }
 
+// ros2ExecCommand returns the in-sidecar executable path for opts. The bridge
+// runs from its bind-mounted host path (validated to live under StageRoot); all
+// other execs use the fixed ros2/python3 allowlist.
+func ros2ExecCommand(opts services.ROS2ExecOptions, distro string) string {
+	if opts.BridgeBinary {
+		return foxglovebridge.BinaryHostPath(distro)
+	}
+	return ros2ExecBinary(opts.Binary)
+}
+
 // ExecROS2 runs `<binary> <args...>` (binary defaults to `ros2`) inside the CLI
 // sidecar, streaming stdout and
 // stderr to the given writers, and returns the command's exit code. When ctx
@@ -788,6 +811,17 @@ func ros2ExecBinary(requested string) string {
 // — the SIGINT-first order lets `ros2 bag record` finalize its output.
 // EnsureROS2Sidecar must have succeeded before calling ExecROS2.
 func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+	return c.execROS2(ctx, opts, nil, stdout, stderr)
+}
+
+// ExecROS2Stream is ExecROS2 with a stdin stream, used to drive the long-lived
+// wendy-ros2-bridge control protocol (set opts.BridgeBinary to exec it).
+func (c *Client) ExecROS2Stream(ctx context.Context, opts services.ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return c.execROS2(ctx, opts, stdin, stdout, stderr)
+}
+
+// execROS2 is the shared implementation behind ExecROS2 and ExecROS2Stream.
+func (c *Client) execROS2(ctx context.Context, opts services.ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	nctx := c.withNamespace(context.WithoutCancel(ctx))
 
 	name := opts.SidecarName
@@ -829,7 +863,7 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	// indirection keeps user-supplied args out of shell interpretation
 	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 	pspec.Terminal = false
-	bin := ros2ExecBinary(opts.Binary)
+	bin := ros2ExecCommand(opts, distro)
 	pspec.Args = append([]string{
 		"/bin/bash", "-c",
 		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec %s \"$@\"", distro, bin),
@@ -865,7 +899,7 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	defer c.releaseSidecarExec(name)
 
 	execID := fmt.Sprintf("ros2-exec-%d-%d", time.Now().UnixNano(), ros2ExecCounter.Add(1))
-	proc, err := task.Exec(nctx, execID, pspec, cio.NewCreator(cio.WithStreams(nil, stdout, stderr)))
+	proc, err := task.Exec(nctx, execID, pspec, cio.NewCreator(cio.WithStreams(stdin, stdout, stderr)))
 	if err != nil {
 		return -1, fmt.Errorf("exec into ROS 2 sidecar: %w", err)
 	}

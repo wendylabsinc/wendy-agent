@@ -30,6 +30,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/container"
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
+	"github.com/wendylabsinc/wendy/go/internal/agent/foxglovebridge"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/interceptor"
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
@@ -299,6 +300,10 @@ func main() {
 			defer wg.Done()
 			services.CollectContainerMetrics(ctx, containerdClient, telemetryBuf, logManager)
 		}()
+	}
+
+	if err := foxglovebridge.Stage(foxglovebridge.StageRoot); err != nil {
+		logger.Warn("staging ROS 2 bridge binaries failed; foxglove falls back to rclpy", zap.Error(err))
 	}
 
 	if ctrdClient != nil {

@@ -67,6 +67,12 @@ func (f *fakeROS2Runtime) ExecROS2(ctx context.Context, opts ROS2ExecOptions, st
 	return 0, nil
 }
 
+// ExecROS2Stream is not exercised by these tests (nothing here drives the
+// bridge's stdin control protocol); it mirrors ExecROS2 minus the stdin arg.
+func (f *fakeROS2Runtime) ExecROS2Stream(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	return f.ExecROS2(ctx, opts, stdout, stderr)
+}
+
 func newTestROS2Service(t *testing.T, runtime ROS2Runtime, bagDir string) *ROS2Service {
 	t.Helper()
 	return NewROS2Service(zaptest.NewLogger(t), runtime, bagDir)
