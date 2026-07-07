@@ -153,6 +153,28 @@ func TestAppsDashboardModel_EnterSetsActionLogs(t *testing.T) {
 	}
 }
 
+// Regression: a single app must be visible on first render even when the
+// window-size message arrives before the container data (the common ordering).
+// Previously the empty SetRows from the resize drove the table cursor to -1 and
+// the row stayed hidden until the user pressed the down arrow.
+func TestAppsDashboardModel_SingleAppVisibleWhenSizeArrivesFirst(t *testing.T) {
+	m := newAppsDashboardModel(nil, context.Background())
+
+	// Window size lands before any container data (refreshTable runs with 0 rows).
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = updated.(appsDashboardModel)
+
+	// Then the first (and only) container arrives.
+	updated, _ = m.Update(appsDashContainersMsg{containers: []*agentpb.AppContainer{
+		{AppName: "solo-app", AppVersion: "1.0", RunningState: agentpb.AppRunningState_RUNNING},
+	}})
+	m = updated.(appsDashboardModel)
+
+	if !strings.Contains(m.View(), "solo-app") {
+		t.Fatalf("expected 'solo-app' visible without pressing a key, got:\n%s", m.View())
+	}
+}
+
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		n    int64

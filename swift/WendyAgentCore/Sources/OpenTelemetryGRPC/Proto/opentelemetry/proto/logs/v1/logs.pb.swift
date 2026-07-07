@@ -34,13 +34,13 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// Possible values for LogRecord.SeverityNumber.
-public enum Opentelemetry_Proto_Logs_V1_SeverityNumber: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Opentelemetry_Proto_Logs_V1_SeverityNumber: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// UNSPECIFIED is the default SeverityNumber, it MUST NOT be used.
@@ -175,7 +175,7 @@ public enum Opentelemetry_Proto_Logs_V1_SeverityNumber: SwiftProtobuf.Enum, Swif
 /// expression like:
 ///
 ///   (logRecord.flags & LOG_RECORD_FLAGS_TRACE_FLAGS_MASK)
-public enum Opentelemetry_Proto_Logs_V1_LogRecordFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Opentelemetry_Proto_Logs_V1_LogRecordFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// The zero value for the enum. Should not be used for comparisons.
@@ -224,7 +224,7 @@ public enum Opentelemetry_Proto_Logs_V1_LogRecordFlags: SwiftProtobuf.Enum, Swif
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
-public struct Opentelemetry_Proto_Logs_V1_LogsData: Sendable {
+public nonisolated struct Opentelemetry_Proto_Logs_V1_LogsData: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -242,7 +242,7 @@ public struct Opentelemetry_Proto_Logs_V1_LogsData: Sendable {
 }
 
 /// A collection of ScopeLogs from a Resource.
-public struct Opentelemetry_Proto_Logs_V1_ResourceLogs: Sendable {
+public nonisolated struct Opentelemetry_Proto_Logs_V1_ResourceLogs: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -277,7 +277,7 @@ public struct Opentelemetry_Proto_Logs_V1_ResourceLogs: Sendable {
 }
 
 /// A collection of Logs produced by a Scope.
-public struct Opentelemetry_Proto_Logs_V1_ScopeLogs: Sendable {
+public nonisolated struct Opentelemetry_Proto_Logs_V1_ScopeLogs: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -313,7 +313,7 @@ public struct Opentelemetry_Proto_Logs_V1_ScopeLogs: Sendable {
 
 /// A log record according to OpenTelemetry Log Data Model:
 /// https://github.com/open-telemetry/oteps/blob/main/text/logs/0097-log-data-model.md
-public struct Opentelemetry_Proto_Logs_V1_LogRecord: Sendable {
+public nonisolated struct Opentelemetry_Proto_Logs_V1_LogRecord: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -422,17 +422,17 @@ public struct Opentelemetry_Proto_Logs_V1_LogRecord: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "opentelemetry.proto.logs.v1"
+fileprivate nonisolated let _protobuf_package = "opentelemetry.proto.logs.v1"
 
-extension Opentelemetry_Proto_Logs_V1_SeverityNumber: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_SeverityNumber: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0SEVERITY_NUMBER_UNSPECIFIED\0\u{1}SEVERITY_NUMBER_TRACE\0\u{1}SEVERITY_NUMBER_TRACE2\0\u{1}SEVERITY_NUMBER_TRACE3\0\u{1}SEVERITY_NUMBER_TRACE4\0\u{1}SEVERITY_NUMBER_DEBUG\0\u{1}SEVERITY_NUMBER_DEBUG2\0\u{1}SEVERITY_NUMBER_DEBUG3\0\u{1}SEVERITY_NUMBER_DEBUG4\0\u{1}SEVERITY_NUMBER_INFO\0\u{1}SEVERITY_NUMBER_INFO2\0\u{1}SEVERITY_NUMBER_INFO3\0\u{1}SEVERITY_NUMBER_INFO4\0\u{1}SEVERITY_NUMBER_WARN\0\u{1}SEVERITY_NUMBER_WARN2\0\u{1}SEVERITY_NUMBER_WARN3\0\u{1}SEVERITY_NUMBER_WARN4\0\u{1}SEVERITY_NUMBER_ERROR\0\u{1}SEVERITY_NUMBER_ERROR2\0\u{1}SEVERITY_NUMBER_ERROR3\0\u{1}SEVERITY_NUMBER_ERROR4\0\u{1}SEVERITY_NUMBER_FATAL\0\u{1}SEVERITY_NUMBER_FATAL2\0\u{1}SEVERITY_NUMBER_FATAL3\0\u{1}SEVERITY_NUMBER_FATAL4\0")
 }
 
-extension Opentelemetry_Proto_Logs_V1_LogRecordFlags: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_LogRecordFlags: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0LOG_RECORD_FLAGS_DO_NOT_USE\0\u{2}\u{7f}\u{3}LOG_RECORD_FLAGS_TRACE_FLAGS_MASK\0")
 }
 
-extension Opentelemetry_Proto_Logs_V1_LogsData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_LogsData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".LogsData"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}resource_logs\0")
 
@@ -462,7 +462,7 @@ extension Opentelemetry_Proto_Logs_V1_LogsData: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Opentelemetry_Proto_Logs_V1_ResourceLogs: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_ResourceLogs: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ResourceLogs"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}resource\0\u{3}scope_logs\0\u{3}schema_url\0\u{c}h\u{f}\u{1}")
 
@@ -506,7 +506,7 @@ extension Opentelemetry_Proto_Logs_V1_ResourceLogs: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Opentelemetry_Proto_Logs_V1_ScopeLogs: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_ScopeLogs: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ScopeLogs"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}scope\0\u{3}log_records\0\u{3}schema_url\0")
 
@@ -550,7 +550,7 @@ extension Opentelemetry_Proto_Logs_V1_ScopeLogs: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Opentelemetry_Proto_Logs_V1_LogRecord: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Logs_V1_LogRecord: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".LogRecord"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}time_unix_nano\0\u{3}severity_number\0\u{3}severity_text\0\u{2}\u{2}body\0\u{1}attributes\0\u{3}dropped_attributes_count\0\u{1}flags\0\u{3}trace_id\0\u{3}span_id\0\u{3}observed_time_unix_nano\0\u{3}event_name\0\u{c}\u{4}\u{1}")
 

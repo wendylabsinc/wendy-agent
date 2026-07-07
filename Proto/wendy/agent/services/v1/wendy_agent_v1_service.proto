@@ -46,13 +46,27 @@ service WendyAgentService {
     rpc DisconnectBluetoothPeripheral(DisconnectBluetoothPeripheralRequest) returns (DisconnectBluetoothPeripheralResponse);
     rpc ForgetBluetoothPeripheral(ForgetBluetoothPeripheralRequest) returns (ForgetBluetoothPeripheralResponse);
 
-    // Update the operating system using a Mender artifact
+    // Update the operating system using an OS update artifact
     rpc UpdateOS(UpdateOSRequest) returns (stream UpdateOSResponse);
+
+    // Dump the current kernel ring buffer (dmesg) for inspection. By default
+    // the agent streams the buffered records and then keeps following new
+    // kernel messages until the client disconnects (like `dmesg -w`); set
+    // follow=false for a one-shot dump that completes once the buffer drains.
+    // Records are NOT PII-redacted; this is a local diagnostic for an operator
+    // connected to their own device, distinct from the DPIA-gated OTel
+    // kernel-log streaming path.
+    rpc DumpKernelLog(DumpKernelLogRequest) returns (stream DumpKernelLogResponse);
 
     // Report the outcome of the most recent OS update attempt: committed
     // after post-reboot healthchecks passed, or rolled back with details on
     // which critical services failed and why.
     rpc GetOSUpdateStatus(GetOSUpdateStatusRequest) returns (GetOSUpdateStatusResponse);
+
+    // Set the device's hostname (and mDNS name) to a literal value. Unlike the
+    // first-boot device-name flow, no "wendyos-" prefix is derived: the hostname
+    // is applied exactly as given. The value is persisted so it survives reboots.
+    rpc SetHostname(SetHostnameRequest) returns (SetHostnameResponse);
 }
 
 message RunContainerRequest {
@@ -194,6 +208,26 @@ message GetAgentVersionResponse {
     repeated DiskPartition partitions = 15;
     // GPU architecture identifier. Format is vendor-specific (e.g. "sm_87" for NVIDIA).
     optional string gpu_arch = 16;
+    // Network interfaces and their assigned IP addresses, as observed on the
+    // device. Loopback, down, and container/virtual bridge interfaces are
+    // omitted, and link-local addresses are excluded. Empty when the agent
+    // cannot enumerate interfaces.
+    repeated NetworkInterface network_interfaces = 17;
+    // Total physical memory (RAM) in bytes, from /proc/meminfo. Zero when the
+    // agent cannot read it (a real host never has 0 bytes of RAM).
+    int64 mem_total_bytes = 18;
+    // Number of online logical CPU cores, from /proc/stat. Zero when the
+    // agent cannot read it.
+    uint32 cpu_count = 19;
+}
+
+// A network interface on the device and the IP addresses assigned to it.
+message NetworkInterface {
+    // Interface name (e.g. "eth0", "wlan0").
+    string name = 1;
+    // Routable IPv4 and IPv6 addresses assigned to the interface, without any
+    // CIDR prefix suffix (e.g. "192.168.1.42").
+    repeated string ip_addresses = 2;
 }
 
 // Usage information for a single mounted filesystem.
@@ -434,10 +468,9 @@ message ForgetBluetoothPeripheralResponse {}
 
 // Request message for updating the OS
 message UpdateOSRequest {
-    // URL to download the OS update artifact from (a .wendy or .mender artifact)
+    // URL to download the OS update artifact from (a .wendy artifact)
     string artifact_url = 1;
-    // Updater backend to use: "" or "auto" prefers the in-house wendyos-update
-    // engine and falls back to mender; "wendyos-update" or "mender" force one.
+    // Optional. Empty/'auto' selects the wendyos-update engine; 'wendyos'/'wendyos-update' force it. Retained for wire compatibility.
     string updater_backend = 2;
 }
 
@@ -467,7 +500,96 @@ message UpdateOSResponse {
     }
 }
 
-message GetOSUpdateStatusRequest {}
+// Request to dump the kernel ring buffer.
+message DumpKernelLogRequest {
+    // When true (the default when the field is omitted), the agent streams the
+    // currently-buffered records and then follows new kernel messages until the
+    // client disconnects (like `dmesg -w`). When explicitly false, the agent
+    // streams the buffered records and completes once the ring buffer is drained
+    // (like `dmesg`). Sent as optional so an unset request defaults to follow.
+    optional bool follow = 1;
+}
+
+// A batch of kernel log records. The agent sends records in batches to keep
+// individual messages well under the gRPC message-size limit, regardless of
+// how large the kernel ring buffer is.
+message DumpKernelLogResponse {
+    repeated KernelLogRecord records = 1;
+}
+
+// A single kernel ring buffer record (one /dev/kmsg line).
+message KernelLogRecord {
+    // Timestamp in microseconds since boot, as reported by the kernel.
+    int64 timestamp_us = 1;
+    // Kernel syslog level (0=EMERG .. 7=DEBUG).
+    int32 level = 2;
+    // Message text. Control characters are stripped; the body is NOT
+    // PII-redacted.
+    string message = 3;
+}
+
+message GetOSUpdateStatusRequest {
+    // When true, the agent additionally probes the OS updater's live status
+    // (`wendyos-update status --json`) and returns it in engine_status. Off by
+    // default because the probe execs a binary on the device.
+    bool include_engine_status = 1;
+}
+
+// Live A/B-slot snapshot from `wendyos-update status --json` (frozen v1 CLI
+// contract of github.com/wendylabsinc/wendyos-update). Mirrors that contract's
+// field names; all fields are best-effort and may be empty.
+message OSUpdateEngineStatus {
+    // Platform connector driving the A/B scheme, e.g. "tegrauefi" or "ubootenv".
+    string connector = 1;
+    // Slot the device is currently booted from ("A" or "B").
+    string current_slot = 2;
+
+    message Slot {
+        // Slot name ("A" or "B").
+        string slot = 1;
+        // True for the slot the device is booted from.
+        bool booted = 2;
+        // Rootfs partition device, e.g. "/dev/nvme0n1p1".
+        string partition = 3;
+        // Distro version installed in the slot; "" when unreadable.
+        string distro = 4;
+        // Kernel version installed in the slot; "" when unreadable.
+        string kernel = 5;
+        // Slot health as reported by the bootloader, e.g. "normal".
+        string rootfs_health = 6;
+        // Remaining boot-trial retries, when the platform tracks them.
+        string retries = 7;
+        // Free-form platform note about the slot.
+        string note = 8;
+    }
+    repeated Slot slots = 3;
+
+    // Ordered system-wide key/value pairs (bootloader version, capsule
+    // status, ...) exactly as the engine reports them.
+    message SystemEntry {
+        string key = 1;
+        string value = 2;
+    }
+    repeated SystemEntry system = 4;
+
+    // In-flight (uncommitted) update, absent when none is pending.
+    message PendingUpdate {
+        string artifact_name = 1;
+        string artifact_version = 2;
+        // Engine phase, e.g. "installed" (awaiting reboot + commit).
+        string phase = 3;
+        // Slot the update was written to ("A" or "B").
+        string target_slot = 4;
+    }
+    PendingUpdate pending = 5;
+
+    // Raw, display-only engine diagnostics from `wendyos-update status
+    // --verbose` (the connector's Diagnostics map: e.g. the tegra
+    // RootfsStatusSlot{A,B} bytes, boot-chain and capsule EFI variables, or
+    // the uboot env). Present only when the caller asked for engine status;
+    // keys and values are connector-specific and additive.
+    map<string, string> diagnostics = 6;
+}
 
 // Outcome of the most recent OS update attempt, produced by the agent's
 // post-reboot healthcheck gate and persisted on the device's data partition
@@ -522,4 +644,21 @@ message GetOSUpdateStatusResponse {
     // the commit command's failure reason, including the OS updater's output,
     // so the failure is diagnosable without shell access to the device.
     string note = 9;
+
+    // Live updater snapshot; set only when the request asked for it via
+    // include_engine_status AND the device uses the wendyos-update engine AND
+    // the probe succeeded. Independent of has_result.
+    OSUpdateEngineStatus engine_status = 10;
+}
+
+message SetHostnameRequest {
+    // The literal hostname to apply. Must be a valid DNS label: starts with a
+    // lowercase letter, followed by lowercase letters, digits, or hyphens, not
+    // ending in a hyphen, at most 63 characters. No prefix is added.
+    string hostname = 1;
+}
+
+message SetHostnameResponse {
+    // The hostname that was applied.
+    string hostname = 1;
 }

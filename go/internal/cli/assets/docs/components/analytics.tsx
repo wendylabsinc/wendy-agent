@@ -1,4 +1,6 @@
 import { GoogleAnalytics } from '@next/third-parties/google';
+import Script from 'next/script';
+import { withBasePath } from '@/lib/shared';
 
 // Google Analytics 4 / Firebase Analytics — shares the same measurement ID as
 // the marketing site (wendy.dev): the "marketing-website-wendy" Firebase web
@@ -14,5 +16,13 @@ export function Analytics() {
     return null;
   }
 
-  return <GoogleAnalytics gaId={GA_MEASUREMENT_ID} />;
+  return (
+    <>
+      <Script
+        src={withBasePath('/static/docs-google-analytics-consent-default.js')}
+        strategy="beforeInteractive"
+      />
+      <GoogleAnalytics gaId={GA_MEASUREMENT_ID} />
+    </>
+  );
 }

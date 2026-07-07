@@ -4,27 +4,17 @@ description: The open source operating system and toolchain for Physical AI — 
 full: true
 ---
 
-import { Database, Monitor, Box, Terminal, ArrowRight, Microchip } from 'lucide-react';
+import { Database, Monitor, Box, Terminal, Microchip } from 'lucide-react';
 import { HardwareShowcase } from '@/components/docs/hardware-showcase';
 import { OverviewIntro } from '@/components/docs/overview-intro';
 import { USPGrid } from '@/components/docs/usp-grid';
+import { GetStartedSection } from '@/components/docs/get-started-section';
 
 <OverviewIntro />
 
 <USPGrid />
 
-<a
-  href="/docs/installation/developer-machine-setup"
-  className="not-prose group my-8 flex flex-col items-center gap-2 border bg-fd-card px-6 py-10 text-center transition-colors hover:border-fd-primary/50 hover:bg-fd-accent no-underline"
->
-  <span className="text-2xl font-semibold text-fd-card-foreground">Get Started!</span>
-  <span className="text-fd-muted-foreground">Set up your developer machine and deploy your first app.</span>
-  <span className="text-sm text-fd-muted-foreground">Develop from macOS, Windows, or Linux.</span>
-  <span className="mt-4 inline-flex items-center gap-2 bg-fd-primary px-5 py-2.5 font-medium text-fd-primary-foreground transition-transform group-hover:translate-x-0.5">
-    Developer Machine Setup
-    <ArrowRight className="size-4" />
-  </span>
-</a>
+<GetStartedSection />
 
 ## Supported Hardware
 
@@ -42,14 +32,14 @@ Wendy consists of several core components:
   </Card>
 
   <div className="relative flex flex-col">
-    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Beta</span>
-    <Card icon={<Terminal />} title="Headless Mac" className="h-full">
-      Deploy native macOS apps to Apple Silicon Mac targets with [Headless Mac](/docs/installation/wendy-agent-macos) beta. Supports SwiftPM and Xcode projects with the same CLI workflow.
+    <span className="absolute -top-px right-0 z-10 bg-wendy-seafoam text-zinc-950 text-xs px-2 py-1 font-medium">Beta</span>
+    <Card icon={<Terminal />} title="Wendy for macOS" className="h-full">
+      Deploy native macOS apps to Apple Silicon Mac targets with [Wendy for macOS](/installation/wendy-agent-macos) beta. Supports SwiftPM and Xcode projects with the same CLI workflow.
     </Card>
   </div>
 
   <div className="relative flex flex-col">
-    <span className="absolute -top-px right-0 z-10 bg-orange-500 text-white text-xs px-2 py-1 font-medium">Beta</span>
+    <span className="absolute -top-px right-0 z-10 bg-wendy-seafoam text-zinc-950 text-xs px-2 py-1 font-medium">Beta</span>
     <Card icon={<Monitor />} title="Wendy Cloud" className="h-full">
       A fleet management solution for OTA updates, crash reporting, and remote telemetry. Built for teams scaling from prototypes to thousands of devices.
     </Card>

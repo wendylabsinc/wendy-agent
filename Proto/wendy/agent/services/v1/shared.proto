@@ -17,6 +17,12 @@ message RestartPolicy {
 enum AppRunningState {
     STOPPED = 0;
     RUNNING = 1;
+    // The app is not running right now, but the agent's restart policy is
+    // actively restart-looping it: it has already been auto-restarted at least
+    // once (see failure_count) and will be started again. Reported instead of
+    // STOPPED so a crash loop is visible rather than masquerading as an
+    // ordinary stop; exit_code/termination_reason carry the last crash's cause.
+    CRASH_LOOPING = 2;
 }
 
 // ServiceEntry describes a single container within a services-map app group.
@@ -37,4 +43,10 @@ message AppContainer {
     // (single- or multi-service services-map apps). Empty for single-container
     // apps and flattened single-service apps (those with no service name).
     repeated ServiceEntry services = 6;
+    // Exit diagnostics for the last run, only meaningful when running_state is
+    // STOPPED. Fields 7-10 are left for the in-flight provenance PR #1234, so
+    // these start at 11 to guarantee no wire-number collision on either merge
+    // order.
+    int32 exit_code = 11;            // process exit code of the last run; -1 = task never started.
+    string termination_reason = 12;  // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
 }

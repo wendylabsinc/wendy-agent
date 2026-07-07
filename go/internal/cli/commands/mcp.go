@@ -37,7 +37,16 @@ func newMCPServeCmd() *cobra.Command {
 			if address == "" {
 				address = cfg.DefaultDevice
 			}
-			if address != "" {
+			switch {
+			case os.Getenv("WENDY_AGENT_SOCKET") != "":
+				// Admin-entitled on-device container: connect over the local
+				// agent socket regardless of any configured device. connectFn
+				// (connectWithAutoTLS) honors WENDY_AGENT_SOCKET, so the address
+				// passed here is ignored.
+				if err := srv.ConnectTo(ctx, ""); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not connect to agent socket: %v\n", err)
+				}
+			case address != "":
 				if _, _, err := net.SplitHostPort(address); err != nil {
 					address = hostPort(address, defaultAgentPort)
 				}

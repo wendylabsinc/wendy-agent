@@ -20,11 +20,12 @@ func TestManifestStorage(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		v        deviceVersion
-		st       StorageType
-		override string
-		want     string
+		name       string
+		v          deviceVersion
+		st         StorageType
+		mediaFixed bool
+		override   string
+		want       string
 	}{
 		{
 			name:     "override nvme wins regardless of storage type",
@@ -53,12 +54,31 @@ func TestManifestStorage(t *testing.T) {
 			want: "sd",
 		},
 		{
-			// The regression: an RPi 5 SD card in a USB reader enumerates as USB.
-			// It must resolve to the SD image, not the NVMe image.
-			name: "USB drive + device publishes an SD variant returns sd (RPi 5)",
+			// The regression: an RPi 5 SD card in a USB reader enumerates as USB
+			// and reports removable media. It must resolve to the SD image.
+			name: "USB drive + removable media + dual variant returns sd (RPi 5 SD reader)",
 			v:    rpi5,
 			st:   StorageUSB,
 			want: "sd",
+		},
+		{
+			// An RPi 5 NVMe SSD in a USB enclosure enumerates as USB but reports
+			// fixed, solid-state media — not an SD card. It is bound for the NVMe
+			// slot, so it must resolve to the NVMe image.
+			name:       "USB drive + fixed SSD media + dual variant returns nvme (RPi 5 NVMe enclosure)",
+			v:          rpi5,
+			st:         StorageUSB,
+			mediaFixed: true,
+			want:       "nvme",
+		},
+		{
+			// Fixed media but a legacy-only device (RPi 3/4) ships no NVMe variant,
+			// so there is nothing to upgrade to — stays sd.
+			name:       "USB drive + fixed media + legacy-only device returns sd",
+			v:          legacyOnly,
+			st:         StorageUSB,
+			mediaFixed: true,
+			want:       "sd",
 		},
 		{
 			// Preserves commit 95d63153: a Jetson NVMe SSD in a USB enclosure has
@@ -85,9 +105,9 @@ func TestManifestStorage(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := manifestStorage(tc.v, tc.st, tc.override)
+			got := manifestStorage(tc.v, tc.st, tc.mediaFixed, tc.override)
 			if got != tc.want {
-				t.Errorf("manifestStorage(%+v, %v, %q) = %q; want %q", tc.v, tc.st, tc.override, got, tc.want)
+				t.Errorf("manifestStorage(%+v, %v, fixed=%v, %q) = %q; want %q", tc.v, tc.st, tc.mediaFixed, tc.override, got, tc.want)
 			}
 		})
 	}
@@ -108,7 +128,7 @@ func TestManifestStorage_RPi5USBResolvesSDImage(t *testing.T) {
 	}
 	v := dm.Versions["nightly"]
 
-	storage := manifestStorage(v, StorageUSB, "")
+	storage := manifestStorage(v, StorageUSB, false, "")
 	if storage != "sd" {
 		t.Fatalf("manifestStorage for RPi5 USB = %q; want sd", storage)
 	}
@@ -122,6 +142,36 @@ func TestManifestStorage_RPi5USBResolvesSDImage(t *testing.T) {
 	}
 	if info.Storage != "sd" {
 		t.Errorf("imageInfo.Storage = %q; want sd", info.Storage)
+	}
+}
+
+// storageChoiceAmbiguous decides when to ask the user which slot a USB drive
+// is for, rather than silently guessing the image variant.
+func TestStorageChoiceAmbiguous(t *testing.T) {
+	rpi5 := deviceVersion{Path: "n", NVMEPath: "n", SDPath: "s"} // dual-variant
+	jetson := deviceVersion{Path: "n", NVMEPath: "n"}            // nvme-only
+	legacyOnly := deviceVersion{Path: "s"}                       // sd-only
+
+	cases := []struct {
+		name       string
+		v          deviceVersion
+		st         StorageType
+		mediaFixed bool
+		want       bool
+	}{
+		{"USB + unsure media + dual variant is ambiguous", rpi5, StorageUSB, false, true},
+		{"USB + detected fixed SSD is not ambiguous (auto nvme)", rpi5, StorageUSB, true, false},
+		{"USB + nvme-only device is not ambiguous (no sd alternative)", jetson, StorageUSB, false, false},
+		{"USB + legacy-only device is not ambiguous (no nvme alternative)", legacyOnly, StorageUSB, false, false},
+		{"real NVMe controller is not ambiguous", rpi5, StorageNVMe, false, false},
+		{"unknown bus is not ambiguous", rpi5, StorageUnknown, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := storageChoiceAmbiguous(tc.v, tc.st, tc.mediaFixed); got != tc.want {
+				t.Errorf("storageChoiceAmbiguous(%+v, %v, %v) = %v; want %v", tc.v, tc.st, tc.mediaFixed, got, tc.want)
+			}
+		})
 	}
 }
 

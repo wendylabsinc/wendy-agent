@@ -34,7 +34,7 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
@@ -42,7 +42,7 @@ fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAP
 /// AggregationTemporality defines how a metric aggregator reports aggregated
 /// values. It describes how those values relate to the time interval over
 /// which they are aggregated.
-public enum Opentelemetry_Proto_Metrics_V1_AggregationTemporality: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Opentelemetry_Proto_Metrics_V1_AggregationTemporality: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// UNSPECIFIED is the default AggregationTemporality, it MUST not be used.
@@ -149,7 +149,7 @@ public enum Opentelemetry_Proto_Metrics_V1_AggregationTemporality: SwiftProtobuf
 /// a data point, for example, use an expression like:
 ///
 ///   (point.flags & DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK) == DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK
-public enum Opentelemetry_Proto_Metrics_V1_DataPointFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Opentelemetry_Proto_Metrics_V1_DataPointFlags: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
 
   /// The zero value for the enum. Should not be used for comparisons.
@@ -218,7 +218,7 @@ public enum Opentelemetry_Proto_Metrics_V1_DataPointFlags: SwiftProtobuf.Enum, S
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
-public struct Opentelemetry_Proto_Metrics_V1_MetricsData: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_MetricsData: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -236,7 +236,7 @@ public struct Opentelemetry_Proto_Metrics_V1_MetricsData: Sendable {
 }
 
 /// A collection of ScopeMetrics from a Resource.
-public struct Opentelemetry_Proto_Metrics_V1_ResourceMetrics: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_ResourceMetrics: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -271,7 +271,7 @@ public struct Opentelemetry_Proto_Metrics_V1_ResourceMetrics: Sendable {
 }
 
 /// A collection of Metrics produced by an Scope.
-public struct Opentelemetry_Proto_Metrics_V1_ScopeMetrics: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_ScopeMetrics: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -390,7 +390,7 @@ public struct Opentelemetry_Proto_Metrics_V1_ScopeMetrics: Sendable {
 /// to support correct rate calculation.  Although it may be omitted
 /// when the start time is truly unknown, setting StartTimeUnixNano is
 /// strongly encouraged.
-public struct Opentelemetry_Proto_Metrics_V1_Metric: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Metric: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -465,7 +465,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Metric: Sendable {
   /// Data determines the aggregation type (if any) of the metric, what is the
   /// reported value type for the data points, as well as the relatationship to
   /// the time interval over which they are reported.
-  public enum OneOf_Data: Equatable, Sendable {
+  public nonisolated enum OneOf_Data: Equatable, Sendable {
     case gauge(Opentelemetry_Proto_Metrics_V1_Gauge)
     case sum(Opentelemetry_Proto_Metrics_V1_Sum)
     case histogram(Opentelemetry_Proto_Metrics_V1_Histogram)
@@ -486,7 +486,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Metric: Sendable {
 /// aggregation, regardless of aggregation temporalities. Therefore,
 /// AggregationTemporality is not included. Consequently, this also means
 /// "StartTimeUnixNano" is ignored for all data points.
-public struct Opentelemetry_Proto_Metrics_V1_Gauge: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Gauge: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -502,7 +502,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Gauge: Sendable {
 
 /// Sum represents the type of a scalar metric that is calculated as a sum of all
 /// reported measurements over a time interval.
-public struct Opentelemetry_Proto_Metrics_V1_Sum: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Sum: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -525,7 +525,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Sum: Sendable {
 
 /// Histogram represents the type of a metric that is calculated by aggregating
 /// as a Histogram of all reported measurements over a time interval.
-public struct Opentelemetry_Proto_Metrics_V1_Histogram: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Histogram: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -545,7 +545,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Histogram: Sendable {
 
 /// ExponentialHistogram represents the type of a metric that is calculated by aggregating
 /// as a ExponentialHistogram of all reported double measurements over a time interval.
-public struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -572,7 +572,7 @@ public struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: Sendable {
 /// Summary metrics do not have an aggregation temporality field. This is
 /// because the count and sum fields of a SummaryDataPoint are assumed to be
 /// cumulative values.
-public struct Opentelemetry_Proto_Metrics_V1_Summary: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Summary: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -588,7 +588,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Summary: Sendable {
 
 /// NumberDataPoint is a single data point in a timeseries that describes the
 /// time-varying scalar value of a metric.
-public struct Opentelemetry_Proto_Metrics_V1_NumberDataPoint: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_NumberDataPoint: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -645,7 +645,7 @@ public struct Opentelemetry_Proto_Metrics_V1_NumberDataPoint: Sendable {
 
   /// The value itself.  A point is considered invalid when one of the recognized
   /// value fields is not present inside this oneof.
-  public enum OneOf_Value: Equatable, Sendable {
+  public nonisolated enum OneOf_Value: Equatable, Sendable {
     case asDouble(Double)
     case asInt(Int64)
 
@@ -664,7 +664,7 @@ public struct Opentelemetry_Proto_Metrics_V1_NumberDataPoint: Sendable {
 /// If the histogram does not contain the distribution of values, then both
 /// "explicit_bounds" and "bucket_counts" must be omitted and only "count" and
 /// "sum" are known.
-public struct Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -781,7 +781,7 @@ public struct Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: Sendable {
 /// time-varying values of a ExponentialHistogram of double values. A ExponentialHistogram contains
 /// summary statistics for a population of values, it may optionally contain the
 /// distribution of those values across a set of buckets.
-public struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -915,7 +915,7 @@ public struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: Send
 
   /// Buckets are a set of bucket counts, encoded in a contiguous array
   /// of counts.
-  public struct Buckets: Sendable {
+  public nonisolated struct Buckets: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -953,7 +953,7 @@ public struct Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: Send
 /// SummaryDataPoint is a single data point in a timeseries that describes the
 /// time-varying values of a Summary metric. The count and sum fields represent
 /// cumulative values.
-public struct Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1009,7 +1009,7 @@ public struct Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: Sendable {
   ///
   /// See the following issue for more context:
   /// https://github.com/open-telemetry/opentelemetry-proto/issues/125
-  public struct ValueAtQuantile: Sendable {
+  public nonisolated struct ValueAtQuantile: Sendable {
     // SwiftProtobuf.Message conformance is added in an extension below. See the
     // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
     // methods supported on all messages.
@@ -1035,7 +1035,7 @@ public struct Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: Sendable {
 /// Exemplars also hold information about the environment when the measurement
 /// was recorded, for example the span and trace ID of the active span when the
 /// exemplar was recorded.
-public struct Opentelemetry_Proto_Metrics_V1_Exemplar: Sendable {
+public nonisolated struct Opentelemetry_Proto_Metrics_V1_Exemplar: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1087,7 +1087,7 @@ public struct Opentelemetry_Proto_Metrics_V1_Exemplar: Sendable {
   /// The value of the measurement that was recorded. An exemplar is
   /// considered invalid when one of the recognized value fields is not present
   /// inside this oneof.
-  public enum OneOf_Value: Equatable, Sendable {
+  public nonisolated enum OneOf_Value: Equatable, Sendable {
     case asDouble(Double)
     case asInt(Int64)
 
@@ -1098,17 +1098,17 @@ public struct Opentelemetry_Proto_Metrics_V1_Exemplar: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "opentelemetry.proto.metrics.v1"
+fileprivate nonisolated let _protobuf_package = "opentelemetry.proto.metrics.v1"
 
-extension Opentelemetry_Proto_Metrics_V1_AggregationTemporality: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_AggregationTemporality: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AGGREGATION_TEMPORALITY_UNSPECIFIED\0\u{1}AGGREGATION_TEMPORALITY_DELTA\0\u{1}AGGREGATION_TEMPORALITY_CUMULATIVE\0")
 }
 
-extension Opentelemetry_Proto_Metrics_V1_DataPointFlags: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_DataPointFlags: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0DATA_POINT_FLAGS_DO_NOT_USE\0\u{1}DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK\0")
 }
 
-extension Opentelemetry_Proto_Metrics_V1_MetricsData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_MetricsData: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".MetricsData"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}resource_metrics\0")
 
@@ -1138,7 +1138,7 @@ extension Opentelemetry_Proto_Metrics_V1_MetricsData: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_ResourceMetrics: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_ResourceMetrics: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ResourceMetrics"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}resource\0\u{3}scope_metrics\0\u{3}schema_url\0\u{c}h\u{f}\u{1}")
 
@@ -1182,7 +1182,7 @@ extension Opentelemetry_Proto_Metrics_V1_ResourceMetrics: SwiftProtobuf.Message,
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_ScopeMetrics: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_ScopeMetrics: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ScopeMetrics"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}scope\0\u{1}metrics\0\u{3}schema_url\0")
 
@@ -1226,7 +1226,7 @@ extension Opentelemetry_Proto_Metrics_V1_ScopeMetrics: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Metric: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Metric: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Metric"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}description\0\u{1}unit\0\u{2}\u{2}gauge\0\u{2}\u{2}sum\0\u{2}\u{2}histogram\0\u{3}exponential_histogram\0\u{1}summary\0\u{1}metadata\0\u{c}\u{4}\u{1}\u{c}\u{6}\u{1}\u{c}\u{8}\u{1}")
 
@@ -1364,7 +1364,7 @@ extension Opentelemetry_Proto_Metrics_V1_Metric: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Gauge: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Gauge: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Gauge"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_points\0")
 
@@ -1394,7 +1394,7 @@ extension Opentelemetry_Proto_Metrics_V1_Gauge: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Sum: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Sum: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Sum"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_points\0\u{3}aggregation_temporality\0\u{3}is_monotonic\0")
 
@@ -1434,7 +1434,7 @@ extension Opentelemetry_Proto_Metrics_V1_Sum: SwiftProtobuf.Message, SwiftProtob
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Histogram: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Histogram: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Histogram"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_points\0\u{3}aggregation_temporality\0")
 
@@ -1469,7 +1469,7 @@ extension Opentelemetry_Proto_Metrics_V1_Histogram: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExponentialHistogram"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_points\0\u{3}aggregation_temporality\0")
 
@@ -1504,7 +1504,7 @@ extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogram: SwiftProtobuf.Mes
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Summary: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Summary: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Summary"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}data_points\0")
 
@@ -1534,7 +1534,7 @@ extension Opentelemetry_Proto_Metrics_V1_Summary: SwiftProtobuf.Message, SwiftPr
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_NumberDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_NumberDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".NumberDataPoint"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{2}start_time_unix_nano\0\u{3}time_unix_nano\0\u{3}as_double\0\u{1}exemplars\0\u{3}as_int\0\u{1}attributes\0\u{1}flags\0\u{c}\u{1}\u{1}")
 
@@ -1611,7 +1611,7 @@ extension Opentelemetry_Proto_Metrics_V1_NumberDataPoint: SwiftProtobuf.Message,
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HistogramDataPoint"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{2}start_time_unix_nano\0\u{3}time_unix_nano\0\u{1}count\0\u{1}sum\0\u{3}bucket_counts\0\u{3}explicit_bounds\0\u{1}exemplars\0\u{1}attributes\0\u{1}flags\0\u{1}min\0\u{1}max\0\u{c}\u{1}\u{1}")
 
@@ -1695,7 +1695,7 @@ extension Opentelemetry_Proto_Metrics_V1_HistogramDataPoint: SwiftProtobuf.Messa
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ExponentialHistogramDataPoint"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}attributes\0\u{3}start_time_unix_nano\0\u{3}time_unix_nano\0\u{1}count\0\u{1}sum\0\u{1}scale\0\u{3}zero_count\0\u{1}positive\0\u{1}negative\0\u{1}flags\0\u{1}exemplars\0\u{1}min\0\u{1}max\0\u{3}zero_threshold\0")
 
@@ -1794,7 +1794,7 @@ extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint: SwiftPro
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint.Buckets: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint.Buckets: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint.protoMessageName + ".Buckets"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}offset\0\u{3}bucket_counts\0")
 
@@ -1829,7 +1829,7 @@ extension Opentelemetry_Proto_Metrics_V1_ExponentialHistogramDataPoint.Buckets: 
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SummaryDataPoint"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{2}start_time_unix_nano\0\u{3}time_unix_nano\0\u{1}count\0\u{1}sum\0\u{3}quantile_values\0\u{1}attributes\0\u{1}flags\0\u{c}\u{1}\u{1}")
 
@@ -1889,7 +1889,7 @@ extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint: SwiftProtobuf.Message
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint.ValueAtQuantile: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint.ValueAtQuantile: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Opentelemetry_Proto_Metrics_V1_SummaryDataPoint.protoMessageName + ".ValueAtQuantile"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}quantile\0\u{1}value\0")
 
@@ -1924,7 +1924,7 @@ extension Opentelemetry_Proto_Metrics_V1_SummaryDataPoint.ValueAtQuantile: Swift
   }
 }
 
-extension Opentelemetry_Proto_Metrics_V1_Exemplar: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Opentelemetry_Proto_Metrics_V1_Exemplar: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".Exemplar"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{4}\u{2}time_unix_nano\0\u{3}as_double\0\u{3}span_id\0\u{3}trace_id\0\u{3}as_int\0\u{3}filtered_attributes\0\u{c}\u{1}\u{1}")
 

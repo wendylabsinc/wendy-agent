@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/enrolltoken"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -43,6 +43,7 @@ func newAuthCmd() *cobra.Command {
 		newAuthStatusCmd(),
 		newAuthUseCmd(),
 		newAuthDefaultCmd(),
+		newAuthListOrgsCmd(),
 	)
 
 	return cmd
@@ -295,26 +296,10 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 }
 
 func enrollmentTokenCommonName(token string) (string, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) < 2 {
-		return "", fmt.Errorf("invalid enrollment token")
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := enrolltoken.Parse(token)
 	if err != nil {
-		return "", fmt.Errorf("decoding token payload: %w", err)
+		return "", err
 	}
-
-	var claims struct {
-		OrganizationID int32  `json:"org_id"`
-		AssetID        int32  `json:"asset_id"`
-		UserID         string `json:"user_id"`
-		Type           string `json:"type"`
-	}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("decoding token claims: %w", err)
-	}
-
 	switch claims.Type {
 	case "user_enrollment":
 		if claims.UserID == "" {
@@ -396,19 +381,7 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 		Certificates: []config.CertificateInfo{certInfo},
 	}
 
-	// Prepend so local cert is tried first by connectWithAutoTLS.
-	cfg.Auth = append([]config.AuthConfig{authEntry}, cfg.Auth...)
-	// Deduplicate: remove older entry for the same cloudGRPC if any.
-	seen := make(map[string]bool)
-	filtered := cfg.Auth[:0]
-	for _, a := range cfg.Auth {
-		if seen[a.CloudGRPC] {
-			continue
-		}
-		seen[a.CloudGRPC] = true
-		filtered = append(filtered, a)
-	}
-	cfg.Auth = filtered
+	cfg.AddAuth(authEntry)
 
 	if err := config.Save(cfg); err != nil {
 		return fmt.Errorf("saving config: %w", err)

@@ -2,6 +2,7 @@
   "pages": [
     "apps",
     "logs",
+    "os-logs",
     "dashboard",
     "top",
     "info",
@@ -13,6 +14,7 @@
     "bluetooth",
     "---Reference---",
     "enroll",
+    "rename",
     "setup",
     "get-default",
     "provision",

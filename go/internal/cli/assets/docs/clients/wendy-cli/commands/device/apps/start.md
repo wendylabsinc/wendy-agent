@@ -4,6 +4,8 @@ By default, after starting the app the CLI attaches to the container's output st
 
 Starting an app always applies the **`UNLESS_STOPPED`** restart policy, so the agent automatically restarts the container if it exits unexpectedly. The container only stays stopped when it is explicitly stopped (e.g. via `wendy device apps stop`).
 
+If the container keeps exiting and the agent has already performed at least one automatic restart, `wendy device apps list` shows the app as **crash-looping** (a red `↻` icon) rather than stopped, so a restart loop is not mistaken for a clean exit. Use `wendy device logs --app <name>` to view the crash output.
+
 ## Flags
 
 | Flag | Description |

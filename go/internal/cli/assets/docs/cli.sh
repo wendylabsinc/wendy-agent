@@ -173,6 +173,16 @@ echo ""
 
 # ===== macOS =====
 if [[ "$OS" == "darwin" ]]; then
+  if [[ "$ARCH" != "arm64" ]]; then
+    # On Apple Silicon running under Rosetta, uname -m reports x86_64; still install arm64.
+    if [[ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
+      ARCH="arm64"
+    else
+      echo "Error: the Wendy CLI for macOS requires Apple Silicon (arm64)." >&2
+      echo "Intel (x86_64) Macs are no longer supported." >&2
+      exit 1
+    fi
+  fi
   if command -v brew &>/dev/null; then
     if homebrew_supports_trust; then
       echo "Homebrew detected. Will trust and install via:"

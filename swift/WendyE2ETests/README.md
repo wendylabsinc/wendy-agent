@@ -64,6 +64,22 @@ make e2e-test-linux DEVICE=my-linux-box.local
 make e2e-test-macos DEVICE=mac-mini.local
 ```
 
+### Run legacy app integration tests
+
+The `legacy integration tests` suite preserves parity with `go/scripts/test-ci.sh`
+by deploying fixtures from `.github/ci-tests/`. It is skipped by default because
+it requires Docker/buildx and a real WendyOS target. In CI, set
+`WENDY_E2E_LEGACY_INTEGRATION` only in protected, non-fork workflows: the suite
+deploys apps to a real device, so it must never run against untrusted pull
+requests.
+
+```bash
+WENDY_E2E_LEGACY_INTEGRATION=true \
+  bash Scripts/E2ETest.sh \
+    --output-dir ../Build/e2e \
+    --filter "legacy integration tests"
+```
+
 ## Test environment
 
 `Scripts/E2ETest.sh` is the preferred runner. It:
@@ -93,6 +109,7 @@ The most useful environment variables are:
 | `WENDY_E2E_CLI_OS` / `WENDY_E2E_AGENT_OS` | Override machine OS metadata. |
 | `WENDY_E2E_ISOLATION` | Sandbox mode: `per-test`, `per-run`, or `none`. |
 | `WENDY_E2E_PARALLEL` | Enables parallel test execution when supported by the runner. |
+| `WENDY_E2E_TEST_TIMEOUT_SECONDS` | SwiftPM test process timeout in seconds; 0 disables. |
 | `WENDY_E2E_VERBOSE` | Print every machine command before it runs. |
 
 Sandbox isolation modes:

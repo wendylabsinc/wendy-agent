@@ -46,10 +46,24 @@ public enum Wendy_Agent_Services_V1_WendyProvisioningService: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "Unprovision" metadata.
+        public enum Unprovision: Sendable {
+            /// Request type for "Unprovision".
+            public typealias Input = Wendy_Agent_Services_V1_UnprovisionRequest
+            /// Response type for "Unprovision".
+            public typealias Output = Wendy_Agent_Services_V1_UnprovisionResponse
+            /// Descriptor for "Unprovision".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyProvisioningService"),
+                method: "Unprovision",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "wendy.agent.services.v1.WendyProvisioningService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             StartProvisioning.descriptor,
-            IsProvisioned.descriptor
+            IsProvisioned.descriptor,
+            Unprovision.descriptor
         ]
     }
 }
@@ -102,6 +116,26 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>
+
+        /// Handle the "Unprovision" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Unprovision resets the device to an unprovisioned state: it deletes the
+        /// > stored enrollment certificates and provisioning state, then restarts the
+        /// > agent so it comes back up serving plaintext on the unprovisioned port.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_UnprovisionRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_UnprovisionResponse` messages.
+        func unprovision(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_UnprovisionResponse>
     }
 
     /// Service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -139,6 +173,26 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_IsProvisionedRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>
+
+        /// Handle the "Unprovision" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Unprovision resets the device to an unprovisioned state: it deletes the
+        /// > stored enrollment certificates and provisioning state, then restarts the
+        /// > agent so it comes back up serving plaintext on the unprovisioned port.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_UnprovisionRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendy_Agent_Services_V1_UnprovisionResponse` message.
+        func unprovision(
+            request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_UnprovisionResponse>
     }
 
     /// Simple service protocol for the "wendy.agent.services.v1.WendyProvisioningService" service.
@@ -174,6 +228,26 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             request: Wendy_Agent_Services_V1_IsProvisionedRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Wendy_Agent_Services_V1_IsProvisionedResponse
+
+        /// Handle the "Unprovision" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Unprovision resets the device to an unprovisioned state: it deletes the
+        /// > stored enrollment certificates and provisioning state, then restarts the
+        /// > agent so it comes back up serving plaintext on the unprovisioned port.
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendy_Agent_Services_V1_UnprovisionRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Wendy_Agent_Services_V1_UnprovisionResponse` to respond with.
+        func unprovision(
+            request: Wendy_Agent_Services_V1_UnprovisionRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendy_Agent_Services_V1_UnprovisionResponse
     }
 }
 
@@ -198,6 +272,17 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.StreamingServiceProto
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_IsProvisionedResponse>(),
             handler: { request, context in
                 try await self.isProvisioned(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyProvisioningService.Method.Unprovision.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_UnprovisionRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_UnprovisionResponse>(),
+            handler: { request, context in
+                try await self.unprovision(
                     request: request,
                     context: context
                 )
@@ -230,6 +315,17 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ServiceProtocol {
         )
         return GRPCCore.StreamingServerResponse(single: response)
     }
+
+    public func unprovision(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_UnprovisionResponse> {
+        let response = try await self.unprovision(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
 }
 
 // Default implementation of methods from 'ServiceProtocol'.
@@ -254,6 +350,19 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.SimpleServiceProtocol
     ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse> {
         return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>(
             message: try await self.isProvisioned(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func unprovision(
+        request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Wendy_Agent_Services_V1_UnprovisionResponse> {
+        return GRPCCore.ServerResponse<Wendy_Agent_Services_V1_UnprovisionResponse>(
+            message: try await self.unprovision(
                 request: request.message,
                 context: context
             ),
@@ -307,6 +416,31 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
             deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_IsProvisionedResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_IsProvisionedResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "Unprovision" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Unprovision resets the device to an unprovisioned state: it deletes the
+        /// > stored enrollment certificates and provisioning state, then restarts the
+        /// > agent so it comes back up serving plaintext on the unprovisioned port.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_UnprovisionRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_UnprovisionRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_UnprovisionResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func unprovision<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_UnprovisionResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_UnprovisionResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -385,6 +519,42 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "Unprovision" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Unprovision resets the device to an unprovisioned state: it deletes the
+        /// > stored enrollment certificates and provisioning state, then restarts the
+        /// > agent so it comes back up serving plaintext on the unprovisioned port.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendy_Agent_Services_V1_UnprovisionRequest` message.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_UnprovisionRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_UnprovisionResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func unprovision<Result>(
+            request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_UnprovisionRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_UnprovisionResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_UnprovisionResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyProvisioningService.Method.Unprovision.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -436,6 +606,37 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_IsProvisionedRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_IsProvisionedResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "Unprovision" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Unprovision resets the device to an unprovisioned state: it deletes the
+    /// > stored enrollment certificates and provisioning state, then restarts the
+    /// > agent so it comes back up serving plaintext on the unprovisioned port.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendy_Agent_Services_V1_UnprovisionRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func unprovision<Result>(
+        request: GRPCCore.ClientRequest<Wendy_Agent_Services_V1_UnprovisionRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_UnprovisionResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.unprovision(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_UnprovisionRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_UnprovisionResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -497,6 +698,41 @@ extension Wendy_Agent_Services_V1_WendyProvisioningService.ClientProtocol {
             metadata: metadata
         )
         return try await self.isProvisioned(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "Unprovision" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Unprovision resets the device to an unprovisioned state: it deletes the
+    /// > stored enrollment certificates and provisioning state, then restarts the
+    /// > agent so it comes back up serving plaintext on the unprovisioned port.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func unprovision<Result>(
+        _ message: Wendy_Agent_Services_V1_UnprovisionRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendy_Agent_Services_V1_UnprovisionResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendy_Agent_Services_V1_UnprovisionRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.unprovision(
             request: request,
             options: options,
             onResponse: handleResponse

@@ -58,6 +58,13 @@ type ServerVerifyOpts struct {
 	ChainPEM      string     // required: PEM-encoded CA chain for ML-DSA-aware chain verification
 	ExpectedOrgID int32      // 0 = accept any org (still extracted for pinning key)
 	PinStore      PinChecker // nil = skip pinning
+	// OnServerIdentity, when non-nil, is called with the server leaf's Wendy
+	// identity BEFORE chain verification and the org-mismatch check — so the
+	// observed org is captured on every outcome (success, chain-verify failure,
+	// org mismatch, and before any client-cert rejection). Best-effort: it is
+	// not called when the cert carries no Wendy identity or identity parsing
+	// fails, and it never affects the verification result.
+	OnServerIdentity func(WendyIdentity)
 }
 
 // ParseCertsFromPEM parses all CERTIFICATE blocks from a PEM bundle, handling
@@ -169,6 +176,18 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 			return fmt.Errorf("device presented no TLS certificate")
 		}
 		leaf := cs.PeerCertificates[0]
+
+		// Best-effort: surface the server's observed Wendy identity before any
+		// verification step so callers can report a cross-org mismatch even when
+		// the chain fails to verify or the peer later rejects our client cert.
+		if opts.OnServerIdentity != nil {
+			if id, ok, idErr := IdentityFromCert(leaf); ok && idErr == nil {
+				func() {
+					defer func() { _ = recover() }()
+					opts.OnServerIdentity(id)
+				}()
+			}
+		}
 
 		// Step 1: ML-DSA-aware chain verification.
 		intermediates := x509.NewCertPool()

@@ -5,7 +5,7 @@ description: Install wendy-agent on any Linux machine to turn it into a managed 
 
 ## Overview
 
-Install `wendy-agent` on **any existing Linux installation** — Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86_64 distribution — to turn it into a managed Wendy device. Once installed, your `wendy` CLI and the device discover each other over the local network.
+Install `wendy-agent` on **any existing Linux installation** — Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86-64 (Intel or AMD) machine — to turn it into a managed Wendy device. Once installed, your `wendy` CLI and the device discover each other over the local network.
 
 (`wendy-agent` is already built into [WendyOS](/docs/installation/wendyos-nvidia-jetson) — if you flashed WendyOS, skip this guide.)
 
@@ -24,6 +24,21 @@ curl -fsSL https://install.wendy.dev/agent.sh | bash
 ```
 
 This installs the `wendy-agent` service, which registers the device on your local network via mDNS so that the Wendy CLI on your developer machine can discover it.
+
+### Pre-enrolling into your org (optional)
+
+Running `wendy install` and choosing **Linux Desktop** while logged in prints a
+one-liner that carries a short-lived enrollment token:
+
+```bash
+curl -fsSL https://install.wendy.dev/agent.sh | \
+  WENDY_ENROLLMENT_TOKEN=<token> WENDY_CLOUD_HOST=<cloud-host> bash
+```
+
+The agent enrolls into your organization on first startup — no `wendy device
+enroll` step needed. The token expires after about an hour, so run the command
+promptly. Without these variables the agent installs unenrolled and is
+discovered over your local network as described above.
 
 ### Verify the Installation
 

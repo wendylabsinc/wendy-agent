@@ -38,6 +38,69 @@ func TestOSAlreadyCurrent(t *testing.T) {
 	}
 }
 
+func TestRequireReflashableOSVersion(t *testing.T) {
+	tests := []struct {
+		name      string
+		osVersion string
+		wantErr   bool
+	}{
+		{"pre-0.17 blocked", "WendyOS-0.16.0", true},
+		{"pre-0.17 nightly blocked", "WendyOS-0.16.0-nightly", true},
+		{"pre-0.17 without prefix blocked", "0.16.0", true},
+		{"much older blocked", "WendyOS-0.10.4", true},
+		{"two-component older blocked", "WendyOS-0.16", true},
+		{"exactly 0.17.0 allowed", "WendyOS-0.17.0", false},
+		{"0.17.0 nightly allowed", "WendyOS-0.17.0-nightly", false},
+		{"patch newer allowed", "WendyOS-0.17.1", false},
+		{"minor newer allowed", "WendyOS-0.18.0", false},
+		{"dev allowed", "dev", false},
+		{"dev suffix allowed", "2026.06.30-133859-dev", false},
+		{"empty allowed", "", false},
+		{"unparseable allowed", "garbage", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireReflashableOSVersion(tc.osVersion)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("requireReflashableOSVersion(%q) err = %v, wantErr = %v", tc.osVersion, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "wendy os install") {
+				t.Errorf("error message should point to `wendy os install`, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestOSUpdateShouldSkipAlreadyCurrent pins the fix for the `os update --pr N`
+// re-flash bug: a PR's resolved version tag ("pr-N") is constant across
+// rebuilds, so before this fix a second `update --pr N` after pushing a new
+// commit to the same PR would compare "pr-N" == "pr-N" and silently no-op with
+// "already at latest" instead of re-flashing. The non-PR path (prNumber == 0)
+// must keep deferring entirely to osAlreadyCurrent.
+func TestOSUpdateShouldSkipAlreadyCurrent(t *testing.T) {
+	tests := []struct {
+		name     string
+		prNumber int
+		current  string
+		latest   string
+		nightly  bool
+		want     bool
+	}{
+		{"non-PR already current still short-circuits", 0, "WendyOS-0.10.4", "0.10.4", false, true},
+		{"non-PR newer available does not short-circuit", 0, "WendyOS-0.10.4", "0.12.0", false, false},
+		{"PR re-test with identical pr-N tag never short-circuits", 123, "WendyOS-pr-123", "pr-123", false, false},
+		{"PR first-time install never short-circuits even when versions differ", 123, "WendyOS-0.10.4", "pr-123", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := osUpdateShouldSkipAlreadyCurrent(tc.prNumber, tc.current, tc.latest, tc.nightly); got != tc.want {
+				t.Fatalf("osUpdateShouldSkipAlreadyCurrent(%d,%q,%q,%v) = %v, want %v",
+					tc.prNumber, tc.current, tc.latest, tc.nightly, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDecideOSUpdate(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -65,11 +128,16 @@ func TestDecideOSUpdate(t *testing.T) {
 	}
 }
 
-func TestValidateOSUpdateIdentityAllowsWendyOSBeforeMenderCheck(t *testing.T) {
+func TestValidateOSUpdateIdentityAllowsWendyOSBeforeBackendCheck(t *testing.T) {
 	osVersion := "WendyOS-0.10.4"
-	resp := &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: &osVersion}
-	if err := validateOSUpdateIdentity(resp); err != nil {
-		t.Fatalf("validateOSUpdateIdentity() error = %v, want nil", err)
+	cases := []*agentpb.GetAgentVersionResponse{
+		{Os: "linux", OsVersion: &osVersion},
+		{Os: "linux", OsVersion: &osVersion, Featureset: []string{"wendyos-update"}},
+	}
+	for _, resp := range cases {
+		if err := validateOSUpdateIdentity(resp); err != nil {
+			t.Fatalf("validateOSUpdateIdentity(%+v) error = %v, want nil", resp, err)
+		}
 	}
 }
 
@@ -114,8 +182,8 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			want: linuxOSUpdateUnsupportedMessage,
 		},
 		{
-			name: "linux host with mender is still not WendyOS",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", Featureset: []string{"mender"}},
+			name: "linux host with an update backend is still not WendyOS",
+			resp: &agentpb.GetAgentVersionResponse{Os: "linux", Featureset: []string{"wendyos-update"}},
 			want: linuxOSUpdateUnsupportedMessage,
 		},
 		{
@@ -129,16 +197,12 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			want: wendyOSMissingUpdaterMessage,
 		},
 		{
-			name: "WendyOS version with mender is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"mender"}},
-		},
-		{
 			name: "WendyOS version with wendyos-update is supported",
 			resp: &agentpb.GetAgentVersionResponse{Os: "linux", OsVersion: strp("WendyOS-0.10.4"), Featureset: []string{"wendyos-update"}},
 		},
 		{
-			name: "WendyOS device type with mender is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "linux", DeviceType: strp("raspberry-pi-5"), Featureset: []string{"mender"}},
+			name: "WendyOS device type with wendyos-update is supported",
+			resp: &agentpb.GetAgentVersionResponse{Os: "linux", DeviceType: strp("raspberry-pi-5"), Featureset: []string{"wendyos-update"}},
 		},
 		{
 			name: "WendyOS reported as a distro id (post-#1136) is supported",
@@ -146,7 +210,7 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 		},
 		{
 			name: "WendyOS distro id with device type is supported",
-			resp: &agentpb.GetAgentVersionResponse{Os: "edgeos", DeviceType: strp("jetson-orin-nano"), Featureset: []string{"mender"}},
+			resp: &agentpb.GetAgentVersionResponse{Os: "edgeos", DeviceType: strp("jetson-orin-nano"), Featureset: []string{"wendyos-update"}},
 		},
 		{
 			name: "generic distro id host still gets the Linux guidance",
@@ -169,6 +233,100 @@ func TestValidateOSUpdateTarget(t *testing.T) {
 			}
 			if err.Error() != tc.want {
 				t.Fatalf("validateOSUpdateTarget() error = %q, want %q", err.Error(), tc.want)
+			}
+		})
+	}
+}
+
+func TestHasOTABackend(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *agentpb.GetAgentVersionResponse
+		want bool
+	}{
+		{
+			name: "wendyos-update only (e.g. Jetson Orin Nano)",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "wendyos-update", "os-healthcheck"}},
+			want: true,
+		},
+		{
+			// Regression: a legacy mender-only featureset (old CLI talking to a
+			// stale agent) must not be treated as an OTA-capable backend.
+			name: "mender only",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"mender"}},
+			want: false,
+		},
+		{
+			name: "wendyos-update alongside an unrelated legacy entry",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"wendyos-update", "mender"}},
+			want: true,
+		},
+		{
+			name: "no update backend",
+			resp: &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", "audio"}},
+			want: false,
+		},
+		{
+			name: "empty featureset",
+			resp: &agentpb.GetAgentVersionResponse{},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasOTABackend(tc.resp); got != tc.want {
+				t.Fatalf("hasOTABackend() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestOSUpdateStackMismatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		features    []string
+		artifactURL string
+		wantErr     bool
+		wantSubstr  string
+	}{
+		{
+			name:        "wendy artifact on a device that predates the wendyos-update stack requires a reflash",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+			wantErr:     true,
+			wantSubstr:  "reflash",
+		},
+		{
+			name:        "wendy artifact on a wendyos-update device is fine",
+			features:    []string{"wendyos-update"},
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+		{
+			name:        "unknown artifact extension is not constrained",
+			features:    []string{"os-healthcheck"},
+			artifactURL: "https://example.com/custom-artifact",
+		},
+		{
+			name:        "device without advertised backends is left to the agent",
+			features:    nil,
+			artifactURL: "https://storage.googleapis.com/img/wendyos-image.rootfs.wendy",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &agentpb.GetAgentVersionResponse{Featureset: tc.features}
+			err := osUpdateStackMismatch(resp, tc.artifactURL)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("osUpdateStackMismatch() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("osUpdateStackMismatch() = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("error %q should contain %q", err, tc.wantSubstr)
 			}
 		})
 	}
@@ -271,33 +429,35 @@ func TestResolveArtifactPath(t *testing.T) {
 		}
 	})
 
-	t.Run("directory search still finds a .mender artifact", func(t *testing.T) {
+	t.Run("directory search does not find a .mender artifact", func(t *testing.T) {
 		dir := t.TempDir()
 		f := filepath.Join(dir, "image.mender")
 		if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := resolveArtifactPath(dir)
-		if err != nil {
-			t.Fatalf("resolveArtifactPath(%q) error = %v", dir, err)
-		}
-		if got != f {
-			t.Fatalf("resolveArtifactPath(%q) = %q, want %q", dir, got, f)
+		if _, err := resolveArtifactPath(dir); err == nil {
+			t.Fatalf("resolveArtifactPath(%q) error = nil, want error", dir)
 		}
 	})
 }
 
-func TestValidateUpdaterBackend(t *testing.T) {
-	valid := []string{"", "auto", "wendyos", "wendyos-update", "mender"}
-	for _, v := range valid {
-		if err := validateUpdaterBackend(v); err != nil {
-			t.Errorf("validateUpdaterBackend(%q) = %v, want nil", v, err)
-		}
+func TestArtifactSuffix(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"wendy artifact", "https://storage.example.com/images/raspberry-pi-5/1.0/wendyos-image-x.rootfs.wendy", ".wendy"},
+		{"wendy with query string", "https://storage.example.com/x.wendy?token=abc&exp=123", ".wendy"},
+		{"unknown extension falls back to wendy", "https://storage.example.com/images/x.bin", ".wendy"},
+		{"bare local path", "/tmp/update.wendy", ".wendy"},
 	}
-	for _, v := range []string{"bogus", "Mender", "wendy", "none"} {
-		if err := validateUpdaterBackend(v); err == nil {
-			t.Errorf("validateUpdaterBackend(%q) = nil, want error", v)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := artifactSuffix(tc.url); got != tc.want {
+				t.Fatalf("artifactSuffix(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -330,7 +490,7 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		HasResult:     true,
 		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
 		CreatedAtUnix: fresh,
-		RollbackError: "mender-update reported nothing to roll back",
+		RollbackError: "wendyos-update reported nothing to roll back",
 		Services: []*agentpb.GetOSUpdateStatusResponse_ServiceResult{
 			{Unit: "avahi-daemon.service", Status: agentpb.GetOSUpdateStatusResponse_ServiceResult_STATUS_FAILED, Reason: "timed out"},
 		},
@@ -340,6 +500,24 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMIT_FAILED,
 		CreatedAtUnix: fresh,
 		Note:          "wendyos-update commit failed: exit status 1 (tegra: ESRT capsule not staged)",
+	}
+	// A delegated (wendyos-update health.d) rollback has no per-service results;
+	// the reason is carried in Note and must still reach the user.
+	delegatedRolledBack := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLED_BACK,
+		OldOsVersion:  "WendyOS-0.10.4",
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+	}
+	// A rollback-failed record can also carry the commit-rejection reason in
+	// Note; it must not be dropped alongside RollbackError.
+	rollbackFailedWithNote := &agentpb.GetOSUpdateStatusResponse{
+		HasResult:     true,
+		Outcome:       agentpb.GetOSUpdateStatusResponse_OUTCOME_ROLLBACK_FAILED,
+		CreatedAtUnix: fresh,
+		Note:          "wendyos-update commit failed: exit status 1 (pending update is marked failed; run rollback)",
+		RollbackError: "wendyos-update reported nothing to roll back",
 	}
 
 	tests := []struct {
@@ -392,12 +570,35 @@ func TestEvaluateOSUpdateOutcome(t *testing.T) {
 			},
 		},
 		{
+			name:    "delegated rollback surfaces the note when there are no service results",
+			resp:    delegatedRolledBack,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.10.4",
+			wantErr: true,
+			wantContains: []string{
+				"rolled back",
+				"WendyOS-0.10.4",
+				"is marked failed",
+			},
+		},
+		{
 			name:         "rollback failed reports degraded state",
 			resp:         rollbackFailed,
 			preVer:       "WendyOS-0.10.4",
 			postVer:      "WendyOS-0.11.0",
 			wantErr:      true,
 			wantContains: []string{"avahi-daemon.service", "nothing to roll back"},
+		},
+		{
+			name:    "rollback failed surfaces the note alongside the rollback error",
+			resp:    rollbackFailedWithNote,
+			preVer:  "WendyOS-0.10.4",
+			postVer: "WendyOS-0.11.0",
+			wantErr: true,
+			wantContains: []string{
+				"is marked failed",
+				"nothing to roll back",
+			},
 		},
 		{
 			name:         "commit failed surfaces the captured reason",

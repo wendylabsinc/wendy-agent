@@ -52,11 +52,12 @@ If UUID or device-name files are not yet present, the script retries for up to 1
 Avahi broadcasts the device hostname as `<hostname>.local`. The hostname is set by `generate-hostname.sh` via `wendyos-hostname.service`, which runs before `avahi-daemon.service`:
 
 **Resolution order:**
-1. `/etc/wendyos/device-name` — use as-is, lowercased, prefixed with `wendyos-`
+1. `/etc/wendy-agent/hostname` — literal hostname set via `wendy device rename` (no prefix)
+2. `/etc/wendyos/device-name` — use as-is, lowercased, prefixed with `wendyos-`
    → `wendyos-<device-name>.local`
-2. `/etc/wendyos/device-uuid` — take the last 8 hex characters (without dashes)
+3. `/etc/wendyos/device-uuid` — take the last 8 hex characters (without dashes)
    → `wendyos-<8-char-uuid-suffix>.local`
-3. Legacy fallbacks: RPi serial from `/proc/cpuinfo`, first 16 chars of `/etc/machine-id`, first MAC address, random hex
+4. Legacy fallbacks: RPi serial from `/proc/cpuinfo`, first 16 chars of `/etc/machine-id`, first MAC address, random hex
 
 The hostname is written to `/etc/hostname` using a direct write (not `hostnamectl`, to avoid EBUSY issues with bind mounts) and also added to `/etc/hosts` as `127.0.1.1 <hostname> <hostname>.local`.
 

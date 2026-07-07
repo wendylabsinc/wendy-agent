@@ -213,7 +213,7 @@ func newBuildCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
-	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
+	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 
 	return cmd
 }
@@ -564,10 +564,12 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return err
 	}
 	if !imageBuilderWasExplicit(builder) && shouldAutoAttemptAppleContainerBuilder() {
-		cliLogln("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
+		// The auto-attempt path must not prompt or start services as a side effect:
+		// if Apple Container is not already ready, fall back to Docker. Use
+		// --builder apple-container to require Apple Container and get the startup
+		// prompt.
 		if err := checkAppleContainerBuilder(ctx); err == nil {
-			if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err == nil {
-				cliSuccess("Build completed successfully.")
+			if err := runAppleContainerBuildWithProgress(ctx, dir, imageName, platform, dockerfile); err == nil {
 				return nil
 			} else {
 				logAppleContainerFallback(os.Stderr, err)
@@ -580,15 +582,10 @@ func buildDockerProjectWithBuilder(ctx context.Context, builder, dir, imageName,
 		return buildDockerProjectWithDocker(dir, imageName, platform, dockerfile)
 	}
 
-	cliLogln("Building Apple Container image %s for %s...", imageName, platform)
 	if err := ensureAppleContainerSystem(ctx, false); err != nil {
 		return err
 	}
-	if err := buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, os.Stdout, os.Stderr); err != nil {
-		return err
-	}
-	cliSuccess("Build completed successfully.")
-	return nil
+	return runAppleContainerBuildWithProgress(ctx, dir, imageName, platform, dockerfile)
 }
 
 func buildPythonProject(ctx context.Context, builder, dir, imageName, platform string) error {

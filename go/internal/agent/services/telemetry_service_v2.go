@@ -5,6 +5,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
@@ -37,20 +38,26 @@ func (s *TelemetryServiceV2) StreamLogs(req *agentpbv2.StreamLogsRequest, stream
 	}
 	defer s.broadcaster.UnsubscribeLogs(subID)
 
-	// Replay history after subscribing.
+	// Replay history after subscribing. Count the tail window against batches
+	// that survive the filter: the last N batches device-wide may all belong
+	// to a chatty co-tenant, which would replay nothing for the requested app.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
+		entries := s.buffer.ReadLastNMatching(SignalLogs, int(*req.LastN), func(m proto.Message) proto.Message {
+			logs, ok := m.(*otelpb.ExportLogsServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+				if logs = filterLogsV2(logs, req); logs == nil {
+					return nil
+				}
+			}
+			return logs
+		})
 		for _, e := range entries {
 			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
 			if !ok {
 				continue
-			}
-			// Apply filters if set.
-			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
-				logs = filterLogsV2(logs, req)
-				if logs == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpbv2.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
 				return err
@@ -92,19 +99,25 @@ func (s *TelemetryServiceV2) StreamMetrics(req *agentpbv2.StreamMetricsRequest, 
 	}
 	defer s.broadcaster.UnsubscribeMetrics(subID)
 
-	// Replay history after subscribing.
+	// Replay history after subscribing. As with logs, the tail window counts
+	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalMetrics, int(*req.LastN))
+		entries := s.buffer.ReadLastNMatching(SignalMetrics, int(*req.LastN), func(m proto.Message) proto.Message {
+			metrics, ok := m.(*otelpb.ExportMetricsServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil {
+				if metrics = filterMetricsV2(metrics, req); metrics == nil {
+					return nil
+				}
+			}
+			return metrics
+		})
 		for _, e := range entries {
 			metrics, ok := e.(*otelpb.ExportMetricsServiceRequest)
 			if !ok {
 				continue
-			}
-			if req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil {
-				metrics = filterMetricsV2(metrics, req)
-				if metrics == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpbv2.StreamMetricsResponse{Metrics: metrics, IsHistory: true}); err != nil {
 				return err
@@ -139,19 +152,25 @@ func (s *TelemetryServiceV2) StreamTraces(req *agentpbv2.StreamTracesRequest, st
 	subID, ch := s.broadcaster.SubscribeTraces()
 	defer s.broadcaster.UnsubscribeTraces(subID)
 
-	// Replay history after subscribing.
+	// Replay history after subscribing. As with logs, the tail window counts
+	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalTraces, int(*req.LastN))
+		entries := s.buffer.ReadLastNMatching(SignalTraces, int(*req.LastN), func(m proto.Message) proto.Message {
+			traces, ok := m.(*otelpb.ExportTraceServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil {
+				if traces = filterTracesV2(traces, req); traces == nil {
+					return nil
+				}
+			}
+			return traces
+		})
 		for _, e := range entries {
 			traces, ok := e.(*otelpb.ExportTraceServiceRequest)
 			if !ok {
 				continue
-			}
-			if req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil {
-				traces = filterTracesV2(traces, req)
-				if traces == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpbv2.StreamTracesResponse{Traces: traces, IsHistory: true}); err != nil {
 				return err

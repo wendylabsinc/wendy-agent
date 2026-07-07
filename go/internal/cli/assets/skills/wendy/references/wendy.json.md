@@ -92,9 +92,31 @@ When enabled:
 
 **Note**: GPU entitlement behavior is hardware-specific.
 
+### Display Entitlement
+
+Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
+
+```json
+{ "type": "display" }
+```
+
+When enabled:
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`
+- Membership in the `video` and `render` groups
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through CDI; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images |
+
+> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
 ### Video Entitlement
 
-Provides access to video capture devices (USB cameras, CSI cameras).
+**Deprecated:** Use `camera` instead. Provides access to video capture devices (USB cameras, CSI cameras).
 
 ```json
 { "type": "video" }
@@ -139,6 +161,50 @@ Allows communication with Bluetooth devices.
 **bluez mode** provides:
 - BlueZ D-Bus interface access
 - Interaction with paired devices and Bluetooth profiles
+
+### Display Entitlement
+
+Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
+
+```json
+{ "type": "display" }
+```
+
+The container receives:
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
+- Membership in the `video` group, plus the `render` group when the host has one.
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
+
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+
+| Constraint | |
+|------------|--|
+| At most one `display` per app | enforced at validation |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
+
+> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
+### Admin Entitlement
+
+Grants the container the wendy-agent's full gRPC over a local unix socket, exposed as `WENDY_AGENT_SOCKET` (`/run/wendy/agent/agent.sock`) — with no authentication.
+
+```json
+{ "type": "admin" }
+```
+
+An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted only into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
+
+> **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+
+### Build Entitlement
+
+Runs a container image builder (BuildKit) inside the app container.
+
+```json
+{ "type": "build" }
+```
+
+Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` syscalls a nested builder needs (the kernel-module and `kexec` denials are kept). **Privileged-equivalent: a container→host escape surface.** Used so a device can build apps for itself (see the `claude-on-device` example). Grant only to fully-trusted, first-party apps. At most one per app; takes no parameters (`{"type":"build"}`).
 
 ## Common Configurations
 

@@ -13,7 +13,7 @@ import (
 func TestRecordPendingOSUpdateRedactsURLCredentials(t *testing.T) {
 	dir := t.TempDir()
 
-	recordPendingOSUpdate(zap.NewNop(), dir, "https://user:hunter2@artifacts.example.com/os.mender", updaterNameMender)
+	recordPendingOSUpdate(zap.NewNop(), dir, "https://user:hunter2@artifacts.example.com/os.wendy", updaterNameWendyOS)
 
 	marker, found, err := oshealth.ReadPendingMarker(dir)
 	if err != nil || !found {
@@ -22,7 +22,7 @@ func TestRecordPendingOSUpdateRedactsURLCredentials(t *testing.T) {
 	if strings.Contains(marker.ArtifactURL, "hunter2") {
 		t.Errorf("persisted ArtifactURL %q must not contain credentials", marker.ArtifactURL)
 	}
-	if !strings.Contains(marker.ArtifactURL, "artifacts.example.com/os.mender") {
+	if !strings.Contains(marker.ArtifactURL, "artifacts.example.com/os.wendy") {
 		t.Errorf("persisted ArtifactURL %q should keep host and path for debugging", marker.ArtifactURL)
 	}
 }
@@ -36,21 +36,21 @@ func TestRedactURLCredentials(t *testing.T) {
 	}{
 		{
 			name:    "presigned query signature",
-			raw:     "https://bucket.s3.amazonaws.com/os.mender?X-Amz-Signature=deadbeefsecret&X-Amz-Expires=900",
+			raw:     "https://bucket.s3.amazonaws.com/os.wendy?X-Amz-Signature=deadbeefsecret&X-Amz-Expires=900",
 			secrets: []string{"deadbeefsecret"},
-			keep:    []string{"bucket.s3.amazonaws.com/os.mender", "X-Amz-Signature"},
+			keep:    []string{"bucket.s3.amazonaws.com/os.wendy", "X-Amz-Signature"},
 		},
 		{
 			name:    "opaque token query param",
-			raw:     "https://example.com/a.mender?token=abc123secret",
+			raw:     "https://example.com/a.wendy?token=abc123secret",
 			secrets: []string{"abc123secret"},
-			keep:    []string{"example.com/a.mender", "token"},
+			keep:    []string{"example.com/a.wendy", "token"},
 		},
 		{
 			name:    "userinfo password",
-			raw:     "https://user:hunter2@artifacts.example.com/os.mender",
+			raw:     "https://user:hunter2@artifacts.example.com/os.wendy",
 			secrets: []string{"hunter2"},
-			keep:    []string{"artifacts.example.com/os.mender"},
+			keep:    []string{"artifacts.example.com/os.wendy"},
 		},
 	}
 	for _, tc := range cases {
@@ -73,7 +73,7 @@ func TestRedactURLCredentials(t *testing.T) {
 func TestRedactURLCredentialsFailsClosed(t *testing.T) {
 	// A control character makes url.Parse fail. The raw string still embeds a
 	// password and a query token, so it must be dropped, not echoed.
-	raw := "https://user:hunter2@example.com/os.mender?sig=topsecret\x7f"
+	raw := "https://user:hunter2@example.com/os.wendy?sig=topsecret\x7f"
 	got := redactURLCredentials(raw)
 	if strings.Contains(got, "hunter2") || strings.Contains(got, "topsecret") {
 		t.Errorf("unparseable URL was echoed with credentials: %q", got)
@@ -90,7 +90,7 @@ func TestRecordPendingOSUpdateClearsPreviousResult(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recordPendingOSUpdate(zap.NewNop(), dir, "http://example/artifact.mender", updaterNameWendyOS)
+	recordPendingOSUpdate(zap.NewNop(), dir, "http://example/artifact.wendy", updaterNameWendyOS)
 
 	if _, found, err := oshealth.ReadUpdateResult(dir); err != nil || found {
 		t.Errorf("previous update result must be cleared so it cannot be mistaken for this attempt's outcome (found=%v err=%v)", found, err)
@@ -99,7 +99,7 @@ func TestRecordPendingOSUpdateClearsPreviousResult(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("marker should be written (found=%v err=%v)", found, err)
 	}
-	if marker.ArtifactURL != "http://example/artifact.mender" {
+	if marker.ArtifactURL != "http://example/artifact.wendy" {
 		t.Errorf("ArtifactURL = %q", marker.ArtifactURL)
 	}
 	if marker.Backend != updaterNameWendyOS {

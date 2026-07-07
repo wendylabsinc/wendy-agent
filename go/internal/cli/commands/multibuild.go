@@ -167,15 +167,34 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 }
 
 // planServicePushSkips decides, per service, whether its build+push can be
-// skipped because the build inputs are unchanged since the last successful push
-// to this device AND the device still has that service's container (so the image
-// is in the device registry). It returns the skip set and the freshly computed
-// per-service input hashes, so the caller can persist fingerprints for the
-// services it actually builds. Best-effort throughout: any error for a service
-// (or WENDY_PUSH_SKIP=0) just means "don't skip it". The single buildkitd content
-// store and the device registry are unaffected; a wrong "present" guess at worst
-// surfaces as a normal create-time pull failure (hardened with a registry digest
-// check in a follow-up, WDY-1692).
+// skipped. A skip is only permitted when ALL of the following hold: the build
+// inputs are unchanged since the last successful push to this device, the
+// device still has that service's container, AND we can confirm the device
+// still holds the exact image content we pushed (contentPresent). It returns
+// the skip set and the freshly computed per-service input hashes, so the caller
+// can persist fingerprints for the services it actually builds.
+//
+// The content check is the fix for WDY-1824: an unchanged input hash and a
+// present container do not prove the device still has the pushed image content
+// (blobs can be GC'd, a push can half-complete, or a rebuilt local base image
+// never changes the input hash), so skipping on those alone could leave the
+// device running a stale/partial image while the CLI reports success.
+//
+// Content verification for the multi-service builder path is a known gap: these
+// services are built and pushed to the *device registry* (buildAndPushImageForAgent),
+// whose compressed layer blobs are keyed by compressed digest, so the diff-ID
+// QueryLayers check that guards the single-service chunk-diff fast path
+// (deviceHasAllLayers) can never confirm them. The WDY-1692 commit already
+// called this out ("a device-registry digest pre-check is a planned follow-up
+// for full robustness against a wiped registry") and it is tracked as the
+// WDY-1824 follow-up. Until that registry-digest RPC lands, contentPresent
+// fails closed for every registry-push service, so this path never skips — the
+// safe behavior, at the cost of re-pushing unchanged images (the WDY-1692
+// optimization stays dormant for multi-service, deliberately and visibly, not
+// via a silently-unsatisfiable diff-ID check).
+//
+// Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
+// means "don't skip it".
 func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
@@ -203,9 +222,34 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
 			continue
 		}
+		// Container presence is not enough: confirm the device still holds the
+		// image content we pushed. Without this a skip can leave a stale/partial
+		// image running while we report success (WDY-1824).
+		if !contentPresentForService(ctx, conn, fp) {
+			continue
+		}
 		skip[name] = true
 	}
 	return skip, hashes
+}
+
+// contentPresentForService reports whether the device is confirmed to still hold
+// the image content recorded for a registry-push service, gating a push-skip
+// (WDY-1824).
+//
+// It is fail-closed. The multi-service builder pushes to the device registry,
+// whose layers the diff-ID QueryLayers check cannot see (compressed blobs are
+// keyed by compressed digest, not by uncompressed diff ID). So recorded layer
+// diff IDs are still verified via QueryLayers when present — a future
+// chunk-diff-based multi-service push would record verifiable IDs — but a
+// fingerprint without them (every registry push today) can never be confirmed
+// and returns false. Confirming registry-pushed content needs the device
+// registry-digest pre-check deferred from WDY-1692; see WDY-1824 follow-up.
+func contentPresentForService(ctx context.Context, conn *grpcclient.AgentConnection, fp *deployFingerprint) bool {
+	if fp == nil {
+		return false
+	}
+	return deviceHasAllLayers(ctx, conn, fp.LayerDiffIDs)
 }
 
 // runMultiServiceWithAgent orchestrates the full build → push → create →
@@ -254,10 +298,14 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Decide which services can skip build+push entirely: those whose build
-	// inputs are unchanged since the last successful push to this device and whose
-	// container is still present (so the image is in the device registry). This
-	// avoids re-pushing unchanged images — notably the multi-GB GPU base — and the
-	// HEAD-check storm that re-push triggers (WDY-1692).
+	// inputs are unchanged since the last successful push to this device, whose
+	// container is still present, AND whose image content the device is confirmed
+	// to still hold. This is the WDY-1692 optimization (avoid re-pushing unchanged
+	// images — notably the multi-GB GPU base — and the HEAD-check storm re-push
+	// triggers), tightened for WDY-1824 so it never skips onto stale/partial
+	// content. NOTE: the registry-push builder path can't yet prove content
+	// presence, so this currently skips nothing for multi-service; see
+	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
 	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
 	if n := len(skip); n > 0 {

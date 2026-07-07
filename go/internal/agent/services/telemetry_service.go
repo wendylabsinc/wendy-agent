@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
@@ -337,17 +338,25 @@ func (s *TelemetryService) StreamLogs(req *agentpb.StreamLogsRequest, stream grp
 
 	// Replay history if requested (after subscribing so no live items are missed).
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalLogs, int(*req.LastN))
+		// Count the tail window against batches that survive the filter: the
+		// last N batches device-wide may all belong to a chatty co-tenant,
+		// which would replay nothing for the requested app.
+		entries := s.buffer.ReadLastNMatching(SignalLogs, int(*req.LastN), func(m proto.Message) proto.Message {
+			logs, ok := m.(*otelpb.ExportLogsServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
+				if logs = filterLogs(logs, req); logs == nil {
+					return nil
+				}
+			}
+			return logs
+		})
 		for _, e := range entries {
 			logs, ok := e.(*otelpb.ExportLogsServiceRequest)
 			if !ok {
 				continue
-			}
-			if req.AppName != nil || req.ServiceName != nil || req.MinSeverity != nil {
-				logs = filterLogs(logs, req)
-				if logs == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpb.StreamLogsResponse{Logs: logs, IsHistory: true}); err != nil {
 				return err
@@ -397,19 +406,25 @@ func (s *TelemetryService) StreamMetrics(req *agentpb.StreamMetricsRequest, stre
 	}
 	defer s.broadcaster.UnsubscribeMetrics(id)
 
-	// Replay history after subscribing.
+	// Replay history after subscribing. As with logs, the tail window counts
+	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalMetrics, int(*req.LastN))
+		entries := s.buffer.ReadLastNMatching(SignalMetrics, int(*req.LastN), func(m proto.Message) proto.Message {
+			metrics, ok := m.(*otelpb.ExportMetricsServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil {
+				if metrics = filterMetrics(metrics, req); metrics == nil {
+					return nil
+				}
+			}
+			return metrics
+		})
 		for _, e := range entries {
 			metrics, ok := e.(*otelpb.ExportMetricsServiceRequest)
 			if !ok {
 				continue
-			}
-			if req.ServiceName != nil || req.AppName != nil || req.MetricNamePrefix != nil {
-				metrics = filterMetrics(metrics, req)
-				if metrics == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpb.StreamMetricsResponse{Metrics: metrics, IsHistory: true}); err != nil {
 				return err
@@ -454,19 +469,25 @@ func (s *TelemetryService) StreamTraces(req *agentpb.StreamTracesRequest, stream
 	id, ch := s.broadcaster.SubscribeTraces()
 	defer s.broadcaster.UnsubscribeTraces(id)
 
-	// Replay history after subscribing.
+	// Replay history after subscribing. As with logs, the tail window counts
+	// batches that survive the filter, not the last N device-wide.
 	if req.LastN != nil && *req.LastN > 0 && s.buffer != nil && s.buffer.DiskEnabled() {
-		entries := s.buffer.ReadLastN(SignalTraces, int(*req.LastN))
+		entries := s.buffer.ReadLastNMatching(SignalTraces, int(*req.LastN), func(m proto.Message) proto.Message {
+			traces, ok := m.(*otelpb.ExportTraceServiceRequest)
+			if !ok {
+				return nil
+			}
+			if req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil {
+				if traces = filterTraces(traces, req); traces == nil {
+					return nil
+				}
+			}
+			return traces
+		})
 		for _, e := range entries {
 			traces, ok := e.(*otelpb.ExportTraceServiceRequest)
 			if !ok {
 				continue
-			}
-			if req.ServiceName != nil || req.AppName != nil || req.SpanNamePrefix != nil {
-				traces = filterTraces(traces, req)
-				if traces == nil {
-					continue
-				}
 			}
 			if err := stream.Send(&agentpb.StreamTracesResponse{Traces: traces, IsHistory: true}); err != nil {
 				return err
@@ -558,13 +579,31 @@ func matchResourceAttributes(resource *otelpb.Resource, serviceName *string, app
 			if serviceName != nil && val == *serviceName {
 				return true
 			}
-			if appName != nil && val == *appName {
+			if appName != nil && resourceBelongsToApp(val, *appName) {
 				return true
 			}
 			return false
 		}
 	}
 	return false
+}
+
+// resourceBelongsToApp reports whether a telemetry resource's service.name
+// belongs to the given app: either the bare appID, or a per-service container
+// name "{appID}_{serviceName}" (see containerd.ContainerName). Output the
+// container monitor captures while restart-looping a services-map app is
+// published under the container name, so an --app filter that only matched the
+// bare appID made crash output unreachable (WDY-1826). The suffix must be a
+// valid service name so an unrelated app that merely shares the prefix (e.g.
+// "myapp_V2" for --app myapp) is not swept in.
+func resourceBelongsToApp(resourceService, appName string) bool {
+	if resourceService == appName {
+		return true
+	}
+	if !strings.HasPrefix(resourceService, appName+"_") {
+		return false
+	}
+	return appconfig.ValidateServiceName(resourceService[len(appName)+1:]) == nil
 }
 
 func resourceServiceName(resource *otelpb.Resource) string {

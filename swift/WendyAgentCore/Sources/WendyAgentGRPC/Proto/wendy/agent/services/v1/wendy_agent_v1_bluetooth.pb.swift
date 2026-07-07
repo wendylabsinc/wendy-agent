@@ -15,13 +15,13 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// Bluetooth command sent from CLI to Agent over L2CAP
-public struct Wendy_Agent_Services_V1_BluetoothCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -166,7 +166,7 @@ public struct Wendy_Agent_Services_V1_BluetoothCommand: Sendable {
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public enum OneOf_Command: Equatable, Sendable {
+  public nonisolated enum OneOf_Command: Equatable, Sendable {
     case wifiList(Wendy_Agent_Services_V1_WifiListCommand)
     case wifiConnect(Wendy_Agent_Services_V1_WifiConnectCommand)
     case wifiStatus(Wendy_Agent_Services_V1_WifiStatusCommand)
@@ -191,7 +191,7 @@ public struct Wendy_Agent_Services_V1_BluetoothCommand: Sendable {
 }
 
 /// Empty commands (no parameters needed)
-public struct Wendy_Agent_Services_V1_WifiListCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiListCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -201,7 +201,7 @@ public struct Wendy_Agent_Services_V1_WifiListCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiStatusCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiStatusCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -211,7 +211,7 @@ public struct Wendy_Agent_Services_V1_WifiStatusCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiDisconnectCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiDisconnectCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -221,7 +221,7 @@ public struct Wendy_Agent_Services_V1_WifiDisconnectCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_AppsListCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsListCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -231,7 +231,7 @@ public struct Wendy_Agent_Services_V1_AppsListCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_AgentVersionCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AgentVersionCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -241,7 +241,7 @@ public struct Wendy_Agent_Services_V1_AgentVersionCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_HardwareListCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_HardwareListCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -252,7 +252,7 @@ public struct Wendy_Agent_Services_V1_HardwareListCommand: Sendable {
 }
 
 /// Bluetooth device commands
-public struct Wendy_Agent_Services_V1_BluetoothListCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothListCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -264,7 +264,7 @@ public struct Wendy_Agent_Services_V1_BluetoothListCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothConnectCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothConnectCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -276,7 +276,7 @@ public struct Wendy_Agent_Services_V1_BluetoothConnectCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothDisconnectCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothDisconnectCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -288,7 +288,7 @@ public struct Wendy_Agent_Services_V1_BluetoothDisconnectCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothForgetCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothForgetCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -301,7 +301,7 @@ public struct Wendy_Agent_Services_V1_BluetoothForgetCommand: Sendable {
 }
 
 /// Commands with parameters
-public struct Wendy_Agent_Services_V1_WifiConnectCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiConnectCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -336,7 +336,7 @@ public struct Wendy_Agent_Services_V1_WifiConnectCommand: Sendable {
   fileprivate var _hidden: Bool? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiKnownListCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiKnownListCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -346,7 +346,7 @@ public struct Wendy_Agent_Services_V1_WifiKnownListCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiSetPriorityCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiSetPriorityCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -360,7 +360,7 @@ public struct Wendy_Agent_Services_V1_WifiSetPriorityCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiReorderCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiReorderCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -372,7 +372,7 @@ public struct Wendy_Agent_Services_V1_WifiReorderCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiForgetCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiForgetCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -384,7 +384,7 @@ public struct Wendy_Agent_Services_V1_WifiForgetCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_AppsStopCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsStopCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -396,7 +396,7 @@ public struct Wendy_Agent_Services_V1_AppsStopCommand: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_AppsRemoveCommand: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsRemoveCommand: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -411,7 +411,7 @@ public struct Wendy_Agent_Services_V1_AppsRemoveCommand: Sendable {
 }
 
 /// Bluetooth response sent from Agent to CLI over L2CAP
-public struct Wendy_Agent_Services_V1_BluetoothResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -564,7 +564,7 @@ public struct Wendy_Agent_Services_V1_BluetoothResponse: Sendable {
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public enum OneOf_Response: Equatable, Sendable {
+  public nonisolated enum OneOf_Response: Equatable, Sendable {
     case wifiList(Wendy_Agent_Services_V1_WifiListResponse)
     case wifiConnect(Wendy_Agent_Services_V1_WifiConnectResponse)
     case wifiStatus(Wendy_Agent_Services_V1_WifiStatusResponse)
@@ -590,7 +590,7 @@ public struct Wendy_Agent_Services_V1_BluetoothResponse: Sendable {
 }
 
 /// WiFi responses
-public struct Wendy_Agent_Services_V1_WifiListResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiListResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -602,7 +602,7 @@ public struct Wendy_Agent_Services_V1_WifiListResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiConnectResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiConnectResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -625,7 +625,7 @@ public struct Wendy_Agent_Services_V1_WifiConnectResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiStatusResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiStatusResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -658,7 +658,7 @@ public struct Wendy_Agent_Services_V1_WifiStatusResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiDisconnectResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiDisconnectResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -682,7 +682,7 @@ public struct Wendy_Agent_Services_V1_WifiDisconnectResponse: Sendable {
 }
 
 /// Apps responses
-public struct Wendy_Agent_Services_V1_AppsListResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsListResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -694,7 +694,7 @@ public struct Wendy_Agent_Services_V1_AppsListResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_AppsStopResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsStopResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -717,7 +717,7 @@ public struct Wendy_Agent_Services_V1_AppsStopResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_AppsRemoveResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppsRemoveResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -741,7 +741,7 @@ public struct Wendy_Agent_Services_V1_AppsRemoveResponse: Sendable {
 }
 
 /// Other responses
-public struct Wendy_Agent_Services_V1_AgentVersionResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AgentVersionResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -786,7 +786,7 @@ public struct Wendy_Agent_Services_V1_AgentVersionResponse: Sendable {
   fileprivate var _cpuArchitecture: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_HardwareListResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_HardwareListResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -798,7 +798,7 @@ public struct Wendy_Agent_Services_V1_HardwareListResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_ErrorResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_ErrorResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -811,7 +811,7 @@ public struct Wendy_Agent_Services_V1_ErrorResponse: Sendable {
 }
 
 /// Bluetooth device responses
-public struct Wendy_Agent_Services_V1_BluetoothListResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothListResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -823,7 +823,7 @@ public struct Wendy_Agent_Services_V1_BluetoothListResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothConnectResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothConnectResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -846,7 +846,7 @@ public struct Wendy_Agent_Services_V1_BluetoothConnectResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothDisconnectResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothDisconnectResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -869,7 +869,7 @@ public struct Wendy_Agent_Services_V1_BluetoothDisconnectResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_BluetoothForgetResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothForgetResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -892,7 +892,7 @@ public struct Wendy_Agent_Services_V1_BluetoothForgetResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiKnownListResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiKnownListResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -904,7 +904,7 @@ public struct Wendy_Agent_Services_V1_WifiKnownListResponse: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_KnownWifiNetworkInfo: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_KnownWifiNetworkInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -922,7 +922,7 @@ public struct Wendy_Agent_Services_V1_KnownWifiNetworkInfo: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_WifiSetPriorityResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiSetPriorityResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -945,7 +945,7 @@ public struct Wendy_Agent_Services_V1_WifiSetPriorityResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiReorderResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiReorderResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -968,7 +968,7 @@ public struct Wendy_Agent_Services_V1_WifiReorderResponse: Sendable {
   fileprivate var _errorMessage: String? = nil
 }
 
-public struct Wendy_Agent_Services_V1_WifiForgetResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiForgetResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -992,7 +992,7 @@ public struct Wendy_Agent_Services_V1_WifiForgetResponse: Sendable {
 }
 
 /// Shared types
-public struct Wendy_Agent_Services_V1_WifiNetworkInfo: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_WifiNetworkInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1041,7 +1041,7 @@ public struct Wendy_Agent_Services_V1_WifiNetworkInfo: Sendable {
   fileprivate var _rssiDbm: Int32? = nil
 }
 
-public struct Wendy_Agent_Services_V1_AppInfo: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AppInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1059,7 +1059,7 @@ public struct Wendy_Agent_Services_V1_AppInfo: Sendable {
   public init() {}
 }
 
-public struct Wendy_Agent_Services_V1_HardwareInfo: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_HardwareInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1076,7 +1076,7 @@ public struct Wendy_Agent_Services_V1_HardwareInfo: Sendable {
 }
 
 /// Information about a Bluetooth device
-public struct Wendy_Agent_Services_V1_BluetoothDeviceInfo: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_BluetoothDeviceInfo: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -1121,9 +1121,9 @@ public struct Wendy_Agent_Services_V1_BluetoothDeviceInfo: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendy.agent.services.v1"
+fileprivate nonisolated let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_BluetoothCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}wifi_list\0\u{3}wifi_connect\0\u{3}wifi_status\0\u{3}wifi_disconnect\0\u{3}apps_list\0\u{3}apps_stop\0\u{3}apps_remove\0\u{3}agent_version\0\u{3}hardware_list\0\u{3}bluetooth_list\0\u{3}bluetooth_connect\0\u{3}bluetooth_disconnect\0\u{3}bluetooth_forget\0\u{3}wifi_known_list\0\u{3}wifi_set_priority\0\u{3}wifi_reorder\0\u{3}wifi_forget\0")
 
@@ -1445,7 +1445,7 @@ extension Wendy_Agent_Services_V1_BluetoothCommand: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiListCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1464,7 +1464,7 @@ extension Wendy_Agent_Services_V1_WifiListCommand: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiStatusCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiStatusCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiStatusCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1483,7 +1483,7 @@ extension Wendy_Agent_Services_V1_WifiStatusCommand: SwiftProtobuf.Message, Swif
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiDisconnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiDisconnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiDisconnectCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1502,7 +1502,7 @@ extension Wendy_Agent_Services_V1_WifiDisconnectCommand: SwiftProtobuf.Message, 
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsListCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1521,7 +1521,7 @@ extension Wendy_Agent_Services_V1_AppsListCommand: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendy_Agent_Services_V1_AgentVersionCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AgentVersionCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AgentVersionCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1540,7 +1540,7 @@ extension Wendy_Agent_Services_V1_AgentVersionCommand: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendy_Agent_Services_V1_HardwareListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_HardwareListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HardwareListCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1559,7 +1559,7 @@ extension Wendy_Agent_Services_V1_HardwareListCommand: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothListCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}paired_only\0")
 
@@ -1589,7 +1589,7 @@ extension Wendy_Agent_Services_V1_BluetoothListCommand: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothConnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothConnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothConnectCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0")
 
@@ -1619,7 +1619,7 @@ extension Wendy_Agent_Services_V1_BluetoothConnectCommand: SwiftProtobuf.Message
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothDisconnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothDisconnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothDisconnectCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0")
 
@@ -1649,7 +1649,7 @@ extension Wendy_Agent_Services_V1_BluetoothDisconnectCommand: SwiftProtobuf.Mess
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothForgetCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothForgetCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothForgetCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0")
 
@@ -1679,7 +1679,7 @@ extension Wendy_Agent_Services_V1_BluetoothForgetCommand: SwiftProtobuf.Message,
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiConnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiConnectCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiConnectCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{1}password\0\u{1}security\0\u{1}hidden\0")
 
@@ -1728,7 +1728,7 @@ extension Wendy_Agent_Services_V1_WifiConnectCommand: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiKnownListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiKnownListCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiKnownListCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
 
@@ -1747,7 +1747,7 @@ extension Wendy_Agent_Services_V1_WifiKnownListCommand: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiSetPriorityCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiSetPriorityCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiSetPriorityCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{1}priority\0")
 
@@ -1782,7 +1782,7 @@ extension Wendy_Agent_Services_V1_WifiSetPriorityCommand: SwiftProtobuf.Message,
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiReorderCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiReorderCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiReorderCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}order_ssids\0")
 
@@ -1812,7 +1812,7 @@ extension Wendy_Agent_Services_V1_WifiReorderCommand: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiForgetCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiForgetCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiForgetCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0")
 
@@ -1842,7 +1842,7 @@ extension Wendy_Agent_Services_V1_WifiForgetCommand: SwiftProtobuf.Message, Swif
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsStopCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsStopCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsStopCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0")
 
@@ -1872,7 +1872,7 @@ extension Wendy_Agent_Services_V1_AppsStopCommand: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsRemoveCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsRemoveCommand: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsRemoveCommand"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}purge_image\0")
 
@@ -1907,7 +1907,7 @@ extension Wendy_Agent_Services_V1_AppsRemoveCommand: SwiftProtobuf.Message, Swif
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}wifi_list\0\u{3}wifi_connect\0\u{3}wifi_status\0\u{3}wifi_disconnect\0\u{3}apps_list\0\u{3}apps_stop\0\u{3}apps_remove\0\u{3}agent_version\0\u{3}hardware_list\0\u{1}error\0\u{3}bluetooth_list\0\u{3}bluetooth_connect\0\u{3}bluetooth_disconnect\0\u{3}bluetooth_forget\0\u{3}wifi_known_list\0\u{3}wifi_set_priority\0\u{3}wifi_reorder\0\u{3}wifi_forget\0")
 
@@ -2246,7 +2246,7 @@ extension Wendy_Agent_Services_V1_BluetoothResponse: SwiftProtobuf.Message, Swif
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiListResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}networks\0")
 
@@ -2276,7 +2276,7 @@ extension Wendy_Agent_Services_V1_WifiListResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiConnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiConnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiConnectResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2315,7 +2315,7 @@ extension Wendy_Agent_Services_V1_WifiConnectResponse: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiStatusResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiStatusResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}connected\0\u{1}ssid\0\u{3}error_message\0")
 
@@ -2359,7 +2359,7 @@ extension Wendy_Agent_Services_V1_WifiStatusResponse: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiDisconnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiDisconnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiDisconnectResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2398,7 +2398,7 @@ extension Wendy_Agent_Services_V1_WifiDisconnectResponse: SwiftProtobuf.Message,
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsListResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}apps\0")
 
@@ -2428,7 +2428,7 @@ extension Wendy_Agent_Services_V1_AppsListResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsStopResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsStopResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsStopResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2467,7 +2467,7 @@ extension Wendy_Agent_Services_V1_AppsStopResponse: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_AppsRemoveResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppsRemoveResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppsRemoveResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2506,7 +2506,7 @@ extension Wendy_Agent_Services_V1_AppsRemoveResponse: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_AgentVersionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AgentVersionResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AgentVersionResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}version\0\u{1}os\0\u{3}os_version\0\u{3}cpu_architecture\0\u{1}featureset\0")
 
@@ -2560,7 +2560,7 @@ extension Wendy_Agent_Services_V1_AgentVersionResponse: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_HardwareListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_HardwareListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HardwareListResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}capabilities\0")
 
@@ -2590,7 +2590,7 @@ extension Wendy_Agent_Services_V1_HardwareListResponse: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_ErrorResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_ErrorResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ErrorResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}message\0")
 
@@ -2620,7 +2620,7 @@ extension Wendy_Agent_Services_V1_ErrorResponse: SwiftProtobuf.Message, SwiftPro
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothListResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}devices\0")
 
@@ -2650,7 +2650,7 @@ extension Wendy_Agent_Services_V1_BluetoothListResponse: SwiftProtobuf.Message, 
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothConnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothConnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothConnectResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2689,7 +2689,7 @@ extension Wendy_Agent_Services_V1_BluetoothConnectResponse: SwiftProtobuf.Messag
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothDisconnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothDisconnectResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothDisconnectResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2728,7 +2728,7 @@ extension Wendy_Agent_Services_V1_BluetoothDisconnectResponse: SwiftProtobuf.Mes
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothForgetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothForgetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothForgetResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2767,7 +2767,7 @@ extension Wendy_Agent_Services_V1_BluetoothForgetResponse: SwiftProtobuf.Message
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiKnownListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiKnownListResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiKnownListResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}networks\0")
 
@@ -2797,7 +2797,7 @@ extension Wendy_Agent_Services_V1_WifiKnownListResponse: SwiftProtobuf.Message, 
   }
 }
 
-extension Wendy_Agent_Services_V1_KnownWifiNetworkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_KnownWifiNetworkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".KnownWifiNetworkInfo"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{1}uuid\0\u{1}priority\0\u{1}security\0")
 
@@ -2842,7 +2842,7 @@ extension Wendy_Agent_Services_V1_KnownWifiNetworkInfo: SwiftProtobuf.Message, S
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiSetPriorityResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiSetPriorityResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiSetPriorityResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2881,7 +2881,7 @@ extension Wendy_Agent_Services_V1_WifiSetPriorityResponse: SwiftProtobuf.Message
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiReorderResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiReorderResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiReorderResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2920,7 +2920,7 @@ extension Wendy_Agent_Services_V1_WifiReorderResponse: SwiftProtobuf.Message, Sw
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiForgetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiForgetResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiForgetResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -2959,7 +2959,7 @@ extension Wendy_Agent_Services_V1_WifiForgetResponse: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_WifiNetworkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_WifiNetworkInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".WifiNetworkInfo"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}ssid\0\u{3}signal_strength\0\u{1}security\0\u{3}is_known\0\u{3}is_connected\0\u{1}priority\0\u{3}rssi_dbm\0")
 
@@ -3023,7 +3023,7 @@ extension Wendy_Agent_Services_V1_WifiNetworkInfo: SwiftProtobuf.Message, SwiftP
   }
 }
 
-extension Wendy_Agent_Services_V1_AppInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AppInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AppInfo"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{1}state\0\u{3}failure_count\0")
 
@@ -3068,7 +3068,7 @@ extension Wendy_Agent_Services_V1_AppInfo: SwiftProtobuf.Message, SwiftProtobuf.
   }
 }
 
-extension Wendy_Agent_Services_V1_HardwareInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_HardwareInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".HardwareInfo"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}type\0\u{1}name\0\u{1}available\0")
 
@@ -3108,7 +3108,7 @@ extension Wendy_Agent_Services_V1_HardwareInfo: SwiftProtobuf.Message, SwiftProt
   }
 }
 
-extension Wendy_Agent_Services_V1_BluetoothDeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_BluetoothDeviceInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".BluetoothDeviceInfo"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}name\0\u{1}address\0\u{1}rssi\0\u{1}paired\0\u{1}connected\0\u{1}trusted\0\u{3}device_type\0\u{1}icon\0")
 

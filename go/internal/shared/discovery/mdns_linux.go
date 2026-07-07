@@ -165,7 +165,12 @@ func queryInterfaceMDNS(_ context.Context, iface *net.Interface, serviceType str
 
 			hostname := strings.TrimSuffix(entry.Host, ".")
 
-			key := fmt.Sprintf("%s-%s-%d", entry.Name, hostname, entry.Port)
+			instanceName := entry.Name
+			if labels := splitDNSSDLabels(strings.Trim(entry.Name, ".")); len(labels) > 0 {
+				instanceName = labels[0]
+			}
+
+			key := fmt.Sprintf("%s-%s-%d", instanceName, hostname, entry.Port)
 			if seen[key] {
 				continue
 			}
@@ -185,7 +190,7 @@ func queryInterfaceMDNS(_ context.Context, iface *net.Interface, serviceType str
 			txtRecords := parseMDNSInfoFields(entry.InfoFields)
 
 			services = append(services, MDNSService{
-				InstanceName: entry.Name,
+				InstanceName: instanceName,
 				Hostname:     hostname,
 				IPAddress:    ipAddr,
 				Port:         entry.Port,

@@ -20,13 +20,13 @@ public import SwiftProtobuf
 // incompatible with the version of SwiftProtobuf to which you are linking.
 // Please ensure that you are building against the same version of the API
 // that was used to generate this file.
-fileprivate struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
+fileprivate nonisolated struct _GeneratedWithProtocGenSwiftVersion: SwiftProtobuf.ProtobufAPIVersionCheck {
   struct _2: SwiftProtobuf.ProtobufAPIVersion_2 {}
   typealias Version = _2
 }
 
 /// Type of audio device
-public enum Wendy_Agent_Services_V1_AudioDeviceType: SwiftProtobuf.Enum, Swift.CaseIterable {
+public nonisolated enum Wendy_Agent_Services_V1_AudioDeviceType: SwiftProtobuf.Enum, Swift.CaseIterable {
   public typealias RawValue = Int
   case unspecified // = 0
 
@@ -69,7 +69,7 @@ public enum Wendy_Agent_Services_V1_AudioDeviceType: SwiftProtobuf.Enum, Swift.C
 }
 
 /// Request to list audio devices
-public struct Wendy_Agent_Services_V1_ListAudioDevicesRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_ListAudioDevicesRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -92,7 +92,7 @@ public struct Wendy_Agent_Services_V1_ListAudioDevicesRequest: Sendable {
 }
 
 /// Response containing available audio devices
-public struct Wendy_Agent_Services_V1_ListAudioDevicesResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_ListAudioDevicesResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -105,7 +105,7 @@ public struct Wendy_Agent_Services_V1_ListAudioDevicesResponse: Sendable {
 }
 
 /// Information about an audio device
-public struct Wendy_Agent_Services_V1_AudioDevice: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AudioDevice: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -131,7 +131,7 @@ public struct Wendy_Agent_Services_V1_AudioDevice: Sendable {
 }
 
 /// Request to set default audio device
-public struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -145,7 +145,7 @@ public struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: Sendable {
 }
 
 /// Response for setting default device
-public struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -169,7 +169,7 @@ public struct Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: Sendable {
 }
 
 /// Request to stream audio levels
-public struct Wendy_Agent_Services_V1_StreamAudioLevelsRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamAudioLevelsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -186,7 +186,7 @@ public struct Wendy_Agent_Services_V1_StreamAudioLevelsRequest: Sendable {
 }
 
 /// Real-time audio level update
-public struct Wendy_Agent_Services_V1_AudioLevelUpdate: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AudioLevelUpdate: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -206,7 +206,7 @@ public struct Wendy_Agent_Services_V1_AudioLevelUpdate: Sendable {
 }
 
 /// Request to stream raw audio
-public struct Wendy_Agent_Services_V1_StreamAudioRequest: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_StreamAudioRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -226,7 +226,7 @@ public struct Wendy_Agent_Services_V1_StreamAudioRequest: Sendable {
 }
 
 /// Raw PCM audio chunk
-public struct Wendy_Agent_Services_V1_AudioChunk: Sendable {
+public nonisolated struct Wendy_Agent_Services_V1_AudioChunk: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -250,13 +250,13 @@ public struct Wendy_Agent_Services_V1_AudioChunk: Sendable {
 
 // MARK: - Code below here is support for the SwiftProtobuf runtime.
 
-fileprivate let _protobuf_package = "wendy.agent.services.v1"
+fileprivate nonisolated let _protobuf_package = "wendy.agent.services.v1"
 
-extension Wendy_Agent_Services_V1_AudioDeviceType: SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AudioDeviceType: SwiftProtobuf._ProtoNameProviding {
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0AUDIO_DEVICE_TYPE_UNSPECIFIED\0\u{1}AUDIO_DEVICE_TYPE_INPUT\0\u{1}AUDIO_DEVICE_TYPE_OUTPUT\0")
 }
 
-extension Wendy_Agent_Services_V1_ListAudioDevicesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_ListAudioDevicesRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAudioDevicesRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}type_filter\0")
 
@@ -290,7 +290,7 @@ extension Wendy_Agent_Services_V1_ListAudioDevicesRequest: SwiftProtobuf.Message
   }
 }
 
-extension Wendy_Agent_Services_V1_ListAudioDevicesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_ListAudioDevicesResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListAudioDevicesResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}devices\0")
 
@@ -320,7 +320,7 @@ extension Wendy_Agent_Services_V1_ListAudioDevicesResponse: SwiftProtobuf.Messag
   }
 }
 
-extension Wendy_Agent_Services_V1_AudioDevice: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AudioDevice: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AudioDevice"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{1}name\0\u{1}description\0\u{1}type\0\u{3}is_default\0")
 
@@ -370,7 +370,7 @@ extension Wendy_Agent_Services_V1_AudioDevice: SwiftProtobuf.Message, SwiftProto
   }
 }
 
-extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SetDefaultAudioDeviceRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0")
 
@@ -400,7 +400,7 @@ extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceRequest: SwiftProtobuf.Me
   }
 }
 
-extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".SetDefaultAudioDeviceResponse"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}success\0\u{3}error_message\0")
 
@@ -439,7 +439,7 @@ extension Wendy_Agent_Services_V1_SetDefaultAudioDeviceResponse: SwiftProtobuf.M
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamAudioLevelsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamAudioLevelsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamAudioLevelsRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}update_rate_hz\0")
 
@@ -474,7 +474,7 @@ extension Wendy_Agent_Services_V1_StreamAudioLevelsRequest: SwiftProtobuf.Messag
   }
 }
 
-extension Wendy_Agent_Services_V1_AudioLevelUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AudioLevelUpdate: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AudioLevelUpdate"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}peak_db\0\u{3}rms_db\0\u{3}timestamp_ns\0")
 
@@ -514,7 +514,7 @@ extension Wendy_Agent_Services_V1_AudioLevelUpdate: SwiftProtobuf.Message, Swift
   }
 }
 
-extension Wendy_Agent_Services_V1_StreamAudioRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_StreamAudioRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".StreamAudioRequest"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}device_id\0\u{3}sample_rate\0\u{1}channels\0")
 
@@ -554,7 +554,7 @@ extension Wendy_Agent_Services_V1_StreamAudioRequest: SwiftProtobuf.Message, Swi
   }
 }
 
-extension Wendy_Agent_Services_V1_AudioChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+nonisolated extension Wendy_Agent_Services_V1_AudioChunk: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".AudioChunk"
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}pcm_data\0\u{3}timestamp_ns\0\u{3}sample_rate\0\u{1}channels\0")
 

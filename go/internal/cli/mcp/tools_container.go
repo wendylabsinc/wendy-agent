@@ -86,12 +86,19 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 		if c == nil {
 			continue
 		}
-		containers = append(containers, map[string]any{
+		entry := map[string]any{
 			"app_name":      c.GetAppName(),
 			"app_version":   c.GetAppVersion(),
 			"running_state": c.GetRunningState().String(),
 			"failure_count": c.GetFailureCount(),
-		})
+		}
+		// Exit diagnostics: why a stopped app stopped (crashed / OOM / start
+		// failure / entitlement denied). Only present when recorded.
+		if reason := c.GetTerminationReason(); reason != "" {
+			entry["termination_reason"] = reason
+			entry["exit_code"] = c.GetExitCode()
+		}
+		containers = append(containers, entry)
 	}
 	if containers == nil {
 		containers = []map[string]any{}

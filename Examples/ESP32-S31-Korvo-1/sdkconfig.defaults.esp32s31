@@ -1,0 +1,35 @@
+# Target: ESP32-S31 (ESP32-S31-Korvo-1)
+#
+# The S31 is a RISC-V dual-core (HP RV32IMAFCP @ 320 MHz + LP core) with native
+# WiFi 6 / BT 5.4 and integrated PSRAM. Unlike the ESP32-P4 (which needs a
+# companion ESP32-C6 over ESP-Hosted for radio), the S31's radio is on-die, so
+# NONE of the ESP-Hosted knobs from wendy-lite's P4 profile apply here.
+#
+# For the camera/display pipeline the S31 exposes the LCD_CAM peripheral
+# (parallel DVP camera in + RGB/i80 LCD out) plus a JPEG codec and the PPA
+# pixel accelerator -- i.e. an ESP32-S3-class imaging path, NOT the P4's
+# MIPI-CSI/DSI. That is why this demo uses esp32-camera (DVP) + esp_lcd RGB.
+
+CONFIG_IDF_TARGET="esp32s31"
+
+# --- Flash: 16 MB (Korvo-1 module). partitions.csv is sized to match. ---
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# --- PSRAM (16 MB integrated) ---------------------------------------------
+# NOTE(unverified): exact SPIRAM interface mode + clock for the S31's
+# integrated PSRAM are not yet documented publicly. Enabling SPIRAM and
+# letting the IDF target defaults pick the mode; revisit against the S31
+# datasheet / esp_hosted-free Korvo-1 board support package once available.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_BOOT_INIT=y
+# Keep latency-sensitive small allocs in internal SRAM; large buffers (camera
+# framebuffers, LCD bounce buffers) may land in PSRAM.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# Needed so EXT_RAM_BSS_ATTR / large DMA framebuffers can be placed in PSRAM.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# --- WAMR runtime (Phase 2, wendy_core): fast interp + normal loader, with a
+#     PSRAM-backed pool, mirroring wendy-lite's PSRAM-rich P4 profile. These
+#     are inert until the wendy_core component is enabled (DEMO_ENABLE_WENDY_CORE).
+CONFIG_WAMR_INTERP_FAST=y
+CONFIG_WAMR_INTERP_LOADER_NORMAL=y

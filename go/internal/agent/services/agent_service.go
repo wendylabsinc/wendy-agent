@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -98,6 +97,8 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		resp.DiskTotalBytes = &usage.totalBytes
 	}
 
+	resp.MemTotalBytes, resp.CpuCount = hostMemAndCPUCount()
+
 	for _, p := range listDiskPartitions() {
 		resp.Partitions = append(resp.Partitions, &agentpb.DiskPartition{
 			Mountpoint: p.mountpoint,
@@ -108,7 +109,31 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		})
 	}
 
+	resp.NetworkInterfaces = listNetworkInterfaces()
+
 	return resp, nil
+}
+
+// SetHostname sets the device's hostname (and mDNS name) to a literal value,
+// applies it live, and persists it across reboots. See applyHostname.
+func (s *AgentService) SetHostname(_ context.Context, req *agentpb.SetHostnameRequest) (*agentpb.SetHostnameResponse, error) {
+	hostname := req.GetHostname()
+	s.logger.Info("SetHostname requested", zap.String("hostname", hostname))
+
+	if !s.isWendyOSHost() {
+		s.logger.Warn("SetHostname rejected: host is not a WendyOS device", zap.String("hostname", hostname))
+		return nil, status.Error(codes.Unavailable, "setting the hostname is only supported on WendyOS devices")
+	}
+
+	if err := applyHostname(s.logger, hostname); err != nil {
+		s.logger.Warn("SetHostname failed", zap.String("hostname", hostname), zap.Error(err))
+		if !validHostname(hostname) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "applying hostname: %v", err)
+	}
+
+	return &agentpb.SetHostnameResponse{Hostname: hostname}, nil
 }
 
 type gpuInfo struct {
@@ -195,30 +220,61 @@ func detectJetPackVersion() string {
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
 
 func detectCUDAVersion() string {
-	if data, err := os.ReadFile("/usr/local/cuda/version.txt"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+	return detectCUDAVersionIn("/usr/local", exec.LookPath, runDetectCommand)
+}
 
-	if data, err := os.ReadFile("/usr/local/cuda/version.json"); err == nil {
-		if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
-			return string(m[1])
-		}
-	}
+// runDetectCommand runs a detection helper binary with a timeout so detection
+// cannot block an RPC handler.
+func runDetectCommand(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
-	// Fall back to nvcc --version with a timeout so detection cannot block an RPC handler.
-	if nvcc, err := exec.LookPath("nvcc"); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		out, err := exec.CommandContext(ctx, nvcc, "--version").Output()
-		if err == nil {
-			if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+// detectCUDAVersionIn probes for the installed CUDA toolkit version under
+// usrLocal (normally /usr/local). lookPath and runCmd are injectable for tests.
+//
+// Probe order:
+//  1. version.txt / version.json under the well-known cuda symlink (legacy
+//     layouts; CUDA 11.1+ dropped version.txt, newer releases also dropped
+//     version.json).
+//  2. nvcc on PATH.
+//  3. nvcc inside versioned toolkit dirs (cuda-X.Y/bin/nvcc) — the JetPack 7
+//     layout ships no cuda symlink, no version files, and does not put nvcc
+//     on PATH.
+func detectCUDAVersionIn(usrLocal string, lookPath func(string) (string, error), runCmd func(string, ...string) ([]byte, error)) string {
+	for _, name := range []string{"version.txt", "version.json"} {
+		if data, err := os.ReadFile(filepath.Join(usrLocal, "cuda", name)); err == nil {
+			if m := cudaVersionFileRe.FindSubmatch(data); len(m) > 1 {
 				return string(m[1])
 			}
 		}
 	}
 
+	if nvcc, err := lookPath("nvcc"); err == nil {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(usrLocal, "cuda-*", "bin", "nvcc"))
+	for _, nvcc := range matches {
+		if v := cudaVersionFromNvcc(nvcc, runCmd); v != "" {
+			return v
+		}
+	}
+
+	return ""
+}
+
+func cudaVersionFromNvcc(nvcc string, runCmd func(string, ...string) ([]byte, error)) string {
+	out, err := runCmd(nvcc, "--version")
+	if err != nil {
+		return ""
+	}
+	if m := cudaVersionFileRe.FindSubmatch(out); len(m) > 1 {
+		return string(m[1])
+	}
 	return ""
 }
 
@@ -272,20 +328,13 @@ func detectFeatureset() []string {
 		features = append(features, "camera")
 	}
 
-	_, hasMender := resolveMenderBinary()
-	if hasMender {
-		features = append(features, "mender")
-	}
-	_, hasWendyOS := resolveWendyOSBinary()
-	if hasWendyOS {
-		// The in-house wendyos-update engine; the primary OS update backend
-		// when present (mender is the fallback). See selectUpdater.
+	if _, hasWendyOS := resolveWendyOSBinary(); hasWendyOS {
+		// The in-house wendyos-update engine, the OS update backend. See
+		// selectUpdater.
 		features = append(features, "wendyos-update")
-	}
-	if hasMender || hasWendyOS {
 		// "os-healthcheck": OS updates are verified by post-reboot service
 		// healthchecks with automatic rollback (and GetOSUpdateStatus reports
-		// the outcome). Backend-agnostic — see oshealth.Gate.
+		// the outcome). See oshealth.Gate.
 		features = append(features, "os-healthcheck")
 	}
 
@@ -437,26 +486,44 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 				}
 				committed = true
 
-				if err := stream.Send(&agentpb.UpdateAgentResponse{
-					ResponseType: &agentpb.UpdateAgentResponse_Updated_{
-						Updated: &agentpb.UpdateAgentResponse_Updated{},
-					},
-				}); err != nil {
-					return err
-				}
-
-				// Trigger process exit for systemd to restart the agent.
-				go func() {
-					time.Sleep(500 * time.Millisecond)
-					os.Exit(0)
-				}()
-
-				return nil
+				return finishCommittedUpdate(s.logger, func() error {
+					return stream.Send(&agentpb.UpdateAgentResponse{
+						ResponseType: &agentpb.UpdateAgentResponse_Updated_{
+							Updated: &agentpb.UpdateAgentResponse_Updated{},
+						},
+					})
+				}, scheduleAgentRestartExit)
 			}
 		}
 	}
 
 	return status.Error(codes.InvalidArgument, "update stream ended without update control command")
+}
+
+// finishCommittedUpdate runs the tail of an UpdateAgent stream once the binary
+// is committed: schedule the restart exit FIRST, then best-effort ack the
+// client. The restart must never depend on the ack — the client's transport
+// can already be gone by the time the update lands, and returning an error
+// here would leave the old binary running while the installer lock is held
+// forever (it is deliberately kept on success), wedging every retry on
+// "an update is already in progress" until a manual reboot. The exit delay in
+// scheduleExit gives a successful ack time to flush before the process dies.
+func finishCommittedUpdate(logger *zap.Logger, sendAck func() error, scheduleExit func()) error {
+	scheduleExit()
+	if err := sendAck(); err != nil {
+		logger.Warn("agent update committed but the ack was not delivered; restarting into the new binary anyway",
+			zap.Error(err))
+	}
+	return nil
+}
+
+// scheduleAgentRestartExit exits the process after a short grace period so
+// systemd restarts the agent on the just-committed binary.
+func scheduleAgentRestartExit() {
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+	}()
 }
 
 func (s *AgentService) ListWiFiNetworks(ctx context.Context, _ *agentpb.ListWiFiNetworksRequest) (*agentpb.ListWiFiNetworksResponse, error) {
@@ -604,10 +671,6 @@ func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agent
 
 const osUpdateUnsupportedForHostMessage = "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install."
 
-// menderProgressRe matches percentage patterns in mender output, e.g.
-// "  10%" or "50% 5120 kB" or "Installing:  75%".
-var menderProgressRe = regexp.MustCompile(`(\d{1,3})%`)
-
 // systemctlFn runs systemctl; overridable in tests.
 var systemctlFn = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "systemctl", args...).CombinedOutput()
@@ -620,9 +683,9 @@ const (
 
 // inhibitAutoUpdater stops the agent auto-updater (timer+service) and returns a
 // defer-able restore func that re-enables the timer. The updater's "systemctl
-// stop wendyos-agent" would otherwise SIGTERM in-flight mender via the shared
-// service cgroup (default KillMode=control-group) and abort the OTA.
-// Best-effort: failures are logged, not fatal.
+// stop wendyos-agent" would otherwise SIGTERM the in-flight wendyos-update
+// install via the shared service cgroup (default KillMode=control-group) and
+// abort the OTA. Best-effort: failures are logged, not fatal.
 func inhibitAutoUpdater(logger *zap.Logger) func() {
 	sysctl := func(args ...string) ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -679,68 +742,6 @@ func readWendyOSVersionFrom(paths ...string) (string, bool) {
 	return "", false
 }
 
-// enableJetsonRootfsAB ensures rootfs A/B redundancy is configured on NVIDIA
-// Jetson devices by writing the required UEFI EFI variables. It is a no-op on
-// non-Jetson hardware (detected by the absence of nvbootctrl).
-//
-// The caller must be running as root; the function returns an error if the
-// device appears to be a Jetson but the prerequisite APP_b partition is absent.
-func enableJetsonRootfsAB(logger *zap.Logger) error {
-	const guid = "781e084c-a330-417c-b678-38e696380cb9"
-	const efivarsDir = "/sys/firmware/efi/efivars"
-
-	nvbootctrl, err := exec.LookPath("nvbootctrl")
-	if err != nil {
-		// Not a Jetson device — nothing to do.
-		return nil
-	}
-
-	if _, err := os.Stat(efivarsDir); err != nil {
-		return fmt.Errorf("EFI vars not accessible at %s: %w", efivarsDir, err)
-	}
-
-	if _, err := os.Stat("/dev/disk/by-partlabel/APP_b"); err != nil {
-		return fmt.Errorf("APP_b partition not found — device needs reflashing for rootfs A/B support")
-	}
-
-	// Exit code 0 means A/B is NOT yet enabled; non-zero means already enabled.
-	checkCmd := exec.Command(nvbootctrl, "-t", "rootfs", "is-rootfs-ab-enabled")
-	if err := checkCmd.Run(); err != nil {
-		logger.Info("Jetson rootfs A/B already enabled, skipping EFI var setup")
-		return nil
-	}
-
-	logger.Info("Enabling Jetson rootfs A/B redundancy")
-
-	writeVar := func(name string, value []byte) error {
-		path := fmt.Sprintf("%s/%s-%s", efivarsDir, name, guid)
-		if _, err := os.Stat(path); err == nil {
-			logger.Info("EFI var already exists, skipping", zap.String("name", name))
-			return nil
-		}
-		// EFI variable format: 4-byte attributes header + value bytes.
-		// Attributes: 0x07 = NV|BS|RT (non-volatile, boot-service, runtime-service).
-		data := append([]byte{0x07, 0x00, 0x00, 0x00}, value...)
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return fmt.Errorf("writing EFI var %s: %w", name, err)
-		}
-		logger.Info("EFI var written", zap.String("name", name))
-		return nil
-	}
-
-	// RootfsRedundancyLevel = 1, RootfsRetryCountMax = 3.
-	if err := writeVar("RootfsRedundancyLevel", []byte{0x01, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-	if err := writeVar("RootfsRetryCountMax", []byte{0x03, 0x00, 0x00, 0x00}); err != nil {
-		return err
-	}
-
-	out, _ := exec.Command(nvbootctrl, "-t", "rootfs", "dump-slots-info").CombinedOutput()
-	logger.Info("Jetson rootfs A/B enabled", zap.String("slots_info", strings.TrimSpace(string(out))))
-	return nil
-}
-
 func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.ServerStreamingServer[agentpb.UpdateOSResponse]) error {
 	s.logger.Info("UpdateOS started",
 		zap.String("artifact_url", req.GetArtifactUrl()), zap.String("updater", req.GetUpdaterBackend()))
@@ -755,7 +756,7 @@ func (s *AgentService) UpdateOS(req *agentpb.UpdateOSRequest, stream grpc.Server
 	restoreUpdater := inhibitAutoUpdater(s.logger)
 	defer restoreUpdater()
 
-	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend(), req.GetArtifactUrl())
 	if err != nil {
 		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
 		return sendOSUpdateFailure(stream, err.Error())
@@ -819,40 +820,6 @@ func envWithPath(path string) []string {
 		}
 	}
 	return append(env, "PATH="+path)
-}
-
-// resolveMenderBinary finds the mender-update binary. It checks PATH via
-// exec.LookPath and then probes absolute paths directly. The os.Stat fallback
-// is restricted to absolute paths to avoid accidentally executing a file from
-// the current working directory. mender-update is preferred over legacy mender.
-func resolveMenderBinary() (string, bool) {
-	candidates := []string{
-		"mender-update",
-		"/usr/local/sbin/mender-update",
-		"/usr/local/bin/mender-update",
-		"/usr/sbin/mender-update",
-		"/usr/bin/mender-update",
-		"/sbin/mender-update",
-		"/bin/mender-update",
-		"mender",
-		"/usr/local/sbin/mender",
-		"/usr/local/bin/mender",
-		"/usr/sbin/mender",
-		"/usr/bin/mender",
-		"/sbin/mender",
-		"/bin/mender",
-	}
-	for _, c := range candidates {
-		if path, err := exec.LookPath(c); err == nil {
-			return path, true
-		}
-		if filepath.IsAbs(c) {
-			if _, err := os.Stat(c); err == nil {
-				return c, true
-			}
-		}
-	}
-	return "", false
 }
 
 func CleanupOldBackups(logger *zap.Logger) {

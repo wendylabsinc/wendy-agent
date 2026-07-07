@@ -41,7 +41,9 @@ When the device clock is behind the floor at startup, `wendy-agent` logs a `WARN
 
 The systemd unit also orders the agent after `time-sync.target` (`After=`/`Wants=`) so NTP synchronisation is attempted as early as possible; the floor is the primary guard and does not depend on that ordering.
 
-For additional clock resilience, the agent uses **Roughtime** — a cryptographically-signed time protocol — to obtain a trusted timestamp from multiple public servers. Roughtime sync runs on startup and periodically thereafter, advancing the system clock when the verified time is ahead of the local clock. The CLI can also broadcast Roughtime time to nearby devices via `wendy device sync-time`.
+For additional clock resilience, the agent uses **Roughtime** — a cryptographically-signed time protocol — to obtain a trusted timestamp from multiple public servers. Roughtime sync runs on startup and periodically thereafter, advancing the system clock when the verified time is ahead of the local clock.
+
+When connecting to a device, the CLI automatically checks for clock skew. If the device clock lags by more than 2 minutes, the CLI fetches a signed Roughtime proof and relays it to the device, which verifies the signature and advances its clock. The CLI's own clock is never sent as authoritative time — only used to decide whether to relay. The CLI can also broadcast Roughtime time to nearby devices via `wendy device sync-time`.
 
 ## Local development with pki-core
 

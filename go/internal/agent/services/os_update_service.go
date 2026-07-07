@@ -37,7 +37,7 @@ func (s *OSUpdateService) UpdateOS(req *agentpbv2.UpdateOSRequest, stream grpc.S
 	restoreUpdater := inhibitAutoUpdater(s.logger)
 	defer restoreUpdater()
 
-	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend())
+	updater, err := selectUpdater(s.logger, req.GetUpdaterBackend(), req.GetArtifactUrl())
 	if err != nil {
 		s.logger.Warn("UpdateOS rejected: no usable updater backend", zap.Error(err))
 		return sendOSUpdateFailureV2(stream, err.Error())

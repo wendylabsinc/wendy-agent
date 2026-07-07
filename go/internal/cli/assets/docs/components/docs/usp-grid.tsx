@@ -9,49 +9,49 @@ type USP = {
 
 const usps: USP[] = [
   {
-    icon: <Plug className="size-5 text-orange-500" />,
+    icon: <Plug className="size-5 text-wendy-seafoam" />,
     title: 'USB-C Deployment',
     description:
       'Plug in your Jetson or Pi and deploy in seconds. No SSH, no network config, no ceremony.',
   },
   {
-    icon: <BugPlay className="size-5 text-orange-500" />,
+    icon: <BugPlay className="size-5 text-wendy-seafoam" />,
     title: 'Remote Debugging',
     description:
       'Full VSCode debugger with breakpoints over USB or the internet — on any device, anywhere.',
   },
   {
-    icon: <Activity className="size-5 text-orange-500" />,
+    icon: <Activity className="size-5 text-wendy-seafoam" />,
     title: 'Observability',
     description:
       'Real-time logs, metrics, and distributed traces from every device in your fleet.',
   },
   {
-    icon: <Bot className="size-5 text-orange-500" />,
+    icon: <Bot className="size-5 text-wendy-seafoam" />,
     title: 'ROS2 Support',
     description:
       'Run ROS2 nodes natively alongside WendyOS apps on the same hardware.',
   },
   {
-    icon: <RefreshCw className="size-5 text-orange-500" />,
+    icon: <RefreshCw className="size-5 text-wendy-seafoam" />,
     title: 'Atomic OTA Updates',
     description:
       'Push firmware to one device or ten thousand. Automatic rollback on failure.',
   },
   {
-    icon: <Code2 className="size-5 text-orange-500" />,
+    icon: <Code2 className="size-5 text-wendy-seafoam" />,
     title: 'VSCode & Cursor',
     description:
       'Deploy and debug without leaving your editor. Extensions for VSCode, Cursor, and Windsurf.',
   },
   {
-    icon: <LockOpen className="size-5 text-orange-500" />,
+    icon: <LockOpen className="size-5 text-wendy-seafoam" />,
     title: 'Apache 2.0',
     description:
       'No black boxes, no lock-in. The full OS and toolchain are open source and auditable.',
   },
   {
-    icon: <CircuitBoard className="size-5 text-orange-500" />,
+    icon: <CircuitBoard className="size-5 text-wendy-seafoam" />,
     title: 'NVIDIA & Raspberry Pi',
     description:
       'First-class support for Jetson Orin, AGX Thor, and Raspberry Pi 3, 4, and 5.',

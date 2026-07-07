@@ -7,6 +7,21 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
+## Reachable app URLs
+
+After the app starts, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
+
+```text
+App reachable at http://192.168.123.222:3000
+```
+
+The CLI derives this URL from either:
+
+- `hooks.postStart.openURL`, when the URL contains `WENDY_HOSTNAME`
+- `readiness.tcpSocket.port`
+
+The printed URL uses a routable IP address reported by the device instead of the `.local` hostname, which makes it easier to open from browsers that do not resolve mDNS names reliably. If neither an `openURL` hook nor a TCP readiness port is configured, or if the device cannot report an IP address, `wendy run` skips this line.
+
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
 ## Headless Mac — supported project types
@@ -29,21 +44,31 @@ The error explains the project/target mismatch and tells you to set `platform: "
 
 When building a Dockerfile or Containerfile project, `wendy run` passes the target device's hardware parameters as `--build-arg` values so the build file can branch on platform, GPU vendor, or CUDA version. Declare any arg you want to use with `ARG`:
 
-On Apple silicon Macs with Apple's `container` runtime started, Wendy tries
+On Apple silicon Macs with Apple's `container` runtime, Wendy tries
 Apple Container first when `--builder` is omitted. If Apple Container is
 unavailable or the build fails, Wendy falls back to Docker. Use
 `--builder docker` to force Docker, or `--builder apple-container` to require
 Apple Container:
 
 ```sh
-container system start
 wendy --device my-wendy.local run
 ```
+
+Wendy automatically checks for the `container` CLI and offers to install it via Homebrew if missing, and starts the `system` and `builder` services if they are not running.
+
+If Apple Container reports an empty build context for a project under `/tmp` or
+`/private/tmp`, Wendy returns an error with the known workaround: move the
+project to a non-`/tmp` directory and retry.
 
 For local-only Dockerfile or Containerfile runs on the Mac itself, use `wendy run --device
 apple-container` instead. Compose projects still require the Docker provider for
 local runs, but compose service builds targeting a WendyOS device can use
 `--builder apple-container`.
+
+The interactive device picker hides local run targets (this machine,
+Docker/OrbStack, Apple Container) by default so it lists separate WendyOS
+devices first. Select one explicitly with `--device` (as above), or set
+`WENDY_SHOW_LOCAL_DEVICES=1` to list them in the picker.
 
 | Build-arg | Values | Notes |
 |---|---|---|
@@ -72,6 +97,8 @@ Press **Ctrl-C** to stop all services. A 30-second graceful shutdown window is g
 Use `--service <name>` to build and run only a specific service and its transitive `dependsOn` dependencies instead of the full set.
 
 See [Multi-Service Apps with `wendy.json`](../../../apps/wendy-services.md) for a full walkthrough.
+
+> **Note:** Every multi-service run rebuilds and re-pushes each service — the push-skip optimisation is currently inactive for multi-service deployments. See [Push-skip content verification](#push-skip-content-verification) for why.
 
 > **Headless Mac:** Multi-service `wendy.json` projects are not supported when the selected target is Headless Mac. `wendy run` returns an error immediately. Target a Linux/WendyOS device for multi-service workloads.
 
@@ -129,7 +156,6 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
-| `--all` | Include local run targets (this machine, Docker/OrbStack, Apple Container) in the device picker. Hidden by default so the picker lists WendyOS devices first. |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
@@ -167,6 +193,23 @@ period.
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
 
 Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
+
+## Push-skip content verification
+
+When a detached run (`--detach`) finds that nothing has changed since the last successful deploy to this device, `wendy run` can skip the build and push entirely and just ensure the existing container is running. So this never leaves the device on stale or partial content, the skip is content-verified — it happens only when **all** of the following hold:
+
+1. The build inputs (context, Dockerfile/Containerfile, platform, and build-args) hash the same as the last deploy.
+2. A local deploy record for this app on this device exists and lists the image layer diff IDs that were deployed.
+3. The device confirms it still holds every one of those recorded layers.
+
+If any check fails — an older agent that cannot answer the layer query, a layer garbage-collected on the device, a partial push, or a locally rebuilt base image that never changed the input hash — `wendy run` falls back to a full build and push, recording fresh layer IDs on success.
+
+Deploy records written before this version carry no layer IDs, so they cannot be verified and never skip. In practice:
+
+- The first deploy after upgrading always does a full build and push.
+- A legacy record (or any record without verifiable layer IDs) is treated as unverifiable rather than skipped, so you see a full rebuild with unchanged inputs instead of a silent skip onto possibly-stale content.
+
+> **Note:** Push-skip is currently inactive for multi-service deployments. Registry-push content cannot be verified via layer diff IDs, so every multi-service run rebuilds and re-pushes each service; a registry-digest pre-check to restore the optimisation is planned. Setting `WENDY_PUSH_SKIP=0` disables the multi-service push-skip planner (it does not affect the single-service fast path above). Because that planner is inactive today, the override has no observable effect and is reserved for when multi-service push-skip returns.
 
 ## postStart hooks
 

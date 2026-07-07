@@ -17,4 +17,14 @@ struct ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Sim
         response.notProvisioned = Wendy_Agent_Services_V1_NotProvisionedResponse()
         return response
     }
+
+    func unprovision(
+        request: Wendy_Agent_Services_V1_UnprovisionRequest,
+        context: ServerContext
+    ) async throws -> Wendy_Agent_Services_V1_UnprovisionResponse {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Unprovisioning is currently not supported by Wendy Agent for Mac."
+        )
+    }
 }

@@ -68,6 +68,7 @@ func (s *ContainerServiceV2) ListContainers(_ *agentpbv2.ListContainersRequest, 
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to list containers: %v", err)
 	}
+	s.v1.applyRestartStatus(containers)
 	for _, c := range containers {
 		if err := stream.Send(&agentpbv2.ListContainersResponse{
 			Container: mapAppContainerToV2(c),
@@ -129,14 +130,18 @@ func mapAppContainerToV2(c *agentpb.AppContainer) *agentpbv2.AppContainer {
 	switch c.RunningState {
 	case agentpb.AppRunningState_RUNNING:
 		state = agentpbv2.AppRunningState_APP_RUNNING_STATE_RUNNING
+	case agentpb.AppRunningState_CRASH_LOOPING:
+		state = agentpbv2.AppRunningState_APP_RUNNING_STATE_CRASH_LOOPING
 	default:
 		state = agentpbv2.AppRunningState_APP_RUNNING_STATE_STOPPED
 	}
 	return &agentpbv2.AppContainer{
-		AppName:      c.AppName,
-		AppVersion:   c.AppVersion,
-		RunningState: state,
-		FailureCount: c.FailureCount,
+		AppName:           c.AppName,
+		AppVersion:        c.AppVersion,
+		RunningState:      state,
+		FailureCount:      c.FailureCount,
+		ExitCode:          c.ExitCode,
+		TerminationReason: c.TerminationReason,
 	}
 }
 

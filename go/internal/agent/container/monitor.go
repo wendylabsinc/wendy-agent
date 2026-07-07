@@ -80,7 +80,6 @@ type ContainerMonitor struct {
 	groupRestarting map[string]bool
 	mu              sync.Mutex
 	interval        time.Duration
-	stopCh          chan struct{}
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -94,7 +93,6 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
 		interval:        interval,
-		stopCh:          make(chan struct{}),
 	}
 }
 
@@ -139,14 +137,68 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	}
 }
 
-// Start begins the monitoring loop in a goroutine.
-func (m *ContainerMonitor) Start(ctx context.Context) {
-	go m.Run(ctx)
+// RestartStatuses returns the monitor's per-container restart bookkeeping,
+// keyed by the monitored container name (bare appID, or "{appID}_{serviceName}"
+// for services-map apps). It implements services.RestartStatusProvider so the
+// container list can report a crash-looping app truthfully instead of STOPPED.
+func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]services.RestartStatus, len(m.states))
+	for name, state := range m.states {
+		out[name] = services.RestartStatus{
+			FailureCount: state.FailureCount,
+			WillRestart:  m.shouldRestart(state),
+		}
+	}
+	return out
 }
 
-// Stop signals the monitor to stop.
-func (m *ContainerMonitor) Stop() {
-	close(m.stopCh)
+// ReconcileBootContainers brings apps back after a device boot. containerd
+// keeps container definitions across a reboot but loses their tasks, so without
+// this every app sits stopped until manually started. It registers each
+// container whose restart policy keeps it running (and that the user didn't
+// explicitly stop) under that policy, then runs one immediate reconcile so the
+// stopped ones are (re)launched without waiting for the next tick. Intended to
+// be called once at agent startup.
+//
+// Apps deployed with the default policy (unless-stopped) come back; apps
+// deployed with --no-restart, and apps the user explicitly stopped, stay down.
+func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	// One-time upgrade back-fill: apps stopped under an older agent carry no
+	// stopped-by-user mark, so without this the first post-upgrade boot would
+	// resurrect them. Runs once (persistent marker); must precede the listing
+	// below so the marks are in place before we decide what to start.
+	if err := m.containerd.MigrateStoppedByUserOnce(ctx); err != nil {
+		m.logger.Warn("Boot reconcile migration failed; proceeding without it", zap.Error(err))
+	}
+
+	bcs, err := m.containerd.ListBootContainers(ctx)
+	if err != nil {
+		m.logger.Error("Failed to list boot containers", zap.Error(err))
+		return
+	}
+	if len(bcs) == 0 {
+		return
+	}
+	for _, bc := range bcs {
+		// Empty policy means "default keep-running"; map it to unless-stopped.
+		policy := RestartUnlessStopped
+		if bc.RestartPolicy != "" {
+			p, parseErr := ParseRestartPolicy(bc.RestartPolicy)
+			if parseErr != nil {
+				m.logger.Warn("Skipping boot container with unparseable restart policy",
+					zap.String("app_name", bc.Name), zap.String("policy", bc.RestartPolicy), zap.Error(parseErr))
+				continue
+			}
+			policy = p
+		}
+		m.Register(bc.Name, policy, bc.MaxRetries)
+	}
+	m.logger.Info("Reconciling apps on boot", zap.Int("count", len(bcs)))
+	// Immediate pass: start the ones that aren't running yet (the common
+	// post-reboot case) instead of waiting up to one tick interval.
+	m.checkContainers(ctx)
 }
 
 // Run is the main monitoring loop that checks container health and restarts as needed.
@@ -157,8 +209,6 @@ func (m *ContainerMonitor) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-m.stopCh:
 			return
 		case <-ticker.C:
 			m.checkContainers(ctx)
@@ -260,15 +310,19 @@ func (m *ContainerMonitor) restartGroup(ctx context.Context, appID string) {
 		m.mu.Unlock()
 	}()
 	channels, err := gr.RestartGroup(ctx, appID)
+	// RestartGroup can return partially-started services together with an
+	// error (e.g. the primary started but a secondary failed). Drain every
+	// returned channel even on error: an abandoned channel back-pressures
+	// through the agent's pipes into the service's stdout FIFO and freezes
+	// the process in pipe_write once the buffers fill (WDY-1822).
+	for name, ch := range channels {
+		go m.drainOutput(name, ch)
+	}
 	if err != nil {
 		m.logger.Error("Failed to restart app group",
 			zap.String("app_id", appID),
 			zap.Error(err),
 		)
-		return
-	}
-	for name, ch := range channels {
-		go m.drainOutput(name, ch)
 	}
 }
 

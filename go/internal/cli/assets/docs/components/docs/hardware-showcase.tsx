@@ -1,10 +1,11 @@
-import { basePath } from '@/lib/shared';
+import { basePath, withBasePath } from '@/lib/shared';
 
 type Board = {
   name: string;
   tagline: string;
   logo: string;
   animation: string;
+  href: string;
   features: string[];
 };
 
@@ -14,6 +15,7 @@ const boards: Board[] = [
     tagline: 'Orin Nano, AGX Orin',
     logo: '/icons/icons8-nvidia.svg',
     animation: '/images/boards/jetson-orin.webp',
+    href: '/installation/wendyos-nvidia-jetson/',
     features: [
       'Up to 2000 TOPS AI performance',
       'CUDA, PyTorch & MLX support',
@@ -26,6 +28,7 @@ const boards: Board[] = [
     tagline: 'Pi 3, 4 & 5 (8GB Pi 5 recommended)',
     logo: '/icons/icons8-raspberry-pi.svg',
     animation: '/images/boards/raspberry-pi-5.webp',
+    href: '/installation/wendyos-raspberry-pi-5/',
     features: [
       'Low power consumption',
       'Broad GPIO ecosystem',
@@ -39,9 +42,10 @@ export function HardwareShowcase() {
   return (
     <div className="not-prose my-8 grid gap-6 sm:grid-cols-2">
       {boards.map((board) => (
-        <div
+        <a
           key={board.name}
-          className="flex flex-col overflow-hidden border bg-fd-card transition-colors hover:border-fd-primary/50"
+          href={withBasePath(board.href)}
+          className="flex flex-col overflow-hidden border bg-fd-card transition-colors hover:border-fd-primary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fd-primary focus-visible:ring-offset-2 focus-visible:ring-offset-fd-background"
         >
           <img
             src={`${basePath}${board.animation}`}
@@ -66,7 +70,7 @@ export function HardwareShowcase() {
               ))}
             </ul>
           </div>
-        </div>
+        </a>
       ))}
     </div>
   );

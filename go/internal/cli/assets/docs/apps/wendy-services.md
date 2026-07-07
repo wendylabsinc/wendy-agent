@@ -34,7 +34,7 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `context` | string | **yes** | Build context directory, relative to `wendy.json`. Must be a relative path and must not contain `..` components. |
-| `entitlements` | array | no | [Entitlements](../wendy-agent/oci/entitlements.md) to apply to this service's container. Same schema as the top-level `entitlements` field. |
+| `entitlements` | array | no | [Entitlements](../device/entitlements.md) to apply to this service's container. Same schema as the top-level `entitlements` field. |
 | `dependsOn` | array of strings | no | Names of other services in this `services` map that must be created before this one. All referenced names must exist in the same map. |
 
 ### Validation rules
@@ -118,6 +118,19 @@ my-project/
 wendy run            # builds and starts all three services
 wendy run --service api   # builds db and api only (frontend excluded)
 ```
+
+## Crash-looping services
+
+When a service within a group crashes and the agent's restart policy is
+automatically restarting it, that service's individual entry in
+`wendy device apps list` shows a red `↻` **crash-looping** state (nested under
+the group header). The top-level app entry stays `Running` as long as at least
+one service is up; it flips to `Crash-looping` only when every service is down
+and the restart policy is still restarting at least one of them.
+
+`wendy device logs --app <appId>` surfaces crash output from all service
+members of the group, so a crash-looping service's logs are reachable without
+naming the individual service.
 
 ## Limitations
 

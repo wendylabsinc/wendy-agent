@@ -534,6 +534,9 @@ private func loadRunTestResults(
                         targetName: targetName,
                         attempt: attemptName
                     )
+                    if e2eAttemptInfrastructureFailureDetail(at: attemptArtifactsURL) != nil {
+                        continue
+                    }
                     let metadata = try loadE2ETestMetadata(in: attemptURL)
                     let identityKey = metadata.identityKey
                     let status = try runObservationStatus(
@@ -601,8 +604,7 @@ private func runObservationStatus(
     metadata: E2ETestMetadata,
     attemptURL: URL
 ) throws -> ReportTestStatus {
-    let resultURL = attemptURL.appendingPathComponent("test-results.xml")
-    guard FileManager.default.fileExists(atPath: resultURL.path) else {
+    guard let resultURL = e2eAttemptXUnitURL(at: attemptURL) else {
         return .unknown
     }
 
@@ -1098,7 +1100,9 @@ private func buildTargetOverview(
         let observedAttempts = observedAttemptsByTarget[target, default: []]
         for attemptURL in attemptURLs
         where !observedAttempts.contains(attemptURL.lastPathComponent) {
-            guard let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0 else {
+            let infrastructureFailure = e2eAttemptInfrastructureFailureDetail(at: attemptURL)
+            let exitStatus = e2eAttemptExitStatus(at: attemptURL)
+            guard infrastructureFailure != nil || (exitStatus != nil && exitStatus != 0) else {
                 continue
             }
             var row = rowsByTarget[target] ?? ReportTargetOverviewAccumulator()

@@ -40,8 +40,12 @@ wendy run
 | Microphone | `audio` | Recording, voice commands, audio analysis |
 | Speaker or audio output | `audio` | Playback, alerts, voice responses |
 | Bluetooth adapter | `bluetooth` | BLE devices, Bluetooth sensors, paired accessories |
-| NVIDIA GPU | `gpu` | CUDA, ML inference, accelerated computer vision |
+| NVIDIA GPU | `gpu` | CUDA, ML inference, accelerated computer vision (Jetson and x86 NVIDIA GPUs) |
 | Web servers or network APIs | `network` | Serving HTTP, WebSockets, or accepting inbound connections |
+
+<Callout type="info">
+  AMD GPU (ROCm) support is in progress. Today the `gpu` entitlement accelerates NVIDIA GPUs via CUDA. See [GPU Access](/docs/hardware/gpu).
+</Callout>
 
 ## Feature Guides
 

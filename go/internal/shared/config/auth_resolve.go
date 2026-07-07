@@ -35,9 +35,10 @@ func (c *Config) DefaultAuth() (*AuthConfig, bool) {
 // ResolveAuth chooses the auth session to use. Precedence:
 //  1. cloudGRPC flag set      -> exact endpoint match (error if none)
 //  2. exactly one session     -> use it
-//  3. valid persisted default -> use it
-//  4. pick != nil             -> interactive picker
-//  5. otherwise               -> ErrMultipleSessions
+//  3. DefaultOrgID set        -> session whose cert org matches (if unique)
+//  4. valid persisted default -> use it (DefaultCloudGRPC)
+//  5. pick != nil             -> interactive picker
+//  6. otherwise               -> ErrMultipleSessions
 //
 // The returned session is guaranteed to hold certificate material.
 func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig, error) {
@@ -54,6 +55,16 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 	}
 	if len(cfg.Auth) == 1 {
 		return authWithCerts(&cfg.Auth[0])
+	}
+	if cfg.DefaultOrgID != 0 {
+		for i := range cfg.Auth {
+			a := &cfg.Auth[i]
+			if len(a.Certificates) > 0 && int32(a.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
+				return authWithCerts(a)
+			}
+		}
+		// DefaultOrgID set but no matching session; fall through so the user
+		// can still operate (e.g. the session was removed).
 	}
 	if def, ok := cfg.DefaultAuth(); ok {
 		return authWithCerts(def)
