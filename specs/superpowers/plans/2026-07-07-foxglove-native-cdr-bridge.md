@@ -117,13 +117,9 @@ func TestSubscribeRoundTripFrames(t *testing.T) {
 		t.Fatalf("want clean EOF, got %v", err)
 	}
 }
-
-func TestReadyAndSubError(t *testing.T) {
-	var s []byte
-	s = appendFrame(s, KindReady, appendString(appendString(nil, "jazzy")[:len(appendString(nil, "jazzy"))], "")[:0]) // placeholder, replaced below
-	_ = s
-}
 ```
+
+(The READY / SUB_ERROR / truncation tests are added in Step 4, once the codec helpers exist.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
