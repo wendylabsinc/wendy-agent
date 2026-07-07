@@ -4,11 +4,13 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <thread>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/generic_publisher.hpp>
 #include <rclcpp/generic_subscription.hpp>
 #include <rclcpp/serialized_message.hpp>
 
@@ -86,6 +88,9 @@ int main(int argc, char** argv) {
   std::map<uint32_t, rclcpp::GenericSubscription::SharedPtr> subs;
   std::mutex subs_mu;
 
+  std::map<std::string, rclcpp::GenericPublisher::SharedPtr> pubs;
+  std::mutex pubs_mu;
+
   // Reader thread: parse stdin commands and mutate the subscription table.
   std::atomic<bool> stop{false};
   std::thread reader([&] {
@@ -160,8 +165,62 @@ int main(int argc, char** argv) {
           uint32_t sub_id = read_u32(body.data());
           std::lock_guard<std::mutex> lk(subs_mu);
           subs.erase(sub_id);
+        } else if (tag == OP_PUBLISH) {
+          // Same incremental-bounds-check idiom as OP_SUBSCRIBE above: validate
+          // `remaining` bytes before every field read, and skip (continue) a
+          // malformed/truncated frame rather than reading past `body` or
+          // throwing into the outer catch.
+          const uint8_t* p = body.data();
+          size_t remaining = body.size();
+          bool ok = remaining >= 2;
+          uint16_t tn = 0, yn = 0;
+          std::string topic, type;
+          if (ok) {
+            tn = read_u16(p); p += 2; remaining -= 2;
+            ok = remaining >= tn;
+          }
+          if (ok) {
+            topic.assign((const char*)p, tn); p += tn; remaining -= tn;
+            ok = remaining >= 2;
+          }
+          if (ok) {
+            yn = read_u16(p); p += 2; remaining -= 2;
+            ok = remaining >= yn;
+          }
+          if (ok) {
+            type.assign((const char*)p, yn); p += yn; remaining -= yn;
+          }
+          if (!ok) {
+            // No sub_id to report against for PUBLISH; just drop the frame.
+            continue;
+          }
+          // Whatever is left of the body is the raw CDR payload, verbatim.
+          size_t cdr_len = remaining;
+          const uint8_t* cdr = p;
+
+          std::string key = type + "\n" + topic;
+          rclcpp::GenericPublisher::SharedPtr pub;
+          {
+            std::lock_guard<std::mutex> lk(pubs_mu);
+            auto it = pubs.find(key);
+            if (it == pubs.end()) {
+              try {
+                pub = node->create_generic_publisher(topic, type, rclcpp::QoS(rclcpp::KeepLast(10)));
+              } catch (const std::exception&) {
+                // Can't create the publisher (e.g. bad type name); drop the frame.
+                continue;
+              }
+              pubs[key] = pub;
+            } else {
+              pub = it->second;
+            }
+          }
+          rclcpp::SerializedMessage sm(cdr_len);
+          auto& rcl = sm.get_rcl_serialized_message();
+          std::memcpy(rcl.buffer, cdr, cdr_len);
+          rcl.buffer_length = cdr_len;
+          pub->publish(sm);
         }
-        // OP_PUBLISH handled in Task 4.
       }
     } catch (const std::exception&) {
       // stdin closed or corrupt: fall through to shutdown.
