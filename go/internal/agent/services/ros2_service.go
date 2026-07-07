@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -50,12 +51,16 @@ type ROS2Service struct {
 	// bagDir is the host directory holding rosbag2 recordings. Variable for
 	// tests; defaults to the containerd package's ROS2BagDir.
 	bagDir string
+	// bridge manages the compiled wendy-ros2-bridge process per sidecar
+	// (WDY-1722 follow-up): SubscribeRaw/Publish prefer it and fall back to
+	// the rclpy forwarder / `ros2` CLI on any failure.
+	bridge *ros2Bridge
 }
 
 // NewROS2Service creates a new ROS2Service backed by the given runtime.
 // bagDir is the host directory where bag recordings are stored.
 func NewROS2Service(logger *zap.Logger, runtime ROS2Runtime, bagDir string) *ROS2Service {
-	return &ROS2Service{logger: logger, runtime: runtime, bagDir: bagDir}
+	return &ROS2Service{logger: logger, runtime: runtime, bagDir: bagDir, bridge: newROS2Bridge(runtime)}
 }
 
 // ros2SC is a resolved per-RMW sidecar plus the DDS domain to use for a call.
@@ -369,9 +374,12 @@ func (s *ROS2Service) GetServiceDefinition(ctx context.Context, req *agentpbv2.G
 	}, nil
 }
 
-// Publish publishes one message to a topic via `ros2 topic pub --once`. The yaml
-// argument is passed as a single non-shell argument (matching CallService /
-// SetParam), so it is never subject to shell interpretation.
+// Publish publishes one message to a topic. When the request carries raw CDR
+// bytes (the native Foxglove client-publish path), it prefers the compiled
+// bridge and only falls back to `ros2 topic pub --once` when YAML is also
+// present. The yaml argument, when used, is passed as a single non-shell
+// argument (matching CallService / SetParam), so it is never subject to shell
+// interpretation.
 func (s *ROS2Service) Publish(ctx context.Context, req *agentpbv2.PublishROS2Request) (*agentpbv2.PublishROS2Response, error) {
 	scs, err := s.resolveSidecars(ctx, req.DomainId)
 	if err != nil {
@@ -384,6 +392,17 @@ func (s *ROS2Service) Publish(ctx context.Context, req *agentpbv2.PublishROS2Req
 		return nil, status.Errorf(codes.InvalidArgument, "invalid message type %q: %v", req.GetType(), err)
 	}
 	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
+
+	if cdr := req.GetCdr(); len(cdr) > 0 {
+		if berr := s.bridge.Publish(ctx, sc, req.GetTopic(), req.GetType(), cdr); berr == nil {
+			return &agentpbv2.PublishROS2Response{Success: true}, nil
+		}
+		// Bridge unavailable/failed: fall through to the YAML ros2-CLI path only
+		// if we also have YAML; otherwise report the failure.
+		if req.GetYaml() == "" {
+			return &agentpbv2.PublishROS2Response{Success: false, Message: "native publish failed and no YAML fallback provided"}, nil
+		}
+	}
 	out, err := s.runIn(ctx, sc, "topic", "pub", "--once", req.GetTopic(), req.GetType(), req.GetYaml())
 	if err != nil {
 		return &agentpbv2.PublishROS2Response{Success: false, Message: err.Error()}, nil
@@ -735,6 +754,74 @@ func (s *ROS2Service) SubscribeRaw(req *agentpbv2.SubscribeRawROS2Request, strea
 	}
 	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
 
+	// Fast path: the compiled bridge streams native CDR without a per-topic
+	// python process. On any bridge failure fall through to the rclpy
+	// forwarder below.
+	if bridgeErr := s.subscribeRawViaBridge(ctx, sc, req.GetTopic(), stream); bridgeErr != errSubscribeRawFallback {
+		return bridgeErr
+	}
+	return s.subscribeRawFallback(ctx, sc, req, stream)
+}
+
+// errSubscribeRawFallback is a sentinel returned by subscribeRawViaBridge to
+// tell SubscribeRaw to fall back to the rclpy forwarder. It never escapes to
+// a caller.
+var errSubscribeRawFallback = errors.New("subscribe raw: fall back to rclpy forwarder")
+
+// subscribeRawViaBridge attempts to stream topic via the compiled bridge. It
+// returns errSubscribeRawFallback (never a real error to the client) when the
+// bridge is unavailable, fails, or its subscription dies mid-stream, so the
+// caller can fall back to the legacy rclpy forwarder without losing ground
+// already covered elsewhere in SubscribeRaw's contract (nil on client
+// cancellation, a real error only on a send failure).
+func (s *ROS2Service) subscribeRawViaBridge(ctx context.Context, sc ros2SC, topic string, stream grpc.ServerStreamingServer[agentpbv2.RawROS2Message]) error {
+	msgType, terr := s.resolveTopicType(ctx, sc, topic)
+	if terr != nil {
+		return errSubscribeRawFallback
+	}
+	ch, cancel, berr := s.bridge.Subscribe(ctx, sc, topic, msgType)
+	if berr != nil {
+		return errSubscribeRawFallback
+	}
+	defer cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case m, ok := <-ch:
+			if !ok {
+				// Bridge subscription ended (SUB_ERROR/dead): fall back below.
+				return errSubscribeRawFallback
+			}
+			if serr := stream.Send(&agentpbv2.RawROS2Message{Cdr: m.CDR, TimestampNs: m.TimestampNs}); serr != nil {
+				return serr
+			}
+		}
+	}
+}
+
+// resolveTopicType returns the trimmed message type for topic (e.g.
+// "geometry_msgs/msg/Twist") via `ros2 topic type <topic>`, run once at
+// subscription start — not per message — to decide whether the bridge fast
+// path is viable.
+func (s *ROS2Service) resolveTopicType(ctx context.Context, sc ros2SC, topic string) (string, error) {
+	out, err := s.runIn(ctx, sc, "topic", "type", topic)
+	if err != nil {
+		return "", err
+	}
+	msgType := strings.TrimSpace(out)
+	if msgType == "" {
+		return "", status.Errorf(codes.NotFound, "topic %q has no resolvable type", topic)
+	}
+	return msgType, nil
+}
+
+// subscribeRawFallback runs the existing inline rclpy forwarder
+// (ros2ForwarderScript, via `python3 -c`) that raw-subscribes the topic and
+// writes length-framed binary CDR to stdout; those frames (readCDRFrames) are
+// forwarded verbatim. This is the pre-bridge behavior, unchanged, reached
+// whenever the native bridge path is unavailable.
+func (s *ROS2Service) subscribeRawFallback(ctx context.Context, sc ros2SC, req *agentpbv2.SubscribeRawROS2Request, stream grpc.ServerStreamingServer[agentpbv2.RawROS2Message]) error {
 	execCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

@@ -125,9 +125,11 @@ func (s *foxgloveServer) handleServiceCall(ctx context.Context, frame []byte, in
 	}
 }
 
-// handleClientPublish processes one CLIENT_MESSAGE_DATA binary frame: decode the
-// CDR payload using the client-advertised channel's schema and publish it via
-// the agent (`ros2 topic pub --once`).
+// handleClientPublish processes one CLIENT_MESSAGE_DATA binary frame: forward
+// the client's raw CDR payload (encapsulation header included, exactly what
+// GenericPublisher expects) to the agent's native bridge via Publish. The
+// agent falls back to the YAML `ros2 topic pub --once` path on its own if the
+// bridge is unavailable; no CDR->YAML decode is needed here.
 func (s *foxgloveServer) handleClientPublish(ctx context.Context, frame []byte, channels map[uint32]*fgClientChannel) {
 	channelID, payload, err := fgParseClientMessageData(frame)
 	if err != nil {
@@ -138,22 +140,12 @@ func (s *foxgloveServer) handleClientPublish(ctx context.Context, frame []byte, 
 		fmt.Fprintf(os.Stderr, "foxglove: publish to unknown client channel %d\n", channelID)
 		return
 	}
-	schema, root, perr := foxglovecdr.ParseSchema(ch.Schema)
-	if perr != nil {
-		fmt.Fprintf(os.Stderr, "foxglove: publish %s: schema parse: %v\n", ch.Topic, perr)
-		return
-	}
-	val, derr := foxglovecdr.Decode(schema, root, payload)
-	if derr != nil {
-		fmt.Fprintf(os.Stderr, "foxglove: publish %s: decode: %v\n", ch.Topic, derr)
-		return
-	}
-	yamlMsg, yerr := foxglovecdr.ToYAML(val)
-	if yerr != nil {
-		fmt.Fprintf(os.Stderr, "foxglove: publish %s: render: %v\n", ch.Topic, yerr)
-		return
-	}
-	resp, err := s.src.Publish(ctx, &agentpbv2.PublishROS2Request{DomainId: s.domainID, Topic: ch.Topic, Type: fgSchemaNameToType(ch.SchemaName), Yaml: yamlMsg})
+	resp, err := s.src.Publish(ctx, &agentpbv2.PublishROS2Request{
+		DomainId: s.domainID,
+		Topic:    ch.Topic,
+		Type:     fgSchemaNameToType(ch.SchemaName),
+		Cdr:      payload,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "foxglove: publish %s: %v\n", ch.Topic, ros2RPCError(err))
 		return

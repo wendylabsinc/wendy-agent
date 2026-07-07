@@ -2219,6 +2219,7 @@ type PublishROS2Request struct {
 	Topic         string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
 	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"` // e.g. "geometry_msgs/msg/Twist"
 	Yaml          string                 `protobuf:"bytes,4,opt,name=yaml,proto3" json:"yaml,omitempty"` // message body as YAML/JSON, e.g. "{linear: {x: 1.0}}"
+	Cdr           []byte                 `protobuf:"bytes,5,opt,name=cdr,proto3" json:"cdr,omitempty"`   // raw serialized CDR (native path); preferred when set
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2279,6 +2280,13 @@ func (x *PublishROS2Request) GetYaml() string {
 		return x.Yaml
 	}
 	return ""
+}
+
+func (x *PublishROS2Request) GetCdr() []byte {
+	if x != nil {
+		return x.Cdr
+	}
+	return nil
 }
 
 type PublishROS2Response struct {
@@ -4113,12 +4121,13 @@ const file_wendy_agent_services_v2_ros2_service_proto_rawDesc = "" +
 	" GetROS2ServiceDefinitionResponse\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12%\n" +
 	"\x0erequest_schema\x18\x02 \x01(\tR\rrequestSchema\x12'\n" +
-	"\x0fresponse_schema\x18\x03 \x01(\tR\x0eresponseSchema\"\x82\x01\n" +
+	"\x0fresponse_schema\x18\x03 \x01(\tR\x0eresponseSchema\"\x94\x01\n" +
 	"\x12PublishROS2Request\x12 \n" +
 	"\tdomain_id\x18\x01 \x01(\x05H\x00R\bdomainId\x88\x01\x01\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12\x12\n" +
 	"\x04type\x18\x03 \x01(\tR\x04type\x12\x12\n" +
-	"\x04yaml\x18\x04 \x01(\tR\x04yamlB\f\n" +
+	"\x04yaml\x18\x04 \x01(\tR\x04yaml\x12\x10\n" +
+	"\x03cdr\x18\x05 \x01(\fR\x03cdrB\f\n" +
 	"\n" +
 	"_domain_id\"I\n" +
 	"\x13PublishROS2Response\x12\x18\n" +

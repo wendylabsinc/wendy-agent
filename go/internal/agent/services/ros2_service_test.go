@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/foxglovebridge"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -31,7 +33,25 @@ type fakeROS2Runtime struct {
 	outputs map[string]string
 	// execFn, when set, overrides the outputs map entirely.
 	execFn func(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)
-	calls  []ROS2ExecOptions
+	// execStreamFn, when set, overrides ExecROS2Stream entirely so a test can
+	// speak the wendy-ros2-bridge stdin/stdout control protocol (READY /
+	// SUBSCRIBE / MESSAGE / PUBLISH frames). Nil means "no bridge process
+	// available", which SubscribeRaw/Publish must treat as a fallback signal,
+	// not a hang or panic.
+	execStreamFn func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+	// mu guards calls: the bridge (Task 7) runs ExecROS2Stream in a background
+	// goroutine, which can now execute concurrently with the foreground
+	// ExecROS2 calls a test makes after SubscribeRaw/Publish returns.
+	mu    sync.Mutex
+	calls []ROS2ExecOptions
+}
+
+// getCalls returns a snapshot of calls made so far, safe to inspect
+// concurrently with a still-running (or just-finished) bridge goroutine.
+func (f *fakeROS2Runtime) getCalls() []ROS2ExecOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]ROS2ExecOptions(nil), f.calls...)
 }
 
 func (f *fakeROS2Runtime) FindROS2Containers(context.Context) ([]ROS2Target, error) {
@@ -53,7 +73,9 @@ func (f *fakeROS2Runtime) StopROS2Sidecar(context.Context) error { return nil }
 func (f *fakeROS2Runtime) VerifyROS2Sidecar(context.Context) error { return f.verifyErr }
 
 func (f *fakeROS2Runtime) ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, opts)
+	f.mu.Unlock()
 	if f.execFn != nil {
 		return f.execFn(ctx, opts, stdout, stderr)
 	}
@@ -67,9 +89,16 @@ func (f *fakeROS2Runtime) ExecROS2(ctx context.Context, opts ROS2ExecOptions, st
 	return 0, nil
 }
 
-// ExecROS2Stream is not exercised by these tests (nothing here drives the
-// bridge's stdin control protocol); it mirrors ExecROS2 minus the stdin arg.
+// ExecROS2Stream backs the bridge (WDY-1722 follow-up). When execStreamFn is
+// set, a test drives the wendy-ros2-bridge stdin/stdout protocol directly;
+// otherwise it mirrors ExecROS2 minus the stdin arg (the pre-bridge
+// behavior), which — because nothing here ever reads stdin — deterministically
+// signals "bridge unavailable" to callers (mirrors ros2_bridge_test.go's
+// deadRuntime) rather than hanging or racing on shared state.
 func (f *fakeROS2Runtime) ExecROS2Stream(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	if f.execStreamFn != nil {
+		return f.execStreamFn(ctx, opts, stdin, stdout, stderr)
+	}
 	return f.ExecROS2(ctx, opts, stdout, stderr)
 }
 
@@ -939,5 +968,189 @@ func TestTailLines(t *testing.T) {
 	}
 	if got := tailLines("", 5); got != "" {
 		t.Errorf("tailLines empty = %q", got)
+	}
+}
+
+// --- SubscribeRaw / Publish routed through the native bridge (WDY-1722 follow-up) ---
+
+// TestROS2Service_SubscribeRaw_BridgeDeliversMessage proves the fast path: when
+// the compiled bridge process is available and answers SUBSCRIBE with a
+// MESSAGE frame, SubscribeRaw emits a RawROS2Message carrying the bridge's CDR
+// bytes and timestamp — never touching the rclpy forwarder.
+func TestROS2Service_SubscribeRaw_BridgeDeliversMessage(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"topic type /chatter": "std_msgs/msg/String",
+		},
+		execStreamFn: func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			var ready []byte
+			ready = foxglovebridge.AppendString(ready, "humble")
+			ready = append(ready, 0)
+			writeFrame(stdout, foxglovebridge.KindReady, ready)
+
+			buf := make([]byte, 0, 64)
+			for {
+				fr, nb, err := foxglovebridge.ReadFrame(stdin, buf)
+				buf = nb
+				if err != nil {
+					return 0, nil
+				}
+				if fr.Tag == foxglovebridge.OpSubscribe {
+					subID := readU32(fr.Body)
+					var m []byte
+					m = appendU32(m, subID)
+					m = appendU64(m, 99)
+					m = append(m, 0xCD)
+					writeFrame(stdout, foxglovebridge.KindMessage, m)
+				}
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	// A short deadline stands in for the client eventually cancelling the
+	// stream; the bridge round trip itself is a handful of synchronous pipe
+	// handoffs, so it completes in microseconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	stream := &fakeServerStream[agentpbv2.RawROS2Message]{ctx: ctx}
+
+	if err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, stream); err != nil {
+		t.Fatalf("SubscribeRaw: %v", err)
+	}
+	if len(stream.sent) == 0 {
+		t.Fatal("no message delivered via the bridge")
+	}
+	msg := stream.sent[0]
+	if msg.GetTimestampNs() != 99 || len(msg.GetCdr()) != 1 || msg.GetCdr()[0] != 0xCD {
+		t.Fatalf("msg = %+v, want {TimestampNs:99 Cdr:[0xCD]}", msg)
+	}
+	for _, call := range rt.getCalls() {
+		if call.Binary == "python3" {
+			t.Fatalf("rclpy forwarder was exec'd even though the bridge served the subscription: %+v", call)
+		}
+	}
+}
+
+// TestROS2Service_SubscribeRaw_BridgeFailureFallsBackToForwarder proves that
+// when the bridge is unavailable (its process exits without ever reading
+// stdin, exactly like ros2_bridge_test.go's deadRuntime), SubscribeRaw falls
+// through to the rclpy forwarder rather than hanging or panicking — the
+// fallback error surfaces the same way it did before the bridge existed.
+func TestROS2Service_SubscribeRaw_BridgeFailureFallsBackToForwarder(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"topic type /chatter": "std_msgs/msg/String",
+		},
+		// The bridge process exits immediately without reading stdin, so the
+		// Subscribe write fails and SubscribeRaw must fall back below.
+		execStreamFn: func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			return 1, nil
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+	stream := &fakeServerStream[agentpbv2.RawROS2Message]{ctx: context.Background()}
+
+	err := svc.SubscribeRaw(&agentpbv2.SubscribeRawROS2Request{Topic: "/chatter"}, stream)
+	// The forwarder is unconfigured in this fake (no "python3" outputs entry),
+	// so it also fails — but the important thing this test proves is that the
+	// handler *reached* the forwarder path instead of stalling on the dead
+	// bridge, and did so without panicking.
+	if err == nil {
+		t.Fatal("want an error: the fallback forwarder is unconfigured in this fake")
+	}
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "forwarder") {
+		t.Fatalf("error = %v, want an Internal forwarder-path error (proof the fallback ran)", err)
+	}
+	foundForwarder := false
+	for _, call := range rt.getCalls() {
+		if call.Binary == "python3" {
+			foundForwarder = true
+		}
+	}
+	if !foundForwarder {
+		t.Fatal("fallback rclpy forwarder was never exec'd")
+	}
+}
+
+// TestROS2Service_Publish_PrefersBridgeWhenCdrSet proves that a Publish
+// request carrying raw CDR bytes is routed to the native bridge instead of
+// the `ros2 topic pub --once` CLI path.
+func TestROS2Service_Publish_PrefersBridgeWhenCdrSet(t *testing.T) {
+	gotFrame := make(chan []byte, 1)
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		// Loop reading frames rather than returning after the first one: a
+		// real bridge process stays alive across publishes. Returning
+		// immediately would race the process-exit cleanup (which closes the
+		// stdin pipe and marks the process dead) against the in-flight
+		// Write's completion signal, occasionally losing that race and
+		// reporting "bridge process is dead" for a write that actually
+		// landed.
+		execStreamFn: func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			buf := make([]byte, 0, 64)
+			for {
+				fr, nb, err := foxglovebridge.ReadFrame(stdin, buf)
+				buf = nb
+				if err != nil {
+					return 0, nil
+				}
+				gotFrame <- append([]byte(nil), fr.Body...)
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	resp, err := svc.Publish(context.Background(), &agentpbv2.PublishROS2Request{
+		Topic: "/cmd", Type: "std_msgs/msg/String", Cdr: []byte{0xDE, 0xAD},
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !resp.GetSuccess() {
+		t.Fatalf("Publish response = %+v, want success", resp)
+	}
+	select {
+	case frame := <-gotFrame:
+		if len(frame) == 0 {
+			t.Fatal("bridge received an empty PUBLISH frame")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bridge never received the PUBLISH frame")
+	}
+	for _, call := range rt.getCalls() {
+		if len(call.Args) > 1 && call.Args[0] == "topic" && call.Args[1] == "pub" {
+			t.Fatalf("legacy `ros2 topic pub` was exec'd even though the bridge accepted the publish: %+v", call)
+		}
+	}
+}
+
+// TestROS2Service_Publish_BridgeFailsNoYamlFallback proves that a CDR-only
+// Publish request (no YAML fallback provided) reports failure cleanly instead
+// of silently dropping the message when the bridge is unavailable.
+func TestROS2Service_Publish_BridgeFailsNoYamlFallback(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execStreamFn: func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			return 1, nil // bridge unavailable: exits without reading stdin
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	resp, err := svc.Publish(context.Background(), &agentpbv2.PublishROS2Request{
+		Topic: "/cmd", Type: "std_msgs/msg/String", Cdr: []byte{0xDE, 0xAD},
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if resp.GetSuccess() {
+		t.Fatalf("Publish response = %+v, want failure (bridge down, no YAML fallback)", resp)
+	}
+	for _, call := range rt.getCalls() {
+		if len(call.Args) > 1 && call.Args[0] == "topic" && call.Args[1] == "pub" {
+			t.Fatalf("legacy `ros2 topic pub` was exec'd even without a YAML fallback: %+v", call)
+		}
 	}
 }

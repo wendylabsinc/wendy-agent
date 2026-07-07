@@ -328,6 +328,7 @@ message PublishROS2Request {
     string topic = 2;
     string type = 3;  // e.g. "geometry_msgs/msg/Twist"
     string yaml = 4;  // message body as YAML/JSON, e.g. "{linear: {x: 1.0}}"
+    bytes cdr = 5;    // raw serialized CDR (native path); preferred when set
 }
 
 message PublishROS2Response {

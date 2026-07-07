@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"reflect"
@@ -175,8 +176,14 @@ func TestFoxgloveClientPublish(t *testing.T) {
 	if src.lastPublish.GetTopic() != "/value" || src.lastPublish.GetType() != "std_msgs/msg/Float64" {
 		t.Fatalf("publish target = %s %s", src.lastPublish.GetTopic(), src.lastPublish.GetType())
 	}
-	if !strings.Contains(src.lastPublish.GetYaml(), "data") || !strings.Contains(src.lastPublish.GetYaml(), "1.5") {
-		t.Fatalf("publish yaml = %q", src.lastPublish.GetYaml())
+	// The client's raw CDR payload must be forwarded verbatim as Cdr — no
+	// CDR->YAML decode on the CLI side anymore; the agent's native bridge
+	// (with a YAML fallback of its own) handles the payload.
+	if !bytes.Equal(src.lastPublish.GetCdr(), cdr) {
+		t.Fatalf("publish cdr = %x, want %x", src.lastPublish.GetCdr(), cdr)
+	}
+	if src.lastPublish.GetYaml() != "" {
+		t.Fatalf("publish yaml = %q, want empty (CDR path)", src.lastPublish.GetYaml())
 	}
 }
 
