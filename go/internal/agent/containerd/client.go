@@ -44,6 +44,7 @@ import (
 	localoci "github.com/wendylabsinc/wendy/go/internal/agent/oci"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/diskspace"
 	sharedenv "github.com/wendylabsinc/wendy/go/internal/shared/env"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -97,11 +98,48 @@ type Client struct {
 	// Defaults to "overlayfs" when supported; falls back to "native" on kernels
 	// that do not support overlay mounts (e.g. nested container environments).
 	snapshotter string
+
+	// imageGCEnabled gates the post-deploy / boot image garbage collector
+	// (WENDY_IMAGE_GC_ENABLED). When false, both triggerImageGCAsync and
+	// GarbageCollectImages are no-ops.
+	imageGCEnabled bool
+
+	// containerdRoot is the filesystem path whose free space governs whether the
+	// image GC engages (default /var/lib/containerd, overridable via
+	// WENDY_CONTAINERD_ROOT). It is the volume containerd's snapshots and content
+	// blobs live on.
+	containerdRoot string
+
+	// diskFreePct reports the free-% of the filesystem containing a path (and
+	// false if it cannot be measured). Defaults to diskspace.FreePercent; a seam
+	// so tests can simulate disk pressure without a real full disk.
+	diskFreePct func(path string) (float64, bool)
+
+	// gcRunning is the single-flight guard for image GC: at most one
+	// mark-and-sweep pass runs at a time across the deploy hook and boot sweep.
+	gcRunning atomic.Bool
+
+	// gcPass runs one mark-and-sweep pass (snapshots, plus content blobs when the
+	// argument is true). Defaults to garbageCollectImages; a seam so the
+	// disk-pressure gate and single-flight orchestration are testable without a
+	// live containerd.
+	gcPass func(ctx context.Context, includeContent bool) (GCStats, error)
 }
 
-func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
+// defaultContainerdRoot is the filesystem the image GC measures for free space.
+// The agent connects to containerd over a socket and does not configure its data
+// root, so this mirrors containerd's own default; override with
+// WENDY_CONTAINERD_ROOT if the daemon is configured elsewhere.
+const defaultContainerdRoot = "/var/lib/containerd"
+
+func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager, imageGCEnabled bool) (*Client, error) {
 	if address == "" {
 		address = DefaultAddress
+	}
+
+	containerdRoot := defaultContainerdRoot
+	if v := os.Getenv("WENDY_CONTAINERD_ROOT"); v != "" {
+		containerdRoot = v
 	}
 
 	c, err := containerd.New(address)
@@ -117,21 +155,26 @@ func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) 
 
 	snapshotter := probeSnapshotter(logger)
 
-	return &Client{
-		client:       c,
-		logger:       logger,
-		namespace:    "default",
-		proxyManager: proxyMgr,
-		appServices:  make(map[string]map[string]*appconfig.ServiceConfig),
-		primaryPIDs:  make(map[string]uint32),
-		appIsolation: make(map[string]string),
-		serviceIPs:   make(map[string]map[string]string),
-		appStopping:  make(map[string]bool),
-		ros2ExecRefs: make(map[string]int),
-		chunkIndex:   idx,
-		staging:      newStaging(defaultChunkStagingDir),
-		snapshotter:  snapshotter,
-	}, nil
+	cl := &Client{
+		client:         c,
+		logger:         logger,
+		namespace:      "default",
+		proxyManager:   proxyMgr,
+		appServices:    make(map[string]map[string]*appconfig.ServiceConfig),
+		primaryPIDs:    make(map[string]uint32),
+		appIsolation:   make(map[string]string),
+		serviceIPs:     make(map[string]map[string]string),
+		appStopping:    make(map[string]bool),
+		ros2ExecRefs:   make(map[string]int),
+		chunkIndex:     idx,
+		staging:        newStaging(defaultChunkStagingDir),
+		snapshotter:    snapshotter,
+		imageGCEnabled: imageGCEnabled,
+		containerdRoot: containerdRoot,
+		diskFreePct:    diskspace.FreePercent,
+	}
+	cl.gcPass = cl.garbageCollectImages
+	return cl, nil
 }
 
 // probeSnapshotter returns "overlayfs" if the kernel supports overlay mounts,
@@ -998,6 +1041,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 		c.appIsolation[appID] = appCfg.Isolation
 	}
+
+	// A newer image version is now active for this app. If the device is low on
+	// disk, kick off a background sweep to reclaim the prior version's gc.root
+	// snapshots. Async + single-flight so it never blocks or fails the deploy,
+	// and gated on disk pressure so roomy devices never reclaim (which would
+	// force layers to be re-uploaded on the next deploy).
+	c.triggerImageGCAsync()
 
 	return nil
 }
