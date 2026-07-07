@@ -96,3 +96,110 @@ func TestBridgeUnavailableReturnsError(t *testing.T) {
 		t.Fatal("want fallback error when bridge is dead")
 	}
 }
+
+// controllableRuntime lets a test drive a bridge process through its
+// lifecycle phases (not-ready-yet -> ready/live -> dead) under explicit
+// control instead of a fixed timing script. It also drains stdin in the
+// background so pending SUBSCRIBE/PUBLISH writes complete instead of
+// blocking forever on the unbuffered io.Pipe.
+type controllableRuntime struct {
+	ROS2Runtime
+	sendReady chan struct{} // closed by the test to trigger writing READY
+	exit      chan struct{} // closed by the test to trigger process exit
+}
+
+func (c *controllableRuntime) ExecROS2Stream(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	stop := make(chan struct{})
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if _, err := stdin.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	defer close(stop)
+
+	<-c.sendReady
+	var ready []byte
+	ready = foxglovebridge.AppendString(ready, "jazzy")
+	ready = append(ready, 0)
+	writeFrame(stdout, foxglovebridge.KindReady, ready)
+
+	<-c.exit
+	return 0, nil
+}
+
+// waitFor polls cond until it returns true or the deadline elapses.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting to %s", what)
+}
+
+// TestBridgeAvailable exercises available(sc) across the three states a
+// caller cares about: no process yet (absent), a live process past its
+// READY handshake, and a process that has since died.
+func TestBridgeAvailable(t *testing.T) {
+	sc := ros2SC{name: "sc"}
+
+	b := newROS2Bridge(&fakeBridgeRuntime{})
+	if b.available(sc) {
+		t.Fatal("available with no process started: want false")
+	}
+
+	rt := &controllableRuntime{sendReady: make(chan struct{}), exit: make(chan struct{})}
+	b2 := newROS2Bridge(rt)
+	if _, err := b2.ensure(context.Background(), sc); err != nil {
+		t.Fatal(err)
+	}
+	if b2.available(sc) {
+		t.Fatal("available before READY handshake: want false")
+	}
+
+	close(rt.sendReady)
+	waitFor(t, func() bool { return b2.available(sc) }, "become available after READY")
+
+	close(rt.exit)
+	waitFor(t, func() bool { return !b2.available(sc) }, "become unavailable after process death")
+}
+
+// TestBridgeSubscriptionClosesOnProcessDeath registers a live subscription,
+// then kills the bridge process (ExecROS2Stream returns), and asserts the
+// subscriber channel is closed so a blocked receiver unblocks instead of
+// hanging forever.
+func TestBridgeSubscriptionClosesOnProcessDeath(t *testing.T) {
+	rt := &controllableRuntime{sendReady: make(chan struct{}), exit: make(chan struct{})}
+	close(rt.sendReady) // ready immediately; Subscribe's write completes via the drain loop
+
+	b := newROS2Bridge(rt)
+	sc := ros2SC{name: "sc"}
+
+	ch, cancel, err := b.Subscribe(context.Background(), sc, "/t", "T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+
+	close(rt.exit) // process exits -> failAll() must close every live subscriber channel
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("want subscriber channel closed (ok=false), got a delivered value instead")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber channel was never closed after process death")
+	}
+}
