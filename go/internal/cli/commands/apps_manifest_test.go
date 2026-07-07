@@ -51,3 +51,33 @@ func TestResolveAppManifestNotFound(t *testing.T) {
 		t.Fatal("expected error for 404")
 	}
 }
+
+func TestSubstituteSecretsSharedValue(t *testing.T) {
+	secrets, err := generateSecrets([]string{"db_password"})
+	if err != nil {
+		t.Fatalf("generateSecrets: %v", err)
+	}
+	pg, err := substituteSecrets(map[string]string{"POSTGRES_PASSWORD": "${secret:db_password}"}, secrets)
+	if err != nil {
+		t.Fatalf("substituteSecrets pg: %v", err)
+	}
+	srv, err := substituteSecrets(map[string]string{"DB_PASSWORD": "${secret:db_password}", "DB_HOSTNAME": "postgres"}, secrets)
+	if err != nil {
+		t.Fatalf("substituteSecrets srv: %v", err)
+	}
+	if pg["POSTGRES_PASSWORD"] == "${secret:db_password}" || pg["POSTGRES_PASSWORD"] == "" {
+		t.Fatalf("secret not substituted: %q", pg["POSTGRES_PASSWORD"])
+	}
+	if pg["POSTGRES_PASSWORD"] != srv["DB_PASSWORD"] {
+		t.Fatalf("shared secret differs across services: %q vs %q", pg["POSTGRES_PASSWORD"], srv["DB_PASSWORD"])
+	}
+	if srv["DB_HOSTNAME"] != "postgres" {
+		t.Fatalf("non-secret value mangled: %q", srv["DB_HOSTNAME"])
+	}
+}
+
+func TestSubstituteSecretsMissingName(t *testing.T) {
+	if _, err := substituteSecrets(map[string]string{"X": "${secret:absent}"}, map[string]string{}); err == nil {
+		t.Fatal("expected error for missing secret name")
+	}
+}

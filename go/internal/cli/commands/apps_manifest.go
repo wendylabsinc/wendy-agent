@@ -2,11 +2,14 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -70,6 +73,53 @@ func resolveAppManifest(ctx context.Context, base, appID string) (appManifest, e
 	}
 	if len(out.Services) == 0 {
 		return appManifest{}, fmt.Errorf("AppStore returned an empty manifest for %q", appID)
+	}
+	return out, nil
+}
+
+// secretRefPattern matches ${secret:NAME} tokens in manifest env values.
+var secretRefPattern = regexp.MustCompile(`\$\{secret:([a-zA-Z0-9_]+)\}`)
+
+// generateSecrets returns one random 32-hex-character value per (deduplicated)
+// name. Values are stable within a single install so services sharing a secret
+// name receive the same value.
+func generateSecrets(names []string) (map[string]string, error) {
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		if _, ok := out[name]; ok {
+			continue
+		}
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, fmt.Errorf("generating secret %q: %w", name, err)
+		}
+		out[name] = hex.EncodeToString(buf)
+	}
+	return out, nil
+}
+
+// substituteSecrets replaces every ${secret:NAME} token in the env values with
+// the corresponding generated secret. It errors if a referenced name has no
+// generated value (a manifest bug). The input map is not modified.
+func substituteSecrets(env map[string]string, secrets map[string]string) (map[string]string, error) {
+	if env == nil {
+		return nil, nil
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		var subErr error
+		out[k] = secretRefPattern.ReplaceAllStringFunc(v, func(match string) string {
+			name := secretRefPattern.FindStringSubmatch(match)[1]
+			val, ok := secrets[name]
+			if !ok {
+				subErr = fmt.Errorf("env %q references unknown secret %q", k, name)
+				return match
+			}
+			return val
+		})
+		if subErr != nil {
+			return nil, subErr
+		}
 	}
 	return out, nil
 }
