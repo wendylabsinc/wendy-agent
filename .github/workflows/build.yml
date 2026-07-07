@@ -70,10 +70,52 @@ jobs:
           echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
+  # Builds the compiled ROS 2 bridge (ros2/wendy_ros2_bridge) for every
+  # {distro}x{arch} combination the agent embeds (go:embed, see
+  # go/internal/agent/foxglovebridge). Runs on native per-arch GitHub-hosted
+  # runners rather than QEMU-emulated cross-builds: this mirrors the
+  # documented rationale in build-cli-linux below (native compile is far
+  # faster than emulation for a C++/CMake toolchain), and this repo's
+  # self-hosted runners (the `wendy-developer` group) are reserved for
+  # physical-device testing, not generic compute, so there is no
+  # large/self-hosted convention to match here.
+  ros2-bridge:
+    name: ROS2 bridge (${{ matrix.distro }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [humble, jazzy]
+        arch: [arm64, amd64]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # The ROS C++ build is slow, especially for jazzy; skip it when the
+      # bridge source hasn't changed since the last successful build for
+      # this distro+arch.
+      - name: Cache bridge binary
+        id: cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: go/internal/agent/foxglovebridge/bin/${{ matrix.arch }}/${{ matrix.distro }}/wendy-ros2-bridge
+          key: ros2-bridge-${{ matrix.distro }}-${{ matrix.arch }}-${{ hashFiles('ros2/wendy_ros2_bridge/**') }}
+
+      - name: Build bridge
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash scripts/build-ros2-bridge.sh ${{ matrix.distro }} ${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bridge-${{ matrix.arch }}-${{ matrix.distro }}
+          path: go/internal/agent/foxglovebridge/bin/${{ matrix.arch }}/${{ matrix.distro }}/wendy-ros2-bridge
+          retention-days: 14
+          if-no-files-found: error
+
   build:
     name: ${{ matrix.artifact-name }}
     runs-on: ubuntu-latest
-    needs: [determine-version]
+    needs: [determine-version, ros2-bridge]
     strategy:
       matrix:
         include:
@@ -105,6 +147,26 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      # Replace the committed placeholder bridge binaries with the real ones
+      # built by the ros2-bridge job above, for this build's GOARCH, before
+      # `go build` embeds them into the agent via go:embed. Only the agent
+      # (goos == linux) actually ships the bridge; the Windows CLI build
+      # embeds via the same arch-tagged files but never runs the bridge, so
+      # it can keep using placeholders.
+      - name: Download ROS2 bridge binaries (humble)
+        if: matrix.goos == 'linux'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bridge-${{ matrix.goarch }}-humble
+          path: go/internal/agent/foxglovebridge/bin/${{ matrix.goarch }}/humble
+
+      - name: Download ROS2 bridge binaries (jazzy)
+        if: matrix.goos == 'linux'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: bridge-${{ matrix.goarch }}-jazzy
+          path: go/internal/agent/foxglovebridge/bin/${{ matrix.goarch }}/jazzy
 
       - name: Build
         working-directory: go
