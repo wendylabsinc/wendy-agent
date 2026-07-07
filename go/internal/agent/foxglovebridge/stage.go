@@ -42,7 +42,11 @@ func Stage(root string) error {
 			return fmt.Errorf("write %s: %w", tmp, err)
 		}
 		if err := os.Rename(tmp, path); err != nil {
+			os.Remove(tmp)
 			return fmt.Errorf("rename %s: %w", path, err)
+		}
+		if err := os.Chmod(path, 0o755); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
 		}
 	}
 	return nil
