@@ -2,6 +2,7 @@ package foxglovebridge
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -76,3 +77,148 @@ func TestReadFrameTruncated(t *testing.T) {
 }
 
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
+
+// readU16LEString is a test helper that reads a u16-prefixed LE string from the given buffer
+// and returns the string, remaining buffer, and any error.
+func readU16LEString(b []byte) (string, []byte, error) {
+	if len(b) < 2 {
+		return "", nil, io.ErrUnexpectedEOF
+	}
+	n := int(binary.LittleEndian.Uint16(b[0:2]))
+	b = b[2:]
+	if len(b) < n {
+		return "", nil, io.ErrUnexpectedEOF
+	}
+	return string(b[:n]), b[n:], nil
+}
+
+func TestAppendSubscribeLayout(t *testing.T) {
+	// Build a SUBSCRIBE frame.
+	var data []byte
+	data = AppendSubscribe(data, 7, "/img", "sensor_msgs/msg/Image", QoSAuto)
+
+	// Decode with ReadFrame.
+	f, _, err := ReadFrame(bytesReader(data), nil)
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if f.Tag != OpSubscribe {
+		t.Fatalf("tag = %d, want %d", f.Tag, OpSubscribe)
+	}
+
+	// Verify body layout: [u32 subID][u16 len topic][topic][u16 len msgType][msgType][u8 qos].
+	b := f.Body
+	if len(b) < 4 {
+		t.Fatalf("body too short for subID: len=%d", len(b))
+	}
+	subID := binary.LittleEndian.Uint32(b[0:4])
+	if subID != 7 {
+		t.Fatalf("subID = %d, want 7", subID)
+	}
+	b = b[4:]
+
+	topic, b, err := readU16LEString(b)
+	if err != nil {
+		t.Fatalf("read topic: %v", err)
+	}
+	if topic != "/img" {
+		t.Fatalf("topic = %q, want %q", topic, "/img")
+	}
+
+	msgType, b, err := readU16LEString(b)
+	if err != nil {
+		t.Fatalf("read msgType: %v", err)
+	}
+	if msgType != "sensor_msgs/msg/Image" {
+		t.Fatalf("msgType = %q, want %q", msgType, "sensor_msgs/msg/Image")
+	}
+
+	if len(b) != 1 {
+		t.Fatalf("remaining bytes = %d, want 1", len(b))
+	}
+	if b[0] != QoSAuto {
+		t.Fatalf("qos = %d, want %d", b[0], QoSAuto)
+	}
+}
+
+func TestAppendPublishLayout(t *testing.T) {
+	// Build a PUBLISH frame.
+	var data []byte
+	data = AppendPublish(data, "/cmd", "geometry_msgs/msg/Twist", []byte{0x01, 0x02, 0x03})
+
+	// Decode with ReadFrame.
+	f, _, err := ReadFrame(bytesReader(data), nil)
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if f.Tag != OpPublish {
+		t.Fatalf("tag = %d, want %d", f.Tag, OpPublish)
+	}
+
+	// Verify body layout: [u16 len topic][topic][u16 len msgType][msgType][cdr...].
+	b := f.Body
+
+	topic, b, err := readU16LEString(b)
+	if err != nil {
+		t.Fatalf("read topic: %v", err)
+	}
+	if topic != "/cmd" {
+		t.Fatalf("topic = %q, want %q", topic, "/cmd")
+	}
+
+	msgType, b, err := readU16LEString(b)
+	if err != nil {
+		t.Fatalf("read msgType: %v", err)
+	}
+	if msgType != "geometry_msgs/msg/Twist" {
+		t.Fatalf("msgType = %q, want %q", msgType, "geometry_msgs/msg/Twist")
+	}
+
+	// Remaining should be the CDR payload.
+	if !bytes.Equal(b, []byte{0x01, 0x02, 0x03}) {
+		t.Fatalf("cdr = %v, want [0x01 0x02 0x03]", b)
+	}
+}
+
+func TestAppendUnsubscribeLayout(t *testing.T) {
+	// Build an UNSUBSCRIBE frame.
+	var data []byte
+	data = AppendUnsubscribe(data, 42)
+
+	// Decode with ReadFrame.
+	f, _, err := ReadFrame(bytesReader(data), nil)
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if f.Tag != OpUnsubscribe {
+		t.Fatalf("tag = %d, want %d", f.Tag, OpUnsubscribe)
+	}
+
+	// Body should be exactly 4 bytes: the little-endian u32 42.
+	if len(f.Body) != 4 {
+		t.Fatalf("body len = %d, want 4", len(f.Body))
+	}
+	subID := binary.LittleEndian.Uint32(f.Body[0:4])
+	if subID != 42 {
+		t.Fatalf("subID = %d, want 42", subID)
+	}
+}
+
+func TestReadFrameRejectsZeroAndOversize(t *testing.T) {
+	// Zero-length frame.
+	zeroFrame := []byte{0x00, 0x00, 0x00, 0x00}
+	_, _, err := ReadFrame(bytesReader(zeroFrame), nil)
+	if err == nil || err.Error() != "zero-length frame" {
+		t.Fatalf("zero-length frame: got %v, want 'zero-length frame'", err)
+	}
+
+	// Oversize frame (exceeds 128 MiB).
+	oversizeFrame := []byte{0xFF, 0xFF, 0xFF, 0xFF}
+	_, _, err = ReadFrame(bytesReader(oversizeFrame), nil)
+	if err == nil {
+		t.Fatalf("oversize frame: got no error, want 'frame too large'")
+	}
+	if err.Error() != "frame too large: 4294967295" {
+		t.Fatalf("oversize frame: got %v, want 'frame too large: 4294967295'", err)
+	}
+}
