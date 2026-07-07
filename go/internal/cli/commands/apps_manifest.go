@@ -10,8 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // appManifest is the JSON returned by GET /v1/apps/{app_id}/manifest. A manifest
@@ -122,4 +126,89 @@ func substituteSecrets(env map[string]string, secrets map[string]string) (map[st
 		}
 	}
 	return out, nil
+}
+
+// buildServiceInstall turns a resolved manifest into an ordered set of
+// per-service CreateContainerRequests. Services are ordered so every service
+// follows its dependsOn entries (create+start must happen in this order so each
+// service's /etc/hosts already resolves its dependencies). Secrets are generated
+// once and shared across services by name.
+func buildServiceInstall(m appManifest) ([]string, map[string]*agentpb.CreateContainerRequest, error) {
+	secrets, err := generateSecrets(m.Secrets)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Build the appconfig.ServiceConfig map for topo ordering and for the agent's
+	// group awareness (len(Services) > 1 triggers /etc/hosts injection).
+	svcConfigs := make(map[string]*appconfig.ServiceConfig, len(m.Services))
+	byName := make(map[string]manifestService, len(m.Services))
+	for _, s := range m.Services {
+		svcConfigs[s.Name] = &appconfig.ServiceConfig{DependsOn: s.DependsOn}
+		byName[s.Name] = s
+	}
+
+	order, err := appconfig.ServiceTopoOrder(svcConfigs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	multi := len(m.Services) > 1
+	reqs := make(map[string]*agentpb.CreateContainerRequest, len(m.Services))
+	for _, name := range order {
+		svc := byName[name]
+
+		env, err := substituteSecrets(svc.Env, secrets)
+		if err != nil {
+			return nil, nil, err
+		}
+		envList := make([]string, 0, len(env))
+		for k, v := range env {
+			envList = append(envList, k+"="+v)
+		}
+		sort.Strings(envList) // stable order for reproducible requests/tests
+
+		var entitlements []appconfig.Entitlement
+		if len(svc.Ports) > 0 {
+			ports := make([]appconfig.PortMapping, 0, len(svc.Ports))
+			for _, p := range svc.Ports {
+				ports = append(ports, appconfig.PortMapping{Host: p.Host, Container: p.Container})
+			}
+			entitlements = append(entitlements, appconfig.Entitlement{
+				Type:  appconfig.EntitlementNetwork,
+				Ports: ports,
+			})
+		}
+		for _, v := range svc.Volumes {
+			entitlements = append(entitlements, appconfig.Entitlement{
+				Type: appconfig.EntitlementPersist,
+				Name: v.Name,
+				Path: v.Path,
+			})
+		}
+
+		cfg := &appconfig.AppConfig{
+			AppID:        m.AppID,
+			Entitlements: entitlements,
+		}
+		if multi {
+			cfg.ServiceName = name
+			cfg.Isolation = "isolated"
+			cfg.Services = svcConfigs
+		}
+
+		cfgData, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshaling config for service %s: %w", name, err)
+		}
+
+		reqs[name] = &agentpb.CreateContainerRequest{
+			ImageName:     normalizeImageRef(svc.Image),
+			AppName:       cfg.ContainerName(),
+			AppConfig:     cfgData,
+			Env:           envList,
+			RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
+		}
+	}
+	return order, reqs, nil
 }
