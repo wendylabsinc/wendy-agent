@@ -40,7 +40,6 @@ const ros2BagChunkSize = 64 * 1024
 // ISO27001-A.8).
 const ros2MaxMsgDeps = 256
 
-
 // ROS2Service implements agentpbv2.ROS2ServiceServer by exec-ing `ros2`
 // commands inside the CLI sidecar managed by the ROS2Runtime (WDY-1332).
 type ROS2Service struct {

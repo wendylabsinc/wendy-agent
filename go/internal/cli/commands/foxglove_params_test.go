@@ -30,14 +30,14 @@ func TestFGSplitParamName(t *testing.T) {
 
 func TestFGParamValueFromROS(t *testing.T) {
 	cases := map[string]any{
-		"Double value is: 1.5":            1.5,
-		"Integer value is: 42":            int64(42),
-		"Boolean value is: True":          true,
-		"Boolean value is: False":         false,
-		"String value is: hello":          "hello",
-		"Integer values are: [1, 2, 3]":   []any{float64(1), float64(2), float64(3)},
-		"String values are: ['a', 'b']":   []any{"a", "b"},
-		"1.5":                             1.5, // no label prefix
+		"Double value is: 1.5":          1.5,
+		"Integer value is: 42":          int64(42),
+		"Boolean value is: True":        true,
+		"Boolean value is: False":       false,
+		"String value is: hello":        "hello",
+		"Integer values are: [1, 2, 3]": []any{float64(1), float64(2), float64(3)},
+		"String values are: ['a', 'b']": []any{"a", "b"},
+		"1.5":                           1.5, // no label prefix
 	}
 	for in, want := range cases {
 		if got := fgParamValueFromROS(in); !reflect.DeepEqual(got, want) {
@@ -48,10 +48,10 @@ func TestFGParamValueFromROS(t *testing.T) {
 
 func TestFGParamLiteralFromValue(t *testing.T) {
 	cases := map[string]any{
-		"1.5":       1.5,
-		"true":      true,
-		"\"hi\"":    "hi",
-		"[1,2,3]":   []any{1, 2, 3},
+		"1.5":     1.5,
+		"true":    true,
+		"\"hi\"":  "hi",
+		"[1,2,3]": []any{1, 2, 3},
 	}
 	for want, v := range cases {
 		got, err := fgParamLiteralFromValue(v)
