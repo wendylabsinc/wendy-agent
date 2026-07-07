@@ -394,7 +394,8 @@ func (s *ROS2Service) Publish(ctx context.Context, req *agentpbv2.PublishROS2Req
 	sc := s.pickSidecarForTopic(ctx, scs, req.GetTopic())
 
 	if cdr := req.GetCdr(); len(cdr) > 0 {
-		if berr := s.bridge.Publish(ctx, sc, req.GetTopic(), req.GetType(), cdr); berr == nil {
+		berr := s.bridge.Publish(ctx, sc, req.GetTopic(), req.GetType(), cdr)
+		if berr == nil {
 			return &agentpbv2.PublishROS2Response{Success: true}, nil
 		}
 		// Bridge unavailable/failed: fall through to the YAML ros2-CLI path only
@@ -402,6 +403,7 @@ func (s *ROS2Service) Publish(ctx context.Context, req *agentpbv2.PublishROS2Req
 		if req.GetYaml() == "" {
 			return &agentpbv2.PublishROS2Response{Success: false, Message: "native publish failed and no YAML fallback provided"}, nil
 		}
+		s.logger.Debug("ros2 publish: bridge failed, falling back to yaml path", zap.String("topic", req.GetTopic()), zap.Error(berr))
 	}
 	out, err := s.runIn(ctx, sc, "topic", "pub", "--once", req.GetTopic(), req.GetType(), req.GetYaml())
 	if err != nil {
@@ -777,10 +779,12 @@ var errSubscribeRawFallback = errors.New("subscribe raw: fall back to rclpy forw
 func (s *ROS2Service) subscribeRawViaBridge(ctx context.Context, sc ros2SC, topic string, stream grpc.ServerStreamingServer[agentpbv2.RawROS2Message]) error {
 	msgType, terr := s.resolveTopicType(ctx, sc, topic)
 	if terr != nil {
+		s.logger.Debug("ros2 subscribe: bridge unavailable, falling back to rclpy forwarder", zap.String("topic", topic), zap.Error(terr))
 		return errSubscribeRawFallback
 	}
 	ch, cancel, berr := s.bridge.Subscribe(ctx, sc, topic, msgType)
 	if berr != nil {
+		s.logger.Debug("ros2 subscribe: bridge unavailable, falling back to rclpy forwarder", zap.String("topic", topic), zap.Error(berr))
 		return errSubscribeRawFallback
 	}
 	defer cancel()

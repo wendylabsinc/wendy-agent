@@ -1154,3 +1154,50 @@ func TestROS2Service_Publish_BridgeFailsNoYamlFallback(t *testing.T) {
 		}
 	}
 }
+
+// TestROS2Service_Publish_BridgeFailsYamlFallback proves that a Publish
+// request with both CDR and YAML falls back to the YAML path when the bridge
+// fails, returning success and executing the legacy `ros2 topic pub --once`
+// command instead.
+func TestROS2Service_Publish_BridgeFailsYamlFallback(t *testing.T) {
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		outputs: map[string]string{
+			"topic pub --once /cmd std_msgs/msg/String {data: 'hello'}": "publishing...\n",
+		},
+		execStreamFn: func(ctx context.Context, opts ROS2ExecOptions, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+			return 1, nil // bridge unavailable: exits without reading stdin
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	resp, err := svc.Publish(context.Background(), &agentpbv2.PublishROS2Request{
+		Topic: "/cmd",
+		Type:  "std_msgs/msg/String",
+		Cdr:   []byte{0xDE, 0xAD},
+		Yaml:  "{data: 'hello'}",
+	})
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if !resp.GetSuccess() {
+		t.Fatalf("Publish response = %+v, want success (fallback to YAML)", resp)
+	}
+	if resp.GetMessage() != "publishing..." {
+		t.Errorf("message = %q, want 'publishing...'", resp.GetMessage())
+	}
+
+	// Verify that the legacy ros2 topic pub command was executed.
+	foundPub := false
+	for _, call := range rt.getCalls() {
+		if len(call.Args) > 1 && call.Args[0] == "topic" && call.Args[1] == "pub" {
+			foundPub = true
+			if len(call.Args) < 4 || call.Args[2] != "--once" || call.Args[3] != "/cmd" {
+				t.Errorf("unexpected pub args: %v", call.Args)
+			}
+		}
+	}
+	if !foundPub {
+		t.Fatalf("legacy `ros2 topic pub --once` was never exec'd; calls=%+v", rt.calls)
+	}
+}
