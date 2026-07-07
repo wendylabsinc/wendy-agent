@@ -3,6 +3,7 @@
 // subscriptions so DDS's serialized bytes flow straight through to Foxglove.
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <thread>
@@ -39,20 +40,27 @@ void emit_sub_error(uint32_t sub_id, const std::string& msg) {
 }
 
 // Pick a QoS compatible with the topic's publishers. Falls back to
-// best-effort/KEEP_LAST(1) when none are visible yet or when forced.
+// best-effort/KEEP_LAST(1) when none are visible yet or when forced. When
+// publishers are visible, a reliable subscription is only chosen if every
+// publisher is reliable (a reliable subscriber can't match a best-effort
+// publisher, but a best-effort subscriber matches both); transient_local is
+// adopted if any publisher uses it.
 rclcpp::QoS choose_qos(rclcpp::Node& node, const std::string& topic, uint8_t qos_flag) {
   if (qos_flag == QOS_FORCE_BEST_EFFORT) {
     return rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
   }
   auto infos = node.get_publishers_info_by_topic(topic);
-  bool any_reliable = false, any_transient_local = false;
+  if (infos.empty()) {
+    return rclcpp::QoS(rclcpp::KeepLast(1)).best_effort();
+  }
+  bool all_reliable = true, any_transient_local = false;
   for (const auto& info : infos) {
     const auto& q = info.qos_profile();
-    if (q.reliability() == rclcpp::ReliabilityPolicy::Reliable) any_reliable = true;
+    if (q.reliability() != rclcpp::ReliabilityPolicy::Reliable) all_reliable = false;
     if (q.durability() == rclcpp::DurabilityPolicy::TransientLocal) any_transient_local = true;
   }
   rclcpp::QoS q(rclcpp::KeepLast(10));
-  if (any_reliable) q.reliable(); else q.best_effort();
+  if (all_reliable) q.reliable(); else q.best_effort();
   if (any_transient_local) q.transient_local();
   return q;
 }
@@ -87,13 +95,46 @@ int main(int argc, char** argv) {
     try {
       while (!stop && fr.next(tag, body)) {
         if (tag == OP_SUBSCRIBE) {
+          // FrameReader guarantees body.size() == the frame's declared length,
+          // but not that it's long enough for the fields below (a malformed or
+          // truncated frame must never be read out of bounds). Validate
+          // incrementally and skip the frame -- without throwing -- on any
+          // shortfall, so a bad frame can't propagate to the outer catch and
+          // tear down the whole bridge.
+          if (body.size() < 4) {
+            // Can't even recover a sub_id to report against; drop the frame.
+            continue;
+          }
           const uint8_t* p = body.data();
-          uint32_t sub_id = read_u32(p); p += 4;
-          uint16_t tn = read_u16(p); p += 2;
-          std::string topic((const char*)p, tn); p += tn;
-          uint16_t yn = read_u16(p); p += 2;
-          std::string type((const char*)p, yn); p += yn;
-          uint8_t qos_flag = *p;
+          size_t remaining = body.size();
+          uint32_t sub_id = read_u32(p); p += 4; remaining -= 4;
+          bool ok = remaining >= 2;
+          uint16_t tn = 0, yn = 0;
+          std::string topic, type;
+          uint8_t qos_flag = 0;
+          if (ok) {
+            tn = read_u16(p); p += 2; remaining -= 2;
+            ok = remaining >= tn;
+          }
+          if (ok) {
+            topic.assign((const char*)p, tn); p += tn; remaining -= tn;
+            ok = remaining >= 2;
+          }
+          if (ok) {
+            yn = read_u16(p); p += 2; remaining -= 2;
+            ok = remaining >= yn;
+          }
+          if (ok) {
+            type.assign((const char*)p, yn); p += yn; remaining -= yn;
+            ok = remaining >= 1;
+          }
+          if (ok) {
+            qos_flag = *p;
+          }
+          if (!ok) {
+            emit_sub_error(sub_id, "malformed SUBSCRIBE frame");
+            continue;
+          }
           try {
             auto qos = choose_qos(*node, topic, qos_flag);
             auto sub = node->create_generic_subscription(
@@ -113,6 +154,9 @@ int main(int argc, char** argv) {
             emit_sub_error(sub_id, e.what());
           }
         } else if (tag == OP_UNSUBSCRIBE) {
+          if (body.size() < 4) {
+            continue;
+          }
           uint32_t sub_id = read_u32(body.data());
           std::lock_guard<std::mutex> lk(subs_mu);
           subs.erase(sub_id);
@@ -130,7 +174,23 @@ int main(int argc, char** argv) {
   exec.add_node(node);
   exec.spin();
 
+  // exec.spin() can return either because the reader thread saw stdin EOF and
+  // called rclcpp::shutdown() itself (in which case it has already finished,
+  // or is about to), or because a signal (e.g. SIGINT via rclcpp's own
+  // handler) triggered rclcpp::shutdown() out-of-band. In the latter case the
+  // reader thread is still blocked in a plain fread(stdin) with no portable,
+  // race-free way to interrupt it, so reader.join() here could hang forever.
+  //
+  // Instead: detach the reader and terminate the process immediately with
+  // std::_Exit. _Exit skips destructors for both automatic-storage objects
+  // (node, subs, framer, ...) and static-storage objects, and it reclaims the
+  // whole process image -- including any thread still parked in fread --
+  // atomically from the OS's point of view. That means there is no window in
+  // which the detached thread could wake up and touch `node`/`subs` while (or
+  // after) they are being destroyed: the process is simply gone before that
+  // could happen. Genuine stdin EOF/closed-pipe still drives the normal
+  // shutdown path above (reader sets stop + calls rclcpp::shutdown() itself).
   stop = true;
-  reader.join();
-  return 0;
+  reader.detach();
+  std::_Exit(0);
 }
