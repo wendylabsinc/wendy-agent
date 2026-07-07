@@ -215,11 +215,19 @@ int main(int argc, char** argv) {
               pub = it->second;
             }
           }
-          rclcpp::SerializedMessage sm(cdr_len);
-          auto& rcl = sm.get_rcl_serialized_message();
-          std::memcpy(rcl.buffer, cdr, cdr_len);
-          rcl.buffer_length = cdr_len;
-          pub->publish(sm);
+          try {
+            rclcpp::SerializedMessage sm(cdr_len);
+            auto& rcl = sm.get_rcl_serialized_message();
+            if (cdr_len > 0) {
+              std::memcpy(rcl.buffer, cdr, cdr_len);
+            }
+            rcl.buffer_length = cdr_len;
+            pub->publish(sm);
+          } catch (const std::exception&) {
+            // Runtime publish failure (e.g. DDS writer error, shutdown race);
+            // drop this frame instead of tearing down the whole bridge.
+            continue;
+          }
         }
       }
     } catch (const std::exception&) {
