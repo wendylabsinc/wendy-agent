@@ -1287,7 +1287,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		} else if tb, ok := p.(providers.TypedBuilder); ok {
 			app, err = tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
 		} else {
-			app, err = p.Build(ctx, device, projectPath, product, opts.debug)
+			app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
 		}
 		if err != nil {
 			return fmt.Errorf("provider build: %w", err)

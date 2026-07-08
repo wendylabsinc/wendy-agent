@@ -31,7 +31,7 @@ type DeviceProvider interface {
 	// CanBuild reports whether this provider can build the project at projectPath.
 	CanBuild(projectPath string) bool
 	// Build compiles the project for the given device and returns a BuiltApp handle.
-	Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error)
+	Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error)
 	// Run starts the built application, streaming output to the channel until done.
 	Run(ctx context.Context, app *BuiltApp, detach bool, output chan<- RunOutput) error
 	// Stop terminates a running application.

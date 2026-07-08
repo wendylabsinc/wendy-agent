@@ -31,16 +31,17 @@ const (
 	microWendySwiftTarget = "wasm32-unknown-wasip1"
 )
 
-// microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
+// microWendyBuildContext is stored in BuiltApp.Context.
 type microWendyBuildContext struct {
-	WASMPath string
+	AppPath string
+	AppType liteclient.AppType
 }
 
 // MicroWendyProvider builds Swift packages to WASM and serves them to ESP32 devices.
 type MicroWendyProvider struct{}
 
 func (p *MicroWendyProvider) Key() string         { return "wendy-lite" }
-func (p *MicroWendyProvider) DisplayName() string { return "Micro Wendy (WASM)" }
+func (p *MicroWendyProvider) DisplayName() string { return "Wendy Lite" }
 
 func (p *MicroWendyProvider) IsAvailable(ctx context.Context) bool {
 	return true
@@ -99,7 +100,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 }
 
 func (p *MicroWendyProvider) SupportedBuildTypes() []string {
-	return []string{"swift"}
+	return []string{"swift", "esp-idf"}
 }
 
 func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
@@ -107,7 +108,19 @@ func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
 	return err == nil
 }
 
-func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
+	switch projectType {
+	case "swift":
+		return p.buildSwift(ctx, device, projectPath, product, debug)
+	case "esp-idf":
+		return p.buildEspIdf(device, projectPath, product)
+	default:
+		return nil, fmt.Errorf("wendy-lite provider: unsupported project type %q", projectType)
+	}
+}
+
+// buildSwift compiles a Swift package to WASM for the embedded WASI target.
+func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
 	swiftlyTestCmd := exec.CommandContext(ctx, "swiftly", "--version")
 	if swiftlyTestCmd.Run() != nil {
 		return nil, fmt.Errorf("swiftly is not installed or not in PATH")
@@ -169,7 +182,23 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		ProviderKey: p.Key(),
 		Device:      device,
 		AppName:     product,
-		Context:     &microWendyBuildContext{WASMPath: wasmPath},
+		Context:     &microWendyBuildContext{AppPath: wasmPath, AppType: liteclient.AppTypeWasm},
+	}, nil
+}
+
+// buildEspIdf picks up an already-built ESP-IDF firmware binary from the
+// project's build folder. It does not compile the project.
+func (p *MicroWendyProvider) buildEspIdf(device models.ExternalDevice, projectPath, product string) (*BuiltApp, error) {
+	binPath := filepath.Join(projectPath, "build", product+".bin")
+	if _, err := os.Stat(binPath); err != nil {
+		return nil, fmt.Errorf("expected ESP-IDF app binary at %s: %w", binPath, err)
+	}
+
+	return &BuiltApp{
+		ProviderKey: p.Key(),
+		Device:      device,
+		AppName:     product,
+		Context:     &microWendyBuildContext{AppPath: binPath, AppType: liteclient.AppTypeNative},
 	}, nil
 }
 
@@ -187,12 +216,14 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 	defer client.Close()
 
-	if err := client.StopApp(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+	if bc.AppType == liteclient.AppTypeWasm {
+		if err := client.StopApp(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+		}
 	}
 
 	if detach {
-		if err := client.PushApp(bc.WASMPath, liteclient.AppTypeWasm, nil); err != nil {
+		if err := client.PushApp(bc.AppPath, bc.AppType, nil); err != nil {
 			return fmt.Errorf("push app: %w", err)
 		}
 	} else {
@@ -200,7 +231,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		pushProg := tui.NewProgress("Pushing app...")
 		pp := tui.NewProgressProgram(pushProg)
 		go func() {
-			pushErr := client.PushApp(bc.WASMPath, liteclient.AppTypeWasm, func(written, total uint32) {
+			pushErr := client.PushApp(bc.AppPath, bc.AppType, func(written, total uint32) {
 				var pct float64
 				if total > 0 {
 					pct = float64(written) / float64(total)
@@ -223,9 +254,19 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	fmt.Println()
-	fmt.Println("Starting app...")
-	if err := client.StartApp(); err != nil {
-		return fmt.Errorf("app start: %w", err)
+	switch bc.AppType {
+	case liteclient.AppTypeNative:
+		// A native app is a full firmware image; the device boots into it on
+		// reset rather than via AppStart. The deferred Close runs on return.
+		fmt.Println("Rebooting device...")
+		if err := client.ResetTargetDevice(); err != nil {
+			return fmt.Errorf("device reset: %w", err)
+		}
+	default:
+		fmt.Println("Starting app...")
+		if err := client.StartApp(); err != nil {
+			return fmt.Errorf("app start: %w", err)
+		}
 	}
 
 	output <- RunOutput{Type: RunOutputStarted}

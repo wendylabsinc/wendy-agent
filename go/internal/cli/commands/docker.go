@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -193,7 +194,7 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers.
+// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
@@ -236,6 +237,9 @@ func detectProjectType(dir string) (string, error) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "pyproject.toml")); err == nil {
 		return "python", nil
+	}
+	if espidftoolchain.IsEspIdfProject(dir) {
+		return "esp-idf", nil
 	}
 	return "unknown", nil
 }

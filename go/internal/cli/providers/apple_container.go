@@ -117,7 +117,7 @@ func (p *AppleContainerProvider) CanBuild(projectPath string) bool {
 	return hasContainerBuildFile(projectPath)
 }
 
-func (p *AppleContainerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *AppleContainerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	return p.BuildWithDockerfile(ctx, device, projectPath, product, "", "", debug)
 }
 

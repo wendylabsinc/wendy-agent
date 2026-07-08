@@ -152,7 +152,7 @@ func newBuildCmd() *cobra.Command {
 				} else if tb, ok := target.Provider.(providers.TypedBuilder); ok {
 					app, buildErr = tb.BuildWithType(cmd.Context(), *target.External, cwd, product, opts.buildType, false)
 				} else {
-					app, buildErr = target.Provider.Build(cmd.Context(), *target.External, cwd, product, false)
+					app, buildErr = target.Provider.Build(cmd.Context(), *target.External, cwd, projectType, product, false)
 				}
 				if buildErr != nil {
 					return fmt.Errorf("provider build: %w", buildErr)

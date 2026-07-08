@@ -87,7 +87,7 @@ func (p *DockerProvider) CanBuild(projectPath string) bool {
 	return composeFile(projectPath) != ""
 }
 
-func (p *DockerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *DockerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	return p.BuildWithDockerfile(ctx, device, projectPath, product, "", "", debug)
 }
 

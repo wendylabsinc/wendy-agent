@@ -228,7 +228,7 @@ func TestAppleContainerBuildWithContainerfileUsesContainerBuild(t *testing.T) {
 	if !p.CanBuild(dir) {
 		t.Fatal("CanBuild = false, want true for Containerfile")
 	}
-	if _, err := p.Build(context.Background(), models.ExternalDevice{CPUArchitecture: "arm64"}, dir, "MyApp", false); err != nil {
+	if _, err := p.Build(context.Background(), models.ExternalDevice{CPUArchitecture: "arm64"}, dir, "docker", "MyApp", false); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 

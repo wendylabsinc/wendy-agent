@@ -37,7 +37,7 @@ func TestLocalProviderDoesNotClaimContainerBuildFileProjects(t *testing.T) {
 		t.Fatal("LocalProvider.CanBuild() = true for container-build-file-only project, want false")
 	}
 
-	_, err := p.Build(context.Background(), models.ExternalDevice{ID: "local", ProviderKey: p.Key()}, dir, "app", false)
+	_, err := p.Build(context.Background(), models.ExternalDevice{ID: "local", ProviderKey: p.Key()}, dir, "", "app", false)
 	if err == nil {
 		t.Fatal("LocalProvider.Build() succeeded for container-build-file-only project, want error")
 	}
