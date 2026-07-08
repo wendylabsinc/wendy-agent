@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
@@ -113,7 +114,7 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 	case "swift":
 		return p.buildSwift(ctx, device, projectPath, product, debug)
 	case "esp-idf":
-		return p.buildEspIdf(device, projectPath, product)
+		return p.buildEspIdf(ctx, device, projectPath, product)
 	default:
 		return nil, fmt.Errorf("wendy-lite provider: unsupported project type %q", projectType)
 	}
@@ -186,10 +187,64 @@ func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.Exter
 	}, nil
 }
 
-// buildEspIdf picks up an already-built ESP-IDF firmware binary from the
-// project's build folder. It does not compile the project.
-func (p *MicroWendyProvider) buildEspIdf(device models.ExternalDevice, projectPath, product string) (*BuiltApp, error) {
-	binPath := filepath.Join(projectPath, "build", product+".bin")
+// boardToTarget returns the IDF target (SoC name, e.g. "esp32c6") firmware
+// must be built for to run on the given board. A board and a target are
+// different concepts: the device reports "esp32c6" meaning "generic esp32c6
+// board", not the SoC name — they merely coincide for the boards supported
+// today, so the mapping is the identity for now. A real lookup goes here once
+// board names diverge from SoC names.
+func boardToTarget(board string) string {
+	return board
+}
+
+// buildEspIdf builds an ESP-IDF project with idf.py (via eim) and picks up
+// the firmware binary from the project's build folder. The binary is named
+// after the CMake project() name, which may differ from the app ID.
+func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.ExternalDevice, projectPath, product string) (*BuiltApp, error) {
+	// get device info
+	di, err := p.GetDeviceInfo(ctx, device)
+	if err != nil {
+		return nil, fmt.Errorf("getting device info: %w", err)
+	}
+
+	// check device capability
+	if !di.NativeAppSupport {
+		return nil, fmt.Errorf("device %s does not support native apps", device.DisplayName)
+	}
+
+	// ensures the ESP-IDF toolchain is available, install it if not
+	if err := espidftoolchain.EnsureVersion(ctx); err != nil {
+		return nil, err
+	}
+
+	// check if the project has been configured for the right target
+	target := boardToTarget(di.DeviceType)
+	configuredTarget := espidftoolchain.ProjectTarget(projectPath)
+	if target != "" && target != configuredTarget {
+		cmd := espidftoolchain.IdfCommandContext(ctx, "set-target", target)
+		cmd.Dir = projectPath
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("idf.py set-target %s: %w", target, err)
+		}
+	}
+
+	// build the project
+	cmd := espidftoolchain.IdfCommandContext(ctx, "build")
+	cmd.Dir = projectPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("idf.py build: %w", err)
+	}
+
+	// verify the presence of the output bin file
+	binName := espidftoolchain.ProjectName(projectPath)
+	if binName == "" {
+		binName = product
+	}
+	binPath := filepath.Join(projectPath, "build", binName+".bin")
 	if _, err := os.Stat(binPath); err != nil {
 		return nil, fmt.Errorf("expected ESP-IDF app binary at %s: %w", binPath, err)
 	}
