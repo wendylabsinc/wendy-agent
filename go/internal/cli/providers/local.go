@@ -219,3 +219,7 @@ func (p *LocalProvider) Stop(_ context.Context, app *BuiltApp) error {
 	}
 	return nil
 }
+
+func (p *LocalProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
+}

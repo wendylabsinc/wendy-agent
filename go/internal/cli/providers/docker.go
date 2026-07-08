@@ -364,6 +364,10 @@ func (p *DockerProvider) Stop(ctx context.Context, app *BuiltApp) error {
 	return cmd.Run()
 }
 
+func (p *DockerProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
+}
+
 // ContainerManager implementation for Docker Desktop.
 
 func (p *DockerProvider) ListContainers(ctx context.Context) ([]ContainerInfo, error) {

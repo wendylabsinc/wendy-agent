@@ -43,14 +43,10 @@ func (p *MicroWendyProvider) Key() string         { return "wendy-lite" }
 func (p *MicroWendyProvider) DisplayName() string { return "Micro Wendy (WASM)" }
 
 func (p *MicroWendyProvider) IsAvailable(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "swiftly", "--version")
-	return cmd.Run() == nil
+	return true
 }
 
 func (p *MicroWendyProvider) CheckRequirements(ctx context.Context) error {
-	if !p.IsAvailable(ctx) {
-		return fmt.Errorf("swiftly is not installed or not in PATH")
-	}
 	return nil
 }
 
@@ -81,8 +77,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 				"port":     fmt.Sprintf("%d", svc.Port),
 				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
 			},
-			IsWendyDevice:   true,
-			CPUArchitecture: "wasm32",
+			IsWendyDevice: true,
 		})
 	}
 
@@ -96,8 +91,7 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 				"name":       dev.Name,
 				"serialPort": dev.Port,
 			},
-			IsWendyDevice:   true,
-			CPUArchitecture: "wasm32",
+			IsWendyDevice: true,
 		})
 	}
 
@@ -114,6 +108,11 @@ func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
 }
 
 func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+	swiftlyTestCmd := exec.CommandContext(ctx, "swiftly", "--version")
+	if swiftlyTestCmd.Run() != nil {
+		return nil, fmt.Errorf("swiftly is not installed or not in PATH")
+	}
+
 	if err := swifttoolchain.EnsureSwiftVersion(ctx, os.Stdout, os.Stderr); err != nil {
 		return nil, err
 	}
@@ -182,64 +181,9 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	client := liteclient.NewWendyLiteClient()
-	if app.Device.ConnectionInfo["type"] == "USB" {
-		serialPort := app.Device.ConnectionInfo["serialPort"]
-		if serialPort == "" {
-			return fmt.Errorf("wendy-lite provider: missing serial port in connection info")
-		}
-		if err := client.ConnectToSerial(serialPort); err != nil {
-			return fmt.Errorf("connect to device via serial: %w", err)
-		}
-	} else if app.Device.ConnectionInfo["type"] == "LAN" {
-		ip := app.Device.ConnectionInfo["ip"]
-		port := app.Device.ConnectionInfo["port"]
-		if ip == "" || port == "" {
-			return fmt.Errorf("wendy-lite provider: missing IP or port in connection info")
-		}
-		addr := net.JoinHostPort(ip, port)
-		if app.Device.ConnectionInfo["mtls"] == "true" {
-			certInfos, err := loadAllCLICerts()
-			if err != nil {
-				return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
-			}
-			var connectErrs []error
-			connected := false
-			for _, certInfo := range certInfos {
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
-				if err != nil {
-					return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
-				}
-				rootCAs := x509.NewCertPool()
-				if certInfo.PemCertificateChain != "" {
-					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
-				}
-				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
-					connectErrs = append(connectErrs, err)
-				} else {
-					connected = true
-					break
-				}
-			}
-			if !connected {
-				var b strings.Builder
-				fmt.Fprintf(&b, "Wendy Lite connection error")
-				for i, e := range connectErrs {
-					if i == 0 {
-						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
-					} else {
-						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
-					}
-				}
-				return errors.New(b.String())
-			}
-		} else {
-			if err := client.ConnectInsecure(addr); err != nil {
-				return fmt.Errorf("connect to device: %w", err)
-			}
-		}
-	} else {
-		return fmt.Errorf("wendy-lite provider: unsupported connection type: %s", app.Device.ConnectionInfo["type"])
+	client, err := p.connectClient(app.Device)
+	if err != nil {
+		return err
 	}
 	defer client.Close()
 
@@ -248,7 +192,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	if detach {
-		if err := client.PushApp(bc.WASMPath, nil); err != nil {
+		if err := client.PushApp(bc.WASMPath, liteclient.AppTypeWasm, nil); err != nil {
 			return fmt.Errorf("push app: %w", err)
 		}
 	} else {
@@ -256,7 +200,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		pushProg := tui.NewProgress("Pushing app...")
 		pp := tui.NewProgressProgram(pushProg)
 		go func() {
-			pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
+			pushErr := client.PushApp(bc.WASMPath, liteclient.AppTypeWasm, func(written, total uint32) {
 				var pct float64
 				if total > 0 {
 					pct = float64(written) / float64(total)
@@ -291,6 +235,94 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	return nil
+}
+
+func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	client, err := p.connectClient(device)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	di, err := client.GetDeviceInfo(3 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &ProviderDeviceInfo{
+		// On wendy-lite, OS version and agent version are the same.
+		AgentVersion:     di.OSVersion,
+		OS:               di.OS,
+		OSVersion:        di.OSVersion,
+		CPUArchitecture:  di.CPUArchitecture,
+		DeviceType:       di.Board,
+		WasmAppSupport:   di.WasmAppSupport,
+		NativeAppSupport: di.NativeAppSupport,
+	}, nil
+}
+
+// connectClient opens a WendyLiteClient connection to the device over serial
+// or LAN (with mTLS when advertised). The caller must Close the client.
+func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+	client := liteclient.NewWendyLiteClient()
+	if device.ConnectionInfo["type"] == "USB" {
+		serialPort := device.ConnectionInfo["serialPort"]
+		if serialPort == "" {
+			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
+		}
+		if err := client.ConnectToSerial(serialPort); err != nil {
+			return nil, fmt.Errorf("connect to device via serial: %w", err)
+		}
+	} else if device.ConnectionInfo["type"] == "LAN" {
+		ip := device.ConnectionInfo["ip"]
+		port := device.ConnectionInfo["port"]
+		if ip == "" || port == "" {
+			return nil, fmt.Errorf("wendy-lite provider: missing IP or port in connection info")
+		}
+		addr := net.JoinHostPort(ip, port)
+		if device.ConnectionInfo["mtls"] == "true" {
+			certInfos, err := loadAllCLICerts()
+			if err != nil {
+				return nil, fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
+			}
+			var connectErrs []error
+			connected := false
+			for _, certInfo := range certInfos {
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				if err != nil {
+					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+				}
+				rootCAs := x509.NewCertPool()
+				if certInfo.PemCertificateChain != "" {
+					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+				}
+				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
+					connectErrs = append(connectErrs, err)
+				} else {
+					connected = true
+					break
+				}
+			}
+			if !connected {
+				var b strings.Builder
+				fmt.Fprintf(&b, "Wendy Lite connection error")
+				for i, e := range connectErrs {
+					if i == 0 {
+						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+					} else {
+						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+					}
+				}
+				return nil, errors.New(b.String())
+			}
+		} else {
+			if err := client.ConnectInsecure(addr); err != nil {
+				return nil, fmt.Errorf("connect to device: %w", err)
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
+	}
+	return client, nil
 }
 
 func loadAllCLICerts() ([]config.CertificateInfo, error) {

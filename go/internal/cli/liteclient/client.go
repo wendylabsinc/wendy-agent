@@ -42,6 +42,22 @@ type DeviceIdentity struct {
 	DisplayName string
 }
 
+type DeviceInfo struct {
+	OS               string
+	OSVersion        string
+	CPUArchitecture  string
+	Board            string
+	WasmAppSupport   bool
+	NativeAppSupport bool
+}
+
+type AppType int
+
+const (
+	AppTypeWasm AppType = iota
+	AppTypeNative
+)
+
 type WendyLiteClient struct {
 	conn                io.ReadWriteCloser
 	isSerial            bool
@@ -238,7 +254,17 @@ func (c *WendyLiteClient) ResetTargetDevice() error {
 	return nil
 }
 
-func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total uint32)) error {
+func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(written, total uint32)) error {
+	var pbAppType wendypb.WendyComAppType
+	switch appType {
+	case AppTypeWasm:
+		pbAppType = wendypb.WendyComAppType_WENDY_COM_APP_TYPE_WASM
+	case AppTypeNative:
+		pbAppType = wendypb.WendyComAppType_WENDY_COM_APP_TYPE_NATIVE
+	default:
+		return fmt.Errorf("unknown app type %d", appType)
+	}
+
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("open: %w", err)
@@ -250,7 +276,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 		return fmt.Errorf("stat: %w", err)
 	}
 	if info.Size() > math.MaxUint32 {
-		return fmt.Errorf("WASM file too large: %d bytes exceeds 4 GiB limit", info.Size())
+		return fmt.Errorf("app file too large: %d bytes exceeds 4 GiB limit", info.Size())
 	}
 	size := uint32(info.Size())
 
@@ -258,7 +284,7 @@ func (c *WendyLiteClient) PushApp(path string, onProgress func(written, total ui
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
 		RequestId: c.requestIdGen,
 		Params: &wendypb.WendyComCommand_AppPushBegin{
-			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size},
+			AppPushBegin: &wendypb.WendyComAppPushBeginParams{Size: size, AppType: pbAppType},
 		},
 	}, 0)
 	if err != nil {
@@ -375,6 +401,34 @@ func (c *WendyLiteClient) GetDeviceIdentity(timeout time.Duration) (*DeviceIdent
 		return nil, fmt.Errorf("device returned no identity")
 	}
 	return &DeviceIdentity{ID: di.GetId(), Name: di.GetName(), DisplayName: di.GetDisplayName()}, nil
+}
+
+func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, error) {
+	c.requestIdGen++
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen,
+		Params: &wendypb.WendyComCommand_GetDeviceInfo{
+			GetDeviceInfo: &wendypb.WendyComGetDeviceInfoParams{},
+		},
+	}, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Result != wendypb.WendyComResult_WENDY_COM_RESULT_OK {
+		return nil, fmt.Errorf("device returned error %d", resp.Result)
+	}
+	di := resp.GetDeviceInfo()
+	if di == nil {
+		return nil, fmt.Errorf("device returned no info")
+	}
+	return &DeviceInfo{
+		OS:               di.GetOs(),
+		OSVersion:        di.GetOsVersion(),
+		CPUArchitecture:  di.GetCpuArchitecture(),
+		Board:            di.GetBoard(),
+		WasmAppSupport:   di.GetWasmAppSupport(),
+		NativeAppSupport: di.GetNativeAppSupport(),
+	}, nil
 }
 
 func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time.Duration) (*wendypb.WendyComResponse, error) {

@@ -251,3 +251,7 @@ func (p *AndroidProvider) Stop(ctx context.Context, app *BuiltApp) error {
 	cmd := exec.CommandContext(ctx, "adb", stopArgs...)
 	return cmd.Run()
 }
+
+func (p *AndroidProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
+}

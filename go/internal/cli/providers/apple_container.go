@@ -351,6 +351,10 @@ func (p *AppleContainerProvider) Stop(ctx context.Context, app *BuiltApp) error 
 	return nil
 }
 
+func (p *AppleContainerProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
+}
+
 func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, name string) error {
 	if err := validateAppleContainerContainerName(name); err != nil {
 		return err

@@ -15,9 +15,16 @@ message WendyComProtocolVersionParams {
 message WendyComPingParams {}
 message WendyComRebootParams {}
 
+// Type of app pushed by WENDY_COM_CMD_APP_PUSH_BEGIN — wasm when omitted.
+enum WendyComAppType {
+    WENDY_COM_APP_TYPE_WASM   = 0;
+    WENDY_COM_APP_TYPE_NATIVE = 1;
+}
+
 // Params for WENDY_COM_CMD_APP_PUSH_BEGIN
 message WendyComAppPushBeginParams {
-    uint32 size = 1;
+    uint32          size     = 1;
+    WendyComAppType app_type = 2;
 }
 
 // Params for WENDY_COM_CMD_APP_PUSH_DATA
@@ -38,6 +45,20 @@ message WendyComDeviceIdentity {
     string display_name = 3;
 }
 
+message WendyComGetDeviceInfoParams {}
+
+message WendyComDeviceInfo {
+    string os = 1; // typically "wendy-lite"
+    string os_version = 2;
+    string cpu_architecture = 3;
+    // Board can be "esp32c6", but this doesn't mean that this field contains
+    // the SoC name. Here "esp32c6" means "generic esp32c6 board". Should
+    // probably be replaced by "esp32c6-generic" in the future.
+    string board = 4;
+    bool wasm_app_support = 5;
+    bool native_app_support = 6;
+}
+
 // Top-level command message — the oneof variant identifies the command.
 message WendyComCommand {
     uint32 request_id = 1;
@@ -51,6 +72,7 @@ message WendyComCommand {
         WendyComAppStartParams             app_start             = 8;
         WendyComAppStopParams              app_stop              = 9;
         WendyComGetDeviceIdentityParams    get_device_identity   = 10;
+        WendyComGetDeviceInfoParams        get_device_info       = 11;
     }
 }
 
@@ -60,6 +82,8 @@ enum WendyComResult {
     WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2;
     WENDY_COM_RESULT_BAD_STATE            = 3;
     WENDY_COM_RESULT_BUSY                 = 4;
+    WENDY_COM_RESULT_BAD_APP_TYPE         = 5;
+    WENDY_COM_RESULT_BAD_APP_SIZE         = 6;
 }
 
 // Response to a WendyComCommand — request_id matches the request.
@@ -69,5 +93,6 @@ message WendyComResponse {
     oneof data {
         WendyComProtocolVersion  protocol_version  = 3;
         WendyComDeviceIdentity   device_identity   = 4;
+        WendyComDeviceInfo       device_info       = 5;
     }
 }

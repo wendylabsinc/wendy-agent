@@ -36,6 +36,20 @@ type DeviceProvider interface {
 	Run(ctx context.Context, app *BuiltApp, detach bool, output chan<- RunOutput) error
 	// Stop terminates a running application.
 	Stop(ctx context.Context, app *BuiltApp) error
+	// GetDeviceInfo queries the device for identifying information.
+	// Providers that cannot report device info return (nil, nil).
+	GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error)
+}
+
+// ProviderDeviceInfo describes a device as reported by its provider.
+type ProviderDeviceInfo struct {
+	AgentVersion     string
+	OS               string
+	OSVersion        string
+	CPUArchitecture  string // e.g. "riscv" for wendy-lite ESP32 boards
+	DeviceType       string // e.g. the board name for wendy-lite
+	WasmAppSupport   bool
+	NativeAppSupport bool
 }
 
 // BuiltApp is the result of a successful Build. The opaque Context field
