@@ -311,6 +311,169 @@ func (s *SimService) SetJointTargets(ctx context.Context, req *simpb.SetJointTar
 	return resp, nil
 }
 
+func (s *SimService) Step(ctx context.Context, req *simpb.StepRequest) (*simpb.StepResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Step(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+// --- Interactive tooling ---
+
+func (s *SimService) SetClock(ctx context.Context, req *simpb.SetClockRequest) (*simpb.SetClockResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.SetClock(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) ApplyForce(ctx context.Context, req *simpb.ApplyForceRequest) (*simpb.ApplyForceResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.ApplyForce(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) Teleport(ctx context.Context, req *simpb.TeleportRequest) (*simpb.TeleportResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Teleport(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) SaveSnapshot(ctx context.Context, req *simpb.SaveSnapshotRequest) (*simpb.SaveSnapshotResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.SaveSnapshot(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) RestoreSnapshot(ctx context.Context, req *simpb.RestoreSnapshotRequest) (*simpb.RestoreSnapshotResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.RestoreSnapshot(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) ReadSensors(ctx context.Context, req *simpb.ReadSensorsRequest) (*simpb.ReadSensorsResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.ReadSensors(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) EditScene(ctx context.Context, req *simpb.EditSceneRequest) (*simpb.EditSceneResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.EditScene(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) LoadPolicy(stream agentpbv2.WendySimService_LoadPolicyServer) error {
+	client, err := s.client()
+	if err != nil {
+		return err
+	}
+	backendStream, err := client.LoadPolicy(stream.Context())
+	if err != nil {
+		return s.backendErr(err)
+	}
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return recvErr
+		}
+		if sendErr := backendStream.Send(chunk); sendErr != nil {
+			// Send failing means the backend closed the stream; the real
+			// error comes from CloseAndRecv.
+			break
+		}
+	}
+	resp, err := backendStream.CloseAndRecv()
+	if err != nil {
+		return s.backendErr(err)
+	}
+	return stream.SendAndClose(resp)
+}
+
+func (s *SimService) ClearPolicy(ctx context.Context, req *simpb.ClearPolicyRequest) (*simpb.ClearPolicyResponse, error) {
+	client, err := s.client()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.ClearPolicy(ctx, req)
+	if err != nil {
+		return nil, s.backendErr(err)
+	}
+	return resp, nil
+}
+
+func (s *SimService) RenderVideo(req *simpb.RenderVideoRequest, stream agentpbv2.WendySimService_RenderVideoServer) error {
+	client, err := s.client()
+	if err != nil {
+		return err
+	}
+	backendStream, err := client.RenderVideo(stream.Context(), req)
+	if err != nil {
+		return s.backendErr(err)
+	}
+	for {
+		chunk, recvErr := backendStream.Recv()
+		if recvErr == io.EOF {
+			return nil
+		}
+		if recvErr != nil {
+			return s.backendErr(recvErr)
+		}
+		if sendErr := stream.Send(chunk); sendErr != nil {
+			return sendErr
+		}
+	}
+}
+
 // --- Tasks & replay ---
 
 func (s *SimService) RunTask(req *agentpbv2.RunSimTaskRequest, stream agentpbv2.WendySimService_RunTaskServer) error {

@@ -37,6 +37,125 @@ type fakeRobotBackend struct {
 	state        *simpb.GetStateResponse
 	// replays maps replay id -> chunks served by GetReplay.
 	replays map[string][][]byte
+
+	// Interactive tooling captures.
+	lastSetClock   *simpb.SetClockRequest
+	lastApplyForce *simpb.ApplyForceRequest
+	lastTeleport   *simpb.TeleportRequest
+	snapshotWorlds []string
+	lastRestore    *simpb.RestoreSnapshotRequest
+	sensorReadings []*simpb.SensorReading
+	lastEditScene  *simpb.EditSceneRequest
+	lastStep       *simpb.StepRequest
+	policySource   *simpb.PolicySource
+	policyData     []byte
+	clearedPolicy  *simpb.ClearPolicyRequest
+	// videoChunks are the chunks served by RenderVideo.
+	videoChunks [][]byte
+	lastRender  *simpb.RenderVideoRequest
+}
+
+func (f *fakeRobotBackend) SetClock(_ context.Context, req *simpb.SetClockRequest) (*simpb.SetClockResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastSetClock = req
+	return &simpb.SetClockResponse{Paused: req.GetPaused(), SpeedFactor: req.GetSpeedFactor()}, nil
+}
+
+func (f *fakeRobotBackend) ApplyForce(_ context.Context, req *simpb.ApplyForceRequest) (*simpb.ApplyForceResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastApplyForce = req
+	return &simpb.ApplyForceResponse{}, nil
+}
+
+func (f *fakeRobotBackend) Teleport(_ context.Context, req *simpb.TeleportRequest) (*simpb.TeleportResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastTeleport = req
+	return &simpb.TeleportResponse{}, nil
+}
+
+func (f *fakeRobotBackend) SaveSnapshot(_ context.Context, req *simpb.SaveSnapshotRequest) (*simpb.SaveSnapshotResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.snapshotWorlds = append(f.snapshotWorlds, req.GetWorldId())
+	return &simpb.SaveSnapshotResponse{SnapshotId: fmt.Sprintf("snap-%d", len(f.snapshotWorlds))}, nil
+}
+
+func (f *fakeRobotBackend) RestoreSnapshot(_ context.Context, req *simpb.RestoreSnapshotRequest) (*simpb.RestoreSnapshotResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastRestore = req
+	return &simpb.RestoreSnapshotResponse{}, nil
+}
+
+func (f *fakeRobotBackend) ReadSensors(_ context.Context, _ *simpb.ReadSensorsRequest) (*simpb.ReadSensorsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return &simpb.ReadSensorsResponse{Readings: f.sensorReadings}, nil
+}
+
+func (f *fakeRobotBackend) EditScene(_ context.Context, req *simpb.EditSceneRequest) (*simpb.EditSceneResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastEditScene = req
+	return &simpb.EditSceneResponse{}, nil
+}
+
+func (f *fakeRobotBackend) Step(_ context.Context, req *simpb.StepRequest) (*simpb.StepResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastStep = req
+	return &simpb.StepResponse{SimTimeS: req.GetSeconds()}, nil
+}
+
+func (f *fakeRobotBackend) LoadPolicy(stream grpc.ClientStreamingServer[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]) error {
+	var source *simpb.PolicySource
+	var data bytes.Buffer
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch p := chunk.GetPayload().(type) {
+		case *simpb.LoadPolicyChunk_Source:
+			source = p.Source
+		case *simpb.LoadPolicyChunk_Data:
+			data.Write(p.Data)
+		}
+	}
+	if source == nil {
+		return status.Error(codes.InvalidArgument, "first chunk must carry the policy source")
+	}
+	f.mu.Lock()
+	f.policySource = source
+	f.policyData = data.Bytes()
+	f.mu.Unlock()
+	return stream.SendAndClose(&simpb.LoadPolicyResponse{PolicyId: "policy-1"})
+}
+
+func (f *fakeRobotBackend) ClearPolicy(_ context.Context, req *simpb.ClearPolicyRequest) (*simpb.ClearPolicyResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearedPolicy = req
+	return &simpb.ClearPolicyResponse{}, nil
+}
+
+func (f *fakeRobotBackend) RenderVideo(req *simpb.RenderVideoRequest, stream grpc.ServerStreamingServer[simpb.VideoChunk]) error {
+	f.mu.Lock()
+	f.lastRender = req
+	chunks := f.videoChunks
+	f.mu.Unlock()
+	for _, c := range chunks {
+		if err := stream.Send(&simpb.VideoChunk{Data: c}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *fakeRobotBackend) CreateWorld(_ context.Context, req *simpb.CreateWorldRequest) (*simpb.CreateWorldResponse, error) {
@@ -438,6 +557,270 @@ func TestSimService_BackendDialFailureIsUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "WENDY_SIM_BACKEND_ADDR") {
 		t.Errorf("error %q should mention WENDY_SIM_BACKEND_ADDR", err.Error())
+	}
+}
+
+func TestSimService_SetClockPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	resp, err := client.SetClock(context.Background(), &simpb.SetClockRequest{
+		WorldId: "world-1", Paused: true, SpeedFactor: 4,
+	})
+	if err != nil {
+		t.Fatalf("SetClock: %v", err)
+	}
+	if !resp.GetPaused() || resp.GetSpeedFactor() != 4 {
+		t.Errorf("response = %+v; want paused=true speed=4", resp)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.lastSetClock.GetWorldId() != "world-1" || !backend.lastSetClock.GetPaused() ||
+		backend.lastSetClock.GetSpeedFactor() != 4 {
+		t.Errorf("forwarded request = %+v", backend.lastSetClock)
+	}
+}
+
+func TestSimService_ApplyForcePassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	if _, err := client.ApplyForce(context.Background(), &simpb.ApplyForceRequest{
+		WorldId: "world-1", RobotId: "robot-1", FxN: 30, FyN: -5, FzN: 1, DurationS: 0.2,
+	}); err != nil {
+		t.Fatalf("ApplyForce: %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	got := backend.lastApplyForce
+	if got.GetRobotId() != "robot-1" || got.GetFxN() != 30 || got.GetFyN() != -5 ||
+		got.GetFzN() != 1 || got.GetDurationS() != 0.2 {
+		t.Errorf("forwarded request = %+v", got)
+	}
+}
+
+func TestSimService_TeleportPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	if _, err := client.Teleport(context.Background(), &simpb.TeleportRequest{
+		WorldId: "world-1", RobotId: "robot-1",
+		Pose:         &simpb.Pose{X: 1, Y: 2, Z: 0.5, Qw: 1},
+		ZeroVelocity: true,
+	}); err != nil {
+		t.Fatalf("Teleport: %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	got := backend.lastTeleport
+	if got.GetPose().GetX() != 1 || got.GetPose().GetZ() != 0.5 || !got.GetZeroVelocity() {
+		t.Errorf("forwarded request = %+v", got)
+	}
+}
+
+func TestSimService_SnapshotSaveAndRestorePassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+	ctx := context.Background()
+
+	saved, err := client.SaveSnapshot(ctx, &simpb.SaveSnapshotRequest{WorldId: "world-1"})
+	if err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if saved.GetSnapshotId() != "snap-1" {
+		t.Errorf("snapshot_id = %q; want snap-1", saved.GetSnapshotId())
+	}
+
+	if _, err := client.RestoreSnapshot(ctx, &simpb.RestoreSnapshotRequest{
+		WorldId: "world-1", SnapshotId: saved.GetSnapshotId(),
+	}); err != nil {
+		t.Fatalf("RestoreSnapshot: %v", err)
+	}
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if len(backend.snapshotWorlds) != 1 || backend.snapshotWorlds[0] != "world-1" {
+		t.Errorf("snapshot worlds = %v; want [world-1]", backend.snapshotWorlds)
+	}
+	if backend.lastRestore.GetSnapshotId() != "snap-1" {
+		t.Errorf("restored snapshot = %q; want snap-1", backend.lastRestore.GetSnapshotId())
+	}
+}
+
+func TestSimService_ReadSensorsPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{
+		sensorReadings: []*simpb.SensorReading{
+			{Name: "imu_gyro", Type: "gyro", Values: []float64{0.1, -0.2, 0.05}},
+			{Name: "touch_fl", Type: "touch", Values: []float64{1}},
+		},
+	}
+	client := startSimService(t, backend)
+
+	resp, err := client.ReadSensors(context.Background(), &simpb.ReadSensorsRequest{
+		WorldId: "world-1", RobotId: "robot-1",
+	})
+	if err != nil {
+		t.Fatalf("ReadSensors: %v", err)
+	}
+	if len(resp.GetReadings()) != 2 {
+		t.Fatalf("len(readings) = %d; want 2", len(resp.GetReadings()))
+	}
+	if r := resp.GetReadings()[0]; r.GetName() != "imu_gyro" || r.GetType() != "gyro" ||
+		len(r.GetValues()) != 3 || r.GetValues()[1] != -0.2 {
+		t.Errorf("readings[0] = %+v", r)
+	}
+}
+
+func TestSimService_EditScenePassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+	ctx := context.Background()
+
+	if _, err := client.EditScene(ctx, &simpb.EditSceneRequest{
+		WorldId: "world-1",
+		Op: &simpb.EditSceneRequest_AddBox{AddBox: &simpb.SceneBoxSpec{
+			Id: "crate", Position: []float64{1, 0, 0.25}, Size: []float64{0.5, 0.5, 0.5},
+		}},
+	}); err != nil {
+		t.Fatalf("EditScene(add_box): %v", err)
+	}
+	backend.mu.Lock()
+	box := backend.lastEditScene.GetAddBox()
+	backend.mu.Unlock()
+	if box.GetId() != "crate" || len(box.GetPosition()) != 3 || box.GetSize()[2] != 0.5 {
+		t.Errorf("forwarded add_box = %+v", box)
+	}
+
+	if _, err := client.EditScene(ctx, &simpb.EditSceneRequest{
+		WorldId: "world-1",
+		Op:      &simpb.EditSceneRequest_RemoveId{RemoveId: "crate"},
+	}); err != nil {
+		t.Fatalf("EditScene(remove): %v", err)
+	}
+	backend.mu.Lock()
+	removeID := backend.lastEditScene.GetRemoveId()
+	backend.mu.Unlock()
+	if removeID != "crate" {
+		t.Errorf("forwarded remove_id = %q; want crate", removeID)
+	}
+}
+
+func TestSimService_StepPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	resp, err := client.Step(context.Background(), &simpb.StepRequest{WorldId: "world-1", Seconds: 2.5})
+	if err != nil {
+		t.Fatalf("Step: %v", err)
+	}
+	if resp.GetSimTimeS() != 2.5 {
+		t.Errorf("sim_time_s = %v; want 2.5", resp.GetSimTimeS())
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.lastStep.GetWorldId() != "world-1" || backend.lastStep.GetSeconds() != 2.5 {
+		t.Errorf("forwarded request = %+v", backend.lastStep)
+	}
+}
+
+func TestSimService_LoadPolicyStreamPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	stream, err := client.LoadPolicy(context.Background())
+	if err != nil {
+		t.Fatalf("LoadPolicy: %v", err)
+	}
+	if err := stream.Send(&simpb.LoadPolicyChunk{
+		Payload: &simpb.LoadPolicyChunk_Source{Source: &simpb.PolicySource{
+			WorldId: "world-1", RobotId: "robot-1", Format: "onnx",
+		}},
+	}); err != nil {
+		t.Fatalf("Send(source): %v", err)
+	}
+	parts := [][]byte{[]byte("onnx-head|"), bytes.Repeat([]byte{0x7f}, 2048), []byte("|onnx-tail")}
+	for _, part := range parts {
+		if err := stream.Send(&simpb.LoadPolicyChunk{
+			Payload: &simpb.LoadPolicyChunk_Data{Data: part},
+		}); err != nil {
+			t.Fatalf("Send(data): %v", err)
+		}
+	}
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		t.Fatalf("CloseAndRecv: %v", err)
+	}
+	if resp.GetPolicyId() != "policy-1" {
+		t.Errorf("policy_id = %q; want policy-1", resp.GetPolicyId())
+	}
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.policySource.GetWorldId() != "world-1" || backend.policySource.GetRobotId() != "robot-1" ||
+		backend.policySource.GetFormat() != "onnx" {
+		t.Errorf("backend policy source = %+v", backend.policySource)
+	}
+	if want := bytes.Join(parts, nil); !bytes.Equal(backend.policyData, want) {
+		t.Errorf("relayed policy differs: got %d bytes, want %d", len(backend.policyData), len(want))
+	}
+}
+
+func TestSimService_ClearPolicyPassthrough(t *testing.T) {
+	backend := &fakeRobotBackend{}
+	client := startSimService(t, backend)
+
+	if _, err := client.ClearPolicy(context.Background(), &simpb.ClearPolicyRequest{
+		WorldId: "world-1", RobotId: "robot-1",
+	}); err != nil {
+		t.Fatalf("ClearPolicy: %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.clearedPolicy.GetWorldId() != "world-1" || backend.clearedPolicy.GetRobotId() != "robot-1" {
+		t.Errorf("forwarded request = %+v", backend.clearedPolicy)
+	}
+}
+
+func TestSimService_RenderVideoRelaysChunks(t *testing.T) {
+	chunks := [][]byte{
+		[]byte("mp4-header|"),
+		bytes.Repeat([]byte{0x11}, 4000),
+		[]byte("|mp4-footer"),
+	}
+	backend := &fakeRobotBackend{videoChunks: chunks}
+	client := startSimService(t, backend)
+
+	stream, err := client.RenderVideo(context.Background(), &simpb.RenderVideoRequest{
+		WorldId: "world-1", RobotId: "robot-1", DurationS: 5, Fps: 15, Width: 640, Height: 480,
+	})
+	if err != nil {
+		t.Fatalf("RenderVideo: %v", err)
+	}
+
+	var got bytes.Buffer
+	recvCount := 0
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		recvCount++
+		got.Write(chunk.GetData())
+	}
+	if recvCount != len(chunks) {
+		t.Errorf("received %d chunks; want %d", recvCount, len(chunks))
+	}
+	if want := bytes.Join(chunks, nil); !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("relayed video differs: got %d bytes, want %d", got.Len(), len(want))
+	}
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.lastRender.GetDurationS() != 5 || backend.lastRender.GetFps() != 15 {
+		t.Errorf("forwarded request = %+v", backend.lastRender)
 	}
 }
 
