@@ -129,7 +129,8 @@ func (WendyComResult) EnumDescriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{1}
 }
 
-// Response data for WENDY_COM_CMD_GET_PROTOCOL_VERSION
+// Protocol version, exchanged in the handshake. The major number must match
+// on both sides; minor is informational.
 type WendyComProtocolVersion struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Major         uint32                 `protobuf:"varint,1,opt,name=major,proto3" json:"major,omitempty"`
@@ -182,29 +183,32 @@ func (x *WendyComProtocolVersion) GetMinor() uint32 {
 	return 0
 }
 
-// Command parameter messages — empty ones serve as presence markers.
-type WendyComProtocolVersionParams struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Major         uint32                 `protobuf:"varint,1,opt,name=major,proto3" json:"major,omitempty"`
-	Minor         uint32                 `protobuf:"varint,2,opt,name=minor,proto3" json:"minor,omitempty"`
+// First message in each direction after connect. The host sends its version
+// with a fresh handshake_id; the device echoes handshake_id with its own
+// version, then eventually closes the connection if the host's major version
+// is unsupported. Commands are rejected until the handshake completes.
+type WendyComHandshake struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	HandshakeId   uint32                   `protobuf:"varint,1,opt,name=handshake_id,json=handshakeId,proto3" json:"handshake_id,omitempty"`
+	Version       *WendyComProtocolVersion `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *WendyComProtocolVersionParams) Reset() {
-	*x = WendyComProtocolVersionParams{}
+func (x *WendyComHandshake) Reset() {
+	*x = WendyComHandshake{}
 	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *WendyComProtocolVersionParams) String() string {
+func (x *WendyComHandshake) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*WendyComProtocolVersionParams) ProtoMessage() {}
+func (*WendyComHandshake) ProtoMessage() {}
 
-func (x *WendyComProtocolVersionParams) ProtoReflect() protoreflect.Message {
+func (x *WendyComHandshake) ProtoReflect() protoreflect.Message {
 	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -216,25 +220,26 @@ func (x *WendyComProtocolVersionParams) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use WendyComProtocolVersionParams.ProtoReflect.Descriptor instead.
-func (*WendyComProtocolVersionParams) Descriptor() ([]byte, []int) {
+// Deprecated: Use WendyComHandshake.ProtoReflect.Descriptor instead.
+func (*WendyComHandshake) Descriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *WendyComProtocolVersionParams) GetMajor() uint32 {
+func (x *WendyComHandshake) GetHandshakeId() uint32 {
 	if x != nil {
-		return x.Major
+		return x.HandshakeId
 	}
 	return 0
 }
 
-func (x *WendyComProtocolVersionParams) GetMinor() uint32 {
+func (x *WendyComHandshake) GetVersion() *WendyComProtocolVersion {
 	if x != nil {
-		return x.Minor
+		return x.Version
 	}
-	return 0
+	return nil
 }
 
+// Command parameter messages — empty ones serve as presence markers.
 type WendyComPingParams struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -740,13 +745,12 @@ func (x *WendyComDeviceInfo) GetNativeAppSupport() bool {
 	return false
 }
 
-// Top-level command message — the oneof variant identifies the command.
+// Command sent host -> device — the oneof variant identifies the command.
 type WendyComCommand struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	RequestId uint32                 `protobuf:"varint,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 	// Types that are valid to be assigned to Params:
 	//
-	//	*WendyComCommand_ProtocolVersion
 	//	*WendyComCommand_Ping
 	//	*WendyComCommand_Reboot
 	//	*WendyComCommand_AppPushBegin
@@ -801,15 +805,6 @@ func (x *WendyComCommand) GetRequestId() uint32 {
 func (x *WendyComCommand) GetParams() isWendyComCommand_Params {
 	if x != nil {
 		return x.Params
-	}
-	return nil
-}
-
-func (x *WendyComCommand) GetProtocolVersion() *WendyComProtocolVersionParams {
-	if x != nil {
-		if x, ok := x.Params.(*WendyComCommand_ProtocolVersion); ok {
-			return x.ProtocolVersion
-		}
 	}
 	return nil
 }
@@ -899,47 +894,41 @@ type isWendyComCommand_Params interface {
 	isWendyComCommand_Params()
 }
 
-type WendyComCommand_ProtocolVersion struct {
-	ProtocolVersion *WendyComProtocolVersionParams `protobuf:"bytes,2,opt,name=protocol_version,json=protocolVersion,proto3,oneof"`
-}
-
 type WendyComCommand_Ping struct {
-	Ping *WendyComPingParams `protobuf:"bytes,3,opt,name=ping,proto3,oneof"`
+	Ping *WendyComPingParams `protobuf:"bytes,2,opt,name=ping,proto3,oneof"`
 }
 
 type WendyComCommand_Reboot struct {
-	Reboot *WendyComRebootParams `protobuf:"bytes,4,opt,name=reboot,proto3,oneof"`
+	Reboot *WendyComRebootParams `protobuf:"bytes,3,opt,name=reboot,proto3,oneof"`
 }
 
 type WendyComCommand_AppPushBegin struct {
-	AppPushBegin *WendyComAppPushBeginParams `protobuf:"bytes,5,opt,name=app_push_begin,json=appPushBegin,proto3,oneof"`
+	AppPushBegin *WendyComAppPushBeginParams `protobuf:"bytes,4,opt,name=app_push_begin,json=appPushBegin,proto3,oneof"`
 }
 
 type WendyComCommand_AppPushData struct {
-	AppPushData *WendyComAppPushDataParams `protobuf:"bytes,6,opt,name=app_push_data,json=appPushData,proto3,oneof"`
+	AppPushData *WendyComAppPushDataParams `protobuf:"bytes,5,opt,name=app_push_data,json=appPushData,proto3,oneof"`
 }
 
 type WendyComCommand_AppPushEnd struct {
-	AppPushEnd *WendyComAppPushEndParams `protobuf:"bytes,7,opt,name=app_push_end,json=appPushEnd,proto3,oneof"`
+	AppPushEnd *WendyComAppPushEndParams `protobuf:"bytes,6,opt,name=app_push_end,json=appPushEnd,proto3,oneof"`
 }
 
 type WendyComCommand_AppStart struct {
-	AppStart *WendyComAppStartParams `protobuf:"bytes,8,opt,name=app_start,json=appStart,proto3,oneof"`
+	AppStart *WendyComAppStartParams `protobuf:"bytes,7,opt,name=app_start,json=appStart,proto3,oneof"`
 }
 
 type WendyComCommand_AppStop struct {
-	AppStop *WendyComAppStopParams `protobuf:"bytes,9,opt,name=app_stop,json=appStop,proto3,oneof"`
+	AppStop *WendyComAppStopParams `protobuf:"bytes,8,opt,name=app_stop,json=appStop,proto3,oneof"`
 }
 
 type WendyComCommand_GetDeviceIdentity struct {
-	GetDeviceIdentity *WendyComGetDeviceIdentityParams `protobuf:"bytes,10,opt,name=get_device_identity,json=getDeviceIdentity,proto3,oneof"`
+	GetDeviceIdentity *WendyComGetDeviceIdentityParams `protobuf:"bytes,9,opt,name=get_device_identity,json=getDeviceIdentity,proto3,oneof"`
 }
 
 type WendyComCommand_GetDeviceInfo struct {
-	GetDeviceInfo *WendyComGetDeviceInfoParams `protobuf:"bytes,11,opt,name=get_device_info,json=getDeviceInfo,proto3,oneof"`
+	GetDeviceInfo *WendyComGetDeviceInfoParams `protobuf:"bytes,10,opt,name=get_device_info,json=getDeviceInfo,proto3,oneof"`
 }
-
-func (*WendyComCommand_ProtocolVersion) isWendyComCommand_Params() {}
 
 func (*WendyComCommand_Ping) isWendyComCommand_Params() {}
 
@@ -966,7 +955,6 @@ type WendyComResponse struct {
 	Result    WendyComResult         `protobuf:"varint,2,opt,name=result,proto3,enum=WendyComResult" json:"result,omitempty"`
 	// Types that are valid to be assigned to Data:
 	//
-	//	*WendyComResponse_ProtocolVersion
 	//	*WendyComResponse_DeviceIdentity
 	//	*WendyComResponse_DeviceInfo
 	Data          isWendyComResponse_Data `protobuf_oneof:"data"`
@@ -1025,15 +1013,6 @@ func (x *WendyComResponse) GetData() isWendyComResponse_Data {
 	return nil
 }
 
-func (x *WendyComResponse) GetProtocolVersion() *WendyComProtocolVersion {
-	if x != nil {
-		if x, ok := x.Data.(*WendyComResponse_ProtocolVersion); ok {
-			return x.ProtocolVersion
-		}
-	}
-	return nil
-}
-
 func (x *WendyComResponse) GetDeviceIdentity() *WendyComDeviceIdentity {
 	if x != nil {
 		if x, ok := x.Data.(*WendyComResponse_DeviceIdentity); ok {
@@ -1056,23 +1035,178 @@ type isWendyComResponse_Data interface {
 	isWendyComResponse_Data()
 }
 
-type WendyComResponse_ProtocolVersion struct {
-	ProtocolVersion *WendyComProtocolVersion `protobuf:"bytes,3,opt,name=protocol_version,json=protocolVersion,proto3,oneof"`
-}
-
 type WendyComResponse_DeviceIdentity struct {
-	DeviceIdentity *WendyComDeviceIdentity `protobuf:"bytes,4,opt,name=device_identity,json=deviceIdentity,proto3,oneof"`
+	DeviceIdentity *WendyComDeviceIdentity `protobuf:"bytes,3,opt,name=device_identity,json=deviceIdentity,proto3,oneof"`
 }
 
 type WendyComResponse_DeviceInfo struct {
-	DeviceInfo *WendyComDeviceInfo `protobuf:"bytes,5,opt,name=device_info,json=deviceInfo,proto3,oneof"`
+	DeviceInfo *WendyComDeviceInfo `protobuf:"bytes,4,opt,name=device_info,json=deviceInfo,proto3,oneof"`
 }
-
-func (*WendyComResponse_ProtocolVersion) isWendyComResponse_Data() {}
 
 func (*WendyComResponse_DeviceIdentity) isWendyComResponse_Data() {}
 
 func (*WendyComResponse_DeviceInfo) isWendyComResponse_Data() {}
+
+// Unsolicited device -> host or host -> device message.
+type WendyComEvent struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EventId       uint32                 `protobuf:"varint,1,opt,name=event_id,json=eventId,proto3" json:"event_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WendyComEvent) Reset() {
+	*x = WendyComEvent{}
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WendyComEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WendyComEvent) ProtoMessage() {}
+
+func (x *WendyComEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WendyComEvent.ProtoReflect.Descriptor instead.
+func (*WendyComEvent) Descriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *WendyComEvent) GetEventId() uint32 {
+	if x != nil {
+		return x.EventId
+	}
+	return 0
+}
+
+// Base wrapper — every frame body, in either direction, is exactly one of
+// these.
+type WendyComMessage struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Msg:
+	//
+	//	*WendyComMessage_Handshake
+	//	*WendyComMessage_Command
+	//	*WendyComMessage_Response
+	//	*WendyComMessage_Event
+	Msg           isWendyComMessage_Msg `protobuf_oneof:"msg"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WendyComMessage) Reset() {
+	*x = WendyComMessage{}
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WendyComMessage) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WendyComMessage) ProtoMessage() {}
+
+func (x *WendyComMessage) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WendyComMessage.ProtoReflect.Descriptor instead.
+func (*WendyComMessage) Descriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *WendyComMessage) GetMsg() isWendyComMessage_Msg {
+	if x != nil {
+		return x.Msg
+	}
+	return nil
+}
+
+func (x *WendyComMessage) GetHandshake() *WendyComHandshake {
+	if x != nil {
+		if x, ok := x.Msg.(*WendyComMessage_Handshake); ok {
+			return x.Handshake
+		}
+	}
+	return nil
+}
+
+func (x *WendyComMessage) GetCommand() *WendyComCommand {
+	if x != nil {
+		if x, ok := x.Msg.(*WendyComMessage_Command); ok {
+			return x.Command
+		}
+	}
+	return nil
+}
+
+func (x *WendyComMessage) GetResponse() *WendyComResponse {
+	if x != nil {
+		if x, ok := x.Msg.(*WendyComMessage_Response); ok {
+			return x.Response
+		}
+	}
+	return nil
+}
+
+func (x *WendyComMessage) GetEvent() *WendyComEvent {
+	if x != nil {
+		if x, ok := x.Msg.(*WendyComMessage_Event); ok {
+			return x.Event
+		}
+	}
+	return nil
+}
+
+type isWendyComMessage_Msg interface {
+	isWendyComMessage_Msg()
+}
+
+type WendyComMessage_Handshake struct {
+	Handshake *WendyComHandshake `protobuf:"bytes,1,opt,name=handshake,proto3,oneof"`
+}
+
+type WendyComMessage_Command struct {
+	Command *WendyComCommand `protobuf:"bytes,2,opt,name=command,proto3,oneof"`
+}
+
+type WendyComMessage_Response struct {
+	Response *WendyComResponse `protobuf:"bytes,3,opt,name=response,proto3,oneof"`
+}
+
+type WendyComMessage_Event struct {
+	Event *WendyComEvent `protobuf:"bytes,4,opt,name=event,proto3,oneof"`
+}
+
+func (*WendyComMessage_Handshake) isWendyComMessage_Msg() {}
+
+func (*WendyComMessage_Command) isWendyComMessage_Msg() {}
+
+func (*WendyComMessage_Response) isWendyComMessage_Msg() {}
+
+func (*WendyComMessage_Event) isWendyComMessage_Msg() {}
 
 var File_wendy_lite_wendy_com_msg_proto protoreflect.FileDescriptor
 
@@ -1081,10 +1215,10 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x1ewendy/lite/wendy_com_msg.proto\"E\n" +
 	"\x17WendyComProtocolVersion\x12\x14\n" +
 	"\x05major\x18\x01 \x01(\rR\x05major\x12\x14\n" +
-	"\x05minor\x18\x02 \x01(\rR\x05minor\"K\n" +
-	"\x1dWendyComProtocolVersionParams\x12\x14\n" +
-	"\x05major\x18\x01 \x01(\rR\x05major\x12\x14\n" +
-	"\x05minor\x18\x02 \x01(\rR\x05minor\"\x14\n" +
+	"\x05minor\x18\x02 \x01(\rR\x05minor\"j\n" +
+	"\x11WendyComHandshake\x12!\n" +
+	"\fhandshake_id\x18\x01 \x01(\rR\vhandshakeId\x122\n" +
+	"\aversion\x18\x02 \x01(\v2\x18.WendyComProtocolVersionR\aversion\"\x14\n" +
 	"\x12WendyComPingParams\"\x16\n" +
 	"\x14WendyComRebootParams\"]\n" +
 	"\x1aWendyComAppPushBeginParams\x12\x12\n" +
@@ -1109,32 +1243,38 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x10cpu_architecture\x18\x03 \x01(\tR\x0fcpuArchitecture\x12\x14\n" +
 	"\x05board\x18\x04 \x01(\tR\x05board\x12(\n" +
 	"\x10wasm_app_support\x18\x05 \x01(\bR\x0ewasmAppSupport\x12,\n" +
-	"\x12native_app_support\x18\x06 \x01(\bR\x10nativeAppSupport\"\xb2\x05\n" +
+	"\x12native_app_support\x18\x06 \x01(\bR\x10nativeAppSupport\"\xe5\x04\n" +
 	"\x0fWendyComCommand\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\rR\trequestId\x12K\n" +
-	"\x10protocol_version\x18\x02 \x01(\v2\x1e.WendyComProtocolVersionParamsH\x00R\x0fprotocolVersion\x12)\n" +
-	"\x04ping\x18\x03 \x01(\v2\x13.WendyComPingParamsH\x00R\x04ping\x12/\n" +
-	"\x06reboot\x18\x04 \x01(\v2\x15.WendyComRebootParamsH\x00R\x06reboot\x12C\n" +
-	"\x0eapp_push_begin\x18\x05 \x01(\v2\x1b.WendyComAppPushBeginParamsH\x00R\fappPushBegin\x12@\n" +
-	"\rapp_push_data\x18\x06 \x01(\v2\x1a.WendyComAppPushDataParamsH\x00R\vappPushData\x12=\n" +
-	"\fapp_push_end\x18\a \x01(\v2\x19.WendyComAppPushEndParamsH\x00R\n" +
+	"request_id\x18\x01 \x01(\rR\trequestId\x12)\n" +
+	"\x04ping\x18\x02 \x01(\v2\x13.WendyComPingParamsH\x00R\x04ping\x12/\n" +
+	"\x06reboot\x18\x03 \x01(\v2\x15.WendyComRebootParamsH\x00R\x06reboot\x12C\n" +
+	"\x0eapp_push_begin\x18\x04 \x01(\v2\x1b.WendyComAppPushBeginParamsH\x00R\fappPushBegin\x12@\n" +
+	"\rapp_push_data\x18\x05 \x01(\v2\x1a.WendyComAppPushDataParamsH\x00R\vappPushData\x12=\n" +
+	"\fapp_push_end\x18\x06 \x01(\v2\x19.WendyComAppPushEndParamsH\x00R\n" +
 	"appPushEnd\x126\n" +
-	"\tapp_start\x18\b \x01(\v2\x17.WendyComAppStartParamsH\x00R\bappStart\x123\n" +
-	"\bapp_stop\x18\t \x01(\v2\x16.WendyComAppStopParamsH\x00R\aappStop\x12R\n" +
-	"\x13get_device_identity\x18\n" +
-	" \x01(\v2 .WendyComGetDeviceIdentityParamsH\x00R\x11getDeviceIdentity\x12F\n" +
-	"\x0fget_device_info\x18\v \x01(\v2\x1c.WendyComGetDeviceInfoParamsH\x00R\rgetDeviceInfoB\b\n" +
-	"\x06params\"\xa5\x02\n" +
+	"\tapp_start\x18\a \x01(\v2\x17.WendyComAppStartParamsH\x00R\bappStart\x123\n" +
+	"\bapp_stop\x18\b \x01(\v2\x16.WendyComAppStopParamsH\x00R\aappStop\x12R\n" +
+	"\x13get_device_identity\x18\t \x01(\v2 .WendyComGetDeviceIdentityParamsH\x00R\x11getDeviceIdentity\x12F\n" +
+	"\x0fget_device_info\x18\n" +
+	" \x01(\v2\x1c.WendyComGetDeviceInfoParamsH\x00R\rgetDeviceInfoB\b\n" +
+	"\x06params\"\xde\x01\n" +
 	"\x10WendyComResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\rR\trequestId\x12'\n" +
-	"\x06result\x18\x02 \x01(\x0e2\x0f.WendyComResultR\x06result\x12E\n" +
-	"\x10protocol_version\x18\x03 \x01(\v2\x18.WendyComProtocolVersionH\x00R\x0fprotocolVersion\x12B\n" +
-	"\x0fdevice_identity\x18\x04 \x01(\v2\x17.WendyComDeviceIdentityH\x00R\x0edeviceIdentity\x126\n" +
-	"\vdevice_info\x18\x05 \x01(\v2\x13.WendyComDeviceInfoH\x00R\n" +
+	"\x06result\x18\x02 \x01(\x0e2\x0f.WendyComResultR\x06result\x12B\n" +
+	"\x0fdevice_identity\x18\x03 \x01(\v2\x17.WendyComDeviceIdentityH\x00R\x0edeviceIdentity\x126\n" +
+	"\vdevice_info\x18\x04 \x01(\v2\x13.WendyComDeviceInfoH\x00R\n" +
 	"deviceInfoB\x06\n" +
-	"\x04data*M\n" +
+	"\x04data\"*\n" +
+	"\rWendyComEvent\x12\x19\n" +
+	"\bevent_id\x18\x01 \x01(\rR\aeventId\"\xd3\x01\n" +
+	"\x0fWendyComMessage\x122\n" +
+	"\thandshake\x18\x01 \x01(\v2\x12.WendyComHandshakeH\x00R\thandshake\x12,\n" +
+	"\acommand\x18\x02 \x01(\v2\x10.WendyComCommandH\x00R\acommand\x12/\n" +
+	"\bresponse\x18\x03 \x01(\v2\x11.WendyComResponseH\x00R\bresponse\x12&\n" +
+	"\x05event\x18\x04 \x01(\v2\x0e.WendyComEventH\x00R\x05eventB\x05\n" +
+	"\x03msg*M\n" +
 	"\x0fWendyComAppType\x12\x1b\n" +
 	"\x17WENDY_COM_APP_TYPE_WASM\x10\x00\x12\x1d\n" +
 	"\x19WENDY_COM_APP_TYPE_NATIVE\x10\x01*\xf9\x01\n" +
@@ -1160,12 +1300,12 @@ func file_wendy_lite_wendy_com_msg_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_lite_wendy_com_msg_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_lite_wendy_com_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_wendy_lite_wendy_com_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_wendy_lite_wendy_com_msg_proto_goTypes = []any{
 	(WendyComAppType)(0),                    // 0: WendyComAppType
 	(WendyComResult)(0),                     // 1: WendyComResult
 	(*WendyComProtocolVersion)(nil),         // 2: WendyComProtocolVersion
-	(*WendyComProtocolVersionParams)(nil),   // 3: WendyComProtocolVersionParams
+	(*WendyComHandshake)(nil),               // 3: WendyComHandshake
 	(*WendyComPingParams)(nil),              // 4: WendyComPingParams
 	(*WendyComRebootParams)(nil),            // 5: WendyComRebootParams
 	(*WendyComAppPushBeginParams)(nil),      // 6: WendyComAppPushBeginParams
@@ -1179,10 +1319,12 @@ var file_wendy_lite_wendy_com_msg_proto_goTypes = []any{
 	(*WendyComDeviceInfo)(nil),              // 14: WendyComDeviceInfo
 	(*WendyComCommand)(nil),                 // 15: WendyComCommand
 	(*WendyComResponse)(nil),                // 16: WendyComResponse
+	(*WendyComEvent)(nil),                   // 17: WendyComEvent
+	(*WendyComMessage)(nil),                 // 18: WendyComMessage
 }
 var file_wendy_lite_wendy_com_msg_proto_depIdxs = []int32{
-	0,  // 0: WendyComAppPushBeginParams.app_type:type_name -> WendyComAppType
-	3,  // 1: WendyComCommand.protocol_version:type_name -> WendyComProtocolVersionParams
+	2,  // 0: WendyComHandshake.version:type_name -> WendyComProtocolVersion
+	0,  // 1: WendyComAppPushBeginParams.app_type:type_name -> WendyComAppType
 	4,  // 2: WendyComCommand.ping:type_name -> WendyComPingParams
 	5,  // 3: WendyComCommand.reboot:type_name -> WendyComRebootParams
 	6,  // 4: WendyComCommand.app_push_begin:type_name -> WendyComAppPushBeginParams
@@ -1193,14 +1335,17 @@ var file_wendy_lite_wendy_com_msg_proto_depIdxs = []int32{
 	11, // 9: WendyComCommand.get_device_identity:type_name -> WendyComGetDeviceIdentityParams
 	13, // 10: WendyComCommand.get_device_info:type_name -> WendyComGetDeviceInfoParams
 	1,  // 11: WendyComResponse.result:type_name -> WendyComResult
-	2,  // 12: WendyComResponse.protocol_version:type_name -> WendyComProtocolVersion
-	12, // 13: WendyComResponse.device_identity:type_name -> WendyComDeviceIdentity
-	14, // 14: WendyComResponse.device_info:type_name -> WendyComDeviceInfo
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	12, // 12: WendyComResponse.device_identity:type_name -> WendyComDeviceIdentity
+	14, // 13: WendyComResponse.device_info:type_name -> WendyComDeviceInfo
+	3,  // 14: WendyComMessage.handshake:type_name -> WendyComHandshake
+	15, // 15: WendyComMessage.command:type_name -> WendyComCommand
+	16, // 16: WendyComMessage.response:type_name -> WendyComResponse
+	17, // 17: WendyComMessage.event:type_name -> WendyComEvent
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_wendy_lite_wendy_com_msg_proto_init() }
@@ -1209,7 +1354,6 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		return
 	}
 	file_wendy_lite_wendy_com_msg_proto_msgTypes[13].OneofWrappers = []any{
-		(*WendyComCommand_ProtocolVersion)(nil),
 		(*WendyComCommand_Ping)(nil),
 		(*WendyComCommand_Reboot)(nil),
 		(*WendyComCommand_AppPushBegin)(nil),
@@ -1221,9 +1365,14 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		(*WendyComCommand_GetDeviceInfo)(nil),
 	}
 	file_wendy_lite_wendy_com_msg_proto_msgTypes[14].OneofWrappers = []any{
-		(*WendyComResponse_ProtocolVersion)(nil),
 		(*WendyComResponse_DeviceIdentity)(nil),
 		(*WendyComResponse_DeviceInfo)(nil),
+	}
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[16].OneofWrappers = []any{
+		(*WendyComMessage_Handshake)(nil),
+		(*WendyComMessage_Command)(nil),
+		(*WendyComMessage_Response)(nil),
+		(*WendyComMessage_Event)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1231,7 +1380,7 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_lite_wendy_com_msg_proto_rawDesc), len(file_wendy_lite_wendy_com_msg_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   15,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

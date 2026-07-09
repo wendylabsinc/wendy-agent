@@ -1,17 +1,22 @@
 syntax = "proto3";
 
-// Response data for WENDY_COM_CMD_GET_PROTOCOL_VERSION
+// Protocol version, exchanged in the handshake. The major number must match
+// on both sides; minor is informational.
 message WendyComProtocolVersion {
     uint32 major = 1;
     uint32 minor = 2;
 }
 
-// Command parameter messages — empty ones serve as presence markers.
-message WendyComProtocolVersionParams {
-    uint32 major = 1;
-    uint32 minor = 2;
+// First message in each direction after connect. The host sends its version
+// with a fresh handshake_id; the device echoes handshake_id with its own
+// version, then eventually closes the connection if the host's major version
+// is unsupported. Commands are rejected until the handshake completes.
+message WendyComHandshake {
+    uint32                  handshake_id = 1;
+    WendyComProtocolVersion version      = 2;
 }
 
+// Command parameter messages — empty ones serve as presence markers.
 message WendyComPingParams {}
 message WendyComRebootParams {}
 
@@ -59,20 +64,19 @@ message WendyComDeviceInfo {
     bool native_app_support = 6;
 }
 
-// Top-level command message — the oneof variant identifies the command.
+// Command sent host -> device — the oneof variant identifies the command.
 message WendyComCommand {
     uint32 request_id = 1;
     oneof params {
-        WendyComProtocolVersionParams      protocol_version      = 2;
-        WendyComPingParams                 ping                  = 3;
-        WendyComRebootParams               reboot                = 4;
-        WendyComAppPushBeginParams         app_push_begin        = 5;
-        WendyComAppPushDataParams          app_push_data         = 6;
-        WendyComAppPushEndParams           app_push_end          = 7;
-        WendyComAppStartParams             app_start             = 8;
-        WendyComAppStopParams              app_stop              = 9;
-        WendyComGetDeviceIdentityParams    get_device_identity   = 10;
-        WendyComGetDeviceInfoParams        get_device_info       = 11;
+        WendyComPingParams                 ping                  = 2;
+        WendyComRebootParams               reboot                = 3;
+        WendyComAppPushBeginParams         app_push_begin        = 4;
+        WendyComAppPushDataParams          app_push_data         = 5;
+        WendyComAppPushEndParams           app_push_end          = 6;
+        WendyComAppStartParams             app_start             = 7;
+        WendyComAppStopParams              app_stop              = 8;
+        WendyComGetDeviceIdentityParams    get_device_identity   = 9;
+        WendyComGetDeviceInfoParams        get_device_info       = 10;
     }
 }
 
@@ -91,8 +95,23 @@ message WendyComResponse {
     uint32         request_id = 1;
     WendyComResult result     = 2;
     oneof data {
-        WendyComProtocolVersion  protocol_version  = 3;
-        WendyComDeviceIdentity   device_identity   = 4;
-        WendyComDeviceInfo       device_info       = 5;
+        WendyComDeviceIdentity   device_identity   = 3;
+        WendyComDeviceInfo       device_info       = 4;
+    }
+}
+
+// Unsolicited device -> host or host -> device message.
+message WendyComEvent {
+    uint32 event_id = 1;
+}
+
+// Base wrapper — every frame body, in either direction, is exactly one of
+// these.
+message WendyComMessage {
+    oneof msg {
+        WendyComHandshake handshake = 1;
+        WendyComCommand   command   = 2;
+        WendyComResponse  response  = 3;
+        WendyComEvent     event     = 4;
     }
 }
