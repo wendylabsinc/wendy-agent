@@ -1,0 +1,354 @@
+syntax = "proto3";
+package wendy.sim.v1;
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/simpb;simpb";
+
+// RobotBackendService is the engine-neutral contract between the Wendy agent
+// and a simulation (or real-robot) backend. A backend runs as a containerized
+// service; the agent's sim service fronts it toward the CLI/MCP. The first
+// implementation is MuJoCo; the contract deliberately avoids engine-specific
+// concepts so a Gazebo or hardware backend can implement it unchanged.
+//
+// Model format note: the MVP accepts MJCF only. `ModelSource.format` exists so
+// URDF/SDF can be added without a wire change.
+service RobotBackendService {
+    // --- Models & worlds ---
+
+    // LoadModel registers a robot model with the backend. Model archives can
+    // exceed the gRPC message limit (meshes), so the model is streamed in
+    // chunks; the first chunk carries the metadata.
+    rpc LoadModel(stream LoadModelChunk) returns (LoadModelResponse);
+
+    // DescribeModel returns the capability map extracted from a loaded model:
+    // joints, actuators, sensors, cameras, and control modes. The agent uses
+    // this to validate task specs and enforce control-level gating.
+    rpc DescribeModel(DescribeModelRequest) returns (DescribeModelResponse);
+
+    // CreateWorld creates a simulation world. The scene description is a
+    // backend-interpreted document (for MuJoCo, built via PyMJCF).
+    rpc CreateWorld(CreateWorldRequest) returns (CreateWorldResponse);
+
+    // Spawn places a loaded model into a world at a pose.
+    rpc Spawn(SpawnRequest) returns (SpawnResponse);
+
+    // Reset restores a world (and everything spawned in it) to its initial
+    // state without reloading models.
+    rpc Reset(ResetRequest) returns (ResetResponse);
+
+    // --- Observation ---
+
+    // GetState returns the robot's base pose, joint state, and sim time.
+    rpc GetState(GetStateRequest) returns (GetStateResponse);
+
+    // GetContacts returns active contact pairs for a robot (or the whole
+    // world when robot_id is empty).
+    rpc GetContacts(GetContactsRequest) returns (GetContactsResponse);
+
+    // GetCameraFrame renders and returns one frame from a named camera.
+    // Requires offscreen rendering in the backend (EGL/osmesa when headless).
+    rpc GetCameraFrame(GetCameraFrameRequest) returns (GetCameraFrameResponse);
+
+    // --- Control ---
+    // The agent enforces ControlLevel gating before forwarding these; the
+    // backend additionally clamps commands to the model's safety limits.
+
+    // SetVelocity commands a base velocity (motion level).
+    rpc SetVelocity(SetVelocityRequest) returns (SetVelocityResponse);
+
+    // SetJointTargets commands joint positions (joint level, expert-gated).
+    rpc SetJointTargets(SetJointTargetsRequest) returns (SetJointTargetsResponse);
+
+    // Step advances sim time (torque/physics level, expert-gated). Backends
+    // normally run their own real-time loop; Step exists for deterministic
+    // debugging.
+    rpc Step(StepRequest) returns (StepResponse);
+
+    // --- Tasks & recording ---
+
+    // RunTask executes a Wendy task spec against a world and streams progress
+    // events, ending with a TaskResult. The task spec document is carried
+    // verbatim (YAML) so its schema can iterate without wire changes.
+    rpc RunTask(RunTaskRequest) returns (stream TaskEvent);
+
+    // StartRecording begins capturing state/contacts/camera into a replay.
+    rpc StartRecording(StartRecordingRequest) returns (StartRecordingResponse);
+
+    // StopRecording finalizes a recording and returns a replay handle the
+    // agent can fetch or point a viewer at (e.g. a Rerun .rrd).
+    rpc StopRecording(StopRecordingRequest) returns (StopRecordingResponse);
+}
+
+// ControlLevel classifies how low-level a command is. The agent gates levels
+// per session: TASK and MOTION are allowed by default (with safe limits);
+// JOINT and PHYSICS require developer/expert mode.
+enum ControlLevel {
+    CONTROL_LEVEL_UNSPECIFIED = 0;
+    CONTROL_LEVEL_TASK = 1;
+    CONTROL_LEVEL_MOTION = 2;
+    CONTROL_LEVEL_JOINT = 3;
+    CONTROL_LEVEL_PHYSICS = 4;
+}
+
+enum ModelFormat {
+    MODEL_FORMAT_UNSPECIFIED = 0;
+    MODEL_FORMAT_MJCF = 1;
+    // Reserved for post-MVP import paths.
+    MODEL_FORMAT_URDF = 2;
+    MODEL_FORMAT_SDF = 3;
+}
+
+message LoadModelChunk {
+    oneof payload {
+        // First chunk: what is being loaded.
+        ModelSource source = 1;
+        // Subsequent chunks: the model archive (tar of MJCF + assets).
+        bytes data = 2;
+    }
+}
+
+message ModelSource {
+    // Registry name the model will be addressable by (e.g. "go2").
+    string name = 1;
+    ModelFormat format = 2;
+    // When set, the backend loads a bundled MuJoCo Menagerie model by path
+    // (e.g. "unitree_go2/go2.xml") and no data chunks follow.
+    string menagerie_path = 3;
+}
+
+message LoadModelResponse {
+    string model_id = 1;
+}
+
+message DescribeModelRequest {
+    string model_id = 1;
+}
+
+message DescribeModelResponse {
+    CapabilityMap capabilities = 1;
+}
+
+// CapabilityMap is the §14 capability map: everything the runtime needs to
+// know to validate and safely drive a model.
+message CapabilityMap {
+    repeated JointInfo joints = 1;
+    repeated ActuatorInfo actuators = 2;
+    repeated SensorInfo sensors = 3;
+    repeated string cameras = 4;
+    repeated ControlLevel supported_control_levels = 5;
+    SafetyLimits safety_limits = 6;
+}
+
+message JointInfo {
+    string name = 1;
+    // Joint type as reported by the engine (hinge, slide, ball, free).
+    string type = 2;
+    double range_min = 3;
+    double range_max = 4;
+}
+
+message ActuatorInfo {
+    string name = 1;
+    string joint = 2;
+    double ctrl_min = 3;
+    double ctrl_max = 4;
+}
+
+message SensorInfo {
+    string name = 1;
+    string type = 2;
+}
+
+message SafetyLimits {
+    double max_linear_speed_mps = 1;
+    double max_angular_speed_radps = 2;
+}
+
+message CreateWorldRequest {
+    string name = 1;
+    // Backend-interpreted scene description; empty means an empty flat-floor
+    // world. For MuJoCo this is consumed by the PyMJCF scene builder.
+    string scene_yaml = 2;
+}
+
+message CreateWorldResponse {
+    string world_id = 1;
+}
+
+message SpawnRequest {
+    string world_id = 1;
+    string model_id = 2;
+    Pose pose = 3;
+}
+
+message SpawnResponse {
+    // Handle for the spawned robot instance within the world.
+    string robot_id = 1;
+}
+
+message ResetRequest {
+    string world_id = 1;
+}
+
+message ResetResponse {}
+
+message Pose {
+    // Position in meters, world frame.
+    double x = 1;
+    double y = 2;
+    double z = 3;
+    // Orientation quaternion (w, x, y, z); identity when all zero.
+    double qw = 4;
+    double qx = 5;
+    double qy = 6;
+    double qz = 7;
+}
+
+message GetStateRequest {
+    string world_id = 1;
+    string robot_id = 2;
+}
+
+message GetStateResponse {
+    Pose base_pose = 1;
+    repeated JointState joints = 2;
+    // Simulation time in seconds since world creation or last reset.
+    double sim_time_s = 3;
+    // True when the backend judges the robot to have fallen (base orientation
+    // or height outside nominal bounds). Drives the not_fallen check.
+    bool fallen = 4;
+}
+
+message JointState {
+    string name = 1;
+    double position = 2;
+    double velocity = 3;
+}
+
+message GetContactsRequest {
+    string world_id = 1;
+    // Empty: all contacts in the world.
+    string robot_id = 2;
+}
+
+message GetContactsResponse {
+    repeated Contact contacts = 1;
+}
+
+message Contact {
+    string body_a = 1;
+    string body_b = 2;
+    // Contact force magnitude in Newtons, when the engine reports it.
+    double force_n = 3;
+}
+
+message GetCameraFrameRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    string camera_name = 3;
+    uint32 width = 4;
+    uint32 height = 5;
+}
+
+message GetCameraFrameResponse {
+    // Encoded image bytes.
+    bytes image = 1;
+    // Encoding of image (png, jpeg).
+    string encoding = 2;
+}
+
+message SetVelocityRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    // Body-frame velocity command.
+    double vx_mps = 3;
+    double vy_mps = 4;
+    double yaw_rate_radps = 5;
+}
+
+message SetVelocityResponse {}
+
+message SetJointTargetsRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    map<string, double> targets = 3;
+}
+
+message SetJointTargetsResponse {}
+
+message StepRequest {
+    string world_id = 1;
+    double seconds = 2;
+}
+
+message StepResponse {
+    double sim_time_s = 1;
+}
+
+message RunTaskRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    // The Wendy task spec document, verbatim YAML. Schema iterates in the
+    // runtime/backend without proto changes.
+    string spec_yaml = 3;
+    // Highest control level the task may use; the backend rejects specs that
+    // require more.
+    ControlLevel max_control_level = 4;
+    // Record a replay for this run.
+    bool record = 5;
+}
+
+message TaskEvent {
+    oneof event {
+        TaskProgress progress = 1;
+        TaskLog log = 2;
+        TaskResult result = 3;
+    }
+}
+
+message TaskProgress {
+    // Objective currently being executed (e.g. "move_forward").
+    string objective = 1;
+    double sim_time_s = 2;
+}
+
+message TaskLog {
+    string message = 1;
+}
+
+message TaskResult {
+    bool success = 1;
+    bool fell = 2;
+    uint32 collision_count = 3;
+    double distance_traveled_m = 4;
+    repeated CheckResult checks = 5;
+    // Replay handle when the run was recorded.
+    string replay_id = 6;
+    // Human/AI-readable explanation of the outcome.
+    string summary = 7;
+}
+
+message CheckResult {
+    // Check name from the task spec (e.g. "not_fallen").
+    string name = 1;
+    bool passed = 2;
+    string detail = 3;
+}
+
+message StartRecordingRequest {
+    string world_id = 1;
+}
+
+message StartRecordingResponse {
+    string recording_id = 1;
+}
+
+message StopRecordingRequest {
+    string recording_id = 1;
+}
+
+message StopRecordingResponse {
+    string replay_id = 1;
+    // Where the replay can be fetched or viewed. For the Rerun sink this is
+    // an .rrd path inside the backend container (fetched via the agent) or a
+    // viewer URL when the backend serves one.
+    string uri = 2;
+}

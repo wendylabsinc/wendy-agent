@@ -52,6 +52,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/file_sync_service.proto"
     "wendy/agent/services/v2/ros2_service.proto"
     "wendy/agent/services/v2/timesync_service.proto"
+    "wendy/agent/services/v2/sim_service.proto"
 )
 
 V2_AGENT_M_OPTS=""
@@ -99,8 +100,21 @@ for p in "${CLOUD_PROTOS[@]}"; do
     CLOUD_M_OPTS="$CLOUD_M_OPTS --go-grpc_opt=M${p}=${CLOUD_PKG}"
 done
 
+# ---- Wendy Sim protos (engine-neutral robot backend contract) ----
+SIM_PKG="$MODULE/go/proto/gen/simpb"
+
+SIM_PROTOS=(
+    "wendy/sim/v1/robot_backend.proto"
+)
+
+SIM_M_OPTS=""
+for p in "${SIM_PROTOS[@]}"; do
+    SIM_M_OPTS="$SIM_M_OPTS --go_opt=M${p}=${SIM_PKG}"
+    SIM_M_OPTS="$SIM_M_OPTS --go-grpc_opt=M${p}=${SIM_PKG}"
+done
+
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $SIM_M_OPTS"
 
 echo "Generating OpenTelemetry protos..."
 mkdir -p "$GEN_DIR/otelpb"
@@ -134,6 +148,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/agentpb/v2" \
     --go-grpc_opt=module="$V2_AGENT_PKG" \
     "${V2_AGENT_PROTOS[@]}"
+
+echo "Generating Wendy Sim protos..."
+mkdir -p "$GEN_DIR/simpb"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/simpb" \
+    --go_opt=module="$SIM_PKG" \
+    $ALL_M_OPTS \
+    --go-grpc_out="$GEN_DIR/simpb" \
+    --go-grpc_opt=module="$SIM_PKG" \
+    ${SIM_PROTOS[@]}
 
 echo "Generating Wendy Cloud protos..."
 mkdir -p "$GEN_DIR/cloudpb"

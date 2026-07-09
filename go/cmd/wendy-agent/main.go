@@ -205,6 +205,7 @@ func main() {
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
 	osUpdateSvc := services.NewOSUpdateService(logger)
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
+	simSvc := services.NewSimService(logger)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
@@ -419,6 +420,7 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		agentpbv2.RegisterWendySimServiceServer(srv, simSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}

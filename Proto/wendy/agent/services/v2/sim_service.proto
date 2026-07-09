@@ -1,0 +1,103 @@
+syntax = "proto3";
+package wendy.agent.services.v2;
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
+
+import "wendy/sim/v1/robot_backend.proto";
+
+// WendySimService is the CLI/MCP-facing front for simulation. It manages sim
+// backends (containerized RobotBackendService implementations — MuJoCo first)
+// and forwards observation/control/task calls to the selected backend, after
+// enforcing per-session ControlLevel gating. Backend selection follows the
+// WENDY_SIM_BACKEND convention (cf. WENDY_NETWORK_MANAGER).
+service WendySimService {
+    // --- Simulation lifecycle (backs `wendy sim create/list/reset`) ---
+
+    // CreateSimulation starts (if needed) the selected sim backend and creates
+    // a world in it.
+    rpc CreateSimulation(CreateSimulationRequest) returns (CreateSimulationResponse);
+
+    // ListSimulations lists worlds across running backends.
+    rpc ListSimulations(ListSimulationsRequest) returns (ListSimulationsResponse);
+
+    // ResetSimulation restores a world to its initial state.
+    rpc ResetSimulation(ResetSimulationRequest) returns (ResetSimulationResponse);
+
+    // --- Models (backs `wendy sim import-model/describe-model/spawn`) ---
+
+    // ImportModel uploads a robot model archive (or references a bundled
+    // Menagerie model) into the backend's model registry.
+    rpc ImportModel(stream wendy.sim.v1.LoadModelChunk) returns (wendy.sim.v1.LoadModelResponse);
+
+    // DescribeModel returns the capability map for an imported model.
+    rpc DescribeModel(wendy.sim.v1.DescribeModelRequest) returns (wendy.sim.v1.DescribeModelResponse);
+
+    // SpawnRobot places an imported model into a world.
+    rpc SpawnRobot(wendy.sim.v1.SpawnRequest) returns (wendy.sim.v1.SpawnResponse);
+
+    // --- Observation (backs `wendy sim state`, MCP get_robot_state etc.) ---
+
+    rpc GetState(wendy.sim.v1.GetStateRequest) returns (wendy.sim.v1.GetStateResponse);
+    rpc GetContacts(wendy.sim.v1.GetContactsRequest) returns (wendy.sim.v1.GetContactsResponse);
+    rpc GetCameraFrame(wendy.sim.v1.GetCameraFrameRequest) returns (wendy.sim.v1.GetCameraFrameResponse);
+
+    // --- Control (ControlLevel-gated; motion allowed by default) ---
+
+    rpc SetVelocity(wendy.sim.v1.SetVelocityRequest) returns (wendy.sim.v1.SetVelocityResponse);
+    rpc SetJointTargets(wendy.sim.v1.SetJointTargetsRequest) returns (wendy.sim.v1.SetJointTargetsResponse);
+
+    // --- Tasks & replay (backs `wendy sim run/evaluate`, `wendy replay`) ---
+
+    // RunTask executes a task spec and streams progress, ending with a
+    // TaskResult.
+    rpc RunTask(RunSimTaskRequest) returns (stream wendy.sim.v1.TaskEvent);
+
+    // GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks.
+    rpc GetReplay(GetReplayRequest) returns (stream GetReplayChunk);
+}
+
+message CreateSimulationRequest {
+    string name = 1;
+    // Backend key (e.g. "mujoco"); empty selects the configured default.
+    string backend = 2;
+    // Optional scene description forwarded to the backend.
+    string scene_yaml = 3;
+}
+
+message CreateSimulationResponse {
+    string world_id = 1;
+    string backend = 2;
+}
+
+message ListSimulationsRequest {}
+
+message ListSimulationsResponse {
+    repeated SimulationInfo simulations = 1;
+}
+
+message SimulationInfo {
+    string world_id = 1;
+    string name = 2;
+    string backend = 3;
+    repeated string robot_ids = 4;
+}
+
+message ResetSimulationRequest {
+    string world_id = 1;
+}
+
+message ResetSimulationResponse {}
+
+message RunSimTaskRequest {
+    wendy.sim.v1.RunTaskRequest task = 1;
+    // Session control level the caller is entitled to; the service clamps
+    // task.max_control_level to this before forwarding.
+    wendy.sim.v1.ControlLevel session_control_level = 2;
+}
+
+message GetReplayRequest {
+    string replay_id = 1;
+}
+
+message GetReplayChunk {
+    bytes data = 1;
+}
