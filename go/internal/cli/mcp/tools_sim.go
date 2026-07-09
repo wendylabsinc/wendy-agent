@@ -39,9 +39,11 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 	), s.handleSimList)
 
 	srv.AddTool(mcpgo.NewTool("sim_import_model",
-		mcpgo.WithDescription("Import a robot model (MJCF) into the sim backend. Provide exactly one source: "+
+		mcpgo.WithDescription("Import a robot model into the sim backend. Provide exactly one source: "+
 			"menagerie_path for a bundled MuJoCo Menagerie model, or local_path for a model directory "+
-			"or .tar/.tar.gz archive on this machine (it is streamed to the device). Returns the model_id."),
+			"or .tar/.tar.gz archive on this machine (it is streamed to the device). Format is "+
+			"auto-detected (mjcf/sdf/urdf; override with format) — which formats load depends on the "+
+			"backend (MuJoCo: mjcf; Gazebo: sdf, urdf). Returns the model_id."),
 		mcpgo.WithString("name",
 			mcpgo.Required(),
 			mcpgo.Description("Registry name the model will be addressable by (e.g. \"go2\")"),
@@ -49,8 +51,11 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 		mcpgo.WithString("menagerie_path",
 			mcpgo.Description("Bundled MuJoCo Menagerie model path (e.g. \"unitree_go2/go2.xml\")"),
 		),
+		mcpgo.WithString("format",
+			mcpgo.Description("Model format: mjcf, sdf, or urdf (default: auto-detect from the source)"),
+		),
 		mcpgo.WithString("local_path",
-			mcpgo.Description("Local MJCF model directory or .tar/.tar.gz archive to upload"),
+			mcpgo.Description("Local model directory or .tar/.tar.gz archive to upload"),
 		),
 	), s.handleSimImportModel)
 
@@ -227,6 +232,10 @@ func (s *mcpServer) handleSimImportModel(ctx context.Context, req mcpgo.CallTool
 	if err := validateSimImportSource(menageriePath, localPath); err != nil {
 		return mcpgo.NewToolResultError(err.Error()), nil
 	}
+	format, err := simutil.ResolveModelFormat(stringParam(req, "format"), menageriePath, localPath)
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
 
 	stream, err := conn.SimService.ImportModel(ctx)
 	if err != nil {
@@ -235,7 +244,7 @@ func (s *mcpServer) handleSimImportModel(ctx context.Context, req mcpgo.CallTool
 	if err := stream.Send(&simpb.LoadModelChunk{
 		Payload: &simpb.LoadModelChunk_Source{Source: &simpb.ModelSource{
 			Name:          name,
-			Format:        simpb.ModelFormat_MODEL_FORMAT_MJCF,
+			Format:        format,
 			MenageriePath: menageriePath,
 		}},
 	}); err != nil {

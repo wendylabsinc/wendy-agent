@@ -144,14 +144,17 @@ func newSimListCmd() *cobra.Command {
 }
 
 func newSimImportModelCmd() *cobra.Command {
-	var menageriePath, name string
+	var menageriePath, name, formatFlag string
 
 	cmd := &cobra.Command{
 		Use:   "import-model [local-dir]",
 		Short: "Import a robot model into the simulation backend",
 		Long: "Import a robot model into the simulation backend.\n\n" +
 			"Either reference a bundled MuJoCo Menagerie model (--menagerie unitree_go2/go2.xml)\n" +
-			"or upload a local MJCF model directory (or .tar/.tar.gz archive of one).",
+			"or upload a local model directory (or .tar/.tar.gz archive of one).\n" +
+			"The model format (mjcf, sdf, urdf) is auto-detected from the file\n" +
+			"extensions in a local source; override with --format. Which formats\n" +
+			"load depends on the backend (MuJoCo: mjcf; Gazebo: sdf, urdf).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -161,6 +164,10 @@ func newSimImportModelCmd() *cobra.Command {
 				localPath = args[0]
 			}
 			if err := validateImportModelSource(menageriePath, localPath); err != nil {
+				return err
+			}
+			format, err := simutil.ResolveModelFormat(formatFlag, menageriePath, localPath)
+			if err != nil {
 				return err
 			}
 
@@ -177,7 +184,7 @@ func newSimImportModelCmd() *cobra.Command {
 			if err := stream.Send(&simpb.LoadModelChunk{
 				Payload: &simpb.LoadModelChunk_Source{Source: &simpb.ModelSource{
 					Name:          name,
-					Format:        simpb.ModelFormat_MODEL_FORMAT_MJCF,
+					Format:        format,
 					MenageriePath: menageriePath,
 				}},
 			}); err != nil {
@@ -214,6 +221,7 @@ func newSimImportModelCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&menageriePath, "menagerie", "", "Bundled MuJoCo Menagerie model path (e.g. unitree_go2/go2.xml)")
 	cmd.Flags().StringVar(&name, "name", "", "Registry name for the model (e.g. go2)")
+	cmd.Flags().StringVar(&formatFlag, "format", "", "Model format: mjcf, sdf, or urdf (default: auto-detect)")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }

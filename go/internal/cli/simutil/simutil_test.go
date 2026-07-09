@@ -339,3 +339,43 @@ func TestWriteReplayFile_ErrorRemovesPartialFile(t *testing.T) {
 		t.Errorf("partial file %s should have been removed (stat err = %v)", path, statErr)
 	}
 }
+
+func TestResolveModelFormat(t *testing.T) {
+	sdfDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sdfDir, "model.sdf"), []byte("<sdf/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	urdfDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(urdfDir, "robot.urdf"), []byte("<robot/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mjcfDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mjcfDir, "scene.xml"), []byte("<mujoco/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name, explicit, menagerie, local string
+		want                             simpb.ModelFormat
+		wantErr                          bool
+	}{
+		{"explicit sdf wins", "sdf", "", mjcfDir, simpb.ModelFormat_MODEL_FORMAT_SDF, false},
+		{"explicit urdf", "URDF", "", "", simpb.ModelFormat_MODEL_FORMAT_URDF, false},
+		{"invalid explicit", "step", "", "", 0, true},
+		{"menagerie is mjcf", "", "unitree_go2/go2.xml", "", simpb.ModelFormat_MODEL_FORMAT_MJCF, false},
+		{"sdf dir detected", "", "", sdfDir, simpb.ModelFormat_MODEL_FORMAT_SDF, false},
+		{"urdf dir detected", "", "", urdfDir, simpb.ModelFormat_MODEL_FORMAT_URDF, false},
+		{"xml dir stays mjcf", "", "", mjcfDir, simpb.ModelFormat_MODEL_FORMAT_MJCF, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ResolveModelFormat(tc.explicit, tc.menagerie, tc.local)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

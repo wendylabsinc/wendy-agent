@@ -24,6 +24,62 @@ import (
 // agent; small enough to stay well under gRPC message limits.
 const ModelChunkSize = 64 * 1024
 
+// ResolveModelFormat picks the ModelFormat for an import. An explicit name
+// ("mjcf", "sdf", "urdf") wins; a Menagerie source is always MJCF; a local
+// source is sniffed by the file extensions it contains (.sdf/.urdf beat the
+// MJCF default only when no plain .xml is present alongside them).
+func ResolveModelFormat(explicit, menageriePath, localPath string) (simpb.ModelFormat, error) {
+	switch strings.ToLower(strings.TrimSpace(explicit)) {
+	case "mjcf":
+		return simpb.ModelFormat_MODEL_FORMAT_MJCF, nil
+	case "sdf":
+		return simpb.ModelFormat_MODEL_FORMAT_SDF, nil
+	case "urdf":
+		return simpb.ModelFormat_MODEL_FORMAT_URDF, nil
+	case "":
+	default:
+		return simpb.ModelFormat_MODEL_FORMAT_UNSPECIFIED,
+			fmt.Errorf("invalid model format %q (expected mjcf, sdf, or urdf)", explicit)
+	}
+	if menageriePath != "" || localPath == "" {
+		return simpb.ModelFormat_MODEL_FORMAT_MJCF, nil
+	}
+	return detectLocalModelFormat(localPath), nil
+}
+
+// detectLocalModelFormat sniffs a local model dir/archive path by extension.
+func detectLocalModelFormat(localPath string) simpb.ModelFormat {
+	var sawSDF, sawURDF, sawXML bool
+	note := func(name string) {
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".sdf":
+			sawSDF = true
+		case ".urdf":
+			sawURDF = true
+		case ".xml":
+			sawXML = true
+		}
+	}
+	if info, err := os.Stat(localPath); err == nil && info.IsDir() {
+		entries, _ := os.ReadDir(localPath)
+		for _, e := range entries {
+			note(e.Name())
+		}
+	} else {
+		// Archive: sniff by the archive's own name (foo.sdf.tar.gz etc.
+		// won't match; the backend still validates content).
+		note(strings.TrimSuffix(strings.TrimSuffix(localPath, ".gz"), ".tar"))
+	}
+	switch {
+	case sawSDF && !sawXML:
+		return simpb.ModelFormat_MODEL_FORMAT_SDF
+	case sawURDF && !sawXML:
+		return simpb.ModelFormat_MODEL_FORMAT_URDF
+	default:
+		return simpb.ModelFormat_MODEL_FORMAT_MJCF
+	}
+}
+
 // ControlLevelName renders a simpb.ControlLevel as a short lowercase name
 // (e.g. "motion").
 func ControlLevelName(l simpb.ControlLevel) string {
