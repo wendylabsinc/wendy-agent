@@ -40,8 +40,19 @@ var (
 	// Hyphen-form MAC (colon-form is covered by reIPv6 above).
 	reMACHyphen = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}\b`)
 
+	// Windows UNC path (\\host\share\...). Matched before the drive-letter form
+	// so the leading double backslash is consumed as one token.
+	reUNCPath = regexp.MustCompile(`\\\\[^\s\\]+(?:\\[^\s]*)?`)
+
 	// Windows absolute path (drive letter + backslash run).
 	reWinPath = regexp.MustCompile(`[A-Za-z]:\\[^\s]*`)
+
+	// Collapse runs of adjacent redaction tokens (separated only by whitespace or
+	// path/address punctuation) into one, so the output neither reads as
+	// "[redacted] [redacted]" nor discloses how many tokens were stripped.
+	// Separators are matched only *between* tokens, never trailing, so the space
+	// before the following word survives.
+	reCollapse = regexp.MustCompile(regexp.QuoteMeta(redactedToken) + `(?:[\s:/\\.,-]*` + regexp.QuoteMeta(redactedToken) + `)+`)
 
 	// Unix absolute path: a "/" that begins a path — anchored with \B so a "/"
 	// preceded by a word char (e.g. the "/" in "input/output") is NOT treated
@@ -51,9 +62,13 @@ var (
 )
 
 // RedactErrorDetail returns a best-effort PII-scrubbed, length-capped copy of an
-// error message suitable for the error_detail analytics field. It is not a
-// security boundary: it removes the common shapes of sensitive data, not every
-// conceivable one. Returns "" for an empty input.
+// error message suitable for the error_detail analytics field. It is NOT a
+// security boundary: it is a denylist, so it removes only the shapes of
+// sensitive data it recognizes. Known residual gaps that are NOT stripped:
+// bare single-label hostnames (e.g. "my-laptop"), usernames that appear outside
+// a path (e.g. "for user alice"), and other free-form identifiers — a denylist
+// cannot tell these from ordinary words. Callers must treat the output as
+// reduced-risk, not PII-free. Returns "" for an empty input.
 func RedactErrorDetail(msg string) string {
 	if msg == "" {
 		return ""
@@ -65,11 +80,13 @@ func RedactErrorDetail(msg string) string {
 		reFQDN,
 		reIPv4,
 		reMACHyphen,
+		reUNCPath,
 		reWinPath,
 		reUnixPath,
 	} {
 		msg = re.ReplaceAllString(msg, redactedToken)
 	}
+	msg = reCollapse.ReplaceAllString(msg, redactedToken)
 	msg = strings.TrimSpace(msg)
 	if r := []rune(msg); len(r) > maxErrorDetailRunes {
 		msg = strings.TrimSpace(string(r[:maxErrorDetailRunes]))

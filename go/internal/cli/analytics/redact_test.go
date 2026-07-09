@@ -31,6 +31,12 @@ func TestRedactErrorDetail_StripsPII(t *testing.T) {
 			survive: []string{"creating temp file", "access denied"},
 		},
 		{
+			name:    "windows unc path",
+			in:      `mounting: open \\fileserver\share\secret\image.img: network path not found`,
+			leaks:   []string{`\\fileserver`, "fileserver", "share", "secret"},
+			survive: []string{"mounting", "network path not found"},
+		},
+		{
 			name:    "url",
 			in:      "downloading: Get \"https://secret-host.example.com/images/wendyos.zip\": connection refused",
 			leaks:   []string{"secret-host.example.com", "secret-host", "/images/wendyos.zip"},
@@ -90,6 +96,19 @@ func TestRedactErrorDetail_PreservesSafeTokens(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("safe token %q was redacted: %q", want, got)
 		}
+	}
+}
+
+func TestRedactErrorDetail_CollapsesAdjacentTokens(t *testing.T) {
+	// Two paths separated only by whitespace/punctuation should not produce a
+	// run of "[redacted] [redacted]" — collapse keeps the output readable and
+	// avoids hinting at how many tokens were stripped.
+	got := RedactErrorDetail("copy /Users/a/x.img /Users/b/y.img failed")
+	if strings.Contains(got, "[redacted] [redacted]") || strings.Contains(got, "[redacted][redacted]") {
+		t.Errorf("adjacent redacted tokens were not collapsed: %q", got)
+	}
+	if !strings.Contains(got, "[redacted]") {
+		t.Errorf("expected at least one redaction: %q", got)
 	}
 }
 

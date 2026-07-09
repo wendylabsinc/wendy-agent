@@ -34,13 +34,29 @@ Every event is an anonymous JSON object. The fields sent are:
 | `command_root` | string | Top-level command token |
 | `duration_ms` | integer | Command duration in milliseconds |
 | `success` | boolean | Whether the command completed without error |
-| `error_class` | string | Bounded enum describing the error category (never free-form error text) |
+| `error_class` | string | Bounded enum describing the error category (never free-form error text). Values include `user_cancelled`, `context_canceled`, `context_deadline`, `grpc_unavailable`, `grpc_deadline`, `grpc_unimplemented`, `grpc_other`, the `install_*` reason codes for `os install` failures (e.g. `install_download`, `install_disk_write`), and `other` for anything unclassified |
+| `error_detail` | string | Best-effort **redacted** excerpt of the error message. Sent **only** when `error_class` is a catch-all bucket (`other` or `grpc_other`); absent on success and for every classified error. See [redaction](#error_detail-redaction) |
 | `cli_version` | string | CLI version string |
 | `os` | string | Operating system (`GOOS`) |
 | `arch` | string | CPU architecture (`GOARCH`) |
 | `is_dev_build` | boolean | `true` when `cli_version == "dev"` |
 
-> **Privacy note:** Flag values, positional arguments, file paths, hostnames, and error message text are never included in telemetry payloads. Only the fields listed above are sent.
+> **Privacy note:** Flag values, positional arguments, and raw error message text are never included in classified telemetry. `error_class` is always a bounded enum. The one exception is `error_detail`: for *unclassified* failures (`error_class` `other`/`grpc_other`) a **redacted** excerpt of the error message is sent, with file paths, hostnames, IP addresses, MAC addresses, URLs, and email addresses stripped and the value capped at 200 characters. Redaction is best-effort — see the limitations below.
+
+## `error_detail` redaction
+
+When `error_class` is `other` or `grpc_other`, the CLI sends a redacted excerpt of the error message as `error_detail` so unclassified failures remain diagnosable. Before the value leaves the machine, the following patterns are replaced with `[redacted]`:
+
+- URLs (`http(s)://…`)
+- IPv4 and IPv6 addresses
+- MAC addresses (colon and hyphen forms)
+- Email addresses
+- Dotted hostnames / FQDNs
+- Absolute file paths — Unix (`/Users/…`, `/home/…`, `/dev/…`, `/tmp/…`, …), Windows drive paths (`C:\…`), and UNC paths (`\\host\share\…`)
+
+Structural text — errno phrases (`no space left on device`), `fmt.Errorf` prefix chains (`writing image:`), version strings, and device-type slugs — survives, and the result is capped at 200 Unicode code points.
+
+**Known limitations (best-effort, not a guarantee):** the redactor is a denylist, so it cannot strip data it can't recognize — a bare single-label hostname (`my-laptop`), a username that appears outside a path (`for user alice`), or other free-form identifiers may survive. It reduces, but does not eliminate, the chance of sensitive text reaching the backend.
 
 ## Opting out
 
