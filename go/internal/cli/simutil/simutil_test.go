@@ -50,6 +50,38 @@ func TestParsePosition(t *testing.T) {
 	}
 }
 
+func TestParseVector3(t *testing.T) {
+	tests := []struct {
+		s       string
+		want    [3]float64
+		wantErr bool
+	}{
+		{s: "1,2,0.5", want: [3]float64{1, 2, 0.5}},
+		{s: " -30 , 0 , 5 ", want: [3]float64{-30, 0, 5}},
+		{s: "", wantErr: true},
+		{s: "1,2", wantErr: true},
+		{s: "1,2,3,4", wantErr: true},
+		{s: "a,b,c", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.s, func(t *testing.T) {
+			got, err := ParseVector3(tt.s, "force")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseVector3(%q) error = %v; wantErr %v", tt.s, err, tt.wantErr)
+			}
+			if tt.wantErr {
+				if err != nil && !strings.Contains(err.Error(), "force") {
+					t.Errorf("error %q should name the value (force)", err.Error())
+				}
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseVector3(%q) = %v; want %v", tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestControlLevelName(t *testing.T) {
 	if got := ControlLevelName(simpb.ControlLevel_CONTROL_LEVEL_MOTION); got != "motion" {
 		t.Errorf("ControlLevelName(MOTION) = %q; want motion", got)

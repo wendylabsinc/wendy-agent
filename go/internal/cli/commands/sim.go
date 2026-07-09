@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,18 @@ func newSimCmd() *cobra.Command {
 		newSimResetCmd(),
 		newSimRunCmd(),
 		newSimReplayCmd(),
+		newSimPauseCmd(),
+		newSimResumeCmd(),
+		newSimSpeedCmd(),
+		newSimPushCmd(),
+		newSimTeleportCmd(),
+		newSimSnapshotCmd(),
+		newSimSensorsCmd(),
+		newSimSceneCmd(),
+		newSimPolicyCmd(),
+		newSimRecordCmd(),
+		newSimJointsCmd(),
+		newSimStepCmd(),
 	)
 
 	return cmd
@@ -149,7 +162,7 @@ func newSimListCmd() *cobra.Command {
 }
 
 func newSimImportModelCmd() *cobra.Command {
-	var menageriePath, name, formatFlag string
+	var menageriePath, name, formatFlag, replaceModelID string
 
 	cmd := &cobra.Command{
 		Use:   "import-model [local-dir]",
@@ -159,7 +172,9 @@ func newSimImportModelCmd() *cobra.Command {
 			"or upload a local model directory (or .tar/.tar.gz archive of one).\n" +
 			"The model format (mjcf, sdf, urdf) is auto-detected from the file\n" +
 			"extensions in a local source; override with --format. Which formats\n" +
-			"load depends on the backend (MuJoCo: mjcf; Gazebo: sdf, urdf).",
+			"load depends on the backend (MuJoCo: mjcf; Gazebo: sdf, urdf).\n\n" +
+			"Pass --replace <model-id> to reload an existing model in place: robots\n" +
+			"spawned from it are respawned against the new model (the edit-reload loop).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -188,9 +203,10 @@ func newSimImportModelCmd() *cobra.Command {
 			}
 			if err := stream.Send(&simpb.LoadModelChunk{
 				Payload: &simpb.LoadModelChunk_Source{Source: &simpb.ModelSource{
-					Name:          name,
-					Format:        format,
-					MenageriePath: menageriePath,
+					Name:           name,
+					Format:         format,
+					MenageriePath:  menageriePath,
+					ReplaceModelId: replaceModelID,
 				}},
 			}); err != nil {
 				return fmt.Errorf("sending model source: %w", err)
@@ -227,6 +243,8 @@ func newSimImportModelCmd() *cobra.Command {
 	cmd.Flags().StringVar(&menageriePath, "menagerie", "", "Bundled MuJoCo Menagerie model path (e.g. unitree_go2/go2.xml)")
 	cmd.Flags().StringVar(&name, "name", "", "Registry name for the model (e.g. go2)")
 	cmd.Flags().StringVar(&formatFlag, "format", "", "Model format: mjcf, sdf, or urdf (default: auto-detect)")
+	cmd.Flags().StringVar(&replaceModelID, "replace", "",
+		"Replace this existing model in place (robots spawned from it are respawned)")
 	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
@@ -933,6 +951,803 @@ func newSimReplayCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "",
 		"Output file path (default ./replay-<replay-id>.rrd)")
+	return cmd
+}
+
+// --- Interactive tooling ---
+
+// setClock sends a SetClock request and renders the resulting clock state.
+func setClock(cmd *cobra.Command, worldID string, paused bool, speedFactor float64) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := conn.SimService.SetClock(ctx, &simpb.SetClockRequest{
+		WorldId:     worldID,
+		Paused:      paused,
+		SpeedFactor: speedFactor,
+	})
+	if err != nil {
+		return fmt.Errorf("setting sim clock: %w", err)
+	}
+
+	if jsonOutput {
+		return printJSON(map[string]any{
+			"paused":      resp.GetPaused(),
+			"speedFactor": resp.GetSpeedFactor(),
+		})
+	}
+	state := "running"
+	if resp.GetPaused() {
+		state = "paused"
+	}
+	cliSuccess("Simulation %s %s (speed %.2fx).", worldID, state, resp.GetSpeedFactor())
+	return nil
+}
+
+func newSimPauseCmd() *cobra.Command {
+	var worldID string
+
+	cmd := &cobra.Command{
+		Use:   "pause",
+		Short: "Pause a simulation world's physics",
+		Long: "Pause a simulation world's physics stepping.\n\n" +
+			"While paused, advance time deterministically with `wendy sim step`;\n" +
+			"resume real-time stepping with `wendy sim resume`.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return setClock(cmd, worldID, true, 0)
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimResumeCmd() *cobra.Command {
+	var worldID string
+
+	cmd := &cobra.Command{
+		Use:   "resume",
+		Short: "Resume a paused simulation world",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return setClock(cmd, worldID, false, 0)
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimSpeedCmd() *cobra.Command {
+	var worldID string
+
+	cmd := &cobra.Command{
+		Use:   "speed <factor>",
+		Short: "Set a simulation world's real-time pacing (1 = real time)",
+		Long: "Set a simulation world's real-time pacing multiplier: 1 = real time,\n" +
+			"10 = 10x fast-forward, 0.5 = half speed. Setting a speed also resumes\n" +
+			"a paused world.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			factor, err := strconv.ParseFloat(args[0], 64)
+			if err != nil {
+				return fmt.Errorf("invalid speed factor %q: expected a number", args[0])
+			}
+			if factor <= 0 {
+				return fmt.Errorf("speed factor must be positive (got %v)", factor)
+			}
+			return setClock(cmd, worldID, false, factor)
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimPushCmd() *cobra.Command {
+	var worldID, robotID, force string
+	var duration float64
+
+	cmd := &cobra.Command{
+		Use:   "push",
+		Short: "Apply a force impulse to a robot's base (balance testing)",
+		Long: "Apply a world-frame force to a robot's base — the programmatic version\n" +
+			"of shoving it in a viewer, used to test balance and recovery.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			f, err := simutil.ParseVector3(force, "force")
+			if err != nil {
+				return err
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.ApplyForce(ctx, &simpb.ApplyForceRequest{
+				WorldId:   worldID,
+				RobotId:   robotID,
+				FxN:       f[0],
+				FyN:       f[1],
+				FzN:       f[2],
+				DurationS: duration,
+			}); err != nil {
+				return fmt.Errorf("applying force: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{
+					"fx": f[0], "fy": f[1], "fz": f[2], "durationS": duration,
+				})
+			}
+			cliSuccess("Pushed %s: force (%.1f, %.1f, %.1f) N for %.2f s.", robotID, f[0], f[1], f[2], duration)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	cmd.Flags().StringVar(&force, "force", "", "World-frame force as x,y,z in Newtons (required)")
+	cmd.Flags().Float64Var(&duration, "duration", 0.1, "How long the force is held, in sim seconds")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	_ = cmd.MarkFlagRequired("force")
+	return cmd
+}
+
+func newSimTeleportCmd() *cobra.Command {
+	var worldID, robotID, pos string
+
+	cmd := &cobra.Command{
+		Use:   "teleport",
+		Short: "Move a robot to a position directly (velocities are zeroed)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			pose, err := simutil.ParsePosition(pos)
+			if err != nil {
+				return err
+			}
+			if pose == nil {
+				return fmt.Errorf("--pos is required (x,y,z in meters)")
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.Teleport(ctx, &simpb.TeleportRequest{
+				WorldId:      worldID,
+				RobotId:      robotID,
+				Pose:         pose,
+				ZeroVelocity: true,
+			}); err != nil {
+				return fmt.Errorf("teleporting robot: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{
+					"x": pose.GetX(), "y": pose.GetY(), "z": pose.GetZ(),
+				})
+			}
+			cliSuccess("Teleported %s to (%.3f, %.3f, %.3f).", robotID, pose.GetX(), pose.GetY(), pose.GetZ())
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	cmd.Flags().StringVar(&pos, "pos", "", "Target position as x,y,z in meters (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	_ = cmd.MarkFlagRequired("pos")
+	return cmd
+}
+
+func newSimSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "snapshot",
+		Short: "Save and restore exact physics-state snapshots of a world",
+	}
+	cmd.AddCommand(newSimSnapshotSaveCmd(), newSimSnapshotRestoreCmd())
+	return cmd
+}
+
+func newSimSnapshotSaveCmd() *cobra.Command {
+	var worldID string
+
+	cmd := &cobra.Command{
+		Use:   "save",
+		Short: "Capture a world's exact physics state",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.SimService.SaveSnapshot(ctx, &simpb.SaveSnapshotRequest{WorldId: worldID})
+			if err != nil {
+				return fmt.Errorf("saving snapshot: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]string{"snapshotId": resp.GetSnapshotId()})
+			}
+			cliSuccess("Snapshot saved.")
+			cliLogln("  Snapshot ID: %s", resp.GetSnapshotId())
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimSnapshotRestoreCmd() *cobra.Command {
+	var worldID string
+
+	cmd := &cobra.Command{
+		Use:   "restore <snapshot-id>",
+		Short: "Rewind a world to a saved snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.RestoreSnapshot(ctx, &simpb.RestoreSnapshotRequest{
+				WorldId:    worldID,
+				SnapshotId: args[0],
+			}); err != nil {
+				return fmt.Errorf("restoring snapshot: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]string{"snapshotId": args[0], "status": "restored"})
+			}
+			cliSuccess("Snapshot %s restored.", args[0])
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimSensorsCmd() *cobra.Command {
+	var worldID, robotID string
+
+	cmd := &cobra.Command{
+		Use:   "sensors",
+		Short: "Read a robot's declared sensors (IMU, force, touch, ...)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.SimService.ReadSensors(ctx, &simpb.ReadSensorsRequest{
+				WorldId: worldID,
+				RobotId: robotID,
+			})
+			if err != nil {
+				return fmt.Errorf("reading sensors: %w", err)
+			}
+
+			if jsonOutput {
+				type jsonReading struct {
+					Name   string    `json:"name"`
+					Type   string    `json:"type,omitempty"`
+					Values []float64 `json:"values"`
+				}
+				readings := make([]jsonReading, len(resp.GetReadings()))
+				for i, r := range resp.GetReadings() {
+					readings[i] = jsonReading{Name: r.GetName(), Type: r.GetType(), Values: r.GetValues()}
+				}
+				return printJSON(readings)
+			}
+
+			if len(resp.GetReadings()) == 0 {
+				cliLogln("No sensor readings (does the model declare sensors?).")
+				return nil
+			}
+			headers := []string{"Sensor", "Type", "Values"}
+			var rows [][]string
+			for _, r := range resp.GetReadings() {
+				values := make([]string, len(r.GetValues()))
+				for i, v := range r.GetValues() {
+					values[i] = fmt.Sprintf("%.4f", v)
+				}
+				rows = append(rows, []string{r.GetName(), r.GetType(), strings.Join(values, ", ")})
+			}
+			fmt.Print(tui.RenderTable(headers, rows))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimSceneCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "scene",
+		Short: "Edit a live world's static scenery",
+	}
+	cmd.AddCommand(newSimSceneAddBoxCmd(), newSimSceneRemoveCmd())
+	return cmd
+}
+
+func newSimSceneAddBoxCmd() *cobra.Command {
+	var worldID, id, pos, size string
+
+	cmd := &cobra.Command{
+		Use:   "add-box",
+		Short: "Add a static box obstacle to a live world",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			p, err := simutil.ParseVector3(pos, "position")
+			if err != nil {
+				return err
+			}
+			sz, err := simutil.ParseVector3(size, "size")
+			if err != nil {
+				return err
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.EditScene(ctx, &simpb.EditSceneRequest{
+				WorldId: worldID,
+				Op: &simpb.EditSceneRequest_AddBox{AddBox: &simpb.SceneBoxSpec{
+					Id:       id,
+					Position: p[:],
+					Size:     sz[:],
+				}},
+			}); err != nil {
+				return fmt.Errorf("adding box: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{"id": id, "position": p[:], "size": sz[:]})
+			}
+			cliSuccess("Box %s added at (%.2f, %.2f, %.2f).", id, p[0], p[1], p[2])
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&id, "id", "", "Obstacle ID (required; used to remove it later)")
+	cmd.Flags().StringVar(&pos, "pos", "", "Center position as x,y,z in meters (required)")
+	cmd.Flags().StringVar(&size, "size", "", "Full extents as x,y,z in meters (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("id")
+	_ = cmd.MarkFlagRequired("pos")
+	_ = cmd.MarkFlagRequired("size")
+	return cmd
+}
+
+func newSimSceneRemoveCmd() *cobra.Command {
+	var worldID, id string
+
+	cmd := &cobra.Command{
+		Use:   "remove",
+		Short: "Remove an obstacle from a live world",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.EditScene(ctx, &simpb.EditSceneRequest{
+				WorldId: worldID,
+				Op:      &simpb.EditSceneRequest_RemoveId{RemoveId: id},
+			}); err != nil {
+				return fmt.Errorf("removing obstacle: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]string{"id": id, "status": "removed"})
+			}
+			cliSuccess("Obstacle %s removed.", id)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&id, "id", "", "Obstacle ID to remove (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("id")
+	return cmd
+}
+
+func newSimPolicyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "policy",
+		Short: "Load and clear trained control policies on a simulated robot",
+	}
+	cmd.AddCommand(newSimPolicyLoadCmd(), newSimPolicyClearCmd())
+	return cmd
+}
+
+func newSimPolicyLoadCmd() *cobra.Command {
+	var worldID, robotID, format string
+
+	cmd := &cobra.Command{
+		Use:   "load <policy-file>",
+		Short: "Load a trained policy (e.g. ONNX) that replaces the built-in controller",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			f, err := os.Open(args[0])
+			if err != nil {
+				return fmt.Errorf("opening policy file: %w", err)
+			}
+			defer f.Close()
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			stream, err := conn.SimService.LoadPolicy(ctx)
+			if err != nil {
+				return fmt.Errorf("loading policy: %w", err)
+			}
+			if err := stream.Send(&simpb.LoadPolicyChunk{
+				Payload: &simpb.LoadPolicyChunk_Source{Source: &simpb.PolicySource{
+					WorldId: worldID,
+					RobotId: robotID,
+					Format:  format,
+				}},
+			}); err != nil {
+				return fmt.Errorf("sending policy source: %w", err)
+			}
+
+			buf := make([]byte, simutil.ModelChunkSize)
+			for {
+				n, readErr := f.Read(buf)
+				if n > 0 {
+					chunk := make([]byte, n)
+					copy(chunk, buf[:n])
+					if sendErr := stream.Send(&simpb.LoadPolicyChunk{
+						Payload: &simpb.LoadPolicyChunk_Data{Data: chunk},
+					}); sendErr != nil {
+						// The stream broke; CloseAndRecv surfaces the cause.
+						break
+					}
+				}
+				if readErr == io.EOF {
+					break
+				}
+				if readErr != nil {
+					return fmt.Errorf("reading policy %s: %w", args[0], readErr)
+				}
+			}
+
+			resp, err := stream.CloseAndRecv()
+			if err != nil {
+				return fmt.Errorf("loading policy: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]string{"policyId": resp.GetPolicyId()})
+			}
+			cliSuccess("Policy loaded onto %s.", robotID)
+			cliLogln("  Policy ID: %s", resp.GetPolicyId())
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	cmd.Flags().StringVar(&format, "format", "onnx", "Policy file format")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimPolicyClearCmd() *cobra.Command {
+	var worldID, robotID string
+
+	cmd := &cobra.Command{
+		Use:   "clear",
+		Short: "Revert a robot to its built-in controller",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.ClearPolicy(ctx, &simpb.ClearPolicyRequest{
+				WorldId: worldID,
+				RobotId: robotID,
+			}); err != nil {
+				return fmt.Errorf("clearing policy: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]string{"robotId": robotID, "status": "cleared"})
+			}
+			cliSuccess("Policy cleared; %s uses its built-in controller.", robotID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimRecordCmd() *cobra.Command {
+	var worldID, robotID, cameraName, outputPath string
+	var duration float64
+	var fps, width, height uint32
+
+	cmd := &cobra.Command{
+		Use:   "record",
+		Short: "Render a video clip (mp4) of the simulation",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			stream, err := conn.SimService.RenderVideo(ctx, &simpb.RenderVideoRequest{
+				WorldId:    worldID,
+				RobotId:    robotID,
+				CameraName: cameraName,
+				DurationS:  duration,
+				Fps:        fps,
+				Width:      width,
+				Height:     height,
+			})
+			if err != nil {
+				return fmt.Errorf("rendering video: %w", err)
+			}
+
+			path := outputPath
+			if path == "" {
+				path = fmt.Sprintf("clip-%s.mp4", worldID)
+			}
+			n, err := simutil.WriteReplayFile(path, func() ([]byte, error) {
+				chunk, recvErr := stream.Recv()
+				if recvErr != nil {
+					return nil, recvErr
+				}
+				return chunk.GetData(), nil
+			})
+			if err != nil {
+				return fmt.Errorf("rendering video: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{"path": path, "bytes": n})
+			}
+			cliSuccess("Video saved to %s (%d bytes).", path, n)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID the tracking camera follows (required)")
+	cmd.Flags().StringVar(&cameraName, "camera", "", "Model camera name (default: tracking view)")
+	cmd.Flags().Float64Var(&duration, "duration", 5, "Clip length in sim seconds")
+	cmd.Flags().Uint32Var(&fps, "fps", 15, "Frames per second")
+	cmd.Flags().Uint32Var(&width, "width", 640, "Frame width in pixels")
+	cmd.Flags().Uint32Var(&height, "height", 480, "Frame height in pixels")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output file (default clip-<world>.mp4)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimJointsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "joints",
+		Short: "Read and command a robot's joints (joint level, expert-gated)",
+	}
+	cmd.AddCommand(newSimJointsGetCmd(), newSimJointsSetCmd())
+	return cmd
+}
+
+func newSimJointsGetCmd() *cobra.Command {
+	var worldID, robotID string
+
+	cmd := &cobra.Command{
+		Use:   "get",
+		Short: "Show a robot's joint positions and velocities",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.SimService.GetState(ctx, &simpb.GetStateRequest{
+				WorldId: worldID,
+				RobotId: robotID,
+			})
+			if err != nil {
+				return fmt.Errorf("getting state: %w", err)
+			}
+
+			if jsonOutput {
+				type jsonJointState struct {
+					Name     string  `json:"name"`
+					Position float64 `json:"position"`
+					Velocity float64 `json:"velocity"`
+				}
+				joints := make([]jsonJointState, len(resp.GetJoints()))
+				for i, j := range resp.GetJoints() {
+					joints[i] = jsonJointState{Name: j.GetName(), Position: j.GetPosition(), Velocity: j.GetVelocity()}
+				}
+				return printJSON(joints)
+			}
+
+			if len(resp.GetJoints()) == 0 {
+				cliLogln("No joints reported.")
+				return nil
+			}
+			headers := []string{"Joint", "Position", "Velocity"}
+			var rows [][]string
+			for _, j := range resp.GetJoints() {
+				rows = append(rows, []string{
+					j.GetName(),
+					fmt.Sprintf("%.4f", j.GetPosition()),
+					fmt.Sprintf("%.4f", j.GetVelocity()),
+				})
+			}
+			fmt.Print(tui.RenderTable(headers, rows))
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimJointsSetCmd() *cobra.Command {
+	var worldID, robotID string
+
+	cmd := &cobra.Command{
+		Use:   "set <joint>=<target> [<joint>=<target>...]",
+		Short: "Command joint position targets (joint level, expert-gated)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			targets, err := parseJointTargets(args)
+			if err != nil {
+				return err
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.SetJointTargets(ctx, &simpb.SetJointTargetsRequest{
+				WorldId: worldID,
+				RobotId: robotID,
+				Targets: targets,
+			}); err != nil {
+				return fmt.Errorf("setting joint targets: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(targets)
+			}
+			cliSuccess("Set %d joint target(s) on %s.", len(targets), robotID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+// parseJointTargets parses "name=value" args into a joint-target map.
+func parseJointTargets(args []string) (map[string]float64, error) {
+	targets := make(map[string]float64, len(args))
+	for _, arg := range args {
+		name, value, ok := strings.Cut(arg, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("invalid joint target %q: expected <joint>=<value>", arg)
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid joint target %q: %q is not a number", arg, value)
+		}
+		targets[name] = v
+	}
+	return targets, nil
+}
+
+func newSimStepCmd() *cobra.Command {
+	var worldID string
+	var seconds float64
+
+	cmd := &cobra.Command{
+		Use:   "step",
+		Short: "Advance sim time deterministically (pairs with `wendy sim pause`)",
+		Long: "Advance a world's simulation time by a fixed amount and return the new\n" +
+			"sim time. Deterministic debugging tool: pause the world first\n" +
+			"(`wendy sim pause`), then step it in controlled increments.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.SimService.Step(ctx, &simpb.StepRequest{
+				WorldId: worldID,
+				Seconds: seconds,
+			})
+			if err != nil {
+				return fmt.Errorf("stepping simulation: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{"simTimeS": resp.GetSimTimeS()})
+			}
+			cliSuccess("Stepped %.3f s; sim time is now %.3f s.", seconds, resp.GetSimTimeS())
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().Float64Var(&seconds, "seconds", 1, "Sim seconds to advance")
+	_ = cmd.MarkFlagRequired("world")
 	return cmd
 }
 

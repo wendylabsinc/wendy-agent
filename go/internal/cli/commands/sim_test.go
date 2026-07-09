@@ -26,6 +26,18 @@ func TestNewSimCmd_Subcommands(t *testing.T) {
 		"reset":          false,
 		"run":            false,
 		"replay":         false,
+		"pause":          false,
+		"resume":         false,
+		"speed":          false,
+		"push":           false,
+		"teleport":       false,
+		"snapshot":       false,
+		"sensors":        false,
+		"scene":          false,
+		"policy":         false,
+		"record":         false,
+		"joints":         false,
+		"step":           false,
 	}
 	for _, sub := range cmd.Commands() {
 		if _, ok := want[sub.Name()]; ok {
@@ -232,6 +244,97 @@ func TestSimDriveCmd_Flags(t *testing.T) {
 	for _, f := range []string{"world", "robot", "vx", "vy", "yaw", "stop"} {
 		if cmd.Flags().Lookup(f) == nil {
 			t.Errorf("drive missing flag --%s", f)
+		}
+	}
+}
+
+func TestSimInteractiveCmds_Flags(t *testing.T) {
+	tests := []struct {
+		name  string
+		cmd   *cobra.Command
+		flags []string
+	}{
+		{name: "pause", cmd: newSimPauseCmd(), flags: []string{"world"}},
+		{name: "resume", cmd: newSimResumeCmd(), flags: []string{"world"}},
+		{name: "speed", cmd: newSimSpeedCmd(), flags: []string{"world"}},
+		{name: "push", cmd: newSimPushCmd(), flags: []string{"world", "robot", "force", "duration"}},
+		{name: "teleport", cmd: newSimTeleportCmd(), flags: []string{"world", "robot", "pos"}},
+		{name: "snapshot save", cmd: newSimSnapshotSaveCmd(), flags: []string{"world"}},
+		{name: "snapshot restore", cmd: newSimSnapshotRestoreCmd(), flags: []string{"world"}},
+		{name: "sensors", cmd: newSimSensorsCmd(), flags: []string{"world", "robot"}},
+		{name: "scene add-box", cmd: newSimSceneAddBoxCmd(), flags: []string{"world", "id", "pos", "size"}},
+		{name: "scene remove", cmd: newSimSceneRemoveCmd(), flags: []string{"world", "id"}},
+		{name: "policy load", cmd: newSimPolicyLoadCmd(), flags: []string{"world", "robot", "format"}},
+		{name: "policy clear", cmd: newSimPolicyClearCmd(), flags: []string{"world", "robot"}},
+		{name: "record", cmd: newSimRecordCmd(), flags: []string{"world", "robot", "duration", "fps", "output", "camera", "width", "height"}},
+		{name: "joints get", cmd: newSimJointsGetCmd(), flags: []string{"world", "robot"}},
+		{name: "joints set", cmd: newSimJointsSetCmd(), flags: []string{"world", "robot"}},
+		{name: "step", cmd: newSimStepCmd(), flags: []string{"world", "seconds"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, f := range tt.flags {
+				if tt.cmd.Flags().Lookup(f) == nil {
+					t.Errorf("%s missing flag --%s", tt.name, f)
+				}
+			}
+		})
+	}
+}
+
+func TestSimSnapshotAndSceneCmd_Subcommands(t *testing.T) {
+	for _, tt := range []struct {
+		cmd  *cobra.Command
+		want []string
+	}{
+		{cmd: newSimSnapshotCmd(), want: []string{"save", "restore"}},
+		{cmd: newSimSceneCmd(), want: []string{"add-box", "remove"}},
+		{cmd: newSimPolicyCmd(), want: []string{"load", "clear"}},
+		{cmd: newSimJointsCmd(), want: []string{"get", "set"}},
+	} {
+		found := map[string]bool{}
+		for _, sub := range tt.cmd.Commands() {
+			found[sub.Name()] = true
+		}
+		for _, name := range tt.want {
+			if !found[name] {
+				t.Errorf("%s missing subcommand %q", tt.cmd.Name(), name)
+			}
+		}
+	}
+}
+
+func TestSimImportModelCmd_HasReplaceFlag(t *testing.T) {
+	cmd := newSimImportModelCmd()
+	if cmd.Flags().Lookup("replace") == nil {
+		t.Error("import-model missing flag --replace")
+	}
+}
+
+func TestSimSpeedCmd_RejectsBadFactor(t *testing.T) {
+	for _, arg := range []string{"abc", "0", "-2"} {
+		cmd := newSimSpeedCmd()
+		cmd.SetArgs([]string{arg, "--world", "w1"})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		if err := cmd.Execute(); err == nil {
+			t.Errorf("speed %q should fail", arg)
+		}
+	}
+}
+
+func TestParseJointTargets(t *testing.T) {
+	got, err := parseJointTargets([]string{"FL_hip=0.5", "FR_hip=-0.25"})
+	if err != nil {
+		t.Fatalf("parseJointTargets: %v", err)
+	}
+	if len(got) != 2 || got["FL_hip"] != 0.5 || got["FR_hip"] != -0.25 {
+		t.Errorf("targets = %v", got)
+	}
+
+	for _, bad := range []string{"FL_hip", "FL_hip=abc", "=0.5"} {
+		if _, err := parseJointTargets([]string{bad}); err == nil {
+			t.Errorf("parseJointTargets(%q) should fail", bad)
 		}
 	}
 }

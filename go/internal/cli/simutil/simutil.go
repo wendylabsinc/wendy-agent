@@ -109,21 +109,31 @@ func ParsePosition(pos string) (*simpb.Pose, error) {
 	if pos == "" {
 		return nil, nil
 	}
-	parts := strings.Split(pos, ",")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid position %q: expected x,y,z", pos)
-	}
-	coords := make([]float64, 3)
-	for i, p := range parts {
-		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid position %q: %q is not a number", pos, strings.TrimSpace(p))
-		}
-		coords[i] = v
+	coords, err := ParseVector3(pos, "position")
+	if err != nil {
+		return nil, err
 	}
 	// Identity orientation (qw=1); the proto also treats an all-zero
 	// quaternion as identity, but being explicit costs nothing.
 	return &simpb.Pose{X: coords[0], Y: coords[1], Z: coords[2], Qw: 1}, nil
+}
+
+// ParseVector3 parses an "x,y,z" triple of numbers; what names the value in
+// error messages (e.g. "force", "size").
+func ParseVector3(s, what string) ([3]float64, error) {
+	var coords [3]float64
+	parts := strings.Split(s, ",")
+	if len(parts) != 3 {
+		return coords, fmt.Errorf("invalid %s %q: expected x,y,z", what, s)
+	}
+	for i, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return coords, fmt.Errorf("invalid %s %q: %q is not a number", what, s, strings.TrimSpace(p))
+		}
+		coords[i] = v
+	}
+	return coords, nil
 }
 
 // DownloadReplay fetches a replay from the agent's sim service and writes it
