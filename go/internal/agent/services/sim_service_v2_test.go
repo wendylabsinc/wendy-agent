@@ -35,6 +35,8 @@ type fakeRobotBackend struct {
 	loadedData   []byte
 	lastRunTask  *simpb.RunTaskRequest
 	state        *simpb.GetStateResponse
+	// replays maps replay id -> chunks served by GetReplay.
+	replays map[string][][]byte
 }
 
 func (f *fakeRobotBackend) CreateWorld(_ context.Context, req *simpb.CreateWorldRequest) (*simpb.CreateWorldResponse, error) {
@@ -107,6 +109,21 @@ func (f *fakeRobotBackend) RunTask(req *simpb.RunTaskRequest, stream grpc.Server
 	return stream.Send(&simpb.TaskEvent{
 		Event: &simpb.TaskEvent_Result{Result: &simpb.TaskResult{Success: true, Summary: "done"}},
 	})
+}
+
+func (f *fakeRobotBackend) GetReplay(req *simpb.GetReplayRequest, stream grpc.ServerStreamingServer[simpb.GetReplayChunk]) error {
+	f.mu.Lock()
+	chunks, ok := f.replays[req.GetReplayId()]
+	f.mu.Unlock()
+	if !ok {
+		return status.Errorf(codes.NotFound, "replay %q not found", req.GetReplayId())
+	}
+	for _, c := range chunks {
+		if err := stream.Send(&simpb.GetReplayChunk{Data: c}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // startSimService wires a SimService (fronted by a real gRPC server) to an
@@ -356,16 +373,56 @@ func TestSimService_RunTaskRequiresTask(t *testing.T) {
 	}
 }
 
-func TestSimService_GetReplayUnimplemented(t *testing.T) {
-	client := startSimService(t, &fakeRobotBackend{})
+func TestSimService_GetReplayRelaysChunks(t *testing.T) {
+	chunks := [][]byte{
+		[]byte("rrd-header|"),
+		bytes.Repeat([]byte{0x42}, 3000),
+		[]byte("|rrd-footer"),
+	}
+	backend := &fakeRobotBackend{replays: map[string][][]byte{"r-1": chunks}}
+	client := startSimService(t, backend)
 
 	stream, err := client.GetReplay(context.Background(), &agentpbv2.GetReplayRequest{ReplayId: "r-1"})
 	if err != nil {
 		t.Fatalf("GetReplay: %v", err)
 	}
+
+	var got bytes.Buffer
+	recvCount := 0
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			t.Fatalf("Recv: %v", recvErr)
+		}
+		recvCount++
+		got.Write(chunk.GetData())
+	}
+
+	if recvCount != len(chunks) {
+		t.Errorf("received %d chunks; want %d", recvCount, len(chunks))
+	}
+	want := bytes.Join(chunks, nil)
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("relayed replay differs: got %d bytes, want %d", got.Len(), len(want))
+	}
+}
+
+func TestSimService_GetReplayNotFoundPassthrough(t *testing.T) {
+	client := startSimService(t, &fakeRobotBackend{})
+
+	stream, err := client.GetReplay(context.Background(), &agentpbv2.GetReplayRequest{ReplayId: "missing"})
+	if err != nil {
+		t.Fatalf("GetReplay: %v", err)
+	}
 	_, err = stream.Recv()
-	if status.Code(err) != codes.Unimplemented {
-		t.Errorf("error code = %v; want Unimplemented", status.Code(err))
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("error code = %v; want NotFound", status.Code(err))
+	}
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("error %v should carry the backend's message", err)
 	}
 }
 

@@ -348,6 +348,27 @@ func (s *SimService) RunTask(req *agentpbv2.RunSimTaskRequest, stream agentpbv2.
 	}
 }
 
-func (s *SimService) GetReplay(_ *agentpbv2.GetReplayRequest, _ agentpbv2.WendySimService_GetReplayServer) error {
-	return status.Error(codes.Unimplemented, "GetReplay is not implemented yet (WendySim P1)")
+func (s *SimService) GetReplay(req *agentpbv2.GetReplayRequest, stream agentpbv2.WendySimService_GetReplayServer) error {
+	client, err := s.client()
+	if err != nil {
+		return err
+	}
+	backendStream, err := client.GetReplay(stream.Context(), &simpb.GetReplayRequest{
+		ReplayId: req.GetReplayId(),
+	})
+	if err != nil {
+		return s.backendErr(err)
+	}
+	for {
+		chunk, recvErr := backendStream.Recv()
+		if recvErr == io.EOF {
+			return nil
+		}
+		if recvErr != nil {
+			return s.backendErr(recvErr)
+		}
+		if sendErr := stream.Send(&agentpbv2.GetReplayChunk{Data: chunk.GetData()}); sendErr != nil {
+			return sendErr
+		}
+	}
 }

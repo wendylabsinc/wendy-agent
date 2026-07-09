@@ -3,7 +3,9 @@ package commands
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +39,8 @@ func newSimCmd() *cobra.Command {
 		newSimSpawnCmd(),
 		newSimStateCmd(),
 		newSimResetCmd(),
+		newSimRunCmd(),
+		newSimReplayCmd(),
 	)
 
 	return cmd
@@ -512,6 +516,175 @@ func newSimResetCmd() *cobra.Command {
 	}
 }
 
+func newSimRunCmd() *cobra.Command {
+	var worldID, robotID, controlLevel, outputPath string
+	var record bool
+
+	cmd := &cobra.Command{
+		Use:   "run <task.yaml>",
+		Short: "Run a task spec in a simulation and report the result",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			level, err := parseControlLevel(controlLevel)
+			if err != nil {
+				return err
+			}
+
+			specData, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("reading task spec: %w", err)
+			}
+			if len(bytes.TrimSpace(specData)) == 0 {
+				return fmt.Errorf("task spec %s is empty", args[0])
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			stream, err := conn.SimService.RunTask(ctx, &agentpbv2.RunSimTaskRequest{
+				Task: &simpb.RunTaskRequest{
+					WorldId:         worldID,
+					RobotId:         robotID,
+					SpecYaml:        string(specData),
+					MaxControlLevel: level,
+					Record:          record,
+				},
+				SessionControlLevel: level,
+			})
+			if err != nil {
+				return fmt.Errorf("running task: %w", err)
+			}
+
+			var result *simpb.TaskResult
+			for {
+				ev, recvErr := stream.Recv()
+				if recvErr == io.EOF {
+					break
+				}
+				if recvErr != nil {
+					return fmt.Errorf("running task: %w", recvErr)
+				}
+				if res := ev.GetResult(); res != nil {
+					result = res // rendered after the stream ends
+					continue
+				}
+				if jsonOutput {
+					if line, ok := taskEventJSONLine(ev); ok {
+						fmt.Println(line)
+					}
+					continue
+				}
+				switch e := ev.GetEvent().(type) {
+				case *simpb.TaskEvent_Progress:
+					cliLogln("[%7.2fs] %s", e.Progress.GetSimTimeS(), e.Progress.GetObjective())
+				case *simpb.TaskEvent_Log:
+					cliNotice("%s", e.Log.GetMessage())
+				}
+			}
+			if result == nil {
+				return fmt.Errorf("task stream ended without a result")
+			}
+
+			if jsonOutput {
+				if err := printJSON(taskResultJSON(result)); err != nil {
+					return err
+				}
+			} else {
+				fmt.Print(renderTaskResult(result))
+			}
+
+			if record && result.GetReplayId() != "" {
+				path := outputPath
+				if path == "" {
+					path = fmt.Sprintf("replay-%s.rrd", result.GetReplayId())
+				}
+				n, err := downloadReplay(ctx, conn.SimService, result.GetReplayId(), path)
+				if err != nil {
+					return fmt.Errorf("downloading replay: %w", err)
+				}
+				if jsonOutput {
+					if err := printJSON(map[string]any{
+						"replayId": result.GetReplayId(),
+						"path":     path,
+						"bytes":    n,
+					}); err != nil {
+						return err
+					}
+				} else {
+					cliSuccess("Replay saved to %s (%d bytes)", path, n)
+				}
+			}
+
+			if !result.GetSuccess() {
+				if summary := result.GetSummary(); summary != "" {
+					return fmt.Errorf("task failed: %s", summary)
+				}
+				return fmt.Errorf("task failed")
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID to run the task in")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID to drive")
+	cmd.Flags().BoolVar(&record, "record", true, "Record a replay of the run")
+	cmd.Flags().StringVar(&controlLevel, "control-level", "motion",
+		"Highest control level the task may use (task, motion, joint, physics)")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "",
+		"Replay download path (default ./replay-<replay-id>.rrd)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimReplayCmd() *cobra.Command {
+	var outputPath string
+
+	cmd := &cobra.Command{
+		Use:   "replay <replay-id>",
+		Short: "Download a recorded replay (.rrd) from the simulation backend",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+
+			path := outputPath
+			if path == "" {
+				path = fmt.Sprintf("replay-%s.rrd", args[0])
+			}
+
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			n, err := downloadReplay(ctx, conn.SimService, args[0], path)
+			if err != nil {
+				return fmt.Errorf("downloading replay: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{
+					"replayId": args[0],
+					"path":     path,
+					"bytes":    n,
+				})
+			}
+			cliSuccess("Replay %s saved to %s (%d bytes)", args[0], path, n)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "",
+		"Output file path (default ./replay-<replay-id>.rrd)")
+	return cmd
+}
+
 // --- helpers ---
 
 func printJSON(v any) error {
@@ -539,6 +712,170 @@ func validateImportModelSource(menageriePath, localPath string) error {
 // (e.g. "motion").
 func controlLevelName(l simpb.ControlLevel) string {
 	return strings.ToLower(strings.TrimPrefix(l.String(), "CONTROL_LEVEL_"))
+}
+
+// parseControlLevel maps a --control-level flag value to a simpb.ControlLevel.
+func parseControlLevel(s string) (simpb.ControlLevel, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "task":
+		return simpb.ControlLevel_CONTROL_LEVEL_TASK, nil
+	case "motion":
+		return simpb.ControlLevel_CONTROL_LEVEL_MOTION, nil
+	case "joint":
+		return simpb.ControlLevel_CONTROL_LEVEL_JOINT, nil
+	case "physics":
+		return simpb.ControlLevel_CONTROL_LEVEL_PHYSICS, nil
+	default:
+		return simpb.ControlLevel_CONTROL_LEVEL_UNSPECIFIED,
+			fmt.Errorf("invalid --control-level %q: expected task, motion, joint, or physics", s)
+	}
+}
+
+// taskEventJSONLine renders a progress or log TaskEvent as a compact JSON
+// line for --json streaming output. Result events return ok=false — the final
+// result is printed as a JSON object instead.
+func taskEventJSONLine(ev *simpb.TaskEvent) (string, bool) {
+	var v any
+	switch e := ev.GetEvent().(type) {
+	case *simpb.TaskEvent_Progress:
+		v = struct {
+			Event     string  `json:"event"`
+			Objective string  `json:"objective,omitempty"`
+			SimTimeS  float64 `json:"simTimeS"`
+		}{Event: "progress", Objective: e.Progress.GetObjective(), SimTimeS: e.Progress.GetSimTimeS()}
+	case *simpb.TaskEvent_Log:
+		v = struct {
+			Event   string `json:"event"`
+			Message string `json:"message"`
+		}{Event: "log", Message: e.Log.GetMessage()}
+	default:
+		return "", false
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// jsonTaskResult is the --json shape of a simpb.TaskResult.
+type jsonTaskResult struct {
+	Success           bool            `json:"success"`
+	Fell              bool            `json:"fell"`
+	CollisionCount    uint32          `json:"collisionCount"`
+	DistanceTraveledM float64         `json:"distanceTraveledM"`
+	Checks            []jsonTaskCheck `json:"checks,omitempty"`
+	ReplayID          string          `json:"replayId,omitempty"`
+	Summary           string          `json:"summary,omitempty"`
+}
+
+type jsonTaskCheck struct {
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
+	Detail string `json:"detail,omitempty"`
+}
+
+func taskResultJSON(res *simpb.TaskResult) jsonTaskResult {
+	out := jsonTaskResult{
+		Success:           res.GetSuccess(),
+		Fell:              res.GetFell(),
+		CollisionCount:    res.GetCollisionCount(),
+		DistanceTraveledM: res.GetDistanceTraveledM(),
+		ReplayID:          res.GetReplayId(),
+		Summary:           res.GetSummary(),
+	}
+	for _, c := range res.GetChecks() {
+		out.Checks = append(out.Checks, jsonTaskCheck{
+			Name: c.GetName(), Passed: c.GetPassed(), Detail: c.GetDetail(),
+		})
+	}
+	return out
+}
+
+// renderTaskResult renders the human-readable summary block for a TaskResult.
+func renderTaskResult(res *simpb.TaskResult) string {
+	var b strings.Builder
+	if res.GetSuccess() {
+		b.WriteString("Task PASSED\n")
+	} else {
+		b.WriteString("Task FAILED\n")
+	}
+	fell := "no"
+	if res.GetFell() {
+		fell = "yes"
+	}
+	fmt.Fprintf(&b, "  Fell:       %s\n", fell)
+	fmt.Fprintf(&b, "  Distance:   %.2f m\n", res.GetDistanceTraveledM())
+	fmt.Fprintf(&b, "  Collisions: %d\n", res.GetCollisionCount())
+	if len(res.GetChecks()) > 0 {
+		b.WriteString("  Checks:\n")
+		for _, c := range res.GetChecks() {
+			mark := "✓"
+			if !c.GetPassed() {
+				mark = "✗"
+			}
+			fmt.Fprintf(&b, "    %s %s", mark, c.GetName())
+			if c.GetDetail() != "" {
+				fmt.Fprintf(&b, " — %s", c.GetDetail())
+			}
+			b.WriteByte('\n')
+		}
+	}
+	if res.GetSummary() != "" {
+		fmt.Fprintf(&b, "  Summary: %s\n", res.GetSummary())
+	}
+	return b.String()
+}
+
+// downloadReplay fetches a replay from the agent's sim service and writes it
+// to path, returning the number of bytes written.
+func downloadReplay(ctx context.Context, client agentpbv2.WendySimServiceClient, replayID, path string) (int64, error) {
+	stream, err := client.GetReplay(ctx, &agentpbv2.GetReplayRequest{ReplayId: replayID})
+	if err != nil {
+		return 0, err
+	}
+	return writeReplayFile(path, func() ([]byte, error) {
+		chunk, recvErr := stream.Recv()
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		return chunk.GetData(), nil
+	})
+}
+
+// writeReplayFile drains recv (which returns io.EOF at end of stream) into
+// path and returns the number of bytes written. A partial file is removed on
+// error so a failed download never leaves a truncated replay behind.
+func writeReplayFile(path string, recv func() ([]byte, error)) (int64, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	fail := func(cause error) (int64, error) {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return 0, cause
+	}
+	var written int64
+	for {
+		data, recvErr := recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return fail(recvErr)
+		}
+		n, writeErr := f.Write(data)
+		written += int64(n)
+		if writeErr != nil {
+			return fail(writeErr)
+		}
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return 0, err
+	}
+	return written, nil
 }
 
 // parseSimPosition parses an "x,y,z" position (meters) into a Pose with
