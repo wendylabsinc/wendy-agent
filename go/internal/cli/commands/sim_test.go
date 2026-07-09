@@ -198,3 +198,40 @@ func TestSimImportModelCmd_RequiresName(t *testing.T) {
 		t.Error("import-model without --name should fail")
 	}
 }
+
+func TestRenderWatchFrame(t *testing.T) {
+	resp := &simpb.GetStateResponse{
+		BasePose: &simpb.Pose{X: 1.5, Y: 0, Z: 0.25},
+		SimTimeS: 12.34,
+		Fallen:   true,
+		Joints:   []*simpb.JointState{{Name: "FL_hip_joint", Position: 0.1, Velocity: -0.2}},
+	}
+	out := renderWatchFrame("world1", "robot3", resp)
+	for _, want := range []string{"world1", "robot3", "FALLEN", "FL_hip_joint", "12.34"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("watch frame missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWatchJSONLine(t *testing.T) {
+	line := watchJSONLine(&simpb.GetStateResponse{
+		BasePose: &simpb.Pose{X: 2, Z: 0.3}, SimTimeS: 5, Fallen: false,
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(line), &got); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if got["x"] != 2.0 || got["fallen"] != false {
+		t.Errorf("unexpected fields: %v", got)
+	}
+}
+
+func TestSimDriveCmd_Flags(t *testing.T) {
+	cmd := newSimDriveCmd()
+	for _, f := range []string{"world", "robot", "vx", "vy", "yaw", "stop"} {
+		if cmd.Flags().Lookup(f) == nil {
+			t.Errorf("drive missing flag --%s", f)
+		}
+	}
+}

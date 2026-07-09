@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,7 +31,10 @@ func newSimCmd() *cobra.Command {
 		newSimDescribeModelCmd(),
 		newSimSpawnCmd(),
 		newSimStateCmd(),
+		newSimWatchCmd(),
+		newSimDriveCmd(),
 		newSimCameraCmd(),
+		newSimViewerCmd(),
 		newSimResetCmd(),
 		newSimRunCmd(),
 		newSimReplayCmd(),
@@ -395,6 +400,185 @@ func newSimSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&worldID, "world", "", "World ID to spawn into")
 	cmd.Flags().StringVar(&pos, "pos", "", "Spawn position as x,y,z in meters (default 0,0,0)")
 	_ = cmd.MarkFlagRequired("world")
+	return cmd
+}
+
+func newSimDriveCmd() *cobra.Command {
+	var worldID, robotID string
+	var vx, vy, yaw float64
+	var stop bool
+
+	cmd := &cobra.Command{
+		Use:   "drive",
+		Short: "Command a base velocity (the robot keeps it until told otherwise)",
+		Long: "Command a base velocity for a simulated robot.\n\n" +
+			"The controller holds the command until the next drive (or a task takes\n" +
+			"over); the backend clamps it to the model's safety limits. Use --stop\n" +
+			"to halt.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if stop {
+				vx, vy, yaw = 0, 0, 0
+			}
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.SimService.SetVelocity(ctx, &simpb.SetVelocityRequest{
+				WorldId:      worldID,
+				RobotId:      robotID,
+				VxMps:        vx,
+				VyMps:        vy,
+				YawRateRadps: yaw,
+			}); err != nil {
+				return fmt.Errorf("driving robot: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(map[string]any{"vx": vx, "vy": vy, "yawRate": yaw})
+			}
+			if stop {
+				cliSuccess("Robot %s stopping.", robotID)
+			} else {
+				cliSuccess("Driving %s: vx=%.2f m/s, vy=%.2f m/s, yaw=%.2f rad/s", robotID, vx, vy, yaw)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	cmd.Flags().Float64Var(&vx, "vx", 0, "Forward velocity in m/s (negative = backward)")
+	cmd.Flags().Float64Var(&vy, "vy", 0, "Lateral velocity in m/s")
+	cmd.Flags().Float64Var(&yaw, "yaw", 0, "Turn rate in rad/s (positive = counter-clockwise)")
+	cmd.Flags().BoolVar(&stop, "stop", false, "Halt the robot (zero all velocities)")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+func newSimWatchCmd() *cobra.Command {
+	var worldID, robotID string
+	var interval time.Duration
+
+	cmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Live-updating robot state (Ctrl-C to exit)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			for {
+				resp, err := conn.SimService.GetState(ctx, &simpb.GetStateRequest{
+					WorldId: worldID,
+					RobotId: robotID,
+				})
+				if err != nil {
+					return fmt.Errorf("getting state: %w", err)
+				}
+				if jsonOutput {
+					fmt.Println(watchJSONLine(resp))
+				} else {
+					// Home + clear-to-end keeps the display in place without
+					// flicker; the frame always ends in a newline.
+					fmt.Print("\033[H\033[2J" + renderWatchFrame(worldID, robotID, resp))
+				}
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(interval):
+				}
+			}
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID (required)")
+	cmd.Flags().DurationVar(&interval, "interval", 500*time.Millisecond, "Refresh interval")
+	_ = cmd.MarkFlagRequired("world")
+	_ = cmd.MarkFlagRequired("robot")
+	return cmd
+}
+
+// renderWatchFrame renders one sim watch frame: pose, status, and joints in
+// columns.
+func renderWatchFrame(worldID, robotID string, resp *simpb.GetStateResponse) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "wendy sim watch — world %s, robot %s (Ctrl-C to exit)\n\n", worldID, robotID)
+	if p := resp.GetBasePose(); p != nil {
+		fmt.Fprintf(&b, "  Position   x %+7.3f   y %+7.3f   z %+7.3f m\n", p.GetX(), p.GetY(), p.GetZ())
+	}
+	fmt.Fprintf(&b, "  Sim time   %.2f s\n", resp.GetSimTimeS())
+	if resp.GetFallen() {
+		b.WriteString("  Status     FALLEN\n")
+	} else {
+		b.WriteString("  Status     upright\n")
+	}
+	if joints := resp.GetJoints(); len(joints) > 0 {
+		b.WriteString("\n  Joint                 Position   Velocity\n")
+		for _, j := range joints {
+			fmt.Fprintf(&b, "  %-20s  %+8.3f   %+8.3f\n", j.GetName(), j.GetPosition(), j.GetVelocity())
+		}
+	}
+	return b.String()
+}
+
+// watchJSONLine renders one sim watch sample as a compact JSON line.
+func watchJSONLine(resp *simpb.GetStateResponse) string {
+	out := map[string]any{
+		"simTimeS": resp.GetSimTimeS(),
+		"fallen":   resp.GetFallen(),
+	}
+	if p := resp.GetBasePose(); p != nil {
+		out["x"], out["y"], out["z"] = p.GetX(), p.GetY(), p.GetZ()
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+func newSimViewerCmd() *cobra.Command {
+	var urlFlag string
+	var port int
+
+	cmd := &cobra.Command{
+		Use:   "viewer",
+		Short: "Open the live sim viewer in the browser",
+		Long: "Open the sim backend's live Rerun web viewer in the browser.\n\n" +
+			"The viewer is served by the sim container when it runs with\n" +
+			"WENDYSIM_LIVE_VIEWER=1; the host defaults to the connected device.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			viewerURL := urlFlag
+			if viewerURL == "" {
+				host := "localhost"
+				if deviceFlag != "" {
+					host = deviceFlag
+					if h, _, err := net.SplitHostPort(deviceFlag); err == nil {
+						host = h
+					}
+				}
+				viewerURL = fmt.Sprintf("http://%s:%d/?url=rerun%%2Bhttp://%s:%d/proxy",
+					host, port, host, port-1)
+			}
+			if jsonOutput {
+				return printJSON(map[string]string{"url": viewerURL})
+			}
+			cliLogln("Opening %s", viewerURL)
+			if err := openBrowser(viewerURL); err != nil {
+				cliNotice("Could not open a browser: %v", err)
+				cliLogln("Open it manually: %s", viewerURL)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&urlFlag, "url", "", "Viewer URL (default: derived from the device host)")
+	cmd.Flags().IntVar(&port, "port", 9877, "Viewer web port on the sim host (gRPC proxy is port-1)")
 	return cmd
 }
 
