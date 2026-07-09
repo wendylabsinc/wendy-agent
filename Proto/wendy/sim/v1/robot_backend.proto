@@ -79,6 +79,41 @@ service RobotBackendService {
     // GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
     // the agent can relay it to the CLI without sharing a filesystem.
     rpc GetReplay(GetReplayRequest) returns (stream GetReplayChunk);
+
+    // --- Interactive tooling (the sim-native workflow: pause, poke, edit) ---
+    // Simulation backends implement these; a real-robot backend returns
+    // Unimplemented (you cannot pause or teleport reality).
+
+    // SetClock pauses/resumes a world and scales its real-time pacing.
+    rpc SetClock(SetClockRequest) returns (SetClockResponse);
+
+    // ApplyForce applies an external force impulse to a robot's base — the
+    // programmatic version of shoving it in a viewer, used to test balance.
+    rpc ApplyForce(ApplyForceRequest) returns (ApplyForceResponse);
+
+    // Teleport moves a robot to a pose directly (physics-level edit).
+    rpc Teleport(TeleportRequest) returns (TeleportResponse);
+
+    // SaveSnapshot captures a world's exact physics state; RestoreSnapshot
+    // rewinds to it. Snapshots let a failure be reproduced deterministically.
+    rpc SaveSnapshot(SaveSnapshotRequest) returns (SaveSnapshotResponse);
+    rpc RestoreSnapshot(RestoreSnapshotRequest) returns (RestoreSnapshotResponse);
+
+    // ReadSensors returns current readings for the model's declared sensors
+    // (IMU, force, touch, rangefinder, ...).
+    rpc ReadSensors(ReadSensorsRequest) returns (ReadSensorsResponse);
+
+    // EditScene mutates a live world's static scenery without recreating it.
+    rpc EditScene(EditSceneRequest) returns (EditSceneResponse);
+
+    // LoadPolicy streams a trained policy (e.g. ONNX) that replaces the
+    // robot's built-in controller; ClearPolicy reverts to the built-in one.
+    rpc LoadPolicy(stream LoadPolicyChunk) returns (LoadPolicyResponse);
+    rpc ClearPolicy(ClearPolicyRequest) returns (ClearPolicyResponse);
+
+    // RenderVideo renders a video clip of the world (tracking or named
+    // camera) and streams the encoded file back.
+    rpc RenderVideo(RenderVideoRequest) returns (stream VideoChunk);
 }
 
 // ControlLevel classifies how low-level a command is. The agent gates levels
@@ -116,6 +151,9 @@ message ModelSource {
     // When set, the backend loads a bundled MuJoCo Menagerie model by path
     // (e.g. "unitree_go2/go2.xml") and no data chunks follow.
     string menagerie_path = 3;
+    // When set, replace this existing model in place (the edit-reload dev
+    // loop): robots spawned from it are respawned against the new model.
+    string replace_model_id = 4;
 }
 
 message LoadModelResponse {
@@ -343,6 +381,136 @@ message StartRecordingRequest {
 
 message StartRecordingResponse {
     string recording_id = 1;
+}
+
+message SetClockRequest {
+    string world_id = 1;
+    // True pauses physics stepping; false resumes it.
+    bool paused = 2;
+    // Real-time pacing multiplier (1.0 = real time, 10 = 10x fast-forward,
+    // 0 = leave the current factor unchanged).
+    double speed_factor = 3;
+}
+
+message SetClockResponse {
+    bool paused = 1;
+    double speed_factor = 2;
+}
+
+message ApplyForceRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    // World-frame force in Newtons applied at the base's center of mass.
+    double fx_n = 3;
+    double fy_n = 4;
+    double fz_n = 5;
+    // How long the force is held, in sim seconds (0 = one physics step).
+    double duration_s = 6;
+}
+
+message ApplyForceResponse {}
+
+message TeleportRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    Pose pose = 3;
+    // Also zero the robot's velocities (default behavior when true).
+    bool zero_velocity = 4;
+}
+
+message TeleportResponse {}
+
+message SaveSnapshotRequest {
+    string world_id = 1;
+}
+
+message SaveSnapshotResponse {
+    string snapshot_id = 1;
+}
+
+message RestoreSnapshotRequest {
+    string world_id = 1;
+    string snapshot_id = 2;
+}
+
+message RestoreSnapshotResponse {}
+
+message ReadSensorsRequest {
+    string world_id = 1;
+    string robot_id = 2;
+}
+
+message ReadSensorsResponse {
+    repeated SensorReading readings = 1;
+}
+
+message SensorReading {
+    string name = 1;
+    // Sensor type as reported by the engine (accelerometer, gyro, touch, ...).
+    string type = 2;
+    repeated double values = 3;
+}
+
+message EditSceneRequest {
+    string world_id = 1;
+    oneof op {
+        SceneBoxSpec add_box = 2;
+        // Obstacle id to remove.
+        string remove_id = 3;
+    }
+}
+
+message SceneBoxSpec {
+    string id = 1;
+    // Center position [x, y, z] in meters.
+    repeated double position = 2;
+    // Full extents [x, y, z] in meters.
+    repeated double size = 3;
+}
+
+message EditSceneResponse {}
+
+message LoadPolicyChunk {
+    oneof payload {
+        // First chunk: what the policy is and who it drives.
+        PolicySource source = 1;
+        // Subsequent chunks: the policy file bytes.
+        bytes data = 2;
+    }
+}
+
+message PolicySource {
+    string world_id = 1;
+    string robot_id = 2;
+    // Policy file format; "onnx" is the first supported value.
+    string format = 3;
+}
+
+message LoadPolicyResponse {
+    string policy_id = 1;
+}
+
+message ClearPolicyRequest {
+    string world_id = 1;
+    string robot_id = 2;
+}
+
+message ClearPolicyResponse {}
+
+message RenderVideoRequest {
+    string world_id = 1;
+    string robot_id = 2;
+    // Empty or "tracking" follows the robot; otherwise a model camera name.
+    string camera_name = 3;
+    double duration_s = 4;
+    uint32 fps = 5;
+    uint32 width = 6;
+    uint32 height = 7;
+}
+
+message VideoChunk {
+    // Encoded video bytes (mp4).
+    bytes data = 1;
 }
 
 message StopRecordingRequest {

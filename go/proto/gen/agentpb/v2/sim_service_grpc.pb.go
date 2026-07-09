@@ -33,6 +33,16 @@ const (
 	WendySimService_SetJointTargets_FullMethodName  = "/wendy.agent.services.v2.WendySimService/SetJointTargets"
 	WendySimService_RunTask_FullMethodName          = "/wendy.agent.services.v2.WendySimService/RunTask"
 	WendySimService_GetReplay_FullMethodName        = "/wendy.agent.services.v2.WendySimService/GetReplay"
+	WendySimService_SetClock_FullMethodName         = "/wendy.agent.services.v2.WendySimService/SetClock"
+	WendySimService_ApplyForce_FullMethodName       = "/wendy.agent.services.v2.WendySimService/ApplyForce"
+	WendySimService_Teleport_FullMethodName         = "/wendy.agent.services.v2.WendySimService/Teleport"
+	WendySimService_SaveSnapshot_FullMethodName     = "/wendy.agent.services.v2.WendySimService/SaveSnapshot"
+	WendySimService_RestoreSnapshot_FullMethodName  = "/wendy.agent.services.v2.WendySimService/RestoreSnapshot"
+	WendySimService_ReadSensors_FullMethodName      = "/wendy.agent.services.v2.WendySimService/ReadSensors"
+	WendySimService_EditScene_FullMethodName        = "/wendy.agent.services.v2.WendySimService/EditScene"
+	WendySimService_LoadPolicy_FullMethodName       = "/wendy.agent.services.v2.WendySimService/LoadPolicy"
+	WendySimService_ClearPolicy_FullMethodName      = "/wendy.agent.services.v2.WendySimService/ClearPolicy"
+	WendySimService_RenderVideo_FullMethodName      = "/wendy.agent.services.v2.WendySimService/RenderVideo"
 )
 
 // WendySimServiceClient is the client API for WendySimService service.
@@ -69,6 +79,16 @@ type WendySimServiceClient interface {
 	RunTask(ctx context.Context, in *RunSimTaskRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[simpb.TaskEvent], error)
 	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks.
 	GetReplay(ctx context.Context, in *GetReplayRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetReplayChunk], error)
+	SetClock(ctx context.Context, in *simpb.SetClockRequest, opts ...grpc.CallOption) (*simpb.SetClockResponse, error)
+	ApplyForce(ctx context.Context, in *simpb.ApplyForceRequest, opts ...grpc.CallOption) (*simpb.ApplyForceResponse, error)
+	Teleport(ctx context.Context, in *simpb.TeleportRequest, opts ...grpc.CallOption) (*simpb.TeleportResponse, error)
+	SaveSnapshot(ctx context.Context, in *simpb.SaveSnapshotRequest, opts ...grpc.CallOption) (*simpb.SaveSnapshotResponse, error)
+	RestoreSnapshot(ctx context.Context, in *simpb.RestoreSnapshotRequest, opts ...grpc.CallOption) (*simpb.RestoreSnapshotResponse, error)
+	ReadSensors(ctx context.Context, in *simpb.ReadSensorsRequest, opts ...grpc.CallOption) (*simpb.ReadSensorsResponse, error)
+	EditScene(ctx context.Context, in *simpb.EditSceneRequest, opts ...grpc.CallOption) (*simpb.EditSceneResponse, error)
+	LoadPolicy(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse], error)
+	ClearPolicy(ctx context.Context, in *simpb.ClearPolicyRequest, opts ...grpc.CallOption) (*simpb.ClearPolicyResponse, error)
+	RenderVideo(ctx context.Context, in *simpb.RenderVideoRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[simpb.VideoChunk], error)
 }
 
 type wendySimServiceClient struct {
@@ -230,6 +250,118 @@ func (c *wendySimServiceClient) GetReplay(ctx context.Context, in *GetReplayRequ
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendySimService_GetReplayClient = grpc.ServerStreamingClient[GetReplayChunk]
 
+func (c *wendySimServiceClient) SetClock(ctx context.Context, in *simpb.SetClockRequest, opts ...grpc.CallOption) (*simpb.SetClockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.SetClockResponse)
+	err := c.cc.Invoke(ctx, WendySimService_SetClock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) ApplyForce(ctx context.Context, in *simpb.ApplyForceRequest, opts ...grpc.CallOption) (*simpb.ApplyForceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.ApplyForceResponse)
+	err := c.cc.Invoke(ctx, WendySimService_ApplyForce_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) Teleport(ctx context.Context, in *simpb.TeleportRequest, opts ...grpc.CallOption) (*simpb.TeleportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.TeleportResponse)
+	err := c.cc.Invoke(ctx, WendySimService_Teleport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) SaveSnapshot(ctx context.Context, in *simpb.SaveSnapshotRequest, opts ...grpc.CallOption) (*simpb.SaveSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.SaveSnapshotResponse)
+	err := c.cc.Invoke(ctx, WendySimService_SaveSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) RestoreSnapshot(ctx context.Context, in *simpb.RestoreSnapshotRequest, opts ...grpc.CallOption) (*simpb.RestoreSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.RestoreSnapshotResponse)
+	err := c.cc.Invoke(ctx, WendySimService_RestoreSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) ReadSensors(ctx context.Context, in *simpb.ReadSensorsRequest, opts ...grpc.CallOption) (*simpb.ReadSensorsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.ReadSensorsResponse)
+	err := c.cc.Invoke(ctx, WendySimService_ReadSensors_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) EditScene(ctx context.Context, in *simpb.EditSceneRequest, opts ...grpc.CallOption) (*simpb.EditSceneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.EditSceneResponse)
+	err := c.cc.Invoke(ctx, WendySimService_EditScene_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) LoadPolicy(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendySimService_ServiceDesc.Streams[3], WendySimService_LoadPolicy_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendySimService_LoadPolicyClient = grpc.ClientStreamingClient[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]
+
+func (c *wendySimServiceClient) ClearPolicy(ctx context.Context, in *simpb.ClearPolicyRequest, opts ...grpc.CallOption) (*simpb.ClearPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.ClearPolicyResponse)
+	err := c.cc.Invoke(ctx, WendySimService_ClearPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) RenderVideo(ctx context.Context, in *simpb.RenderVideoRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[simpb.VideoChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendySimService_ServiceDesc.Streams[4], WendySimService_RenderVideo_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[simpb.RenderVideoRequest, simpb.VideoChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendySimService_RenderVideoClient = grpc.ServerStreamingClient[simpb.VideoChunk]
+
 // WendySimServiceServer is the server API for WendySimService service.
 // All implementations must embed UnimplementedWendySimServiceServer
 // for forward compatibility.
@@ -264,6 +396,16 @@ type WendySimServiceServer interface {
 	RunTask(*RunSimTaskRequest, grpc.ServerStreamingServer[simpb.TaskEvent]) error
 	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks.
 	GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error
+	SetClock(context.Context, *simpb.SetClockRequest) (*simpb.SetClockResponse, error)
+	ApplyForce(context.Context, *simpb.ApplyForceRequest) (*simpb.ApplyForceResponse, error)
+	Teleport(context.Context, *simpb.TeleportRequest) (*simpb.TeleportResponse, error)
+	SaveSnapshot(context.Context, *simpb.SaveSnapshotRequest) (*simpb.SaveSnapshotResponse, error)
+	RestoreSnapshot(context.Context, *simpb.RestoreSnapshotRequest) (*simpb.RestoreSnapshotResponse, error)
+	ReadSensors(context.Context, *simpb.ReadSensorsRequest) (*simpb.ReadSensorsResponse, error)
+	EditScene(context.Context, *simpb.EditSceneRequest) (*simpb.EditSceneResponse, error)
+	LoadPolicy(grpc.ClientStreamingServer[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]) error
+	ClearPolicy(context.Context, *simpb.ClearPolicyRequest) (*simpb.ClearPolicyResponse, error)
+	RenderVideo(*simpb.RenderVideoRequest, grpc.ServerStreamingServer[simpb.VideoChunk]) error
 	mustEmbedUnimplementedWendySimServiceServer()
 }
 
@@ -312,6 +454,36 @@ func (UnimplementedWendySimServiceServer) RunTask(*RunSimTaskRequest, grpc.Serve
 }
 func (UnimplementedWendySimServiceServer) GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error {
 	return status.Error(codes.Unimplemented, "method GetReplay not implemented")
+}
+func (UnimplementedWendySimServiceServer) SetClock(context.Context, *simpb.SetClockRequest) (*simpb.SetClockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetClock not implemented")
+}
+func (UnimplementedWendySimServiceServer) ApplyForce(context.Context, *simpb.ApplyForceRequest) (*simpb.ApplyForceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyForce not implemented")
+}
+func (UnimplementedWendySimServiceServer) Teleport(context.Context, *simpb.TeleportRequest) (*simpb.TeleportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Teleport not implemented")
+}
+func (UnimplementedWendySimServiceServer) SaveSnapshot(context.Context, *simpb.SaveSnapshotRequest) (*simpb.SaveSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveSnapshot not implemented")
+}
+func (UnimplementedWendySimServiceServer) RestoreSnapshot(context.Context, *simpb.RestoreSnapshotRequest) (*simpb.RestoreSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreSnapshot not implemented")
+}
+func (UnimplementedWendySimServiceServer) ReadSensors(context.Context, *simpb.ReadSensorsRequest) (*simpb.ReadSensorsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadSensors not implemented")
+}
+func (UnimplementedWendySimServiceServer) EditScene(context.Context, *simpb.EditSceneRequest) (*simpb.EditSceneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EditScene not implemented")
+}
+func (UnimplementedWendySimServiceServer) LoadPolicy(grpc.ClientStreamingServer[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]) error {
+	return status.Error(codes.Unimplemented, "method LoadPolicy not implemented")
+}
+func (UnimplementedWendySimServiceServer) ClearPolicy(context.Context, *simpb.ClearPolicyRequest) (*simpb.ClearPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearPolicy not implemented")
+}
+func (UnimplementedWendySimServiceServer) RenderVideo(*simpb.RenderVideoRequest, grpc.ServerStreamingServer[simpb.VideoChunk]) error {
+	return status.Error(codes.Unimplemented, "method RenderVideo not implemented")
 }
 func (UnimplementedWendySimServiceServer) mustEmbedUnimplementedWendySimServiceServer() {}
 func (UnimplementedWendySimServiceServer) testEmbeddedByValue()                         {}
@@ -543,6 +715,168 @@ func _WendySimService_GetReplay_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendySimService_GetReplayServer = grpc.ServerStreamingServer[GetReplayChunk]
 
+func _WendySimService_SetClock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.SetClockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).SetClock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_SetClock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).SetClock(ctx, req.(*simpb.SetClockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_ApplyForce_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.ApplyForceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).ApplyForce(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_ApplyForce_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).ApplyForce(ctx, req.(*simpb.ApplyForceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_Teleport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.TeleportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).Teleport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_Teleport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).Teleport(ctx, req.(*simpb.TeleportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_SaveSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.SaveSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).SaveSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_SaveSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).SaveSnapshot(ctx, req.(*simpb.SaveSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_RestoreSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.RestoreSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).RestoreSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_RestoreSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).RestoreSnapshot(ctx, req.(*simpb.RestoreSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_ReadSensors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.ReadSensorsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).ReadSensors(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_ReadSensors_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).ReadSensors(ctx, req.(*simpb.ReadSensorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_EditScene_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.EditSceneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).EditScene(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_EditScene_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).EditScene(ctx, req.(*simpb.EditSceneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_LoadPolicy_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WendySimServiceServer).LoadPolicy(&grpc.GenericServerStream[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendySimService_LoadPolicyServer = grpc.ClientStreamingServer[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]
+
+func _WendySimService_ClearPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.ClearPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).ClearPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_ClearPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).ClearPolicy(ctx, req.(*simpb.ClearPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WendySimService_RenderVideo_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(simpb.RenderVideoRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(WendySimServiceServer).RenderVideo(m, &grpc.GenericServerStream[simpb.RenderVideoRequest, simpb.VideoChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendySimService_RenderVideoServer = grpc.ServerStreamingServer[simpb.VideoChunk]
+
 // WendySimService_ServiceDesc is the grpc.ServiceDesc for WendySimService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -590,6 +924,38 @@ var WendySimService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "SetJointTargets",
 			Handler:    _WendySimService_SetJointTargets_Handler,
 		},
+		{
+			MethodName: "SetClock",
+			Handler:    _WendySimService_SetClock_Handler,
+		},
+		{
+			MethodName: "ApplyForce",
+			Handler:    _WendySimService_ApplyForce_Handler,
+		},
+		{
+			MethodName: "Teleport",
+			Handler:    _WendySimService_Teleport_Handler,
+		},
+		{
+			MethodName: "SaveSnapshot",
+			Handler:    _WendySimService_SaveSnapshot_Handler,
+		},
+		{
+			MethodName: "RestoreSnapshot",
+			Handler:    _WendySimService_RestoreSnapshot_Handler,
+		},
+		{
+			MethodName: "ReadSensors",
+			Handler:    _WendySimService_ReadSensors_Handler,
+		},
+		{
+			MethodName: "EditScene",
+			Handler:    _WendySimService_EditScene_Handler,
+		},
+		{
+			MethodName: "ClearPolicy",
+			Handler:    _WendySimService_ClearPolicy_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -605,6 +971,16 @@ var WendySimService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "GetReplay",
 			Handler:       _WendySimService_GetReplay_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "LoadPolicy",
+			Handler:       _WendySimService_LoadPolicy_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "RenderVideo",
+			Handler:       _WendySimService_RenderVideo_Handler,
 			ServerStreams: true,
 		},
 	},

@@ -34,6 +34,16 @@ const (
 	RobotBackendService_StartRecording_FullMethodName  = "/wendy.sim.v1.RobotBackendService/StartRecording"
 	RobotBackendService_StopRecording_FullMethodName   = "/wendy.sim.v1.RobotBackendService/StopRecording"
 	RobotBackendService_GetReplay_FullMethodName       = "/wendy.sim.v1.RobotBackendService/GetReplay"
+	RobotBackendService_SetClock_FullMethodName        = "/wendy.sim.v1.RobotBackendService/SetClock"
+	RobotBackendService_ApplyForce_FullMethodName      = "/wendy.sim.v1.RobotBackendService/ApplyForce"
+	RobotBackendService_Teleport_FullMethodName        = "/wendy.sim.v1.RobotBackendService/Teleport"
+	RobotBackendService_SaveSnapshot_FullMethodName    = "/wendy.sim.v1.RobotBackendService/SaveSnapshot"
+	RobotBackendService_RestoreSnapshot_FullMethodName = "/wendy.sim.v1.RobotBackendService/RestoreSnapshot"
+	RobotBackendService_ReadSensors_FullMethodName     = "/wendy.sim.v1.RobotBackendService/ReadSensors"
+	RobotBackendService_EditScene_FullMethodName       = "/wendy.sim.v1.RobotBackendService/EditScene"
+	RobotBackendService_LoadPolicy_FullMethodName      = "/wendy.sim.v1.RobotBackendService/LoadPolicy"
+	RobotBackendService_ClearPolicy_FullMethodName     = "/wendy.sim.v1.RobotBackendService/ClearPolicy"
+	RobotBackendService_RenderVideo_FullMethodName     = "/wendy.sim.v1.RobotBackendService/RenderVideo"
 )
 
 // RobotBackendServiceClient is the client API for RobotBackendService service.
@@ -93,6 +103,29 @@ type RobotBackendServiceClient interface {
 	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
 	// the agent can relay it to the CLI without sharing a filesystem.
 	GetReplay(ctx context.Context, in *GetReplayRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetReplayChunk], error)
+	// SetClock pauses/resumes a world and scales its real-time pacing.
+	SetClock(ctx context.Context, in *SetClockRequest, opts ...grpc.CallOption) (*SetClockResponse, error)
+	// ApplyForce applies an external force impulse to a robot's base — the
+	// programmatic version of shoving it in a viewer, used to test balance.
+	ApplyForce(ctx context.Context, in *ApplyForceRequest, opts ...grpc.CallOption) (*ApplyForceResponse, error)
+	// Teleport moves a robot to a pose directly (physics-level edit).
+	Teleport(ctx context.Context, in *TeleportRequest, opts ...grpc.CallOption) (*TeleportResponse, error)
+	// SaveSnapshot captures a world's exact physics state; RestoreSnapshot
+	// rewinds to it. Snapshots let a failure be reproduced deterministically.
+	SaveSnapshot(ctx context.Context, in *SaveSnapshotRequest, opts ...grpc.CallOption) (*SaveSnapshotResponse, error)
+	RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error)
+	// ReadSensors returns current readings for the model's declared sensors
+	// (IMU, force, touch, rangefinder, ...).
+	ReadSensors(ctx context.Context, in *ReadSensorsRequest, opts ...grpc.CallOption) (*ReadSensorsResponse, error)
+	// EditScene mutates a live world's static scenery without recreating it.
+	EditScene(ctx context.Context, in *EditSceneRequest, opts ...grpc.CallOption) (*EditSceneResponse, error)
+	// LoadPolicy streams a trained policy (e.g. ONNX) that replaces the
+	// robot's built-in controller; ClearPolicy reverts to the built-in one.
+	LoadPolicy(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[LoadPolicyChunk, LoadPolicyResponse], error)
+	ClearPolicy(ctx context.Context, in *ClearPolicyRequest, opts ...grpc.CallOption) (*ClearPolicyResponse, error)
+	// RenderVideo renders a video clip of the world (tracking or named
+	// camera) and streams the encoded file back.
+	RenderVideo(ctx context.Context, in *RenderVideoRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[VideoChunk], error)
 }
 
 type robotBackendServiceClient struct {
@@ -274,6 +307,118 @@ func (c *robotBackendServiceClient) GetReplay(ctx context.Context, in *GetReplay
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type RobotBackendService_GetReplayClient = grpc.ServerStreamingClient[GetReplayChunk]
 
+func (c *robotBackendServiceClient) SetClock(ctx context.Context, in *SetClockRequest, opts ...grpc.CallOption) (*SetClockResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetClockResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_SetClock_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) ApplyForce(ctx context.Context, in *ApplyForceRequest, opts ...grpc.CallOption) (*ApplyForceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyForceResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_ApplyForce_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) Teleport(ctx context.Context, in *TeleportRequest, opts ...grpc.CallOption) (*TeleportResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TeleportResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_Teleport_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) SaveSnapshot(ctx context.Context, in *SaveSnapshotRequest, opts ...grpc.CallOption) (*SaveSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SaveSnapshotResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_SaveSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) RestoreSnapshot(ctx context.Context, in *RestoreSnapshotRequest, opts ...grpc.CallOption) (*RestoreSnapshotResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestoreSnapshotResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_RestoreSnapshot_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) ReadSensors(ctx context.Context, in *ReadSensorsRequest, opts ...grpc.CallOption) (*ReadSensorsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReadSensorsResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_ReadSensors_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) EditScene(ctx context.Context, in *EditSceneRequest, opts ...grpc.CallOption) (*EditSceneResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EditSceneResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_EditScene_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) LoadPolicy(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[LoadPolicyChunk, LoadPolicyResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &RobotBackendService_ServiceDesc.Streams[3], RobotBackendService_LoadPolicy_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[LoadPolicyChunk, LoadPolicyResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_LoadPolicyClient = grpc.ClientStreamingClient[LoadPolicyChunk, LoadPolicyResponse]
+
+func (c *robotBackendServiceClient) ClearPolicy(ctx context.Context, in *ClearPolicyRequest, opts ...grpc.CallOption) (*ClearPolicyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ClearPolicyResponse)
+	err := c.cc.Invoke(ctx, RobotBackendService_ClearPolicy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *robotBackendServiceClient) RenderVideo(ctx context.Context, in *RenderVideoRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[VideoChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &RobotBackendService_ServiceDesc.Streams[4], RobotBackendService_RenderVideo_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[RenderVideoRequest, VideoChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_RenderVideoClient = grpc.ServerStreamingClient[VideoChunk]
+
 // RobotBackendServiceServer is the server API for RobotBackendService service.
 // All implementations must embed UnimplementedRobotBackendServiceServer
 // for forward compatibility.
@@ -331,6 +476,29 @@ type RobotBackendServiceServer interface {
 	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
 	// the agent can relay it to the CLI without sharing a filesystem.
 	GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error
+	// SetClock pauses/resumes a world and scales its real-time pacing.
+	SetClock(context.Context, *SetClockRequest) (*SetClockResponse, error)
+	// ApplyForce applies an external force impulse to a robot's base — the
+	// programmatic version of shoving it in a viewer, used to test balance.
+	ApplyForce(context.Context, *ApplyForceRequest) (*ApplyForceResponse, error)
+	// Teleport moves a robot to a pose directly (physics-level edit).
+	Teleport(context.Context, *TeleportRequest) (*TeleportResponse, error)
+	// SaveSnapshot captures a world's exact physics state; RestoreSnapshot
+	// rewinds to it. Snapshots let a failure be reproduced deterministically.
+	SaveSnapshot(context.Context, *SaveSnapshotRequest) (*SaveSnapshotResponse, error)
+	RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error)
+	// ReadSensors returns current readings for the model's declared sensors
+	// (IMU, force, touch, rangefinder, ...).
+	ReadSensors(context.Context, *ReadSensorsRequest) (*ReadSensorsResponse, error)
+	// EditScene mutates a live world's static scenery without recreating it.
+	EditScene(context.Context, *EditSceneRequest) (*EditSceneResponse, error)
+	// LoadPolicy streams a trained policy (e.g. ONNX) that replaces the
+	// robot's built-in controller; ClearPolicy reverts to the built-in one.
+	LoadPolicy(grpc.ClientStreamingServer[LoadPolicyChunk, LoadPolicyResponse]) error
+	ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error)
+	// RenderVideo renders a video clip of the world (tracking or named
+	// camera) and streams the encoded file back.
+	RenderVideo(*RenderVideoRequest, grpc.ServerStreamingServer[VideoChunk]) error
 	mustEmbedUnimplementedRobotBackendServiceServer()
 }
 
@@ -385,6 +553,36 @@ func (UnimplementedRobotBackendServiceServer) StopRecording(context.Context, *St
 }
 func (UnimplementedRobotBackendServiceServer) GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error {
 	return status.Error(codes.Unimplemented, "method GetReplay not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) SetClock(context.Context, *SetClockRequest) (*SetClockResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetClock not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) ApplyForce(context.Context, *ApplyForceRequest) (*ApplyForceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyForce not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) Teleport(context.Context, *TeleportRequest) (*TeleportResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Teleport not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) SaveSnapshot(context.Context, *SaveSnapshotRequest) (*SaveSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SaveSnapshot not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) RestoreSnapshot(context.Context, *RestoreSnapshotRequest) (*RestoreSnapshotResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreSnapshot not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) ReadSensors(context.Context, *ReadSensorsRequest) (*ReadSensorsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReadSensors not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) EditScene(context.Context, *EditSceneRequest) (*EditSceneResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EditScene not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) LoadPolicy(grpc.ClientStreamingServer[LoadPolicyChunk, LoadPolicyResponse]) error {
+	return status.Error(codes.Unimplemented, "method LoadPolicy not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) ClearPolicy(context.Context, *ClearPolicyRequest) (*ClearPolicyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ClearPolicy not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) RenderVideo(*RenderVideoRequest, grpc.ServerStreamingServer[VideoChunk]) error {
+	return status.Error(codes.Unimplemented, "method RenderVideo not implemented")
 }
 func (UnimplementedRobotBackendServiceServer) mustEmbedUnimplementedRobotBackendServiceServer() {}
 func (UnimplementedRobotBackendServiceServer) testEmbeddedByValue()                             {}
@@ -652,6 +850,168 @@ func _RobotBackendService_GetReplay_Handler(srv interface{}, stream grpc.ServerS
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type RobotBackendService_GetReplayServer = grpc.ServerStreamingServer[GetReplayChunk]
 
+func _RobotBackendService_SetClock_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetClockRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).SetClock(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_SetClock_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).SetClock(ctx, req.(*SetClockRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_ApplyForce_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyForceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).ApplyForce(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_ApplyForce_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).ApplyForce(ctx, req.(*ApplyForceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_Teleport_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TeleportRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).Teleport(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_Teleport_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).Teleport(ctx, req.(*TeleportRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_SaveSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SaveSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).SaveSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_SaveSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).SaveSnapshot(ctx, req.(*SaveSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_RestoreSnapshot_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreSnapshotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).RestoreSnapshot(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_RestoreSnapshot_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).RestoreSnapshot(ctx, req.(*RestoreSnapshotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_ReadSensors_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReadSensorsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).ReadSensors(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_ReadSensors_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).ReadSensors(ctx, req.(*ReadSensorsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_EditScene_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EditSceneRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).EditScene(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_EditScene_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).EditScene(ctx, req.(*EditSceneRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_LoadPolicy_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(RobotBackendServiceServer).LoadPolicy(&grpc.GenericServerStream[LoadPolicyChunk, LoadPolicyResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_LoadPolicyServer = grpc.ClientStreamingServer[LoadPolicyChunk, LoadPolicyResponse]
+
+func _RobotBackendService_ClearPolicy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ClearPolicyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RobotBackendServiceServer).ClearPolicy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RobotBackendService_ClearPolicy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RobotBackendServiceServer).ClearPolicy(ctx, req.(*ClearPolicyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RobotBackendService_RenderVideo_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(RenderVideoRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(RobotBackendServiceServer).RenderVideo(m, &grpc.GenericServerStream[RenderVideoRequest, VideoChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_RenderVideoServer = grpc.ServerStreamingServer[VideoChunk]
+
 // RobotBackendService_ServiceDesc is the grpc.ServiceDesc for RobotBackendService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -707,6 +1067,38 @@ var RobotBackendService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "StopRecording",
 			Handler:    _RobotBackendService_StopRecording_Handler,
 		},
+		{
+			MethodName: "SetClock",
+			Handler:    _RobotBackendService_SetClock_Handler,
+		},
+		{
+			MethodName: "ApplyForce",
+			Handler:    _RobotBackendService_ApplyForce_Handler,
+		},
+		{
+			MethodName: "Teleport",
+			Handler:    _RobotBackendService_Teleport_Handler,
+		},
+		{
+			MethodName: "SaveSnapshot",
+			Handler:    _RobotBackendService_SaveSnapshot_Handler,
+		},
+		{
+			MethodName: "RestoreSnapshot",
+			Handler:    _RobotBackendService_RestoreSnapshot_Handler,
+		},
+		{
+			MethodName: "ReadSensors",
+			Handler:    _RobotBackendService_ReadSensors_Handler,
+		},
+		{
+			MethodName: "EditScene",
+			Handler:    _RobotBackendService_EditScene_Handler,
+		},
+		{
+			MethodName: "ClearPolicy",
+			Handler:    _RobotBackendService_ClearPolicy_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -722,6 +1114,16 @@ var RobotBackendService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "GetReplay",
 			Handler:       _RobotBackendService_GetReplay_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "LoadPolicy",
+			Handler:       _RobotBackendService_LoadPolicy_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "RenderVideo",
+			Handler:       _RobotBackendService_RenderVideo_Handler,
 			ServerStreams: true,
 		},
 	},

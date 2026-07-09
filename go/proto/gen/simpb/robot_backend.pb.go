@@ -224,8 +224,11 @@ type ModelSource struct {
 	// When set, the backend loads a bundled MuJoCo Menagerie model by path
 	// (e.g. "unitree_go2/go2.xml") and no data chunks follow.
 	MenageriePath string `protobuf:"bytes,3,opt,name=menagerie_path,json=menageriePath,proto3" json:"menagerie_path,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// When set, replace this existing model in place (the edit-reload dev
+	// loop): robots spawned from it are respawned against the new model.
+	ReplaceModelId string `protobuf:"bytes,4,opt,name=replace_model_id,json=replaceModelId,proto3" json:"replace_model_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ModelSource) Reset() {
@@ -275,6 +278,13 @@ func (x *ModelSource) GetFormat() ModelFormat {
 func (x *ModelSource) GetMenageriePath() string {
 	if x != nil {
 		return x.MenageriePath
+	}
+	return ""
+}
+
+func (x *ModelSource) GetReplaceModelId() string {
+	if x != nil {
+		return x.ReplaceModelId
 	}
 	return ""
 }
@@ -2410,6 +2420,1285 @@ func (x *StartRecordingResponse) GetRecordingId() string {
 	return ""
 }
 
+type SetClockRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	// True pauses physics stepping; false resumes it.
+	Paused bool `protobuf:"varint,2,opt,name=paused,proto3" json:"paused,omitempty"`
+	// Real-time pacing multiplier (1.0 = real time, 10 = 10x fast-forward,
+	// 0 = leave the current factor unchanged).
+	SpeedFactor   float64 `protobuf:"fixed64,3,opt,name=speed_factor,json=speedFactor,proto3" json:"speed_factor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetClockRequest) Reset() {
+	*x = SetClockRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetClockRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetClockRequest) ProtoMessage() {}
+
+func (x *SetClockRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetClockRequest.ProtoReflect.Descriptor instead.
+func (*SetClockRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *SetClockRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *SetClockRequest) GetPaused() bool {
+	if x != nil {
+		return x.Paused
+	}
+	return false
+}
+
+func (x *SetClockRequest) GetSpeedFactor() float64 {
+	if x != nil {
+		return x.SpeedFactor
+	}
+	return 0
+}
+
+type SetClockResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Paused        bool                   `protobuf:"varint,1,opt,name=paused,proto3" json:"paused,omitempty"`
+	SpeedFactor   float64                `protobuf:"fixed64,2,opt,name=speed_factor,json=speedFactor,proto3" json:"speed_factor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetClockResponse) Reset() {
+	*x = SetClockResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetClockResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetClockResponse) ProtoMessage() {}
+
+func (x *SetClockResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetClockResponse.ProtoReflect.Descriptor instead.
+func (*SetClockResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *SetClockResponse) GetPaused() bool {
+	if x != nil {
+		return x.Paused
+	}
+	return false
+}
+
+func (x *SetClockResponse) GetSpeedFactor() float64 {
+	if x != nil {
+		return x.SpeedFactor
+	}
+	return 0
+}
+
+type ApplyForceRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	// World-frame force in Newtons applied at the base's center of mass.
+	FxN float64 `protobuf:"fixed64,3,opt,name=fx_n,json=fxN,proto3" json:"fx_n,omitempty"`
+	FyN float64 `protobuf:"fixed64,4,opt,name=fy_n,json=fyN,proto3" json:"fy_n,omitempty"`
+	FzN float64 `protobuf:"fixed64,5,opt,name=fz_n,json=fzN,proto3" json:"fz_n,omitempty"`
+	// How long the force is held, in sim seconds (0 = one physics step).
+	DurationS     float64 `protobuf:"fixed64,6,opt,name=duration_s,json=durationS,proto3" json:"duration_s,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyForceRequest) Reset() {
+	*x = ApplyForceRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyForceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyForceRequest) ProtoMessage() {}
+
+func (x *ApplyForceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyForceRequest.ProtoReflect.Descriptor instead.
+func (*ApplyForceRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *ApplyForceRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *ApplyForceRequest) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+func (x *ApplyForceRequest) GetFxN() float64 {
+	if x != nil {
+		return x.FxN
+	}
+	return 0
+}
+
+func (x *ApplyForceRequest) GetFyN() float64 {
+	if x != nil {
+		return x.FyN
+	}
+	return 0
+}
+
+func (x *ApplyForceRequest) GetFzN() float64 {
+	if x != nil {
+		return x.FzN
+	}
+	return 0
+}
+
+func (x *ApplyForceRequest) GetDurationS() float64 {
+	if x != nil {
+		return x.DurationS
+	}
+	return 0
+}
+
+type ApplyForceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyForceResponse) Reset() {
+	*x = ApplyForceResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyForceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyForceResponse) ProtoMessage() {}
+
+func (x *ApplyForceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyForceResponse.ProtoReflect.Descriptor instead.
+func (*ApplyForceResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{42}
+}
+
+type TeleportRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	Pose    *Pose                  `protobuf:"bytes,3,opt,name=pose,proto3" json:"pose,omitempty"`
+	// Also zero the robot's velocities (default behavior when true).
+	ZeroVelocity  bool `protobuf:"varint,4,opt,name=zero_velocity,json=zeroVelocity,proto3" json:"zero_velocity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TeleportRequest) Reset() {
+	*x = TeleportRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TeleportRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TeleportRequest) ProtoMessage() {}
+
+func (x *TeleportRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TeleportRequest.ProtoReflect.Descriptor instead.
+func (*TeleportRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *TeleportRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *TeleportRequest) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+func (x *TeleportRequest) GetPose() *Pose {
+	if x != nil {
+		return x.Pose
+	}
+	return nil
+}
+
+func (x *TeleportRequest) GetZeroVelocity() bool {
+	if x != nil {
+		return x.ZeroVelocity
+	}
+	return false
+}
+
+type TeleportResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TeleportResponse) Reset() {
+	*x = TeleportResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TeleportResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TeleportResponse) ProtoMessage() {}
+
+func (x *TeleportResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TeleportResponse.ProtoReflect.Descriptor instead.
+func (*TeleportResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{44}
+}
+
+type SaveSnapshotRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorldId       string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SaveSnapshotRequest) Reset() {
+	*x = SaveSnapshotRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SaveSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SaveSnapshotRequest) ProtoMessage() {}
+
+func (x *SaveSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SaveSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*SaveSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *SaveSnapshotRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+type SaveSnapshotResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SnapshotId    string                 `protobuf:"bytes,1,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SaveSnapshotResponse) Reset() {
+	*x = SaveSnapshotResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SaveSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SaveSnapshotResponse) ProtoMessage() {}
+
+func (x *SaveSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SaveSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*SaveSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *SaveSnapshotResponse) GetSnapshotId() string {
+	if x != nil {
+		return x.SnapshotId
+	}
+	return ""
+}
+
+type RestoreSnapshotRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorldId       string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	SnapshotId    string                 `protobuf:"bytes,2,opt,name=snapshot_id,json=snapshotId,proto3" json:"snapshot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreSnapshotRequest) Reset() {
+	*x = RestoreSnapshotRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreSnapshotRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreSnapshotRequest) ProtoMessage() {}
+
+func (x *RestoreSnapshotRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreSnapshotRequest.ProtoReflect.Descriptor instead.
+func (*RestoreSnapshotRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *RestoreSnapshotRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *RestoreSnapshotRequest) GetSnapshotId() string {
+	if x != nil {
+		return x.SnapshotId
+	}
+	return ""
+}
+
+type RestoreSnapshotResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreSnapshotResponse) Reset() {
+	*x = RestoreSnapshotResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreSnapshotResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreSnapshotResponse) ProtoMessage() {}
+
+func (x *RestoreSnapshotResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreSnapshotResponse.ProtoReflect.Descriptor instead.
+func (*RestoreSnapshotResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{48}
+}
+
+type ReadSensorsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorldId       string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId       string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadSensorsRequest) Reset() {
+	*x = ReadSensorsRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadSensorsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadSensorsRequest) ProtoMessage() {}
+
+func (x *ReadSensorsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadSensorsRequest.ProtoReflect.Descriptor instead.
+func (*ReadSensorsRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *ReadSensorsRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *ReadSensorsRequest) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+type ReadSensorsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Readings      []*SensorReading       `protobuf:"bytes,1,rep,name=readings,proto3" json:"readings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadSensorsResponse) Reset() {
+	*x = ReadSensorsResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadSensorsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadSensorsResponse) ProtoMessage() {}
+
+func (x *ReadSensorsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadSensorsResponse.ProtoReflect.Descriptor instead.
+func (*ReadSensorsResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *ReadSensorsResponse) GetReadings() []*SensorReading {
+	if x != nil {
+		return x.Readings
+	}
+	return nil
+}
+
+type SensorReading struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Sensor type as reported by the engine (accelerometer, gyro, touch, ...).
+	Type          string    `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Values        []float64 `protobuf:"fixed64,3,rep,packed,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SensorReading) Reset() {
+	*x = SensorReading{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SensorReading) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SensorReading) ProtoMessage() {}
+
+func (x *SensorReading) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SensorReading.ProtoReflect.Descriptor instead.
+func (*SensorReading) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *SensorReading) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *SensorReading) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *SensorReading) GetValues() []float64 {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
+type EditSceneRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	// Types that are valid to be assigned to Op:
+	//
+	//	*EditSceneRequest_AddBox
+	//	*EditSceneRequest_RemoveId
+	Op            isEditSceneRequest_Op `protobuf_oneof:"op"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditSceneRequest) Reset() {
+	*x = EditSceneRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditSceneRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditSceneRequest) ProtoMessage() {}
+
+func (x *EditSceneRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditSceneRequest.ProtoReflect.Descriptor instead.
+func (*EditSceneRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *EditSceneRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *EditSceneRequest) GetOp() isEditSceneRequest_Op {
+	if x != nil {
+		return x.Op
+	}
+	return nil
+}
+
+func (x *EditSceneRequest) GetAddBox() *SceneBoxSpec {
+	if x != nil {
+		if x, ok := x.Op.(*EditSceneRequest_AddBox); ok {
+			return x.AddBox
+		}
+	}
+	return nil
+}
+
+func (x *EditSceneRequest) GetRemoveId() string {
+	if x != nil {
+		if x, ok := x.Op.(*EditSceneRequest_RemoveId); ok {
+			return x.RemoveId
+		}
+	}
+	return ""
+}
+
+type isEditSceneRequest_Op interface {
+	isEditSceneRequest_Op()
+}
+
+type EditSceneRequest_AddBox struct {
+	AddBox *SceneBoxSpec `protobuf:"bytes,2,opt,name=add_box,json=addBox,proto3,oneof"`
+}
+
+type EditSceneRequest_RemoveId struct {
+	// Obstacle id to remove.
+	RemoveId string `protobuf:"bytes,3,opt,name=remove_id,json=removeId,proto3,oneof"`
+}
+
+func (*EditSceneRequest_AddBox) isEditSceneRequest_Op() {}
+
+func (*EditSceneRequest_RemoveId) isEditSceneRequest_Op() {}
+
+type SceneBoxSpec struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Center position [x, y, z] in meters.
+	Position []float64 `protobuf:"fixed64,2,rep,packed,name=position,proto3" json:"position,omitempty"`
+	// Full extents [x, y, z] in meters.
+	Size          []float64 `protobuf:"fixed64,3,rep,packed,name=size,proto3" json:"size,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SceneBoxSpec) Reset() {
+	*x = SceneBoxSpec{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SceneBoxSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SceneBoxSpec) ProtoMessage() {}
+
+func (x *SceneBoxSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SceneBoxSpec.ProtoReflect.Descriptor instead.
+func (*SceneBoxSpec) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *SceneBoxSpec) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *SceneBoxSpec) GetPosition() []float64 {
+	if x != nil {
+		return x.Position
+	}
+	return nil
+}
+
+func (x *SceneBoxSpec) GetSize() []float64 {
+	if x != nil {
+		return x.Size
+	}
+	return nil
+}
+
+type EditSceneResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EditSceneResponse) Reset() {
+	*x = EditSceneResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EditSceneResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EditSceneResponse) ProtoMessage() {}
+
+func (x *EditSceneResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EditSceneResponse.ProtoReflect.Descriptor instead.
+func (*EditSceneResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{54}
+}
+
+type LoadPolicyChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*LoadPolicyChunk_Source
+	//	*LoadPolicyChunk_Data
+	Payload       isLoadPolicyChunk_Payload `protobuf_oneof:"payload"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoadPolicyChunk) Reset() {
+	*x = LoadPolicyChunk{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoadPolicyChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoadPolicyChunk) ProtoMessage() {}
+
+func (x *LoadPolicyChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoadPolicyChunk.ProtoReflect.Descriptor instead.
+func (*LoadPolicyChunk) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *LoadPolicyChunk) GetPayload() isLoadPolicyChunk_Payload {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *LoadPolicyChunk) GetSource() *PolicySource {
+	if x != nil {
+		if x, ok := x.Payload.(*LoadPolicyChunk_Source); ok {
+			return x.Source
+		}
+	}
+	return nil
+}
+
+func (x *LoadPolicyChunk) GetData() []byte {
+	if x != nil {
+		if x, ok := x.Payload.(*LoadPolicyChunk_Data); ok {
+			return x.Data
+		}
+	}
+	return nil
+}
+
+type isLoadPolicyChunk_Payload interface {
+	isLoadPolicyChunk_Payload()
+}
+
+type LoadPolicyChunk_Source struct {
+	// First chunk: what the policy is and who it drives.
+	Source *PolicySource `protobuf:"bytes,1,opt,name=source,proto3,oneof"`
+}
+
+type LoadPolicyChunk_Data struct {
+	// Subsequent chunks: the policy file bytes.
+	Data []byte `protobuf:"bytes,2,opt,name=data,proto3,oneof"`
+}
+
+func (*LoadPolicyChunk_Source) isLoadPolicyChunk_Payload() {}
+
+func (*LoadPolicyChunk_Data) isLoadPolicyChunk_Payload() {}
+
+type PolicySource struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	// Policy file format; "onnx" is the first supported value.
+	Format        string `protobuf:"bytes,3,opt,name=format,proto3" json:"format,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PolicySource) Reset() {
+	*x = PolicySource{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PolicySource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PolicySource) ProtoMessage() {}
+
+func (x *PolicySource) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PolicySource.ProtoReflect.Descriptor instead.
+func (*PolicySource) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *PolicySource) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *PolicySource) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+func (x *PolicySource) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+type LoadPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PolicyId      string                 `protobuf:"bytes,1,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LoadPolicyResponse) Reset() {
+	*x = LoadPolicyResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LoadPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LoadPolicyResponse) ProtoMessage() {}
+
+func (x *LoadPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LoadPolicyResponse.ProtoReflect.Descriptor instead.
+func (*LoadPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *LoadPolicyResponse) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+type ClearPolicyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorldId       string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId       string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearPolicyRequest) Reset() {
+	*x = ClearPolicyRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearPolicyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearPolicyRequest) ProtoMessage() {}
+
+func (x *ClearPolicyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearPolicyRequest.ProtoReflect.Descriptor instead.
+func (*ClearPolicyRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *ClearPolicyRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *ClearPolicyRequest) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+type ClearPolicyResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClearPolicyResponse) Reset() {
+	*x = ClearPolicyResponse{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClearPolicyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClearPolicyResponse) ProtoMessage() {}
+
+func (x *ClearPolicyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClearPolicyResponse.ProtoReflect.Descriptor instead.
+func (*ClearPolicyResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{59}
+}
+
+type RenderVideoRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	WorldId string                 `protobuf:"bytes,1,opt,name=world_id,json=worldId,proto3" json:"world_id,omitempty"`
+	RobotId string                 `protobuf:"bytes,2,opt,name=robot_id,json=robotId,proto3" json:"robot_id,omitempty"`
+	// Empty or "tracking" follows the robot; otherwise a model camera name.
+	CameraName    string  `protobuf:"bytes,3,opt,name=camera_name,json=cameraName,proto3" json:"camera_name,omitempty"`
+	DurationS     float64 `protobuf:"fixed64,4,opt,name=duration_s,json=durationS,proto3" json:"duration_s,omitempty"`
+	Fps           uint32  `protobuf:"varint,5,opt,name=fps,proto3" json:"fps,omitempty"`
+	Width         uint32  `protobuf:"varint,6,opt,name=width,proto3" json:"width,omitempty"`
+	Height        uint32  `protobuf:"varint,7,opt,name=height,proto3" json:"height,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenderVideoRequest) Reset() {
+	*x = RenderVideoRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenderVideoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenderVideoRequest) ProtoMessage() {}
+
+func (x *RenderVideoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenderVideoRequest.ProtoReflect.Descriptor instead.
+func (*RenderVideoRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *RenderVideoRequest) GetWorldId() string {
+	if x != nil {
+		return x.WorldId
+	}
+	return ""
+}
+
+func (x *RenderVideoRequest) GetRobotId() string {
+	if x != nil {
+		return x.RobotId
+	}
+	return ""
+}
+
+func (x *RenderVideoRequest) GetCameraName() string {
+	if x != nil {
+		return x.CameraName
+	}
+	return ""
+}
+
+func (x *RenderVideoRequest) GetDurationS() float64 {
+	if x != nil {
+		return x.DurationS
+	}
+	return 0
+}
+
+func (x *RenderVideoRequest) GetFps() uint32 {
+	if x != nil {
+		return x.Fps
+	}
+	return 0
+}
+
+func (x *RenderVideoRequest) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *RenderVideoRequest) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+type VideoChunk struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Encoded video bytes (mp4).
+	Data          []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VideoChunk) Reset() {
+	*x = VideoChunk{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VideoChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VideoChunk) ProtoMessage() {}
+
+func (x *VideoChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VideoChunk.ProtoReflect.Descriptor instead.
+func (*VideoChunk) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *VideoChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 type StopRecordingRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RecordingId   string                 `protobuf:"bytes,1,opt,name=recording_id,json=recordingId,proto3" json:"recording_id,omitempty"`
@@ -2419,7 +3708,7 @@ type StopRecordingRequest struct {
 
 func (x *StopRecordingRequest) Reset() {
 	*x = StopRecordingRequest{}
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[39]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2431,7 +3720,7 @@ func (x *StopRecordingRequest) String() string {
 func (*StopRecordingRequest) ProtoMessage() {}
 
 func (x *StopRecordingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[39]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2444,7 +3733,7 @@ func (x *StopRecordingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRecordingRequest.ProtoReflect.Descriptor instead.
 func (*StopRecordingRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{39}
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *StopRecordingRequest) GetRecordingId() string {
@@ -2467,7 +3756,7 @@ type StopRecordingResponse struct {
 
 func (x *StopRecordingResponse) Reset() {
 	*x = StopRecordingResponse{}
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[40]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2479,7 +3768,7 @@ func (x *StopRecordingResponse) String() string {
 func (*StopRecordingResponse) ProtoMessage() {}
 
 func (x *StopRecordingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[40]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2492,7 +3781,7 @@ func (x *StopRecordingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRecordingResponse.ProtoReflect.Descriptor instead.
 func (*StopRecordingResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{40}
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *StopRecordingResponse) GetReplayId() string {
@@ -2518,7 +3807,7 @@ type GetReplayRequest struct {
 
 func (x *GetReplayRequest) Reset() {
 	*x = GetReplayRequest{}
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2530,7 +3819,7 @@ func (x *GetReplayRequest) String() string {
 func (*GetReplayRequest) ProtoMessage() {}
 
 func (x *GetReplayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2543,7 +3832,7 @@ func (x *GetReplayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplayRequest.ProtoReflect.Descriptor instead.
 func (*GetReplayRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{41}
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *GetReplayRequest) GetReplayId() string {
@@ -2562,7 +3851,7 @@ type GetReplayChunk struct {
 
 func (x *GetReplayChunk) Reset() {
 	*x = GetReplayChunk{}
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2574,7 +3863,7 @@ func (x *GetReplayChunk) String() string {
 func (*GetReplayChunk) ProtoMessage() {}
 
 func (x *GetReplayChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2587,7 +3876,7 @@ func (x *GetReplayChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetReplayChunk.ProtoReflect.Descriptor instead.
 func (*GetReplayChunk) Descriptor() ([]byte, []int) {
-	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{42}
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *GetReplayChunk) GetData() []byte {
@@ -2605,11 +3894,12 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\x0eLoadModelChunk\x123\n" +
 	"\x06source\x18\x01 \x01(\v2\x19.wendy.sim.v1.ModelSourceH\x00R\x06source\x12\x14\n" +
 	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\t\n" +
-	"\apayload\"{\n" +
+	"\apayload\"\xa5\x01\n" +
 	"\vModelSource\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x121\n" +
 	"\x06format\x18\x02 \x01(\x0e2\x19.wendy.sim.v1.ModelFormatR\x06format\x12%\n" +
-	"\x0emenagerie_path\x18\x03 \x01(\tR\rmenageriePath\".\n" +
+	"\x0emenagerie_path\x18\x03 \x01(\tR\rmenageriePath\x12(\n" +
+	"\x10replace_model_id\x18\x04 \x01(\tR\x0ereplaceModelId\".\n" +
 	"\x11LoadModelResponse\x12\x19\n" +
 	"\bmodel_id\x18\x01 \x01(\tR\amodelId\"1\n" +
 	"\x14DescribeModelRequest\x12\x19\n" +
@@ -2750,7 +4040,85 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\x15StartRecordingRequest\x12\x19\n" +
 	"\bworld_id\x18\x01 \x01(\tR\aworldId\";\n" +
 	"\x16StartRecordingResponse\x12!\n" +
-	"\frecording_id\x18\x01 \x01(\tR\vrecordingId\"9\n" +
+	"\frecording_id\x18\x01 \x01(\tR\vrecordingId\"g\n" +
+	"\x0fSetClockRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x16\n" +
+	"\x06paused\x18\x02 \x01(\bR\x06paused\x12!\n" +
+	"\fspeed_factor\x18\x03 \x01(\x01R\vspeedFactor\"M\n" +
+	"\x10SetClockResponse\x12\x16\n" +
+	"\x06paused\x18\x01 \x01(\bR\x06paused\x12!\n" +
+	"\fspeed_factor\x18\x02 \x01(\x01R\vspeedFactor\"\xa1\x01\n" +
+	"\x11ApplyForceRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\x12\x11\n" +
+	"\x04fx_n\x18\x03 \x01(\x01R\x03fxN\x12\x11\n" +
+	"\x04fy_n\x18\x04 \x01(\x01R\x03fyN\x12\x11\n" +
+	"\x04fz_n\x18\x05 \x01(\x01R\x03fzN\x12\x1d\n" +
+	"\n" +
+	"duration_s\x18\x06 \x01(\x01R\tdurationS\"\x14\n" +
+	"\x12ApplyForceResponse\"\x94\x01\n" +
+	"\x0fTeleportRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\x12&\n" +
+	"\x04pose\x18\x03 \x01(\v2\x12.wendy.sim.v1.PoseR\x04pose\x12#\n" +
+	"\rzero_velocity\x18\x04 \x01(\bR\fzeroVelocity\"\x12\n" +
+	"\x10TeleportResponse\"0\n" +
+	"\x13SaveSnapshotRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\"7\n" +
+	"\x14SaveSnapshotResponse\x12\x1f\n" +
+	"\vsnapshot_id\x18\x01 \x01(\tR\n" +
+	"snapshotId\"T\n" +
+	"\x16RestoreSnapshotRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x1f\n" +
+	"\vsnapshot_id\x18\x02 \x01(\tR\n" +
+	"snapshotId\"\x19\n" +
+	"\x17RestoreSnapshotResponse\"J\n" +
+	"\x12ReadSensorsRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\"N\n" +
+	"\x13ReadSensorsResponse\x127\n" +
+	"\breadings\x18\x01 \x03(\v2\x1b.wendy.sim.v1.SensorReadingR\breadings\"O\n" +
+	"\rSensorReading\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04type\x18\x02 \x01(\tR\x04type\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\x01R\x06values\"\x89\x01\n" +
+	"\x10EditSceneRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x125\n" +
+	"\aadd_box\x18\x02 \x01(\v2\x1a.wendy.sim.v1.SceneBoxSpecH\x00R\x06addBox\x12\x1d\n" +
+	"\tremove_id\x18\x03 \x01(\tH\x00R\bremoveIdB\x04\n" +
+	"\x02op\"N\n" +
+	"\fSceneBoxSpec\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1a\n" +
+	"\bposition\x18\x02 \x03(\x01R\bposition\x12\x12\n" +
+	"\x04size\x18\x03 \x03(\x01R\x04size\"\x13\n" +
+	"\x11EditSceneResponse\"h\n" +
+	"\x0fLoadPolicyChunk\x124\n" +
+	"\x06source\x18\x01 \x01(\v2\x1a.wendy.sim.v1.PolicySourceH\x00R\x06source\x12\x14\n" +
+	"\x04data\x18\x02 \x01(\fH\x00R\x04dataB\t\n" +
+	"\apayload\"\\\n" +
+	"\fPolicySource\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\x12\x16\n" +
+	"\x06format\x18\x03 \x01(\tR\x06format\"1\n" +
+	"\x12LoadPolicyResponse\x12\x1b\n" +
+	"\tpolicy_id\x18\x01 \x01(\tR\bpolicyId\"J\n" +
+	"\x12ClearPolicyRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\"\x15\n" +
+	"\x13ClearPolicyResponse\"\xca\x01\n" +
+	"\x12RenderVideoRequest\x12\x19\n" +
+	"\bworld_id\x18\x01 \x01(\tR\aworldId\x12\x19\n" +
+	"\brobot_id\x18\x02 \x01(\tR\arobotId\x12\x1f\n" +
+	"\vcamera_name\x18\x03 \x01(\tR\n" +
+	"cameraName\x12\x1d\n" +
+	"\n" +
+	"duration_s\x18\x04 \x01(\x01R\tdurationS\x12\x10\n" +
+	"\x03fps\x18\x05 \x01(\rR\x03fps\x12\x14\n" +
+	"\x05width\x18\x06 \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\a \x01(\rR\x06height\" \n" +
+	"\n" +
+	"VideoChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"9\n" +
 	"\x14StopRecordingRequest\x12!\n" +
 	"\frecording_id\x18\x01 \x01(\tR\vrecordingId\"F\n" +
 	"\x15StopRecordingResponse\x12\x1b\n" +
@@ -2770,7 +4138,7 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\x18MODEL_FORMAT_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11MODEL_FORMAT_MJCF\x10\x01\x12\x15\n" +
 	"\x11MODEL_FORMAT_URDF\x10\x02\x12\x14\n" +
-	"\x10MODEL_FORMAT_SDF\x10\x032\xcc\t\n" +
+	"\x10MODEL_FORMAT_SDF\x10\x032\xfe\x0f\n" +
 	"\x13RobotBackendService\x12L\n" +
 	"\tLoadModel\x12\x1c.wendy.sim.v1.LoadModelChunk\x1a\x1f.wendy.sim.v1.LoadModelResponse(\x01\x12X\n" +
 	"\rDescribeModel\x12\".wendy.sim.v1.DescribeModelRequest\x1a#.wendy.sim.v1.DescribeModelResponse\x12R\n" +
@@ -2786,7 +4154,19 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\aRunTask\x12\x1c.wendy.sim.v1.RunTaskRequest\x1a\x17.wendy.sim.v1.TaskEvent0\x01\x12[\n" +
 	"\x0eStartRecording\x12#.wendy.sim.v1.StartRecordingRequest\x1a$.wendy.sim.v1.StartRecordingResponse\x12X\n" +
 	"\rStopRecording\x12\".wendy.sim.v1.StopRecordingRequest\x1a#.wendy.sim.v1.StopRecordingResponse\x12K\n" +
-	"\tGetReplay\x12\x1e.wendy.sim.v1.GetReplayRequest\x1a\x1c.wendy.sim.v1.GetReplayChunk0\x01B8Z6github.com/wendylabsinc/wendy/go/proto/gen/simpb;simpbb\x06proto3"
+	"\tGetReplay\x12\x1e.wendy.sim.v1.GetReplayRequest\x1a\x1c.wendy.sim.v1.GetReplayChunk0\x01\x12I\n" +
+	"\bSetClock\x12\x1d.wendy.sim.v1.SetClockRequest\x1a\x1e.wendy.sim.v1.SetClockResponse\x12O\n" +
+	"\n" +
+	"ApplyForce\x12\x1f.wendy.sim.v1.ApplyForceRequest\x1a .wendy.sim.v1.ApplyForceResponse\x12I\n" +
+	"\bTeleport\x12\x1d.wendy.sim.v1.TeleportRequest\x1a\x1e.wendy.sim.v1.TeleportResponse\x12U\n" +
+	"\fSaveSnapshot\x12!.wendy.sim.v1.SaveSnapshotRequest\x1a\".wendy.sim.v1.SaveSnapshotResponse\x12^\n" +
+	"\x0fRestoreSnapshot\x12$.wendy.sim.v1.RestoreSnapshotRequest\x1a%.wendy.sim.v1.RestoreSnapshotResponse\x12R\n" +
+	"\vReadSensors\x12 .wendy.sim.v1.ReadSensorsRequest\x1a!.wendy.sim.v1.ReadSensorsResponse\x12L\n" +
+	"\tEditScene\x12\x1e.wendy.sim.v1.EditSceneRequest\x1a\x1f.wendy.sim.v1.EditSceneResponse\x12O\n" +
+	"\n" +
+	"LoadPolicy\x12\x1d.wendy.sim.v1.LoadPolicyChunk\x1a .wendy.sim.v1.LoadPolicyResponse(\x01\x12R\n" +
+	"\vClearPolicy\x12 .wendy.sim.v1.ClearPolicyRequest\x1a!.wendy.sim.v1.ClearPolicyResponse\x12K\n" +
+	"\vRenderVideo\x12 .wendy.sim.v1.RenderVideoRequest\x1a\x18.wendy.sim.v1.VideoChunk0\x01B8Z6github.com/wendylabsinc/wendy/go/proto/gen/simpb;simpbb\x06proto3"
 
 var (
 	file_wendy_sim_v1_robot_backend_proto_rawDescOnce sync.Once
@@ -2801,7 +4181,7 @@ func file_wendy_sim_v1_robot_backend_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_sim_v1_robot_backend_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_sim_v1_robot_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_wendy_sim_v1_robot_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_wendy_sim_v1_robot_backend_proto_goTypes = []any{
 	(ControlLevel)(0),               // 0: wendy.sim.v1.ControlLevel
 	(ModelFormat)(0),                // 1: wendy.sim.v1.ModelFormat
@@ -2844,11 +4224,34 @@ var file_wendy_sim_v1_robot_backend_proto_goTypes = []any{
 	(*CheckResult)(nil),             // 38: wendy.sim.v1.CheckResult
 	(*StartRecordingRequest)(nil),   // 39: wendy.sim.v1.StartRecordingRequest
 	(*StartRecordingResponse)(nil),  // 40: wendy.sim.v1.StartRecordingResponse
-	(*StopRecordingRequest)(nil),    // 41: wendy.sim.v1.StopRecordingRequest
-	(*StopRecordingResponse)(nil),   // 42: wendy.sim.v1.StopRecordingResponse
-	(*GetReplayRequest)(nil),        // 43: wendy.sim.v1.GetReplayRequest
-	(*GetReplayChunk)(nil),          // 44: wendy.sim.v1.GetReplayChunk
-	nil,                             // 45: wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
+	(*SetClockRequest)(nil),         // 41: wendy.sim.v1.SetClockRequest
+	(*SetClockResponse)(nil),        // 42: wendy.sim.v1.SetClockResponse
+	(*ApplyForceRequest)(nil),       // 43: wendy.sim.v1.ApplyForceRequest
+	(*ApplyForceResponse)(nil),      // 44: wendy.sim.v1.ApplyForceResponse
+	(*TeleportRequest)(nil),         // 45: wendy.sim.v1.TeleportRequest
+	(*TeleportResponse)(nil),        // 46: wendy.sim.v1.TeleportResponse
+	(*SaveSnapshotRequest)(nil),     // 47: wendy.sim.v1.SaveSnapshotRequest
+	(*SaveSnapshotResponse)(nil),    // 48: wendy.sim.v1.SaveSnapshotResponse
+	(*RestoreSnapshotRequest)(nil),  // 49: wendy.sim.v1.RestoreSnapshotRequest
+	(*RestoreSnapshotResponse)(nil), // 50: wendy.sim.v1.RestoreSnapshotResponse
+	(*ReadSensorsRequest)(nil),      // 51: wendy.sim.v1.ReadSensorsRequest
+	(*ReadSensorsResponse)(nil),     // 52: wendy.sim.v1.ReadSensorsResponse
+	(*SensorReading)(nil),           // 53: wendy.sim.v1.SensorReading
+	(*EditSceneRequest)(nil),        // 54: wendy.sim.v1.EditSceneRequest
+	(*SceneBoxSpec)(nil),            // 55: wendy.sim.v1.SceneBoxSpec
+	(*EditSceneResponse)(nil),       // 56: wendy.sim.v1.EditSceneResponse
+	(*LoadPolicyChunk)(nil),         // 57: wendy.sim.v1.LoadPolicyChunk
+	(*PolicySource)(nil),            // 58: wendy.sim.v1.PolicySource
+	(*LoadPolicyResponse)(nil),      // 59: wendy.sim.v1.LoadPolicyResponse
+	(*ClearPolicyRequest)(nil),      // 60: wendy.sim.v1.ClearPolicyRequest
+	(*ClearPolicyResponse)(nil),     // 61: wendy.sim.v1.ClearPolicyResponse
+	(*RenderVideoRequest)(nil),      // 62: wendy.sim.v1.RenderVideoRequest
+	(*VideoChunk)(nil),              // 63: wendy.sim.v1.VideoChunk
+	(*StopRecordingRequest)(nil),    // 64: wendy.sim.v1.StopRecordingRequest
+	(*StopRecordingResponse)(nil),   // 65: wendy.sim.v1.StopRecordingResponse
+	(*GetReplayRequest)(nil),        // 66: wendy.sim.v1.GetReplayRequest
+	(*GetReplayChunk)(nil),          // 67: wendy.sim.v1.GetReplayChunk
+	nil,                             // 68: wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
 }
 var file_wendy_sim_v1_robot_backend_proto_depIdxs = []int32{
 	3,  // 0: wendy.sim.v1.LoadModelChunk.source:type_name -> wendy.sim.v1.ModelSource
@@ -2863,47 +4266,71 @@ var file_wendy_sim_v1_robot_backend_proto_depIdxs = []int32{
 	18, // 9: wendy.sim.v1.GetStateResponse.base_pose:type_name -> wendy.sim.v1.Pose
 	21, // 10: wendy.sim.v1.GetStateResponse.joints:type_name -> wendy.sim.v1.JointState
 	24, // 11: wendy.sim.v1.GetContactsResponse.contacts:type_name -> wendy.sim.v1.Contact
-	45, // 12: wendy.sim.v1.SetJointTargetsRequest.targets:type_name -> wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
+	68, // 12: wendy.sim.v1.SetJointTargetsRequest.targets:type_name -> wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
 	0,  // 13: wendy.sim.v1.RunTaskRequest.max_control_level:type_name -> wendy.sim.v1.ControlLevel
 	35, // 14: wendy.sim.v1.TaskEvent.progress:type_name -> wendy.sim.v1.TaskProgress
 	36, // 15: wendy.sim.v1.TaskEvent.log:type_name -> wendy.sim.v1.TaskLog
 	37, // 16: wendy.sim.v1.TaskEvent.result:type_name -> wendy.sim.v1.TaskResult
 	38, // 17: wendy.sim.v1.TaskResult.checks:type_name -> wendy.sim.v1.CheckResult
-	2,  // 18: wendy.sim.v1.RobotBackendService.LoadModel:input_type -> wendy.sim.v1.LoadModelChunk
-	5,  // 19: wendy.sim.v1.RobotBackendService.DescribeModel:input_type -> wendy.sim.v1.DescribeModelRequest
-	12, // 20: wendy.sim.v1.RobotBackendService.CreateWorld:input_type -> wendy.sim.v1.CreateWorldRequest
-	14, // 21: wendy.sim.v1.RobotBackendService.Spawn:input_type -> wendy.sim.v1.SpawnRequest
-	16, // 22: wendy.sim.v1.RobotBackendService.Reset:input_type -> wendy.sim.v1.ResetRequest
-	19, // 23: wendy.sim.v1.RobotBackendService.GetState:input_type -> wendy.sim.v1.GetStateRequest
-	22, // 24: wendy.sim.v1.RobotBackendService.GetContacts:input_type -> wendy.sim.v1.GetContactsRequest
-	25, // 25: wendy.sim.v1.RobotBackendService.GetCameraFrame:input_type -> wendy.sim.v1.GetCameraFrameRequest
-	27, // 26: wendy.sim.v1.RobotBackendService.SetVelocity:input_type -> wendy.sim.v1.SetVelocityRequest
-	29, // 27: wendy.sim.v1.RobotBackendService.SetJointTargets:input_type -> wendy.sim.v1.SetJointTargetsRequest
-	31, // 28: wendy.sim.v1.RobotBackendService.Step:input_type -> wendy.sim.v1.StepRequest
-	33, // 29: wendy.sim.v1.RobotBackendService.RunTask:input_type -> wendy.sim.v1.RunTaskRequest
-	39, // 30: wendy.sim.v1.RobotBackendService.StartRecording:input_type -> wendy.sim.v1.StartRecordingRequest
-	41, // 31: wendy.sim.v1.RobotBackendService.StopRecording:input_type -> wendy.sim.v1.StopRecordingRequest
-	43, // 32: wendy.sim.v1.RobotBackendService.GetReplay:input_type -> wendy.sim.v1.GetReplayRequest
-	4,  // 33: wendy.sim.v1.RobotBackendService.LoadModel:output_type -> wendy.sim.v1.LoadModelResponse
-	6,  // 34: wendy.sim.v1.RobotBackendService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
-	13, // 35: wendy.sim.v1.RobotBackendService.CreateWorld:output_type -> wendy.sim.v1.CreateWorldResponse
-	15, // 36: wendy.sim.v1.RobotBackendService.Spawn:output_type -> wendy.sim.v1.SpawnResponse
-	17, // 37: wendy.sim.v1.RobotBackendService.Reset:output_type -> wendy.sim.v1.ResetResponse
-	20, // 38: wendy.sim.v1.RobotBackendService.GetState:output_type -> wendy.sim.v1.GetStateResponse
-	23, // 39: wendy.sim.v1.RobotBackendService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
-	26, // 40: wendy.sim.v1.RobotBackendService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
-	28, // 41: wendy.sim.v1.RobotBackendService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
-	30, // 42: wendy.sim.v1.RobotBackendService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
-	32, // 43: wendy.sim.v1.RobotBackendService.Step:output_type -> wendy.sim.v1.StepResponse
-	34, // 44: wendy.sim.v1.RobotBackendService.RunTask:output_type -> wendy.sim.v1.TaskEvent
-	40, // 45: wendy.sim.v1.RobotBackendService.StartRecording:output_type -> wendy.sim.v1.StartRecordingResponse
-	42, // 46: wendy.sim.v1.RobotBackendService.StopRecording:output_type -> wendy.sim.v1.StopRecordingResponse
-	44, // 47: wendy.sim.v1.RobotBackendService.GetReplay:output_type -> wendy.sim.v1.GetReplayChunk
-	33, // [33:48] is the sub-list for method output_type
-	18, // [18:33] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	18, // 18: wendy.sim.v1.TeleportRequest.pose:type_name -> wendy.sim.v1.Pose
+	53, // 19: wendy.sim.v1.ReadSensorsResponse.readings:type_name -> wendy.sim.v1.SensorReading
+	55, // 20: wendy.sim.v1.EditSceneRequest.add_box:type_name -> wendy.sim.v1.SceneBoxSpec
+	58, // 21: wendy.sim.v1.LoadPolicyChunk.source:type_name -> wendy.sim.v1.PolicySource
+	2,  // 22: wendy.sim.v1.RobotBackendService.LoadModel:input_type -> wendy.sim.v1.LoadModelChunk
+	5,  // 23: wendy.sim.v1.RobotBackendService.DescribeModel:input_type -> wendy.sim.v1.DescribeModelRequest
+	12, // 24: wendy.sim.v1.RobotBackendService.CreateWorld:input_type -> wendy.sim.v1.CreateWorldRequest
+	14, // 25: wendy.sim.v1.RobotBackendService.Spawn:input_type -> wendy.sim.v1.SpawnRequest
+	16, // 26: wendy.sim.v1.RobotBackendService.Reset:input_type -> wendy.sim.v1.ResetRequest
+	19, // 27: wendy.sim.v1.RobotBackendService.GetState:input_type -> wendy.sim.v1.GetStateRequest
+	22, // 28: wendy.sim.v1.RobotBackendService.GetContacts:input_type -> wendy.sim.v1.GetContactsRequest
+	25, // 29: wendy.sim.v1.RobotBackendService.GetCameraFrame:input_type -> wendy.sim.v1.GetCameraFrameRequest
+	27, // 30: wendy.sim.v1.RobotBackendService.SetVelocity:input_type -> wendy.sim.v1.SetVelocityRequest
+	29, // 31: wendy.sim.v1.RobotBackendService.SetJointTargets:input_type -> wendy.sim.v1.SetJointTargetsRequest
+	31, // 32: wendy.sim.v1.RobotBackendService.Step:input_type -> wendy.sim.v1.StepRequest
+	33, // 33: wendy.sim.v1.RobotBackendService.RunTask:input_type -> wendy.sim.v1.RunTaskRequest
+	39, // 34: wendy.sim.v1.RobotBackendService.StartRecording:input_type -> wendy.sim.v1.StartRecordingRequest
+	64, // 35: wendy.sim.v1.RobotBackendService.StopRecording:input_type -> wendy.sim.v1.StopRecordingRequest
+	66, // 36: wendy.sim.v1.RobotBackendService.GetReplay:input_type -> wendy.sim.v1.GetReplayRequest
+	41, // 37: wendy.sim.v1.RobotBackendService.SetClock:input_type -> wendy.sim.v1.SetClockRequest
+	43, // 38: wendy.sim.v1.RobotBackendService.ApplyForce:input_type -> wendy.sim.v1.ApplyForceRequest
+	45, // 39: wendy.sim.v1.RobotBackendService.Teleport:input_type -> wendy.sim.v1.TeleportRequest
+	47, // 40: wendy.sim.v1.RobotBackendService.SaveSnapshot:input_type -> wendy.sim.v1.SaveSnapshotRequest
+	49, // 41: wendy.sim.v1.RobotBackendService.RestoreSnapshot:input_type -> wendy.sim.v1.RestoreSnapshotRequest
+	51, // 42: wendy.sim.v1.RobotBackendService.ReadSensors:input_type -> wendy.sim.v1.ReadSensorsRequest
+	54, // 43: wendy.sim.v1.RobotBackendService.EditScene:input_type -> wendy.sim.v1.EditSceneRequest
+	57, // 44: wendy.sim.v1.RobotBackendService.LoadPolicy:input_type -> wendy.sim.v1.LoadPolicyChunk
+	60, // 45: wendy.sim.v1.RobotBackendService.ClearPolicy:input_type -> wendy.sim.v1.ClearPolicyRequest
+	62, // 46: wendy.sim.v1.RobotBackendService.RenderVideo:input_type -> wendy.sim.v1.RenderVideoRequest
+	4,  // 47: wendy.sim.v1.RobotBackendService.LoadModel:output_type -> wendy.sim.v1.LoadModelResponse
+	6,  // 48: wendy.sim.v1.RobotBackendService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
+	13, // 49: wendy.sim.v1.RobotBackendService.CreateWorld:output_type -> wendy.sim.v1.CreateWorldResponse
+	15, // 50: wendy.sim.v1.RobotBackendService.Spawn:output_type -> wendy.sim.v1.SpawnResponse
+	17, // 51: wendy.sim.v1.RobotBackendService.Reset:output_type -> wendy.sim.v1.ResetResponse
+	20, // 52: wendy.sim.v1.RobotBackendService.GetState:output_type -> wendy.sim.v1.GetStateResponse
+	23, // 53: wendy.sim.v1.RobotBackendService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
+	26, // 54: wendy.sim.v1.RobotBackendService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
+	28, // 55: wendy.sim.v1.RobotBackendService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
+	30, // 56: wendy.sim.v1.RobotBackendService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
+	32, // 57: wendy.sim.v1.RobotBackendService.Step:output_type -> wendy.sim.v1.StepResponse
+	34, // 58: wendy.sim.v1.RobotBackendService.RunTask:output_type -> wendy.sim.v1.TaskEvent
+	40, // 59: wendy.sim.v1.RobotBackendService.StartRecording:output_type -> wendy.sim.v1.StartRecordingResponse
+	65, // 60: wendy.sim.v1.RobotBackendService.StopRecording:output_type -> wendy.sim.v1.StopRecordingResponse
+	67, // 61: wendy.sim.v1.RobotBackendService.GetReplay:output_type -> wendy.sim.v1.GetReplayChunk
+	42, // 62: wendy.sim.v1.RobotBackendService.SetClock:output_type -> wendy.sim.v1.SetClockResponse
+	44, // 63: wendy.sim.v1.RobotBackendService.ApplyForce:output_type -> wendy.sim.v1.ApplyForceResponse
+	46, // 64: wendy.sim.v1.RobotBackendService.Teleport:output_type -> wendy.sim.v1.TeleportResponse
+	48, // 65: wendy.sim.v1.RobotBackendService.SaveSnapshot:output_type -> wendy.sim.v1.SaveSnapshotResponse
+	50, // 66: wendy.sim.v1.RobotBackendService.RestoreSnapshot:output_type -> wendy.sim.v1.RestoreSnapshotResponse
+	52, // 67: wendy.sim.v1.RobotBackendService.ReadSensors:output_type -> wendy.sim.v1.ReadSensorsResponse
+	56, // 68: wendy.sim.v1.RobotBackendService.EditScene:output_type -> wendy.sim.v1.EditSceneResponse
+	59, // 69: wendy.sim.v1.RobotBackendService.LoadPolicy:output_type -> wendy.sim.v1.LoadPolicyResponse
+	61, // 70: wendy.sim.v1.RobotBackendService.ClearPolicy:output_type -> wendy.sim.v1.ClearPolicyResponse
+	63, // 71: wendy.sim.v1.RobotBackendService.RenderVideo:output_type -> wendy.sim.v1.VideoChunk
+	47, // [47:72] is the sub-list for method output_type
+	22, // [22:47] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_wendy_sim_v1_robot_backend_proto_init() }
@@ -2920,13 +4347,21 @@ func file_wendy_sim_v1_robot_backend_proto_init() {
 		(*TaskEvent_Log)(nil),
 		(*TaskEvent_Result)(nil),
 	}
+	file_wendy_sim_v1_robot_backend_proto_msgTypes[52].OneofWrappers = []any{
+		(*EditSceneRequest_AddBox)(nil),
+		(*EditSceneRequest_RemoveId)(nil),
+	}
+	file_wendy_sim_v1_robot_backend_proto_msgTypes[55].OneofWrappers = []any{
+		(*LoadPolicyChunk_Source)(nil),
+		(*LoadPolicyChunk_Data)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_sim_v1_robot_backend_proto_rawDesc), len(file_wendy_sim_v1_robot_backend_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   44,
+			NumMessages:   67,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

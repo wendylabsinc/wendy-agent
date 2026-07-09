@@ -53,6 +53,20 @@ service WendySimService {
 
     // GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks.
     rpc GetReplay(GetReplayRequest) returns (stream GetReplayChunk);
+
+    // --- Interactive tooling (forwarded to sim backends; Unimplemented on
+    // real-robot backends) ---
+
+    rpc SetClock(wendy.sim.v1.SetClockRequest) returns (wendy.sim.v1.SetClockResponse);
+    rpc ApplyForce(wendy.sim.v1.ApplyForceRequest) returns (wendy.sim.v1.ApplyForceResponse);
+    rpc Teleport(wendy.sim.v1.TeleportRequest) returns (wendy.sim.v1.TeleportResponse);
+    rpc SaveSnapshot(wendy.sim.v1.SaveSnapshotRequest) returns (wendy.sim.v1.SaveSnapshotResponse);
+    rpc RestoreSnapshot(wendy.sim.v1.RestoreSnapshotRequest) returns (wendy.sim.v1.RestoreSnapshotResponse);
+    rpc ReadSensors(wendy.sim.v1.ReadSensorsRequest) returns (wendy.sim.v1.ReadSensorsResponse);
+    rpc EditScene(wendy.sim.v1.EditSceneRequest) returns (wendy.sim.v1.EditSceneResponse);
+    rpc LoadPolicy(stream wendy.sim.v1.LoadPolicyChunk) returns (wendy.sim.v1.LoadPolicyResponse);
+    rpc ClearPolicy(wendy.sim.v1.ClearPolicyRequest) returns (wendy.sim.v1.ClearPolicyResponse);
+    rpc RenderVideo(wendy.sim.v1.RenderVideoRequest) returns (stream wendy.sim.v1.VideoChunk);
 }
 
 message CreateSimulationRequest {
