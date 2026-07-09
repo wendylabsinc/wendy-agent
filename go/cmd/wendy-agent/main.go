@@ -124,6 +124,14 @@ func main() {
 
 	logger.Info("Starting wendy-agent", zap.String("version", version.Version))
 
+	// Sim-only mode: run purely as a sim front (see simOnlyEnvVar). Services
+	// are constructed and registered as usual; only the containerd-backed
+	// loops and boot-time one-shots below are not launched.
+	simOnly := simOnlyMode()
+	if simOnly {
+		logger.Info("sim-only mode: container management disabled (WENDY_SIM_ONLY=1)")
+	}
+
 	configPath := "/etc/wendy-agent"
 	if envPath := os.Getenv("WENDY_CONFIG_PATH"); envPath != "" {
 		configPath = envPath
@@ -276,7 +284,7 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	if monitor != nil {
+	if monitor != nil && !simOnly {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -288,7 +296,7 @@ func main() {
 		go monitor.ReconcileBootContainers(ctx)
 	}
 
-	if containerdClient != nil {
+	if containerdClient != nil && !simOnly {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -296,7 +304,7 @@ func main() {
 		}()
 	}
 
-	if ctrdClient != nil {
+	if ctrdClient != nil && !simOnly {
 		if err := ctrdClient.ReapOrphanedROS2Sidecars(ctx); err != nil {
 			logger.Warn("ROS 2 sidecar reap on boot failed", zap.Error(err))
 		}
