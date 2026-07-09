@@ -75,6 +75,10 @@ service RobotBackendService {
     // StopRecording finalizes a recording and returns a replay handle the
     // agent can fetch or point a viewer at (e.g. a Rerun .rrd).
     rpc StopRecording(StopRecordingRequest) returns (StopRecordingResponse);
+
+    // GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
+    // the agent can relay it to the CLI without sharing a filesystem.
+    rpc GetReplay(GetReplayRequest) returns (stream GetReplayChunk);
 }
 
 // ControlLevel classifies how low-level a command is. The agent gates levels
@@ -351,4 +355,12 @@ message StopRecordingResponse {
     // an .rrd path inside the backend container (fetched via the agent) or a
     // viewer URL when the backend serves one.
     string uri = 2;
+}
+
+message GetReplayRequest {
+    string replay_id = 1;
+}
+
+message GetReplayChunk {
+    bytes data = 1;
 }

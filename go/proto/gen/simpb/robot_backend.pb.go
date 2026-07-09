@@ -2509,6 +2509,94 @@ func (x *StopRecordingResponse) GetUri() string {
 	return ""
 }
 
+type GetReplayRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ReplayId      string                 `protobuf:"bytes,1,opt,name=replay_id,json=replayId,proto3" json:"replay_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetReplayRequest) Reset() {
+	*x = GetReplayRequest{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetReplayRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetReplayRequest) ProtoMessage() {}
+
+func (x *GetReplayRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetReplayRequest.ProtoReflect.Descriptor instead.
+func (*GetReplayRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *GetReplayRequest) GetReplayId() string {
+	if x != nil {
+		return x.ReplayId
+	}
+	return ""
+}
+
+type GetReplayChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetReplayChunk) Reset() {
+	*x = GetReplayChunk{}
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetReplayChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetReplayChunk) ProtoMessage() {}
+
+func (x *GetReplayChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_sim_v1_robot_backend_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetReplayChunk.ProtoReflect.Descriptor instead.
+func (*GetReplayChunk) Descriptor() ([]byte, []int) {
+	return file_wendy_sim_v1_robot_backend_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *GetReplayChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 var File_wendy_sim_v1_robot_backend_proto protoreflect.FileDescriptor
 
 const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
@@ -2667,7 +2755,11 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\frecording_id\x18\x01 \x01(\tR\vrecordingId\"F\n" +
 	"\x15StopRecordingResponse\x12\x1b\n" +
 	"\treplay_id\x18\x01 \x01(\tR\breplayId\x12\x10\n" +
-	"\x03uri\x18\x02 \x01(\tR\x03uri*\x93\x01\n" +
+	"\x03uri\x18\x02 \x01(\tR\x03uri\"/\n" +
+	"\x10GetReplayRequest\x12\x1b\n" +
+	"\treplay_id\x18\x01 \x01(\tR\breplayId\"$\n" +
+	"\x0eGetReplayChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data*\x93\x01\n" +
 	"\fControlLevel\x12\x1d\n" +
 	"\x19CONTROL_LEVEL_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12CONTROL_LEVEL_TASK\x10\x01\x12\x18\n" +
@@ -2678,7 +2770,7 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\x18MODEL_FORMAT_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11MODEL_FORMAT_MJCF\x10\x01\x12\x15\n" +
 	"\x11MODEL_FORMAT_URDF\x10\x02\x12\x14\n" +
-	"\x10MODEL_FORMAT_SDF\x10\x032\xff\b\n" +
+	"\x10MODEL_FORMAT_SDF\x10\x032\xcc\t\n" +
 	"\x13RobotBackendService\x12L\n" +
 	"\tLoadModel\x12\x1c.wendy.sim.v1.LoadModelChunk\x1a\x1f.wendy.sim.v1.LoadModelResponse(\x01\x12X\n" +
 	"\rDescribeModel\x12\".wendy.sim.v1.DescribeModelRequest\x1a#.wendy.sim.v1.DescribeModelResponse\x12R\n" +
@@ -2693,7 +2785,8 @@ const file_wendy_sim_v1_robot_backend_proto_rawDesc = "" +
 	"\x04Step\x12\x19.wendy.sim.v1.StepRequest\x1a\x1a.wendy.sim.v1.StepResponse\x12B\n" +
 	"\aRunTask\x12\x1c.wendy.sim.v1.RunTaskRequest\x1a\x17.wendy.sim.v1.TaskEvent0\x01\x12[\n" +
 	"\x0eStartRecording\x12#.wendy.sim.v1.StartRecordingRequest\x1a$.wendy.sim.v1.StartRecordingResponse\x12X\n" +
-	"\rStopRecording\x12\".wendy.sim.v1.StopRecordingRequest\x1a#.wendy.sim.v1.StopRecordingResponseB8Z6github.com/wendylabsinc/wendy/go/proto/gen/simpb;simpbb\x06proto3"
+	"\rStopRecording\x12\".wendy.sim.v1.StopRecordingRequest\x1a#.wendy.sim.v1.StopRecordingResponse\x12K\n" +
+	"\tGetReplay\x12\x1e.wendy.sim.v1.GetReplayRequest\x1a\x1c.wendy.sim.v1.GetReplayChunk0\x01B8Z6github.com/wendylabsinc/wendy/go/proto/gen/simpb;simpbb\x06proto3"
 
 var (
 	file_wendy_sim_v1_robot_backend_proto_rawDescOnce sync.Once
@@ -2708,7 +2801,7 @@ func file_wendy_sim_v1_robot_backend_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_sim_v1_robot_backend_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_sim_v1_robot_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_wendy_sim_v1_robot_backend_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_wendy_sim_v1_robot_backend_proto_goTypes = []any{
 	(ControlLevel)(0),               // 0: wendy.sim.v1.ControlLevel
 	(ModelFormat)(0),                // 1: wendy.sim.v1.ModelFormat
@@ -2753,7 +2846,9 @@ var file_wendy_sim_v1_robot_backend_proto_goTypes = []any{
 	(*StartRecordingResponse)(nil),  // 40: wendy.sim.v1.StartRecordingResponse
 	(*StopRecordingRequest)(nil),    // 41: wendy.sim.v1.StopRecordingRequest
 	(*StopRecordingResponse)(nil),   // 42: wendy.sim.v1.StopRecordingResponse
-	nil,                             // 43: wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
+	(*GetReplayRequest)(nil),        // 43: wendy.sim.v1.GetReplayRequest
+	(*GetReplayChunk)(nil),          // 44: wendy.sim.v1.GetReplayChunk
+	nil,                             // 45: wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
 }
 var file_wendy_sim_v1_robot_backend_proto_depIdxs = []int32{
 	3,  // 0: wendy.sim.v1.LoadModelChunk.source:type_name -> wendy.sim.v1.ModelSource
@@ -2768,7 +2863,7 @@ var file_wendy_sim_v1_robot_backend_proto_depIdxs = []int32{
 	18, // 9: wendy.sim.v1.GetStateResponse.base_pose:type_name -> wendy.sim.v1.Pose
 	21, // 10: wendy.sim.v1.GetStateResponse.joints:type_name -> wendy.sim.v1.JointState
 	24, // 11: wendy.sim.v1.GetContactsResponse.contacts:type_name -> wendy.sim.v1.Contact
-	43, // 12: wendy.sim.v1.SetJointTargetsRequest.targets:type_name -> wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
+	45, // 12: wendy.sim.v1.SetJointTargetsRequest.targets:type_name -> wendy.sim.v1.SetJointTargetsRequest.TargetsEntry
 	0,  // 13: wendy.sim.v1.RunTaskRequest.max_control_level:type_name -> wendy.sim.v1.ControlLevel
 	35, // 14: wendy.sim.v1.TaskEvent.progress:type_name -> wendy.sim.v1.TaskProgress
 	36, // 15: wendy.sim.v1.TaskEvent.log:type_name -> wendy.sim.v1.TaskLog
@@ -2788,22 +2883,24 @@ var file_wendy_sim_v1_robot_backend_proto_depIdxs = []int32{
 	33, // 29: wendy.sim.v1.RobotBackendService.RunTask:input_type -> wendy.sim.v1.RunTaskRequest
 	39, // 30: wendy.sim.v1.RobotBackendService.StartRecording:input_type -> wendy.sim.v1.StartRecordingRequest
 	41, // 31: wendy.sim.v1.RobotBackendService.StopRecording:input_type -> wendy.sim.v1.StopRecordingRequest
-	4,  // 32: wendy.sim.v1.RobotBackendService.LoadModel:output_type -> wendy.sim.v1.LoadModelResponse
-	6,  // 33: wendy.sim.v1.RobotBackendService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
-	13, // 34: wendy.sim.v1.RobotBackendService.CreateWorld:output_type -> wendy.sim.v1.CreateWorldResponse
-	15, // 35: wendy.sim.v1.RobotBackendService.Spawn:output_type -> wendy.sim.v1.SpawnResponse
-	17, // 36: wendy.sim.v1.RobotBackendService.Reset:output_type -> wendy.sim.v1.ResetResponse
-	20, // 37: wendy.sim.v1.RobotBackendService.GetState:output_type -> wendy.sim.v1.GetStateResponse
-	23, // 38: wendy.sim.v1.RobotBackendService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
-	26, // 39: wendy.sim.v1.RobotBackendService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
-	28, // 40: wendy.sim.v1.RobotBackendService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
-	30, // 41: wendy.sim.v1.RobotBackendService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
-	32, // 42: wendy.sim.v1.RobotBackendService.Step:output_type -> wendy.sim.v1.StepResponse
-	34, // 43: wendy.sim.v1.RobotBackendService.RunTask:output_type -> wendy.sim.v1.TaskEvent
-	40, // 44: wendy.sim.v1.RobotBackendService.StartRecording:output_type -> wendy.sim.v1.StartRecordingResponse
-	42, // 45: wendy.sim.v1.RobotBackendService.StopRecording:output_type -> wendy.sim.v1.StopRecordingResponse
-	32, // [32:46] is the sub-list for method output_type
-	18, // [18:32] is the sub-list for method input_type
+	43, // 32: wendy.sim.v1.RobotBackendService.GetReplay:input_type -> wendy.sim.v1.GetReplayRequest
+	4,  // 33: wendy.sim.v1.RobotBackendService.LoadModel:output_type -> wendy.sim.v1.LoadModelResponse
+	6,  // 34: wendy.sim.v1.RobotBackendService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
+	13, // 35: wendy.sim.v1.RobotBackendService.CreateWorld:output_type -> wendy.sim.v1.CreateWorldResponse
+	15, // 36: wendy.sim.v1.RobotBackendService.Spawn:output_type -> wendy.sim.v1.SpawnResponse
+	17, // 37: wendy.sim.v1.RobotBackendService.Reset:output_type -> wendy.sim.v1.ResetResponse
+	20, // 38: wendy.sim.v1.RobotBackendService.GetState:output_type -> wendy.sim.v1.GetStateResponse
+	23, // 39: wendy.sim.v1.RobotBackendService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
+	26, // 40: wendy.sim.v1.RobotBackendService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
+	28, // 41: wendy.sim.v1.RobotBackendService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
+	30, // 42: wendy.sim.v1.RobotBackendService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
+	32, // 43: wendy.sim.v1.RobotBackendService.Step:output_type -> wendy.sim.v1.StepResponse
+	34, // 44: wendy.sim.v1.RobotBackendService.RunTask:output_type -> wendy.sim.v1.TaskEvent
+	40, // 45: wendy.sim.v1.RobotBackendService.StartRecording:output_type -> wendy.sim.v1.StartRecordingResponse
+	42, // 46: wendy.sim.v1.RobotBackendService.StopRecording:output_type -> wendy.sim.v1.StopRecordingResponse
+	44, // 47: wendy.sim.v1.RobotBackendService.GetReplay:output_type -> wendy.sim.v1.GetReplayChunk
+	33, // [33:48] is the sub-list for method output_type
+	18, // [18:33] is the sub-list for method input_type
 	18, // [18:18] is the sub-list for extension type_name
 	18, // [18:18] is the sub-list for extension extendee
 	0,  // [0:18] is the sub-list for field type_name
@@ -2829,7 +2926,7 @@ func file_wendy_sim_v1_robot_backend_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_sim_v1_robot_backend_proto_rawDesc), len(file_wendy_sim_v1_robot_backend_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   42,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -33,6 +33,7 @@ const (
 	RobotBackendService_RunTask_FullMethodName         = "/wendy.sim.v1.RobotBackendService/RunTask"
 	RobotBackendService_StartRecording_FullMethodName  = "/wendy.sim.v1.RobotBackendService/StartRecording"
 	RobotBackendService_StopRecording_FullMethodName   = "/wendy.sim.v1.RobotBackendService/StopRecording"
+	RobotBackendService_GetReplay_FullMethodName       = "/wendy.sim.v1.RobotBackendService/GetReplay"
 )
 
 // RobotBackendServiceClient is the client API for RobotBackendService service.
@@ -89,6 +90,9 @@ type RobotBackendServiceClient interface {
 	// StopRecording finalizes a recording and returns a replay handle the
 	// agent can fetch or point a viewer at (e.g. a Rerun .rrd).
 	StopRecording(ctx context.Context, in *StopRecordingRequest, opts ...grpc.CallOption) (*StopRecordingResponse, error)
+	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
+	// the agent can relay it to the CLI without sharing a filesystem.
+	GetReplay(ctx context.Context, in *GetReplayRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetReplayChunk], error)
 }
 
 type robotBackendServiceClient struct {
@@ -251,6 +255,25 @@ func (c *robotBackendServiceClient) StopRecording(ctx context.Context, in *StopR
 	return out, nil
 }
 
+func (c *robotBackendServiceClient) GetReplay(ctx context.Context, in *GetReplayRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetReplayChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &RobotBackendService_ServiceDesc.Streams[2], RobotBackendService_GetReplay_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[GetReplayRequest, GetReplayChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_GetReplayClient = grpc.ServerStreamingClient[GetReplayChunk]
+
 // RobotBackendServiceServer is the server API for RobotBackendService service.
 // All implementations must embed UnimplementedRobotBackendServiceServer
 // for forward compatibility.
@@ -305,6 +328,9 @@ type RobotBackendServiceServer interface {
 	// StopRecording finalizes a recording and returns a replay handle the
 	// agent can fetch or point a viewer at (e.g. a Rerun .rrd).
 	StopRecording(context.Context, *StopRecordingRequest) (*StopRecordingResponse, error)
+	// GetReplay downloads a finished replay (e.g. a Rerun .rrd) in chunks so
+	// the agent can relay it to the CLI without sharing a filesystem.
+	GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error
 	mustEmbedUnimplementedRobotBackendServiceServer()
 }
 
@@ -356,6 +382,9 @@ func (UnimplementedRobotBackendServiceServer) StartRecording(context.Context, *S
 }
 func (UnimplementedRobotBackendServiceServer) StopRecording(context.Context, *StopRecordingRequest) (*StopRecordingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StopRecording not implemented")
+}
+func (UnimplementedRobotBackendServiceServer) GetReplay(*GetReplayRequest, grpc.ServerStreamingServer[GetReplayChunk]) error {
+	return status.Error(codes.Unimplemented, "method GetReplay not implemented")
 }
 func (UnimplementedRobotBackendServiceServer) mustEmbedUnimplementedRobotBackendServiceServer() {}
 func (UnimplementedRobotBackendServiceServer) testEmbeddedByValue()                             {}
@@ -612,6 +641,17 @@ func _RobotBackendService_StopRecording_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RobotBackendService_GetReplay_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(GetReplayRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(RobotBackendServiceServer).GetReplay(m, &grpc.GenericServerStream[GetReplayRequest, GetReplayChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type RobotBackendService_GetReplayServer = grpc.ServerStreamingServer[GetReplayChunk]
+
 // RobotBackendService_ServiceDesc is the grpc.ServiceDesc for RobotBackendService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -677,6 +717,11 @@ var RobotBackendService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "RunTask",
 			Handler:       _RobotBackendService_RunTask_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "GetReplay",
+			Handler:       _RobotBackendService_GetReplay_Handler,
 			ServerStreams: true,
 		},
 	},
