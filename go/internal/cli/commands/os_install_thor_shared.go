@@ -67,7 +67,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 	// re-exec this replaces the process and does not return. Windows elevates
 	// separately via UAC when it installs the WinUSB driver (thorPrepareHost).
 	if err := ensureThorRootAccess(); err != nil {
-		return err
+		return WithReason(reasonInstallElevation, err)
 	}
 
 	cacheDir, err := osCacheDir()
@@ -77,7 +77,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 
 	plan, err := planThorFlashpack(cacheDir, version, nightly)
 	if err != nil {
-		return err
+		return WithReason(reasonInstallManifest, err)
 	}
 
 	// Fail fast on a full disk, before the user starts cabling the Thor.
@@ -216,6 +216,14 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		case failedID == stepStage1:
 			fmt.Println()
 			fmt.Println(tui.WarningMessage("RCM boot failed — the Thor wasn't modified. Re-enter recovery mode and try again."))
+		}
+		switch failedID {
+		case stepDownload:
+			return WithReason(reasonInstallDownload, err)
+		case stepProvision:
+			return WithReason(reasonInstallProvisioning, err)
+		case stepStage1, stepStage2:
+			return WithReason(reasonInstallDiskWrite, err)
 		}
 		return err
 	}

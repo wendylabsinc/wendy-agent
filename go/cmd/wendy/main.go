@@ -48,6 +48,11 @@ func main() {
 //     "dev" default or a CI branch build with a "-dev" suffix.
 //   - error_class (only when err != nil): bounded enum derived from err —
 //     never the error message text, which can leak hostnames or paths.
+//   - error_detail (only for catch-all classes "other"/"grpc_other"): a
+//     best-effort redacted excerpt of the error message, so failures that
+//     carry no specific reason code are still diagnosable. See
+//     analytics.RedactErrorDetail — this is deliberately relaxed from the
+//     error_class no-message-text rule, scoped to the unclassified buckets.
 func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 	if executed == nil {
 		return
@@ -69,7 +74,18 @@ func trackCommand(executed *cobra.Command, err error, dur time.Duration) {
 		"is_dev_build": strconv.FormatBool(version.IsDev(version.Version)),
 	}
 	if err != nil {
-		props["error_class"] = errorClass(err)
+		class := errorClass(err)
+		props["error_class"] = class
+		// For catch-all buckets the class alone says nothing about what
+		// happened, so attach a best-effort redacted detail. Classified
+		// buckets (install_* reasons, grpc_unavailable, context_*,
+		// user_cancelled, …) are self-describing and get no detail, keeping
+		// data collection and PII surface minimal.
+		if class == "other" || class == "grpc_other" {
+			if detail := analytics.RedactErrorDetail(err.Error()); detail != "" {
+				props["error_detail"] = detail
+			}
+		}
 	}
 	analytics.Track(event, props)
 
@@ -160,10 +176,12 @@ func milestoneFor(commandPath string, success bool) string {
 
 // errorClass maps an execution error to a bounded enum suitable for analytics.
 // It must never embed the error message, which can contain hostnames, paths,
-// or other user input.
+// or other user input. (The free-text detail lives in a separate, redacted
+// error_detail property set by trackCommand — never here.)
 //
 // User-cancellation sentinels are checked first so an outer wrap never
-// reclassifies them. gRPC errors are extracted via status.FromError, which
+// reclassifies them, then cancellation/deadline, then any command-supplied
+// commands.ReasonError code (see commands.WithReason), then gRPC codes. gRPC errors are extracted via status.FromError, which
 // walks the wrapped chain — substring matching on err.Error() would miss
 // errors wrapped via fmt.Errorf with a custom prefix or any future change to
 // grpc-go's stringification.
@@ -173,6 +191,23 @@ func errorClass(err error) string {
 	}
 	if errors.Is(err, commands.ErrUserCancelled) || errors.Is(err, commands.ErrDefaultCleared) {
 		return "user_cancelled"
+	}
+	// Cancellation and deadline are checked before any command-supplied reason
+	// so an install_* wrap of a cancelled/timed-out operation is never
+	// mislabeled as an install failure.
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline"
+	}
+	// A command may tag a failure with a bounded reason code (see
+	// commands.WithReason), which is more specific than the gRPC/"other"
+	// fallbacks below. gRPC transport errors are not wrapped this way, so this
+	// never hides grpc_unavailable/grpc_deadline/etc.
+	var re *commands.ReasonError
+	if errors.As(err, &re) && re.Reason != "" {
+		return re.Reason
 	}
 	// status.FromError returns ok=true only for real gRPC errors (those
 	// produced by the grpc package or implementing GRPCStatus()). For
@@ -193,12 +228,6 @@ func errorClass(err error) string {
 		default:
 			return "grpc_other"
 		}
-	}
-	if errors.Is(err, context.Canceled) {
-		return "context_canceled"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "context_deadline"
 	}
 	return "other"
 }

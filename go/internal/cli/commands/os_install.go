@@ -152,20 +152,20 @@ Flags can be provided progressively — omitted values trigger interactive picke
 func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwriteInternal bool) error {
 	// Verify the image file exists.
 	if _, err := os.Stat(imagePath); err != nil {
-		return fmt.Errorf("image file: %w", err)
+		return WithReason(reasonInstallImageOpen, fmt.Errorf("image file: %w", err))
 	}
 
 	// Authenticate elevation before any disk-listing or write work. On
 	// Windows this offers a UAC re-launch when the current process isn't
 	// elevated; on Unix it pre-caches the sudo timestamp.
 	if err := preAuthElevation(); err != nil {
-		return err
+		return WithReason(reasonInstallElevation, err)
 	}
 
 	// Find the target drive.
 	drives, err := listAllDrives()
 	if err != nil {
-		return fmt.Errorf("listing drives: %w", err)
+		return WithReason(reasonInstallDriveList, fmt.Errorf("listing drives: %w", err))
 	}
 
 	var targetDrive *drive
@@ -176,7 +176,7 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 		}
 	}
 	if targetDrive == nil {
-		return fmt.Errorf("drive %s not found", driveID)
+		return WithReason(reasonInstallDriveNotFound, fmt.Errorf("drive %s not found", driveID))
 	}
 
 	if err := confirmOverwriteInternalDrive(*targetDrive, force, yesOverwriteInternal); err != nil {
@@ -196,14 +196,14 @@ func runOSInstallDirect(imagePath string, driveID string, force bool, yesOverwri
 
 	stream, err := openLocalImageStream(imagePath)
 	if err != nil {
-		return fmt.Errorf("opening image: %w", err)
+		return WithReason(reasonInstallImageOpen, fmt.Errorf("opening image: %w", err))
 	}
 	defer stream.Close()
 
 	fmt.Printf("Writing image to %s...\n", targetDrive.DevicePath)
 	fmt.Println(elevationHint())
 	if err := writeImageToDisk(stream, stream.uncompressedSize, *targetDrive, nil); err != nil {
-		return fmt.Errorf("writing image: %w", err)
+		return WithReason(reasonInstallDiskWrite, fmt.Errorf("writing image: %w", err))
 	}
 
 	fmt.Printf("\nSuccessfully installed image on %s.\n", targetDrive.Name)
@@ -412,7 +412,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
 	// pre-caches the sudo timestamp.
 	if err := preAuthElevation(); err != nil {
-		return err
+		return WithReason(reasonInstallElevation, err)
 	}
 	// The download can take minutes or hours, which is longer than the default
 	// sudo credential cache window. Refresh in the background so the cached
@@ -426,7 +426,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if flagVersion != "" {
 		// Validate the requested version exists in the manifest.
 		if _, err := getImageInfo(device.Manifest, flagVersion, ""); err != nil {
-			return fmt.Errorf("version %q not found for %s", flagVersion, device.Name)
+			return WithReason(reasonInstallManifest, fmt.Errorf("version %q not found for %s", flagVersion, device.Name))
 		}
 		selectedVersion = flagVersion
 	}
@@ -436,7 +436,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if flagDrive != "" {
 		drives, err := listAllDrives()
 		if err != nil {
-			return fmt.Errorf("listing drives: %w", err)
+			return WithReason(reasonInstallDriveList, fmt.Errorf("listing drives: %w", err))
 		}
 		var found bool
 		for _, d := range drives {
@@ -447,7 +447,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 			}
 		}
 		if !found {
-			return fmt.Errorf("drive %s not found", flagDrive)
+			return WithReason(reasonInstallDriveNotFound, fmt.Errorf("drive %s not found", flagDrive))
 		}
 	} else {
 		fmt.Println()
@@ -497,7 +497,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	// manifestStorage. Pass --storage to override.
 	ver, ok := device.Manifest.Versions[selectedVersion]
 	if !ok {
-		return fmt.Errorf("version %s not found in device manifest", selectedVersion)
+		return WithReason(reasonInstallManifest, fmt.Errorf("version %s not found in device manifest", selectedVersion))
 	}
 	storage := manifestStorage(ver, targetDrive.StorageType, targetDrive.MediaFixed, storageOverride)
 
@@ -527,7 +527,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
 	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
 	if err != nil {
-		return fmt.Errorf("getting image info: %w", err)
+		return WithReason(reasonInstallManifest, fmt.Errorf("getting image info: %w", err))
 	}
 
 	// Step 5a: Prefer the seekable-zstd fast path. When the manifest advertises a
@@ -564,7 +564,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	if seekableZst == "" {
 		stream, err = openOSImageStream(deviceKey, imgInfo)
 		if err != nil {
-			return fmt.Errorf("opening OS image: %w", err)
+			return WithReason(reasonInstallImageOpen, fmt.Errorf("opening OS image: %w", err))
 		}
 		defer stream.Close()
 
@@ -677,7 +677,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// fast with the real error plus actionable hints. Integrity failures
 		// (bmap checksum/size mismatch) and unrecognized causes still fall back.
 		if isDeviceFlashFailure(primaryErr) {
-			return fmt.Errorf("%w\n%s", primary, flashDeviceFailureHint)
+			return WithReason(reasonInstallDiskWrite, fmt.Errorf("%w\n%s", primary, flashDeviceFailureHint))
 		}
 
 		// Bmap write failed (typically a checksum mismatch between the published
@@ -692,19 +692,19 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		case seekableZst != "":
 			si, ferr := openSeekableZstd(seekableZst)
 			if ferr != nil {
-				return fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr)
+				return WithReason(reasonInstallDiskWrite, fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr))
 			}
 			fallbackReader, fallbackSize, fallbackCloser = si, si.Size(), si
 		case bmapPath != "":
 			fs, ferr := openOSImageStream(deviceKey, imgInfo)
 			if ferr != nil {
-				return fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr)
+				return WithReason(reasonInstallDiskWrite, fmt.Errorf("%w; could not open image for full-image fallback: %v", primary, ferr))
 			}
 			fallbackReader, fallbackSize, fallbackCloser = fs, fs.uncompressedSize, fs
 		default:
 			// Plain dd primary (no bmap): there is no faster path to fall back
 			// from, so surface the framed primary error directly.
-			return primary
+			return WithReason(reasonInstallDiskWrite, primary)
 		}
 		defer fallbackCloser.Close()
 		fallbackProg := tui.NewProgress(fmt.Sprintf("Writing to %s...", targetDrive.DevicePath))
@@ -727,7 +727,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		if fm := fallbackFinal.(tui.ProgressModel); fm.Err() != nil {
 			// Both writes failed: surface the primary (real) error AND the
 			// fallback's, clearly labeled, so we never again debug the wrong one.
-			return combineFlashFailure(primary, fm.Err())
+			return WithReason(reasonInstallDiskWrite, combineFlashFailure(primary, fm.Err()))
 		}
 	}
 
@@ -739,7 +739,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// step is the bug from WDY-1118.
 		if hasProvisioningData {
 			ejectDisk(targetDrive)
-			return fmt.Errorf("the OS image was written to %s, but --wifi, --device-name, and --pre-enroll cannot be applied on this platform: writing to the device's config partition is not supported here. Re-run on a platform that supports config-partition provisioning to apply provisioning, or omit those flags to image without provisioning", targetDrive.Name)
+			return WithReason(reasonInstallProvisioning, fmt.Errorf("the OS image was written to %s, but --wifi, --device-name, and --pre-enroll cannot be applied on this platform: writing to the device's config partition is not supported here. Re-run on a platform that supports config-partition provisioning to apply provisioning, or omit those flags to image without provisioning", targetDrive.Name))
 		}
 		fmt.Println("\nNote: config-partition provisioning is not yet supported on this platform; skipping. The device will run the agent baked into the image and fetch updates after first boot.")
 	} else {
@@ -2151,7 +2151,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	asset, err := fetchFirmwareFromManifest(chip, nightly)
 	if err != nil {
-		return fmt.Errorf("fetching firmware: %w", err)
+		return WithReason(reasonInstallManifest, fmt.Errorf("fetching firmware: %w", err))
 	}
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
@@ -2183,7 +2183,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	model := finalModel.(tui.ProgressModel)
 	if model.Err() != nil {
-		return model.Err()
+		return WithReason(reasonInstallDownload, model.Err())
 	}
 	defer os.Remove(fwPath)
 
@@ -2191,7 +2191,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	img, err := LoadEspFlashImage(fwPath)
 	if err != nil {
-		return fmt.Errorf("loading firmware image: %w", err)
+		return WithReason(reasonInstallImageOpen, fmt.Errorf("loading firmware image: %w", err))
 	}
 
 	confBytes, err := proto.Marshal(wendyConf)
@@ -2226,7 +2226,7 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 
 	flashModel := flashFinal.(tui.ProgressModel)
 	if flashModel.Err() != nil {
-		return fmt.Errorf("flashing failed: %w", flashModel.Err())
+		return WithReason(reasonInstallDiskWrite, fmt.Errorf("flashing failed: %w", flashModel.Err()))
 	}
 
 	fmt.Printf("\nSuccessfully flashed Wendy Lite %s!\n", asset.Version)

@@ -347,6 +347,103 @@ func TestErrorClass_NeverLeaksMessageText(t *testing.T) {
 	}
 }
 
+func TestErrorClass_ReasonError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"install_download", commands.WithReason("install_download", errors.New("boom")), "install_download"},
+		{"install_disk_write", commands.WithReason("install_disk_write", errors.New("io error")), "install_disk_write"},
+		{"wrapped_reason", fmt.Errorf("outer: %w", commands.WithReason("install_manifest", errors.New("x"))), "install_manifest"},
+		// Cancellation and deadline must win over a reason wrap.
+		{"reason_wrapping_cancel", commands.WithReason("install_disk_write", context.Canceled), "context_canceled"},
+		{"reason_wrapping_deadline", commands.WithReason("install_download", context.DeadlineExceeded), "context_deadline"},
+		{"reason_wrapping_user_cancel", commands.WithReason("install_disk_write", commands.ErrUserCancelled), "user_cancelled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := errorClass(tc.err); got != tc.want {
+				t.Errorf("errorClass = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrackCommand_ErrorDetailForCatchAll(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	// The "failing" command returns errors.New("boom") → class "other".
+	executed, err := runWithArgs(t, []string{"wendy", "failing"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	trackCommand(executed, err, time.Millisecond)
+
+	got := (*events)[0].props
+	if got["error_class"] != "other" {
+		t.Fatalf("error_class = %q, want %q", got["error_class"], "other")
+	}
+	if got["error_detail"] != "boom" {
+		t.Errorf("error_detail = %q, want %q", got["error_detail"], "boom")
+	}
+}
+
+func TestTrackCommand_ErrorDetailRedactsPII(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	root := newTestRoot()
+	executed, _, err := root.Find([]string{"failing"})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	leaky := errors.New("writing image: /dev/disk4: dial 192.168.1.10 failed for host secret.example.com")
+	trackCommand(executed, leaky, time.Millisecond)
+
+	detail := (*events)[0].props["error_detail"]
+	for _, leak := range []string{"/dev/disk4", "192.168.1.10", "secret.example.com"} {
+		if strings.Contains(detail, leak) {
+			t.Errorf("error_detail leaked %q: %q", leak, detail)
+		}
+	}
+	if !strings.Contains(detail, "writing image") {
+		t.Errorf("error_detail dropped structural text: %q", detail)
+	}
+}
+
+func TestTrackCommand_NoErrorDetailForClassifiedBuckets(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	root := newTestRoot()
+	executed, _, err := root.Find([]string{"failing"})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// A gRPC Unavailable classifies as grpc_unavailable (not a catch-all), so
+	// no error_detail is attached even though the message has a hostname.
+	trackCommand(executed, status.Error(codes.Unavailable, "reach secret-host.example.com"), time.Millisecond)
+
+	got := (*events)[0].props
+	if got["error_class"] != "grpc_unavailable" {
+		t.Fatalf("error_class = %q, want grpc_unavailable", got["error_class"])
+	}
+	if _, present := got["error_detail"]; present {
+		t.Errorf("error_detail must be absent for classified buckets, got %q", got["error_detail"])
+	}
+}
+
+func TestTrackCommand_NoErrorDetailOnSuccess(t *testing.T) {
+	clearCIEnv(t)
+	events := captureAnalytics(t)
+	executed, err := runWithArgs(t, []string{"wendy", "run", "x"})
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	trackCommand(executed, nil, time.Millisecond)
+	if _, present := (*events)[0].props["error_detail"]; present {
+		t.Errorf("error_detail must be absent on success")
+	}
+}
+
 func TestFormatError_EnrollmentTokenUnavailableIsCloudError(t *testing.T) {
 	err := fmt.Errorf("creating enrollment token: %w", status.Error(codes.Unavailable, "connection refused"))
 

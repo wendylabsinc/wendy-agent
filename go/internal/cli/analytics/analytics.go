@@ -31,6 +31,7 @@ type eventPayload struct {
 	DurationMS  int64  `json:"duration_ms,omitempty"`
 	Success     bool   `json:"success"`
 	ErrorClass  string `json:"error_class,omitempty"`
+	ErrorDetail string `json:"error_detail,omitempty"`
 	CLIVersion  string `json:"cli_version"`
 	OS          string `json:"os"`
 	Arch        string `json:"arch"`
@@ -111,6 +112,7 @@ func Track(event string, properties map[string]string) {
 		DurationMS:  parseInt64(properties["duration_ms"]),
 		Success:     parseBool(properties["success"]),
 		ErrorClass:  properties["error_class"],
+		ErrorDetail: properties["error_detail"],
 		CLIVersion:  version.Version,
 		OS:          runtime.GOOS,
 		Arch:        runtime.GOARCH,
