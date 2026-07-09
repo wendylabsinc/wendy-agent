@@ -536,7 +536,7 @@ const file_wendy_agent_services_v2_sim_service_proto_rawDesc = "" +
 	"\x10GetReplayRequest\x12\x1b\n" +
 	"\treplay_id\x18\x01 \x01(\tR\breplayId\"$\n" +
 	"\x0eGetReplayChunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data2\xfe\x0f\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data2\xbd\x10\n" +
 	"\x0fWendySimService\x12w\n" +
 	"\x10CreateSimulation\x120.wendy.agent.services.v2.CreateSimulationRequest\x1a1.wendy.agent.services.v2.CreateSimulationResponse\x12t\n" +
 	"\x0fListSimulations\x12/.wendy.agent.services.v2.ListSimulationsRequest\x1a0.wendy.agent.services.v2.ListSimulationsResponse\x12t\n" +
@@ -549,7 +549,8 @@ const file_wendy_agent_services_v2_sim_service_proto_rawDesc = "" +
 	"\vGetContacts\x12 .wendy.sim.v1.GetContactsRequest\x1a!.wendy.sim.v1.GetContactsResponse\x12[\n" +
 	"\x0eGetCameraFrame\x12#.wendy.sim.v1.GetCameraFrameRequest\x1a$.wendy.sim.v1.GetCameraFrameResponse\x12R\n" +
 	"\vSetVelocity\x12 .wendy.sim.v1.SetVelocityRequest\x1a!.wendy.sim.v1.SetVelocityResponse\x12^\n" +
-	"\x0fSetJointTargets\x12$.wendy.sim.v1.SetJointTargetsRequest\x1a%.wendy.sim.v1.SetJointTargetsResponse\x12P\n" +
+	"\x0fSetJointTargets\x12$.wendy.sim.v1.SetJointTargetsRequest\x1a%.wendy.sim.v1.SetJointTargetsResponse\x12=\n" +
+	"\x04Step\x12\x19.wendy.sim.v1.StepRequest\x1a\x1a.wendy.sim.v1.StepResponse\x12P\n" +
 	"\aRunTask\x12*.wendy.agent.services.v2.RunSimTaskRequest\x1a\x17.wendy.sim.v1.TaskEvent0\x01\x12a\n" +
 	"\tGetReplay\x12).wendy.agent.services.v2.GetReplayRequest\x1a'.wendy.agent.services.v2.GetReplayChunk0\x01\x12I\n" +
 	"\bSetClock\x12\x1d.wendy.sim.v1.SetClockRequest\x1a\x1e.wendy.sim.v1.SetClockResponse\x12O\n" +
@@ -599,35 +600,37 @@ var file_wendy_agent_services_v2_sim_service_proto_goTypes = []any{
 	(*simpb.GetCameraFrameRequest)(nil),   // 17: wendy.sim.v1.GetCameraFrameRequest
 	(*simpb.SetVelocityRequest)(nil),      // 18: wendy.sim.v1.SetVelocityRequest
 	(*simpb.SetJointTargetsRequest)(nil),  // 19: wendy.sim.v1.SetJointTargetsRequest
-	(*simpb.SetClockRequest)(nil),         // 20: wendy.sim.v1.SetClockRequest
-	(*simpb.ApplyForceRequest)(nil),       // 21: wendy.sim.v1.ApplyForceRequest
-	(*simpb.TeleportRequest)(nil),         // 22: wendy.sim.v1.TeleportRequest
-	(*simpb.SaveSnapshotRequest)(nil),     // 23: wendy.sim.v1.SaveSnapshotRequest
-	(*simpb.RestoreSnapshotRequest)(nil),  // 24: wendy.sim.v1.RestoreSnapshotRequest
-	(*simpb.ReadSensorsRequest)(nil),      // 25: wendy.sim.v1.ReadSensorsRequest
-	(*simpb.EditSceneRequest)(nil),        // 26: wendy.sim.v1.EditSceneRequest
-	(*simpb.LoadPolicyChunk)(nil),         // 27: wendy.sim.v1.LoadPolicyChunk
-	(*simpb.ClearPolicyRequest)(nil),      // 28: wendy.sim.v1.ClearPolicyRequest
-	(*simpb.RenderVideoRequest)(nil),      // 29: wendy.sim.v1.RenderVideoRequest
-	(*simpb.LoadModelResponse)(nil),       // 30: wendy.sim.v1.LoadModelResponse
-	(*simpb.DescribeModelResponse)(nil),   // 31: wendy.sim.v1.DescribeModelResponse
-	(*simpb.SpawnResponse)(nil),           // 32: wendy.sim.v1.SpawnResponse
-	(*simpb.GetStateResponse)(nil),        // 33: wendy.sim.v1.GetStateResponse
-	(*simpb.GetContactsResponse)(nil),     // 34: wendy.sim.v1.GetContactsResponse
-	(*simpb.GetCameraFrameResponse)(nil),  // 35: wendy.sim.v1.GetCameraFrameResponse
-	(*simpb.SetVelocityResponse)(nil),     // 36: wendy.sim.v1.SetVelocityResponse
-	(*simpb.SetJointTargetsResponse)(nil), // 37: wendy.sim.v1.SetJointTargetsResponse
-	(*simpb.TaskEvent)(nil),               // 38: wendy.sim.v1.TaskEvent
-	(*simpb.SetClockResponse)(nil),        // 39: wendy.sim.v1.SetClockResponse
-	(*simpb.ApplyForceResponse)(nil),      // 40: wendy.sim.v1.ApplyForceResponse
-	(*simpb.TeleportResponse)(nil),        // 41: wendy.sim.v1.TeleportResponse
-	(*simpb.SaveSnapshotResponse)(nil),    // 42: wendy.sim.v1.SaveSnapshotResponse
-	(*simpb.RestoreSnapshotResponse)(nil), // 43: wendy.sim.v1.RestoreSnapshotResponse
-	(*simpb.ReadSensorsResponse)(nil),     // 44: wendy.sim.v1.ReadSensorsResponse
-	(*simpb.EditSceneResponse)(nil),       // 45: wendy.sim.v1.EditSceneResponse
-	(*simpb.LoadPolicyResponse)(nil),      // 46: wendy.sim.v1.LoadPolicyResponse
-	(*simpb.ClearPolicyResponse)(nil),     // 47: wendy.sim.v1.ClearPolicyResponse
-	(*simpb.VideoChunk)(nil),              // 48: wendy.sim.v1.VideoChunk
+	(*simpb.StepRequest)(nil),             // 20: wendy.sim.v1.StepRequest
+	(*simpb.SetClockRequest)(nil),         // 21: wendy.sim.v1.SetClockRequest
+	(*simpb.ApplyForceRequest)(nil),       // 22: wendy.sim.v1.ApplyForceRequest
+	(*simpb.TeleportRequest)(nil),         // 23: wendy.sim.v1.TeleportRequest
+	(*simpb.SaveSnapshotRequest)(nil),     // 24: wendy.sim.v1.SaveSnapshotRequest
+	(*simpb.RestoreSnapshotRequest)(nil),  // 25: wendy.sim.v1.RestoreSnapshotRequest
+	(*simpb.ReadSensorsRequest)(nil),      // 26: wendy.sim.v1.ReadSensorsRequest
+	(*simpb.EditSceneRequest)(nil),        // 27: wendy.sim.v1.EditSceneRequest
+	(*simpb.LoadPolicyChunk)(nil),         // 28: wendy.sim.v1.LoadPolicyChunk
+	(*simpb.ClearPolicyRequest)(nil),      // 29: wendy.sim.v1.ClearPolicyRequest
+	(*simpb.RenderVideoRequest)(nil),      // 30: wendy.sim.v1.RenderVideoRequest
+	(*simpb.LoadModelResponse)(nil),       // 31: wendy.sim.v1.LoadModelResponse
+	(*simpb.DescribeModelResponse)(nil),   // 32: wendy.sim.v1.DescribeModelResponse
+	(*simpb.SpawnResponse)(nil),           // 33: wendy.sim.v1.SpawnResponse
+	(*simpb.GetStateResponse)(nil),        // 34: wendy.sim.v1.GetStateResponse
+	(*simpb.GetContactsResponse)(nil),     // 35: wendy.sim.v1.GetContactsResponse
+	(*simpb.GetCameraFrameResponse)(nil),  // 36: wendy.sim.v1.GetCameraFrameResponse
+	(*simpb.SetVelocityResponse)(nil),     // 37: wendy.sim.v1.SetVelocityResponse
+	(*simpb.SetJointTargetsResponse)(nil), // 38: wendy.sim.v1.SetJointTargetsResponse
+	(*simpb.StepResponse)(nil),            // 39: wendy.sim.v1.StepResponse
+	(*simpb.TaskEvent)(nil),               // 40: wendy.sim.v1.TaskEvent
+	(*simpb.SetClockResponse)(nil),        // 41: wendy.sim.v1.SetClockResponse
+	(*simpb.ApplyForceResponse)(nil),      // 42: wendy.sim.v1.ApplyForceResponse
+	(*simpb.TeleportResponse)(nil),        // 43: wendy.sim.v1.TeleportResponse
+	(*simpb.SaveSnapshotResponse)(nil),    // 44: wendy.sim.v1.SaveSnapshotResponse
+	(*simpb.RestoreSnapshotResponse)(nil), // 45: wendy.sim.v1.RestoreSnapshotResponse
+	(*simpb.ReadSensorsResponse)(nil),     // 46: wendy.sim.v1.ReadSensorsResponse
+	(*simpb.EditSceneResponse)(nil),       // 47: wendy.sim.v1.EditSceneResponse
+	(*simpb.LoadPolicyResponse)(nil),      // 48: wendy.sim.v1.LoadPolicyResponse
+	(*simpb.ClearPolicyResponse)(nil),     // 49: wendy.sim.v1.ClearPolicyResponse
+	(*simpb.VideoChunk)(nil),              // 50: wendy.sim.v1.VideoChunk
 }
 var file_wendy_agent_services_v2_sim_service_proto_depIdxs = []int32{
 	4,  // 0: wendy.agent.services.v2.ListSimulationsResponse.simulations:type_name -> wendy.agent.services.v2.SimulationInfo
@@ -644,43 +647,45 @@ var file_wendy_agent_services_v2_sim_service_proto_depIdxs = []int32{
 	17, // 11: wendy.agent.services.v2.WendySimService.GetCameraFrame:input_type -> wendy.sim.v1.GetCameraFrameRequest
 	18, // 12: wendy.agent.services.v2.WendySimService.SetVelocity:input_type -> wendy.sim.v1.SetVelocityRequest
 	19, // 13: wendy.agent.services.v2.WendySimService.SetJointTargets:input_type -> wendy.sim.v1.SetJointTargetsRequest
-	7,  // 14: wendy.agent.services.v2.WendySimService.RunTask:input_type -> wendy.agent.services.v2.RunSimTaskRequest
-	8,  // 15: wendy.agent.services.v2.WendySimService.GetReplay:input_type -> wendy.agent.services.v2.GetReplayRequest
-	20, // 16: wendy.agent.services.v2.WendySimService.SetClock:input_type -> wendy.sim.v1.SetClockRequest
-	21, // 17: wendy.agent.services.v2.WendySimService.ApplyForce:input_type -> wendy.sim.v1.ApplyForceRequest
-	22, // 18: wendy.agent.services.v2.WendySimService.Teleport:input_type -> wendy.sim.v1.TeleportRequest
-	23, // 19: wendy.agent.services.v2.WendySimService.SaveSnapshot:input_type -> wendy.sim.v1.SaveSnapshotRequest
-	24, // 20: wendy.agent.services.v2.WendySimService.RestoreSnapshot:input_type -> wendy.sim.v1.RestoreSnapshotRequest
-	25, // 21: wendy.agent.services.v2.WendySimService.ReadSensors:input_type -> wendy.sim.v1.ReadSensorsRequest
-	26, // 22: wendy.agent.services.v2.WendySimService.EditScene:input_type -> wendy.sim.v1.EditSceneRequest
-	27, // 23: wendy.agent.services.v2.WendySimService.LoadPolicy:input_type -> wendy.sim.v1.LoadPolicyChunk
-	28, // 24: wendy.agent.services.v2.WendySimService.ClearPolicy:input_type -> wendy.sim.v1.ClearPolicyRequest
-	29, // 25: wendy.agent.services.v2.WendySimService.RenderVideo:input_type -> wendy.sim.v1.RenderVideoRequest
-	1,  // 26: wendy.agent.services.v2.WendySimService.CreateSimulation:output_type -> wendy.agent.services.v2.CreateSimulationResponse
-	3,  // 27: wendy.agent.services.v2.WendySimService.ListSimulations:output_type -> wendy.agent.services.v2.ListSimulationsResponse
-	6,  // 28: wendy.agent.services.v2.WendySimService.ResetSimulation:output_type -> wendy.agent.services.v2.ResetSimulationResponse
-	30, // 29: wendy.agent.services.v2.WendySimService.ImportModel:output_type -> wendy.sim.v1.LoadModelResponse
-	31, // 30: wendy.agent.services.v2.WendySimService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
-	32, // 31: wendy.agent.services.v2.WendySimService.SpawnRobot:output_type -> wendy.sim.v1.SpawnResponse
-	33, // 32: wendy.agent.services.v2.WendySimService.GetState:output_type -> wendy.sim.v1.GetStateResponse
-	34, // 33: wendy.agent.services.v2.WendySimService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
-	35, // 34: wendy.agent.services.v2.WendySimService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
-	36, // 35: wendy.agent.services.v2.WendySimService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
-	37, // 36: wendy.agent.services.v2.WendySimService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
-	38, // 37: wendy.agent.services.v2.WendySimService.RunTask:output_type -> wendy.sim.v1.TaskEvent
-	9,  // 38: wendy.agent.services.v2.WendySimService.GetReplay:output_type -> wendy.agent.services.v2.GetReplayChunk
-	39, // 39: wendy.agent.services.v2.WendySimService.SetClock:output_type -> wendy.sim.v1.SetClockResponse
-	40, // 40: wendy.agent.services.v2.WendySimService.ApplyForce:output_type -> wendy.sim.v1.ApplyForceResponse
-	41, // 41: wendy.agent.services.v2.WendySimService.Teleport:output_type -> wendy.sim.v1.TeleportResponse
-	42, // 42: wendy.agent.services.v2.WendySimService.SaveSnapshot:output_type -> wendy.sim.v1.SaveSnapshotResponse
-	43, // 43: wendy.agent.services.v2.WendySimService.RestoreSnapshot:output_type -> wendy.sim.v1.RestoreSnapshotResponse
-	44, // 44: wendy.agent.services.v2.WendySimService.ReadSensors:output_type -> wendy.sim.v1.ReadSensorsResponse
-	45, // 45: wendy.agent.services.v2.WendySimService.EditScene:output_type -> wendy.sim.v1.EditSceneResponse
-	46, // 46: wendy.agent.services.v2.WendySimService.LoadPolicy:output_type -> wendy.sim.v1.LoadPolicyResponse
-	47, // 47: wendy.agent.services.v2.WendySimService.ClearPolicy:output_type -> wendy.sim.v1.ClearPolicyResponse
-	48, // 48: wendy.agent.services.v2.WendySimService.RenderVideo:output_type -> wendy.sim.v1.VideoChunk
-	26, // [26:49] is the sub-list for method output_type
-	3,  // [3:26] is the sub-list for method input_type
+	20, // 14: wendy.agent.services.v2.WendySimService.Step:input_type -> wendy.sim.v1.StepRequest
+	7,  // 15: wendy.agent.services.v2.WendySimService.RunTask:input_type -> wendy.agent.services.v2.RunSimTaskRequest
+	8,  // 16: wendy.agent.services.v2.WendySimService.GetReplay:input_type -> wendy.agent.services.v2.GetReplayRequest
+	21, // 17: wendy.agent.services.v2.WendySimService.SetClock:input_type -> wendy.sim.v1.SetClockRequest
+	22, // 18: wendy.agent.services.v2.WendySimService.ApplyForce:input_type -> wendy.sim.v1.ApplyForceRequest
+	23, // 19: wendy.agent.services.v2.WendySimService.Teleport:input_type -> wendy.sim.v1.TeleportRequest
+	24, // 20: wendy.agent.services.v2.WendySimService.SaveSnapshot:input_type -> wendy.sim.v1.SaveSnapshotRequest
+	25, // 21: wendy.agent.services.v2.WendySimService.RestoreSnapshot:input_type -> wendy.sim.v1.RestoreSnapshotRequest
+	26, // 22: wendy.agent.services.v2.WendySimService.ReadSensors:input_type -> wendy.sim.v1.ReadSensorsRequest
+	27, // 23: wendy.agent.services.v2.WendySimService.EditScene:input_type -> wendy.sim.v1.EditSceneRequest
+	28, // 24: wendy.agent.services.v2.WendySimService.LoadPolicy:input_type -> wendy.sim.v1.LoadPolicyChunk
+	29, // 25: wendy.agent.services.v2.WendySimService.ClearPolicy:input_type -> wendy.sim.v1.ClearPolicyRequest
+	30, // 26: wendy.agent.services.v2.WendySimService.RenderVideo:input_type -> wendy.sim.v1.RenderVideoRequest
+	1,  // 27: wendy.agent.services.v2.WendySimService.CreateSimulation:output_type -> wendy.agent.services.v2.CreateSimulationResponse
+	3,  // 28: wendy.agent.services.v2.WendySimService.ListSimulations:output_type -> wendy.agent.services.v2.ListSimulationsResponse
+	6,  // 29: wendy.agent.services.v2.WendySimService.ResetSimulation:output_type -> wendy.agent.services.v2.ResetSimulationResponse
+	31, // 30: wendy.agent.services.v2.WendySimService.ImportModel:output_type -> wendy.sim.v1.LoadModelResponse
+	32, // 31: wendy.agent.services.v2.WendySimService.DescribeModel:output_type -> wendy.sim.v1.DescribeModelResponse
+	33, // 32: wendy.agent.services.v2.WendySimService.SpawnRobot:output_type -> wendy.sim.v1.SpawnResponse
+	34, // 33: wendy.agent.services.v2.WendySimService.GetState:output_type -> wendy.sim.v1.GetStateResponse
+	35, // 34: wendy.agent.services.v2.WendySimService.GetContacts:output_type -> wendy.sim.v1.GetContactsResponse
+	36, // 35: wendy.agent.services.v2.WendySimService.GetCameraFrame:output_type -> wendy.sim.v1.GetCameraFrameResponse
+	37, // 36: wendy.agent.services.v2.WendySimService.SetVelocity:output_type -> wendy.sim.v1.SetVelocityResponse
+	38, // 37: wendy.agent.services.v2.WendySimService.SetJointTargets:output_type -> wendy.sim.v1.SetJointTargetsResponse
+	39, // 38: wendy.agent.services.v2.WendySimService.Step:output_type -> wendy.sim.v1.StepResponse
+	40, // 39: wendy.agent.services.v2.WendySimService.RunTask:output_type -> wendy.sim.v1.TaskEvent
+	9,  // 40: wendy.agent.services.v2.WendySimService.GetReplay:output_type -> wendy.agent.services.v2.GetReplayChunk
+	41, // 41: wendy.agent.services.v2.WendySimService.SetClock:output_type -> wendy.sim.v1.SetClockResponse
+	42, // 42: wendy.agent.services.v2.WendySimService.ApplyForce:output_type -> wendy.sim.v1.ApplyForceResponse
+	43, // 43: wendy.agent.services.v2.WendySimService.Teleport:output_type -> wendy.sim.v1.TeleportResponse
+	44, // 44: wendy.agent.services.v2.WendySimService.SaveSnapshot:output_type -> wendy.sim.v1.SaveSnapshotResponse
+	45, // 45: wendy.agent.services.v2.WendySimService.RestoreSnapshot:output_type -> wendy.sim.v1.RestoreSnapshotResponse
+	46, // 46: wendy.agent.services.v2.WendySimService.ReadSensors:output_type -> wendy.sim.v1.ReadSensorsResponse
+	47, // 47: wendy.agent.services.v2.WendySimService.EditScene:output_type -> wendy.sim.v1.EditSceneResponse
+	48, // 48: wendy.agent.services.v2.WendySimService.LoadPolicy:output_type -> wendy.sim.v1.LoadPolicyResponse
+	49, // 49: wendy.agent.services.v2.WendySimService.ClearPolicy:output_type -> wendy.sim.v1.ClearPolicyResponse
+	50, // 50: wendy.agent.services.v2.WendySimService.RenderVideo:output_type -> wendy.sim.v1.VideoChunk
+	27, // [27:51] is the sub-list for method output_type
+	3,  // [3:27] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name

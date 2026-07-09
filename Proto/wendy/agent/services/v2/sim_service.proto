@@ -45,6 +45,9 @@ service WendySimService {
     rpc SetVelocity(wendy.sim.v1.SetVelocityRequest) returns (wendy.sim.v1.SetVelocityResponse);
     rpc SetJointTargets(wendy.sim.v1.SetJointTargetsRequest) returns (wendy.sim.v1.SetJointTargetsResponse);
 
+    // Step advances sim time deterministically (pairs with SetClock pause).
+    rpc Step(wendy.sim.v1.StepRequest) returns (wendy.sim.v1.StepResponse);
+
     // --- Tasks & replay (backs `wendy sim run/evaluate`, `wendy replay`) ---
 
     // RunTask executes a task spec and streams progress, ending with a

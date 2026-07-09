@@ -31,6 +31,7 @@ const (
 	WendySimService_GetCameraFrame_FullMethodName   = "/wendy.agent.services.v2.WendySimService/GetCameraFrame"
 	WendySimService_SetVelocity_FullMethodName      = "/wendy.agent.services.v2.WendySimService/SetVelocity"
 	WendySimService_SetJointTargets_FullMethodName  = "/wendy.agent.services.v2.WendySimService/SetJointTargets"
+	WendySimService_Step_FullMethodName             = "/wendy.agent.services.v2.WendySimService/Step"
 	WendySimService_RunTask_FullMethodName          = "/wendy.agent.services.v2.WendySimService/RunTask"
 	WendySimService_GetReplay_FullMethodName        = "/wendy.agent.services.v2.WendySimService/GetReplay"
 	WendySimService_SetClock_FullMethodName         = "/wendy.agent.services.v2.WendySimService/SetClock"
@@ -74,6 +75,8 @@ type WendySimServiceClient interface {
 	GetCameraFrame(ctx context.Context, in *simpb.GetCameraFrameRequest, opts ...grpc.CallOption) (*simpb.GetCameraFrameResponse, error)
 	SetVelocity(ctx context.Context, in *simpb.SetVelocityRequest, opts ...grpc.CallOption) (*simpb.SetVelocityResponse, error)
 	SetJointTargets(ctx context.Context, in *simpb.SetJointTargetsRequest, opts ...grpc.CallOption) (*simpb.SetJointTargetsResponse, error)
+	// Step advances sim time deterministically (pairs with SetClock pause).
+	Step(ctx context.Context, in *simpb.StepRequest, opts ...grpc.CallOption) (*simpb.StepResponse, error)
 	// RunTask executes a task spec and streams progress, ending with a
 	// TaskResult.
 	RunTask(ctx context.Context, in *RunSimTaskRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[simpb.TaskEvent], error)
@@ -206,6 +209,16 @@ func (c *wendySimServiceClient) SetJointTargets(ctx context.Context, in *simpb.S
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(simpb.SetJointTargetsResponse)
 	err := c.cc.Invoke(ctx, WendySimService_SetJointTargets_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendySimServiceClient) Step(ctx context.Context, in *simpb.StepRequest, opts ...grpc.CallOption) (*simpb.StepResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(simpb.StepResponse)
+	err := c.cc.Invoke(ctx, WendySimService_Step_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +404,8 @@ type WendySimServiceServer interface {
 	GetCameraFrame(context.Context, *simpb.GetCameraFrameRequest) (*simpb.GetCameraFrameResponse, error)
 	SetVelocity(context.Context, *simpb.SetVelocityRequest) (*simpb.SetVelocityResponse, error)
 	SetJointTargets(context.Context, *simpb.SetJointTargetsRequest) (*simpb.SetJointTargetsResponse, error)
+	// Step advances sim time deterministically (pairs with SetClock pause).
+	Step(context.Context, *simpb.StepRequest) (*simpb.StepResponse, error)
 	// RunTask executes a task spec and streams progress, ending with a
 	// TaskResult.
 	RunTask(*RunSimTaskRequest, grpc.ServerStreamingServer[simpb.TaskEvent]) error
@@ -448,6 +463,9 @@ func (UnimplementedWendySimServiceServer) SetVelocity(context.Context, *simpb.Se
 }
 func (UnimplementedWendySimServiceServer) SetJointTargets(context.Context, *simpb.SetJointTargetsRequest) (*simpb.SetJointTargetsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetJointTargets not implemented")
+}
+func (UnimplementedWendySimServiceServer) Step(context.Context, *simpb.StepRequest) (*simpb.StepResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Step not implemented")
 }
 func (UnimplementedWendySimServiceServer) RunTask(*RunSimTaskRequest, grpc.ServerStreamingServer[simpb.TaskEvent]) error {
 	return status.Error(codes.Unimplemented, "method RunTask not implemented")
@@ -693,6 +711,24 @@ func _WendySimService_SetJointTargets_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendySimService_Step_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(simpb.StepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendySimServiceServer).Step(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendySimService_Step_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendySimServiceServer).Step(ctx, req.(*simpb.StepRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WendySimService_RunTask_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(RunSimTaskRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -923,6 +959,10 @@ var WendySimService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetJointTargets",
 			Handler:    _WendySimService_SetJointTargets_Handler,
+		},
+		{
+			MethodName: "Step",
+			Handler:    _WendySimService_Step_Handler,
 		},
 		{
 			MethodName: "SetClock",
