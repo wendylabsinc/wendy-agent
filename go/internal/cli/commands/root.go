@@ -158,6 +158,8 @@ func NewRootCmd() *cobra.Command {
 	authCmd.Hidden = true
 	discoverCmd := newDiscoverCmd()
 	discoverCmd.Hidden = true
+	simCmd := newSimCmd()
+	simCmd.Hidden = true
 	osCmd := newOSCmd()
 	osCmd.Hidden = true
 	infoCmd := newInfoCmd()
@@ -228,6 +230,7 @@ func NewRootCmd() *cobra.Command {
 		jsonCmd,
 		authCmd,
 		discoverCmd,
+		simCmd,
 		osCmd,
 		infoCmd,
 		utilsCmd,
