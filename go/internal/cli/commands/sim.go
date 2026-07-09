@@ -29,6 +29,7 @@ func newSimCmd() *cobra.Command {
 		newSimDescribeModelCmd(),
 		newSimSpawnCmd(),
 		newSimStateCmd(),
+		newSimCameraCmd(),
 		newSimResetCmd(),
 		newSimRunCmd(),
 		newSimReplayCmd(),
@@ -387,6 +388,73 @@ func newSimSpawnCmd() *cobra.Command {
 	cmd.Flags().StringVar(&pos, "pos", "", "Spawn position as x,y,z in meters (default 0,0,0)")
 	_ = cmd.MarkFlagRequired("world")
 	return cmd
+}
+
+func newSimCameraCmd() *cobra.Command {
+	var worldID, robotID, cameraName, outputPath string
+	var width, height uint32
+
+	cmd := &cobra.Command{
+		Use:   "camera",
+		Short: "Capture a camera frame from the simulation",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			resp, err := conn.SimService.GetCameraFrame(ctx, &simpb.GetCameraFrameRequest{
+				WorldId:    worldID,
+				RobotId:    robotID,
+				CameraName: cameraName,
+				Width:      width,
+				Height:     height,
+			})
+			if err != nil {
+				return fmt.Errorf("capturing camera frame: %w", err)
+			}
+
+			path := outputPath
+			if path == "" {
+				path = fmt.Sprintf("frame-%s.%s", worldID, frameExtension(resp.GetEncoding()))
+			}
+			if err := os.WriteFile(path, resp.GetImage(), 0o644); err != nil {
+				return fmt.Errorf("writing frame: %w", err)
+			}
+
+			if jsonOutput {
+				return printJSON(struct {
+					Path     string `json:"path"`
+					Bytes    int    `json:"bytes"`
+					Encoding string `json:"encoding"`
+				}{Path: path, Bytes: len(resp.GetImage()), Encoding: resp.GetEncoding()})
+			}
+			cliSuccess("Frame saved to %s (%d bytes, %s)", path, len(resp.GetImage()), resp.GetEncoding())
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&worldID, "world", "", "World ID (required)")
+	cmd.Flags().StringVar(&robotID, "robot", "", "Robot ID the tracking camera follows")
+	cmd.Flags().StringVar(&cameraName, "camera", "", "Model camera name (default: tracking view)")
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "Output file (default frame-<world>.<ext>)")
+	cmd.Flags().Uint32Var(&width, "width", 640, "Frame width in pixels")
+	cmd.Flags().Uint32Var(&height, "height", 480, "Frame height in pixels")
+	_ = cmd.MarkFlagRequired("world")
+
+	return cmd
+}
+
+// frameExtension maps a camera frame encoding to a file extension.
+func frameExtension(encoding string) string {
+	switch strings.ToLower(encoding) {
+	case "jpeg", "jpg":
+		return "jpg"
+	default:
+		return "png"
+	}
 }
 
 func newSimStateCmd() *cobra.Command {
