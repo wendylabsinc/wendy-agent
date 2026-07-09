@@ -41,11 +41,30 @@ Cloud-enrolled devices:
 - os_update
 - filesync_sync
 - provisioning_start / provisioning_status
+- sim_create / sim_list / sim_import_model / sim_describe_model / sim_spawn /
+  sim_state / sim_contacts / run_task_in_sim / sim_replay / sim_reset
 
 ## Deploying a workload
 
 Use the run tool to build and deploy a local project to a cloud-enrolled device:
   run(project_path="/path/to/project", device_name="mydevice")
+
+## Simulation
+
+Robot simulation runs on the connected device. The typical workflow:
+1. sim_create           — create a simulation world (world_id)
+2. sim_import_model     — import a robot model: a bundled Menagerie path or a
+                          local model directory/archive (model_id)
+3. sim_describe_model   — inspect joints/actuators/sensors/control levels
+4. sim_spawn            — place the model in the world (robot_id)
+5. run_task_in_sim      — run a task spec YAML; returns the TaskResult with
+                          checks plus the last progress/log lines
+6. sim_replay           — download the recorded replay (.rrd) for review
+
+Observe with sim_state and sim_contacts; start over with sim_reset.
+Policy: task specs and their constraints may be edited freely and re-run, but
+changes to controller or application CODE must be proposed to the human for
+approval before running.
 
 ## Disconnecting
 

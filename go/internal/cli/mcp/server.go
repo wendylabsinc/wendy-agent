@@ -105,6 +105,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerFileSyncTools(srv)
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
+	s.registerSimTools(srv)
 	s.registerCloudTools(srv)
 	cleanups := s.registerContainerMCPTools(ctx, srv)
 	defer func() {

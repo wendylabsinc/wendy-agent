@@ -90,6 +90,26 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args map[string]a
 		return s.handleProvisioningStart(ctx, req)
 	case "os_update":
 		return s.handleOSUpdate(ctx, req)
+	case "sim_create":
+		return s.handleSimCreate(ctx, req)
+	case "sim_list":
+		return s.handleSimList(ctx, req)
+	case "sim_import_model":
+		return s.handleSimImportModel(ctx, req)
+	case "sim_describe_model":
+		return s.handleSimDescribeModel(ctx, req)
+	case "sim_spawn":
+		return s.handleSimSpawn(ctx, req)
+	case "sim_state":
+		return s.handleSimState(ctx, req)
+	case "sim_contacts":
+		return s.handleSimContacts(ctx, req)
+	case "run_task_in_sim":
+		return s.handleRunTaskInSim(ctx, req)
+	case "sim_replay":
+		return s.handleSimReplay(ctx, req)
+	case "sim_reset":
+		return s.handleSimReset(ctx, req)
 	case "cloud_discover":
 		return s.handleCloudDiscover(ctx, req)
 	case "cloud_connect":
