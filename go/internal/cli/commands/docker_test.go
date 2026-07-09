@@ -903,6 +903,67 @@ func TestDetectProjectType_DockerfileTakesPrecedence(t *testing.T) {
 	}
 }
 
+func TestDetectProjectType_DockerfileTakesPrecedenceOverSwift(t *testing.T) {
+	dir := t.TempDir()
+	// The common "Swift + Dockerfile side by side" layout: Dockerfile should win.
+	for _, name := range []string{"Dockerfile", "Package.swift"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := mustDetectProjectType(t, dir); got != "docker" {
+		t.Errorf("detectProjectType = %q; want %q (Dockerfile should take precedence over Package.swift)", got, "docker")
+	}
+}
+
+func TestDockerfilePreferredOverSwiftNotice(t *testing.T) {
+	withFiles := func(t *testing.T, names ...string) string {
+		t.Helper()
+		dir := t.TempDir()
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+
+	t.Run("both present, no explicit selection, warns", func(t *testing.T) {
+		dir := withFiles(t, "Dockerfile", "Package.swift")
+		if got := dockerfilePreferredOverSwiftNotice(dir, "docker", "", ""); got == "" {
+			t.Fatal("expected a notice when Package.swift and a Dockerfile coexist")
+		}
+	})
+
+	t.Run("no Package.swift, silent", func(t *testing.T) {
+		dir := withFiles(t, "Dockerfile")
+		if got := dockerfilePreferredOverSwiftNotice(dir, "docker", "", ""); got != "" {
+			t.Fatalf("expected no notice without Package.swift; got %q", got)
+		}
+	})
+
+	t.Run("resolved type not docker, silent", func(t *testing.T) {
+		dir := withFiles(t, "Package.swift")
+		if got := dockerfilePreferredOverSwiftNotice(dir, "swift", "", ""); got != "" {
+			t.Fatalf("expected no notice when the Swift path was chosen; got %q", got)
+		}
+	})
+
+	t.Run("explicit --build-type, silent", func(t *testing.T) {
+		dir := withFiles(t, "Dockerfile", "Package.swift")
+		if got := dockerfilePreferredOverSwiftNotice(dir, "docker", "docker", ""); got != "" {
+			t.Fatalf("expected no notice when --build-type is explicit; got %q", got)
+		}
+	})
+
+	t.Run("explicit --dockerfile, silent", func(t *testing.T) {
+		dir := withFiles(t, "Dockerfile", "Package.swift")
+		if got := dockerfilePreferredOverSwiftNotice(dir, "docker", "", "Dockerfile"); got != "" {
+			t.Fatalf("expected no notice when --dockerfile is explicit; got %q", got)
+		}
+	})
+}
+
 func TestDetectProjectType_DockerfileVariantOnly(t *testing.T) {
 	dir := t.TempDir()
 	// No base Dockerfile — only variants.

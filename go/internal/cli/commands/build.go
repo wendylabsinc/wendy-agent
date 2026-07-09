@@ -180,6 +180,12 @@ func newBuildCmd() *cobra.Command {
 				return err
 			}
 
+			// Surface Dockerfile-over-Package.swift precedence so it isn't silent
+			// for the common "Swift + Dockerfile side by side" layout.
+			if msg := dockerfilePreferredOverSwiftNotice(cwd, selected.Type, opts.buildType, opts.dockerfile); msg != "" {
+				cliNotice("%s", msg)
+			}
+
 			// Query the device OS and architecture when an agent connection is
 			// available and determine the target platform.
 			var cfgPlatform string

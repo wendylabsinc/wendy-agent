@@ -655,6 +655,12 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
+	// Surface Dockerfile-over-Package.swift precedence so it isn't silent for the
+	// common "Swift + Dockerfile side by side" layout.
+	if msg := dockerfilePreferredOverSwiftNotice(cwd, projectType, opts.buildType, opts.dockerfile); msg != "" {
+		cliNotice("%s", msg)
+	}
+
 	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
 	// we end up on the agent path or a provider path (Docker, etc.).

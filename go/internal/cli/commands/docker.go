@@ -241,6 +241,34 @@ func detectProjectType(dir string) (string, error) {
 	return "unknown", nil
 }
 
+// dockerfilePreferredOverSwiftNotice returns a one-line notice (or "" for none)
+// for the common layout where a Swift package sits next to a Dockerfile.
+//
+// `wendy run` and `wendy build` build the Dockerfile by default in that case
+// (see detectProjectType / resolveDetectedBuildOption precedence), but that
+// choice used to be silent: a project with both Package.swift and a Dockerfile
+// would build the container image with no indication of which path ran. That
+// bit users with the common "Swift + Dockerfile side by side" layout — a stale
+// container build reads like the app is crashing when it is really just running
+// the wrong build path. Surfacing the precedence lets them pass --build-type
+// swift (or --dockerfile) deliberately.
+//
+// It stays silent when the user selected a build path explicitly (--build-type
+// or --dockerfile), when the resolved type is not docker, or when there is no
+// Package.swift to be shadowed.
+func dockerfilePreferredOverSwiftNotice(dir, resolvedType, requestedType, requestedDockerfile string) string {
+	if resolvedType != "docker" {
+		return ""
+	}
+	if strings.TrimSpace(requestedType) != "" || strings.TrimSpace(requestedDockerfile) != "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Package.swift")); err != nil {
+		return ""
+	}
+	return "Both Package.swift and a Dockerfile/Containerfile were found; building with the Dockerfile. Pass --build-type swift to build the Swift package instead."
+}
+
 // validDockerfileNameRe matches valid container build file names: "Dockerfile",
 // "Containerfile", or either base name followed by a dot or hyphen and one or
 // more safe characters.
