@@ -108,7 +108,12 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 			"Provide the spec as inline YAML (spec_yaml) or a local file path (spec_path). "+
 			"Task specs and their constraints/checks may be edited freely and re-run to iterate. "+
 			"Changes to controller or application CODE must be proposed to the human for approval before running. "+
-			"When record is true, download the recording afterwards with sim_replay using the returned replay_id."),
+			"When record is true, download the recording afterwards with sim_replay using the returned replay_id. "+
+			"Spec schema — objective: list of {move_forward: {distance_m}} or {wait: {seconds}}; "+
+			"constraints: mapping (max_speed_mps, do_not_fall, avoid_collisions); "+
+			"checks: list of not_fallen, {distance_traveled: {min_m}}, {collision_count: {max}}. Example:\n"+
+			"objective:\n  - move_forward: {distance_m: 3.0}\nconstraints:\n  max_speed_mps: 0.5\n  do_not_fall: true\n"+
+			"checks:\n  - not_fallen\n  - distance_traveled: {min_m: 2.5}\n  - collision_count: {max: 0}"),
 		mcpgo.WithString("world_id",
 			mcpgo.Required(),
 			mcpgo.Description("World ID to run the task in"),
