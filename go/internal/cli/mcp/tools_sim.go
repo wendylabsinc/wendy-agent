@@ -95,6 +95,37 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 		),
 	), s.handleSimState)
 
+	srv.AddTool(mcpgo.NewTool("sim_drive",
+		mcpgo.WithDescription("Command a base velocity for a simulated robot (motion level). The robot holds "+
+			"the command until the next sim_drive or a task takes over; the backend clamps to the model's "+
+			"safety limits. Omit all velocities (or send zeros) to stop. Poll sim_state to see the effect."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+		mcpgo.WithNumber("vx",
+			mcpgo.Description("Forward velocity in m/s (negative = backward)"),
+		),
+		mcpgo.WithNumber("vy",
+			mcpgo.Description("Lateral velocity in m/s"),
+		),
+		mcpgo.WithNumber("yaw_rate",
+			mcpgo.Description("Turn rate in rad/s (positive = counter-clockwise)"),
+		),
+	), s.handleSimDrive)
+
+	srv.AddTool(mcpgo.NewTool("sim_viewer_url",
+		mcpgo.WithDescription("Get the URL of the sim's live browser viewer (served when the sim container "+
+			"runs with WENDYSIM_LIVE_VIEWER=1). Share it with the human so they can watch the simulation live."),
+		mcpgo.WithString("host",
+			mcpgo.Description("Sim host (default: the connected device's host)"),
+		),
+	), s.handleSimViewerURL)
+
 	srv.AddTool(mcpgo.NewTool("sim_contacts",
 		mcpgo.WithDescription("Get active contact pairs for a robot (body_a, body_b, force in Newtons); at most 50 are returned"),
 		mcpgo.WithString("world_id",
@@ -612,4 +643,52 @@ func (s *mcpServer) handleSimReset(ctx context.Context, req mcpgo.CallToolReques
 		return mcpgo.NewToolResultError(grpcErrString(err)), nil
 	}
 	return mcpgo.NewToolResultText(fmt.Sprintf("simulation %s reset", worldID)), nil
+}
+
+func (s *mcpServer) handleSimDrive(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+	vx := req.GetFloat("vx", 0)
+	vy := req.GetFloat("vy", 0)
+	yawRate := req.GetFloat("yaw_rate", 0)
+
+	if _, err := conn.SimService.SetVelocity(ctx, &simpb.SetVelocityRequest{
+		WorldId:      worldID,
+		RobotId:      robotID,
+		VxMps:        vx,
+		VyMps:        vy,
+		YawRateRadps: yawRate,
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	if vx == 0 && vy == 0 && yawRate == 0 {
+		return mcpgo.NewToolResultText(fmt.Sprintf("robot %s stopping", robotID)), nil
+	}
+	return mcpgo.NewToolResultText(fmt.Sprintf(
+		"driving %s: vx=%.2f m/s, vy=%.2f m/s, yaw_rate=%.2f rad/s (holds until the next sim_drive)",
+		robotID, vx, vy, yawRate)), nil
+}
+
+func (s *mcpServer) handleSimViewerURL(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	host := stringParam(req, "host")
+	if host == "" {
+		conn := s.GetConn()
+		if conn == nil {
+			return errNotConnected(), nil
+		}
+		host = conn.Host
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	url := fmt.Sprintf("http://%s:9877/?url=rerun%%2Bhttp://%s:9876/proxy", host, host)
+	return mcpgo.NewToolResultText(fmt.Sprintf(
+		"live viewer: %s (requires the sim container to run with WENDYSIM_LIVE_VIEWER=1)", url)), nil
 }

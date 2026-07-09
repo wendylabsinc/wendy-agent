@@ -42,7 +42,7 @@ Cloud-enrolled devices:
 - filesync_sync
 - provisioning_start / provisioning_status
 - sim_create / sim_list / sim_import_model / sim_describe_model / sim_spawn /
-  sim_state / sim_contacts / run_task_in_sim / sim_replay / sim_reset
+  sim_state / sim_contacts / sim_drive / run_task_in_sim / sim_replay / sim_viewer_url / sim_reset
 
 ## Deploying a workload
 
@@ -61,7 +61,7 @@ Robot simulation runs on the connected device. The typical workflow:
                           checks plus the last progress/log lines
 6. sim_replay           — download the recorded replay (.rrd) for review
 
-Observe with sim_state and sim_contacts; start over with sim_reset.
+Observe with sim_state and sim_contacts; drive directly with sim_drive (motion level); share the live view via sim_viewer_url; start over with sim_reset.
 Policy: task specs and their constraints may be edited freely and re-run, but
 changes to controller or application CODE must be proposed to the human for
 approval before running.
