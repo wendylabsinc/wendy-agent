@@ -21,9 +21,15 @@ var (
 	// URLs first, so a host embedded in a URL doesn't survive as a bare FQDN.
 	reURL = regexp.MustCompile(`https?://\S+`)
 
+	// Colon-form MAC (e.g. "00:1a:7d:da:71:13"). Matched before reIPv6 so MAC
+	// redaction is deterministic and self-contained rather than relying on the
+	// IPv6 pattern to catch MACs as a side-effect (a coupling that would silently
+	// break if reIPv6 changed).
+	reMACColon = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b`)
+
 	// IPv6: a hex group followed by two or more ":hex" groups (empty groups
-	// allow the "::" compressed form). This also catches colon-form MAC
-	// addresses, which is fine — they are redacted either way.
+	// allow the "::" compressed form). Colon-form MACs are handled by
+	// reMACColon above; this only needs to cover genuine IPv6 literals.
 	reIPv6 = regexp.MustCompile(`[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{0,4}){2,}`)
 
 	// Email before FQDN so the domain part is consumed together with the
@@ -37,7 +43,7 @@ var (
 	// IPv4 dotted quad.
 	reIPv4 = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
 
-	// Hyphen-form MAC (colon-form is covered by reIPv6 above).
+	// Hyphen-form MAC (colon-form is covered by reMACColon above).
 	reMACHyphen = regexp.MustCompile(`\b(?:[0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}\b`)
 
 	// Windows UNC path (\\host\share\...). Matched before the drive-letter form
@@ -75,6 +81,7 @@ func RedactErrorDetail(msg string) string {
 	}
 	for _, re := range []*regexp.Regexp{
 		reURL,
+		reMACColon,
 		reIPv6,
 		reEmail,
 		reFQDN,

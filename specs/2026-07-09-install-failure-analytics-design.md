@@ -119,16 +119,20 @@ patterns are adapted from the agent-side dmesg redactor
 (`dmesg_logs_linux.go`). It replaces matches with `[redacted]` and then caps the
 result to 200 runes. Stripped, in order:
 
-1. IPv6 addresses (full + compressed)
-2. URLs (`https?://…`, up to whitespace)
-3. Email addresses
-4. `user@host` / bare FQDNs (dotted host labels)
-5. IPv4 addresses
-6. MAC addresses (colon and hyphen)
-7. Windows paths (`X:\…`)
-8. Unix home/device/temp paths (`/Users/…`, `/home/…`, `/root/…`, `/dev/…`,
+1. URLs (`https?://…`, up to whitespace) — first, so a host inside a URL never
+   survives as a bare FQDN
+2. Colon-form MAC addresses — matched before IPv6 so MAC redaction is
+   self-contained and not a fragile side-effect of the IPv6 pattern
+3. IPv6 addresses (full + compressed)
+4. Email addresses
+5. `user@host` / bare FQDNs (dotted host labels)
+6. IPv4 addresses
+7. Hyphen-form MAC addresses
+8. Windows UNC paths (`\\host\share\…`, also named pipes `\\.\pipe\…`) then
+   drive paths (`X:\…`)
+9. Unix home/device/temp paths (`/Users/…`, `/home/…`, `/root/…`, `/dev/…`,
    `/tmp/…`, `/var/…`) and any remaining `/`-rooted absolute path segment run
-9. Collapse repeated `[redacted]` runs; trim; cap length
+10. Collapse repeated `[redacted]` runs; trim; cap length
 
 Structural text is preserved: `"downloading image: unexpected EOF"`,
 `"no space left on device"`, `"connection refused"`, `"drive not found"`,
@@ -175,6 +179,33 @@ carries best-effort-redacted text, for catch-all failures only. Update the doc
 comments (main.go trackCommand header and `errorClass` doc) to state this
 policy explicitly. `TestErrorClass_NeverLeaksMessageText` stays green
 (`errorClass` still returns only the enum).
+
+## Privacy & compliance
+
+`error_detail` expands the data-collection surface (best-effort-redacted free
+text vs. a bounded enum), so the trade-off is scoped and gated:
+
+- **Opt-out gating (CLI, enforced).** `error_detail` is a plain field on the
+  same event payload as everything else, and `analytics.Track()` returns before
+  building that payload whenever analytics is disabled — via `wendy analytics
+  disable`, `WENDY_ANALYTICS=false`, or any CI environment (hard-disabled, no
+  opt-in escape hatch). There is no code path that sends `error_detail` when
+  analytics is off; the redactor is only ever reached for enabled, non-CI users.
+- **Redactor is reduced-risk, not a security boundary.** It is a denylist and
+  its residual gaps are documented in `RedactErrorDetail` and in the user-facing
+  `analytics.md`. It is not relied on as a guarantee.
+- **User disclosure.** The user-facing `analytics.md` discloses that a redacted
+  error excerpt may be sent for unclassified failures, lists what is stripped,
+  and states the best-effort limitation.
+
+**Follow-ups owned by the cloud/compliance side (not this CLI PR):** because a
+denylist can still let personal data through, once `error_detail` lands in
+`cli_events` it must be covered like any other personal-data-capable column —
+(1) a documented retention period for `cli_events` rows, (2) confirmation that
+account/device-deletion flows cover these rows (GDPR Art. 17), and (3) a ROPA
+entry / privacy-notice update reflecting the new field. These are tracked with
+the companion cloud migration PR, not the CLI change, since that is where the
+data is persisted and the lifecycle is controlled.
 
 ## Testing
 

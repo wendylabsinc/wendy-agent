@@ -61,10 +61,22 @@ func TestRedactErrorDetail_StripsPII(t *testing.T) {
 			survive: []string{"dial tcp", "no route to host"},
 		},
 		{
-			name:    "mac address",
+			name:    "mac address colon form",
 			in:      "bluetooth device 00:1a:7d:da:71:13 not found",
 			leaks:   []string{"00:1a:7d:da:71:13"},
 			survive: []string{"bluetooth device", "not found"},
+		},
+		{
+			name:    "mac address hyphen form",
+			in:      "bluetooth device 00-1A-7D-DA-71-13 not found",
+			leaks:   []string{"00-1A-7D-DA-71-13"},
+			survive: []string{"bluetooth device", "not found"},
+		},
+		{
+			name:    "windows named pipe",
+			in:      `dial \\.\pipe\wendy-agent-1234: access denied`,
+			leaks:   []string{`\\.\pipe`, "wendy-agent-1234"},
+			survive: []string{"dial", "access denied"},
 		},
 		{
 			name:    "email",
