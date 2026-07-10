@@ -110,6 +110,26 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args map[string]a
 		return s.handleSimReplay(ctx, req)
 	case "sim_reset":
 		return s.handleSimReset(ctx, req)
+	case "sim_clock":
+		return s.handleSimClock(ctx, req)
+	case "sim_push":
+		return s.handleSimPush(ctx, req)
+	case "sim_teleport":
+		return s.handleSimTeleport(ctx, req)
+	case "sim_snapshot_save":
+		return s.handleSimSnapshotSave(ctx, req)
+	case "sim_snapshot_restore":
+		return s.handleSimSnapshotRestore(ctx, req)
+	case "sim_sensors":
+		return s.handleSimSensors(ctx, req)
+	case "sim_scene_edit":
+		return s.handleSimSceneEdit(ctx, req)
+	case "sim_policy_load":
+		return s.handleSimPolicyLoad(ctx, req)
+	case "sim_policy_clear":
+		return s.handleSimPolicyClear(ctx, req)
+	case "sim_record":
+		return s.handleSimRecord(ctx, req)
 	case "cloud_discover":
 		return s.handleCloudDiscover(ctx, req)
 	case "cloud_connect":

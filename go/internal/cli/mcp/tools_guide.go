@@ -42,7 +42,9 @@ Cloud-enrolled devices:
 - filesync_sync
 - provisioning_start / provisioning_status
 - sim_create / sim_list / sim_import_model / sim_describe_model / sim_spawn /
-  sim_state / sim_contacts / sim_drive / run_task_in_sim / sim_replay / sim_viewer_url / sim_reset
+  sim_state / sim_contacts / sim_sensors / sim_drive / run_task_in_sim / sim_replay /
+  sim_viewer_url / sim_reset / sim_clock / sim_push / sim_teleport / sim_snapshot_save /
+  sim_snapshot_restore / sim_scene_edit / sim_policy_load / sim_policy_clear / sim_record
 
 ## Deploying a workload
 
@@ -61,7 +63,14 @@ Robot simulation runs on the connected device. The typical workflow:
                           checks plus the last progress/log lines
 6. sim_replay           — download the recorded replay (.rrd) for review
 
-Observe with sim_state and sim_contacts; drive directly with sim_drive (motion level); share the live view via sim_viewer_url; start over with sim_reset.
+Observe with sim_state, sim_contacts, and sim_sensors; drive directly with sim_drive (motion level); share the live view via sim_viewer_url; start over with sim_reset.
+Interactive tooling: sim_clock pauses/resumes and fast-forwards a world;
+sim_push shoves the robot (balance testing); sim_teleport repositions it;
+sim_snapshot_save / sim_snapshot_restore capture and rewind exact physics
+state to reproduce failures; sim_scene_edit adds/removes obstacles in a live
+world; sim_policy_load swaps in a trained policy file (sim_policy_clear
+reverts); sim_record renders an mp4 clip to a local file (share the path);
+sim_import_model with replace_model_id hot-reloads an edited model.
 Policy: task specs and their constraints may be edited freely and re-run, but
 changes to controller or application CODE must be proposed to the human for
 approval before running.

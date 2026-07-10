@@ -1412,11 +1412,9 @@ func newSimPolicyLoadCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			f, err := os.Open(args[0])
-			if err != nil {
+			if _, err := os.Stat(args[0]); err != nil {
 				return fmt.Errorf("opening policy file: %w", err)
 			}
-			defer f.Close()
 
 			conn, err := connectToAgent(ctx)
 			if err != nil {
@@ -1438,25 +1436,15 @@ func newSimPolicyLoadCmd() *cobra.Command {
 				return fmt.Errorf("sending policy source: %w", err)
 			}
 
-			buf := make([]byte, simutil.ModelChunkSize)
-			for {
-				n, readErr := f.Read(buf)
-				if n > 0 {
-					chunk := make([]byte, n)
-					copy(chunk, buf[:n])
-					if sendErr := stream.Send(&simpb.LoadPolicyChunk{
-						Payload: &simpb.LoadPolicyChunk_Data{Data: chunk},
-					}); sendErr != nil {
-						// The stream broke; CloseAndRecv surfaces the cause.
-						break
-					}
-				}
-				if readErr == io.EOF {
-					break
-				}
-				if readErr != nil {
-					return fmt.Errorf("reading policy %s: %w", args[0], readErr)
-				}
+			sendErr := simutil.StreamFileChunks(args[0], func(data []byte) error {
+				return stream.Send(&simpb.LoadPolicyChunk{
+					Payload: &simpb.LoadPolicyChunk_Data{Data: data},
+				})
+			})
+			// A local read error aborts the load. Send returning io.EOF means
+			// the stream broke; CloseAndRecv below surfaces the cause.
+			if sendErr != nil && sendErr != io.EOF {
+				return fmt.Errorf("reading policy %s: %w", args[0], sendErr)
 			}
 
 			resp, err := stream.CloseAndRecv()

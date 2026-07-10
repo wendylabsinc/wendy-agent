@@ -37,6 +37,86 @@ type fakeSimServer struct {
 	importedBytes  int
 	lastRunTask    *agentpbv2.RunSimTaskRequest
 	resetWorldID   string
+
+	// Interactive tooling captures / fixtures.
+	lastSetClock   *simpb.SetClockRequest
+	lastApplyForce *simpb.ApplyForceRequest
+	lastTeleport   *simpb.TeleportRequest
+	lastRestore    *simpb.RestoreSnapshotRequest
+	sensorReadings []*simpb.SensorReading
+	lastEditScene  *simpb.EditSceneRequest
+	policySource   *simpb.PolicySource
+	policyBytes    int
+	clearedPolicy  *simpb.ClearPolicyRequest
+	videoChunks    [][]byte
+	lastRender     *simpb.RenderVideoRequest
+}
+
+func (f *fakeSimServer) SetClock(_ context.Context, req *simpb.SetClockRequest) (*simpb.SetClockResponse, error) {
+	f.lastSetClock = req
+	return &simpb.SetClockResponse{Paused: req.GetPaused(), SpeedFactor: req.GetSpeedFactor()}, nil
+}
+
+func (f *fakeSimServer) ApplyForce(_ context.Context, req *simpb.ApplyForceRequest) (*simpb.ApplyForceResponse, error) {
+	f.lastApplyForce = req
+	return &simpb.ApplyForceResponse{}, nil
+}
+
+func (f *fakeSimServer) Teleport(_ context.Context, req *simpb.TeleportRequest) (*simpb.TeleportResponse, error) {
+	f.lastTeleport = req
+	return &simpb.TeleportResponse{}, nil
+}
+
+func (f *fakeSimServer) SaveSnapshot(_ context.Context, _ *simpb.SaveSnapshotRequest) (*simpb.SaveSnapshotResponse, error) {
+	return &simpb.SaveSnapshotResponse{SnapshotId: "snap-1"}, nil
+}
+
+func (f *fakeSimServer) RestoreSnapshot(_ context.Context, req *simpb.RestoreSnapshotRequest) (*simpb.RestoreSnapshotResponse, error) {
+	f.lastRestore = req
+	return &simpb.RestoreSnapshotResponse{}, nil
+}
+
+func (f *fakeSimServer) ReadSensors(_ context.Context, _ *simpb.ReadSensorsRequest) (*simpb.ReadSensorsResponse, error) {
+	return &simpb.ReadSensorsResponse{Readings: f.sensorReadings}, nil
+}
+
+func (f *fakeSimServer) EditScene(_ context.Context, req *simpb.EditSceneRequest) (*simpb.EditSceneResponse, error) {
+	f.lastEditScene = req
+	return &simpb.EditSceneResponse{}, nil
+}
+
+func (f *fakeSimServer) LoadPolicy(stream grpc.ClientStreamingServer[simpb.LoadPolicyChunk, simpb.LoadPolicyResponse]) error {
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		switch p := chunk.GetPayload().(type) {
+		case *simpb.LoadPolicyChunk_Source:
+			f.policySource = p.Source
+		case *simpb.LoadPolicyChunk_Data:
+			f.policyBytes += len(p.Data)
+		}
+	}
+	return stream.SendAndClose(&simpb.LoadPolicyResponse{PolicyId: "policy-1"})
+}
+
+func (f *fakeSimServer) ClearPolicy(_ context.Context, req *simpb.ClearPolicyRequest) (*simpb.ClearPolicyResponse, error) {
+	f.clearedPolicy = req
+	return &simpb.ClearPolicyResponse{}, nil
+}
+
+func (f *fakeSimServer) RenderVideo(req *simpb.RenderVideoRequest, stream grpc.ServerStreamingServer[simpb.VideoChunk]) error {
+	f.lastRender = req
+	for _, data := range f.videoChunks {
+		if err := stream.Send(&simpb.VideoChunk{Data: data}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *fakeSimServer) CreateSimulation(_ context.Context, req *agentpbv2.CreateSimulationRequest) (*agentpbv2.CreateSimulationResponse, error) {
@@ -152,7 +232,9 @@ func TestSimTools_NotConnected(t *testing.T) {
 	for _, tool := range []string{
 		"sim_create", "sim_list", "sim_import_model", "sim_describe_model",
 		"sim_spawn", "sim_state", "sim_contacts", "run_task_in_sim",
-		"sim_replay", "sim_reset",
+		"sim_replay", "sim_reset", "sim_clock", "sim_push", "sim_teleport",
+		"sim_snapshot_save", "sim_snapshot_restore", "sim_sensors",
+		"sim_scene_edit", "sim_policy_load", "sim_policy_clear", "sim_record",
 	} {
 		result, err := srv.callTool(context.Background(), tool, map[string]any{})
 		if err != nil {
@@ -714,5 +796,372 @@ func TestSimReset_ForwardsWorldID(t *testing.T) {
 	}
 	if fake.resetWorldID != "w1" {
 		t.Errorf("resetWorldID = %q; want w1", fake.resetWorldID)
+	}
+}
+
+func TestSimClock_ForwardsAndReturnsState(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_clock", map[string]any{
+		"world_id": "w1", "paused": true, "speed_factor": 4.0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got["paused"] != true || got["speed_factor"] != 4.0 {
+		t.Errorf("sim_clock = %v; want paused=true speed_factor=4", got)
+	}
+	if fake.lastSetClock.GetWorldId() != "w1" || !fake.lastSetClock.GetPaused() ||
+		fake.lastSetClock.GetSpeedFactor() != 4 {
+		t.Errorf("forwarded request = %+v", fake.lastSetClock)
+	}
+}
+
+func TestSimPush_ForwardsForce(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_push", map[string]any{
+		"world_id": "w1", "robot_id": "r1", "force": "30,0,-5", "duration_s": 0.25,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	got := fake.lastApplyForce
+	if got.GetFxN() != 30 || got.GetFyN() != 0 || got.GetFzN() != -5 || got.GetDurationS() != 0.25 {
+		t.Errorf("forwarded request = %+v", got)
+	}
+}
+
+func TestSimPush_DefaultsDurationAndValidatesForce(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	if result, err := srv.callTool(context.Background(), "sim_push", map[string]any{
+		"world_id": "w1", "robot_id": "r1", "force": "30,0,0",
+	}); err != nil || result.IsError {
+		t.Fatalf("push without duration: err=%v result=%v", err, result)
+	}
+	if fake.lastApplyForce.GetDurationS() != 0.1 {
+		t.Errorf("default duration = %v; want 0.1", fake.lastApplyForce.GetDurationS())
+	}
+
+	for name, force := range map[string]string{"missing": "", "malformed": "1,2"} {
+		result, err := srv.callTool(context.Background(), "sim_push", map[string]any{
+			"world_id": "w1", "robot_id": "r1", "force": force,
+		})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if !result.IsError {
+			t.Errorf("%s force: expected IsError=true", name)
+		}
+	}
+}
+
+func TestSimTeleport_ForwardsPoseWithZeroVelocity(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_teleport", map[string]any{
+		"world_id": "w1", "robot_id": "r1", "pos": "1,2,0.5",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	got := fake.lastTeleport
+	if got.GetPose().GetX() != 1 || got.GetPose().GetY() != 2 || got.GetPose().GetZ() != 0.5 {
+		t.Errorf("forwarded pose = %+v", got.GetPose())
+	}
+	if !got.GetZeroVelocity() {
+		t.Error("zero_velocity should be true")
+	}
+
+	missing, err := srv.callTool(context.Background(), "sim_teleport", map[string]any{
+		"world_id": "w1", "robot_id": "r1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !missing.IsError {
+		t.Error("teleport without pos: expected IsError=true")
+	}
+}
+
+func TestSimSnapshotSaveAndRestore(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_snapshot_save", map[string]any{"world_id": "w1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got["snapshot_id"] != "snap-1" {
+		t.Errorf("snapshot_id = %q; want snap-1", got["snapshot_id"])
+	}
+
+	restore, err := srv.callTool(context.Background(), "sim_snapshot_restore", map[string]any{
+		"world_id": "w1", "snapshot_id": "snap-1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if restore.IsError {
+		t.Fatalf("unexpected error result: %v", restore.Content)
+	}
+	if fake.lastRestore.GetWorldId() != "w1" || fake.lastRestore.GetSnapshotId() != "snap-1" {
+		t.Errorf("forwarded restore = %+v", fake.lastRestore)
+	}
+}
+
+func TestSimSensors_ReturnsBoundedReadings(t *testing.T) {
+	fake := &fakeSimServer{}
+	for i := 0; i < 60; i++ {
+		fake.sensorReadings = append(fake.sensorReadings, &simpb.SensorReading{
+			Name: fmt.Sprintf("sensor-%d", i), Type: "touch", Values: []float64{1},
+		})
+	}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_sensors", map[string]any{
+		"world_id": "w1", "robot_id": "r1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	readings, _ := got["readings"].([]any)
+	if len(readings) != maxSimSensorReadings {
+		t.Errorf("len(readings) = %d; want %d", len(readings), maxSimSensorReadings)
+	}
+	if got["total_sensors"] != float64(60) || got["truncated"] != true {
+		t.Errorf("total/truncated = %v/%v; want 60/true", got["total_sensors"], got["truncated"])
+	}
+}
+
+func TestSimSceneEdit_AddBoxAndRemove(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_scene_edit", map[string]any{
+		"world_id": "w1", "op": "add_box", "id": "crate", "pos": "1,0,0.25", "size": "0.5,0.5,0.5",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	box := fake.lastEditScene.GetAddBox()
+	if box.GetId() != "crate" || box.GetPosition()[0] != 1 || box.GetSize()[2] != 0.5 {
+		t.Errorf("forwarded add_box = %+v", box)
+	}
+
+	remove, err := srv.callTool(context.Background(), "sim_scene_edit", map[string]any{
+		"world_id": "w1", "op": "remove", "id": "crate",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if remove.IsError {
+		t.Fatalf("unexpected error result: %v", remove.Content)
+	}
+	if fake.lastEditScene.GetRemoveId() != "crate" {
+		t.Errorf("forwarded remove_id = %q; want crate", fake.lastEditScene.GetRemoveId())
+	}
+}
+
+func TestSimSceneEdit_Validation(t *testing.T) {
+	conn := startFakeSimServer(t, &fakeSimServer{})
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	for name, args := range map[string]map[string]any{
+		"bad op":           {"world_id": "w1", "op": "add_sphere", "id": "s1"},
+		"add_box no pos":   {"world_id": "w1", "op": "add_box", "id": "b1", "size": "1,1,1"},
+		"add_box bad size": {"world_id": "w1", "op": "add_box", "id": "b1", "pos": "0,0,0", "size": "1,1"},
+		"missing id":       {"world_id": "w1", "op": "remove"},
+	} {
+		result, err := srv.callTool(context.Background(), "sim_scene_edit", args)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", name, err)
+		}
+		if !result.IsError {
+			t.Errorf("%s: expected IsError=true", name)
+		}
+	}
+}
+
+func TestSimPolicyLoad_StreamsFile(t *testing.T) {
+	policy := filepath.Join(t.TempDir(), "policy.onnx")
+	if err := os.WriteFile(policy, []byte("onnx-model-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_policy_load", map[string]any{
+		"world_id": "w1", "robot_id": "r1", "local_path": policy,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	var got map[string]string
+	if err := json.Unmarshal([]byte(toolResultText(t, result)), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got["policy_id"] != "policy-1" {
+		t.Errorf("policy_id = %q; want policy-1", got["policy_id"])
+	}
+	if fake.policySource.GetWorldId() != "w1" || fake.policySource.GetRobotId() != "r1" ||
+		fake.policySource.GetFormat() != "onnx" {
+		t.Errorf("policy source = %+v", fake.policySource)
+	}
+	if fake.policyBytes != len("onnx-model-bytes") {
+		t.Errorf("policy bytes = %d; want %d", fake.policyBytes, len("onnx-model-bytes"))
+	}
+}
+
+func TestSimPolicyLoad_MissingFile(t *testing.T) {
+	conn := startFakeSimServer(t, &fakeSimServer{})
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_policy_load", map[string]any{
+		"world_id": "w1", "robot_id": "r1",
+		"local_path": filepath.Join(t.TempDir(), "nope.onnx"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Error("expected IsError=true for a missing policy file")
+	}
+}
+
+func TestSimPolicyClear_Forwards(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_policy_clear", map[string]any{
+		"world_id": "w1", "robot_id": "r1",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if fake.clearedPolicy.GetWorldId() != "w1" || fake.clearedPolicy.GetRobotId() != "r1" {
+		t.Errorf("forwarded request = %+v", fake.clearedPolicy)
+	}
+}
+
+func TestSimRecord_WritesFileAndReturnsPathNotBytes(t *testing.T) {
+	fake := &fakeSimServer{videoChunks: [][]byte{[]byte("mp4|"), []byte("data")}}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	path := filepath.Join(t.TempDir(), "clip.mp4")
+	result, err := srv.callTool(context.Background(), "sim_record", map[string]any{
+		"world_id": "w1", "robot_id": "r1", "duration_s": 2.0, "fps": 30, "output_path": path,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	text := toolResultText(t, result)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if got["path"] != path || got["bytes"] != float64(8) {
+		t.Errorf("sim_record = %v; want path/bytes=8", got)
+	}
+	if strings.Contains(text, "mp4|data") {
+		t.Error("sim_record must not return the video bytes")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "mp4|data" {
+		t.Errorf("file content = %q; want mp4|data", data)
+	}
+	if fake.lastRender.GetDurationS() != 2 || fake.lastRender.GetFps() != 30 {
+		t.Errorf("forwarded request = %+v", fake.lastRender)
+	}
+}
+
+func TestSimImportModel_ReplaceModelID(t *testing.T) {
+	fake := &fakeSimServer{}
+	conn := startFakeSimServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "sim_import_model", map[string]any{
+		"name":             "go2",
+		"menagerie_path":   "unitree_go2/go2.xml",
+		"replace_model_id": "model-old",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if fake.importedSource.GetReplaceModelId() != "model-old" {
+		t.Errorf("replace_model_id = %q; want model-old", fake.importedSource.GetReplaceModelId())
 	}
 }

@@ -320,6 +320,41 @@ func TestStreamLocalModel_Missing(t *testing.T) {
 	}
 }
 
+func TestStreamFileChunks(t *testing.T) {
+	// A file larger than one chunk streams verbatim across chunk boundaries.
+	data := bytes.Repeat([]byte("policy!"), 20000) // ~140KB > 2 chunks
+	path := filepath.Join(t.TempDir(), "policy.onnx")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	chunkCount := 0
+	err := StreamFileChunks(path, func(chunk []byte) error {
+		if len(chunk) > ModelChunkSize {
+			t.Errorf("chunk of %d bytes exceeds ModelChunkSize", len(chunk))
+		}
+		chunkCount++
+		got.Write(chunk)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamFileChunks: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), data) {
+		t.Errorf("streamed %d bytes; want %d, byte-exact", got.Len(), len(data))
+	}
+	if chunkCount < 3 {
+		t.Errorf("chunkCount = %d; want >= 3", chunkCount)
+	}
+}
+
+func TestStreamFileChunks_Missing(t *testing.T) {
+	err := StreamFileChunks(filepath.Join(t.TempDir(), "nope.onnx"), func([]byte) error { return nil })
+	if err == nil {
+		t.Error("StreamFileChunks on a missing path should fail")
+	}
+}
+
 func TestWriteReplayFile(t *testing.T) {
 	chunks := [][]byte{
 		[]byte("rrd|"),

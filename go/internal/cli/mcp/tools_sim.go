@@ -22,6 +22,9 @@ const maxSimTaskEventLines = 20
 // maxSimContacts bounds how many contact pairs sim_contacts returns.
 const maxSimContacts = 50
 
+// maxSimSensorReadings bounds how many readings sim_sensors returns.
+const maxSimSensorReadings = 50
+
 func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("sim_create",
 		mcpgo.WithDescription("Create a robot simulation world on the connected device. Returns the world_id and backend."),
@@ -43,7 +46,9 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 			"menagerie_path for a bundled MuJoCo Menagerie model, or local_path for a model directory "+
 			"or .tar/.tar.gz archive on this machine (it is streamed to the device). Format is "+
 			"auto-detected (mjcf/sdf/urdf; override with format) — which formats load depends on the "+
-			"backend (MuJoCo: mjcf; Gazebo: sdf, urdf). Returns the model_id."),
+			"backend (MuJoCo: mjcf; Gazebo: sdf, urdf). Set replace_model_id to reload an existing "+
+			"model in place (robots spawned from it are respawned — the edit-reload loop). "+
+			"Returns the model_id."),
 		mcpgo.WithString("name",
 			mcpgo.Required(),
 			mcpgo.Description("Registry name the model will be addressable by (e.g. \"go2\")"),
@@ -56,6 +61,9 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 		),
 		mcpgo.WithString("local_path",
 			mcpgo.Description("Local model directory or .tar/.tar.gz archive to upload"),
+		),
+		mcpgo.WithString("replace_model_id",
+			mcpgo.Description("Existing model ID to replace in place (robots spawned from it are respawned)"),
 		),
 	), s.handleSimImportModel)
 
@@ -190,6 +198,174 @@ func (s *mcpServer) registerSimTools(srv *server.MCPServer) {
 			mcpgo.Description("World ID to reset"),
 		),
 	), s.handleSimReset)
+
+	srv.AddTool(mcpgo.NewTool("sim_clock",
+		mcpgo.WithDescription("Pause/resume a simulation world and set its real-time pacing. "+
+			"paused=true freezes physics (advance deterministically with run_task_in_sim after resuming, "+
+			"or resume with paused=false); speed_factor scales pacing (1 = real time, 10 = 10x, "+
+			"0 = leave unchanged). Returns the resulting clock state."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithBoolean("paused",
+			mcpgo.Description("true pauses physics stepping; false (default) resumes it"),
+		),
+		mcpgo.WithNumber("speed_factor",
+			mcpgo.Description("Real-time pacing multiplier (1 = real time, 10 = 10x; 0/omitted = unchanged)"),
+		),
+	), s.handleSimClock)
+
+	srv.AddTool(mcpgo.NewTool("sim_push",
+		mcpgo.WithDescription("Apply a world-frame force impulse to a robot's base — the programmatic "+
+			"shove, used to test balance and recovery. Check the effect with sim_state."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+		mcpgo.WithString("force",
+			mcpgo.Required(),
+			mcpgo.Description("World-frame force as \"x,y,z\" in Newtons (e.g. \"30,0,0\")"),
+		),
+		mcpgo.WithNumber("duration_s",
+			mcpgo.Description("How long the force is held, in sim seconds (default 0.1; 0 = one physics step)"),
+		),
+	), s.handleSimPush)
+
+	srv.AddTool(mcpgo.NewTool("sim_teleport",
+		mcpgo.WithDescription("Move a robot to a position directly (physics-level edit); its velocities are zeroed"),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+		mcpgo.WithString("pos",
+			mcpgo.Required(),
+			mcpgo.Description("Target position as \"x,y,z\" in meters"),
+		),
+	), s.handleSimTeleport)
+
+	srv.AddTool(mcpgo.NewTool("sim_snapshot_save",
+		mcpgo.WithDescription("Capture a world's exact physics state; restore it later with "+
+			"sim_snapshot_restore to reproduce a scenario deterministically. Returns the snapshot_id."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+	), s.handleSimSnapshotSave)
+
+	srv.AddTool(mcpgo.NewTool("sim_snapshot_restore",
+		mcpgo.WithDescription("Rewind a world to a snapshot saved with sim_snapshot_save"),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("snapshot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Snapshot ID returned by sim_snapshot_save"),
+		),
+	), s.handleSimSnapshotRestore)
+
+	srv.AddTool(mcpgo.NewTool("sim_sensors",
+		mcpgo.WithDescription("Read current values of a robot's declared sensors (IMU, force, touch, "+
+			"rangefinder, ...); at most 50 readings are returned"),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+	), s.handleSimSensors)
+
+	srv.AddTool(mcpgo.NewTool("sim_scene_edit",
+		mcpgo.WithDescription("Edit a live world's static scenery without recreating it. "+
+			"op=add_box adds a static box obstacle (requires id, pos, size); "+
+			"op=remove removes an obstacle by id."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("op",
+			mcpgo.Required(),
+			mcpgo.Description("Scene operation: add_box or remove"),
+		),
+		mcpgo.WithString("id",
+			mcpgo.Required(),
+			mcpgo.Description("Obstacle ID (names a new box, or selects the one to remove)"),
+		),
+		mcpgo.WithString("pos",
+			mcpgo.Description("Box center as \"x,y,z\" in meters (add_box only)"),
+		),
+		mcpgo.WithString("size",
+			mcpgo.Description("Box full extents as \"x,y,z\" in meters (add_box only)"),
+		),
+	), s.handleSimSceneEdit)
+
+	srv.AddTool(mcpgo.NewTool("sim_policy_load",
+		mcpgo.WithDescription("Load a trained policy file (e.g. ONNX) from this machine onto a simulated "+
+			"robot, replacing its built-in controller. Revert with sim_policy_clear. Returns the policy_id."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+		mcpgo.WithString("local_path",
+			mcpgo.Required(),
+			mcpgo.Description("Local policy file to upload (e.g. policy.onnx)"),
+		),
+		mcpgo.WithString("format",
+			mcpgo.Description("Policy file format (default onnx)"),
+		),
+	), s.handleSimPolicyLoad)
+
+	srv.AddTool(mcpgo.NewTool("sim_policy_clear",
+		mcpgo.WithDescription("Revert a robot to its built-in controller (undoes sim_policy_load)"),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID returned by sim_spawn"),
+		),
+	), s.handleSimPolicyClear)
+
+	srv.AddTool(mcpgo.NewTool("sim_record",
+		mcpgo.WithDescription("Render a video clip (mp4) of the simulation and save it to a local file. "+
+			"Returns the saved path and size — share the path with the human; do not try to read the bytes."),
+		mcpgo.WithString("world_id",
+			mcpgo.Required(),
+			mcpgo.Description("World ID"),
+		),
+		mcpgo.WithString("robot_id",
+			mcpgo.Required(),
+			mcpgo.Description("Robot ID the tracking camera follows"),
+		),
+		mcpgo.WithNumber("duration_s",
+			mcpgo.Description("Clip length in sim seconds (default 5)"),
+		),
+		mcpgo.WithNumber("fps",
+			mcpgo.Description("Frames per second (default 15)"),
+		),
+		mcpgo.WithString("camera",
+			mcpgo.Description("Model camera name (default: tracking view)"),
+		),
+		mcpgo.WithString("output_path",
+			mcpgo.Description("Where to save the clip (default ./clip-<world-id>.mp4)"),
+		),
+	), s.handleSimRecord)
 }
 
 func (s *mcpServer) handleSimCreate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -274,9 +450,10 @@ func (s *mcpServer) handleSimImportModel(ctx context.Context, req mcpgo.CallTool
 	}
 	if err := stream.Send(&simpb.LoadModelChunk{
 		Payload: &simpb.LoadModelChunk_Source{Source: &simpb.ModelSource{
-			Name:          name,
-			Format:        format,
-			MenageriePath: menageriePath,
+			Name:           name,
+			Format:         format,
+			MenageriePath:  menageriePath,
+			ReplaceModelId: stringParam(req, "replace_model_id"),
 		}},
 	}); err != nil {
 		return mcpgo.NewToolResultError(grpcErrString(err)), nil
@@ -691,4 +868,322 @@ func (s *mcpServer) handleSimViewerURL(_ context.Context, req mcpgo.CallToolRequ
 	url := fmt.Sprintf("http://%s:9877/?url=rerun%%2Bhttp://%s:9876/proxy", host, host)
 	return mcpgo.NewToolResultText(fmt.Sprintf(
 		"live viewer: %s (requires the sim container to run with WENDYSIM_LIVE_VIEWER=1)", url)), nil
+}
+
+func (s *mcpServer) handleSimClock(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	if worldID == "" {
+		return mcpgo.NewToolResultError("world_id is required"), nil
+	}
+	resp, err := conn.SimService.SetClock(ctx, &simpb.SetClockRequest{
+		WorldId:     worldID,
+		Paused:      req.GetBool("paused", false),
+		SpeedFactor: req.GetFloat("speed_factor", 0),
+	})
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	b, _ := json.MarshalIndent(map[string]any{
+		"paused":       resp.GetPaused(),
+		"speed_factor": resp.GetSpeedFactor(),
+	}, "", "  ")
+	return mcpgo.NewToolResultText(string(b)), nil
+}
+
+func (s *mcpServer) handleSimPush(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+	force, err := simutil.ParseVector3(stringParam(req, "force"), "force")
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	duration := req.GetFloat("duration_s", 0.1)
+
+	if _, err := conn.SimService.ApplyForce(ctx, &simpb.ApplyForceRequest{
+		WorldId:   worldID,
+		RobotId:   robotID,
+		FxN:       force[0],
+		FyN:       force[1],
+		FzN:       force[2],
+		DurationS: duration,
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	return mcpgo.NewToolResultText(fmt.Sprintf(
+		"pushed %s with force (%.1f, %.1f, %.1f) N for %.2f s; check sim_state for the effect",
+		robotID, force[0], force[1], force[2], duration)), nil
+}
+
+func (s *mcpServer) handleSimTeleport(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+	pose, err := simutil.ParsePosition(stringParam(req, "pos"))
+	if err != nil {
+		return mcpgo.NewToolResultError(err.Error()), nil
+	}
+	if pose == nil {
+		return mcpgo.NewToolResultError("pos is required (\"x,y,z\" in meters)"), nil
+	}
+
+	if _, err := conn.SimService.Teleport(ctx, &simpb.TeleportRequest{
+		WorldId:      worldID,
+		RobotId:      robotID,
+		Pose:         pose,
+		ZeroVelocity: true,
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	return mcpgo.NewToolResultText(fmt.Sprintf("teleported %s to (%.3f, %.3f, %.3f); velocities zeroed",
+		robotID, pose.GetX(), pose.GetY(), pose.GetZ())), nil
+}
+
+func (s *mcpServer) handleSimSnapshotSave(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	if worldID == "" {
+		return mcpgo.NewToolResultError("world_id is required"), nil
+	}
+	resp, err := conn.SimService.SaveSnapshot(ctx, &simpb.SaveSnapshotRequest{WorldId: worldID})
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	b, _ := json.MarshalIndent(map[string]string{"snapshot_id": resp.GetSnapshotId()}, "", "  ")
+	return mcpgo.NewToolResultText(string(b)), nil
+}
+
+func (s *mcpServer) handleSimSnapshotRestore(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	snapshotID := stringParam(req, "snapshot_id")
+	if worldID == "" || snapshotID == "" {
+		return mcpgo.NewToolResultError("world_id and snapshot_id are required"), nil
+	}
+	if _, err := conn.SimService.RestoreSnapshot(ctx, &simpb.RestoreSnapshotRequest{
+		WorldId:    worldID,
+		SnapshotId: snapshotID,
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	return mcpgo.NewToolResultText(fmt.Sprintf("world %s restored to snapshot %s", worldID, snapshotID)), nil
+}
+
+func (s *mcpServer) handleSimSensors(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+	resp, err := conn.SimService.ReadSensors(ctx, &simpb.ReadSensorsRequest{
+		WorldId: worldID,
+		RobotId: robotID,
+	})
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	all := resp.GetReadings()
+	readings := []map[string]any{}
+	for i, r := range all {
+		if i >= maxSimSensorReadings {
+			break
+		}
+		readings = append(readings, map[string]any{
+			"name":   r.GetName(),
+			"type":   r.GetType(),
+			"values": r.GetValues(),
+		})
+	}
+	out := map[string]any{
+		"total_sensors": len(all),
+		"readings":      readings,
+	}
+	if len(all) > maxSimSensorReadings {
+		out["truncated"] = true
+	}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	return mcpgo.NewToolResultText(string(b)), nil
+}
+
+func (s *mcpServer) handleSimSceneEdit(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	id := stringParam(req, "id")
+	if worldID == "" || id == "" {
+		return mcpgo.NewToolResultError("world_id and id are required"), nil
+	}
+
+	edit := &simpb.EditSceneRequest{WorldId: worldID}
+	var summary string
+	switch op := stringParam(req, "op"); op {
+	case "add_box":
+		pos, err := simutil.ParseVector3(stringParam(req, "pos"), "pos")
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+		size, err := simutil.ParseVector3(stringParam(req, "size"), "size")
+		if err != nil {
+			return mcpgo.NewToolResultError(err.Error()), nil
+		}
+		edit.Op = &simpb.EditSceneRequest_AddBox{AddBox: &simpb.SceneBoxSpec{
+			Id:       id,
+			Position: pos[:],
+			Size:     size[:],
+		}}
+		summary = fmt.Sprintf("box %s added at (%.2f, %.2f, %.2f) with size (%.2f, %.2f, %.2f)",
+			id, pos[0], pos[1], pos[2], size[0], size[1], size[2])
+	case "remove":
+		edit.Op = &simpb.EditSceneRequest_RemoveId{RemoveId: id}
+		summary = fmt.Sprintf("obstacle %s removed", id)
+	default:
+		return mcpgo.NewToolResultError(fmt.Sprintf("invalid op %q: expected add_box or remove", op)), nil
+	}
+
+	if _, err := conn.SimService.EditScene(ctx, edit); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	return mcpgo.NewToolResultText(summary), nil
+}
+
+func (s *mcpServer) handleSimPolicyLoad(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	localPath := stringParam(req, "local_path")
+	if worldID == "" || robotID == "" || localPath == "" {
+		return mcpgo.NewToolResultError("world_id, robot_id, and local_path are required"), nil
+	}
+	format := stringParam(req, "format")
+	if format == "" {
+		format = "onnx"
+	}
+	if _, err := os.Stat(localPath); err != nil {
+		return mcpgo.NewToolResultError(fmt.Sprintf("opening policy file: %v", err)), nil
+	}
+
+	stream, err := conn.SimService.LoadPolicy(ctx)
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	if err := stream.Send(&simpb.LoadPolicyChunk{
+		Payload: &simpb.LoadPolicyChunk_Source{Source: &simpb.PolicySource{
+			WorldId: worldID,
+			RobotId: robotID,
+			Format:  format,
+		}},
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+
+	sendErr := simutil.StreamFileChunks(localPath, func(data []byte) error {
+		return stream.Send(&simpb.LoadPolicyChunk{
+			Payload: &simpb.LoadPolicyChunk_Data{Data: data},
+		})
+	})
+	// A local read error aborts the load. Send returning io.EOF means the
+	// stream broke; CloseAndRecv below surfaces the cause.
+	if sendErr != nil && sendErr != io.EOF {
+		return mcpgo.NewToolResultError(fmt.Sprintf("reading policy %s: %v", localPath, sendErr)), nil
+	}
+
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	b, _ := json.MarshalIndent(map[string]string{"policy_id": resp.GetPolicyId()}, "", "  ")
+	return mcpgo.NewToolResultText(string(b)), nil
+}
+
+func (s *mcpServer) handleSimPolicyClear(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+	if _, err := conn.SimService.ClearPolicy(ctx, &simpb.ClearPolicyRequest{
+		WorldId: worldID,
+		RobotId: robotID,
+	}); err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	return mcpgo.NewToolResultText(fmt.Sprintf("policy cleared; %s uses its built-in controller", robotID)), nil
+}
+
+func (s *mcpServer) handleSimRecord(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	worldID := stringParam(req, "world_id")
+	robotID := stringParam(req, "robot_id")
+	if worldID == "" || robotID == "" {
+		return mcpgo.NewToolResultError("world_id and robot_id are required"), nil
+	}
+
+	stream, err := conn.SimService.RenderVideo(ctx, &simpb.RenderVideoRequest{
+		WorldId:    worldID,
+		RobotId:    robotID,
+		CameraName: stringParam(req, "camera"),
+		DurationS:  req.GetFloat("duration_s", 5),
+		Fps:        uint32(req.GetInt("fps", 15)),
+	})
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+
+	path := stringParam(req, "output_path")
+	if path == "" {
+		path = fmt.Sprintf("clip-%s.mp4", worldID)
+	}
+	n, err := simutil.WriteReplayFile(path, func() ([]byte, error) {
+		chunk, recvErr := stream.Recv()
+		if recvErr != nil {
+			return nil, recvErr
+		}
+		return chunk.GetData(), nil
+	})
+	if err != nil {
+		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+	}
+	b, _ := json.MarshalIndent(map[string]any{
+		"path":  path,
+		"bytes": n,
+	}, "", "  ")
+	return mcpgo.NewToolResultText(string(b)), nil
 }

@@ -187,6 +187,18 @@ func WriteReplayFile(path string, recv func() ([]byte, error)) (int64, error) {
 	return written, nil
 }
 
+// StreamFileChunks streams a single file's raw bytes to send in chunks of at
+// most ModelChunkSize (used for policy uploads, where the wire carries the
+// file verbatim — no tarring or gunzipping).
+func StreamFileChunks(path string, send func([]byte) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return sendDataChunks(f, send)
+}
+
 // StreamLocalModel streams a local model as tar data chunks. A directory is
 // tarred on the fly; a file is streamed as-is, transparently gunzipping
 // .tar.gz/.tgz archives so the wire always carries a plain tar.
