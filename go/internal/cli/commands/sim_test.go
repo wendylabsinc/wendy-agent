@@ -38,6 +38,8 @@ func TestNewSimCmd_Subcommands(t *testing.T) {
 		"record":         false,
 		"joints":         false,
 		"step":           false,
+		"eval":           false,
+		"teleop":         false,
 	}
 	for _, sub := range cmd.Commands() {
 		if _, ok := want[sub.Name()]; ok {

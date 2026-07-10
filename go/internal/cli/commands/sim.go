@@ -51,6 +51,8 @@ func newSimCmd() *cobra.Command {
 		newSimRecordCmd(),
 		newSimJointsCmd(),
 		newSimStepCmd(),
+		newSimEvalCmd(),
+		newSimTeleopCmd(),
 	)
 
 	return cmd
