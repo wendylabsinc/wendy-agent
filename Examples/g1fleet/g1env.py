@@ -5,6 +5,7 @@ image at build time. Action = PD deltas around the home actuator stance, clamped
 to actuator control ranges (same clamping idea as Examples/HelloPython/mujoco_g1.py).
 """
 from __future__ import annotations
+import os
 import numpy as np
 import mujoco
 
@@ -18,6 +19,20 @@ STAND_HEIGHT = 0.7894        # measured nominal standing base height (calibrated
 
 
 def _model_path() -> str:
+    """Resolve the G1 MJCF. Prefers a model dir vendored into the image at build
+    time (G1_MODEL_DIR) so runtime never touches the network — mesh-mode
+    containers have no internet egress, so a runtime robot_descriptions git
+    fetch would crash. Falls back to robot_descriptions for local dev."""
+    d = os.environ.get("G1_MODEL_DIR", "").strip()
+    if d and os.path.isdir(d):
+        name_file = os.path.join(d, ".mjcf_name")
+        name = "g1.xml"
+        if os.path.isfile(name_file):
+            with open(name_file) as f:
+                name = f.read().strip() or name
+        candidate = os.path.join(d, name)
+        if os.path.isfile(candidate):
+            return candidate
     from robot_descriptions import g1_mj_description
     return g1_mj_description.MJCF_PATH
 
