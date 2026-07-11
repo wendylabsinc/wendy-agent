@@ -1,0 +1,4 @@
+numpy
+mujoco
+robot_descriptions
+debugpy
