@@ -32,3 +32,24 @@ def test_episode_terminates_by_horizon_or_fall():
         _, _, done, _ = env.step(a)
         if done: break
     assert done
+
+
+def test_cpu_backend_evaluate_returns_shape():
+    from g1fleet.g1env import G1Env
+    from g1fleet.policy import MLPPolicy
+    from g1fleet.rollout import CPUBackend
+    e = G1Env(); p = MLPPolicy(e.obs_dim, e.act_dim, hidden=(16, 16))
+    be = CPUBackend(e.obs_dim, e.act_dim, workers=2)
+    import numpy as np
+    v = p.get_flat()
+    out = be.evaluate_returns([v, v * 0.0], seeds=[1, 2])
+    assert out.shape == (2,) and np.all(np.isfinite(out))
+
+def test_cpu_backend_collect_trajectory_lengths():
+    from g1fleet.g1env import G1Env
+    from g1fleet.policy import MLPPolicy
+    from g1fleet.rollout import CPUBackend
+    e = G1Env(); p = MLPPolicy(e.obs_dim, e.act_dim, hidden=(16, 16))
+    be = CPUBackend(e.obs_dim, e.act_dim, workers=1)
+    tr = be.collect_trajectory(p.get_flat(), n_steps=32, seed=0)
+    assert tr.obs.shape[0] == 32 and tr.rewards.shape[0] == 32
