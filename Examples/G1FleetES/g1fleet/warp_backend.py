@@ -12,8 +12,10 @@ a per-world batched MLP in torch-cuda, sharing the device with Warp. Observation
 and reward exactly mirror g1fleet.g1env so returns are comparable to the CPU
 backend.
 
-This module imports torch + warp + mujoco_warp lazily; the CPU path never touches
-them.
+The batched MLP runs in CuPy (numpy-like GPU arrays) rather than torch — torch's
+CUDA wheel adds ~7 GB to the image, which made the mesh push over the tunnel
+unreliable; CuPy reuses the CUDA runtime already in the base image. warp +
+mujoco_warp + cupy are imported lazily; the CPU path never touches them.
 """
 from __future__ import annotations
 import numpy as np
@@ -24,12 +26,12 @@ from .policy import _layer_shapes
 
 class WarpBackend:
     def __init__(self, obs_dim: int, act_dim: int, hidden=(256, 256), **_ignored):
-        import torch
+        import cupy as cp
         import warp as wp
         import mujoco
         import mujoco_warp as mjwarp
 
-        self.torch = torch
+        self.cp = cp
         self.wp = wp
         self.mjwarp = mjwarp
         self.obs_dim = obs_dim
@@ -41,7 +43,6 @@ class WarpBackend:
         if not wp.is_cuda_available():
             raise RuntimeError("SIM_BACKEND=warp requires a CUDA device; none visible "
                                "(is the `gpu` entitlement set and CDI configured?)")
-        self.device = "cuda"
 
         # Build the MjModel once; reset to the home keyframe so every world starts
         # from the same stance g1env uses.
@@ -54,53 +55,51 @@ class WarpBackend:
         self.nq = int(self.m.nq)
         self.nv = int(self.m.nv)
 
-        # Home stance (ctrl at keyframe) and actuator limits, as GPU tensors.
+        # Home stance (ctrl at keyframe) and actuator limits, as GPU arrays.
         home = self.mj_d.ctrl.copy() if self.nu else np.zeros(0, np.float32)
-        self.home = torch.as_tensor(home, dtype=torch.float32, device=self.device)
-        lo = self.m.actuator_ctrlrange[:, 0].copy()
-        hi = self.m.actuator_ctrlrange[:, 1].copy()
-        limited = self.m.actuator_ctrllimited.astype(bool)
-        self.lo = torch.as_tensor(lo, dtype=torch.float32, device=self.device)
-        self.hi = torch.as_tensor(hi, dtype=torch.float32, device=self.device)
-        self.limited = torch.as_tensor(limited, device=self.device)
+        self.home = cp.asarray(home, dtype=cp.float32)
+        self.lo = cp.asarray(self.m.actuator_ctrlrange[:, 0], dtype=cp.float32)
+        self.hi = cp.asarray(self.m.actuator_ctrlrange[:, 1], dtype=cp.float32)
+        self.limited = cp.asarray(self.m.actuator_ctrllimited.astype(bool))
 
         self.mw_m = mjwarp.put_model(self.m)
 
     # -- batched per-world MLP -------------------------------------------------
     def _unpack(self, params_t):
-        """params_t: (P, num_params) -> lists of per-world W (P,nin,nout), b (P,nout)."""
+        """params_t: (P, num_params) -> lists of per-world W (P,nin,nout), b (P,1,nout)."""
         Ws, bs, i = [], [], 0
         P = params_t.shape[0]
         for nin, nout in self._shapes:
             n = nin * nout
             Ws.append(params_t[:, i:i + n].reshape(P, nin, nout)); i += n
-            bs.append(params_t[:, i:i + nout]); i += nout
+            bs.append(params_t[:, i:i + nout].reshape(P, 1, nout)); i += nout
         return Ws, bs
 
     def _forward(self, obs, Ws, bs):
         """obs: (P, obs_dim) -> action (P, act_dim), tanh-bounded. All layers tanh
         (matches MLPPolicy.act)."""
-        torch = self.torch
-        x = obs.unsqueeze(1)  # (P,1,in)
+        cp = self.cp
+        x = obs[:, None, :]  # (P,1,in)
         for k in range(len(Ws)):
-            x = torch.baddbmm(bs[k].unsqueeze(1), x, Ws[k])  # (P,1,out)
-            x = torch.tanh(x)
-        return x.squeeze(1)
+            x = cp.tanh(cp.matmul(x, Ws[k]) + bs[k])  # (P,1,out)
+        return x[:, 0, :]
 
     # -- rollout ---------------------------------------------------------------
     def evaluate_returns(self, param_vectors, seeds=None) -> np.ndarray:
-        torch, wp, mjwarp = self.torch, self.wp, self.mjwarp
+        cp, wp, mjwarp = self.cp, self.wp, self.mjwarp
         P = len(param_vectors)
         params = np.stack([np.asarray(v, np.float32) for v in param_vectors])
-        params_t = torch.as_tensor(params, dtype=torch.float32, device=self.device)
+        params_t = cp.asarray(params, dtype=cp.float32)
         Ws, bs = self._unpack(params_t)
 
         mw_d = mjwarp.put_data(self.m, self.mj_d, nworld=P)
-        qpos = wp.to_torch(mw_d.qpos)   # (P, nq) GPU view
-        qvel = wp.to_torch(mw_d.qvel)   # (P, nv)
-        ctrl = wp.to_torch(mw_d.ctrl)   # (P, nu) — write in place so the graph sees it
+        # Zero-copy CuPy views over the Warp arrays (shared GPU memory). Writing
+        # into `ctrl` in place is what lets the captured graph read fresh controls.
+        qpos = cp.asarray(mw_d.qpos)   # (P, nq)
+        qvel = cp.asarray(mw_d.qvel)   # (P, nv)
+        ctrl = cp.asarray(mw_d.ctrl)   # (P, nu)
 
-        home_b = self.home.unsqueeze(0).expand(P, self.nu)
+        home_b = cp.broadcast_to(self.home, (P, self.nu))
 
         # Warm up (compile all solver kernels) then capture the physics step.
         mjwarp.step(self.mw_m, mw_d)
@@ -109,31 +108,31 @@ class WarpBackend:
             mjwarp.step(self.mw_m, mw_d)
         step_graph = capture.graph
 
-        total = torch.zeros(P, device=self.device)
-        alive = torch.ones(P, device=self.device)
+        total = cp.zeros(P, dtype=cp.float32)
+        alive = cp.ones(P, dtype=cp.float32)
 
         for _ in range(G.EPISODE_STEPS):
-            obs = torch.cat([qpos, qvel, home_b], dim=1)      # (P, obs_dim)
-            action = self._forward(obs, Ws, bs)                # (P, nu)
+            obs = cp.concatenate([qpos, qvel, home_b], axis=1)   # (P, obs_dim)
+            action = self._forward(obs, Ws, bs)                   # (P, nu)
             target = home_b + G.ACTION_SCALE * action
-            target = torch.where(self.limited, torch.clamp(target, self.lo, self.hi), target)
-            ctrl.copy_(target)                                 # in-place -> graph reads it
+            target = cp.where(self.limited, cp.clip(target, self.lo, self.hi), target)
+            ctrl[...] = target                                    # in-place -> graph reads it
             for _ in range(G.CTRL_DECIMATION):
                 wp.capture_launch(step_graph)
             wp.synchronize()
 
             h = qpos[:, 2]
             v = qvel[:, 0]
-            upright = torch.clamp(1.0 - torch.abs(h - G.STAND_HEIGHT), min=0.0)
-            vel_track = -torch.abs(v - G.TARGET_VEL)
-            ctrl_cost = torch.sum(action * action, dim=1)
+            upright = cp.clip(1.0 - cp.abs(h - G.STAND_HEIGHT), 0.0, None)
+            vel_track = -cp.abs(v - G.TARGET_VEL)
+            ctrl_cost = cp.sum(action * action, axis=1)
             fell = h < G.FALL_HEIGHT
             r = (G.W_VEL * vel_track + G.W_UP * upright + G.ALIVE - G.W_CTRL * ctrl_cost)
-            r = r - fell.float()  # fall penalty, matches g1env's reward -= 1.0
+            r = r - fell.astype(cp.float32)  # fall penalty, matches g1env reward -= 1.0
             total = total + r * alive
-            alive = alive * (~fell).float()
+            alive = alive * (~fell).astype(cp.float32)
 
-        return total.detach().cpu().numpy().astype(np.float32)
+        return cp.asnumpy(total).astype(np.float32)
 
     def collect_trajectory(self, *a, **k):
         raise NotImplementedError("WarpBackend supports ES (evaluate_returns) only; "
