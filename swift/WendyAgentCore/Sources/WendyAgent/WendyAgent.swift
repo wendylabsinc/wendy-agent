@@ -375,6 +375,8 @@ public actor WendyAgent {
             ),
             orgID: info.orgID,
             assetID: info.assetID,
+            certPEM: certs.certPEM,
+            keyPEM: certs.keyPEM,
             chainPEM: certs.chainPEM,
             mtlsPort: self.configuration.port + 1
         )

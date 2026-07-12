@@ -39,6 +39,11 @@ struct TunnelBrokerClient: Sendable {
         var brokerURL: String
         var orgID: Int32
         var assetID: Int32
+        /// The device's own leaf certificate (PEM), presented to the broker for
+        /// mTLS. Empty on an unprovisioned device.
+        var certPEM: String
+        /// The private key (PEM) for `certPEM`.
+        var keyPEM: String
         var chainPEM: String
         var mtlsPort: Int
     }
@@ -217,25 +222,37 @@ struct TunnelBrokerClient: Sendable {
             )
         }
 
-        // Server-auth-only TLS: no client certificate (the broker rejects the
-        // ML-DSA client certs pki-core issues), and skip hostname verification (a
-        // self-hosted broker cert's CN is `localhost`, not the cloud host).
-        // Mirrors the Go agent, which trusts the system roots AND the device CA.
-        //
-        // `TrustRootsSource` is either system OR custom (it cannot combine them),
-        // so pick by port: the cloud broker on `:443` is Google Cloud Run, which
-        // terminates TLS with a public WebPKI cert (validated by the system
-        // roots); a self-hosted/LAN broker presents a device-CA-signed cert
-        // (validated by the device chain).
+        // Skip hostname verification (a self-hosted broker cert's CN is
+        // `localhost`, not the cloud host); trust roots mirror the Go agent
+        // (system roots AND the device CA). `TrustRootsSource` is either system
+        // OR custom (it cannot combine them), so pick by port: the cloud broker
+        // on `:443` is Google Cloud Run, which terminates TLS with a public
+        // WebPKI cert (validated by the system roots); a self-hosted/LAN broker
+        // presents a device-CA-signed cert (validated by the device chain).
         let trustRoots: TLSConfig.TrustRootsSource =
             port == 443
             ? .systemDefault
             : .certificates([
                 TLSConfig.CertificateSource.bytes(Array(config.chainPEM.utf8), format: .pem)
             ])
+
+        // Present the device's ECDSA leaf certificate (mTLS phase 1). Today's
+        // broker runs NoClientCert and never sends a CertificateRequest, so this
+        // is not transmitted on the wire; presenting it readies the device for
+        // the broker to require client certs (phase 2) without a flag-day
+        // cutover. Only the leaf is offered (not the ML-DSA CA chain).
+        let clientChain: [TLSConfig.CertificateSource]
+        let clientKey: TLSConfig.PrivateKeySource?
+        if !config.certPEM.isEmpty, !config.keyPEM.isEmpty {
+            clientChain = [.bytes(Array(config.certPEM.utf8), format: .pem)]
+            clientKey = .bytes(Array(config.keyPEM.utf8), format: .pem)
+        } else {
+            clientChain = []
+            clientKey = nil
+        }
         let tls = HTTP2ClientTransport.Posix.TransportSecurity.TLS(
-            certificateChain: [],
-            privateKey: nil,
+            certificateChain: clientChain,
+            privateKey: clientKey,
             serverCertificateVerification: .noHostnameVerification,
             trustRoots: trustRoots
         )
