@@ -87,6 +87,12 @@ class WarpBackend:
     # -- rollout ---------------------------------------------------------------
     def evaluate_returns(self, param_vectors, seeds=None) -> np.ndarray:
         cp, wp, mjwarp = self.cp, self.wp, self.mjwarp
+        import os, sys
+
+        def _log(msg):
+            print(f"[warp] {msg}", file=sys.stdout, flush=True)
+
+        use_graph = os.environ.get("WARP_CUDA_GRAPH", "1") != "0"
         P = len(param_vectors)
         params = np.stack([np.asarray(v, np.float32) for v in param_vectors])
         params_t = cp.asarray(params, dtype=cp.float32)
@@ -94,32 +100,50 @@ class WarpBackend:
 
         mw_d = mjwarp.put_data(self.m, self.mj_d, nworld=P)
         # Zero-copy CuPy views over the Warp arrays (shared GPU memory). Writing
-        # into `ctrl` in place is what lets the captured graph read fresh controls.
+        # into `ctrl` in place is what lets a captured graph read fresh controls.
+        # CuPy runs on its own stream; sync before/after handing off to Warp so
+        # there is no cross-stream race (a common cause of illegal-access crashes).
         qpos = cp.asarray(mw_d.qpos)   # (P, nq)
         qvel = cp.asarray(mw_d.qvel)   # (P, nv)
         ctrl = cp.asarray(mw_d.ctrl)   # (P, nu)
-
         home_b = cp.broadcast_to(self.home, (P, self.nu))
+        _log(f"put_data + cupy views OK (P={P}, obs_dim={self.obs_dim})")
 
-        # Warm up (compile all solver kernels) then capture the physics step.
+        # Warm up (compile all solver kernels).
         mjwarp.step(self.mw_m, mw_d)
         wp.synchronize()
-        with wp.ScopedCapture() as capture:
-            mjwarp.step(self.mw_m, mw_d)
-        step_graph = capture.graph
+        _log("warmup step OK")
+
+        step_graph = None
+        if use_graph:
+            try:
+                with wp.ScopedCapture() as capture:
+                    mjwarp.step(self.mw_m, mw_d)
+                step_graph = capture.graph
+                _log("CUDA graph captured")
+            except Exception as exc:  # noqa: BLE001
+                _log(f"graph capture failed ({exc}); falling back to plain step")
+                step_graph = None
+
+        def _physics():
+            if step_graph is not None:
+                wp.capture_launch(step_graph)
+            else:
+                mjwarp.step(self.mw_m, mw_d)
 
         total = cp.zeros(P, dtype=cp.float32)
         alive = cp.ones(P, dtype=cp.float32)
 
-        for _ in range(G.EPISODE_STEPS):
+        for t in range(G.EPISODE_STEPS):
             obs = cp.concatenate([qpos, qvel, home_b], axis=1)   # (P, obs_dim)
             action = self._forward(obs, Ws, bs)                   # (P, nu)
             target = home_b + G.ACTION_SCALE * action
             target = cp.where(self.limited, cp.clip(target, self.lo, self.hi), target)
-            ctrl[...] = target                                    # in-place -> graph reads it
+            ctrl[...] = target                                    # in-place -> physics reads it
+            cp.cuda.runtime.deviceSynchronize()                   # cupy write done before Warp
             for _ in range(G.CTRL_DECIMATION):
-                wp.capture_launch(step_graph)
-            wp.synchronize()
+                _physics()
+            wp.synchronize()                                      # physics done before cupy reads
 
             h = qpos[:, 2]
             v = qvel[:, 0]
@@ -131,8 +155,12 @@ class WarpBackend:
             r = r - fell.astype(cp.float32)  # fall penalty, matches g1env reward -= 1.0
             total = total + r * alive
             alive = alive * (~fell).astype(cp.float32)
+            if t == 0:
+                _log("first control step OK")
 
-        return cp.asnumpy(total).astype(np.float32)
+        out = cp.asnumpy(total).astype(np.float32)
+        _log(f"episode done: mean_return={float(out.mean()):.3f}")
+        return out
 
     def collect_trajectory(self, *a, **k):
         raise NotImplementedError("WarpBackend supports ES (evaluate_returns) only; "
