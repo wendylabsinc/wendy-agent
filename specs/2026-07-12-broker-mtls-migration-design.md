@@ -1,8 +1,53 @@
 # Cloud tunnel broker: mTLS client-cert identity (replace forgeable headers)
 
 Date: 2026-07-12
-Status: design proposal (follow-up to PR #1409); NOT yet implemented
+Status: design proposal (follow-up to PR #1409); NOT yet implemented. Updated
+2026-07-12 with spike findings — see "Spike findings" below. **Full client-cert
+PKI is near-future, not today's reality**; the today-viable interim is
+broker-signed delegation tokens.
 Scope: cross-repo — WendyOS (`wendy-agent` Go, Swift Mac agent, `wendy` CLI) + cloud (Swift broker service)
+
+## Spike findings (2026-07-12)
+
+Investigated the cloud broker (`cloud/swift`), the live cert chain, and the
+grpc-swift transport before implementing. Three findings reshape the plan:
+
+1. **The cloud PKI is RSA/ECDSA today, not ML-DSA.** The enrolled device's chain
+   is `sha256WithRSAEncryption` root ("Wendy Cloud Root CA", GCP CAS) with an
+   ECDSA (P-256) leaf. The ML-DSA blocker described below is the *self-hosted
+   pki-core* path (near-future / post-quantum), not the deployed cloud. So
+   swift-certificates/BoringSSL can verify today's chains fine — the ML-DSA risk
+   does not apply to the cloud broker now.
+
+2. **The broker already implements dual-accept — it's just not deployed with a
+   CA.** `cloud/swift` has `ClientCertVerifier` (validates against the Wendy CA,
+   extracts identity from the SAN URI) and `extractIdentity(peerCertificate:…)`
+   with preference order **mTLS peer cert → XFCC header → dev headers**. The
+   handler already pulls the peer cert from `context.transportSpecific`. Prod is
+   header-based only because `TLS_CA_PATH` is unset (one-way TLS + XFCC).
+
+3. **grpc-swift-nio-transport has no optional client-cert mode — this blocks
+   same-port dual-accept.** Server `clientCertificateVerification` maps
+   `.noVerification → NIOSSL .none` (no cert requested) and
+   `.noHostnameVerification/.fullVerification → require + verify`. There is no
+   "request-but-don't-require." So enabling the CA to capture certs would
+   **reject every header-only agent at the handshake** — not a safe rollout for a
+   deployed fleet.
+
+### Consequence: today vs near-future
+
+- **Near-future (this doc's mTLS plan):** requires either (a) a two-listener
+  broker (mTLS-required port + legacy XFCC port, migrate clients over, retire
+  legacy), or (b) upstream/custom NIOSSL support for optional client certs, and
+  it pairs naturally with the pki-core ML-DSA migration. Larger, and gated on
+  those enablers.
+- **Today-viable interim (recommended next):** the broker already mints and
+  verifies **short-lived, asset-scoped, broker-signed delegation JWTs**
+  (`TunnelDelegationToken`, used for `ServiceTunnel`). Extending signed-token
+  identity to the `RegisterPresence` / `ClientTunnel` paths removes the
+  *forgeability* of the raw `x-wendy-client-cert` URN without requiring any
+  client-side PKI or transport changes. This is the pragmatic fix while full
+  mTLS waits on the enablers above.
 
 ## Problem
 
