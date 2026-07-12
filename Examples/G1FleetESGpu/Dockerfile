@@ -1,25 +1,25 @@
-# GPU ES trainer: CUDA base + NVIDIA Warp + mujoco_warp + torch(cu128), on the
-# proven Spark recipe (see Examples/G1GpuProbe). The WarpBackend runs the ES
-# population as batched GPU worlds with a CUDA-graph-captured physics step.
+# GPU ES trainer: CUDA base + NVIDIA Warp + mujoco_warp + CuPy, on the proven
+# Spark recipe (see Examples/G1GpuProbe). The WarpBackend runs the ES population
+# as batched GPU worlds with a CUDA-graph-captured physics step.
+#
+# NOTE: no ghcr.io / uv here — wendy's buildx cannot reliably resolve ghcr.io in
+# this environment, so we use the base image's apt python3.12 + pip (docker.io +
+# PyPI + pypi.nvidia.com only).
 FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl libegl1 libgl1 libglib2.0-0 libgomp1 \
+    python3 python3-pip python3-venv git curl \
+    libegl1 libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-ENV UV_LINK_MODE=copy UV_PYTHON_PREFERENCE=only-managed
-RUN uv python install 3.12
 WORKDIR /app
-RUN uv venv --python 3.12 /app/.venv
+RUN python3 -m venv /app/.venv
 ENV VIRTUAL_ENV=/app/.venv PATH=/app/.venv/bin:$PATH
 
 # Warp (NVIDIA index) + mujoco_warp + mujoco + CuPy (batched MLP on GPU, reuses
-# the base image's CUDA runtime — far smaller than torch's bundled CUDA) + model
-# fetcher.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /app/.venv/bin/python \
+# the base image's CUDA runtime) + model fetcher.
+RUN pip install --no-cache-dir \
       --extra-index-url https://pypi.nvidia.com \
       "warp-lang>=1.14.0" "mujoco~=3.10.0" "mujoco-warp~=3.10.0,>=3.10.0.1" \
       cupy-cuda12x robot_descriptions "numpy<2.5"
