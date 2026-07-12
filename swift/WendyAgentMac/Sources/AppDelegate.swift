@@ -20,19 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     // We paper over that race by retrying activation/fronting a few times.
     // Real fix: make onboarding/permissions run in a regular foreground app instead.
     // See WDY-930: https://linear.app/wendylabsinc/issue/WDY-930/explore-more-packaging-and-process-architecture-options-for-wendy-on
-    private var welcomeAndPermissionsPresentationTask: Task<Void, Never>?
+    private var welcomeAndPermissionsPresentationTask: Task<Void, any Error>?
     private var isQuitting = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         self.welcomeAndPermissions.configureLaunchAtLoginOnStartup()
 
-        self.statusMenuController = StatusMenuController(
-            wendyAgent: self.wendyAgent,
-            delegate: self
-        )
-
-        Task { @MainActor [weak self] in
-            guard let self else { return }
+        Task {
+            self.statusMenuController = await StatusMenuController(
+                wendyAgent: self.wendyAgent,
+                delegate: self
+            )
 
             do {
                 try await self.wendyAgent.start()
@@ -63,9 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         guard !self.isQuitting else { return }
         self.isQuitting = true
 
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-
+        Task {
             await self.statusMenuController?.invalidate()
             await self.wendyAgent.stop()
             NSApplication.shared.terminate(nil)
@@ -147,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
         self.showWelcomeAndPermissionsWindow()
 
         self.welcomeAndPermissionsPresentationTask?.cancel()
-        self.welcomeAndPermissionsPresentationTask = Task { @MainActor [weak self] in
+        self.welcomeAndPermissionsPresentationTask = Task {
             // HACK: A single activate/orderFront call is racy here because the system permission
             // dialog may finish restoring the previously active app after our first attempt.
             // Retry a few times to keep the welcome window visible until WDY-930 is addressed by
@@ -155,10 +151,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
             let delays: [UInt64] = [150_000_000, 350_000_000, 750_000_000]
 
             for delay in delays {
-                try? await Task.sleep(nanoseconds: delay)
+                try await Task.sleep(nanoseconds: delay)
 
-                guard !Task.isCancelled,
-                    let self,
+                guard
+                    !Task.isCancelled,
                     let window = self.welcomeAndPermissionsWindow
                 else {
                     return
@@ -167,7 +163,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 self.presentWelcomeAndPermissionsWindow(window)
             }
 
-            guard let self else { return }
             self.welcomeAndPermissionsPresentationTask = nil
         }
     }

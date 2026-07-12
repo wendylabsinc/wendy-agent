@@ -1,7 +1,6 @@
 import AppKit
 import WendyAgentCore
 
-@MainActor
 protocol StatusMenuControllerDelegate: AnyObject {
     func statusMenuControllerDidSelectAbout(_ controller: StatusMenuController)
     func statusMenuControllerDidSelectWelcomeAndPermissions(_ controller: StatusMenuController)
@@ -14,22 +13,23 @@ final class StatusMenuController: NSObject {
 
     init(
         wendyAgent: WendyAgent,
-        delegate: StatusMenuControllerDelegate? = nil,
+        delegate: (any StatusMenuControllerDelegate)? = nil,
         bundle: Bundle = .main
-    ) {
+    ) async {
         self.wendyAgent = wendyAgent
         self.delegate = delegate
         self.bundleDisplayName = AppDisplayName.resolve(from: bundle)
-        self.currentStatus = wendyAgent.status
-        self.currentApps = wendyAgent.apps
+        self.currentStatus = await wendyAgent.status
+        self.currentApps = await wendyAgent.apps
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.menu = NSMenu()
         super.init()
 
-        self.statusObservation = self.wendyAgent.observeStatus { @MainActor [weak self] status in
+        self.statusObservation = await self.wendyAgent.observeStatus {
+            @MainActor [weak self] status in
             self?.update(status: status)
         }
-        self.appsObservation = self.wendyAgent.observeApps { @MainActor [weak self] apps in
+        self.appsObservation = await self.wendyAgent.observeApps { @MainActor [weak self] apps in
             self?.update(apps: apps)
         }
 
@@ -40,7 +40,7 @@ final class StatusMenuController: NSObject {
         self.rebuildMenu()
     }
 
-    weak var delegate: StatusMenuControllerDelegate?
+    weak var delegate: (any StatusMenuControllerDelegate)?
 
     private let bundleDisplayName: String
     private let statusItem: NSStatusItem

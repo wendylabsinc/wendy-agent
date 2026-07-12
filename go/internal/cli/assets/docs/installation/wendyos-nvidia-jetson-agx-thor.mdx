@@ -78,7 +78,11 @@ Jetson AGX Thor uses a dedicated USB recovery flash path. WendyOS flashes the Th
     wendy discover
     ```
 
-    <CliShot flow="discover" step="devices" alt="The Wendy CLI listing discovered WendyOS devices on the network" />
+    <img
+      src={`${(process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '')}/images/docs/cli/discover/devices-thor-dark.png`}
+      alt="The Wendy CLI listing a discovered NVIDIA Jetson AGX Thor on the network"
+      style={{ width: '100%' }}
+    />
 
     Your Thor is ready for development. See [Discovering Devices](/docs/device/discovering-devices) to learn more.
   </Step>

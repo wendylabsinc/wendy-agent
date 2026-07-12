@@ -615,7 +615,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	platform := resolveAgentPlatform("", agentOS, architecture)
 	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
-		return rejectUnsupportedMacRunProject("compose", platform)
+		if err := rejectUnsupportedMacRunProject("compose", platform); err != nil {
+			return err
+		}
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {

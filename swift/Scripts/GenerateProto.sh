@@ -66,6 +66,7 @@ swift package --allow-writing-to-package-directory generate-grpc-code-from-proto
     "$PROTO_DIR/cloud/notifications.proto" \
     "$PROTO_DIR/cloud/organizations.proto" \
     "$PROTO_DIR/cloud/remote_logging.proto" \
+    "$PROTO_DIR/cloud/tunnel.proto" \
     "$PROTO_DIR/cloud/users.proto"
 
 echo "Marking generated public API imports..."

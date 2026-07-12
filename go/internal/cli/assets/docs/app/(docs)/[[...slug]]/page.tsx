@@ -14,14 +14,21 @@ type PageProps = {
   params: Promise<PageParams>;
 };
 
-function isLegacyJetsonRoute(slug?: string[]) {
-  return slug?.join('/') === 'installation/wendyos-nvidia-jetson';
+function getLegacyRedirect(slug?: string[]) {
+  const redirects: Record<string, string> = {
+    'installation/wendyos-nvidia-jetson': '/installation/wendyos-nvidia-jetson-orin-nano/',
+    'installation/wendy-agent-linux': '/installation/linux/',
+    'installation/ubuntu': '/installation/linux/',
+  };
+
+  return redirects[slug?.join('/') ?? ''];
 }
 
 export default async function Page(props: PageProps) {
   const params = await props.params;
-  if (isLegacyJetsonRoute(params.slug)) {
-    permanentRedirect(withBasePath('/installation/wendyos-nvidia-jetson-orin-nano/'));
+  const redirect = getLegacyRedirect(params.slug);
+  if (redirect) {
+    permanentRedirect(withBasePath(redirect));
   }
 
   const page = source.getPage(params.slug);
@@ -50,10 +57,14 @@ export function generateStaticParams() {
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const params = await props.params;
-  if (isLegacyJetsonRoute(params.slug)) {
+  const redirect = getLegacyRedirect(params.slug);
+  if (redirect) {
+    const isLegacyJetsonRoute = params.slug?.join('/') === 'installation/wendyos-nvidia-jetson';
     return {
-      title: 'NVIDIA Jetson Orin Nano',
-      description: 'Install WendyOS on an NVIDIA Jetson Orin Nano.',
+      title: isLegacyJetsonRoute ? 'NVIDIA Jetson Orin Nano' : 'Linux',
+      description: isLegacyJetsonRoute
+        ? 'Install WendyOS on an NVIDIA Jetson Orin Nano.'
+        : 'Install wendy-agent on a Linux machine.',
     };
   }
 

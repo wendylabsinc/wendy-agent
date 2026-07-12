@@ -272,7 +272,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
 	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
-		return rejectUnsupportedMacRunProject("multi-service", platform)
+		if err := rejectUnsupportedMacRunProject("multi-service", platform); err != nil {
+			return err
+		}
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {

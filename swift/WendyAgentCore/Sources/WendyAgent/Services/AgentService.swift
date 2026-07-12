@@ -3,6 +3,11 @@ import GRPCCore
 import WendyAgentGRPC
 
 struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
+    var hardware: any HardwareDiscovering = HardwareInventory()
+    var hostname: any HostnameSetting = ScutilHostname()
+    var wifi: any WiFiManaging = WiFiController()
+    var bluetooth: any BluetoothManaging = BluetoothScanner()
+
     func runContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
         context: ServerContext
@@ -48,97 +53,137 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_ListWiFiNetworksRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListWiFiNetworksResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Wi-Fi network scanning is currently not supported by Wendy Agent for Mac."
-        )
+        let results: [WiFiScanResult]
+        do {
+            results = try await wifi.scan()
+        } catch {
+            throw RPCError(code: .internalError, message: "\(error)")
+        }
+        var response = Wendy_Agent_Services_V1_ListWiFiNetworksResponse()
+        response.networks = results.map { result in
+            var network = Wendy_Agent_Services_V1_ListWiFiNetworksResponse.WiFiNetwork()
+            network.ssid = result.ssid
+            network.signalStrength = result.signalStrength
+            network.rssiDbm = Int32(clamping: result.rssiDbm)
+            network.security = Self.protoSecurity(result.security)
+            network.isKnown = result.isKnown
+            network.isConnected = result.isConnected
+            return network
+        }
+        return ServerResponse(message: response)
     }
 
     func connectToWiFi(
         request: ServerRequest<Wendy_Agent_Services_V1_ConnectToWiFiRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectToWiFiResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Connecting to Wi-Fi networks is currently not supported by Wendy Agent for Mac."
+        let message = request.message
+        let security = message.hasSecurity ? Self.modelSecurity(message.security) : nil
+        let result = await wifi.connect(
+            ssid: message.ssid,
+            password: message.password,
+            security: security,
+            hidden: message.hasHidden ? message.hidden : false
         )
+        var response = Wendy_Agent_Services_V1_ConnectToWiFiResponse()
+        response.success = result.success
+        if let errorMessage = result.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func getWiFiStatus(
         request: ServerRequest<Wendy_Agent_Services_V1_GetWiFiStatusRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetWiFiStatusResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Wi-Fi status reporting is currently not supported by Wendy Agent for Mac."
-        )
+        let status = await wifi.status()
+        var response = Wendy_Agent_Services_V1_GetWiFiStatusResponse()
+        response.connected = status.connected
+        if let ssid = status.ssid { response.ssid = ssid }
+        if let errorMessage = status.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func disconnectWiFi(
         request: ServerRequest<Wendy_Agent_Services_V1_DisconnectWiFiRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectWiFiResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Disconnecting from Wi-Fi networks is currently not supported by Wendy Agent for Mac."
-        )
+        let result = await wifi.disconnect()
+        var response = Wendy_Agent_Services_V1_DisconnectWiFiResponse()
+        response.success = result.success
+        if let errorMessage = result.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func listKnownWiFiNetworks(
         request: ServerRequest<Wendy_Agent_Services_V1_ListKnownWiFiNetworksRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListKnownWiFiNetworksResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Listing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
-        )
+        let known = await wifi.knownNetworks()
+        var response = Wendy_Agent_Services_V1_ListKnownWiFiNetworksResponse()
+        response.networks = known.map { network in
+            var proto = Wendy_Agent_Services_V1_ListKnownWiFiNetworksResponse.KnownWiFiNetwork()
+            proto.ssid = network.ssid
+            proto.priority = network.priority
+            proto.security = Self.protoSecurity(network.security)
+            return proto
+        }
+        return ServerResponse(message: response)
     }
 
     func setWiFiNetworkPriority(
         request: ServerRequest<Wendy_Agent_Services_V1_SetWiFiNetworkPriorityRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetWiFiNetworkPriorityResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Wi-Fi network priority management is currently not supported by Wendy Agent for Mac."
+        let result = await wifi.setPriority(
+            ssid: request.message.ssid,
+            priority: request.message.priority
         )
+        var response = Wendy_Agent_Services_V1_SetWiFiNetworkPriorityResponse()
+        response.success = result.success
+        if let errorMessage = result.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func reorderKnownWiFiNetworks(
         request: ServerRequest<Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Reordering saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
-        )
+        let result = await wifi.reorder(ssids: request.message.orderSsids)
+        var response = Wendy_Agent_Services_V1_ReorderKnownWiFiNetworksResponse()
+        response.success = result.success
+        if let errorMessage = result.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func forgetWiFiNetwork(
         request: ServerRequest<Wendy_Agent_Services_V1_ForgetWiFiNetworkRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ForgetWiFiNetworkResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Removing saved Wi-Fi networks is currently not supported by Wendy Agent for Mac."
-        )
+        let result = await wifi.forget(ssid: request.message.ssid)
+        var response = Wendy_Agent_Services_V1_ForgetWiFiNetworkResponse()
+        response.success = result.success
+        if let errorMessage = result.errorMessage { response.errorMessage = errorMessage }
+        return ServerResponse(message: response)
     }
 
     func listHardwareCapabilities(
         request: ServerRequest<Wendy_Agent_Services_V1_ListHardwareCapabilitiesRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Hardware capability discovery is currently not supported by Wendy Agent for Mac."
-        )
+        let filter = request.message.hasCategoryFilter ? request.message.categoryFilter : nil
+        let capabilities = try await hardware.discover(categoryFilter: filter)
+
+        var response = Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse()
+        response.capabilities = capabilities.map { capability in
+            var proto =
+                Wendy_Agent_Services_V1_ListHardwareCapabilitiesResponse.HardwareCapability()
+            proto.category = capability.category
+            proto.devicePath = capability.devicePath
+            proto.description_p = capability.description
+            proto.properties = capability.properties
+            return proto
+        }
+        return ServerResponse(message: response)
     }
 
     func scanBluetoothPeripherals(
@@ -147,21 +192,38 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     ) async throws -> StreamingServerResponse<
         Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse
     > {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Bluetooth scanning is currently not supported by Wendy Agent for Mac."
-        )
+        let stream = bluetooth.scan()
+        return StreamingServerResponse { writer in
+            for await peripheral in stream {
+                var discovered = Wendy_Agent_Services_V1_DiscoveredBluetoothPeripheral()
+                discovered.name = peripheral.name
+                discovered.address = peripheral.address
+                discovered.rssi = peripheral.rssi
+                discovered.deviceType = peripheral.deviceType
+                discovered.paired = peripheral.paired
+                discovered.connected = peripheral.connected
+                discovered.trusted = peripheral.trusted
+
+                var response = Wendy_Agent_Services_V1_ScanBluetoothPeripheralsResponse()
+                response.discoveredDevices = [discovered]
+                try await writer.write(response)
+            }
+            return Metadata()
+        }
     }
 
     func connectBluetoothPeripheral(
         request: ServerRequest<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Connecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
-        )
+        let result = await bluetooth.connect(address: request.message.address)
+        guard result.success else {
+            throw RPCError(
+                code: .internalError,
+                message: result.errorMessage ?? "Failed to connect Bluetooth peripheral."
+            )
+        }
+        return ServerResponse(message: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse())
     }
 
     func disconnectBluetoothPeripheral(
@@ -169,10 +231,15 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse>
     {
-        throw RPCError(
-            code: .unimplemented,
-            message:
-                "Disconnecting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
+        let result = await bluetooth.disconnect(address: request.message.address)
+        guard result.success else {
+            throw RPCError(
+                code: .internalError,
+                message: result.errorMessage ?? "Failed to disconnect Bluetooth peripheral."
+            )
+        }
+        return ServerResponse(
+            message: Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralResponse()
         )
     }
 
@@ -183,7 +250,7 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         throw RPCError(
             code: .unimplemented,
             message:
-                "Forgetting Bluetooth peripherals is currently not supported by Wendy Agent for Mac."
+                "Forgetting Bluetooth peripherals is not supported on macOS: CoreBluetooth is BLE-only and does not expose classic pairing state to remove."
         )
     }
 
@@ -224,9 +291,49 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: ServerRequest<Wendy_Agent_Services_V1_SetHostnameRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_SetHostnameResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Setting the hostname is currently not supported by Wendy Agent for Mac."
-        )
+        let requested = request.message.hostname
+        do {
+            try await hostname.setHostname(requested)
+        } catch let error as HostnameError {
+            throw RPCError(code: .permissionDenied, message: "\(error)")
+        } catch {
+            throw RPCError(
+                code: .permissionDenied,
+                message: "Failed to set hostname: \(error)"
+            )
+        }
+
+        var response = Wendy_Agent_Services_V1_SetHostnameResponse()
+        response.hostname = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ServerResponse(message: response)
+    }
+
+    // MARK: - Wi-Fi security mapping
+
+    static func protoSecurity(_ security: WiFiSecurity) -> Wendy_Agent_Services_V1_WiFiSecurityType
+    {
+        switch security {
+        case .unspecified: return .unspecified
+        case .open: return .open
+        case .wep: return .wep
+        case .wpaPersonal: return .wpaPsk
+        case .wpa2Personal: return .wpa2Psk
+        case .wpa3Personal: return .wpa3Sae
+        case .wpa2Enterprise: return .wpa2Enterprise
+        }
+    }
+
+    static func modelSecurity(_ security: Wendy_Agent_Services_V1_WiFiSecurityType) -> WiFiSecurity
+    {
+        switch security {
+        case .unspecified: return .unspecified
+        case .open: return .open
+        case .wep: return .wep
+        case .wpaPsk: return .wpaPersonal
+        case .wpa2Psk: return .wpa2Personal
+        case .wpa3Sae: return .wpa3Personal
+        case .wpa2Enterprise: return .wpa2Enterprise
+        case .UNRECOGNIZED: return .unspecified
+        }
     }
 }

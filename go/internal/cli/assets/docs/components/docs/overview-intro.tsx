@@ -5,7 +5,7 @@ export function OverviewIntro() {
         Physical AI Platform
       </p>
       <p className="text-xl font-semibold leading-snug text-white sm:text-2xl">
-        The open source OS and toolchain for robots, drones, and edge AI.
+        The Full Stack Physical AI Platform
       </p>
       <p className="mt-3 max-w-2xl text-sm leading-relaxed text-zinc-400">
         Develop, deploy, debug, and observe physical AI apps from a local CLI and editor workflow.

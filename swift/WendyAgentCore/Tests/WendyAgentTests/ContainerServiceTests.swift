@@ -445,7 +445,7 @@ struct ContainerServiceTests {
         }
     }
 
-    @Test("Linux container create requests return a planned future message")
+    @Test("Linux container create requests fail precondition without a configured runtime")
     func createContainerRejectsLinuxContainers() async throws {
         let appsBase = try makeTempDir()
         defer { cleanup(appsBase) }
@@ -472,7 +472,7 @@ struct ContainerServiceTests {
             Issue.record("Expected createContainer to reject Linux containers on Macs")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -505,7 +505,7 @@ struct ContainerServiceTests {
             )
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -536,7 +536,7 @@ struct ContainerServiceTests {
             Issue.record("Expected createContainer to reject wendyos apps as Linux containers")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 
@@ -576,7 +576,7 @@ struct ContainerServiceTests {
             Issue.record("Expected startContainer to reject persisted Linux containers on Macs")
         } catch let error as RPCError {
             #expect(error.code == .failedPrecondition)
-            #expect("\(error)".contains("Linux containers aren't supported on Macs yet"))
+            #expect("\(error)".contains("No Linux container runtime found"))
         }
     }
 

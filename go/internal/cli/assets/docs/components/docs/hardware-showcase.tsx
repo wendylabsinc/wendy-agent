@@ -36,6 +36,32 @@ const boards: Board[] = [
       'Affordable entry point',
     ],
   },
+  {
+    name: 'NVIDIA Jetson AGX Thor',
+    tagline: 'High-performance physical AI at the edge',
+    logo: '/icons/icons8-nvidia.svg',
+    animation: '/images/boards/jetson-thor.gif',
+    href: '/installation/wendyos-nvidia-jetson-agx-thor/',
+    features: [
+      'Up to 2000 TOPS AI performance',
+      'CUDA, PyTorch & MLX support',
+      'USB recovery flashing',
+      'Hardware video encode & decode',
+    ],
+  },
+  {
+    name: 'Linux',
+    tagline: 'Run Wendy on your Linux development machine',
+    logo: '/icons/simple-icons-linux.svg',
+    animation: '/images/boards/ubuntu.png',
+    href: '/installation/linux/',
+    features: [
+      'Develop and deploy from your Linux machine',
+      'Works with USB-C and LAN devices',
+      'Full Wendy CLI support',
+      'Ideal for robotics and edge AI workflows',
+    ],
+  },
 ];
 
 export function HardwareShowcase() {
