@@ -1,0 +1,17 @@
+{
+    "appId": "sh.wendy.examples.g1gpuprobe",
+    "version": "1.0.0",
+    "platform": "linux",
+    "services": {
+        "probe": {
+            "context": ".",
+            "entitlements": [
+                { "type": "gpu" }
+            ],
+            "env": {
+                "N_WORLDS": "${N_WORLDS}",
+                "N_STEPS": "${N_STEPS}"
+            }
+        }
+    }
+}
