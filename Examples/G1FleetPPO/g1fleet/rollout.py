@@ -96,7 +96,10 @@ class CPUBackend:
 def make_backend(kind, obs_dim, act_dim, workers, hidden=(256, 256)):
     if kind == "cpu":
         return CPUBackend(obs_dim, act_dim, workers=workers, hidden=hidden)
-    if kind == "mjx":
-        raise RuntimeError("mjx backend is a stretch target and not implemented on this path; "
-                           "set SIM_BACKEND=cpu")
+    if kind in ("warp", "gpu", "mjx"):
+        # GPU path: NVIDIA Warp + mujoco_warp, CUDA-graph batched rollouts.
+        # ("mjx" is accepted as an alias; the implementation is mujoco_warp,
+        # which is what runs on the Spark Blackwell GPUs — see Examples/G1GpuProbe.)
+        from .warp_backend import WarpBackend
+        return WarpBackend(obs_dim, act_dim, hidden=hidden)
     raise ValueError(f"unknown SIM_BACKEND={kind!r}")

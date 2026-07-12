@@ -1,0 +1,33 @@
+{
+    "appId": "sh.wendy.examples.g1fleet-esgpu",
+    "version": "1.0.0",
+    "platform": "linux",
+    "isolation": "isolated",
+    "services": {
+        "trainer": {
+            "context": ".",
+            "entitlements": [
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16",
+                    "ports": [
+                        { "host": 8080, "container": 8080 }
+                    ]
+                },
+                { "type": "gpu" },
+                { "type": "persist", "name": "g1fleet-esgpu-ckpt", "path": "/data/checkpoints" }
+            ],
+            "env": {
+                "ROLE": "${ROLE}",
+                "MESH_SELF": "${MESH_SELF}",
+                "LEARNER_ID": "${LEARNER_ID}",
+                "MESH_PEERS": "${MESH_PEERS}",
+                "SIM_BACKEND": "${SIM_BACKEND}",
+                "ES_POP": "${ES_POP}",
+                "POLICY_HIDDEN": "${POLICY_HIDDEN}",
+                "ES_GEN_TIMEOUT_S": "${ES_GEN_TIMEOUT_S}"
+            }
+        }
+    }
+}

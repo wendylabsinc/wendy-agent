@@ -4,7 +4,7 @@ import numpy as np
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .mesh import MeshConfig, worker_index, http_get, http_post
 from .netcodec import encode_named, decode_named
-from .rollout import CPUBackend
+from .rollout import make_backend
 from .policy import MLPPolicy
 
 
@@ -198,7 +198,8 @@ def run_worker(cfg: MeshConfig, obs_dim: int, act_dim: int) -> None:
     raw_peers = os.environ.get("MESH_PEERS", "")
     idx, count = worker_index(cfg.self_id, raw_peers)
 
-    backend = CPUBackend(obs_dim, act_dim, workers=proc_workers, hidden=hidden)
+    backend = make_backend(cfg.backend, obs_dim, act_dim, proc_workers, hidden=hidden)
+    print(f"[g1fleet-es] worker backend={cfg.backend} slice_index={idx}/{count} pop={pop}", flush=True)
     last_gen = -1
 
     while True:
