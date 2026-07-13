@@ -9,7 +9,7 @@
     "check": "scripts/check.sh"
   },
   "devDependencies": {
-    "@slidev/cli": "52.16.0",
+    "@slidev/cli": "52.17.0",
     "@slidev/theme-default": "0.25.0"
   },
   "overrides": {
