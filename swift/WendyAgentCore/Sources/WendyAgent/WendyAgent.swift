@@ -376,7 +376,8 @@ public actor WendyAgent {
             orgID: info.orgID,
             assetID: info.assetID,
             certPEM: certs.certPEM,
-            keyPEM: certs.keyPEM,
+            keyBacking: certs.keyBacking,
+            seKey: certs.seKey,
             chainPEM: certs.chainPEM,
             mtlsPort: self.configuration.port + 1
         )
@@ -458,7 +459,7 @@ public actor WendyAgent {
     ) -> HTTP2ServerTransport.Posix.TransportSecurity {
         let leaf = TLSConfig.CertificateSource.bytes(Array(certs.certPEM.utf8), format: .pem)
         let chain = TLSConfig.CertificateSource.bytes(Array(certs.chainPEM.utf8), format: .pem)
-        let key = TLSConfig.PrivateKeySource.bytes(Array(certs.keyPEM.utf8), format: .pem)
+        let key = tlsPrivateKeySource(certs.keyBacking, seKey: certs.seKey)
 
         let trustRootsPEM = certs.chainPEM
         let deviceOrg = ClientCertAuthorizer.organizationID(fromLeafPEM: certs.certPEM)

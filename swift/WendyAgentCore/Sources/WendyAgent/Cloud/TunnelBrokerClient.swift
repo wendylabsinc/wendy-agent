@@ -42,8 +42,12 @@ struct TunnelBrokerClient: Sendable {
         /// The device's own leaf certificate (PEM), presented to the broker for
         /// mTLS. Empty on an unprovisioned device.
         var certPEM: String
-        /// The private key (PEM) for `certPEM`.
-        var keyPEM: String
+        /// How the private key for `certPEM` is stored: software PEM or
+        /// Secure Enclave. `.softwarePEM("")` on an unprovisioned device.
+        var keyBacking: ProvisioningStore.KeyBacking
+        /// The loaded Secure Enclave signer, required when `keyBacking` is
+        /// `.secureEnclave`.
+        var seKey: SEPrivateKey?
         var chainPEM: String
         var mtlsPort: Int
     }
@@ -241,11 +245,16 @@ struct TunnelBrokerClient: Sendable {
         // is not transmitted on the wire; presenting it readies the device for
         // the broker to require client certs (phase 2) without a flag-day
         // cutover. Only the leaf is offered (not the ML-DSA CA chain).
+        let hasKey: Bool
+        switch config.keyBacking {
+        case .softwarePEM(let pem): hasKey = !pem.isEmpty
+        case .secureEnclave: hasKey = config.seKey != nil
+        }
         let clientChain: [TLSConfig.CertificateSource]
         let clientKey: TLSConfig.PrivateKeySource?
-        if !config.certPEM.isEmpty, !config.keyPEM.isEmpty {
+        if !config.certPEM.isEmpty, hasKey {
             clientChain = [.bytes(Array(config.certPEM.utf8), format: .pem)]
-            clientKey = .bytes(Array(config.keyPEM.utf8), format: .pem)
+            clientKey = tlsPrivateKeySource(config.keyBacking, seKey: config.seKey)
         } else {
             clientChain = []
             clientKey = nil

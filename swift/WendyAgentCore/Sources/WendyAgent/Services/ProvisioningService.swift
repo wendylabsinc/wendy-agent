@@ -17,7 +17,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     struct ProvisioningCerts: Sendable {
         var certPEM: String
         var chainPEM: String
-        var keyPEM: String
+        var keyBacking: ProvisioningStore.KeyBacking
+        var seKey: SEPrivateKey?
     }
 
     private let store: ProvisioningStore
@@ -28,7 +29,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     private var cloudHost = ""
     private var orgID: Int32 = 0
     private var assetID: Int32 = 0
-    private var keyPEM = ""
+    private var keyBacking: ProvisioningStore.KeyBacking = .softwarePEM("")
+    private var seKey: SEPrivateKey?
     private var certPEM = ""
     private var chainPEM = ""
 
@@ -38,19 +40,29 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     init(configPath: URL, cloudClient: CloudCertificateClient = .live) {
         self.store = ProvisioningStore(configPath: configPath)
         self.cloudClient = cloudClient
-        if let loaded = self.store.load() {
-            self.enrolled = loaded.enrolled
-            self.cloudHost = loaded.cloudHost
-            self.orgID = loaded.orgID
-            self.assetID = loaded.assetID
-            // Secure-Enclave-backed devices have no PEM key material; this
-            // field is superseded by keyBacking/seKey wiring in a later task.
-            if case .softwarePEM(let pem) = loaded.keyBacking {
-                self.keyPEM = pem
+        guard let loaded = self.store.load() else { return }
+
+        if loaded.keyBacking == .secureEnclave {
+            // Fail closed: if the SE blob can't be reconstructed (e.g. the
+            // Keychain item vanished, or this isn't the Mac that created it),
+            // treat the device as unprovisioned rather than silently falling
+            // back to no key or a software one. Re-provisioning is required.
+            guard let identity = try? SecureEnclaveIdentity.load(store: KeychainStore()) else {
+                self.logger.error(
+                    "Provisioning state says secureEnclave but the Keychain blob could not be loaded; treating device as unprovisioned"
+                )
+                return
             }
-            self.certPEM = loaded.certPEM
-            self.chainPEM = loaded.chainPEM
+            self.seKey = identity.nioCustomKey
         }
+
+        self.enrolled = loaded.enrolled
+        self.cloudHost = loaded.cloudHost
+        self.orgID = loaded.orgID
+        self.assetID = loaded.assetID
+        self.keyBacking = loaded.keyBacking
+        self.certPEM = loaded.certPEM
+        self.chainPEM = loaded.chainPEM
     }
 
     func setCallbacks(
@@ -75,7 +87,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         return ProvisioningCerts(
             certPEM: self.certPEM,
             chainPEM: self.chainPEM,
-            keyPEM: self.keyPEM
+            keyBacking: self.keyBacking,
+            seKey: self.seKey
         )
     }
 
@@ -160,7 +173,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudHost = request.cloudHost
         self.orgID = request.organizationID
         self.assetID = request.assetID
-        self.keyPEM = keyPEM
+        self.keyBacking = .softwarePEM(keyPEM)
+        self.seKey = nil
         self.certPEM = issued.certPEM
         self.chainPEM = issued.chainPEM
 
@@ -173,7 +187,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             let certs = ProvisioningCerts(
                 certPEM: self.certPEM,
                 chainPEM: self.chainPEM,
-                keyPEM: self.keyPEM
+                keyBacking: self.keyBacking,
+                seKey: self.seKey
             )
             await cb(certs)
         }
@@ -228,7 +243,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudHost = ""
         self.orgID = 0
         self.assetID = 0
-        self.keyPEM = ""
+        self.keyBacking = .softwarePEM("")
+        self.seKey = nil
         self.certPEM = ""
         self.chainPEM = ""
 
