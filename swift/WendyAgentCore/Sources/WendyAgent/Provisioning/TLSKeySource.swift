@@ -1,4 +1,4 @@
-import GRPCNIOTransportHTTP2Posix
+import GRPCNIOTransportHTTP2
 
 /// Resolves a `KeyBacking` (software PEM or Secure Enclave) into the
 /// `TLSConfig.PrivateKeySource` grpc-swift-nio-transport expects, shared by
