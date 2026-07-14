@@ -484,9 +484,9 @@ git commit -m "feat(mac): ProvisioningStore KeyBacking (SE vs software), clear()
 - Consumes: `KeyBacking` (Task 4), `SEPrivateKey`/`SecureEnclaveIdentity` (Task 2), the Task-0 wiring form.
 - Produces: `func tlsPrivateKeySource(_ backing: KeyBacking, seKey: SEPrivateKey?) -> TLSConfig.PrivateKeySource`
 
-- [ ] **Step 1: Implement the helper** (`TLSKeySource.swift`), using the Task-0-confirmed form (A public, or B via `@_spi`):
+- [ ] **Step 1: Implement the helper** (`TLSKeySource.swift`). Task 0 confirmed outcome **(A)**: use the PUBLIC factory `TLSConfig.PrivateKeySource.customPrivateKey(_:)` (defined in `GRPCNIOTransportHTTP2Posix/Config+TLS.swift:472` — a public wrapper over the internal `nioSSLSpecific`). **Import `GRPCNIOTransportHTTP2Posix`** (that module is where the public extension lives; the internal `nioSSLSpecific`/`_NIOSSLPrivateKeySource` must NOT be referenced directly):
 ```swift
-import GRPCNIOTransportHTTP2  // or the @_spi(...) import form Task 0 identified
+import GRPCNIOTransportHTTP2Posix
 
 func tlsPrivateKeySource(_ backing: KeyBacking, seKey: SEPrivateKey?) -> TLSConfig.PrivateKeySource {
     switch backing {
@@ -496,10 +496,11 @@ func tlsPrivateKeySource(_ backing: KeyBacking, seKey: SEPrivateKey?) -> TLSConf
         guard let seKey else {
             preconditionFailure("SE key backing requires a loaded SecureEnclaveIdentity")
         }
-        return .nioSSLSpecific(.customPrivateKey(seKey))
+        return .customPrivateKey(seKey)  // public API; NIOPosix transports only
     }
 }
 ```
+(Note from Task 0: `customPrivateKey` is "NIOPosix based transports only" — both the device gRPC server and the broker client use the Posix transport, so this is correct for both.)
 
 - [ ] **Step 2: Wire `WendyAgent.swift:461`** — replace
   `let key = TLSConfig.PrivateKeySource.bytes(Array(certs.keyPEM.utf8), format: .pem)`
