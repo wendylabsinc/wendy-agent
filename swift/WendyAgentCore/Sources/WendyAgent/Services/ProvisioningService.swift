@@ -23,6 +23,9 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
 
     private let store: ProvisioningStore
     private let cloudClient: CloudCertificateClient
+    /// Overridable so tests can force the SE / software branch deterministically
+    /// regardless of the host's actual hardware. Defaults to the real check.
+    private let isSecureEnclaveAvailable: @Sendable () -> Bool
     private let logger = Logger(label: "sh.wendy.agent.provisioning")
 
     private var enrolled = false
@@ -37,9 +40,16 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     private var onProvisioned: (@Sendable (ProvisioningCerts) async -> Void)?
     private var onUnprovisioned: (@Sendable () async -> Void)?
 
-    init(configPath: URL, cloudClient: CloudCertificateClient = .live) {
+    init(
+        configPath: URL,
+        cloudClient: CloudCertificateClient = .live,
+        isSecureEnclaveAvailable: @Sendable @escaping () -> Bool = {
+            SecureEnclaveIdentity.isAvailable
+        }
+    ) {
         self.store = ProvisioningStore(configPath: configPath)
         self.cloudClient = cloudClient
+        self.isSecureEnclaveAvailable = isSecureEnclaveAvailable
         guard let loaded = self.store.load() else { return }
 
         if loaded.keyBacking == .secureEnclave {
@@ -114,28 +124,58 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             ]
         )
 
-        let keyPEM: String
-        do {
-            keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
-        } catch {
-            throw RPCError(
-                code: .internalError,
-                message: "failed to generate key pair: \(error)"
-            )
-        }
-
         let commonName = DeviceIdentity.commonName(
             organizationID: request.organizationID,
             assetID: request.assetID
         )
+
+        // Prefer the Secure Enclave when this Mac has one: the key is
+        // generated and signs entirely inside the enclave and never exists as
+        // extractable key material. Falls back to a software PEM key
+        // otherwise (older Macs, or hardware without an SE).
+        let keyBacking: ProvisioningStore.KeyBacking
+        let seKey: SEPrivateKey?
         let csrPEM: String
-        do {
-            csrPEM = try DeviceIdentity.generateCSRPEM(
-                privateKeyPEM: keyPEM,
-                commonName: commonName
-            )
-        } catch {
-            throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+        if self.isSecureEnclaveAvailable() {
+            let identity: SecureEnclaveIdentity
+            do {
+                identity = try SecureEnclaveIdentity.generate(store: KeychainStore())
+            } catch {
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate Secure Enclave key: \(error)"
+                )
+            }
+            do {
+                csrPEM = try DeviceIdentity.generateCSRPEM(
+                    identity: identity,
+                    commonName: commonName
+                )
+            } catch {
+                throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+            }
+            keyBacking = .secureEnclave
+            seKey = identity.nioCustomKey
+        } else {
+            let keyPEM: String
+            do {
+                keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
+            } catch {
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate key pair: \(error)"
+                )
+            }
+            do {
+                csrPEM = try DeviceIdentity.generateCSRPEM(
+                    privateKeyPEM: keyPEM,
+                    commonName: commonName
+                )
+            } catch {
+                throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+            }
+            keyBacking = .softwarePEM(keyPEM)
+            seKey = nil
         }
 
         let issued = try await self.cloudClient.issue(
@@ -154,7 +194,7 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 cloudHost: request.cloudHost,
                 orgID: request.organizationID,
                 assetID: request.assetID,
-                keyBacking: .softwarePEM(keyPEM),
+                keyBacking: keyBacking,
                 certPEM: issued.certPEM,
                 chainPEM: issued.chainPEM
             )
@@ -173,8 +213,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudHost = request.cloudHost
         self.orgID = request.organizationID
         self.assetID = request.assetID
-        self.keyBacking = .softwarePEM(keyPEM)
-        self.seKey = nil
+        self.keyBacking = keyBacking
+        self.seKey = seKey
         self.certPEM = issued.certPEM
         self.chainPEM = issued.chainPEM
 

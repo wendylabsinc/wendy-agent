@@ -142,6 +142,70 @@ struct ProvisioningServiceTests {
             )
         }
     }
+
+    @Test("provisioning prefers the Secure Enclave when available and writes no device-key.pem")
+    func provisionUsesSecureEnclaveWhenAvailable() async throws {
+        // Forcing `isSecureEnclaveAvailable` to `true` only selects the SE
+        // branch; `SecureEnclaveIdentity.generate` still calls the real
+        // Security framework underneath, so this needs an actual enclave.
+        try #require(SecureEnclaveIdentity.isAvailable, "no Secure Enclave on this host")
+
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ProvisioningService(
+            configPath: dir,
+            cloudClient: stubClient(),
+            isSecureEnclaveAvailable: { true }
+        )
+
+        var req = Wendy_Agent_Services_V1_StartProvisioningRequest()
+        req.organizationID = 7
+        req.assetID = 42
+        req.cloudHost = "cloud.example:50051"
+        req.enrollmentToken = "tok"
+        _ = try await service.startProvisioning(request: req, context: ctx("StartProvisioning"))
+        defer { try? KeychainStore().remove(account: "device-key-se") }
+
+        let certs = try #require(await service.provisioningCerts())
+        #expect(certs.keyBacking == .secureEnclave)
+        #expect(certs.seKey != nil)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("device-key.pem").path
+            )
+        )
+    }
+
+    @Test("provisioning falls back to a software key when the Secure Enclave is unavailable")
+    func provisionUsesSoftwareKeyWhenSecureEnclaveUnavailable() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let service = ProvisioningService(
+            configPath: dir,
+            cloudClient: stubClient(),
+            isSecureEnclaveAvailable: { false }
+        )
+
+        var req = Wendy_Agent_Services_V1_StartProvisioningRequest()
+        req.organizationID = 7
+        req.assetID = 42
+        req.cloudHost = "cloud.example:50051"
+        req.enrollmentToken = "tok"
+        _ = try await service.startProvisioning(request: req, context: ctx("StartProvisioning"))
+
+        let certs = try #require(await service.provisioningCerts())
+        guard case .softwarePEM(let pem) = certs.keyBacking else {
+            Issue.record("expected softwarePEM, got \(certs.keyBacking)")
+            return
+        }
+        #expect(!pem.isEmpty)
+        #expect(certs.seKey == nil)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("device-key.pem").path
+            )
+        )
+    }
 }
 
 /// Minimal async flag for asserting a callback fired.
