@@ -18,7 +18,15 @@ message WendyComHandshake {
 
 // Command parameter messages — empty ones serve as presence markers.
 message WendyComPingParams {}
-message WendyComRebootParams {}
+
+// Params for WENDY_COM_CMD_REBOOT. app_auto_start defaults to true when
+// absent. Settings survive exactly one software reboot; a hardware boot
+// resets to defaults. The delay is measured from the end of device init;
+// an AppStart command received during the delay starts the app immediately.
+message WendyComRebootParams {
+    optional bool app_auto_start       = 1; // absent => true
+    uint32        app_auto_start_delay = 2; // milliseconds
+}
 
 // Type of app pushed by WENDY_COM_CMD_APP_PUSH_BEGIN — wasm when omitted.
 enum WendyComAppType {

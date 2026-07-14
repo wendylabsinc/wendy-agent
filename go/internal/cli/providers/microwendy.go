@@ -269,7 +269,9 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	if err != nil {
 		return err
 	}
-	defer client.Close()
+	// Closure, not a bound method: the native path below replaces client with
+	// a post-reboot connection that this defer must close instead.
+	defer func() { client.Close() }()
 
 	if bc.AppType == liteclient.AppTypeWasm {
 		if err := client.StopApp(); err != nil {
@@ -309,50 +311,77 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	fmt.Println()
-	var consoleDetach func() error
-	var forwardDone chan struct{}
-	switch bc.AppType {
-	case liteclient.AppTypeNative:
-		// A native app is a full firmware image; the device boots into it on
-		// reset rather than via AppStart. The deferred Close runs on return.
+	if bc.AppType == liteclient.AppTypeNative {
+		// A native app is a full firmware image that only runs after a reboot.
+		// The device drops the connection while restarting, so reconnect
+		// before starting the app.
 		fmt.Println("Rebooting device...")
-		if err := client.ResetTargetDevice(); err != nil {
+		if err := client.ResetTargetDevice(true, 30*time.Second); err != nil {
 			return fmt.Errorf("device reset: %w", err)
 		}
-	default:
-		if !detach {
-			consoleCh, cd, err := client.ConsoleAttach(true, true)
-			if err != nil {
-				return fmt.Errorf("console attach: %w", err)
+		if err := client.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
+		}
+
+		fmt.Println("Waiting for device to come back...")
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			newClient, err := p.connectClient(app.Device)
+			if err == nil {
+				client = newClient
+				break
 			}
-			consoleDetach = cd
+			if time.Now().After(deadline) {
+				return fmt.Errorf("reconnect to device after reboot: %w", err)
+			}
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
 
-			// Console events and command responses share one ordered stream,
-			// so console chunks must be drained whenever a command response is
-			// outstanding — otherwise a backed-up console pipeline stalls the
-			// read loop and the StartApp response below never arrives. Forward
-			// from the moment of attach. The deferred receive keeps Run from
-			// closing output while the forwarder may still send to it; it runs
-			// after the deferred detach, which is what closes consoleCh.
-			forwardDone = make(chan struct{})
-			defer func() { <-forwardDone }()
-			defer consoleDetach()
-			go func() {
-				defer close(forwardDone)
-				for chunk := range consoleCh {
-					typ := RunOutputStdout
-					if chunk.Stderr {
-						typ = RunOutputStderr
-					}
-					output <- RunOutput{Type: typ, Data: chunk.Data}
+	var consoleDetach func() error
+	var forwardDone chan struct{}
+	if !detach {
+		consoleCh, cd, err := client.ConsoleAttach(true, true)
+		if err != nil {
+			return fmt.Errorf("console attach: %w", err)
+		}
+		consoleDetach = cd
+
+		// Console events and command responses share one ordered stream,
+		// so console chunks must be drained whenever a command response is
+		// outstanding — otherwise a backed-up console pipeline stalls the
+		// read loop and the StartApp response below never arrives. Forward
+		// from the moment of attach. The deferred receive keeps Run from
+		// closing output while the forwarder may still send to it; it runs
+		// after the deferred detach, which is what closes consoleCh.
+		forwardDone = make(chan struct{})
+		defer func() { <-forwardDone }()
+		defer consoleDetach()
+		go func() {
+			defer close(forwardDone)
+			for chunk := range consoleCh {
+				typ := RunOutputStdout
+				if chunk.Stderr {
+					typ = RunOutputStderr
 				}
-			}()
-		}
+				output <- RunOutput{Type: typ, Data: chunk.Data}
+			}
+		}()
+	}
 
-		fmt.Println("Starting app...")
-		if err := client.StartApp(); err != nil {
-			return fmt.Errorf("app start: %w", err)
-		}
+	fmt.Println("Starting app...")
+	if err := client.StartApp(); err != nil {
+		return fmt.Errorf("app start: %w", err)
 	}
 
 	output <- RunOutput{Type: RunOutputStarted}

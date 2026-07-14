@@ -264,6 +264,7 @@ func (c *WendyLiteClient) Close() error {
 		}
 	}
 	err := c.conn.Close()
+	c.conn = nil
 	c.serialLock.release()
 	c.serialLock = nil
 	return err
@@ -285,13 +286,22 @@ func (c *WendyLiteClient) Ping() error {
 	return nil
 }
 
-func (c *WendyLiteClient) ResetTargetDevice() error {
+// ResetTargetDevice reboots the device. appAutoStart=false keeps the app
+// stopped after the reboot; delay postpones the auto-start (an AppStart
+// command cuts the delay short). Both settings apply to the next boot only.
+func (c *WendyLiteClient) ResetTargetDevice(appAutoStart bool, delay time.Duration) error {
+	if delay/time.Millisecond > math.MaxUint32 {
+		return fmt.Errorf("delay %v out of range", delay)
+	}
 	// The device reboots on receipt, so no ack is expected.
 	return c.writeMessage(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Command{Command: &wendypb.WendyComCommand{
 			RequestId: c.requestIdGen.Add(1),
 			Params: &wendypb.WendyComCommand_Reboot{
-				Reboot: &wendypb.WendyComRebootParams{},
+				Reboot: &wendypb.WendyComRebootParams{
+					AppAutoStart:      proto.Bool(appAutoStart),
+					AppAutoStartDelay: uint32(delay / time.Millisecond),
+				},
 			},
 		}},
 	})

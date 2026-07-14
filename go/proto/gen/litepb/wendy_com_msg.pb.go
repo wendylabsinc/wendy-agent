@@ -325,10 +325,16 @@ func (*WendyComPingParams) Descriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{2}
 }
 
+// Params for WENDY_COM_CMD_REBOOT. app_auto_start defaults to true when
+// absent. Settings survive exactly one software reboot; a hardware boot
+// resets to defaults. The delay is measured from the end of device init;
+// an AppStart command received during the delay starts the app immediately.
 type WendyComRebootParams struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	AppAutoStart      *bool                  `protobuf:"varint,1,opt,name=app_auto_start,json=appAutoStart,proto3,oneof" json:"app_auto_start,omitempty"`            // absent => true
+	AppAutoStartDelay uint32                 `protobuf:"varint,2,opt,name=app_auto_start_delay,json=appAutoStartDelay,proto3" json:"app_auto_start_delay,omitempty"` // milliseconds
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *WendyComRebootParams) Reset() {
@@ -359,6 +365,20 @@ func (x *WendyComRebootParams) ProtoReflect() protoreflect.Message {
 // Deprecated: Use WendyComRebootParams.ProtoReflect.Descriptor instead.
 func (*WendyComRebootParams) Descriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *WendyComRebootParams) GetAppAutoStart() bool {
+	if x != nil && x.AppAutoStart != nil {
+		return *x.AppAutoStart
+	}
+	return false
+}
+
+func (x *WendyComRebootParams) GetAppAutoStartDelay() uint32 {
+	if x != nil {
+		return x.AppAutoStartDelay
+	}
+	return 0
 }
 
 // Params for WENDY_COM_CMD_APP_PUSH_BEGIN
@@ -1607,8 +1627,11 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x11WendyComHandshake\x12!\n" +
 	"\fhandshake_id\x18\x01 \x01(\rR\vhandshakeId\x122\n" +
 	"\aversion\x18\x02 \x01(\v2\x18.WendyComProtocolVersionR\aversion\"\x14\n" +
-	"\x12WendyComPingParams\"\x16\n" +
-	"\x14WendyComRebootParams\"]\n" +
+	"\x12WendyComPingParams\"\x85\x01\n" +
+	"\x14WendyComRebootParams\x12)\n" +
+	"\x0eapp_auto_start\x18\x01 \x01(\bH\x00R\fappAutoStart\x88\x01\x01\x12/\n" +
+	"\x14app_auto_start_delay\x18\x02 \x01(\rR\x11appAutoStartDelayB\x11\n" +
+	"\x0f_app_auto_start\"]\n" +
 	"\x1aWendyComAppPushBeginParams\x12\x12\n" +
 	"\x04size\x18\x01 \x01(\rR\x04size\x12+\n" +
 	"\bapp_type\x18\x02 \x01(\x0e2\x10.WendyComAppTypeR\aappType\"G\n" +
@@ -1776,6 +1799,7 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 	if File_wendy_lite_wendy_com_msg_proto != nil {
 		return
 	}
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[3].OneofWrappers = []any{}
 	file_wendy_lite_wendy_com_msg_proto_msgTypes[18].OneofWrappers = []any{
 		(*WendyComCommand_Ping)(nil),
 		(*WendyComCommand_Reboot)(nil),
