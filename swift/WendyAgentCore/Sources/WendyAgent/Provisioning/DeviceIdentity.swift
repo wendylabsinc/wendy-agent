@@ -53,4 +53,39 @@ enum DeviceIdentity {
 
         return try csr.serializeAsPEM().pemString
     }
+
+    /// A PEM-encoded PKCS#10 CSR for `commonName`, signed through a Secure
+    /// Enclave-backed identity (the raw key never enters process memory).
+    /// Otherwise identical to `generateCSRPEM(privateKeyPEM:commonName:)`: same
+    /// subject, same critical `digitalSignature` key usage, same client/server
+    /// EKUs — only the key source differs.
+    static func generateCSRPEM(identity: SecureEnclaveIdentity, commonName: String) throws -> String
+    {
+        let privateKey = identity.certificatePrivateKey
+
+        let subject = try DistinguishedName {
+            CommonName(commonName)
+        }
+
+        let extensions = try Certificate.Extensions {
+            Critical(
+                KeyUsage(digitalSignature: true)
+            )
+            try ExtendedKeyUsage([.clientAuth, .serverAuth])
+        }
+
+        let attributes = try CertificateSigningRequest.Attributes([
+            .init(ExtensionRequest(extensions: extensions))
+        ])
+
+        let csr = try CertificateSigningRequest(
+            version: .v1,
+            subject: subject,
+            privateKey: privateKey,
+            attributes: attributes,
+            signatureAlgorithm: .ecdsaWithSHA256
+        )
+
+        return try csr.serializeAsPEM().pemString
+    }
 }
