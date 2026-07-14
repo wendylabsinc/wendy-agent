@@ -4,7 +4,9 @@ import Logging
 /// On-disk persistence of provisioning state and certificate material. Mirrors
 /// the Go agent's layout so behavior (file names, permissions, legacy key
 /// migration) matches. The private key is never written into
-/// `provisioning.json`; it lives only in `device-key.pem`.
+/// `provisioning.json`; for a software-backed key it lives only in
+/// `device-key.pem`. A Secure-Enclave-backed key never touches disk at all —
+/// only the SE-wrapped blob lives in the Keychain (`KeychainStore`).
 struct ProvisioningStore {
     let configPath: URL
     private let logger = Logger(label: "sh.wendy.agent.provisioning.store")
@@ -13,12 +15,19 @@ struct ProvisioningStore {
         self.configPath = configPath
     }
 
+    /// How the device's private key is stored: in the Secure Enclave (no key
+    /// material on disk) or as a software PEM file (`device-key.pem`).
+    enum KeyBacking: Equatable, Sendable {
+        case secureEnclave
+        case softwarePEM(String)
+    }
+
     struct LoadedState {
         var enrolled: Bool
         var cloudHost: String
         var orgID: Int32
         var assetID: Int32
-        var keyPEM: String
+        var keyBacking: KeyBacking
         var certPEM: String
         var chainPEM: String
     }
@@ -29,6 +38,7 @@ struct ProvisioningStore {
         var orgId: Int32?
         var assetId: Int32?
         var keyPem: String?
+        var keyBacking: String?
         var certPem: String?
         var chainPem: String?
     }
@@ -46,26 +56,42 @@ struct ProvisioningStore {
             return nil
         }
 
-        var keyPEM = (try? String(contentsOf: self.keyPath, encoding: .utf8)) ?? ""
-        if keyPEM.isEmpty, let legacy = state.keyPem, !legacy.isEmpty {
-            // Migrate a legacy in-JSON key into device-key.pem, then rewrite the
-            // JSON without it.
-            keyPEM = legacy
-            try? self.writeFile(self.keyPath, contents: legacy, permissions: 0o600)
-            var stripped = state
-            stripped.keyPem = nil
-            if let rewritten = try? JSONEncoder().encode(stripped) {
-                try? self.writeFile(self.statePath, data: rewritten, permissions: 0o600)
-            }
-            self.logger.info("Migrated device key from provisioning.json to device-key.pem")
-        }
-
         let certPEM = state.certPem ?? ""
         let chainPEM = state.chainPem ?? ""
 
-        // Restore individual PEM files if missing (e.g., lost across an update).
-        if !keyPEM.isEmpty, !certPEM.isEmpty {
-            try? self.writePEMFiles(keyPEM: keyPEM, certPEM: certPEM, chainPEM: chainPEM)
+        let backing: KeyBacking
+        if state.keyBacking == "secureEnclave" {
+            // No key file for SE-backed devices; still restore cert/ca/marker
+            // if lost across an update (mirrors the software-key path below).
+            if !certPEM.isEmpty {
+                try? self.writeFile(self.certPath, contents: certPEM, permissions: 0o644)
+                try? self.writeFile(self.caPath, contents: chainPEM, permissions: 0o644)
+                try? self.writeFile(self.markerPath, contents: "", permissions: 0o644)
+            }
+            backing = .secureEnclave
+        } else {
+            var keyPEM = (try? String(contentsOf: self.keyPath, encoding: .utf8)) ?? ""
+            if keyPEM.isEmpty, let legacy = state.keyPem, !legacy.isEmpty {
+                // Migrate a legacy in-JSON key into device-key.pem, then rewrite the
+                // JSON without it.
+                keyPEM = legacy
+                try? self.writeFile(self.keyPath, contents: legacy, permissions: 0o600)
+                var stripped = state
+                stripped.keyPem = nil
+                if let rewritten = try? JSONEncoder().encode(stripped) {
+                    try? self.writeFile(self.statePath, data: rewritten, permissions: 0o600)
+                }
+                self.logger.info("Migrated device key from provisioning.json to device-key.pem")
+            }
+
+            // Restore individual PEM files if missing (e.g., lost across an update).
+            if !keyPEM.isEmpty, !certPEM.isEmpty {
+                try? self.writePEMFiles(keyPEM: keyPEM, certPEM: certPEM, chainPEM: chainPEM)
+            }
+
+            // Fail closed: an enrolled-but-keyless software device is not usable.
+            guard !keyPEM.isEmpty else { return nil }
+            backing = .softwarePEM(keyPEM)
         }
 
         return LoadedState(
@@ -73,7 +99,7 @@ struct ProvisioningStore {
             cloudHost: state.cloudHost ?? "",
             orgID: state.orgId ?? 0,
             assetID: state.assetId ?? 0,
-            keyPEM: keyPEM,
+            keyBacking: backing,
             certPEM: certPEM,
             chainPEM: chainPEM
         )
@@ -83,7 +109,7 @@ struct ProvisioningStore {
         cloudHost: String,
         orgID: Int32,
         assetID: Int32,
-        keyPEM: String,
+        keyBacking: KeyBacking,
         certPEM: String,
         chainPEM: String
     ) throws {
@@ -98,7 +124,18 @@ struct ProvisioningStore {
         // of truth, so it must be written LAST: if anything above fails, the
         // device is left honestly unprovisioned (no json => load() -> nil)
         // rather than "enrolled" on disk with no private key.
-        try self.writePEMFiles(keyPEM: keyPEM, certPEM: certPEM, chainPEM: chainPEM)
+        let keyBackingValue: String?
+        switch keyBacking {
+        case .softwarePEM(let pem):
+            try self.writePEMFiles(keyPEM: pem, certPEM: certPEM, chainPEM: chainPEM)
+            keyBackingValue = nil
+        case .secureEnclave:
+            // No key file: the key never leaves the Secure Enclave.
+            try self.writeFile(self.certPath, contents: certPEM, permissions: 0o644)
+            try self.writeFile(self.caPath, contents: chainPEM, permissions: 0o644)
+            try self.writeFile(self.markerPath, contents: "", permissions: 0o644)
+            keyBackingValue = "secureEnclave"
+        }
 
         // provisioning.json WITHOUT the key, mode 0600.
         let state = PersistedState(
@@ -107,6 +144,7 @@ struct ProvisioningStore {
             orgId: orgID,
             assetId: assetID,
             keyPem: nil,
+            keyBacking: keyBackingValue,
             certPem: certPEM,
             chainPem: chainPEM
         )
@@ -127,6 +165,10 @@ struct ProvisioningStore {
                 continue
             }
         }
+        // Best-effort: also purge any Secure-Enclave-backed key blob so a
+        // re-provision on this device starts clean. A missing Keychain item
+        // is not an error here.
+        try? KeychainStore().remove(account: "device-key-se")
     }
 
     private func writePEMFiles(keyPEM: String, certPEM: String, chainPEM: String) throws {

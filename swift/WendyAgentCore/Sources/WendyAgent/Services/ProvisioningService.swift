@@ -43,7 +43,11 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             self.cloudHost = loaded.cloudHost
             self.orgID = loaded.orgID
             self.assetID = loaded.assetID
-            self.keyPEM = loaded.keyPEM
+            // Secure-Enclave-backed devices have no PEM key material; this
+            // field is superseded by keyBacking/seKey wiring in a later task.
+            if case .softwarePEM(let pem) = loaded.keyBacking {
+                self.keyPEM = pem
+            }
             self.certPEM = loaded.certPEM
             self.chainPEM = loaded.chainPEM
         }
@@ -137,7 +141,7 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 cloudHost: request.cloudHost,
                 orgID: request.organizationID,
                 assetID: request.assetID,
-                keyPEM: keyPEM,
+                keyBacking: .softwarePEM(keyPEM),
                 certPEM: issued.certPEM,
                 chainPEM: issued.chainPEM
             )
