@@ -52,6 +52,41 @@ message WendyComDeviceIdentity {
 
 message WendyComGetDeviceInfoParams {}
 
+// Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
+// WendyComConsoleData events carrying the given event_id. A repeated attach
+// with the same event_id refreshes the auto-detach deadline.
+message WendyComConsoleAttachParams {
+    uint32 event_id = 1;
+    uint32 duration = 2;   // milliseconds; 0 = no deadline (attach forever)
+    bool   blocking = 3;   // writers block when the capture buffer is full, instead of overwriting oldest data
+}
+
+// Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output.
+message WendyComConsoleDetachParams {
+    uint32 event_id = 1;
+}
+
+enum WendyComConsoleIo {
+    WENDY_COM_CONSOLE_IO_STANDARD_INPUT  = 0;
+    WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT = 1;
+    WENDY_COM_CONSOLE_IO_STANDARD_ERROR  = 2;
+}
+
+// Marks the start of a console stream, sent before the first
+// WendyComConsoleData event. Not implemented yet.
+message WendyComConsoleBegin {}
+
+// One chunk of console output, streamed as an event while attached.
+message WendyComConsoleData {
+    WendyComConsoleIo io   = 1;
+    bool              gap  = 2;  // data was lost before this chunk
+    bytes             data = 3;
+}
+
+// Marks the end of a console stream, sent after the last
+// WendyComConsoleData event. Not implemented yet.
+message WendyComConsoleEnd {}
+
 message WendyComDeviceInfo {
     string os = 1; // typically "wendy-lite"
     string os_version = 2;
@@ -77,6 +112,8 @@ message WendyComCommand {
         WendyComAppStopParams              app_stop              = 8;
         WendyComGetDeviceIdentityParams    get_device_identity   = 9;
         WendyComGetDeviceInfoParams        get_device_info       = 10;
+        WendyComConsoleAttachParams        console_attach        = 11;
+        WendyComConsoleDetachParams        console_detach        = 12;
     }
 }
 
@@ -103,6 +140,11 @@ message WendyComResponse {
 // Unsolicited device -> host or host -> device message.
 message WendyComEvent {
     uint32 event_id = 1;
+    oneof data {
+        WendyComConsoleBegin console_begin = 2;
+        WendyComConsoleData  console_data  = 3;
+        WendyComConsoleEnd   console_end   = 4;
+    }
 }
 
 // Base wrapper — every frame body, in either direction, is exactly one of

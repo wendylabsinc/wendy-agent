@@ -309,6 +309,8 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	fmt.Println()
+	var consoleDetach func() error
+	var forwardDone chan struct{}
 	switch bc.AppType {
 	case liteclient.AppTypeNative:
 		// A native app is a full firmware image; the device boots into it on
@@ -318,6 +320,35 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 			return fmt.Errorf("device reset: %w", err)
 		}
 	default:
+		if !detach {
+			consoleCh, cd, err := client.ConsoleAttach(true, true)
+			if err != nil {
+				return fmt.Errorf("console attach: %w", err)
+			}
+			consoleDetach = cd
+
+			// Console events and command responses share one ordered stream,
+			// so console chunks must be drained whenever a command response is
+			// outstanding — otherwise a backed-up console pipeline stalls the
+			// read loop and the StartApp response below never arrives. Forward
+			// from the moment of attach. The deferred receive keeps Run from
+			// closing output while the forwarder may still send to it; it runs
+			// after the deferred detach, which is what closes consoleCh.
+			forwardDone = make(chan struct{})
+			defer func() { <-forwardDone }()
+			defer consoleDetach()
+			go func() {
+				defer close(forwardDone)
+				for chunk := range consoleCh {
+					typ := RunOutputStdout
+					if chunk.Stderr {
+						typ = RunOutputStderr
+					}
+					output <- RunOutput{Type: typ, Data: chunk.Data}
+				}
+			}()
+		}
+
 		fmt.Println("Starting app...")
 		if err := client.StartApp(); err != nil {
 			return fmt.Errorf("app start: %w", err)
@@ -326,7 +357,19 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 	output <- RunOutput{Type: RunOutputStarted}
 
-	return nil
+	if forwardDone == nil {
+		return nil
+	}
+	select {
+	case <-forwardDone:
+		// Device detached on its own or connection lost.
+		return consoleDetach()
+	case <-ctx.Done():
+		if err := consoleDetach(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: console detach: %v\n", err)
+		}
+		return nil
+	}
 }
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
