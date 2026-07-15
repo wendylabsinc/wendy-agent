@@ -41,7 +41,7 @@ struct TunnelBrokerClient: Sendable {
         var assetID: Int32
         /// The device's own leaf certificate (PEM), presented to the broker for
         /// mTLS. Empty on an unprovisioned device.
-        var certPEM: String
+        var certificatePEM: String
         /// How the private key for `certPEM` is stored: software PEM or
         /// Secure Enclave. `.softwarePEM("")` on an unprovisioned device.
         var keyBacking: ProvisioningStore.KeyBacking
