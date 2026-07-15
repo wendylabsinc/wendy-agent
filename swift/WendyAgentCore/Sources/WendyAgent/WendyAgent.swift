@@ -375,7 +375,7 @@ public actor WendyAgent {
             ),
             orgID: info.orgID,
             assetID: info.assetID,
-            certPEM: certs.certPEM,
+            certificatePEM: certs.certPEM,
             keyBacking: certs.keyBacking,
             seKey: certs.seKey,
             chainPEM: certs.chainPEM,

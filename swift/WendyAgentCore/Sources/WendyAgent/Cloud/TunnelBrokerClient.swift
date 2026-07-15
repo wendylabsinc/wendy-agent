@@ -42,7 +42,7 @@ struct TunnelBrokerClient: Sendable {
         /// The device's own leaf certificate (PEM), presented to the broker for
         /// mTLS. Empty on an unprovisioned device.
         var certificatePEM: String
-        /// How the private key for `certPEM` is stored: software PEM or
+        /// How the private key for `certificatePEM` is stored: software PEM or
         /// Secure Enclave. `.softwarePEM("")` on an unprovisioned device.
         var keyBacking: ProvisioningStore.KeyBacking
         /// The loaded Secure Enclave signer, required when `keyBacking` is
@@ -252,8 +252,8 @@ struct TunnelBrokerClient: Sendable {
         }
         let clientChain: [TLSConfig.CertificateSource]
         let clientKey: TLSConfig.PrivateKeySource?
-        if !config.certPEM.isEmpty, hasKey {
-            clientChain = [.bytes(Array(config.certPEM.utf8), format: .pem)]
+        if !config.certificatePEM.isEmpty, hasKey {
+            clientChain = [.bytes(Array(config.certificatePEM.utf8), format: .pem)]
             clientKey = tlsPrivateKeySource(config.keyBacking, seKey: config.seKey)
         } else {
             clientChain = []
