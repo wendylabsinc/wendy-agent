@@ -226,19 +226,29 @@ struct TunnelBrokerClient: Sendable {
             )
         }
 
-        // Skip hostname verification (a self-hosted broker cert's CN is
-        // `localhost`, not the cloud host); trust roots mirror the Go agent
-        // (system roots AND the device CA). `TrustRootsSource` is either system
-        // OR custom (it cannot combine them), so pick by port: the cloud broker
-        // on `:443` is Google Cloud Run, which terminates TLS with a public
-        // WebPKI cert (validated by the system roots); a self-hosted/LAN broker
-        // presents a device-CA-signed cert (validated by the device chain).
+        // Trust roots mirror the Go agent (system roots AND the device CA).
+        // `TrustRootsSource` is either system OR custom (it cannot combine them),
+        // so pick by port: the cloud broker on `:443` is Google Cloud Run, which
+        // terminates TLS with a public WebPKI cert (validated by the system
+        // roots); a self-hosted/LAN broker presents a device-CA-signed cert
+        // (validated by the device chain).
+        let isCloudBroker = port == 443
         let trustRoots: TLSConfig.TrustRootsSource =
-            port == 443
+            isCloudBroker
             ? .systemDefault
             : .certificates([
                 TLSConfig.CertificateSource.bytes(Array(config.chainPEM.utf8), format: .pem)
             ])
+
+        // Hostname verification is scoped to the broker kind, not disabled
+        // wholesale — important now that the client presents a cert (mTLS): a
+        // device must not authenticate itself to the wrong endpoint. The cloud
+        // broker (`:443`) has a real DNS name matching its WebPKI cert, so verify
+        // it fully. A self-hosted/LAN broker's cert carries a `localhost` CN that
+        // won't match the dialed host, so only there do we skip hostname checks
+        // (the device-CA trust root still authenticates the peer).
+        let serverVerification: TLSConfig.CertificateVerification =
+            isCloudBroker ? .fullVerification : .noHostnameVerification
 
         // Present the device's ECDSA leaf certificate (mTLS phase 1). Today's
         // broker runs NoClientCert and never sends a CertificateRequest, so this
@@ -254,7 +264,7 @@ struct TunnelBrokerClient: Sendable {
         let clientKey: TLSConfig.PrivateKeySource?
         if !config.certificatePEM.isEmpty, hasKey {
             clientChain = [.bytes(Array(config.certificatePEM.utf8), format: .pem)]
-            clientKey = tlsPrivateKeySource(config.keyBacking, seKey: config.seKey)
+            clientKey = try tlsPrivateKeySource(config.keyBacking, seKey: config.seKey)
         } else {
             clientChain = []
             clientKey = nil
@@ -262,7 +272,7 @@ struct TunnelBrokerClient: Sendable {
         let tls = HTTP2ClientTransport.Posix.TransportSecurity.TLS(
             certificateChain: clientChain,
             privateKey: clientKey,
-            serverCertificateVerification: .noHostnameVerification,
+            serverCertificateVerification: serverVerification,
             trustRoots: trustRoots
         )
         let transport = try HTTP2ClientTransport.Posix(

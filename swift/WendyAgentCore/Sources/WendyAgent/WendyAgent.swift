@@ -314,7 +314,7 @@ public actor WendyAgent {
 
         // When enrolled, run mTLS on `port + 1`; otherwise plaintext on `port`.
         let certs = info.enrolled ? await provisioningService.provisioningCerts() : nil
-        let (server, isMTLS) = self.makeMainServer(services: services, certs: certs)
+        let (server, isMTLS) = try self.makeMainServer(services: services, certs: certs)
         self.mainServerIsMTLS = isMTLS
         let boundPort = isMTLS ? self.configuration.port + 1 : self.configuration.port
 
@@ -407,11 +407,11 @@ public actor WendyAgent {
     private func makeMainServer(
         services: [any RegistrableRPCService],
         certs: ProvisioningService.ProvisioningCerts?
-    ) -> (PosixGRPCServer, Bool) {
+    ) throws -> (PosixGRPCServer, Bool) {
         let security: HTTP2ServerTransport.Posix.TransportSecurity
         let port: Int
         if let certs {
-            security = self.mTLSSecurity(certs: certs)
+            security = try self.mTLSSecurity(certs: certs)
             port = self.configuration.port + 1
         } else {
             security = .plaintext
@@ -456,10 +456,10 @@ public actor WendyAgent {
     /// from the event loop.
     private func mTLSSecurity(
         certs: ProvisioningService.ProvisioningCerts
-    ) -> HTTP2ServerTransport.Posix.TransportSecurity {
+    ) throws -> HTTP2ServerTransport.Posix.TransportSecurity {
         let leaf = TLSConfig.CertificateSource.bytes(Array(certs.certPEM.utf8), format: .pem)
         let chain = TLSConfig.CertificateSource.bytes(Array(certs.chainPEM.utf8), format: .pem)
-        let key = tlsPrivateKeySource(certs.keyBacking, seKey: certs.seKey)
+        let key = try tlsPrivateKeySource(certs.keyBacking, seKey: certs.seKey)
 
         let trustRootsPEM = certs.chainPEM
         let deviceOrg = ClientCertAuthorizer.organizationID(fromLeafPEM: certs.certPEM)

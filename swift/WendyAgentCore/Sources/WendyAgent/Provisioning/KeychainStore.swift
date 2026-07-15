@@ -30,13 +30,32 @@ struct KeychainStore {
     }
 
     func set(_ data: Data, account: String) throws {
-        // Upsert: delete any existing item, then add with the fixed accessibility.
-        try self.remove(account: account)
+        // Atomic upsert: try to add, and if the slot is already taken update it
+        // in place. This avoids the remove-then-add window where a concurrent
+        // writer (provisioning retry, Keychain sync) could re-insert between the
+        // delete and the add and wedge `SecItemAdd` with `errSecDuplicateItem`.
         var attrs = self.baseQuery(account: account)
         attrs[kSecValueData as String] = data
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attrs as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+        let addStatus = SecItemAdd(attrs as CFDictionary, nil)
+        switch addStatus {
+        case errSecSuccess:
+            return
+        case errSecDuplicateItem:
+            let update: [String: Any] = [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ]
+            let updateStatus = SecItemUpdate(
+                self.baseQuery(account: account) as CFDictionary,
+                update as CFDictionary
+            )
+            guard updateStatus == errSecSuccess else {
+                throw KeychainError.unexpectedStatus(updateStatus)
+            }
+        default:
+            throw KeychainError.unexpectedStatus(addStatus)
+        }
     }
 
     func get(account: String) throws -> Data? {

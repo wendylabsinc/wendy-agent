@@ -6,13 +6,13 @@ import WendyAgentGRPC
 @testable import WendyAgentCore
 
 // Serialized: every test drives the real ProvisioningService, which stores the
-// device SE key at the fixed production keychain account "device-key-se". Run
-// in parallel (swift-testing's default), concurrent provisioning attempts race
-// on that shared account — KeychainStore.set's remove-then-add is not atomic, so
-// two racing set()s collide with errSecDuplicateItem (OSStatus -25299). A device
-// is never provisioned concurrently in reality, so serial execution is the
-// faithful model and removes the race. Each provisioning test also clears the
-// account in a defer so it never leaks into the CI/dev login keychain.
+// device SE key at the fixed production keychain account "device-key-se". Run in
+// parallel (swift-testing's default), tests would clobber each other on that one
+// shared account — one test's `defer` remove could delete the key another test
+// just wrote, and reads could observe the wrong test's blob. A device is never
+// provisioned concurrently in reality, so serial execution is the faithful model.
+// Each provisioning test also clears the account in a defer so it never leaks
+// into the CI/dev login keychain.
 @Suite("ProvisioningService", .serialized)
 struct ProvisioningServiceTests {
     private func tempDir() -> URL {
