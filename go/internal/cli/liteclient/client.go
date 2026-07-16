@@ -1,7 +1,6 @@
 package liteclient
 
 import (
-	"bytes"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,7 +11,6 @@ import (
 	"io"
 	"log"
 	"math"
-	"net"
 	"os"
 	"slices"
 	"strings"
@@ -85,14 +83,11 @@ type subscription struct {
 }
 
 type WendyLiteClient struct {
-	conn                io.ReadWriteCloser
-	isSerial            bool
+	link                wcomLink
 	serialLock          *serialLock
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
-
-	writeMu sync.Mutex // serializes writeMessage across command goroutines
 
 	mu      sync.Mutex // guards subs and readErr
 	subs    []*subscription
@@ -108,12 +103,11 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	c.conn = conn
-	c.isSerial = false
+	c.link = &directLink{conn: conn}
 	err = c.handshake()
 	if err != nil {
 		conn.Close()
-		c.conn = nil
+		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
 	go c.readLoop()
@@ -153,12 +147,11 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 	if err != nil {
 		return fmt.Errorf("connect (mTLS): %w", err)
 	}
-	c.conn = conn
-	c.isSerial = false
+	c.link = &directLink{conn: conn}
 	err = c.handshake()
 	if err != nil {
 		conn.Close()
-		c.conn = nil
+		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
 	go c.readLoop()
@@ -186,14 +179,32 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		lock.release()
 		return err
 	}
-	c.conn = port
-	c.isSerial = true
+	c.link = &directLink{conn: port, isSerial: true}
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
 		port.Close()
 		lock.release()
-		c.conn = nil
+		c.link = nil
 		c.serialLock = nil
+		return fmt.Errorf("handshake: %w", err)
+	}
+	go c.readLoop()
+	return nil
+}
+
+// ConnectViaCloudInsecure reaches a device through a cloud tunnel-broker
+// server (dev server: self-signed cert, verification skipped). The WendyCom
+// handshake runs end-to-end through the broker to the device identified by
+// assetID.
+func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uint32) error {
+	link, err := dialTunnelLinkInsecure(serverAddr, assetID)
+	if err != nil {
+		return err
+	}
+	c.link = link
+	if err := c.handshake(); err != nil {
+		link.close()
+		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
 	go c.readLoop()
@@ -254,17 +265,11 @@ func serialHandshake(port serial.Port) error {
 }
 
 func (c *WendyLiteClient) Close() error {
-	if c.conn == nil {
+	if c.link == nil {
 		return nil
 	}
-	if c.isSerial {
-		if port, ok := c.conn.(serial.Port); ok {
-			_, _ = port.Write([]byte{esc, 'o'})
-			_ = port.Drain()
-		}
-	}
-	err := c.conn.Close()
-	c.conn = nil
+	err := c.link.close()
+	c.link = nil
 	c.serialLock.release()
 	c.serialLock = nil
 	return err
@@ -294,7 +299,7 @@ func (c *WendyLiteClient) ResetTargetDevice(appAutoStart bool, delay time.Durati
 		return fmt.Errorf("delay %v out of range", delay)
 	}
 	// The device reboots on receipt, so no ack is expected.
-	return c.writeMessage(&wendypb.WendyComMessage{
+	return c.link.send(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Command{Command: &wendypb.WendyComCommand{
 			RequestId: c.requestIdGen.Add(1),
 			Params: &wendypb.WendyComCommand_Reboot{
@@ -346,11 +351,7 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 		return fmt.Errorf("push begin: device returned error: %w", err)
 	}
 
-	chunk := chunkSize
-	if c.isSerial {
-		chunk = chunkSizeForSerial
-	}
-	buf := make([]byte, chunk)
+	buf := make([]byte, c.link.maxChunk())
 	var offset uint32
 	for {
 		n, err := f.Read(buf)
@@ -624,48 +625,14 @@ func resultToError(result wendypb.WendyComResult) error {
 	}
 }
 
-func (c *WendyLiteClient) writeMessage(req *wendypb.WendyComMessage) error {
-	body, err := proto.Marshal(req)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	msg := make([]byte, headerSize+len(body))
-	msg[0] = headerMagic
-	msg[1] = headerVersion
-	binary.BigEndian.PutUint16(msg[6:8], uint16(len(body)))
-	copy(msg[headerSize:], body)
-	if c.isSerial {
-		msg = bytes.ReplaceAll(msg, []byte{esc}, []byte{esc, '_'})
-	}
-	// Commands may now be sent from multiple goroutines; keep frames whole.
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	for len(msg) > 0 {
-		n, err := c.conn.Write(msg)
-		if err != nil {
-			return fmt.Errorf("send: %w", err)
-		}
-		msg = msg[n:]
-	}
-	return nil
-}
-
 // roundTrip sends a message and synchronously reads the peer's reply message.
 // Only valid before readLoop is started (i.e. during the handshake); once the
 // read loop owns the connection, use sendCommand/subscribe instead.
 func (c *WendyLiteClient) roundTrip(req *wendypb.WendyComMessage, timeout time.Duration) (*wendypb.WendyComMessage, error) {
-	if err := c.writeMessage(req); err != nil {
+	if err := c.link.send(req); err != nil {
 		return nil, err
 	}
-	raw, err := c.readRawMessage(timeout)
-	if err != nil {
-		return nil, err
-	}
-	reply := &wendypb.WendyComMessage{}
-	if err := proto.Unmarshal(raw, reply); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	return reply, nil
+	return c.link.recv(timeout)
 }
 
 // subscribe registers a waiter with the read loop. Messages matching filter
@@ -702,14 +669,9 @@ func (c *WendyLiteClient) unsubscribe(s *subscription) {
 // until the connection dies.
 func (c *WendyLiteClient) readLoop() {
 	for {
-		raw, err := c.readRawMessage(0)
+		msg, err := c.link.recv(0)
 		if err != nil {
 			c.failAll(err)
-			return
-		}
-		msg := &wendypb.WendyComMessage{}
-		if err := proto.Unmarshal(raw, msg); err != nil {
-			c.failAll(fmt.Errorf("unmarshal: %w", err))
 			return
 		}
 		c.dispatch(msg)
@@ -758,7 +720,7 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 	}
 	defer c.unsubscribe(sub)
 
-	if err := c.writeMessage(&wendypb.WendyComMessage{
+	if err := c.link.send(&wendypb.WendyComMessage{
 		Msg: &wendypb.WendyComMessage_Command{Command: cmd},
 	}); err != nil {
 		return nil, err
@@ -777,76 +739,6 @@ func (c *WendyLiteClient) sendCommand(cmd *wendypb.WendyComCommand, timeout time
 	case <-timer:
 		return nil, fmt.Errorf("timeout waiting for response to request %d", cmd.RequestId)
 	}
-}
-
-// readRawMessage reads one framed message of any kind (response, event, handshake)
-// and returns its raw body. A timeout <= 0 means no deadline.
-func (c *WendyLiteClient) readRawMessage(timeout time.Duration) ([]byte, error) {
-	header := make([]byte, headerSize)
-	if err := c.readFull(header, timeout); err != nil {
-		return nil, fmt.Errorf("reading header: %w", err)
-	}
-	if header[0] != headerMagic {
-		return nil, fmt.Errorf("unexpected magic byte: 0x%02X", header[0])
-	}
-	if header[1] != headerVersion {
-		return nil, fmt.Errorf("unexpected protocol version: 0x%02X", header[1])
-	}
-	bodyLen := binary.BigEndian.Uint16(header[6:8])
-	if bodyLen == 0 {
-		return nil, nil
-	}
-	body := make([]byte, bodyLen)
-	if err := c.readFull(body, timeout); err != nil {
-		return nil, fmt.Errorf("reading body: %w", err)
-	}
-	return body, nil
-}
-
-// readFull reads exactly len(buf) bytes from the connection within timeout.
-// A zero timeout means no deadline.
-//
-// For net.Conn, it sets SetReadDeadline for the duration of the call.
-//
-// For serial.Port, SetReadTimeout makes Read return (0, nil) on timeout
-// instead of an error, which would cause io.ReadFull to spin indefinitely.
-// readFull therefore loops manually, trimming the per-Read call to the
-// remaining time until the deadline, and converts (0, nil) to an error.
-func (c *WendyLiteClient) readFull(buf []byte, timeout time.Duration) error {
-	var deadline time.Time
-	if timeout > 0 {
-		deadline = time.Now().Add(timeout)
-	}
-	if !c.isSerial {
-		if nc, ok := c.conn.(net.Conn); ok && !deadline.IsZero() {
-			_ = nc.SetReadDeadline(deadline)
-			defer nc.SetReadDeadline(time.Time{}) //nolint:errcheck
-		}
-		_, err := io.ReadFull(c.conn, buf)
-		return err
-	}
-	sp := c.conn.(serial.Port)
-	defer sp.SetReadTimeout(serial.NoTimeout) //nolint:errcheck
-	for len(buf) > 0 {
-		perRead := serial.NoTimeout
-		if !deadline.IsZero() {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				return fmt.Errorf("read timeout")
-			}
-			perRead = remaining
-		}
-		_ = sp.SetReadTimeout(perRead)
-		n, err := sp.Read(buf)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return fmt.Errorf("read timeout")
-		}
-		buf = buf[n:]
-	}
-	return nil
 }
 
 func (c *WendyLiteClient) handshake() error {

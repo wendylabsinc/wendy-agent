@@ -158,4 +158,22 @@ protoc \
     wendy/lite/wendy_com_msg.proto \
     wendy/lite/wendy_conf.proto
 
+# The tunnel protos import each other by bare filename so they can be moved
+# to another project as-is; proto_path points inside wendy/lite accordingly.
+echo "Generating Wendy Lite tunnel protos..."
+TUNNEL_PKG="$MODULE/go/proto/gen/tunnelpb"
+mkdir -p "$GEN_DIR/tunnelpb"
+protoc \
+    --proto_path="$PROTO_DIR/wendy/lite" \
+    --go_out="$GEN_DIR/tunnelpb" \
+    --go_opt=module="$TUNNEL_PKG" \
+    --go_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
+    --go_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
+    --go-grpc_out="$GEN_DIR/tunnelpb" \
+    --go-grpc_opt=module="$TUNNEL_PKG" \
+    --go-grpc_opt=Mwendy_com_tunnel_msg.proto="$TUNNEL_PKG" \
+    --go-grpc_opt=Mwendy_com_tunnel_service.proto="$TUNNEL_PKG" \
+    wendy_com_tunnel_msg.proto \
+    wendy_com_tunnel_service.proto
+
 echo "Proto generation complete!"

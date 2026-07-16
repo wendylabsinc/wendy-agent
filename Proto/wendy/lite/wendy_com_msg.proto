@@ -155,13 +155,53 @@ message WendyComEvent {
     }
 }
 
+// Channel management. The channel these messages operate on is the one
+// carried by the channel byte of the frame header — OpenChannel arrives on
+// the channel being opened, CloseChannel on the one being closed — so the
+// bodies are empty presence markers. OpenChannel and CloseChannel are sent
+// host -> device; ChannelState is sent device -> host. Devices that don't
+// track channels may ignore these messages.
+message WendyComOpenChannel {}
+message WendyComCloseChannel {}
+
+// Reports the state of the channel carried by the frame's channel byte,
+// sent device -> host.
+message WendyComChannelOpen  {}
+message WendyComChannelClose {}
+
+enum WendyComChannelErrorReason {
+    WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN = 0; // command received on a channel that is not open
+    WENDY_COM_CHANNEL_ERROR_REASON_REJECTED = 1; // service message not allowed (open/close refused)
+}
+
+message WendyComChannelError {
+    WendyComChannelErrorReason reason = 1;
+}
+
+message WendyComChannelState {
+    oneof state {
+        WendyComChannelOpen  open  = 1;
+        WendyComChannelClose close = 2;
+        WendyComChannelError error = 3;
+    }
+}
+
+message WendyComService {
+    oneof cmd {
+        WendyComOpenChannel  open_channel  = 1;
+        WendyComCloseChannel close_channel = 2;
+        WendyComChannelState channel_state = 3;
+    }
+}
+
 // Base wrapper — every frame body, in either direction, is exactly one of
 // these.
 message WendyComMessage {
     oneof msg {
         WendyComHandshake handshake = 1;
-        WendyComCommand   command   = 2;
-        WendyComResponse  response  = 3;
-        WendyComEvent     event     = 4;
+        WendyComService   service   = 2;
+        WendyComCommand   command   = 3;
+        WendyComResponse  response  = 4;
+        WendyComEvent     event     = 5;
     }
 }
