@@ -90,6 +90,7 @@ struct DeviceIdentityTests {
             issuerPrivateKey: privateKey
         )
         let identity = try #require(try OrgIdentity.identity(fromLeaf: leaf))
-        #expect(identity == OrgIdentity.WendyIdentity(orgID: 7, entityType: "asset", entityID: "42"))
+        let expected = OrgIdentity.WendyIdentity(orgID: 7, entityType: "asset", entityID: "42")
+        #expect(identity == expected)
     }
 }
