@@ -82,6 +82,15 @@ func NewRootCmd() *cobra.Command {
 			}
 			premark("  prerun: dueCLIUpdateCheck")
 
+			// Offer to migrate a pre-SAN cloud certificate (identity in the legacy
+			// CommonName only) to one carrying the authoritative identity URI SAN.
+			// Interactive-only and a no-op unless such a certificate is stored, so it
+			// does not affect first-run users or scripted invocations.
+			if !firstRun {
+				maybePromptCertRotation(cmd.Context())
+			}
+			premark("  prerun: maybePromptCertRotation")
+
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {

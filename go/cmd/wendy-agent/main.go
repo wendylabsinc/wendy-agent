@@ -263,6 +263,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Best-effort migration: a device enrolled before identity SAN issuance holds a
+	// certificate that carries its Wendy identity only in the CommonName. Rotate it (in
+	// the background so startup never blocks) so the reissued cert carries the
+	// authoritative "urn:wendy:org:..." URI SAN the mTLS identity path now prefers.
+	go func() {
+		if err := provisioningSvc.RotateCertificateIfMissingSAN(ctx); err != nil {
+			logger.Warn("device certificate SAN rotation skipped", zap.Error(err))
+		}
+	}()
+
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 

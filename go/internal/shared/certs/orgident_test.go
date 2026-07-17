@@ -248,6 +248,42 @@ func TestIdentityFromCert(t *testing.T) {
 	}
 }
 
+func TestHasWendyIdentitySAN(t *testing.T) {
+	mustParseURI := func(raw string) *url.URL {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("parsing URI %q: %v", raw, err)
+		}
+		return u
+	}
+	makeCert := func(cn string, uris ...string) *x509.Certificate {
+		c := &x509.Certificate{Subject: pkix.Name{CommonName: cn}}
+		for _, u := range uris {
+			c.URIs = append(c.URIs, mustParseURI(u))
+		}
+		return c
+	}
+
+	tests := []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{name: "asset SAN present", cert: makeCert("sh/wendy/7/42", "urn:wendy:org:7:asset:42"), want: true},
+		{name: "user SAN present", cert: makeCert("wendy/user/u1", "urn:wendy:org:3:user:u1"), want: true},
+		{name: "legacy CN only, no SAN", cert: makeCert("sh/wendy/5/123"), want: false},
+		{name: "no identity at all", cert: makeCert("wendy/user/99"), want: false},
+		{name: "non-wendy URI SAN only", cert: makeCert("sh/wendy/5/123", "spiffe://example/x"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasWendyIdentitySAN(tt.cert); got != tt.want {
+				t.Errorf("HasWendyIdentitySAN() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestOrgFromClientCert_StillWorks(t *testing.T) {
 	mustParseURI := func(raw string) *url.URL {
 		u, err := url.Parse(raw)

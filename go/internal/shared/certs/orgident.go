@@ -36,6 +36,19 @@ func AssetURN(orgID, assetID int32) string {
 	return WendyIdentity{OrgID: orgID, EntityType: "asset", EntityID: strconv.Itoa(int(assetID))}.IdentityKey()
 }
 
+// HasWendyIdentitySAN reports whether the certificate carries a Wendy identity
+// as a URI SAN ("urn:wendy:org:..."). A cert that resolves to an identity only
+// via its legacy CommonName returns false — that is the signal the CLI/agent use
+// to rotate a pre-SAN certificate onto one that carries the authoritative SAN.
+func HasWendyIdentitySAN(leaf *x509.Certificate) bool {
+	for _, u := range leaf.URIs {
+		if strings.HasPrefix(u.String(), wendyOrgURNPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // IdentityFromCert extracts the Wendy org+entity identity from a certificate.
 //
 // Resolution order:
