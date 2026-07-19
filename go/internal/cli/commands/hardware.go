@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/hardwarediag"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -29,6 +30,66 @@ func newHardwareCmd() *cobra.Command {
 	cmd.AddCommand(newHardwareListCmd())
 	cmd.AddCommand(newHardwareEventsCmd())
 	cmd.AddCommand(newHardwareWatchCmd())
+	cmd.AddCommand(newHardwareDiagnoseCmd())
+	return cmd
+}
+
+// newHardwareDiagnoseCmd runs the peripheral-health heuristics and prints
+// human-language findings: whether USB instability points at one device/cable,
+// a hub (power budget, bandwidth, clustered drops), or the board itself
+// (multi-bus drops, sagging supply rail).
+func newHardwareDiagnoseCmd() *cobra.Command {
+	var tail int32
+
+	cmd := &cobra.Command{
+		Use:   "diagnose",
+		Short: "Analyze USB stability and name the likely culprit (device, cable, hub, or board)",
+		Long: `Collects the USB topology (with declared power draw and link speeds), the
+buffered hotplug event history, and recent supply-rail voltages, then runs
+diagnosis heuristics and reports findings in plain language — e.g. "multiple
+devices dropping behind hub 1-2: suspect the hub, its cable, or its power",
+or "devices behind hub 1-2 declare 1200mA, above the 500mA the port supplies".`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			devices, events, volts, err := hardwarediag.Collect(ctx, conn, tail)
+			if err != nil {
+				return fmt.Errorf("collecting hardware state: %w", err)
+			}
+			findings := hardwarediag.Diagnose(devices, events, volts)
+
+			if jsonOutput {
+				data, err := json.MarshalIndent(map[string]any{
+					"devices_on_bus":  len(devices),
+					"events_replayed": len(events),
+					"findings":        findings,
+				}, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(data))
+				return nil
+			}
+
+			fmt.Printf("Inspected %d USB devices, %d buffered events, %d voltage sensors.\n\n", len(devices), len(events), len(volts))
+			for i, f := range findings {
+				fmt.Printf("%d. [%s] %s\n", i+1, strings.ToUpper(f.Severity), f.Title)
+				fmt.Printf("   %s\n", f.Evidence)
+				if f.Suggestion != "" {
+					fmt.Printf("   → %s\n", f.Suggestion)
+				}
+				fmt.Println()
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().Int32Var(&tail, "tail", 200, "How many buffered event batches to replay into the analysis")
 	return cmd
 }
 

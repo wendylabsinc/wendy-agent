@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/hardwarediag"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
@@ -53,6 +54,33 @@ func (s *mcpServer) registerHardwareTools(srv *server.MCPServer) {
 	watchOpts = append(watchOpts, idempotent()...)
 	watchOpts = append(watchOpts, localOnly()...)
 	srv.AddTool(mcpgo.NewTool("hardware_watch", watchOpts...), s.handleHardwareWatch)
+
+	diagOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Diagnose USB instability on the connected device and name the likely culprit in plain language: one device/cable (repeated drops of one port), a hub (clustered drops, power budget over the port's 500/900mA, USB2 bandwidth contention), or the board itself (drops across buses, sagging supply rail). Start here when peripherals are flaky."),
+		mcpgo.WithNumber("tail",
+			mcpgo.Description("Buffered event batches to replay into the analysis (default 200)"),
+		),
+	}
+	diagOpts = append(diagOpts, readOnly()...)
+	diagOpts = append(diagOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("hardware_diagnose", diagOpts...), s.handleHardwareDiagnose)
+}
+
+func (s *mcpServer) handleHardwareDiagnose(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	conn := s.GetConn()
+	if conn == nil {
+		return errNotConnected(), nil
+	}
+	devices, events, volts, err := hardwarediag.Collect(ctx, conn, int32(intParam(req, "tail", 200)))
+	if err != nil {
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
+	}
+	findings := hardwarediag.Diagnose(devices, events, volts)
+	return okResult(map[string]any{
+		"devices_on_bus":  len(devices),
+		"events_replayed": len(events),
+		"findings":        findings,
+	}), nil
 }
 
 func (s *mcpServer) handleHardwareCapabilities(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

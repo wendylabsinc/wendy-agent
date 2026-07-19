@@ -152,6 +152,9 @@ func (d *SystemHardwareDiscoverer) discoverUSB() []*agentpb.ListHardwareCapabili
 		setIfNonEmpty("busnum", readSysfsFile(filepath.Join(devDir, "busnum")))
 		setIfNonEmpty("devnum", readSysfsFile(filepath.Join(devDir, "devnum")))
 		setIfNonEmpty("speed_mbps", readSysfsFile(filepath.Join(devDir, "speed")))
+		// Declared maximum bus current draw ("500mA" → "500"). Zero for
+		// self-powered devices. Feeds the hub power-budget diagnosis.
+		setIfNonEmpty("max_power_ma", strings.TrimSuffix(readSysfsFile(filepath.Join(devDir, "bMaxPower")), "mA"))
 		// The sysfs entry name encodes the physical topology (bus-port.port…),
 		// which is stable across replug — unlike devnum.
 		setIfNonEmpty("port_path", entry.Name())

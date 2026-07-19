@@ -41,6 +41,7 @@ Cloud-enrolled devices:
 - hardware_capabilities — inventory incl. USB identity (vendor/product/serial/port) and power sensor chips
 - hardware_events — USB connect/disconnect timeline, re-enumeration storms, watch alerts
 - hardware_watch — read/edit the device's watched-USB-device list (missing-device alerting)
+- hardware_diagnose — analyze USB instability and name the likely culprit (device, cable, hub, board)
 - os_update
 - provisioning_start / provisioning_status
 
