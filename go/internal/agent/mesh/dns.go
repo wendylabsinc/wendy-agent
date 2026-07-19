@@ -16,6 +16,21 @@ import (
 // meshNameRE matches the only names this server is authoritative for.
 var meshNameRE = regexp.MustCompile(`^device-([0-9]{1,5})\.cloud\.wendy\.dev\.$`)
 
+// friendlyNameRE matches <devicename>.<org-slug>.cloud.wendy.dev. — the
+// human-readable mesh name resolved via the injected Resolver. It never
+// overlaps meshNameRE: the numeric form has one label before ".cloud", this
+// form has two.
+var friendlyNameRE = regexp.MustCompile(`^([a-z0-9-]+)\.([a-z0-9-]+)\.cloud\.wendy\.dev\.$`)
+
+// Resolver maps a normalized device name to a cloud asset ID within this
+// device's own org, and reports this device's own org slug. It is implemented
+// in the services package (which owns the mDNS + cloud-roster dependencies)
+// and injected via SetResolver, keeping the mesh package free of those deps.
+type Resolver interface {
+	Resolve(name string) (assetID int32, ok bool)
+	OrgSlug() string
+}
+
 // DNSServer answers device-N.cloud.wendy.dev with the device's mesh VIP and
 // forwards every other query to the host's upstream resolver. One UDP
 // listener is bound per app bridge gateway address, refcounted by the number
@@ -27,6 +42,7 @@ type DNSServer struct {
 
 	mu        sync.Mutex
 	listeners map[string]*gatewayListener
+	resolver  Resolver // friendly-name resolver; nil until SetResolver
 }
 
 type gatewayListener struct {
@@ -42,6 +58,15 @@ func NewDNSServer(logger *zap.Logger, upstream string) *DNSServer {
 		port:      53,
 		listeners: make(map[string]*gatewayListener),
 	}
+}
+
+// SetResolver installs the friendly-name resolver. Safe to call once during
+// agent startup after provisioning identity is available; a nil resolver
+// makes every friendly name NXDOMAIN while the numeric path keeps working.
+func (s *DNSServer) SetResolver(r Resolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.resolver = r
 }
 
 // EnsureListener binds a UDP DNS listener on gatewayIP (idempotent,
@@ -105,17 +130,48 @@ func (s *DNSServer) handle(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 	q := r.Question[0]
-	m := meshNameRE.FindStringSubmatch(strings.ToLower(q.Name))
-	if m == nil {
-		s.forward(w, r)
+	lower := strings.ToLower(q.Name)
+	if m := meshNameRE.FindStringSubmatch(lower); m != nil {
+		s.answerNumeric(w, r, q, m[1])
 		return
 	}
-	id, err := strconv.ParseInt(m[1], 10, 32)
+	if m := friendlyNameRE.FindStringSubmatch(lower); m != nil {
+		s.answerFriendly(w, r, q, m[1], m[2])
+		return
+	}
+	s.forward(w, r)
+}
+
+func (s *DNSServer) answerNumeric(w dns.ResponseWriter, r *dns.Msg, q dns.Question, digits string) {
+	id, err := strconv.ParseInt(digits, 10, 32)
 	if err != nil {
 		s.reply(w, r, dns.RcodeNameError)
 		return
 	}
-	vip, err := VIPForDevice(int32(id))
+	s.answerVIP(w, r, q, int32(id))
+}
+
+func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Question, name, orgSlug string) {
+	s.mu.Lock()
+	resolver := s.resolver
+	s.mu.Unlock()
+	if resolver == nil || resolver.OrgSlug() == "" || orgSlug != resolver.OrgSlug() {
+		s.reply(w, r, dns.RcodeNameError)
+		return
+	}
+	id, ok := resolver.Resolve(name)
+	if !ok {
+		s.reply(w, r, dns.RcodeNameError)
+		return
+	}
+	s.answerVIP(w, r, q, id)
+}
+
+// answerVIP writes the A record for a resolved asset ID, or NXDOMAIN if the ID
+// is outside the VIP range. Shared by the numeric and friendly paths so both
+// emit identical answers.
+func (s *DNSServer) answerVIP(w dns.ResponseWriter, r *dns.Msg, q dns.Question, id int32) {
+	vip, err := VIPForDevice(id)
 	if err != nil {
 		s.reply(w, r, dns.RcodeNameError)
 		return
