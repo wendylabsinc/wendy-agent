@@ -630,7 +630,7 @@ func main() {
 	// alreadyProvisioned. On an unenrolled device orgID/assetID/chainPEM are
 	// zero/empty, so MeshRoster.Sync simply fails closed (logged, retried)
 	// until the device is provisioned, rather than never starting at all.
-	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, chainPEM)
+	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
 		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
 			Types:   []models.InterfaceType{models.InterfaceLAN},
@@ -767,7 +767,7 @@ func main() {
 		// snapshot is org=0/asset=0/empty chain, so without this refresh
 		// friendly names stay dead (resolver rejects every LAN peer, roster
 		// dials with a null identity) until the agent is restarted.
-		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, chainPEM)
+		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
 		meshResolver.UpdateOwnOrgID(orgID)
 		// Resync immediately so friendly names work without waiting for the periodic tick.
 		go func() {

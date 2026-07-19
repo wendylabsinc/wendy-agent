@@ -21,6 +21,8 @@ type MeshRoster struct {
 	cloudURL string
 	orgID    int32
 	assetID  int32
+	certPEM  string
+	keyPEM   string
 	chainPEM string
 
 	mu        sync.RWMutex
@@ -29,12 +31,14 @@ type MeshRoster struct {
 	ambiguous map[string]struct{}
 }
 
-func NewMeshRoster(logger *zap.Logger, cloudURL string, orgID, assetID int32, chainPEM string) *MeshRoster {
+func NewMeshRoster(logger *zap.Logger, cloudURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string) *MeshRoster {
 	return &MeshRoster{
 		logger:    logger,
 		cloudURL:  cloudURL,
 		orgID:     orgID,
 		assetID:   assetID,
+		certPEM:   certPEM,
+		keyPEM:    keyPEM,
 		chainPEM:  chainPEM,
 		byName:    make(map[string]int32),
 		ambiguous: make(map[string]struct{}),
@@ -51,12 +55,14 @@ func (r *MeshRoster) OrgSlug() string {
 // Called when BLE first-boot enrollment provisions the device while the
 // agent is already running, so the boot-time snapshot (org=0/asset=0/empty
 // chain) needs to be replaced with the freshly issued identity.
-func (r *MeshRoster) UpdateIdentity(cloudURL string, orgID, assetID int32, chainPEM string) {
+func (r *MeshRoster) UpdateIdentity(cloudURL string, orgID, assetID int32, certPEM, keyPEM, chainPEM string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cloudURL = cloudURL
 	r.orgID = orgID
 	r.assetID = assetID
+	r.certPEM = certPEM
+	r.keyPEM = keyPEM
 	r.chainPEM = chainPEM
 }
 
@@ -102,6 +108,8 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 	cloudURL := r.cloudURL
 	orgID := r.orgID
 	assetID := r.assetID
+	certPEM := r.certPEM
+	keyPEM := r.keyPEM
 	chainPEM := r.chainPEM
 	r.mu.RUnlock()
 
@@ -114,7 +122,7 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 		return nil
 	}
 
-	dialOpts, md, err := brokerDialOpts(r.logger, orgID, assetID, chainPEM)
+	dialOpts, md, err := brokerDialOpts(r.logger, orgID, assetID, certPEM, keyPEM, chainPEM)
 	if err != nil {
 		return err
 	}

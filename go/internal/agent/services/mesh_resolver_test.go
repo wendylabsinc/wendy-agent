@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolverMDNSHitShortCircuits(t *testing.T) {
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{OrgSlug: "acme"}) // slug only
 	browse := func(context.Context) ([]models.LANDevice, error) {
 		return []models.LANDevice{
@@ -25,7 +25,7 @@ func TestResolverMDNSHitShortCircuits(t *testing.T) {
 }
 
 func TestResolverIgnoresForeignOrgOnLAN(t *testing.T) {
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	browse := func(context.Context) ([]models.LANDevice, error) {
 		return []models.LANDevice{
 			{MeshName: "brave-dolphin", OrgID: 99, AssetID: 700, IsMTLS: true}, // other org
@@ -38,7 +38,7 @@ func TestResolverIgnoresForeignOrgOnLAN(t *testing.T) {
 }
 
 func TestResolverFallsBackToRoster(t *testing.T) {
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpb.MeshRosterEntry{{Name: "calm-otter", AssetId: 216}},
@@ -60,7 +60,7 @@ func TestResolverAmbiguousDifferentAssetIDsOnLAN(t *testing.T) {
 	// mask a bug where LAN ambiguity isn't actually being detected. This
 	// test only passes if resolveLAN itself returns ok=false due to the
 	// two different asset ids, not by coincidence of an empty roster.
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{OrgSlug: "acme"}) // no entries
 	browse := func(context.Context) ([]models.LANDevice, error) {
 		return []models.LANDevice{
@@ -75,7 +75,7 @@ func TestResolverAmbiguousDifferentAssetIDsOnLAN(t *testing.T) {
 }
 
 func TestResolverSameAssetIDRepeatedNotAmbiguous(t *testing.T) {
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{OrgSlug: "acme"}) // no entries
 	browse := func(context.Context) ([]models.LANDevice, error) {
 		return []models.LANDevice{
@@ -96,7 +96,7 @@ func TestResolverUpdateOwnOrgIDReachesFilter(t *testing.T) {
 	// UpdateOwnOrgID(42) — what OnProvisioned now calls — the same peer must
 	// resolve, proving the identity refresh actually reaches resolveLAN's
 	// filter rather than being shadowed by a stale copy.
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 0, 0, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 0, 0, "", "", "")
 	browse := func(context.Context) ([]models.LANDevice, error) {
 		return []models.LANDevice{
 			{MeshName: "brave-dolphin", OrgID: 42, AssetID: 215, IsMTLS: true},
@@ -113,7 +113,7 @@ func TestResolverUpdateOwnOrgIDReachesFilter(t *testing.T) {
 }
 
 func TestResolverBrowseErrorFallsBackToRoster(t *testing.T) {
-	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "", "", "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{
 		OrgSlug: "acme",
 		Entries: []*cloudpb.MeshRosterEntry{{Name: "calm-otter", AssetId: 216}},

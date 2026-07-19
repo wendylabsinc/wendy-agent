@@ -10,7 +10,7 @@ import (
 )
 
 func newTestRoster(t *testing.T) *MeshRoster {
-	return NewMeshRoster(zaptest.NewLogger(t), "cloud.example:443", 42, 215, "")
+	return NewMeshRoster(zaptest.NewLogger(t), "cloud.example:443", 42, 215, "", "", "")
 }
 
 func TestRosterLookupNormalizes(t *testing.T) {
@@ -64,7 +64,7 @@ func TestRosterSlugNormalized(t *testing.T) {
 // bogus "cloud.invalid:1" address, but Sync must return nil quickly instead
 // because there's no asset cert to authenticate an RPC with.
 func TestRosterSyncSkipsUnprovisionedIdentity(t *testing.T) {
-	r := NewMeshRoster(zaptest.NewLogger(t), "cloud.invalid:1", 0, 0, "")
+	r := NewMeshRoster(zaptest.NewLogger(t), "cloud.invalid:1", 0, 0, "", "", "")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -86,8 +86,8 @@ func TestRosterSyncSkipsUnprovisionedIdentity(t *testing.T) {
 // proceeds to a real dial attempt against an unreachable address instead of
 // returning nil immediately).
 func TestRosterUpdateIdentityIsUsedBySync(t *testing.T) {
-	r := NewMeshRoster(zaptest.NewLogger(t), "127.0.0.1:1", 0, 0, "")
-	r.UpdateIdentity("127.0.0.1:1", 7, 215, "")
+	r := NewMeshRoster(zaptest.NewLogger(t), "127.0.0.1:1", 0, 0, "", "", "")
+	r.UpdateIdentity("127.0.0.1:1", 7, 215, "", "", "")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
