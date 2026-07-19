@@ -42,6 +42,7 @@ func (r *MeshResolver) resolveLAN(name string) (int32, bool) {
 	defer cancel()
 	devices, err := r.browse(ctx)
 	if err != nil {
+		r.logger.Warn("mesh: LAN browse failed for friendly-name resolution", zap.Error(err))
 		return 0, false
 	}
 	var found int32
