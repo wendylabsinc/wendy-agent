@@ -289,12 +289,22 @@ func isHub(d Device, all []Device) bool {
 	return strings.Contains(strings.ToLower(d.Description), "hub")
 }
 
-// diagnoseVoltage flags a sagging supply rail: >5% swing on an input rail is
-// enough to brown out bus-powered USB devices.
+// inputRailNames marks sensor labels that measure a supply *input* rail —
+// the ones that should hold steady. Everything else (per-load rails like
+// VDD_CPU_GPU_CV swing with DVFS; unlabelled inN channels and "sum of shunt
+// voltages" vary with load by design) must not be judged for sag, or every
+// healthy board reports a false positive.
+func isInputRail(sensor string) bool {
+	s := strings.ToUpper(sensor)
+	return s == "VDD_IN" || strings.HasPrefix(s, "VIN") || strings.HasPrefix(s, "VBUS") || strings.HasPrefix(s, "VSYS")
+}
+
+// diagnoseVoltage flags a sagging supply input rail: >5% swing is enough to
+// brown out bus-powered USB devices.
 func diagnoseVoltage(volts []VoltageStats) []Finding {
 	var findings []Finding
 	for _, v := range volts {
-		if v.Samples < 2 || v.MaxV <= 0 {
+		if v.Samples < 2 || v.MaxV <= 0 || !isInputRail(v.Sensor) {
 			continue
 		}
 		sag := (v.MaxV - v.MinV) / v.MaxV

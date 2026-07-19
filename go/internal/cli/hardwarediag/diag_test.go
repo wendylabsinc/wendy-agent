@@ -149,8 +149,12 @@ func TestDiagnose_Storm(t *testing.T) {
 
 func TestDiagnose_VoltageSag(t *testing.T) {
 	volts := []VoltageStats{
-		{Sensor: "VDD_IN", MinV: 17.1, MaxV: 19.2, Samples: 20}, // ~11% sag
+		{Sensor: "VDD_IN", MinV: 17.1, MaxV: 19.2, Samples: 20}, // ~11% sag → flag
 		{Sensor: "VDD_SOC", MinV: 0.99, MaxV: 1.01, Samples: 20},
+		// Load-varying channels that must never be judged for sag:
+		{Sensor: "VDD_CPU_GPU_CV", MinV: 0.6, MaxV: 1.1, Samples: 20}, // DVFS swing
+		{Sensor: "in5", MinV: 1.32, MaxV: 1.68, Samples: 40},          // unlabelled aux
+		{Sensor: "sum of shunt voltages", MinV: 9.4, MaxV: 12.5, Samples: 40},
 	}
 	fs := Diagnose(rigDevices(), nil, volts)
 	sagCount := 0
