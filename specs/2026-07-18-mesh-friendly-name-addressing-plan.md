@@ -1048,6 +1048,10 @@ git commit -m "feat(agent): wire hybrid mesh friendly-name resolver + roster syn
 - Reject non-asset (user) certs with `PermissionDenied`. Reject when `orgs.mesh_enabled = false` with `PermissionDenied` (same flag gating the rest of the mesh, per the base design).
 - `normalize` MUST match `mesh.Normalize` exactly (Task 1): lowercase, non-`[a-z0-9]` runs → single `-`, trim `-`.
 
+**Transport/identity contract (confirmed against the built agent client, Tasks 6+8):**
+- The agent dials with `brokerDialOpts` — server-auth-only TLS (`tls.NoClientCert`; there is **no** client TLS peer cert). Caller identity is therefore carried in the gRPC **metadata headers** `x-wendy-client-cert` / `x-forwarded-client-cert` = `URI=urn:wendy:org:<id>:asset:<id>` (the XFCC pattern the broker already terminates), NOT a TLS peer certificate. The handler must derive the caller's org from that header, identically to how `TunnelBrokerService` authenticates asset callers.
+- The endpoint the agent uses is the **broker host:port** (`cloudGRPCURLForCloudHost` → `brokerURLForCloudHost`, i.e. port `50052`), overridable by `WENDY_CLOUD_URL`. `MeshRosterService` must be served where that resolves. If the deployment cannot serve it on the broker endpoint, that is a coordination point — the agent's `cloudGRPCURLForCloudHost` (Task 8) must be repointed to match.
+
 - [ ] **Step 1: Read the existing cloud patterns**
 
 Read, in `~/git/wendy/cloud`: the `AssetService` handler (list-assets-by-org query + asset-cert authz), the `TunnelBrokerService.ClientTunnel` handler (asset-cert identity extraction + `orgs.mesh_enabled` check added by the base mesh design), the `service-protos` submodule layout, the `PostgresModels` `.query.sql` convention, and `BrokerFixture` test setup. (See the `reference_cloud_repo_layout` memory.)
