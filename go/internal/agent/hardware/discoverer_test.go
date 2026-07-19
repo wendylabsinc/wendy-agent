@@ -213,3 +213,46 @@ func TestDiscoverUSB_MissingOptionalAttrs(t *testing.T) {
 		t.Errorf("unexpected identity properties: %v", props)
 	}
 }
+
+func TestDiscoverPower(t *testing.T) {
+	root := t.TempDir()
+	chipDir := filepath.Join(root, "hwmon1")
+	if err := os.MkdirAll(chipDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for file, content := range map[string]string{
+		"name":         "ina3221",
+		"in0_input":    "19012",
+		"in0_label":    "VDD_IN",
+		"curr0_input":  "1523",
+		"power0_input": "28950000",
+		"temp1_input":  "45000", // not a power channel
+	} {
+		if err := os.WriteFile(filepath.Join(chipDir, file), []byte(content+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Chip with no power channels is skipped entirely.
+	fanDir := filepath.Join(root, "hwmon2")
+	if err := os.MkdirAll(fanDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fanDir, "fan1_input"), []byte("3000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d := NewSystemHardwareDiscoverer(zap.NewNop())
+	d.hwmonSysfsPath = root
+
+	caps := d.discoverPower()
+	if len(caps) != 1 {
+		t.Fatalf("expected 1 power capability, got %d: %v", len(caps), caps)
+	}
+	c := caps[0]
+	if c.GetCategory() != "power" || c.GetDescription() != "ina3221 (3 channels)" {
+		t.Errorf("unexpected capability: %v", c)
+	}
+	if got := c.GetProperties()["channels"]; got != "VDD_IN,curr0,power0" {
+		t.Errorf("channels = %q", got)
+	}
+}

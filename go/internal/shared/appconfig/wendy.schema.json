@@ -213,7 +213,28 @@
         },
         {
           "properties": {
-            "type": { "const": "usb" }
+            "type": { "const": "usb" },
+            "devices": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "vendorId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-fA-F]{4}$",
+                    "description": "USB vendor id as 4-digit hex (e.g. \"16d0\")."
+                  },
+                  "productId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-fA-F]{4}$",
+                    "description": "USB product id as 4-digit hex (e.g. \"117e\")."
+                  }
+                },
+                "required": ["vendorId", "productId"],
+                "additionalProperties": false
+              },
+              "description": "USB devices the app requires. Does not restrict access (usb grants the whole bus); the agent alerts when a declared device is missing or drops off the bus."
+            }
           },
           "required": ["type"],
           "additionalProperties": false,

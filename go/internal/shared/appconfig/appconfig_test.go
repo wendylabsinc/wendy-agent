@@ -2183,3 +2183,46 @@ func TestValidateJSON_BuildEntitlementRejectsExtraKeys(t *testing.T) {
 		t.Fatal("expected a warning for an unknown key on the build entitlement")
 	}
 }
+
+func TestValidate_USBDevices(t *testing.T) {
+	valid := &AppConfig{
+		AppID:   "test-app",
+		Version: "1.0.0",
+		Entitlements: []Entitlement{{
+			Type: EntitlementUSB,
+			Devices: []USBDeviceMatcher{
+				{VendorID: "16d0", ProductID: "117E"},
+			},
+		}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("valid usb devices rejected: %v", err)
+	}
+
+	// Bare usb entitlement (no devices) stays valid.
+	bare := &AppConfig{
+		AppID:        "test-app",
+		Version:      "1.0.0",
+		Entitlements: []Entitlement{{Type: EntitlementUSB}},
+	}
+	if err := bare.Validate(); err != nil {
+		t.Errorf("bare usb entitlement rejected: %v", err)
+	}
+
+	for _, m := range []USBDeviceMatcher{
+		{VendorID: "16d", ProductID: "117e"},   // too short
+		{VendorID: "16d00", ProductID: "117e"}, // too long
+		{VendorID: "xyzw", ProductID: "117e"},  // not hex
+		{VendorID: "", ProductID: "117e"},      // missing
+		{VendorID: "16d0", ProductID: ""},      // missing
+	} {
+		cfg := &AppConfig{
+			AppID:        "test-app",
+			Version:      "1.0.0",
+			Entitlements: []Entitlement{{Type: EntitlementUSB, Devices: []USBDeviceMatcher{m}}},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("expected rejection for matcher %+v", m)
+		}
+	}
+}

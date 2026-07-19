@@ -3409,6 +3409,71 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 // before entitlement labels existed carry no persist labels and contribute
 // nothing — callers must treat an app that is absent from the map as
 // "ownership unknown", not "owns nothing", and fail safe.
+// RequiredUSBDevices returns, for every app with at least one currently
+// running container, the USB device matchers declared by its usb entitlements
+// (deduplicated per app). Apps whose usb entitlement declares no devices, and
+// apps that are deployed but not running, are absent from the map. Backs the
+// missing-peripheral alerting in services (WDY-1923).
+func (c *Client) RequiredUSBDevices(ctx context.Context) (map[string][]appconfig.USBDeviceMatcher, error) {
+	ctx = c.withNamespace(ctx)
+
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppVersion))
+	if err != nil {
+		return nil, fmt.Errorf("listing containers: %w", err)
+	}
+
+	required := make(map[string]map[appconfig.USBDeviceMatcher]bool)
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			// Skip rather than propagate: unlike volume ownership, a partial
+			// view only delays an alert until the next reconcile round.
+			continue
+		}
+
+		var matchers []appconfig.USBDeviceMatcher
+		for _, ent := range parseEntitlementsFromAnnotations(info.Labels) {
+			if ent.Type != appconfig.EntitlementUSB {
+				continue
+			}
+			matchers = append(matchers, ent.Devices...)
+		}
+		if len(matchers) == 0 {
+			continue
+		}
+
+		task, terr := ctr.Task(ctx, nil)
+		if terr != nil {
+			continue
+		}
+		if st, serr := task.Status(ctx); serr != nil || st.Status != containerd.Running {
+			continue
+		}
+
+		appID := info.Labels[labelKeyAppID]
+		if appID == "" {
+			appID = ctr.ID()
+		}
+		if required[appID] == nil {
+			required[appID] = make(map[appconfig.USBDeviceMatcher]bool)
+		}
+		for _, m := range matchers {
+			required[appID][m] = true
+		}
+	}
+
+	out := make(map[string][]appconfig.USBDeviceMatcher, len(required))
+	for app, set := range required {
+		list := make([]appconfig.USBDeviceMatcher, 0, len(set))
+		for m := range set {
+			list = append(list, m)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].String() < list[j].String() })
+		out[app] = list
+	}
+	return out, nil
+}
+
 func (c *Client) AppDeclaredVolumes(ctx context.Context) (map[string][]string, error) {
 	ctx = c.withNamespace(ctx)
 

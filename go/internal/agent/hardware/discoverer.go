@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"go.uber.org/zap"
@@ -21,6 +22,7 @@ type SystemHardwareDiscoverer struct {
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 	usbSysfsPath       string
+	hwmonSysfsPath     string
 }
 
 func NewSystemHardwareDiscoverer(logger *zap.Logger) *SystemHardwareDiscoverer {
@@ -29,6 +31,7 @@ func NewSystemHardwareDiscoverer(logger *zap.Logger) *SystemHardwareDiscoverer {
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
 		usbSysfsPath:       "/sys/bus/usb/devices",
+		hwmonSysfsPath:     "/sys/class/hwmon",
 	}
 }
 
@@ -49,6 +52,7 @@ func (d *SystemHardwareDiscoverer) Discover(ctx context.Context, categoryFilter 
 		{"audio", d.discoverAudio},
 		{"network", d.discoverNetwork},
 		{"storage", d.discoverStorage},
+		{"power", d.discoverPower},
 	}
 
 	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
@@ -411,6 +415,62 @@ func (d *SystemHardwareDiscoverer) discoverStorage() []*agentpb.ListHardwareCapa
 			Category:    "storage",
 			DevicePath:  devPath,
 			Description: name,
+		})
+	}
+
+	return caps
+}
+
+// discoverPower enumerates hwmon chips that expose voltage/current/power
+// channels (e.g. the Jetson INA3221 rail monitors). Channel labels are
+// surfaced via properties; the live values stream as OTel hw.* metrics from
+// the agent's power collector.
+func (d *SystemHardwareDiscoverer) discoverPower() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
+	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
+
+	chips, err := os.ReadDir(d.hwmonSysfsPath)
+	if err != nil {
+		return nil
+	}
+
+	for _, chip := range chips {
+		chipDir := filepath.Join(d.hwmonSysfsPath, chip.Name())
+		files, err := os.ReadDir(chipDir)
+		if err != nil {
+			continue
+		}
+
+		var channels []string
+		for _, f := range files {
+			name := f.Name()
+			if !strings.HasSuffix(name, "_input") {
+				continue
+			}
+			stem := strings.TrimSuffix(name, "_input")
+			if !strings.HasPrefix(stem, "in") && !strings.HasPrefix(stem, "curr") && !strings.HasPrefix(stem, "power") {
+				continue
+			}
+			label := readSysfsFile(filepath.Join(chipDir, stem+"_label"))
+			if label == "" {
+				label = stem
+			}
+			channels = append(channels, label)
+		}
+		if len(channels) == 0 {
+			continue
+		}
+		sort.Strings(channels)
+
+		name := readSysfsFile(filepath.Join(chipDir, "name"))
+		if name == "" {
+			name = chip.Name()
+		}
+
+		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+			Category:    "power",
+			DevicePath:  chipDir,
+			Description: fmt.Sprintf("%s (%d channels)", name, len(channels)),
+			Properties:  map[string]string{"channels": strings.Join(channels, ",")},
 		})
 	}
 

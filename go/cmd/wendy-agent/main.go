@@ -347,6 +347,14 @@ func main() {
 		services.CollectAgentMetrics(ctx, telemetryBuf)
 	}()
 
+	// Board power/voltage/current gauges from hwmon (Jetson INA3221 rails
+	// etc.); a no-op on hosts without sensors.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.CollectPowerMetrics(ctx, logger, telemetryBuf)
+	}()
+
 	// USB hotplug connect/disconnect events as telemetry (Linux-only; no-op
 	// elsewhere). On by default because peripheral drop-off is a primary
 	// remote-debugging signal on robotics rigs; set WENDY_HARDWARE_EVENTS=false
@@ -359,11 +367,21 @@ func main() {
 		)
 	}
 	if hwEventsEnv == "" || hwEventsErr != nil || hwEvents {
+		// Hotplug events nudge the required-device reconciler so a declared
+		// device disappearing alerts immediately, not on the next tick.
+		hwTrigger := make(chan struct{}, 1)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf)
+			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf, hwTrigger)
 		}()
+		if ctrdClient != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				services.CollectRequiredDeviceAlerts(ctx, logger, telemetryBuf, ctrdClient, hwTrigger)
+			}()
+		}
 	} else {
 		logger.Info("usb hotplug event collection disabled via WENDY_HARDWARE_EVENTS")
 	}

@@ -58,6 +58,13 @@ func EntitlementAnnotationValue(e Entitlement) string {
 	if len(e.Allowlist) > 0 {
 		parts = append(parts, "allowlist="+strings.Join(e.Allowlist, ","))
 	}
+	if len(e.Devices) > 0 {
+		devStrs := make([]string, len(e.Devices))
+		for i, m := range e.Devices {
+			devStrs[i] = m.String()
+		}
+		parts = append(parts, "devices="+strings.Join(devStrs, ","))
+	}
 	if len(e.Ports) > 0 {
 		pmStrs := make([]string, len(e.Ports))
 		for i, pm := range e.Ports {
@@ -107,6 +114,14 @@ func ParseEntitlementAnnotation(entType, value string) Entitlement {
 		case "allowlist":
 			if val != "" {
 				ent.Allowlist = strings.Split(val, ",")
+			}
+		case "devices":
+			for _, dev := range strings.Split(val, ",") {
+				halves := strings.SplitN(strings.TrimSpace(dev), ":", 2)
+				if len(halves) != 2 {
+					continue
+				}
+				ent.Devices = append(ent.Devices, USBDeviceMatcher{VendorID: halves[0], ProductID: halves[1]})
 			}
 		case "ports":
 			for _, pm := range strings.Split(val, ",") {
