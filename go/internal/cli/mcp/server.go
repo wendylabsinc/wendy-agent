@@ -141,6 +141,11 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 	return req.GetInt(name, defaultVal)
 }
 
+// boolParam extracts a boolean argument, defaulting to false.
+func boolParam(req mcpgo.CallToolRequest, name string) bool {
+	return req.GetBool(name, false)
+}
+
 // intParamAlias reads primary, falling back to alias, then defaultVal.
 func intParamAlias(req mcpgo.CallToolRequest, primary, alias string, defaultVal int) int {
 	// math.MinInt is a sentinel no realistic caller supplies; using it (rather

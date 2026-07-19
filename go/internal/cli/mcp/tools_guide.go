@@ -38,7 +38,9 @@ Cloud-enrolled devices:
 - container_list / container_start / container_stop / container_delete / container_attach / container_stats
 - wifi_list / wifi_connect / wifi_disconnect / wifi_status / wifi_known_networks
 - telemetry_logs / telemetry_metrics / telemetry_traces
-- hardware_capabilities
+- hardware_capabilities — inventory incl. USB identity (vendor/product/serial/port) and power sensor chips
+- hardware_events — USB connect/disconnect timeline, re-enumeration storms, watch alerts
+- hardware_watch — read/edit the device's watched-USB-device list (missing-device alerting)
 - os_update
 - provisioning_start / provisioning_status
 
