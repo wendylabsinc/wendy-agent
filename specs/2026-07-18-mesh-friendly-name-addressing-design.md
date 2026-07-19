@@ -49,10 +49,14 @@ unambiguous escape hatch in every failure case.
 
 Resolution stops at the first step that yields an asset ID.
 
-1. **mDNS first (LAN peers).** Agents already advertise an Avahi TXT record;
-   this design adds `asset-id` and `org-slug` entries next to the existing
-   `name`. A browse resolves `name → asset-id` for any peer on the LAN with
-   sub-second latency, no cloud round-trip.
+1. **mDNS first (LAN peers).** Agents already advertise `name` and (at
+   provisioning) `assetid` in their Avahi TXT record; this design adds a numeric
+   `orgid` entry. A browse resolves `name → assetid` for any peer on the LAN,
+   filtered to the dialer's **own** `orgid` so a same-named device from another
+   org on the shared LAN is never matched — sub-second, no cloud round-trip. The
+   numeric `orgid` is advertised (not the slug) because the device knows its
+   org id locally at provisioning time; the human `org-slug` is only ever used
+   for the DNS enforcement check below, against a value learned from cloud.
 2. **Cloud roster fallback (off-LAN peers).** The agent syncs its org's
    `{name → asset-id}` directory (and its own org slug) from the cloud via the
    new `GetMeshRoster` RPC, caches it, and refreshes periodically and on
@@ -115,10 +119,11 @@ for the tunnel broker, presenting the same asset-cert identity.
 |---|---|---|
 | Name grammar + resolver | `internal/agent/mesh/dns.go` | parse both forms; friendly form → resolver; org-slug enforcement; NXDOMAIN rules |
 | Slug normalization | `internal/agent/mesh/slug.go` | `Organization.name` → DNS-label slug (pure, shared-rule) |
-| Name → asset-id resolver | `internal/agent/mesh/resolver.go` | hybrid: mDNS browse → cloud-roster cache; duplicate detection |
+| `Resolver` interface | `internal/agent/mesh/dns.go` | `Resolve(name) (assetID, ok)` + `OrgSlug()`, injected via `SetResolver` (keeps `mesh` free of gRPC/mDNS deps, mirroring the `PeerDialer` seam) |
+| Hybrid resolver | `internal/agent/services/mesh_resolver.go` | implements `mesh.Resolver`: mDNS browse (own-orgid filter) → cloud-roster cache; duplicate detection |
 | Roster cache/sync | `internal/agent/services/mesh_roster.go` | periodic `GetMeshRoster`, TTL cache, own-org-slug store, refresh-on-miss |
-| mDNS advertise | agent Avahi service file | add `asset-id` + `org-slug` TXT entries |
-| mDNS browse | reuse `internal/shared/discovery` | resolve peer `name → asset-id` on LAN |
+| mDNS advertise | `internal/agent/configpartition/apply.go` | add numeric `orgid` TXT alongside the existing `assetid` at provisioning |
+| mDNS browse | `internal/shared/discovery` + `models.LANDevice` | parse `name` + `orgid` TXT into `LANDevice`; resolve peer `name → assetid` on LAN |
 | Proto | `Proto/wendy/` + cloud `service-protos` | `GetMeshRoster` |
 
 The resolver is injected into the DNS server behind a small interface
