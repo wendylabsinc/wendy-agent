@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -16,7 +17,7 @@ import (
 // always the roster's (cloud-learned) value.
 type MeshResolver struct {
 	logger   *zap.Logger
-	ownOrgID int32
+	ownOrgID atomic.Int32
 	roster   *MeshRoster
 	browse   func(context.Context) ([]models.LANDevice, error)
 }
@@ -24,7 +25,17 @@ type MeshResolver struct {
 var _ mesh.Resolver = (*MeshResolver)(nil)
 
 func NewMeshResolver(logger *zap.Logger, ownOrgID int32, roster *MeshRoster, browse func(context.Context) ([]models.LANDevice, error)) *MeshResolver {
-	return &MeshResolver{logger: logger, ownOrgID: ownOrgID, roster: roster, browse: browse}
+	r := &MeshResolver{logger: logger, roster: roster, browse: browse}
+	r.ownOrgID.Store(ownOrgID)
+	return r
+}
+
+// UpdateOwnOrgID updates the org id used to filter LAN peers. Called when
+// BLE first-boot enrollment provisions the device while the agent is
+// already running, so the boot-time snapshot (org=0) needs to be replaced
+// with the freshly issued org id — otherwise resolveLAN rejects every peer.
+func (r *MeshResolver) UpdateOwnOrgID(orgID int32) {
+	r.ownOrgID.Store(orgID)
 }
 
 func (r *MeshResolver) OrgSlug() string { return r.roster.OrgSlug() }
@@ -48,7 +59,7 @@ func (r *MeshResolver) resolveLAN(name string) (int32, bool) {
 	var found int32
 	matches := 0
 	for _, d := range devices {
-		if d.OrgID != r.ownOrgID || d.AssetID == 0 {
+		if d.OrgID != r.ownOrgID.Load() || d.AssetID == 0 {
 			continue
 		}
 		if mesh.Normalize(d.MeshName) != name {

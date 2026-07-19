@@ -1,7 +1,9 @@
 package services
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"go.uber.org/zap/zaptest"
@@ -53,5 +55,48 @@ func TestRosterSlugNormalized(t *testing.T) {
 	r.applyResponse(&cloudpb.GetMeshRosterResponse{OrgSlug: "ACME Corp."})
 	if r.OrgSlug() != "acme-corp" {
 		t.Fatalf("OrgSlug = %q, want acme-corp", r.OrgSlug())
+	}
+}
+
+// TestRosterSyncSkipsUnprovisionedIdentity proves Sync fails closed without
+// attempting a dial when assetID==0 (the boot-time snapshot before BLE
+// first-boot enrollment completes): a real dial would hang/error against the
+// bogus "cloud.invalid:1" address, but Sync must return nil quickly instead
+// because there's no asset cert to authenticate an RPC with.
+func TestRosterSyncSkipsUnprovisionedIdentity(t *testing.T) {
+	r := NewMeshRoster(zaptest.NewLogger(t), "cloud.invalid:1", 0, 0, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- r.Sync(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Sync() with assetID=0 = %v, want nil (no-dial skip)", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Sync() with assetID=0 should return immediately without dialing")
+	}
+}
+
+// TestRosterUpdateIdentityIsUsedBySync proves UpdateIdentity's write is what
+// a subsequent Sync reads: after moving from assetID=0 (skip branch) to a
+// real assetID via UpdateIdentity, Sync no longer takes the skip path (it
+// proceeds to a real dial attempt against an unreachable address instead of
+// returning nil immediately).
+func TestRosterUpdateIdentityIsUsedBySync(t *testing.T) {
+	r := NewMeshRoster(zaptest.NewLogger(t), "127.0.0.1:1", 0, 0, "")
+	r.UpdateIdentity("127.0.0.1:1", 7, 215, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := r.Sync(ctx)
+	// A real dial is attempted now (assetID=215 != 0), so this must NOT be
+	// the nil the skip-branch would return; brokerDialOpts/dial/RPC against
+	// an unreachable loopback port fails, confirming the identity swap took
+	// effect and Sync proceeded past the assetID==0 guard.
+	if err == nil {
+		t.Fatal("Sync() after UpdateIdentity to a real assetID should attempt a dial and fail against an unreachable address, not silently skip")
 	}
 }

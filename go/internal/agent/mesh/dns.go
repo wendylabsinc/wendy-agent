@@ -155,6 +155,12 @@ func (s *DNSServer) answerFriendly(w dns.ResponseWriter, r *dns.Msg, q dns.Quest
 	s.mu.Lock()
 	resolver := s.resolver
 	s.mu.Unlock()
+	// Re-normalize both labels so slightly-off-but-regex-valid forms (e.g. a
+	// doubled hyphen) compare symmetrically against the resolver's
+	// normalized names; Normalize is idempotent so already-normal names are
+	// unaffected.
+	name = Normalize(name)
+	orgSlug = Normalize(orgSlug)
 	if resolver == nil || resolver.OrgSlug() == "" || orgSlug != resolver.OrgSlug() {
 		s.reply(w, r, dns.RcodeNameError)
 		return

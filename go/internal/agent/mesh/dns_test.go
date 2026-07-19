@@ -201,3 +201,17 @@ func TestNumericNamePathUnchanged(t *testing.T) {
 		t.Fatalf("numeric: got rcode=%d ip=%q, want SUCCESS 10.99.0.215", rcode, ip)
 	}
 }
+
+// TestFriendlyNameDoubledHyphenNormalizes proves answerFriendly re-normalizes
+// the captured labels before comparing/resolving: the regex admits a doubled
+// hyphen ("a--b"), which must still resolve against the resolver's
+// already-normalized name ("a-b") because both sides go through Normalize.
+func TestFriendlyNameDoubledHyphenNormalizes(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme", byName: map[string]int32{"a-b": 215}})
+
+	rcode, ip := answerA(t, s, "a--b.acme.cloud.wendy.dev.")
+	if rcode != dns.RcodeSuccess || ip != "10.99.0.215" {
+		t.Fatalf("doubled hyphen: got rcode=%d ip=%q, want SUCCESS 10.99.0.215", rcode, ip)
+	}
+}

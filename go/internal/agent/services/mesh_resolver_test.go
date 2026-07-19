@@ -89,6 +89,29 @@ func TestResolverSameAssetIDRepeatedNotAmbiguous(t *testing.T) {
 	}
 }
 
+func TestResolverUpdateOwnOrgIDReachesFilter(t *testing.T) {
+	// Simulates BLE first-boot enrollment: the resolver is constructed with
+	// the boot-time snapshot ownOrgID=0, so a LAN peer belonging to the
+	// device's real org (42) is initially rejected as "foreign". After
+	// UpdateOwnOrgID(42) — what OnProvisioned now calls — the same peer must
+	// resolve, proving the identity refresh actually reaches resolveLAN's
+	// filter rather than being shadowed by a stale copy.
+	roster := NewMeshRoster(zaptest.NewLogger(t), "", 0, 0, "")
+	browse := func(context.Context) ([]models.LANDevice, error) {
+		return []models.LANDevice{
+			{MeshName: "brave-dolphin", OrgID: 42, AssetID: 215, IsMTLS: true},
+		}, nil
+	}
+	r := NewMeshResolver(zaptest.NewLogger(t), 0, roster, browse)
+	if _, ok := r.Resolve("brave-dolphin"); ok {
+		t.Fatal("with ownOrgID=0 (unprovisioned), a peer in org 42 must not resolve")
+	}
+	r.UpdateOwnOrgID(42)
+	if id, ok := r.Resolve("brave-dolphin"); !ok || id != 215 {
+		t.Fatalf("after UpdateOwnOrgID(42), Resolve = %d,%v want 215,true", id, ok)
+	}
+}
+
 func TestResolverBrowseErrorFallsBackToRoster(t *testing.T) {
 	roster := NewMeshRoster(zaptest.NewLogger(t), "", 42, 1, "")
 	roster.applyResponse(&cloudpb.GetMeshRosterResponse{

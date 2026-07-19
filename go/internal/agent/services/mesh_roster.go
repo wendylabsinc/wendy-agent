@@ -47,6 +47,19 @@ func (r *MeshRoster) OrgSlug() string {
 	return r.slug
 }
 
+// UpdateIdentity swaps the identity used to authenticate GetMeshRoster calls.
+// Called when BLE first-boot enrollment provisions the device while the
+// agent is already running, so the boot-time snapshot (org=0/asset=0/empty
+// chain) needs to be replaced with the freshly issued identity.
+func (r *MeshRoster) UpdateIdentity(cloudURL string, orgID, assetID int32, chainPEM string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cloudURL = cloudURL
+	r.orgID = orgID
+	r.assetID = assetID
+	r.chainPEM = chainPEM
+}
+
 // Lookup returns the asset id for a normalized device name. Unknown and
 // ambiguous (duplicate-normalized) names return ok=false.
 func (r *MeshRoster) Lookup(name string) (int32, bool) {
@@ -85,11 +98,27 @@ func (r *MeshRoster) applyResponse(resp *cloudpb.GetMeshRosterResponse) {
 // Sync performs one GetMeshRoster refresh over the cloud gRPC endpoint using
 // the same asset-cert identity the tunnel broker client uses.
 func (r *MeshRoster) Sync(ctx context.Context) error {
-	dialOpts, md, err := brokerDialOpts(r.logger, r.orgID, r.assetID, r.chainPEM)
+	r.mu.RLock()
+	cloudURL := r.cloudURL
+	orgID := r.orgID
+	assetID := r.assetID
+	chainPEM := r.chainPEM
+	r.mu.RUnlock()
+
+	if assetID == 0 {
+		// Unprovisioned identity: no asset cert to authenticate with, so
+		// don't bother dialing — this is expected before enrollment (and
+		// briefly during BLE first-boot provisioning) and would otherwise
+		// just fail the RPC every tick.
+		r.logger.Debug("mesh roster: skipping sync, device not provisioned")
+		return nil
+	}
+
+	dialOpts, md, err := brokerDialOpts(r.logger, orgID, assetID, chainPEM)
 	if err != nil {
 		return err
 	}
-	conn, err := grpc.NewClient(r.cloudURL, dialOpts...)
+	conn, err := grpc.NewClient(cloudURL, dialOpts...)
 	if err != nil {
 		return err
 	}

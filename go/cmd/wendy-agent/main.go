@@ -632,7 +632,10 @@ func main() {
 	// until the device is provisioned, rather than never starting at all.
 	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, chainPEM)
 	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
-		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{})
+		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
+			Types:   []models.InterfaceType{models.InterfaceLAN},
+			Timeout: 1 * time.Second,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -760,6 +763,20 @@ func main() {
 			freshBrokerURL = brokerURLForCloudHost(cloudHost)
 		}
 		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
+		// Same story for the friendly-name roster/resolver: the boot-time
+		// snapshot is org=0/asset=0/empty chain, so without this refresh
+		// friendly names stay dead (resolver rejects every LAN peer, roster
+		// dials with a null identity) until the agent is restarted.
+		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, chainPEM)
+		meshResolver.UpdateOwnOrgID(orgID)
+		// Resync immediately so friendly names work without waiting for the periodic tick.
+		go func() {
+			sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			if err := meshRoster.Sync(sctx); err != nil {
+				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
+			}
+		}()
 		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
