@@ -347,6 +347,27 @@ func main() {
 		services.CollectAgentMetrics(ctx, telemetryBuf)
 	}()
 
+	// USB hotplug connect/disconnect events as telemetry (Linux-only; no-op
+	// elsewhere). On by default because peripheral drop-off is a primary
+	// remote-debugging signal on robotics rigs; set WENDY_HARDWARE_EVENTS=false
+	// to disable. Serial numbers are never included in these events.
+	hwEventsEnv := os.Getenv("WENDY_HARDWARE_EVENTS")
+	hwEvents, hwEventsErr := strconv.ParseBool(hwEventsEnv)
+	if hwEventsEnv != "" && hwEventsErr != nil {
+		logger.Warn("WENDY_HARDWARE_EVENTS has unrecognised value; hardware event collection enabled",
+			zap.String("value", hwEventsEnv),
+		)
+	}
+	if hwEventsEnv == "" || hwEventsErr != nil || hwEvents {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf)
+		}()
+	} else {
+		logger.Info("usb hotplug event collection disabled via WENDY_HARDWARE_EVENTS")
+	}
+
 	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.
 	// Opt-in: set WENDY_COLLECT_DMESG=true to enable. Disabled by default
 	// because kernel messages may contain PII (MAC addresses, serial numbers,

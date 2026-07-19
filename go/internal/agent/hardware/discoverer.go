@@ -20,6 +20,7 @@ type SystemHardwareDiscoverer struct {
 	logger             *zap.Logger
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
+	usbSysfsPath       string
 }
 
 func NewSystemHardwareDiscoverer(logger *zap.Logger) *SystemHardwareDiscoverer {
@@ -27,6 +28,7 @@ func NewSystemHardwareDiscoverer(logger *zap.Logger) *SystemHardwareDiscoverer {
 		logger:             logger,
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
+		usbSysfsPath:       "/sys/bus/usb/devices",
 	}
 }
 
@@ -104,18 +106,20 @@ func (d *SystemHardwareDiscoverer) discoverGPU() []*agentpb.ListHardwareCapabili
 	return caps
 }
 
-// discoverUSB enumerates USB devices from sysfs.
+// discoverUSB enumerates USB devices from sysfs. Device identity (vendor/product
+// id, serial, bus position) is surfaced via the properties map so callers can
+// match specific devices rather than parsing the display string; the macOS agent
+// already populates the same keys from IORegistry.
 func (d *SystemHardwareDiscoverer) discoverUSB() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
 	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
 
-	usbPath := "/sys/bus/usb/devices"
-	entries, err := os.ReadDir(usbPath)
+	entries, err := os.ReadDir(d.usbSysfsPath)
 	if err != nil {
 		return nil
 	}
 
 	for _, entry := range entries {
-		devDir := filepath.Join(usbPath, entry.Name())
+		devDir := filepath.Join(d.usbSysfsPath, entry.Name())
 
 		// Read product name.
 		product := readSysfsFile(filepath.Join(devDir, "product"))
@@ -131,10 +135,31 @@ func (d *SystemHardwareDiscoverer) discoverUSB() []*agentpb.ListHardwareCapabili
 			name = fmt.Sprintf("%s (%s:%s)", product, vendor, prodID)
 		}
 
+		props := map[string]string{}
+		setIfNonEmpty := func(key, value string) {
+			if value != "" {
+				props[key] = value
+			}
+		}
+		setIfNonEmpty("vendor_id", vendor)
+		setIfNonEmpty("product_id", prodID)
+		setIfNonEmpty("manufacturer", readSysfsFile(filepath.Join(devDir, "manufacturer")))
+		setIfNonEmpty("serial", readSysfsFile(filepath.Join(devDir, "serial")))
+		setIfNonEmpty("busnum", readSysfsFile(filepath.Join(devDir, "busnum")))
+		setIfNonEmpty("devnum", readSysfsFile(filepath.Join(devDir, "devnum")))
+		setIfNonEmpty("speed_mbps", readSysfsFile(filepath.Join(devDir, "speed")))
+		// The sysfs entry name encodes the physical topology (bus-port.port…),
+		// which is stable across replug — unlike devnum.
+		setIfNonEmpty("port_path", entry.Name())
+		if len(props) == 0 {
+			props = nil
+		}
+
 		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
 			Category:    "usb",
 			DevicePath:  devDir,
 			Description: name,
+			Properties:  props,
 		})
 	}
 

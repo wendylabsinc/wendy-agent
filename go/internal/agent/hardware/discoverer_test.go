@@ -2,6 +2,8 @@ package hardware
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"go.uber.org/zap"
@@ -126,5 +128,88 @@ func TestDiscoverCamera_TransportPropertyCSI_WithLibcameraID(t *testing.T) {
 	}
 	if got := caps[0].GetProperties()["libcamera_id"]; got != "/base/cam@1a" {
 		t.Errorf("expected libcamera_id=/base/cam@1a, got %q", got)
+	}
+}
+
+func writeUSBSysfsDevice(t *testing.T, root, name string, attrs map[string]string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for file, content := range attrs {
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(content+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDiscoverUSB_IdentityProperties(t *testing.T) {
+	root := t.TempDir()
+	writeUSBSysfsDevice(t, root, "1-2.4", map[string]string{
+		"product":      "CANable2",
+		"idVendor":     "16d0",
+		"idProduct":    "117e",
+		"manufacturer": "Openlight Labs",
+		"serial":       "004E00265548501120343041",
+		"busnum":       "1",
+		"devnum":       "9",
+		"speed":        "12",
+	})
+	// Interface entries (1-2.4:1.0) and devices without a product string are skipped.
+	writeUSBSysfsDevice(t, root, "1-2.4:1.0", map[string]string{"bInterfaceClass": "02"})
+	writeUSBSysfsDevice(t, root, "2-1", map[string]string{"idVendor": "1d6b", "idProduct": "0003"})
+
+	d := NewSystemHardwareDiscoverer(zap.NewNop())
+	d.usbSysfsPath = root
+
+	caps := d.discoverUSB()
+	if len(caps) != 1 {
+		t.Fatalf("expected 1 usb capability, got %d: %v", len(caps), caps)
+	}
+	c := caps[0]
+	if c.GetDescription() != "CANable2 (16d0:117e)" {
+		t.Errorf("unexpected description %q", c.GetDescription())
+	}
+	want := map[string]string{
+		"vendor_id":    "16d0",
+		"product_id":   "117e",
+		"manufacturer": "Openlight Labs",
+		"serial":       "004E00265548501120343041",
+		"busnum":       "1",
+		"devnum":       "9",
+		"speed_mbps":   "12",
+		"port_path":    "1-2.4",
+	}
+	for k, v := range want {
+		if got := c.GetProperties()[k]; got != v {
+			t.Errorf("properties[%q] = %q, want %q", k, got, v)
+		}
+	}
+}
+
+func TestDiscoverUSB_MissingOptionalAttrs(t *testing.T) {
+	root := t.TempDir()
+	writeUSBSysfsDevice(t, root, "3-1", map[string]string{
+		"product":   "Widget",
+		"idVendor":  "dead",
+		"idProduct": "beef",
+	})
+
+	d := NewSystemHardwareDiscoverer(zap.NewNop())
+	d.usbSysfsPath = root
+
+	caps := d.discoverUSB()
+	if len(caps) != 1 {
+		t.Fatalf("expected 1 usb capability, got %d", len(caps))
+	}
+	props := caps[0].GetProperties()
+	for _, absent := range []string{"serial", "manufacturer", "busnum", "devnum", "speed_mbps"} {
+		if v, ok := props[absent]; ok {
+			t.Errorf("expected %q to be absent, got %q", absent, v)
+		}
+	}
+	if props["vendor_id"] != "dead" || props["product_id"] != "beef" || props["port_path"] != "3-1" {
+		t.Errorf("unexpected identity properties: %v", props)
 	}
 }
