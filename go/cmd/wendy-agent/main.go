@@ -622,8 +622,8 @@ func main() {
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
+		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
@@ -731,7 +731,7 @@ func main() {
 			freshBrokerURL = brokerURLForCloudHost(cloudHost)
 		}
 		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
 			logger.Info("Device provisioned — shutting down plaintext gRPC port", zap.String("port", agentPort))
