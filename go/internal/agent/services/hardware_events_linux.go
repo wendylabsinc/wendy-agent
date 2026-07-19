@@ -21,14 +21,10 @@ import (
 // OTel log records under service.name "wendy.hardware". Blocks until ctx is
 // cancelled.
 //
-// notify (may be nil) receives a non-blocking signal after every published
-// event so the required-device reconciler can run a round immediately instead
-// of waiting for its periodic tick.
-//
 // This is the event-history counterpart to the point-in-time
 // ListHardwareCapabilities RPC: it makes "the CAN adapter dropped off the bus
 // at 22:14" remotely visible instead of inferred from downstream app failures.
-func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher TelemetryPublisher, notify chan<- struct{}) {
+func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher TelemetryPublisher) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_KOBJECT_UEVENT)
 	if err != nil {
 		logger.Warn("usb hotplug collection unavailable: netlink socket", zap.Error(err))
@@ -130,12 +126,6 @@ func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher 
 		windowCount++
 
 		publisher.PublishLogs(usbEventLogRecord(resource, ev, now))
-		if notify != nil {
-			select {
-			case notify <- struct{}{}:
-			default:
-			}
-		}
 	}
 }
 

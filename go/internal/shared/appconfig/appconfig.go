@@ -92,7 +92,7 @@ var allowedKeys = map[string][]string{
 	EntitlementPersist:   {"type", "name", "path"},
 	EntitlementAudio:     {"type"},
 	EntitlementCamera:    {"type", "mode", "allowlist"},
-	EntitlementUSB:       {"type", "devices"},
+	EntitlementUSB:       {"type"},
 	EntitlementI2C:       {"type", "device"},
 	EntitlementGPIO:      {"type", "pins"},
 	EntitlementSPI:       {"type"},
@@ -309,34 +309,17 @@ type PortMapping struct {
 	Container uint16 `json:"container"`
 }
 
-// USBDeviceMatcher identifies a specific USB device an app requires, by USB
-// vendor and product id (4-digit hex, as in lsusb / sysfs idVendor/idProduct).
-// The declaration does not gate container start — the usb entitlement still
-// grants the whole bus — it tells the agent what should be present so a
-// missing or flapping device can be surfaced as an alert instead of inferred
-// from downstream app failures.
-type USBDeviceMatcher struct {
-	VendorID  string `json:"vendorId"`
-	ProductID string `json:"productId"`
-}
-
-// String renders the matcher in the conventional "vvvv:pppp" form.
-func (m USBDeviceMatcher) String() string {
-	return strings.ToLower(m.VendorID) + ":" + strings.ToLower(m.ProductID)
-}
-
 // Entitlement represents a single entitlement entry in wendy.json.
 type Entitlement struct {
-	Type      string             `json:"type"`
-	Mode      string             `json:"mode,omitempty"`      // Network, Bluetooth, Video
-	Allowlist []string           `json:"allowlist,omitempty"` // Camera, Video
-	Name      string             `json:"name,omitempty"`      // Persist
-	Path      string             `json:"path,omitempty"`      // Persist
-	Device    string             `json:"device,omitempty"`    // I2C, Serial
-	Devices   []USBDeviceMatcher `json:"devices,omitempty"`   // USB (required devices)
-	Pins      []int              `json:"pins,omitempty"`      // GPIO
-	Ports     []PortMapping      `json:"ports,omitempty"`     // Network
-	Port      int                `json:"port,omitempty"`      // MCP
+	Type      string        `json:"type"`
+	Mode      string        `json:"mode,omitempty"`      // Network, Bluetooth, Video
+	Allowlist []string      `json:"allowlist,omitempty"` // Camera, Video
+	Name      string        `json:"name,omitempty"`      // Persist
+	Path      string        `json:"path,omitempty"`      // Persist
+	Device    string        `json:"device,omitempty"`    // I2C, Serial
+	Pins      []int         `json:"pins,omitempty"`      // GPIO
+	Ports     []PortMapping `json:"ports,omitempty"`     // Network
+	Port      int           `json:"port,omitempty"`      // MCP
 	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
 	// The agent derives the gateway from the bridge subnet separately; this
 	// field only carries the service CIDR policy.
@@ -436,14 +419,6 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			}
 		case EntitlementGPIO:
 			// Pins are optional; omitting them grants access to all GPIO chips.
-		case EntitlementUSB:
-			// Devices are optional; when present they declare which USB devices
-			// the app expects so the agent can alert when one is missing.
-			for j, m := range e.Devices {
-				if !isValidUSBID(m.VendorID) || !isValidUSBID(m.ProductID) {
-					return fmt.Errorf("%s[%d]: usb devices[%d] requires 4-digit hex vendorId and productId (e.g. \"16d0\"), got %q:%q", prefix, i, j, m.VendorID, m.ProductID)
-				}
-			}
 		case EntitlementMCP:
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("%s[%d]: mcp port must be between 1 and 65535, got %d", prefix, i, e.Port)
@@ -836,20 +811,6 @@ func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
 
 	warnings := ValidateJSON(data)
 	return &cfg, warnings, nil
-}
-
-// isValidUSBID reports whether s is a 4-digit hex USB vendor or product id
-// (case-insensitive), the format used by lsusb and sysfs idVendor/idProduct.
-func isValidUSBID(s string) bool {
-	if len(s) != 4 {
-		return false
-	}
-	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
 }
 
 // isValidI2CDevice reports whether device is a safe I2C device name (i2c-N).

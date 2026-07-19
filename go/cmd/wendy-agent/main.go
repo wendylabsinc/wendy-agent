@@ -367,21 +367,11 @@ func main() {
 		)
 	}
 	if hwEventsEnv == "" || hwEventsErr != nil || hwEvents {
-		// Hotplug events nudge the required-device reconciler so a declared
-		// device disappearing alerts immediately, not on the next tick.
-		hwTrigger := make(chan struct{}, 1)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf, hwTrigger)
+			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf)
 		}()
-		if ctrdClient != nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				services.CollectRequiredDeviceAlerts(ctx, logger, telemetryBuf, ctrdClient, hwTrigger)
-			}()
-		}
 	} else {
 		logger.Info("usb hotplug event collection disabled via WENDY_HARDWARE_EVENTS")
 	}

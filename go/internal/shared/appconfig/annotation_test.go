@@ -196,31 +196,3 @@ func TestSplitAnnotationParams(t *testing.T) {
 		}
 	}
 }
-
-func TestEntitlementAnnotation_USBDevices(t *testing.T) {
-	ent := Entitlement{Type: EntitlementUSB, Devices: []USBDeviceMatcher{
-		{VendorID: "16D0", ProductID: "117E"},
-		{VendorID: "1d50", ProductID: "606f"},
-	}}
-	// Encoding lowercases ids via USBDeviceMatcher.String.
-	got := EntitlementAnnotationValue(ent)
-	want := "devices=16d0:117e,1d50:606f"
-	if got != want {
-		t.Fatalf("EntitlementAnnotationValue = %q, want %q", got, want)
-	}
-
-	parsed := ParseEntitlementAnnotation(EntitlementUSB, got)
-	wantDevices := []USBDeviceMatcher{
-		{VendorID: "16d0", ProductID: "117e"},
-		{VendorID: "1d50", ProductID: "606f"},
-	}
-	if !reflect.DeepEqual(parsed.Devices, wantDevices) {
-		t.Errorf("parsed devices = %v, want %v", parsed.Devices, wantDevices)
-	}
-
-	// Malformed segments are skipped, not fatal.
-	parsed = ParseEntitlementAnnotation(EntitlementUSB, "devices=junk,16d0:117e")
-	if len(parsed.Devices) != 1 || parsed.Devices[0] != (USBDeviceMatcher{VendorID: "16d0", ProductID: "117e"}) {
-		t.Errorf("parsed devices with junk segment = %v", parsed.Devices)
-	}
-}
