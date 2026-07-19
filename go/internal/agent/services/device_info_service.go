@@ -19,10 +19,11 @@ type DeviceInfoService struct {
 	agentpbv2.UnimplementedWendyDeviceInfoServiceServer
 	logger             *zap.Logger
 	hardwareDiscoverer HardwareDiscoverer
+	watchStore         *HardwareWatchStore // nil when watch persistence is unavailable
 }
 
-func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer) *DeviceInfoService {
-	return &DeviceInfoService{logger: logger, hardwareDiscoverer: hd}
+func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer, watchStore *HardwareWatchStore) *DeviceInfoService {
+	return &DeviceInfoService{logger: logger, hardwareDiscoverer: hd, watchStore: watchStore}
 }
 
 func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDeviceInfoRequest) (*agentpbv2.GetDeviceInfoResponse, error) {
@@ -111,4 +112,57 @@ func (s *DeviceInfoService) ListHardwareCapabilities(ctx context.Context, req *a
 		}
 	}
 	return &agentpbv2.ListHardwareCapabilitiesResponse{Capabilities: v2caps}, nil
+}
+
+func (s *DeviceInfoService) GetHardwareWatchList(_ context.Context, _ *agentpbv2.GetHardwareWatchListRequest) (*agentpbv2.GetHardwareWatchListResponse, error) {
+	if s.watchStore == nil {
+		return nil, status.Error(codes.Unavailable, "hardware watch list is not available on this device")
+	}
+	devices, err := s.watchStore.Load()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "loading hardware watch list: %v", err)
+	}
+	resp := &agentpbv2.GetHardwareWatchListResponse{}
+	for _, d := range devices {
+		resp.Devices = append(resp.Devices, watchedDeviceToProto(d))
+	}
+	return resp, nil
+}
+
+func (s *DeviceInfoService) SetHardwareWatchList(_ context.Context, req *agentpbv2.SetHardwareWatchListRequest) (*agentpbv2.SetHardwareWatchListResponse, error) {
+	if s.watchStore == nil {
+		return nil, status.Error(codes.Unavailable, "hardware watch list is not available on this device")
+	}
+	devices := make([]WatchedDevice, 0, len(req.GetDevices()))
+	for i, d := range req.GetDevices() {
+		w := WatchedDevice{
+			VendorID:  strings.ToLower(d.GetVendorId()),
+			ProductID: strings.ToLower(d.GetProductId()),
+			Serial:    d.GetSerial(),
+			Label:     d.GetLabel(),
+		}
+		if err := ValidateWatchedDevice(w); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "devices[%d]: %v", i, err)
+		}
+		devices = append(devices, w)
+	}
+	if err := s.watchStore.Save(devices); err != nil {
+		return nil, status.Errorf(codes.Internal, "saving hardware watch list: %v", err)
+	}
+	s.logger.Info("hardware watch list updated", zap.Int("devices", len(devices)))
+	return &agentpbv2.SetHardwareWatchListResponse{}, nil
+}
+
+func watchedDeviceToProto(d WatchedDevice) *agentpbv2.WatchedUSBDevice {
+	p := &agentpbv2.WatchedUSBDevice{
+		VendorId:  d.VendorID,
+		ProductId: d.ProductID,
+	}
+	if d.Serial != "" {
+		p.Serial = &d.Serial
+	}
+	if d.Label != "" {
+		p.Label = &d.Label
+	}
+	return p
 }

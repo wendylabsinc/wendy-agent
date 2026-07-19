@@ -238,7 +238,11 @@ func main() {
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
-	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer)
+	// hwTrigger nudges the hardware watch alert loop on hotplug events and
+	// watch-list edits so alerts don't wait for the periodic tick.
+	hwTrigger := make(chan struct{}, 1)
+	hwWatchStore := services.NewHardwareWatchStore("", hwTrigger)
+	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer, hwWatchStore)
 	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
@@ -370,11 +374,20 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf)
+			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf, hwTrigger)
 		}()
 	} else {
 		logger.Info("usb hotplug event collection disabled via WENDY_HARDWARE_EVENTS")
 	}
+
+	// Watched-device alerting: reconciles the device-local watch list (set via
+	// `wendy device hardware watch`) against the bus and publishes
+	// watched_missing / watched_restored events.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		services.CollectWatchedDeviceAlerts(ctx, logger, telemetryBuf, hwWatchStore, hwTrigger)
+	}()
 
 	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.
 	// Opt-in: set WENDY_COLLECT_DMESG=true to enable. Disabled by default

@@ -5,6 +5,8 @@ option go_package = "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv
 service WendyDeviceInfoService {
     rpc GetDeviceInfo(GetDeviceInfoRequest) returns (GetDeviceInfoResponse);
     rpc ListHardwareCapabilities(ListHardwareCapabilitiesRequest) returns (ListHardwareCapabilitiesResponse);
+    rpc GetHardwareWatchList(GetHardwareWatchListRequest) returns (GetHardwareWatchListResponse);
+    rpc SetHardwareWatchList(SetHardwareWatchListRequest) returns (SetHardwareWatchListResponse);
 }
 
 message GetDeviceInfoRequest {}
@@ -66,3 +68,34 @@ message ListHardwareCapabilitiesResponse {
         map<string, string> properties = 4;
     }
 }
+
+// A USB device the agent tracks for presence. When a watched device is absent
+// beyond the agent's grace period a watched_missing event (ERROR) is published
+// to the wendy.hardware telemetry stream, and watched_restored (INFO) when it
+// returns. The list is device-local state managed interactively via
+// `wendy device hardware watch`; it does not affect app entitlements.
+message WatchedUSBDevice {
+    // USB vendor id, 4-digit lowercase hex (e.g. "1d50").
+    string vendor_id = 1;
+    // USB product id, 4-digit lowercase hex (e.g. "606f").
+    string product_id = 2;
+    // Optional serial number distinguishing identical devices. When empty the
+    // watch matches any device with this vendor/product id.
+    optional string serial = 3;
+    // Optional human-readable label captured when the watch was created
+    // (typically the USB product string); used in alert text.
+    optional string label = 4;
+}
+
+message GetHardwareWatchListRequest {}
+
+message GetHardwareWatchListResponse {
+    repeated WatchedUSBDevice devices = 1;
+}
+
+message SetHardwareWatchListRequest {
+    // Full replacement for the device's watch list.
+    repeated WatchedUSBDevice devices = 1;
+}
+
+message SetHardwareWatchListResponse {}

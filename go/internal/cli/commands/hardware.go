@@ -2,14 +2,21 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
 )
 
@@ -21,7 +28,294 @@ func newHardwareCmd() *cobra.Command {
 
 	cmd.AddCommand(newHardwareListCmd())
 	cmd.AddCommand(newHardwareEventsCmd())
+	cmd.AddCommand(newHardwareWatchCmd())
 	return cmd
+}
+
+// newHardwareWatchCmd manages the device-local USB watch list. Interactive
+// runs open a checklist seeded from the devices currently on the bus (plus
+// watched-but-absent entries); the selection replaces the device's list. The
+// agent alerts (watched_missing ERROR / watched_restored INFO in the
+// wendy.hardware stream) when a watched device is absent past a grace period.
+// Nothing is added to wendy.json — the list lives on the device.
+func newHardwareWatchCmd() *cobra.Command {
+	var addFlags, removeFlags []string
+	var clear bool
+
+	cmd := &cobra.Command{
+		Use:   "watch",
+		Short: "Choose USB devices the device should alert on when missing",
+		Long: `Manage the device's hardware watch list. Without flags, opens an interactive
+picker listing the USB devices currently on the bus — check the ones that must
+stay present. The agent then publishes a watched_missing (ERROR) event when a
+watched device is gone for more than ~30s, and watched_restored (INFO) when it
+returns; both appear in 'wendy device hardware events' and in cloud telemetry.
+
+Devices with a serial number are pinned to that exact unit, so two identical
+adapters are tracked individually.
+
+Non-interactive usage:
+  --add vid:pid[:serial]     add a watch (repeatable)
+  --remove vid:pid[:serial]  remove a watch (repeatable)
+  --clear                    remove all watches
+With no flags and no TTY, prints the current watch list.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			current, err := conn.DeviceInfoService.GetHardwareWatchList(ctx, &agentpbv2.GetHardwareWatchListRequest{})
+			if err != nil {
+				if status.Code(err) == codes.Unimplemented {
+					return fmt.Errorf("this agent does not support the hardware watch list — update the agent (wendy device update)")
+				}
+				return fmt.Errorf("getting hardware watch list: %w", err)
+			}
+			watches := current.GetDevices()
+
+			switch {
+			case clear:
+				if _, err := conn.DeviceInfoService.SetHardwareWatchList(ctx, &agentpbv2.SetHardwareWatchListRequest{}); err != nil {
+					return fmt.Errorf("clearing hardware watch list: %w", err)
+				}
+				cliLogln("Hardware watch list cleared.")
+				return nil
+
+			case len(addFlags) > 0 || len(removeFlags) > 0:
+				updated, err := applyWatchEdits(watches, addFlags, removeFlags)
+				if err != nil {
+					return err
+				}
+				if _, err := conn.DeviceInfoService.SetHardwareWatchList(ctx, &agentpbv2.SetHardwareWatchListRequest{Devices: updated}); err != nil {
+					return fmt.Errorf("updating hardware watch list: %w", err)
+				}
+				return printWatchList(updated)
+
+			case jsonOutput || !term.IsTerminal(int(os.Stdin.Fd())):
+				return printWatchList(watches)
+			}
+
+			// Interactive picker seeded from the live bus.
+			req := &agentpb.ListHardwareCapabilitiesRequest{}
+			category := "usb"
+			req.CategoryFilter = &category
+			live, err := conn.AgentService.ListHardwareCapabilities(ctx, req)
+			if err != nil {
+				return fmt.Errorf("listing usb devices: %w", err)
+			}
+
+			items := buildWatchChecklist(live.GetCapabilities(), watches)
+			if len(items) == 0 {
+				fmt.Println("No USB devices found to watch.")
+				return nil
+			}
+			selected, err := tui.RunChecklist("Select USB devices the device must alert on when missing:", items)
+			if err != nil {
+				if errors.Is(err, tui.ErrCancelled) {
+					cliLogln("Cancelled; watch list unchanged.")
+					return nil
+				}
+				return err
+			}
+
+			var chosen []*agentpbv2.WatchedUSBDevice
+			for _, item := range selected {
+				var w agentpbv2.WatchedUSBDevice
+				if err := json.Unmarshal([]byte(item.Value), &w); err != nil {
+					return fmt.Errorf("internal: decoding selection: %w", err)
+				}
+				chosen = append(chosen, &w)
+			}
+			if _, err := conn.DeviceInfoService.SetHardwareWatchList(ctx, &agentpbv2.SetHardwareWatchListRequest{Devices: chosen}); err != nil {
+				return fmt.Errorf("updating hardware watch list: %w", err)
+			}
+			return printWatchList(chosen)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&addFlags, "add", nil, "Add a watch as vid:pid[:serial] (repeatable)")
+	cmd.Flags().StringArrayVar(&removeFlags, "remove", nil, "Remove a watch as vid:pid[:serial] (repeatable)")
+	cmd.Flags().BoolVar(&clear, "clear", false, "Remove all watches")
+	return cmd
+}
+
+// buildWatchChecklist merges the live USB devices with watched-but-absent
+// entries into checklist items. Kernel root hubs (vendor 1d6b) are hidden:
+// they are the host controller itself and always present. Item values carry
+// the WatchedUSBDevice JSON so the selection round-trips losslessly.
+func buildWatchChecklist(live []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability, watches []*agentpbv2.WatchedUSBDevice) []tui.ChecklistItem {
+	matched := make([]bool, len(watches))
+	var items []tui.ChecklistItem
+
+	for _, c := range live {
+		props := c.GetProperties()
+		vendor, product := props["vendor_id"], props["product_id"]
+		if vendor == "" || product == "" || vendor == "1d6b" {
+			continue
+		}
+		serial := props["serial"]
+
+		label := c.GetDescription()
+		if idx := strings.LastIndex(label, " ("); idx > 0 {
+			label = label[:idx]
+		}
+
+		w := &agentpbv2.WatchedUSBDevice{VendorId: vendor, ProductId: product}
+		if serial != "" {
+			w.Serial = &serial
+		}
+		if label != "" {
+			w.Label = &label
+		}
+		value, _ := json.Marshal(w)
+
+		desc := vendor + ":" + product
+		if port := props["port_path"]; port != "" {
+			desc += "  port " + port
+		}
+		if serial != "" {
+			desc += "  serial " + serial
+		}
+
+		selected := false
+		for i, existing := range watches {
+			if watchCoversDevice(existing, vendor, product, serial) {
+				matched[i] = true
+				selected = true
+			}
+		}
+
+		items = append(items, tui.ChecklistItem{
+			Label:       label,
+			Description: desc,
+			Value:       string(value),
+			Selected:    selected,
+		})
+	}
+
+	// Watched entries with no matching live device: keep them visible (and
+	// checked) so an already-missing device isn't silently dropped from the
+	// list just by re-running the picker.
+	for i, w := range watches {
+		if matched[i] {
+			continue
+		}
+		label := w.GetLabel()
+		if label == "" {
+			label = w.GetVendorId() + ":" + w.GetProductId()
+		}
+		desc := w.GetVendorId() + ":" + w.GetProductId()
+		if w.GetSerial() != "" {
+			desc += "  serial " + w.GetSerial()
+		}
+		desc += "  (not currently connected)"
+		value, _ := json.Marshal(w)
+		items = append(items, tui.ChecklistItem{
+			Label:       label,
+			Description: desc,
+			Value:       string(value),
+			Selected:    true,
+		})
+	}
+
+	return items
+}
+
+// watchCoversDevice reports whether an existing watch entry corresponds to the
+// live device: serial-pinned watches require the exact serial, loose watches
+// match any device with the same vendor:product id.
+func watchCoversDevice(w *agentpbv2.WatchedUSBDevice, vendor, product, serial string) bool {
+	if !strings.EqualFold(w.GetVendorId(), vendor) || !strings.EqualFold(w.GetProductId(), product) {
+		return false
+	}
+	return w.GetSerial() == "" || w.GetSerial() == serial
+}
+
+// applyWatchEdits applies --add/--remove specs ("vid:pid[:serial]") to the
+// current list, deduplicating on vendor+product+serial.
+func applyWatchEdits(current []*agentpbv2.WatchedUSBDevice, adds, removes []string) ([]*agentpbv2.WatchedUSBDevice, error) {
+	parse := func(spec string) (*agentpbv2.WatchedUSBDevice, error) {
+		parts := strings.SplitN(spec, ":", 3)
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("invalid watch spec %q: expected vid:pid[:serial]", spec)
+		}
+		w := &agentpbv2.WatchedUSBDevice{
+			VendorId:  strings.ToLower(parts[0]),
+			ProductId: strings.ToLower(parts[1]),
+		}
+		if len(parts) == 3 && parts[2] != "" {
+			w.Serial = &parts[2]
+		}
+		return w, nil
+	}
+	key := func(w *agentpbv2.WatchedUSBDevice) string {
+		return strings.ToLower(w.GetVendorId()) + ":" + strings.ToLower(w.GetProductId()) + ":" + w.GetSerial()
+	}
+
+	byKey := make(map[string]*agentpbv2.WatchedUSBDevice)
+	var order []string
+	for _, w := range current {
+		k := key(w)
+		if _, ok := byKey[k]; !ok {
+			byKey[k] = w
+			order = append(order, k)
+		}
+	}
+	for _, spec := range adds {
+		w, err := parse(spec)
+		if err != nil {
+			return nil, err
+		}
+		k := key(w)
+		if _, ok := byKey[k]; !ok {
+			byKey[k] = w
+			order = append(order, k)
+		}
+	}
+	for _, spec := range removes {
+		w, err := parse(spec)
+		if err != nil {
+			return nil, err
+		}
+		delete(byKey, key(w))
+	}
+
+	var out []*agentpbv2.WatchedUSBDevice
+	for _, k := range order {
+		if w, ok := byKey[k]; ok {
+			out = append(out, w)
+		}
+	}
+	return out, nil
+}
+
+func printWatchList(watches []*agentpbv2.WatchedUSBDevice) error {
+	if jsonOutput {
+		data, err := json.MarshalIndent(watches, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+	if len(watches) == 0 {
+		fmt.Println("No devices watched. Run 'wendy device hardware watch' to pick some.")
+		return nil
+	}
+	headers := []string{"Device", "Vendor:Product", "Serial"}
+	var rows [][]string
+	for _, w := range watches {
+		serial := w.GetSerial()
+		if serial == "" {
+			serial = "(any)"
+		}
+		rows = append(rows, []string{w.GetLabel(), w.GetVendorId() + ":" + w.GetProductId(), serial})
+	}
+	fmt.Print(tui.RenderTable(headers, rows))
+	return nil
 }
 
 // newHardwareEventsCmd streams the device's peripheral connect/disconnect

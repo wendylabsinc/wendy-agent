@@ -20,7 +20,7 @@ func startDeviceInfoServer(t *testing.T, hd HardwareDiscoverer) (agentpbv2.Wendy
 	t.Helper()
 	lis := bufconn.Listen(bufSize) // bufSize = 1024*1024, defined in agent_service_test.go
 	srv := grpc.NewServer()
-	svc := NewDeviceInfoService(zap.NewNop(), hd)
+	svc := NewDeviceInfoService(zap.NewNop(), hd, nil)
 	agentpbv2.RegisterWendyDeviceInfoServiceServer(srv, svc)
 	go func() { _ = srv.Serve(lis) }()
 	conn, err := grpc.NewClient("passthrough:///bufnet",
