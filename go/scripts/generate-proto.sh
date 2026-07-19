@@ -88,6 +88,7 @@ CLOUD_PROTOS=(
     "cloud/assets.proto"
     "cloud/certificates.proto"
     "cloud/deployments.proto"
+    "cloud/mesh.proto"
     "cloud/notifications.proto"
     "cloud/organizations.proto"
     "cloud/remote_logging.proto"
