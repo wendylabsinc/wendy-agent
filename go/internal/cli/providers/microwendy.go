@@ -20,6 +20,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
 
 const (
@@ -426,6 +427,43 @@ func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.Ex
 		WasmAppSupport:   di.WasmAppSupport,
 		NativeAppSupport: di.NativeAppSupport,
 	}, nil
+}
+
+func (p *MicroWendyProvider) WifiConnect(_ context.Context, device models.ExternalDevice, ssid, password string) error {
+	return p.pushWifiConf(device, &litepb.WendyConfWifi{
+		Networks: []*litepb.WendyConfWifiNetwork{{Ssid: ssid, Password: password}},
+	})
+}
+
+func (p *MicroWendyProvider) WifiDisconnect(_ context.Context, device models.ExternalDevice) error {
+	return p.pushWifiConf(device, &litepb.WendyConfWifi{})
+}
+
+// pushWifiConf stops the app, pushes a conf updating only the wifi root field,
+// and reboots the device so the new configuration takes effect.
+func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *litepb.WendyConfWifi) error {
+	fmt.Println("Connecting to the device...")
+	client, err := p.connectClient(device)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	if err := client.StopApp(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+	}
+
+	fmt.Println("Configuring to the device...")
+	conf := &litepb.WendyConf{Wifi: wifi}
+	if err := client.PushConf(conf, liteclient.ConfPushModeUpdate, nil); err != nil {
+		return fmt.Errorf("push conf: %w", err)
+	}
+
+	fmt.Println("Rebooting the device...")
+	if err := client.ResetTargetDevice(true, 0); err != nil {
+		return fmt.Errorf("device reset: %w", err)
+	}
+	return nil
 }
 
 // connectClient opens a WendyLiteClient connection to the device over serial

@@ -68,6 +68,55 @@ func (WendyComAppType) EnumDescriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{0}
 }
 
+// Mode of the conf push started by WENDY_COM_CMD_CONF_PUSH_BEGIN — replace
+// when omitted. REPLACE makes the pushed blob the whole configuration; UPDATE
+// keeps the current value of root fields absent from the pushed blob.
+type WendyComConfPushMode int32
+
+const (
+	WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE WendyComConfPushMode = 0
+	WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE  WendyComConfPushMode = 1
+)
+
+// Enum value maps for WendyComConfPushMode.
+var (
+	WendyComConfPushMode_name = map[int32]string{
+		0: "WENDY_COM_CONF_PUSH_MODE_REPLACE",
+		1: "WENDY_COM_CONF_PUSH_MODE_UPDATE",
+	}
+	WendyComConfPushMode_value = map[string]int32{
+		"WENDY_COM_CONF_PUSH_MODE_REPLACE": 0,
+		"WENDY_COM_CONF_PUSH_MODE_UPDATE":  1,
+	}
+)
+
+func (x WendyComConfPushMode) Enum() *WendyComConfPushMode {
+	p := new(WendyComConfPushMode)
+	*p = x
+	return p
+}
+
+func (x WendyComConfPushMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WendyComConfPushMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_wendy_lite_wendy_com_msg_proto_enumTypes[1].Descriptor()
+}
+
+func (WendyComConfPushMode) Type() protoreflect.EnumType {
+	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[1]
+}
+
+func (x WendyComConfPushMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WendyComConfPushMode.Descriptor instead.
+func (WendyComConfPushMode) EnumDescriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{1}
+}
+
 type WendyComConsoleIo int32
 
 const (
@@ -101,11 +150,11 @@ func (x WendyComConsoleIo) String() string {
 }
 
 func (WendyComConsoleIo) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendy_lite_wendy_com_msg_proto_enumTypes[1].Descriptor()
+	return file_wendy_lite_wendy_com_msg_proto_enumTypes[2].Descriptor()
 }
 
 func (WendyComConsoleIo) Type() protoreflect.EnumType {
-	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[1]
+	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[2]
 }
 
 func (x WendyComConsoleIo) Number() protoreflect.EnumNumber {
@@ -114,7 +163,7 @@ func (x WendyComConsoleIo) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WendyComConsoleIo.Descriptor instead.
 func (WendyComConsoleIo) EnumDescriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{1}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{2}
 }
 
 type WendyComResult int32
@@ -127,6 +176,7 @@ const (
 	WendyComResult_WENDY_COM_RESULT_BUSY                 WendyComResult = 4
 	WendyComResult_WENDY_COM_RESULT_BAD_APP_TYPE         WendyComResult = 5
 	WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE         WendyComResult = 6
+	WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE        WendyComResult = 7
 )
 
 // Enum value maps for WendyComResult.
@@ -139,6 +189,7 @@ var (
 		4: "WENDY_COM_RESULT_BUSY",
 		5: "WENDY_COM_RESULT_BAD_APP_TYPE",
 		6: "WENDY_COM_RESULT_BAD_APP_SIZE",
+		7: "WENDY_COM_RESULT_BAD_CONF_SIZE",
 	}
 	WendyComResult_value = map[string]int32{
 		"WENDY_COM_RESULT_OK":                   0,
@@ -148,6 +199,7 @@ var (
 		"WENDY_COM_RESULT_BUSY":                 4,
 		"WENDY_COM_RESULT_BAD_APP_TYPE":         5,
 		"WENDY_COM_RESULT_BAD_APP_SIZE":         6,
+		"WENDY_COM_RESULT_BAD_CONF_SIZE":        7,
 	}
 )
 
@@ -162,11 +214,11 @@ func (x WendyComResult) String() string {
 }
 
 func (WendyComResult) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendy_lite_wendy_com_msg_proto_enumTypes[2].Descriptor()
+	return file_wendy_lite_wendy_com_msg_proto_enumTypes[3].Descriptor()
 }
 
 func (WendyComResult) Type() protoreflect.EnumType {
-	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[2]
+	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[3]
 }
 
 func (x WendyComResult) Number() protoreflect.EnumNumber {
@@ -175,7 +227,7 @@ func (x WendyComResult) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WendyComResult.Descriptor instead.
 func (WendyComResult) EnumDescriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{2}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{3}
 }
 
 type WendyComChannelErrorReason int32
@@ -208,11 +260,11 @@ func (x WendyComChannelErrorReason) String() string {
 }
 
 func (WendyComChannelErrorReason) Descriptor() protoreflect.EnumDescriptor {
-	return file_wendy_lite_wendy_com_msg_proto_enumTypes[3].Descriptor()
+	return file_wendy_lite_wendy_com_msg_proto_enumTypes[4].Descriptor()
 }
 
 func (WendyComChannelErrorReason) Type() protoreflect.EnumType {
-	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[3]
+	return &file_wendy_lite_wendy_com_msg_proto_enumTypes[4]
 }
 
 func (x WendyComChannelErrorReason) Number() protoreflect.EnumNumber {
@@ -221,7 +273,7 @@ func (x WendyComChannelErrorReason) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use WendyComChannelErrorReason.Descriptor instead.
 func (WendyComChannelErrorReason) EnumDescriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{3}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{4}
 }
 
 // Protocol version, exchanged in the handshake. The major number must match
@@ -641,6 +693,148 @@ func (*WendyComAppStopParams) Descriptor() ([]byte, []int) {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{8}
 }
 
+// Params for WENDY_COM_CMD_CONF_PUSH_BEGIN
+type WendyComConfPushBeginParams struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Size          uint32                 `protobuf:"varint,1,opt,name=size,proto3" json:"size,omitempty"` // total size of the encoded WendyConf blob
+	Mode          WendyComConfPushMode   `protobuf:"varint,2,opt,name=mode,proto3,enum=WendyComConfPushMode" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WendyComConfPushBeginParams) Reset() {
+	*x = WendyComConfPushBeginParams{}
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WendyComConfPushBeginParams) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WendyComConfPushBeginParams) ProtoMessage() {}
+
+func (x *WendyComConfPushBeginParams) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WendyComConfPushBeginParams.ProtoReflect.Descriptor instead.
+func (*WendyComConfPushBeginParams) Descriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *WendyComConfPushBeginParams) GetSize() uint32 {
+	if x != nil {
+		return x.Size
+	}
+	return 0
+}
+
+func (x *WendyComConfPushBeginParams) GetMode() WendyComConfPushMode {
+	if x != nil {
+		return x.Mode
+	}
+	return WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE
+}
+
+// Params for WENDY_COM_CMD_CONF_PUSH_DATA
+type WendyComConfPushDataParams struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Offset        uint32                 `protobuf:"varint,1,opt,name=offset,proto3" json:"offset,omitempty"`
+	Data          []byte                 `protobuf:"bytes,2,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WendyComConfPushDataParams) Reset() {
+	*x = WendyComConfPushDataParams{}
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WendyComConfPushDataParams) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WendyComConfPushDataParams) ProtoMessage() {}
+
+func (x *WendyComConfPushDataParams) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WendyComConfPushDataParams.ProtoReflect.Descriptor instead.
+func (*WendyComConfPushDataParams) Descriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *WendyComConfPushDataParams) GetOffset() uint32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *WendyComConfPushDataParams) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type WendyComConfPushEndParams struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WendyComConfPushEndParams) Reset() {
+	*x = WendyComConfPushEndParams{}
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WendyComConfPushEndParams) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WendyComConfPushEndParams) ProtoMessage() {}
+
+func (x *WendyComConfPushEndParams) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WendyComConfPushEndParams.ProtoReflect.Descriptor instead.
+func (*WendyComConfPushEndParams) Descriptor() ([]byte, []int) {
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{11}
+}
+
 type WendyComGetDeviceIdentityParams struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -649,7 +843,7 @@ type WendyComGetDeviceIdentityParams struct {
 
 func (x *WendyComGetDeviceIdentityParams) Reset() {
 	*x = WendyComGetDeviceIdentityParams{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[9]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -661,7 +855,7 @@ func (x *WendyComGetDeviceIdentityParams) String() string {
 func (*WendyComGetDeviceIdentityParams) ProtoMessage() {}
 
 func (x *WendyComGetDeviceIdentityParams) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[9]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -674,7 +868,7 @@ func (x *WendyComGetDeviceIdentityParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComGetDeviceIdentityParams.ProtoReflect.Descriptor instead.
 func (*WendyComGetDeviceIdentityParams) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{9}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{12}
 }
 
 type WendyComDeviceIdentity struct {
@@ -688,7 +882,7 @@ type WendyComDeviceIdentity struct {
 
 func (x *WendyComDeviceIdentity) Reset() {
 	*x = WendyComDeviceIdentity{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[10]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +894,7 @@ func (x *WendyComDeviceIdentity) String() string {
 func (*WendyComDeviceIdentity) ProtoMessage() {}
 
 func (x *WendyComDeviceIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[10]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +907,7 @@ func (x *WendyComDeviceIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComDeviceIdentity.ProtoReflect.Descriptor instead.
 func (*WendyComDeviceIdentity) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{10}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *WendyComDeviceIdentity) GetId() string {
@@ -745,7 +939,7 @@ type WendyComGetDeviceInfoParams struct {
 
 func (x *WendyComGetDeviceInfoParams) Reset() {
 	*x = WendyComGetDeviceInfoParams{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[11]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -757,7 +951,7 @@ func (x *WendyComGetDeviceInfoParams) String() string {
 func (*WendyComGetDeviceInfoParams) ProtoMessage() {}
 
 func (x *WendyComGetDeviceInfoParams) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[11]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -770,7 +964,7 @@ func (x *WendyComGetDeviceInfoParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComGetDeviceInfoParams.ProtoReflect.Descriptor instead.
 func (*WendyComGetDeviceInfoParams) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{11}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{14}
 }
 
 // Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
@@ -787,7 +981,7 @@ type WendyComConsoleAttachParams struct {
 
 func (x *WendyComConsoleAttachParams) Reset() {
 	*x = WendyComConsoleAttachParams{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[12]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -799,7 +993,7 @@ func (x *WendyComConsoleAttachParams) String() string {
 func (*WendyComConsoleAttachParams) ProtoMessage() {}
 
 func (x *WendyComConsoleAttachParams) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[12]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -812,7 +1006,7 @@ func (x *WendyComConsoleAttachParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComConsoleAttachParams.ProtoReflect.Descriptor instead.
 func (*WendyComConsoleAttachParams) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{12}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *WendyComConsoleAttachParams) GetEventId() uint32 {
@@ -846,7 +1040,7 @@ type WendyComConsoleDetachParams struct {
 
 func (x *WendyComConsoleDetachParams) Reset() {
 	*x = WendyComConsoleDetachParams{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[13]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -858,7 +1052,7 @@ func (x *WendyComConsoleDetachParams) String() string {
 func (*WendyComConsoleDetachParams) ProtoMessage() {}
 
 func (x *WendyComConsoleDetachParams) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[13]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -871,7 +1065,7 @@ func (x *WendyComConsoleDetachParams) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComConsoleDetachParams.ProtoReflect.Descriptor instead.
 func (*WendyComConsoleDetachParams) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{13}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *WendyComConsoleDetachParams) GetEventId() uint32 {
@@ -891,7 +1085,7 @@ type WendyComConsoleBegin struct {
 
 func (x *WendyComConsoleBegin) Reset() {
 	*x = WendyComConsoleBegin{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[14]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -903,7 +1097,7 @@ func (x *WendyComConsoleBegin) String() string {
 func (*WendyComConsoleBegin) ProtoMessage() {}
 
 func (x *WendyComConsoleBegin) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[14]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -916,7 +1110,7 @@ func (x *WendyComConsoleBegin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComConsoleBegin.ProtoReflect.Descriptor instead.
 func (*WendyComConsoleBegin) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{14}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{17}
 }
 
 // One chunk of console output, streamed as an event while attached.
@@ -931,7 +1125,7 @@ type WendyComConsoleData struct {
 
 func (x *WendyComConsoleData) Reset() {
 	*x = WendyComConsoleData{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -943,7 +1137,7 @@ func (x *WendyComConsoleData) String() string {
 func (*WendyComConsoleData) ProtoMessage() {}
 
 func (x *WendyComConsoleData) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[15]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -956,7 +1150,7 @@ func (x *WendyComConsoleData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComConsoleData.ProtoReflect.Descriptor instead.
 func (*WendyComConsoleData) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{15}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *WendyComConsoleData) GetIo() WendyComConsoleIo {
@@ -990,7 +1184,7 @@ type WendyComConsoleEnd struct {
 
 func (x *WendyComConsoleEnd) Reset() {
 	*x = WendyComConsoleEnd{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1002,7 +1196,7 @@ func (x *WendyComConsoleEnd) String() string {
 func (*WendyComConsoleEnd) ProtoMessage() {}
 
 func (x *WendyComConsoleEnd) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[16]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1015,7 +1209,7 @@ func (x *WendyComConsoleEnd) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComConsoleEnd.ProtoReflect.Descriptor instead.
 func (*WendyComConsoleEnd) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{16}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{19}
 }
 
 type WendyComDeviceInfo struct {
@@ -1035,7 +1229,7 @@ type WendyComDeviceInfo struct {
 
 func (x *WendyComDeviceInfo) Reset() {
 	*x = WendyComDeviceInfo{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[17]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1047,7 +1241,7 @@ func (x *WendyComDeviceInfo) String() string {
 func (*WendyComDeviceInfo) ProtoMessage() {}
 
 func (x *WendyComDeviceInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[17]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1060,7 +1254,7 @@ func (x *WendyComDeviceInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComDeviceInfo.ProtoReflect.Descriptor instead.
 func (*WendyComDeviceInfo) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{17}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *WendyComDeviceInfo) GetOs() string {
@@ -1122,6 +1316,9 @@ type WendyComCommand struct {
 	//	*WendyComCommand_GetDeviceInfo
 	//	*WendyComCommand_ConsoleAttach
 	//	*WendyComCommand_ConsoleDetach
+	//	*WendyComCommand_ConfPushBegin
+	//	*WendyComCommand_ConfPushData
+	//	*WendyComCommand_ConfPushEnd
 	Params        isWendyComCommand_Params `protobuf_oneof:"params"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1129,7 +1326,7 @@ type WendyComCommand struct {
 
 func (x *WendyComCommand) Reset() {
 	*x = WendyComCommand{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[18]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1141,7 +1338,7 @@ func (x *WendyComCommand) String() string {
 func (*WendyComCommand) ProtoMessage() {}
 
 func (x *WendyComCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[18]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1154,7 +1351,7 @@ func (x *WendyComCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComCommand.ProtoReflect.Descriptor instead.
 func (*WendyComCommand) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{18}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *WendyComCommand) GetRequestId() uint32 {
@@ -1270,6 +1467,33 @@ func (x *WendyComCommand) GetConsoleDetach() *WendyComConsoleDetachParams {
 	return nil
 }
 
+func (x *WendyComCommand) GetConfPushBegin() *WendyComConfPushBeginParams {
+	if x != nil {
+		if x, ok := x.Params.(*WendyComCommand_ConfPushBegin); ok {
+			return x.ConfPushBegin
+		}
+	}
+	return nil
+}
+
+func (x *WendyComCommand) GetConfPushData() *WendyComConfPushDataParams {
+	if x != nil {
+		if x, ok := x.Params.(*WendyComCommand_ConfPushData); ok {
+			return x.ConfPushData
+		}
+	}
+	return nil
+}
+
+func (x *WendyComCommand) GetConfPushEnd() *WendyComConfPushEndParams {
+	if x != nil {
+		if x, ok := x.Params.(*WendyComCommand_ConfPushEnd); ok {
+			return x.ConfPushEnd
+		}
+	}
+	return nil
+}
+
 type isWendyComCommand_Params interface {
 	isWendyComCommand_Params()
 }
@@ -1318,6 +1542,18 @@ type WendyComCommand_ConsoleDetach struct {
 	ConsoleDetach *WendyComConsoleDetachParams `protobuf:"bytes,12,opt,name=console_detach,json=consoleDetach,proto3,oneof"`
 }
 
+type WendyComCommand_ConfPushBegin struct {
+	ConfPushBegin *WendyComConfPushBeginParams `protobuf:"bytes,13,opt,name=conf_push_begin,json=confPushBegin,proto3,oneof"`
+}
+
+type WendyComCommand_ConfPushData struct {
+	ConfPushData *WendyComConfPushDataParams `protobuf:"bytes,14,opt,name=conf_push_data,json=confPushData,proto3,oneof"`
+}
+
+type WendyComCommand_ConfPushEnd struct {
+	ConfPushEnd *WendyComConfPushEndParams `protobuf:"bytes,15,opt,name=conf_push_end,json=confPushEnd,proto3,oneof"`
+}
+
 func (*WendyComCommand_Ping) isWendyComCommand_Params() {}
 
 func (*WendyComCommand_Reboot) isWendyComCommand_Params() {}
@@ -1340,6 +1576,12 @@ func (*WendyComCommand_ConsoleAttach) isWendyComCommand_Params() {}
 
 func (*WendyComCommand_ConsoleDetach) isWendyComCommand_Params() {}
 
+func (*WendyComCommand_ConfPushBegin) isWendyComCommand_Params() {}
+
+func (*WendyComCommand_ConfPushData) isWendyComCommand_Params() {}
+
+func (*WendyComCommand_ConfPushEnd) isWendyComCommand_Params() {}
+
 // Response to a WendyComCommand — request_id matches the request.
 type WendyComResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
@@ -1356,7 +1598,7 @@ type WendyComResponse struct {
 
 func (x *WendyComResponse) Reset() {
 	*x = WendyComResponse{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[19]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1368,7 +1610,7 @@ func (x *WendyComResponse) String() string {
 func (*WendyComResponse) ProtoMessage() {}
 
 func (x *WendyComResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[19]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1381,7 +1623,7 @@ func (x *WendyComResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComResponse.ProtoReflect.Descriptor instead.
 func (*WendyComResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{19}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *WendyComResponse) GetRequestId() uint32 {
@@ -1455,7 +1697,7 @@ type WendyComEvent struct {
 
 func (x *WendyComEvent) Reset() {
 	*x = WendyComEvent{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[20]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1467,7 +1709,7 @@ func (x *WendyComEvent) String() string {
 func (*WendyComEvent) ProtoMessage() {}
 
 func (x *WendyComEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[20]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1480,7 +1722,7 @@ func (x *WendyComEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComEvent.ProtoReflect.Descriptor instead.
 func (*WendyComEvent) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{20}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *WendyComEvent) GetEventId() uint32 {
@@ -1560,7 +1802,7 @@ type WendyComOpenChannel struct {
 
 func (x *WendyComOpenChannel) Reset() {
 	*x = WendyComOpenChannel{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[21]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1572,7 +1814,7 @@ func (x *WendyComOpenChannel) String() string {
 func (*WendyComOpenChannel) ProtoMessage() {}
 
 func (x *WendyComOpenChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[21]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1585,7 +1827,7 @@ func (x *WendyComOpenChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComOpenChannel.ProtoReflect.Descriptor instead.
 func (*WendyComOpenChannel) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{21}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{24}
 }
 
 type WendyComCloseChannel struct {
@@ -1596,7 +1838,7 @@ type WendyComCloseChannel struct {
 
 func (x *WendyComCloseChannel) Reset() {
 	*x = WendyComCloseChannel{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[22]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1608,7 +1850,7 @@ func (x *WendyComCloseChannel) String() string {
 func (*WendyComCloseChannel) ProtoMessage() {}
 
 func (x *WendyComCloseChannel) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[22]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1621,7 +1863,7 @@ func (x *WendyComCloseChannel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComCloseChannel.ProtoReflect.Descriptor instead.
 func (*WendyComCloseChannel) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{22}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{25}
 }
 
 // Reports the state of the channel carried by the frame's channel byte,
@@ -1634,7 +1876,7 @@ type WendyComChannelOpen struct {
 
 func (x *WendyComChannelOpen) Reset() {
 	*x = WendyComChannelOpen{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[23]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1646,7 +1888,7 @@ func (x *WendyComChannelOpen) String() string {
 func (*WendyComChannelOpen) ProtoMessage() {}
 
 func (x *WendyComChannelOpen) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[23]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1659,7 +1901,7 @@ func (x *WendyComChannelOpen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComChannelOpen.ProtoReflect.Descriptor instead.
 func (*WendyComChannelOpen) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{23}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{26}
 }
 
 type WendyComChannelClose struct {
@@ -1670,7 +1912,7 @@ type WendyComChannelClose struct {
 
 func (x *WendyComChannelClose) Reset() {
 	*x = WendyComChannelClose{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[24]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1682,7 +1924,7 @@ func (x *WendyComChannelClose) String() string {
 func (*WendyComChannelClose) ProtoMessage() {}
 
 func (x *WendyComChannelClose) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[24]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1695,7 +1937,7 @@ func (x *WendyComChannelClose) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComChannelClose.ProtoReflect.Descriptor instead.
 func (*WendyComChannelClose) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{24}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{27}
 }
 
 type WendyComChannelError struct {
@@ -1707,7 +1949,7 @@ type WendyComChannelError struct {
 
 func (x *WendyComChannelError) Reset() {
 	*x = WendyComChannelError{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[25]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1719,7 +1961,7 @@ func (x *WendyComChannelError) String() string {
 func (*WendyComChannelError) ProtoMessage() {}
 
 func (x *WendyComChannelError) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[25]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1732,7 +1974,7 @@ func (x *WendyComChannelError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComChannelError.ProtoReflect.Descriptor instead.
 func (*WendyComChannelError) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{25}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *WendyComChannelError) GetReason() WendyComChannelErrorReason {
@@ -1756,7 +1998,7 @@ type WendyComChannelState struct {
 
 func (x *WendyComChannelState) Reset() {
 	*x = WendyComChannelState{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[26]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1768,7 +2010,7 @@ func (x *WendyComChannelState) String() string {
 func (*WendyComChannelState) ProtoMessage() {}
 
 func (x *WendyComChannelState) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[26]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1781,7 +2023,7 @@ func (x *WendyComChannelState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComChannelState.ProtoReflect.Descriptor instead.
 func (*WendyComChannelState) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{26}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *WendyComChannelState) GetState() isWendyComChannelState_State {
@@ -1854,7 +2096,7 @@ type WendyComService struct {
 
 func (x *WendyComService) Reset() {
 	*x = WendyComService{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[27]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1866,7 +2108,7 @@ func (x *WendyComService) String() string {
 func (*WendyComService) ProtoMessage() {}
 
 func (x *WendyComService) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[27]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1879,7 +2121,7 @@ func (x *WendyComService) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComService.ProtoReflect.Descriptor instead.
 func (*WendyComService) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{27}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *WendyComService) GetCmd() isWendyComService_Cmd {
@@ -1956,7 +2198,7 @@ type WendyComMessage struct {
 
 func (x *WendyComMessage) Reset() {
 	*x = WendyComMessage{}
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[28]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1968,7 +2210,7 @@ func (x *WendyComMessage) String() string {
 func (*WendyComMessage) ProtoMessage() {}
 
 func (x *WendyComMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[28]
+	mi := &file_wendy_lite_wendy_com_msg_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1981,7 +2223,7 @@ func (x *WendyComMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WendyComMessage.ProtoReflect.Descriptor instead.
 func (*WendyComMessage) Descriptor() ([]byte, []int) {
-	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{28}
+	return file_wendy_lite_wendy_com_msg_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *WendyComMessage) GetMsg() isWendyComMessage_Msg {
@@ -2094,7 +2336,14 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x04data\x18\x02 \x01(\fR\x04data\"\x1a\n" +
 	"\x18WendyComAppPushEndParams\"\x18\n" +
 	"\x16WendyComAppStartParams\"\x17\n" +
-	"\x15WendyComAppStopParams\"!\n" +
+	"\x15WendyComAppStopParams\"\\\n" +
+	"\x1bWendyComConfPushBeginParams\x12\x12\n" +
+	"\x04size\x18\x01 \x01(\rR\x04size\x12)\n" +
+	"\x04mode\x18\x02 \x01(\x0e2\x15.WendyComConfPushModeR\x04mode\"H\n" +
+	"\x1aWendyComConfPushDataParams\x12\x16\n" +
+	"\x06offset\x18\x01 \x01(\rR\x06offset\x12\x12\n" +
+	"\x04data\x18\x02 \x01(\fR\x04data\"\x1b\n" +
+	"\x19WendyComConfPushEndParams\"!\n" +
 	"\x1fWendyComGetDeviceIdentityParams\"_\n" +
 	"\x16WendyComDeviceIdentity\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
@@ -2120,7 +2369,7 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x10cpu_architecture\x18\x03 \x01(\tR\x0fcpuArchitecture\x12\x14\n" +
 	"\x05board\x18\x04 \x01(\tR\x05board\x12(\n" +
 	"\x10wasm_app_support\x18\x05 \x01(\bR\x0ewasmAppSupport\x12,\n" +
-	"\x12native_app_support\x18\x06 \x01(\bR\x10nativeAppSupport\"\xf3\x05\n" +
+	"\x12native_app_support\x18\x06 \x01(\bR\x10nativeAppSupport\"\xc2\a\n" +
 	"\x0fWendyComCommand\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\rR\trequestId\x12)\n" +
@@ -2136,7 +2385,10 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x0fget_device_info\x18\n" +
 	" \x01(\v2\x1c.WendyComGetDeviceInfoParamsH\x00R\rgetDeviceInfo\x12E\n" +
 	"\x0econsole_attach\x18\v \x01(\v2\x1c.WendyComConsoleAttachParamsH\x00R\rconsoleAttach\x12E\n" +
-	"\x0econsole_detach\x18\f \x01(\v2\x1c.WendyComConsoleDetachParamsH\x00R\rconsoleDetachB\b\n" +
+	"\x0econsole_detach\x18\f \x01(\v2\x1c.WendyComConsoleDetachParamsH\x00R\rconsoleDetach\x12F\n" +
+	"\x0fconf_push_begin\x18\r \x01(\v2\x1c.WendyComConfPushBeginParamsH\x00R\rconfPushBegin\x12C\n" +
+	"\x0econf_push_data\x18\x0e \x01(\v2\x1b.WendyComConfPushDataParamsH\x00R\fconfPushData\x12@\n" +
+	"\rconf_push_end\x18\x0f \x01(\v2\x1a.WendyComConfPushEndParamsH\x00R\vconfPushEndB\b\n" +
 	"\x06params\"\xde\x01\n" +
 	"\x10WendyComResponse\x12\x1d\n" +
 	"\n" +
@@ -2178,11 +2430,14 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x03msg*M\n" +
 	"\x0fWendyComAppType\x12\x1b\n" +
 	"\x17WENDY_COM_APP_TYPE_WASM\x10\x00\x12\x1d\n" +
-	"\x19WENDY_COM_APP_TYPE_NATIVE\x10\x01*\x8f\x01\n" +
+	"\x19WENDY_COM_APP_TYPE_NATIVE\x10\x01*a\n" +
+	"\x14WendyComConfPushMode\x12$\n" +
+	" WENDY_COM_CONF_PUSH_MODE_REPLACE\x10\x00\x12#\n" +
+	"\x1fWENDY_COM_CONF_PUSH_MODE_UPDATE\x10\x01*\x8f\x01\n" +
 	"\x11WendyComConsoleIo\x12'\n" +
 	"#WENDY_COM_CONSOLE_IO_STANDARD_INPUT\x10\x00\x12(\n" +
 	"$WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT\x10\x01\x12'\n" +
-	"#WENDY_COM_CONSOLE_IO_STANDARD_ERROR\x10\x02*\xf9\x01\n" +
+	"#WENDY_COM_CONSOLE_IO_STANDARD_ERROR\x10\x02*\x9d\x02\n" +
 	"\x0eWendyComResult\x12\x17\n" +
 	"\x13WENDY_COM_RESULT_OK\x10\x00\x12\"\n" +
 	"\x1eWENDY_COM_RESULT_UNKNOWN_ERROR\x10\x01\x12)\n" +
@@ -2190,7 +2445,8 @@ const file_wendy_lite_wendy_com_msg_proto_rawDesc = "" +
 	"\x1aWENDY_COM_RESULT_BAD_STATE\x10\x03\x12\x19\n" +
 	"\x15WENDY_COM_RESULT_BUSY\x10\x04\x12!\n" +
 	"\x1dWENDY_COM_RESULT_BAD_APP_TYPE\x10\x05\x12!\n" +
-	"\x1dWENDY_COM_RESULT_BAD_APP_SIZE\x10\x06*v\n" +
+	"\x1dWENDY_COM_RESULT_BAD_APP_SIZE\x10\x06\x12\"\n" +
+	"\x1eWENDY_COM_RESULT_BAD_CONF_SIZE\x10\a*v\n" +
 	"\x1aWendyComChannelErrorReason\x12+\n" +
 	"'WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN\x10\x00\x12+\n" +
 	"'WENDY_COM_CHANNEL_ERROR_REASON_REJECTED\x10\x01b\x06proto3"
@@ -2207,81 +2463,89 @@ func file_wendy_lite_wendy_com_msg_proto_rawDescGZIP() []byte {
 	return file_wendy_lite_wendy_com_msg_proto_rawDescData
 }
 
-var file_wendy_lite_wendy_com_msg_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_wendy_lite_wendy_com_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_wendy_lite_wendy_com_msg_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_wendy_lite_wendy_com_msg_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_wendy_lite_wendy_com_msg_proto_goTypes = []any{
 	(WendyComAppType)(0),                    // 0: WendyComAppType
-	(WendyComConsoleIo)(0),                  // 1: WendyComConsoleIo
-	(WendyComResult)(0),                     // 2: WendyComResult
-	(WendyComChannelErrorReason)(0),         // 3: WendyComChannelErrorReason
-	(*WendyComProtocolVersion)(nil),         // 4: WendyComProtocolVersion
-	(*WendyComHandshake)(nil),               // 5: WendyComHandshake
-	(*WendyComPingParams)(nil),              // 6: WendyComPingParams
-	(*WendyComRebootParams)(nil),            // 7: WendyComRebootParams
-	(*WendyComAppPushBeginParams)(nil),      // 8: WendyComAppPushBeginParams
-	(*WendyComAppPushDataParams)(nil),       // 9: WendyComAppPushDataParams
-	(*WendyComAppPushEndParams)(nil),        // 10: WendyComAppPushEndParams
-	(*WendyComAppStartParams)(nil),          // 11: WendyComAppStartParams
-	(*WendyComAppStopParams)(nil),           // 12: WendyComAppStopParams
-	(*WendyComGetDeviceIdentityParams)(nil), // 13: WendyComGetDeviceIdentityParams
-	(*WendyComDeviceIdentity)(nil),          // 14: WendyComDeviceIdentity
-	(*WendyComGetDeviceInfoParams)(nil),     // 15: WendyComGetDeviceInfoParams
-	(*WendyComConsoleAttachParams)(nil),     // 16: WendyComConsoleAttachParams
-	(*WendyComConsoleDetachParams)(nil),     // 17: WendyComConsoleDetachParams
-	(*WendyComConsoleBegin)(nil),            // 18: WendyComConsoleBegin
-	(*WendyComConsoleData)(nil),             // 19: WendyComConsoleData
-	(*WendyComConsoleEnd)(nil),              // 20: WendyComConsoleEnd
-	(*WendyComDeviceInfo)(nil),              // 21: WendyComDeviceInfo
-	(*WendyComCommand)(nil),                 // 22: WendyComCommand
-	(*WendyComResponse)(nil),                // 23: WendyComResponse
-	(*WendyComEvent)(nil),                   // 24: WendyComEvent
-	(*WendyComOpenChannel)(nil),             // 25: WendyComOpenChannel
-	(*WendyComCloseChannel)(nil),            // 26: WendyComCloseChannel
-	(*WendyComChannelOpen)(nil),             // 27: WendyComChannelOpen
-	(*WendyComChannelClose)(nil),            // 28: WendyComChannelClose
-	(*WendyComChannelError)(nil),            // 29: WendyComChannelError
-	(*WendyComChannelState)(nil),            // 30: WendyComChannelState
-	(*WendyComService)(nil),                 // 31: WendyComService
-	(*WendyComMessage)(nil),                 // 32: WendyComMessage
+	(WendyComConfPushMode)(0),               // 1: WendyComConfPushMode
+	(WendyComConsoleIo)(0),                  // 2: WendyComConsoleIo
+	(WendyComResult)(0),                     // 3: WendyComResult
+	(WendyComChannelErrorReason)(0),         // 4: WendyComChannelErrorReason
+	(*WendyComProtocolVersion)(nil),         // 5: WendyComProtocolVersion
+	(*WendyComHandshake)(nil),               // 6: WendyComHandshake
+	(*WendyComPingParams)(nil),              // 7: WendyComPingParams
+	(*WendyComRebootParams)(nil),            // 8: WendyComRebootParams
+	(*WendyComAppPushBeginParams)(nil),      // 9: WendyComAppPushBeginParams
+	(*WendyComAppPushDataParams)(nil),       // 10: WendyComAppPushDataParams
+	(*WendyComAppPushEndParams)(nil),        // 11: WendyComAppPushEndParams
+	(*WendyComAppStartParams)(nil),          // 12: WendyComAppStartParams
+	(*WendyComAppStopParams)(nil),           // 13: WendyComAppStopParams
+	(*WendyComConfPushBeginParams)(nil),     // 14: WendyComConfPushBeginParams
+	(*WendyComConfPushDataParams)(nil),      // 15: WendyComConfPushDataParams
+	(*WendyComConfPushEndParams)(nil),       // 16: WendyComConfPushEndParams
+	(*WendyComGetDeviceIdentityParams)(nil), // 17: WendyComGetDeviceIdentityParams
+	(*WendyComDeviceIdentity)(nil),          // 18: WendyComDeviceIdentity
+	(*WendyComGetDeviceInfoParams)(nil),     // 19: WendyComGetDeviceInfoParams
+	(*WendyComConsoleAttachParams)(nil),     // 20: WendyComConsoleAttachParams
+	(*WendyComConsoleDetachParams)(nil),     // 21: WendyComConsoleDetachParams
+	(*WendyComConsoleBegin)(nil),            // 22: WendyComConsoleBegin
+	(*WendyComConsoleData)(nil),             // 23: WendyComConsoleData
+	(*WendyComConsoleEnd)(nil),              // 24: WendyComConsoleEnd
+	(*WendyComDeviceInfo)(nil),              // 25: WendyComDeviceInfo
+	(*WendyComCommand)(nil),                 // 26: WendyComCommand
+	(*WendyComResponse)(nil),                // 27: WendyComResponse
+	(*WendyComEvent)(nil),                   // 28: WendyComEvent
+	(*WendyComOpenChannel)(nil),             // 29: WendyComOpenChannel
+	(*WendyComCloseChannel)(nil),            // 30: WendyComCloseChannel
+	(*WendyComChannelOpen)(nil),             // 31: WendyComChannelOpen
+	(*WendyComChannelClose)(nil),            // 32: WendyComChannelClose
+	(*WendyComChannelError)(nil),            // 33: WendyComChannelError
+	(*WendyComChannelState)(nil),            // 34: WendyComChannelState
+	(*WendyComService)(nil),                 // 35: WendyComService
+	(*WendyComMessage)(nil),                 // 36: WendyComMessage
 }
 var file_wendy_lite_wendy_com_msg_proto_depIdxs = []int32{
-	4,  // 0: WendyComHandshake.version:type_name -> WendyComProtocolVersion
+	5,  // 0: WendyComHandshake.version:type_name -> WendyComProtocolVersion
 	0,  // 1: WendyComAppPushBeginParams.app_type:type_name -> WendyComAppType
-	1,  // 2: WendyComConsoleData.io:type_name -> WendyComConsoleIo
-	6,  // 3: WendyComCommand.ping:type_name -> WendyComPingParams
-	7,  // 4: WendyComCommand.reboot:type_name -> WendyComRebootParams
-	8,  // 5: WendyComCommand.app_push_begin:type_name -> WendyComAppPushBeginParams
-	9,  // 6: WendyComCommand.app_push_data:type_name -> WendyComAppPushDataParams
-	10, // 7: WendyComCommand.app_push_end:type_name -> WendyComAppPushEndParams
-	11, // 8: WendyComCommand.app_start:type_name -> WendyComAppStartParams
-	12, // 9: WendyComCommand.app_stop:type_name -> WendyComAppStopParams
-	13, // 10: WendyComCommand.get_device_identity:type_name -> WendyComGetDeviceIdentityParams
-	15, // 11: WendyComCommand.get_device_info:type_name -> WendyComGetDeviceInfoParams
-	16, // 12: WendyComCommand.console_attach:type_name -> WendyComConsoleAttachParams
-	17, // 13: WendyComCommand.console_detach:type_name -> WendyComConsoleDetachParams
-	2,  // 14: WendyComResponse.result:type_name -> WendyComResult
-	14, // 15: WendyComResponse.device_identity:type_name -> WendyComDeviceIdentity
-	21, // 16: WendyComResponse.device_info:type_name -> WendyComDeviceInfo
-	18, // 17: WendyComEvent.console_begin:type_name -> WendyComConsoleBegin
-	19, // 18: WendyComEvent.console_data:type_name -> WendyComConsoleData
-	20, // 19: WendyComEvent.console_end:type_name -> WendyComConsoleEnd
-	3,  // 20: WendyComChannelError.reason:type_name -> WendyComChannelErrorReason
-	27, // 21: WendyComChannelState.open:type_name -> WendyComChannelOpen
-	28, // 22: WendyComChannelState.close:type_name -> WendyComChannelClose
-	29, // 23: WendyComChannelState.error:type_name -> WendyComChannelError
-	25, // 24: WendyComService.open_channel:type_name -> WendyComOpenChannel
-	26, // 25: WendyComService.close_channel:type_name -> WendyComCloseChannel
-	30, // 26: WendyComService.channel_state:type_name -> WendyComChannelState
-	5,  // 27: WendyComMessage.handshake:type_name -> WendyComHandshake
-	31, // 28: WendyComMessage.service:type_name -> WendyComService
-	22, // 29: WendyComMessage.command:type_name -> WendyComCommand
-	23, // 30: WendyComMessage.response:type_name -> WendyComResponse
-	24, // 31: WendyComMessage.event:type_name -> WendyComEvent
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	1,  // 2: WendyComConfPushBeginParams.mode:type_name -> WendyComConfPushMode
+	2,  // 3: WendyComConsoleData.io:type_name -> WendyComConsoleIo
+	7,  // 4: WendyComCommand.ping:type_name -> WendyComPingParams
+	8,  // 5: WendyComCommand.reboot:type_name -> WendyComRebootParams
+	9,  // 6: WendyComCommand.app_push_begin:type_name -> WendyComAppPushBeginParams
+	10, // 7: WendyComCommand.app_push_data:type_name -> WendyComAppPushDataParams
+	11, // 8: WendyComCommand.app_push_end:type_name -> WendyComAppPushEndParams
+	12, // 9: WendyComCommand.app_start:type_name -> WendyComAppStartParams
+	13, // 10: WendyComCommand.app_stop:type_name -> WendyComAppStopParams
+	17, // 11: WendyComCommand.get_device_identity:type_name -> WendyComGetDeviceIdentityParams
+	19, // 12: WendyComCommand.get_device_info:type_name -> WendyComGetDeviceInfoParams
+	20, // 13: WendyComCommand.console_attach:type_name -> WendyComConsoleAttachParams
+	21, // 14: WendyComCommand.console_detach:type_name -> WendyComConsoleDetachParams
+	14, // 15: WendyComCommand.conf_push_begin:type_name -> WendyComConfPushBeginParams
+	15, // 16: WendyComCommand.conf_push_data:type_name -> WendyComConfPushDataParams
+	16, // 17: WendyComCommand.conf_push_end:type_name -> WendyComConfPushEndParams
+	3,  // 18: WendyComResponse.result:type_name -> WendyComResult
+	18, // 19: WendyComResponse.device_identity:type_name -> WendyComDeviceIdentity
+	25, // 20: WendyComResponse.device_info:type_name -> WendyComDeviceInfo
+	22, // 21: WendyComEvent.console_begin:type_name -> WendyComConsoleBegin
+	23, // 22: WendyComEvent.console_data:type_name -> WendyComConsoleData
+	24, // 23: WendyComEvent.console_end:type_name -> WendyComConsoleEnd
+	4,  // 24: WendyComChannelError.reason:type_name -> WendyComChannelErrorReason
+	31, // 25: WendyComChannelState.open:type_name -> WendyComChannelOpen
+	32, // 26: WendyComChannelState.close:type_name -> WendyComChannelClose
+	33, // 27: WendyComChannelState.error:type_name -> WendyComChannelError
+	29, // 28: WendyComService.open_channel:type_name -> WendyComOpenChannel
+	30, // 29: WendyComService.close_channel:type_name -> WendyComCloseChannel
+	34, // 30: WendyComService.channel_state:type_name -> WendyComChannelState
+	6,  // 31: WendyComMessage.handshake:type_name -> WendyComHandshake
+	35, // 32: WendyComMessage.service:type_name -> WendyComService
+	26, // 33: WendyComMessage.command:type_name -> WendyComCommand
+	27, // 34: WendyComMessage.response:type_name -> WendyComResponse
+	28, // 35: WendyComMessage.event:type_name -> WendyComEvent
+	36, // [36:36] is the sub-list for method output_type
+	36, // [36:36] is the sub-list for method input_type
+	36, // [36:36] is the sub-list for extension type_name
+	36, // [36:36] is the sub-list for extension extendee
+	0,  // [0:36] is the sub-list for field type_name
 }
 
 func init() { file_wendy_lite_wendy_com_msg_proto_init() }
@@ -2290,7 +2554,7 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		return
 	}
 	file_wendy_lite_wendy_com_msg_proto_msgTypes[3].OneofWrappers = []any{}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[18].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[21].OneofWrappers = []any{
 		(*WendyComCommand_Ping)(nil),
 		(*WendyComCommand_Reboot)(nil),
 		(*WendyComCommand_AppPushBegin)(nil),
@@ -2302,27 +2566,30 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		(*WendyComCommand_GetDeviceInfo)(nil),
 		(*WendyComCommand_ConsoleAttach)(nil),
 		(*WendyComCommand_ConsoleDetach)(nil),
+		(*WendyComCommand_ConfPushBegin)(nil),
+		(*WendyComCommand_ConfPushData)(nil),
+		(*WendyComCommand_ConfPushEnd)(nil),
 	}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[19].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[22].OneofWrappers = []any{
 		(*WendyComResponse_DeviceIdentity)(nil),
 		(*WendyComResponse_DeviceInfo)(nil),
 	}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[20].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[23].OneofWrappers = []any{
 		(*WendyComEvent_ConsoleBegin)(nil),
 		(*WendyComEvent_ConsoleData)(nil),
 		(*WendyComEvent_ConsoleEnd)(nil),
 	}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[26].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[29].OneofWrappers = []any{
 		(*WendyComChannelState_Open)(nil),
 		(*WendyComChannelState_Close)(nil),
 		(*WendyComChannelState_Error)(nil),
 	}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[27].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[30].OneofWrappers = []any{
 		(*WendyComService_OpenChannel)(nil),
 		(*WendyComService_CloseChannel)(nil),
 		(*WendyComService_ChannelState)(nil),
 	}
-	file_wendy_lite_wendy_com_msg_proto_msgTypes[28].OneofWrappers = []any{
+	file_wendy_lite_wendy_com_msg_proto_msgTypes[31].OneofWrappers = []any{
 		(*WendyComMessage_Handshake)(nil),
 		(*WendyComMessage_Service)(nil),
 		(*WendyComMessage_Command)(nil),
@@ -2334,8 +2601,8 @@ func file_wendy_lite_wendy_com_msg_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_lite_wendy_com_msg_proto_rawDesc), len(file_wendy_lite_wendy_com_msg_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   29,
+			NumEnums:      5,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

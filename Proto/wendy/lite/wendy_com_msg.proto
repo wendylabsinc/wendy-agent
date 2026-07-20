@@ -50,6 +50,28 @@ message WendyComAppPushEndParams {}
 message WendyComAppStartParams {}
 message WendyComAppStopParams {}
 
+// Mode of the conf push started by WENDY_COM_CMD_CONF_PUSH_BEGIN — replace
+// when omitted. REPLACE makes the pushed blob the whole configuration; UPDATE
+// keeps the current value of root fields absent from the pushed blob.
+enum WendyComConfPushMode {
+    WENDY_COM_CONF_PUSH_MODE_REPLACE = 0;
+    WENDY_COM_CONF_PUSH_MODE_UPDATE  = 1;
+}
+
+// Params for WENDY_COM_CMD_CONF_PUSH_BEGIN
+message WendyComConfPushBeginParams {
+    uint32               size = 1; // total size of the encoded WendyConf blob
+    WendyComConfPushMode mode = 2;
+}
+
+// Params for WENDY_COM_CMD_CONF_PUSH_DATA
+message WendyComConfPushDataParams {
+    uint32 offset = 1;
+    bytes  data   = 2;
+}
+
+message WendyComConfPushEndParams {}
+
 message WendyComGetDeviceIdentityParams {}
 
 message WendyComDeviceIdentity {
@@ -122,6 +144,9 @@ message WendyComCommand {
         WendyComGetDeviceInfoParams        get_device_info       = 10;
         WendyComConsoleAttachParams        console_attach        = 11;
         WendyComConsoleDetachParams        console_detach        = 12;
+        WendyComConfPushBeginParams        conf_push_begin       = 13;
+        WendyComConfPushDataParams         conf_push_data        = 14;
+        WendyComConfPushEndParams          conf_push_end         = 15;
     }
 }
 
@@ -133,6 +158,7 @@ enum WendyComResult {
     WENDY_COM_RESULT_BUSY                 = 4;
     WENDY_COM_RESULT_BAD_APP_TYPE         = 5;
     WENDY_COM_RESULT_BAD_APP_SIZE         = 6;
+    WENDY_COM_RESULT_BAD_CONF_SIZE        = 7;
 }
 
 // Response to a WendyComCommand — request_id matches the request.

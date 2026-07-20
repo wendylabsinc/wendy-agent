@@ -148,6 +148,13 @@ type ContainerManager interface {
 	RemoveContainer(ctx context.Context, name string) error
 }
 
+// WifiManager is optionally implemented by providers that can manage the
+// WiFi connection of their devices.
+type WifiManager interface {
+	WifiConnect(ctx context.Context, device models.ExternalDevice, ssid, password string) error
+	WifiDisconnect(ctx context.Context, device models.ExternalDevice) error
+}
+
 // ContainerInfo describes a container managed by a provider.
 type ContainerInfo struct {
 	Name   string `json:"name"`

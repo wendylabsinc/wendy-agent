@@ -56,6 +56,16 @@ type DeviceInfo struct {
 
 type AppType int
 
+// ConfPushMode selects how a pushed configuration combines with the one
+// stored on the device: replace it entirely, or update it keeping the root
+// fields the pushed configuration does not provide.
+type ConfPushMode int
+
+const (
+	ConfPushModeReplace ConfPushMode = iota
+	ConfPushModeUpdate
+)
+
 // ConsoleChunk is one piece of console output streamed by the device.
 type ConsoleChunk struct {
 	Gap    bool // data was lost before this chunk
@@ -399,6 +409,80 @@ func (c *WendyLiteClient) PushApp(path string, appType AppType, onProgress func(
 	return nil
 }
 
+// PushConf writes a configuration to the device's wendy_conf partition. The
+// new configuration takes effect after reboot.
+func (c *WendyLiteClient) PushConf(conf *wendypb.WendyConf, mode ConfPushMode, onProgress func(written, total uint32)) error {
+	var pbMode wendypb.WendyComConfPushMode
+	switch mode {
+	case ConfPushModeReplace:
+		pbMode = wendypb.WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_REPLACE
+	case ConfPushModeUpdate:
+		pbMode = wendypb.WendyComConfPushMode_WENDY_COM_CONF_PUSH_MODE_UPDATE
+	default:
+		return fmt.Errorf("unknown conf push mode %d", mode)
+	}
+
+	blob, err := proto.Marshal(conf)
+	if err != nil {
+		return fmt.Errorf("marshal conf: %w", err)
+	}
+	if len(blob) > math.MaxUint32 {
+		return fmt.Errorf("conf too large: %d bytes exceeds 4 GiB limit", len(blob))
+	}
+	size := uint32(len(blob))
+
+	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_ConfPushBegin{
+			ConfPushBegin: &wendypb.WendyComConfPushBeginParams{Size: size, Mode: pbMode},
+		},
+	}, 0)
+	if err != nil {
+		return fmt.Errorf("push begin: %w", err)
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("push begin: device returned error: %w", err)
+	}
+
+	maxChunk := c.link.maxChunk()
+	for offset := uint32(0); offset < size; {
+		n := min(size-offset, uint32(maxChunk))
+		resp, err := c.sendCommand(&wendypb.WendyComCommand{
+			RequestId: c.requestIdGen.Add(1),
+			Params: &wendypb.WendyComCommand_ConfPushData{
+				ConfPushData: &wendypb.WendyComConfPushDataParams{
+					Offset: offset,
+					Data:   blob[offset : offset+n],
+				},
+			},
+		}, 0)
+		if err != nil {
+			return fmt.Errorf("push data at offset %d: %w", offset, err)
+		}
+		if err := resultToError(resp.Result); err != nil {
+			return fmt.Errorf("push data at offset %d: device returned error: %w", offset, err)
+		}
+		offset += n
+		if onProgress != nil {
+			onProgress(offset, size)
+		}
+	}
+
+	resp, err = c.sendCommand(&wendypb.WendyComCommand{
+		RequestId: c.requestIdGen.Add(1),
+		Params: &wendypb.WendyComCommand_ConfPushEnd{
+			ConfPushEnd: &wendypb.WendyComConfPushEndParams{},
+		},
+	}, 0)
+	if err != nil {
+		return fmt.Errorf("push end: %w", err)
+	}
+	if err := resultToError(resp.Result); err != nil {
+		return fmt.Errorf("push end: device returned error: %w", err)
+	}
+	return nil
+}
+
 func (c *WendyLiteClient) StopApp() error {
 	resp, err := c.sendCommand(&wendypb.WendyComCommand{
 		RequestId: c.requestIdGen.Add(1),
@@ -620,6 +704,8 @@ func resultToError(result wendypb.WendyComResult) error {
 		return errors.New("bad app type")
 	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_APP_SIZE:
 		return errors.New("bad app size")
+	case wendypb.WendyComResult_WENDY_COM_RESULT_BAD_CONF_SIZE:
+		return errors.New("bad conf size")
 	default: // includes WENDY_COM_RESULT_UNKNOWN_ERROR
 		return fmt.Errorf("error %d", int32(result))
 	}
