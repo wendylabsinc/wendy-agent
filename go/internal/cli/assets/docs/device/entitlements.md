@@ -19,11 +19,21 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 ## Events
 
 Use `{ "type": "events" }` when a workload needs to alert an operator in Wendy
-Companion. WendyOS mounts an app-specific unix socket and injects
-`WENDY_EVENT_SOCKET`; the workload publishes a stable source event ID, title,
-body, severity, and semantic Live/camera target. WendyOS and Cloud authenticate
-and attribute the app/device/organization, so the workload never supplies those
-identities or an arbitrary URL. See the [FireWatch example](../../../../../Examples/FireWatchEvents/README.md).
+Companion.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/events` (one socket per app/service) |
+| Injected environment | `WENDY_EVENT_SOCKET=/run/wendy/events/events.sock` |
+| Supplementary group | GID `2000`, so non-root apps can connect without world access |
+| Host persistence | `/var/lib/wendy/app-events`, restored after Agent restart |
+
+The workload publishes a stable source event ID, bounded title/body, severity,
+and semantic Live/camera target. WendyOS and Cloud authenticate and attribute
+the app/device/organization, so the workload never supplies those identities or
+an arbitrary URL. Tapping the resulting APNs notification opens Companion's
+**Live** view on the source device with that camera selected. See the
+[FireWatch example](../../../../../Examples/FireWatchEvents/README.md).
 
 ## Network
 

@@ -389,15 +389,33 @@ Publishes operator-facing events through a narrow, app-specific Wendy Agent unix
 { "type": "events" }
 ```
 
-The container receives `WENDY_EVENT_SOCKET=/run/wendy/events/events.sock`. Call
-`WendyEventService.PublishEvent` there with a stable `source_event_id`, title,
-body, severity, and a structured Live target containing the camera's stable
-`libcamera_id`. See [`Examples/FireWatchEvents`](../../../../Examples/FireWatchEvents/README.md).
+The Agent mounts an app-specific socket directory read-only at
+`/run/wendy/events`, injects
+`WENDY_EVENT_SOCKET=/run/wendy/events/events.sock`, and grants supplementary GID
+`2000` so non-root workloads can connect without making the socket
+world-readable. Socket directories remain under `/var/lib/wendy/app-events` and
+are safely restored after Agent restart.
+
+Call `WendyEventService.PublishEvent` with:
+
+| Field | Constraint | Description |
+|---|---|---|
+| `source_event_id` | 1–128 safe ASCII bytes | Stable caller ID; reuse it for retries and deduplication. |
+| `title` | 1–120 printable UTF-8 bytes | Push notification title. |
+| `body` | 1–2000 printable UTF-8 bytes | Operator-facing alert text. |
+| `severity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | Required alert severity. |
+| `target.live.camera_id` | 1–256 printable UTF-8 bytes | Stable `libcamera_id` reported by Wendy Agent. |
+
+Cloud stores one notification per organization member. Tapping its APNs push
+opens Companion's **Live** view on the source device with this camera selected.
+See [`Examples/FireWatchEvents`](../../../../Examples/FireWatchEvents/README.md).
 
 The workload cannot choose its app, device, or organization identity: WendyOS
 attributes the source from the entitlement mount, and Cloud derives device and
 organization from the Agent certificate. Reusing a source event ID retries
-safely without duplicate notifications. The API does not accept URLs.
+safely without duplicate notifications. The API does not accept URLs. The Agent
+bounds requests to 4 KiB and rate-limits each app socket; retry transient gRPC
+errors with the same source ID.
 
 > **Security:** `events` exposes only event publishing, never the full Agent
 > control plane. Use it instead of `admin` for alerts.

@@ -28,3 +28,8 @@ ID. Other errors are surfaced to the workload; malformed text, source IDs, or
 camera targets are rejected rather than silently altered. A successful response
 means the event and recipient notifications are persisted. APNs delivery remains
 best-effort, while the persisted notification is still available to Companion.
+
+## See also
+
+- [Events entitlement](https://docs.wendy.dev/apps/wendy-json#events)
+- [App entitlements](https://docs.wendy.dev/device/entitlements)
