@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
@@ -90,6 +92,12 @@ func (m *AppEventSocketManager) Restore() {
 			m.logger.Warn("invalid app event socket identity", zap.String("path", identityPath), zap.Error(err))
 			continue
 		}
+		// SECURITY: Bind persisted identity to its collision-proof directory name;
+		// never trust identity.json independently after an Agent restart.
+		if entry.Name() != appEventSocketKey(identity.AppID, identity.ServiceName) {
+			m.logger.Warn("app event socket identity path mismatch", zap.String("path", identityPath))
+			continue
+		}
 		if _, err := m.Ensure(identity.AppID, identity.ServiceName); err != nil {
 			m.logger.Warn("cannot restore app event socket", zap.String("app_id", identity.AppID), zap.Error(err))
 		}
@@ -107,8 +115,7 @@ func (m *AppEventSocketManager) Ensure(appID, serviceName string) (string, error
 			return "", fmt.Errorf("invalid service name: %w", err)
 		}
 	}
-	identityDigest := sha256.Sum256([]byte(appID + "\x00" + serviceName))
-	socketKey := hex.EncodeToString(identityDigest[:16])
+	socketKey := appEventSocketKey(appID, serviceName)
 	directory := filepath.Join(AppEventSocketRootPath, socketKey)
 
 	m.mu.Lock()
@@ -143,7 +150,13 @@ func (m *AppEventSocketManager) Ensure(appID, serviceName string) (string, error
 			return "", fmt.Errorf("set app event socket ownership: %w", err)
 		}
 	}
-	server := grpc.NewServer()
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(4*1024),
+		grpc.MaxConcurrentStreams(16),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 2 * time.Minute,
+		}),
+	)
 	agentpb.RegisterWendyEventServiceServer(
 		server,
 		NewWendyEventService(appID, m.publisher),
@@ -159,6 +172,11 @@ func (m *AppEventSocketManager) Ensure(appID, serviceName string) (string, error
 		}
 	}()
 	return directory, nil
+}
+
+func appEventSocketKey(appID, serviceName string) string {
+	identityDigest := sha256.Sum256([]byte(appID + "\x00" + serviceName))
+	return hex.EncodeToString(identityDigest[:16])
 }
 
 func (m *AppEventSocketManager) stopAll() {
