@@ -381,6 +381,27 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
+### `events`
+
+Publishes operator-facing events through a narrow, app-specific Wendy Agent unix socket.
+
+```json
+{ "type": "events" }
+```
+
+The container receives `WENDY_EVENT_SOCKET=/run/wendy/events/events.sock`. Call
+`WendyEventService.PublishEvent` there with a stable `source_event_id`, title,
+body, severity, and a structured Live target containing the camera's stable
+`libcamera_id`. See [`Examples/FireWatchEvents`](../../../../Examples/FireWatchEvents/README.md).
+
+The workload cannot choose its app, device, or organization identity: WendyOS
+attributes the source from the entitlement mount, and Cloud derives device and
+organization from the Agent certificate. Reusing a source event ID retries
+safely without duplicate notifications. The API does not accept URLs.
+
+> **Security:** `events` exposes only event publishing, never the full Agent
+> control plane. Use it instead of `admin` for alerts.
+
 ### `admin`
 
 Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.

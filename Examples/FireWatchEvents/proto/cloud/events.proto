@@ -1,0 +1,8 @@
+syntax = "proto3";
+package wendycloud.v1;
+message LiveEventTarget { string camera_id = 1; }
+message EventTarget { oneof destination { LiveEventTarget live = 1; } }
+enum EventSeverity { EVENT_SEVERITY_UNSPECIFIED = 0; EVENT_SEVERITY_INFO = 1; EVENT_SEVERITY_WARNING = 2; EVENT_SEVERITY_ERROR = 3; EVENT_SEVERITY_CRITICAL = 4; }
+// The example only reads id; newer response fields remain wire-compatible.
+message Event { int64 id = 1; }
+message PublishEventResponse { Event event = 1; bool duplicate = 2; int32 recipient_count = 3; }

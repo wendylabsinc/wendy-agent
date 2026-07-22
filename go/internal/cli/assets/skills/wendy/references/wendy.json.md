@@ -184,6 +184,19 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
+### Events Entitlement
+
+Publishes attributed operator alerts through the local Wendy Agent without granting device control.
+
+```json
+{ "type": "events" }
+```
+
+Use the injected `WENDY_EVENT_SOCKET` to call `WendyEventService.PublishEvent`
+with a stable source event ID and a structured Live/camera target. The workload
+cannot supply app/device/organization identity or a URL. Reusing the same source
+ID safely deduplicates retries. See `Examples/FireWatchEvents`.
+
 ### Admin Entitlement
 
 Grants the container the wendy-agent's full gRPC over a local unix socket, exposed as `WENDY_AGENT_SOCKET` (`/run/wendy/agent/agent.sock`) — with no authentication.

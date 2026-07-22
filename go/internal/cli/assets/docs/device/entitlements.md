@@ -16,6 +16,15 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 
 > **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
+## Events
+
+Use `{ "type": "events" }` when a workload needs to alert an operator in Wendy
+Companion. WendyOS mounts an app-specific unix socket and injects
+`WENDY_EVENT_SOCKET`; the workload publishes a stable source event ID, title,
+body, severity, and semantic Live/camera target. WendyOS and Cloud authenticate
+and attribute the app/device/organization, so the workload never supplies those
+identities or an arbitrary URL. See the [FireWatch example](../../../../../Examples/FireWatchEvents/README.md).
+
 ## Network
 
 The network entitlement allows the container to access the device's network. If the device is connected to WiFi, Ethernet or otherwise, the container will have access to make TCP and UDP connections to the internet.

@@ -1,0 +1,9 @@
+{
+  "appId": "dev.wendy.firewatch",
+  "version": "1.0.0",
+  "platform": "linux",
+  "language": "python",
+  "entitlements": [
+    { "type": "events" }
+  ]
+}
