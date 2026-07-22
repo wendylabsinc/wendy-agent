@@ -56,12 +56,17 @@ var _ services.ContainerdClient = (*Client)(nil)
 // DefaultAddress is the default containerd socket path on Linux.
 const DefaultAddress = "/run/containerd/containerd.sock"
 
+type AppEventSocketProvider interface {
+	Ensure(appID, serviceName string) (string, error)
+}
+
 type Client struct {
-	client       *containerd.Client
-	logger       *zap.Logger
-	namespace    string
-	mu           sync.Mutex
-	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	client              *containerd.Client
+	logger              *zap.Logger
+	namespace           string
+	mu                  sync.Mutex
+	proxyManager        *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	eventSocketProvider AppEventSocketProvider
 
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
@@ -137,6 +142,12 @@ func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
 		return
 	}
 	c.meshDNS = d
+}
+
+// SetAppEventSocketProvider injects the manager that creates narrow,
+// source-attributed event sockets for entitled workloads.
+func (c *Client) SetAppEventSocketProvider(provider AppEventSocketProvider) {
+	c.eventSocketProvider = provider
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -1035,8 +1046,19 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		c.applyCDIGPU(spec)
 	}
 
+	var eventSocketDir string
+	if appCfg.HasEntitlement(appconfig.EntitlementEvents) {
+		if c.eventSocketProvider == nil {
+			return fmt.Errorf("events entitlement unavailable: app event socket manager is not configured")
+		}
+		eventSocketDir, err = c.eventSocketProvider.Ensure(appID, serviceName)
+		if err != nil {
+			return fmt.Errorf("preparing app event socket: %w", err)
+		}
+	}
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
+		EventSocketDir:     eventSocketDir,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives

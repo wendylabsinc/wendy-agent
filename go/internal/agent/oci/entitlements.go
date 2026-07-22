@@ -29,6 +29,9 @@ const (
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
+	// appEventsGroupGID is reserved by WendyOS for app event sockets, allowing
+	// non-root workload users to connect without making host sockets world-readable.
+	appEventsGroupGID uint32 = 2000
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -46,6 +49,9 @@ type ApplyOptions struct {
 	// DBUS_SYSTEM_BUS_ADDRESS — mounting the raw host D-Bus socket directly
 	// would expose every system service, so it is never done.
 	DBusProxySocketDir string
+	// EventSocketDir is the app-specific host directory prepared by
+	// AppEventSocketManager. It contains only the narrow event publishing socket.
+	EventSocketDir string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -104,6 +110,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 				didSetDeviceCapabilities = true
 				SetDeviceCapabilities(spec)
 			}
+		case appconfig.EntitlementEvents:
+			applyEvents(spec, opts.EventSocketDir)
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
@@ -431,6 +439,30 @@ func applyDisplay(spec *Spec) {
 // would strand the mount on the orphaned pre-reboot inode (in-container dial →
 // ENOENT). See AdminAgentSocketHostPath. The socket lives in its own dedicated
 // directory so this exposes nothing else. Read-only: connecting needs no write.
+func applyEvents(spec *Spec, hostDirectory string) {
+	if hostDirectory == "" {
+		return
+	}
+	const containerDirectory = "/run/wendy/events"
+	const containerSocket = containerDirectory + "/events.sock"
+	socketPath := filepath.Join(hostDirectory, "events.sock")
+	fi, err := os.Lstat(socketPath)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: containerDirectory,
+		Source:      hostDirectory,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
+	})
+	spec.Process.User.AdditionalGids = appendUnique(
+		spec.Process.User.AdditionalGids,
+		appEventsGroupGID,
+	)
+	spec.Process.Env = append(spec.Process.Env, "WENDY_EVENT_SOCKET="+containerSocket)
+}
+
 func applyAdmin(spec *Spec) {
 	fi, err := os.Lstat(AdminAgentSocketHostPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {

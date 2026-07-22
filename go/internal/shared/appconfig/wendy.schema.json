@@ -288,6 +288,14 @@
         },
         {
           "properties": {
+            "type": { "const": "events" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Publish operator-facing events through an app-specific Wendy Agent socket. The Agent authenticates the app from the entitlement mount and attributes every event to this app and device."
+        },
+        {
+          "properties": {
             "type": { "const": "admin" }
           },
           "required": ["type"],

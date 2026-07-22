@@ -263,6 +263,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	eventPublisher := services.NewCloudEventPublisher(logger, provisioningSvc)
+	eventSocketManager := services.NewAppEventSocketManager(ctx, logger, eventPublisher)
+	eventSocketManager.Restore()
+	if ctrdClient != nil {
+		ctrdClient.SetAppEventSocketProvider(eventSocketManager)
+	}
+
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 

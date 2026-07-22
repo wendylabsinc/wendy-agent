@@ -46,6 +46,9 @@ const (
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 	EntitlementDisplay   = "display"
+	// EntitlementEvents grants access only to an app-attributed event publishing
+	// socket. It does not expose the Agent's general control plane.
+	EntitlementEvents = "events"
 	// EntitlementAdmin grants full, unauthenticated local control of the agent
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
@@ -75,6 +78,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementSerial,
 	EntitlementMCP,
 	EntitlementDisplay,
+	EntitlementEvents,
 	EntitlementAdmin,
 	EntitlementBuild,
 }
@@ -100,6 +104,7 @@ var allowedKeys = map[string][]string{
 	EntitlementSerial:    {"type", "device"},
 	EntitlementMCP:       {"type", "port"},
 	EntitlementDisplay:   {"type"},
+	EntitlementEvents:    {"type"},
 	EntitlementAdmin:     {"type"},
 	EntitlementBuild:     {"type"},
 }

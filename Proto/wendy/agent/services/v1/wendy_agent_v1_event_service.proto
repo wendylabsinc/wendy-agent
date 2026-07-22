@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package wendy.agent.services.v1;
+
+import "cloud/events.proto";
+
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb";
+
+// WendyEventService is exposed only through an app-specific unix socket mounted
+// by the events entitlement. The Agent derives app_id from that socket and the
+// Cloud derives organization/device identity from the Agent's certificate.
+service WendyEventService {
+  rpc PublishEvent(PublishAppEventRequest) returns (wendycloud.v1.PublishEventResponse);
+}
+
+message PublishAppEventRequest {
+  string source_event_id = 1;
+  string title = 2;
+  string body = 3;
+  wendycloud.v1.EventSeverity severity = 4;
+  wendycloud.v1.EventTarget target = 5;
+}
