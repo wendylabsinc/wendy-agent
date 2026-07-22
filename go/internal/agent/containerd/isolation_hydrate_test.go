@@ -136,7 +136,7 @@ func TestReconcileRoundTrip_LabelPersistsAcrossSimulatedReboot(t *testing.T) {
 
 	// Step 1: simulate CreateContainerWithProgress persisting labels at create
 	// time (client.go:826) for an isolated multi-service app.
-	createTimeLabels := wendyLabels(appID, "streamer", "1.0.0", nil, nil, "isolated")
+	createTimeLabels := wendyLabels(appID, "streamer", "1.0.0", nil, nil, "isolated", nil)
 	if createTimeLabels[labelKeyIsolation] != "isolated" {
 		t.Fatalf("precondition: wendyLabels did not persist isolation label, got %+v", createTimeLabels)
 	}

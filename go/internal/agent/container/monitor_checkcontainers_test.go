@@ -26,6 +26,8 @@ type fakeContainerd struct {
 	started       chan string // signalled (buffered) on each StartContainer
 	stoppedByUser map[string]bool
 	migrateCalls  int
+	rebuildCalls  int
+	probeCalls    int
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -51,6 +53,18 @@ func (f *fakeContainerd) MigrateStoppedByUserOnce(ctx context.Context) error {
 	defer f.mu.Unlock()
 	f.migrateCalls++
 	return nil
+}
+
+func (f *fakeContainerd) RebuildAppStateCaches(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rebuildCalls++
+}
+
+func (f *fakeContainerd) WarnPubliclyExposedPorts(ctx context.Context) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probeCalls++
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -169,6 +183,37 @@ func TestCheckContainers_SingleServiceMapApp_NotRestarted(t *testing.T) {
 	}
 }
 
+// Single-service apps deploy as a BARE-named container (AppConfig.ContainerName
+// returns the appID when ServiceName is empty), so their monitor state is
+// registered under the bare appID — while ListContainers still reports the
+// service via Services. The monitor must recognize the bare registration as
+// running too, or it force-restarts the healthy app every tick.
+func TestCheckContainers_SingleServiceMapApp_BareRegistration_NotRestarted(t *testing.T) {
+	fake := &fakeContainerd{
+		containers: []*agentpb.AppContainer{{
+			AppName:      "myapp",
+			RunningState: agentpb.AppRunningState_RUNNING,
+			Services: []*agentpb.ServiceEntry{
+				{Name: "web", RunningState: agentpb.AppRunningState_RUNNING},
+			},
+		}},
+	}
+	m := newMonitorWithClient(fake)
+	m.Register("myapp", RestartUnlessStopped, 0)
+
+	m.checkContainers(context.Background())
+
+	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("StartContainer called for healthy service: %v", calls)
+	}
+	m.mu.Lock()
+	fc := m.states["myapp"].FailureCount
+	m.mu.Unlock()
+	if fc != 0 {
+		t.Fatalf("FailureCount = %d, want 0 (no spurious restart)", fc)
+	}
+}
+
 func TestReconcileBootContainers_StartsStoppedApp(t *testing.T) {
 	fake := &fakeContainerd{
 		started:        make(chan string, 1),
@@ -206,6 +251,18 @@ func TestReconcileBootContainers_RunsMigration(t *testing.T) {
 	fake.mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("MigrateStoppedByUserOnce called %d times, want 1", calls)
+	}
+}
+
+func TestReconcileBootContainers_RebuildsCaches(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.ReconcileBootContainers(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rebuildCalls != 1 {
+		t.Fatalf("RebuildAppStateCaches called %d times, want 1", f.rebuildCalls)
 	}
 }
 
@@ -273,5 +330,17 @@ func TestCheckContainers_LegacySingleContainer_NotRestarted(t *testing.T) {
 
 	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
 		t.Fatalf("StartContainer called for healthy legacy app: %v", calls)
+	}
+}
+
+func TestProbeExposedPortsInvokesProber(t *testing.T) {
+	f := &fakeContainerd{}
+	m := newMonitorWithClient(f)
+	m.probeExposedPorts(context.Background())
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.probeCalls != 1 {
+		t.Fatalf("WarnPubliclyExposedPorts called %d times, want 1", f.probeCalls)
 	}
 }

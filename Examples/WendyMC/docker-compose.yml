@@ -1,0 +1,47 @@
+services:
+  minecraft:
+    build:
+      context: ./minecraft
+      args:
+        EULA: "TRUE"
+        TYPE: "PAPER"
+        VERSION: "LATEST"
+        MEMORY: "4G"
+        MAX_PLAYERS: "10"
+        MOTD: "WendyMC - hosted by Wendy"
+        ONLINE_MODE: "TRUE"
+        ENABLE_RCON: "true"
+        RCON_PASSWORD: "wendymc-local"
+        RCON_PORT: "25575"
+        SERVER_PORT: "25565"
+    network_mode: host
+    restart: always
+    volumes:
+      - mc-data:/data
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      start_period: 120s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  webui:
+    build:
+      context: ./webui
+      args:
+        RCON_HOST: "127.0.0.1"
+        RCON_PORT: "25575"
+        RCON_PASSWORD: "wendymc-local"
+        MC_HOST: "127.0.0.1"
+        MC_PORT: "25565"
+        LOG_PATH: "/mc-data/logs/latest.log"
+        WEBUI_PORT: "8080"
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - minecraft
+    volumes:
+      - mc-data:/mc-data:ro
+
+volumes:
+  mc-data:

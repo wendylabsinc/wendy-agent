@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 
@@ -138,6 +139,15 @@ func preferDiscoveredLANDevice(candidate, existing models.LANDevice) bool {
 	if existing.IPAddress == "" && candidate.IPAddress != "" {
 		return true
 	}
+	// Same device advertised at both an IPv4 and an IPv6 address (avahi emits
+	// one resolve entry per protocol): keep the IPv4 one. A device's IPv6 set
+	// typically leads with an RFC 4941 temporary (privacy) address that
+	// rotates away, so dialing or probing the stored IPv6 later goes stale.
+	if candidate.IPAddress != "" && existing.IPAddress != "" {
+		if c4, e4 := isIPv4LANAddress(candidate.IPAddress), isIPv4LANAddress(existing.IPAddress); c4 != e4 {
+			return c4
+		}
+	}
 	if existing.NetworkInterface == "" && candidate.NetworkInterface != "" {
 		return true
 	}
@@ -158,6 +168,9 @@ func lanDeviceDiscoveryScore(dev models.LANDevice) int {
 	if dev.IPAddress != "" {
 		score++
 	}
+	if isRoutableLANAddress(dev.IPAddress) {
+		score++
+	}
 	if dev.Port != 0 {
 		score++
 	}
@@ -171,4 +184,33 @@ func lanDeviceDiscoveryScore(dev models.LANDevice) int {
 		score++
 	}
 	return score
+}
+
+// isIPv4LANAddress reports whether addr (optionally "%zone"-suffixed) is an
+// IPv4 or IPv4-mapped address.
+func isIPv4LANAddress(addr string) bool {
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		addr = addr[:i]
+	}
+	a, err := netip.ParseAddr(addr)
+	return err == nil && (a.Is4() || a.Is4In6())
+}
+
+// isRoutableLANAddress reports whether addr is a directly dialable address —
+// all IPv4 (including 169.254.0.0/16 link-local) or non-link-local IPv6 —
+// as opposed to an IPv6 link-local unicast address (fe80::/10), which needs a
+// zone id and is a poor default dial target. A "%zone" suffix is stripped
+// before parsing; an empty or unparseable address is treated as non-routable.
+func isRoutableLANAddress(addr string) bool {
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		addr = addr[:i]
+	}
+	a, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	if a.Is4() || a.Is4In6() {
+		return true
+	}
+	return !a.IsLinkLocalUnicast()
 }

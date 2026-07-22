@@ -13,6 +13,6 @@
     "@slidev/theme-default": "0.25.0"
   },
   "overrides": {
-    "dompurify": "3.4.11"
+    "dompurify": "3.4.12"
   }
 }

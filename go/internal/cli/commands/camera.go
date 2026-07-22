@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc/status"
 )
 
 func newCameraCmd() *cobra.Command {
@@ -131,15 +133,16 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				Framerate: fps,
 			})
 			if err != nil {
-				return fmt.Errorf("starting video stream: %w", err)
+				return fmt.Errorf("starting video stream: %w", cameraFirmwareDiagnostic(err))
 			}
+			diagnosticStream := &cameraDiagnosticStream{videoStream: stream}
 
 			cliLogln("Streaming video (Ctrl+C to stop)...")
 
 			if toStdout {
-				return pipeVideoToStdout(stream, cmd.OutOrStdout())
+				return pipeVideoToStdout(diagnosticStream, cmd.OutOrStdout())
 			}
-			return playVideoWithGStreamer(ctx, stream)
+			return playVideoWithGStreamer(ctx, diagnosticStream)
 		},
 	}
 
@@ -155,6 +158,32 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 // videoStream is the receive side of the StreamVideo gRPC stream.
 type videoStream interface {
 	Recv() (*agentpb.VideoFrame, error)
+}
+
+type cameraDiagnosticStream struct{ videoStream }
+
+func (s *cameraDiagnosticStream) Recv() (*agentpb.VideoFrame, error) {
+	frame, err := s.videoStream.Recv()
+	if err != nil {
+		return nil, cameraFirmwareDiagnostic(err)
+	}
+	return frame, nil
+}
+
+func cameraFirmwareDiagnostic(err error) error {
+	st, ok := status.FromError(err)
+	if !ok {
+		return err
+	}
+	for _, detail := range st.Details() {
+		info, ok := detail.(*errdetails.ErrorInfo)
+		if !ok || info.GetReason() != "TEGRA_FIRMWARE_MISMATCH" {
+			continue
+		}
+		rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
+		return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+	}
+	return err
 }
 
 func pipeVideoToStdout(stream videoStream, w io.Writer) error {

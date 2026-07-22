@@ -1,17 +1,18 @@
 ---
 title: Wendy for ROS 2
-description: Inspect and debug live ROS 2 systems on a WendyOS device from the CLI — nodes, topics, services, parameters, rosbags, and more, with no SSH.
+description: Inspect and debug live ROS 2 systems on a WendyOS device from the CLI, with no SSH. Nodes, topics, services, parameters, actions, lifecycle nodes, components, and rosbags.
 ---
 
 `wendy device ros2` brings the full `ros2` command-line experience to a remote
 device. List nodes and topics, echo messages, watch publish rates, render the
-connectivity graph, read and set parameters, and record rosbags — all from your
-machine, over the same secure connection the CLI already uses.
+connectivity graph, read and set parameters, drive actions and lifecycle nodes,
+and record rosbags, all from your machine, over the same secure connection the
+CLI already uses.
 
 <Callout type="info">
-**Standard, upstream ROS 2.** WendyOS runs real ROS 2 from stock containers — Humble
+**Standard, upstream ROS 2.** WendyOS runs real ROS 2 from stock containers, Humble
 by default, configurable per app. Choose your middleware with `frameworks.ros2.rmw`:
-CycloneDDS (default), Fast DDS, RTI Connext, or Gurum.
+CycloneDDS (default), Fast DDS, RTI Connext, or GurumDDS.
 </Callout>
 
 ## How it works
@@ -35,7 +36,11 @@ DDS), results are tagged with the RMW they came from, such as `[cyclonedds]`.
   [Discovering devices](/docs/device/discovering-devices).
 
 Every subcommand accepts `--domain` to override the `ROS_DOMAIN_ID`. By default it
-is read from the app's ROS 2 config, so you rarely need to set it.
+is read from the app's ROS 2 config, so you rarely need to set it. That includes
+auto-derived domains: an app whose `frameworks.ros2` omits `domainId` gets a
+stable domain hashed from its `appId` (in the 0 to 232 range), and the CLI
+follows it automatically. Every subcommand also honors the global `--json` flag
+for machine-readable output.
 
 ## Explore the graph
 
@@ -85,7 +90,7 @@ wendy device ros2 hz /chatter
 
 ## Parameters
 
-Read parameters across the whole system or a single node, and change them live —
+Read parameters across the whole system or a single node, and change them live,
 no restart required:
 
 ```bash
@@ -107,6 +112,51 @@ wendy device ros2 call /reset std_srvs/srv/Empty
 Pass a request payload as the optional third argument when the service type needs
 one.
 
+## Actions
+
+List action servers, inspect one, and send goals with live feedback:
+
+```bash
+wendy device ros2 action list
+wendy device ros2 action info /navigate
+
+# Send a goal; add --feedback to stream feedback while it runs
+wendy device ros2 action send_goal /navigate nav2_msgs/action/NavigateToPose "{pose: ...}" --feedback
+```
+
+Cancel all in-flight goals on an action server (a Wendy extension; the upstream
+`ros2 action` CLI has no cancel verb):
+
+```bash
+wendy device ros2 action cancel /navigate
+```
+
+## Lifecycle nodes
+
+Inspect and drive managed (lifecycle) nodes through their state machine:
+
+```bash
+# Lifecycle nodes on the system
+wendy device ros2 lifecycle nodes
+
+# Current state and available transitions for one node
+wendy device ros2 lifecycle get /lifecycle_talker
+wendy device ros2 lifecycle list /lifecycle_talker
+
+# Trigger a transition (configure, activate, deactivate, cleanup, shutdown)
+wendy device ros2 lifecycle set /lifecycle_talker configure
+```
+
+## Components
+
+Manage composable nodes in a running component container:
+
+```bash
+wendy device ros2 component list
+wendy device ros2 component load /ComponentManager composition composition::Talker
+wendy device ros2 component unload /ComponentManager 1
+```
+
 ## Record rosbags
 
 Record topics to a bag on the device, list what's been recorded, and pull a bag
@@ -125,6 +175,11 @@ wendy device ros2 bag list
 # Download a bag to a local directory
 wendy device ros2 bag download drive-test ./local-bags
 ```
+
+Run `bag download` with no arguments to pick from the device's bags
+interactively. On a device running apps across multiple RMW implementations,
+recording all topics captures one RMW's graph and warns about the others;
+record explicit topic lists per RMW if you need both.
 
 ## Health checks
 
@@ -152,7 +207,7 @@ into Foxglove Studio with [Wendy for Foxglove](/docs/integrations/foxglove).
 
 ## Related
 
-- [Multi-app deployments](/docs/guides/multi-app-deployments) — deploy a ROS 2
-  stack with `docker-compose.yml`.
-- [Entitlements](/docs/device/entitlements) — the host-network access ROS 2
+- [Multi-app deployments](/docs/guides/multi-app-deployments): deploy a ROS 2
+  stack with `wendy.json` services or `docker-compose.yml`.
+- [Entitlements](/docs/device/entitlements): the host-network access ROS 2
   discovery requires.

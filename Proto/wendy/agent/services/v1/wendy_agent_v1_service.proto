@@ -159,6 +159,7 @@ message UpdateAgentRequest {
 
         message Update {
             string sha256 = 1;
+            bytes signature = 2;  // Detached ML-DSA65 signature over the SHA256 digest of the agent binary; empty until a signer is deployed.
         }
     }
 }
@@ -454,7 +455,12 @@ message ConnectBluetoothPeripheralRequest {
     bool pair = 2;
     bool trust = 3;
 }
-message ConnectBluetoothPeripheralResponse {}
+message ConnectBluetoothPeripheralResponse {
+    // Whether the device is paired after the connect completed. Optional so
+    // clients can tell an agent that reports pairing state apart from an
+    // older agent that does not (absent = unknown).
+    optional bool paired = 1;
+}
 
 message DisconnectBluetoothPeripheralRequest {
     string address = 1;

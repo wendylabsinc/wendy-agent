@@ -20,11 +20,16 @@ func readFloor(configPath string) time.Time {
 	return time.Unix(sec, 0)
 }
 
+// FloorBytes encodes t as the 8-byte big-endian clock_floor payload.
+func FloorBytes(t time.Time) []byte {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(t.Unix())) //nolint:gosec — install-time timestamps are non-negative
+	return buf[:]
+}
+
 // WriteFloor writes t as a big-endian int64 Unix timestamp to
 // configPath/clock_floor. Called by the CLI at install time and during
 // config-partition provisioning.
 func WriteFloor(configPath string, t time.Time) error {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], uint64(t.Unix())) //nolint:gosec — Unix() is always non-negative for install-time timestamps
-	return os.WriteFile(filepath.Join(configPath, clockFloorFile), buf[:], 0o644)
+	return os.WriteFile(filepath.Join(configPath, clockFloorFile), FloorBytes(t), 0o644)
 }

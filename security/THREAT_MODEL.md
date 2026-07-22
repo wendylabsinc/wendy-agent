@@ -198,6 +198,12 @@ Severity scale: **CRITICAL > HIGH > MEDIUM > LOW > INFO**
   - Namespace volumes by a unique app identifier (not just user-supplied name) by default.
   - Document the sharing model explicitly; require explicit opt-in for cross-app sharing.
 
+### Software Bill of Materials & provenance
+
+Releases include SPDX SBOMs for each shipped binary plus Swift and whole-repo
+source SBOMs, and Sigstore-backed SLSA build provenance and SBOM attestations.
+See `security/VERIFICATION.md` for verification steps.
+
 ---
 
 ### 6.3 Repudiation

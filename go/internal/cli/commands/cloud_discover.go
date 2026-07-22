@@ -43,7 +43,9 @@ func newCloudDiscoverCmd() *cobra.Command {
 			}
 
 			m := newCloudDiscoverModel(ctx, auth, brokerURL, all, false, nil)
-			p := tea.NewProgram(m)
+			// Alt screen restores the user's terminal content on exit. The
+			// picker-mode embedding in `wendy cloud tunnel` stays inline.
+			p := tea.NewProgram(m, tea.WithAltScreen())
 			if _, err := p.Run(); err != nil {
 				return fmt.Errorf("TUI error: %w", err)
 			}
@@ -469,6 +471,12 @@ func cloudDiscoverJSON(ctx context.Context, auth *config.AuthConfig, all bool) e
 
 // fetchCloudAssetsFiltered retrieves compute-device assets for the org.
 // When onlineOnly is true, only online (enrolled and reachable) assets are returned.
+//
+// ListAssets is paginated server-side: a single request returns only the first
+// page (capped well below a large fleet), so we page through with offset/limit
+// until we've collected every asset the server reports via total. Without this,
+// callers silently see only the first page — e.g. fleet group operations could
+// not target devices that fell outside it.
 func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onlineOnly bool) ([]*cloudpb.Asset, error) {
 	cert := auth.Certificates[0]
 	cloudConn, err := dialCloudGRPC(auth)
@@ -478,32 +486,49 @@ func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onli
 	defer cloudConn.Close()
 
 	assetClient := cloudpb.NewAssetServiceClient(cloudConn)
-	req := &cloudpb.ListAssetsRequest{
-		OrganizationId:  int32(cert.OrganizationID),
-		IsComputeDevice: boolPtr(true),
-	}
-	if onlineOnly {
-		req.OnlineOnly = boolPtr(true)
-	}
 
-	stream, err := assetClient.ListAssets(cloudContext(ctx, auth), req)
-	if err != nil {
-		return nil, fmt.Errorf("listing devices: %w", err)
-	}
-
+	const pageSize = 200
 	var assets []*cloudpb.Asset
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
-			break
+	for offset := int32(0); ; {
+		req := &cloudpb.ListAssetsRequest{
+			OrganizationId:  int32(cert.OrganizationID),
+			IsComputeDevice: boolPtr(true),
+			Offset:          int32Ptr(offset),
+			Limit:           int32Ptr(pageSize),
 		}
+		if onlineOnly {
+			req.OnlineOnly = boolPtr(true)
+		}
+
+		stream, err := assetClient.ListAssets(cloudContext(ctx, auth), req)
 		if err != nil {
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}
-		if len(assets) >= maxCloudAssets {
-			return nil, fmt.Errorf("cloud returned more than %d devices", maxCloudAssets)
+
+		page := 0
+		var total int32
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("listing devices: %w", err)
+			}
+			if len(assets) >= maxCloudAssets {
+				return nil, fmt.Errorf("cloud returned more than %d devices", maxCloudAssets)
+			}
+			assets = append(assets, resp.GetAsset())
+			page++
+			total = resp.GetTotal()
 		}
-		assets = append(assets, resp.GetAsset())
+
+		offset += int32(page)
+		// Done when the server reports we've seen every asset, or a page makes
+		// no progress (guards against a missing/inconsistent total).
+		if page == 0 || offset >= total {
+			break
+		}
 	}
 	return assets, nil
 }

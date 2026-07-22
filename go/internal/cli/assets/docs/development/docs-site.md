@@ -3,9 +3,6 @@
 The public WendyOS documentation site is built with Fumadocs and Next.js, then
 published as a static export to `https://docs.wendy.dev`.
 
-`https://docs.wendy.sh` redirects to the equivalent `https://docs.wendy.dev`
-URL.
-
 ## URLs
 
 | Purpose | URL |
@@ -109,8 +106,8 @@ Required GitHub environment variables:
 
 Static files are served from the public `wendy-docs-public` Cloud Storage bucket
 through the global external HTTP(S) load balancer for `docs.wendy.dev`. The load
-balancer terminates HTTPS, redirects `docs.wendy.sh` to `docs.wendy.dev`, and
-adds security response headers for the public docs host.
+balancer terminates HTTPS and adds security response headers for the public
+docs host.
 
 Branch-preview objects under `branch-*` are cleaned up by CI after 30 days.
 

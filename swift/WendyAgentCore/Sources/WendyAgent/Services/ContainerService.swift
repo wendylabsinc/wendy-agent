@@ -27,11 +27,9 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private var isStopping = false
     private let sandboxProfilePath: String?
 
-    /// Docker backend for Linux containers. Nil while Linux containers remain unsupported.
-    private let dockerBackend: DockerContainerBackend?
-    private let dockerUnavailableMessage: String?
-    private let linuxContainersUnsupportedMessage =
-        "Linux containers aren't supported on Macs yet. Support is planned for a future release."
+    /// Linux container runtime (Apple `container` or Docker). Nil when neither is present.
+    private let linuxBackend: (any LinuxContainerBackend)?
+    private let linuxUnavailableMessage: String
 
     init(
         broadcaster: TelemetryBroadcaster,
@@ -39,16 +37,17 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         sandboxProfilePath: String? = nil,
         stateDirectory: URL? = nil,
         appsBase: URL? = nil,
-        dockerAvailable: Bool = false,
-        dockerUnavailableMessage: String? = nil,
+        linuxBackend: (any LinuxContainerBackend)? = nil,
+        linuxUnavailableMessage: String =
+            "No Linux container runtime found. Install Apple's `container` (recommended) or Docker on the Mac agent.",
         onAppsChanged: @escaping @Sendable ([WendyAppInfo]) async -> Void = { _ in }
     ) {
         self.broadcaster = broadcaster
         self.onAppsChanged = onAppsChanged
         self.executablePath = executablePath
         self.sandboxProfilePath = sandboxProfilePath
-        self.dockerBackend = dockerAvailable ? DockerContainerBackend() : nil
-        self.dockerUnavailableMessage = dockerUnavailableMessage
+        self.linuxBackend = linuxBackend
+        self.linuxUnavailableMessage = linuxUnavailableMessage
 
         let defaultStateDirectory = WendyAgentPaths.stateDirectory
         let resolvedStateDirectory = stateDirectory ?? appsBase ?? defaultStateDirectory
@@ -311,8 +310,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         let exitTask = Self.makeProcessExitTask(process)
 
-        if app.info.kind == .container, app.container != nil, let dockerBackend {
-            try await dockerBackend.stop(appName: id)
+        if app.info.kind == .container, app.container != nil, let linuxBackend {
+            try await linuxBackend.stop(appName: id)
             let didExit = await Self.waitForProcessExit(exitTask, timeout: self.nativeStopTimeout)
             if !didExit {
                 self.logger.warning(
@@ -428,17 +427,36 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         ["bundle", "--file", brewfilePath]
     }
 
+    nonisolated static func realUserName() -> String? {
+        guard let passwd = getpwuid(getuid()) else { return nil }
+        return String(cString: passwd.pointee.pw_name)
+    }
+
     nonisolated static func brewBundleEnvironment(
-        source: [String: String] = ProcessInfo.processInfo.environment
+        source: [String: String] = ProcessInfo.processInfo.environment,
+        realUserName: String? = realUserName()
     ) -> [String: String] {
         var environment: [String: String] = [:]
-        for key in ["HOME", "TMPDIR", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE"] {
+        for key in ["HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE"] {
             if let value = source[key], !value.isEmpty {
                 environment[key] = value
             }
         }
         if environment["HOME"] == nil {
             environment["HOME"] = NSHomeDirectory()
+        }
+        // Homebrew's tap-trust resolves the invoking user's home via a passwd lookup
+        // of USER/LOGNAME, so these must name a real account — an env-only identity
+        // (as the E2E harness sets) makes every `brew install` abort.
+        if let realUserName, !realUserName.isEmpty {
+            environment["USER"] = realUserName
+            environment["LOGNAME"] = realUserName
+        } else {
+            for key in ["USER", "LOGNAME"] {
+                if let value = source[key], !value.isEmpty {
+                    environment[key] = value
+                }
+            }
         }
         environment["PATH"] = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin"
         environment["HOMEBREW_NO_ANALYTICS"] = "1"
@@ -715,10 +733,19 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         if isLinux {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+            guard linuxBackend != nil else {
+                throw RPCError(code: .failedPrecondition, message: self.linuxUnavailableMessage)
+            }
+            try await self.registerApp(
+                id: appName,
+                kind: .container,
+                container: WendyApp.ContainerMetadata(imageName: imageName, appConfig: appConfig)
             )
+            logger.info(
+                "Registered Linux container app",
+                metadata: ["app_name": "\(appName)", "image": "\(imageName)"]
+            )
+            return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
         }
 
         // Native darwin path (existing behavior).
@@ -726,7 +753,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let nativeLaunchInfo: NativeLaunchInfo
         if imageName.hasPrefix("sha256:") {
             // OCI image: parse manifest → config → extract layer.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             try FileManager.default.createDirectory(
                 atPath: appDirectory,
                 withIntermediateDirectories: true
@@ -774,7 +801,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         } else if !imageName.isEmpty {
             // Legacy: imageName is the binary name directly.
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(imageName)"
             guard FileManager.default.fileExists(atPath: binaryPath) else {
                 throw RPCError(code: .notFound, message: "Binary not found at \(binaryPath)")
@@ -796,7 +823,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // Nothing to register — container will fall back to --appPath.
                 return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
             }
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectory = try validateContainedPath(base: appsBase, relative: appName).path
             let binaryPath = "\(appDirectory)/\(cmd)"
 
             guard FileManager.default.fileExists(atPath: binaryPath) else {
@@ -846,10 +873,51 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             )
         }
 
-        if app.container != nil {
-            throw RPCError(
-                code: .failedPrecondition,
-                message: self.dockerUnavailableMessage ?? self.linuxContainersUnsupportedMessage
+        if let container = app.container {
+            guard let linuxBackend else {
+                throw RPCError(code: .failedPrecondition, message: self.linuxUnavailableMessage)
+            }
+            let launchToken = UUID()
+            let process: Foundation.Process
+            let stdoutPipe: Pipe
+            let stderrPipe: Pipe
+            do {
+                // Pull first, then create+start. Both shell out to the Linux
+                // runtime CLI, which throws a plain `Error` (e.g. a nonzero exit
+                // with stderr) on failure. Wrap those in `RPCError` so the client
+                // sees the actionable message — an un-wrapped error surfaces as
+                // gRPC's opaque "Service method threw an unknown error." instead.
+                try await linuxBackend.pull(image: container.imageName)
+                self.prepareAppForLaunch(id: appName, launchToken: launchToken)
+                (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
+                    appName: appName,
+                    imageName: container.imageName,
+                    appConfig: container.appConfig,
+                    terminationHandler: self.makeTerminationHandler(
+                        forAppID: appName,
+                        launchToken: launchToken
+                    )
+                )
+            } catch let error as RPCError {
+                self.cancelAppLaunch(id: appName, launchToken: launchToken)
+                throw error
+            } catch {
+                self.cancelAppLaunch(id: appName, launchToken: launchToken)
+                throw RPCError(
+                    code: .internalError,
+                    message: "Failed to start Linux container \(appName): \(error)"
+                )
+            }
+            try await self.markAppRunning(id: appName, process: process, launchToken: launchToken)
+            logger.info(
+                "Container started",
+                metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
+            )
+            return self.makeStreamingResponse(
+                appName: appName,
+                process: process,
+                stdoutPipe: stdoutPipe,
+                stderrPipe: stderrPipe
             )
         }
 
@@ -922,6 +990,24 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
         )
 
+        return self.makeStreamingResponse(
+            appName: appName,
+            process: process,
+            stdoutPipe: stdoutPipe,
+            stderrPipe: stderrPipe
+        )
+    }
+
+    /// Builds the streaming RPC response shared by both the native-process and
+    /// Linux-container launch paths: sends a `.started` message, then streams
+    /// stdout/stderr as they're produced (also broadcasting them as telemetry
+    /// logs) until the process exits.
+    private func makeStreamingResponse(
+        appName: String,
+        process: Foundation.Process,
+        stdoutPipe: Pipe,
+        stderrPipe: Pipe
+    ) -> StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse> {
         // Capture values for the sendable closure.
         let broadcaster = self.broadcaster
 
@@ -997,7 +1083,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         let didStop = try await self.stopTrackedAppIfRunning(id: appName)
         if didStop {
             if self.appsByID[appName]?.info.kind == .container {
-                logger.info("Docker container stopped", metadata: ["app_name": "\(appName)"])
+                logger.info("Linux container stopped", metadata: ["app_name": "\(appName)"])
             } else {
                 logger.info("Process stopped", metadata: ["app_name": "\(appName)"])
             }
@@ -1017,10 +1103,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
         try await self.stopTrackedAppIfRunning(id: appName)
 
-        if self.appsByID[appName]?.container != nil, let dockerBackend {
-            try await dockerBackend.remove(appName: appName)
+        if self.appsByID[appName]?.container != nil, let linuxBackend {
+            try await linuxBackend.remove(appName: appName)
             await self.removeApp(id: appName)
-            logger.info("Docker container removed", metadata: ["app_name": "\(appName)"])
+            logger.info("Linux container removed", metadata: ["app_name": "\(appName)"])
         } else {
             try self.removeNativeAppDirectory(appName: appName)
             await self.removeApp(id: appName)
@@ -1060,6 +1146,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         response.stats = appNames.map { appName in
             var stats = Wendy_Agent_Services_V1_ContainerStats()
             stats.appName = appName
+            if let pid = appsByID[appName]?.info.pid,
+                let sample = SystemStats.processStats(pid: pid)
+            {
+                stats.memoryBytes = sample.memoryBytes
+            }
             return stats
         }
         return ServerResponse(message: response)
@@ -1074,6 +1165,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         throw RPCError(
             code: .unimplemented,
             message: "Linux container attach is currently not supported by Wendy Agent for Mac."
+        )
+    }
+
+    func execContainer(
+        request: StreamingServerRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+        context: ServerContext
+    ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse> {
+        throw RPCError(
+            code: .unimplemented,
+            message: "Interactive container exec is currently not supported by Wendy Agent for Mac."
         )
     }
 
@@ -1102,10 +1203,28 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_GetResourceStatsRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetResourceStatsResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Resource stats are currently not supported by Wendy Agent for Mac."
-        )
+        let host = SystemStats.hostStats()
+        var response = Wendy_Agent_Services_V1_GetResourceStatsResponse()
+
+        var hostStats = Wendy_Agent_Services_V1_HostStats()
+        hostStats.cpuTotalJiffies = host.cpuTotalTicks
+        hostStats.cpuIdleJiffies = host.cpuIdleTicks
+        hostStats.cpuCount = host.cpuCount
+        hostStats.memTotalBytes = host.memTotalBytes
+        hostStats.memAvailableBytes = host.memAvailableBytes
+        response.host = hostStats
+
+        response.containers = appsByID.keys.sorted().compactMap { appName in
+            guard let pid = appsByID[appName]?.info.pid,
+                let sample = SystemStats.processStats(pid: pid)
+            else { return nil }
+            var container = Wendy_Agent_Services_V1_ResourceContainerStats()
+            container.appName = appName
+            container.cpuUsageNanos = sample.cpuUsageNanos
+            container.memoryBytes = sample.memoryBytes
+            return container
+        }
+        return ServerResponse(message: response)
     }
 
     func streamMCP(
@@ -1122,10 +1241,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_GetContainerPortsRequest>,
         context: ServerContext
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_GetContainerPortsResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Container port lookup is currently not supported by Wendy Agent for Mac."
-        )
+        var response = Wendy_Agent_Services_V1_GetContainerPortsResponse()
+        if let pid = appsByID[request.message.appName]?.info.pid {
+            let ports = await SystemStats.listeningPorts(pid: pid)
+            response.ports = ports.map { sample in
+                var entry = Wendy_Agent_Services_V1_PortEntry()
+                entry.protocol = sample.proto
+                entry.port = sample.port
+                entry.address = sample.address
+                return entry
+            }
+        }
+        return ServerResponse(message: response)
     }
 
     func queryChunks(
@@ -1207,8 +1334,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let blobPath = "\(blobsDirectory)/sha256/\(expectedHash)"
-            try accumulated.write(to: URL(fileURLWithPath: blobPath))
+            let blobURL = try validateContainedPath(
+                base: URL(fileURLWithPath: blobsDirectory),
+                relative: "sha256/\(expectedHash)"
+            )
+            try accumulated.write(to: blobURL)
 
             logger.info(
                 "WriteLayer completed (OCI blob)",
@@ -1233,18 +1363,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 )
             }
 
-            let appDirectory = appsBase.appendingPathComponent(appName).path
+            let appDirectoryURL = try validateContainedPath(base: appsBase, relative: appName)
             try FileManager.default.createDirectory(
-                atPath: appDirectory,
+                at: appDirectoryURL,
                 withIntermediateDirectories: true
             )
-            let filePath = "\(appDirectory)/\(filename)"
-            try accumulated.write(to: URL(fileURLWithPath: filePath))
+            let fileURL = try validateContainedPath(base: appDirectoryURL, relative: filename)
+            try accumulated.write(to: fileURL)
 
             if filename != "sandbox.sb" {
                 try FileManager.default.setAttributes(
                     [.posixPermissions: 0o755],
-                    ofItemAtPath: filePath
+                    ofItemAtPath: fileURL.path
                 )
             }
 
@@ -1293,7 +1423,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     private func readBlob(digest: String) throws -> Data {
         // digest is "sha256:<hex>" — map to blobsDirectory/sha256/<hex>.
-        let blobPath = "\(blobsDirectory)/\(digest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: digest.replacingOccurrences(of: ":", with: "/")
+        ).path
         guard let data = FileManager.default.contents(atPath: blobPath) else {
             throw RPCError(code: .notFound, message: "Blob not found at \(blobPath)")
         }
@@ -1301,7 +1434,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     }
 
     private func extractTarGz(blobDigest: String, to destinationDirectory: String) async throws {
-        let blobPath = "\(blobsDirectory)/\(blobDigest.replacingOccurrences(of: ":", with: "/"))"
+        let blobPath = try validateContainedPath(
+            base: URL(fileURLWithPath: blobsDirectory),
+            relative: blobDigest.replacingOccurrences(of: ":", with: "/")
+        ).path
         let tarProcess = Foundation.Process()
         tarProcess.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tarProcess.arguments = ["-xzf", blobPath, "-C", destinationDirectory]

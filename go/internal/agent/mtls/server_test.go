@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -224,6 +225,125 @@ func TestNewTLSConfigEmptyChainReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewTLSConfig() expected error for empty chainPEM, got nil")
 	}
+}
+
+// testCAKeyPair generates a self-signed CA certificate/key and also returns
+// its PEM encoding, so callers can both sign peer leaves with it (needs the
+// *x509.Certificate + key) and use it as a chainPEM (needs the PEM).
+func testCAKeyPair(t *testing.T) (cert *x509.Certificate, key *ecdsa.PrivateKey, certPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating CA key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "Test Peer-Pinning CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("creating CA cert: %v", err)
+	}
+	cert, err = x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("parsing CA cert: %v", err)
+	}
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	return cert, key, certPEM
+}
+
+// testPeerLeafRaw signs a leaf certificate with ca/caKey carrying urn as a SAN
+// URI (the wendy org/entity identity format certs.IdentityFromCert parses),
+// returning the raw DER bytes as they would appear in tls.ConnectionState's
+// PeerCertificates during a real handshake.
+func testPeerLeafRaw(t *testing.T, ca *x509.Certificate, caKey *ecdsa.PrivateKey, urn string) []byte {
+	t.Helper()
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generating leaf key: %v", err)
+	}
+	u, err := url.Parse(urn)
+	if err != nil {
+		t.Fatalf("parsing urn %q: %v", urn, err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "peer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		URIs:         []*url.URL{u},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("creating leaf cert: %v", err)
+	}
+	return der
+}
+
+// TestNewClientTLSConfigExpectingPeerPinsIdentity covers the LAN-dial peer
+// pinning fix (C-final-review Fix 2): mDNS advertises a device's cloud asset
+// ID unauthenticated, so meshDialLAN must not trust chain validity alone —
+// any device holding a cert signed by the same CA (a different asset in the
+// same org, or a user cert) could otherwise impersonate the mDNS-advertised
+// target and MITM the connection. NewClientTLSConfigExpectingPeer's
+// VerifyPeerCertificate must accept only a peer leaf whose wendy identity is
+// exactly the expected asset in the expected org.
+func TestNewClientTLSConfigExpectingPeerPinsIdentity(t *testing.T) {
+	ca, caKey, chainPEM := testCAKeyPair(t)
+	// The config's own identity (used for the client cert we present); its
+	// content is irrelevant to peer verification.
+	ownCertPEM, ownKeyPEM := testLeafCertificate(t, "dialer")
+
+	cfg, err := NewClientTLSConfigExpectingPeer(ownCertPEM, chainPEM, ownKeyPEM, nil, 7, "215")
+	if err != nil {
+		t.Fatalf("NewClientTLSConfigExpectingPeer: %v", err)
+	}
+	if cfg.VerifyPeerCertificate == nil {
+		t.Fatal("VerifyPeerCertificate must not be nil (InsecureSkipVerify relies on it)")
+	}
+
+	t.Run("matching asset in expected org is accepted", func(t *testing.T) {
+		leaf := testPeerLeafRaw(t, ca, caKey, "urn:wendy:org:7:asset:215")
+		if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err != nil {
+			t.Fatalf("expected acceptance, got: %v", err)
+		}
+	})
+
+	t.Run("wrong asset ID in the right org is rejected", func(t *testing.T) {
+		leaf := testPeerLeafRaw(t, ca, caKey, "urn:wendy:org:7:asset:999")
+		if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
+			t.Fatal("expected rejection for wrong asset ID, got nil")
+		}
+	})
+
+	t.Run("right asset ID in the wrong org is rejected", func(t *testing.T) {
+		leaf := testPeerLeafRaw(t, ca, caKey, "urn:wendy:org:9:asset:215")
+		if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
+			t.Fatal("expected rejection for wrong org, got nil")
+		}
+	})
+
+	t.Run("user certificate for the expected identity's org is rejected", func(t *testing.T) {
+		leaf := testPeerLeafRaw(t, ca, caKey, "urn:wendy:org:7:user:215")
+		if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
+			t.Fatal("expected rejection for a user certificate, got nil")
+		}
+	})
+
+	t.Run("chain validity is still enforced (untrusted CA rejected)", func(t *testing.T) {
+		otherCA, otherKey, _ := testCAKeyPair(t)
+		leaf := testPeerLeafRaw(t, otherCA, otherKey, "urn:wendy:org:7:asset:215")
+		if err := cfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
+			t.Fatal("expected rejection for a leaf signed by an untrusted CA, got nil")
+		}
+	})
 }
 
 func TestNewTLSConfigServesOnlyLeafCertificate(t *testing.T) {

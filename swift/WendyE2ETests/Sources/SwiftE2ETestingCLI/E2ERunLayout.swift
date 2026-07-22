@@ -54,7 +54,8 @@ func e2eAttemptInfrastructureFailureDetail(at attemptURL: URL) -> String? {
     let xunitProblem = e2eAttemptXUnitProblem(at: attemptURL)
     if let exitStatus = e2eAttemptExitStatus(at: attemptURL), exitStatus != 0 {
         if let xunitProblem {
-            return "attempt exited with status \(exitStatus) and produced unusable xUnit output: \(xunitProblem)"
+            return
+                "attempt exited with status \(exitStatus) and produced unusable xUnit output: \(xunitProblem)"
         }
         if e2eAttemptXUnitURL(at: attemptURL) == nil {
             return "attempt exited with status \(exitStatus) before producing test-results.xml"
@@ -96,7 +97,8 @@ private func e2eAttemptTimeoutDetail(at attemptURL: URL) -> String? {
 }
 
 private func e2eBoundedMessage(_ message: String) -> String {
-    let normalized = message
+    let normalized =
+        message
         .replacingOccurrences(of: "\r", with: " ")
         .replacingOccurrences(of: "\n", with: " ")
     guard normalized.count > e2eAttemptMessageMaxCharacters else { return normalized }

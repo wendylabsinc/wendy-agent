@@ -68,6 +68,42 @@ func TestLANDeviceFromMDNSEntryUsesWendyOSDeviceID(t *testing.T) {
 	}
 }
 
+func TestLANDeviceFromMDNSEntryParsesAssetID(t *testing.T) {
+	entry := &mdns.ServiceEntry{
+		Name:       "wendyos-prudent-lark._wendyos._udp.local.",
+		Host:       "wendyos-prudent-lark.local.",
+		AddrV4:     net.ParseIP("169.254.249.48"),
+		Port:       50051,
+		InfoFields: []string{"id=agent-id", "tls=true", "assetid=215"},
+	}
+
+	dev, ok := lanDeviceFromMDNSEntry(entry, nil, windowsNetworkAdapterLookup{})
+	if !ok {
+		t.Fatal("lanDeviceFromMDNSEntry returned false")
+	}
+	if dev.AssetID != 215 {
+		t.Fatalf("AssetID = %d, want 215", dev.AssetID)
+	}
+}
+
+func TestLANDeviceFromMDNSEntryNoAssetIDWithoutTXT(t *testing.T) {
+	entry := &mdns.ServiceEntry{
+		Name:       "wendyos-prudent-lark._wendyos._udp.local.",
+		Host:       "wendyos-prudent-lark.local.",
+		AddrV4:     net.ParseIP("169.254.249.48"),
+		Port:       50051,
+		InfoFields: []string{"id=agent-id"},
+	}
+
+	dev, ok := lanDeviceFromMDNSEntry(entry, nil, windowsNetworkAdapterLookup{})
+	if !ok {
+		t.Fatal("lanDeviceFromMDNSEntry returned false")
+	}
+	if dev.AssetID != 0 {
+		t.Fatalf("AssetID = %d, want 0 when assetid TXT record is absent", dev.AssetID)
+	}
+}
+
 func TestLANDeviceFromMDNSEntryAddsIPv6LinkLocalZone(t *testing.T) {
 	iface := &net.Interface{Name: "Ethernet"}
 	entry := &mdns.ServiceEntry{

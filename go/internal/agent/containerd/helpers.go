@@ -91,6 +91,11 @@ const labelKeyServiceName = "sh.wendy/service"
 // when the app declares an isolation mode.
 const labelKeyIsolation = "sh.wendy/isolation"
 
+// labelKeyDependsOn persists a service's dependsOn list (comma-separated) so
+// appServices can be rebuilt after a restart for shared-namespace stop-order /
+// group restart. Absent means no declared dependencies.
+const labelKeyDependsOn = "sh.wendy/depends-on"
+
 // labelKeyStoppedByUser records that an app was explicitly stopped by the user
 // (wendy device apps stop). Set to "true" on stop, removed on start. The boot
 // reconcile skips containers carrying it, so a deliberate stop survives a
@@ -253,8 +258,9 @@ func sanitizeForLog(s string, maxLen int) string {
 // When serviceName is non-empty (multi-service app), labelKeyServiceName is
 // additionally set to serviceName. When isolation is non-empty, labelKeyIsolation
 // is additionally set to isolation, so the isolation mode survives a reboot
-// (see labelKeyIsolation).
-func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, isolation string) map[string]string {
+// (see labelKeyIsolation). dependsOn, when non-empty, is persisted so
+// appServices can be rebuilt after a restart (see labelKeyDependsOn).
+func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.RestartPolicy, entitlements []appconfig.Entitlement, isolation string, dependsOn []string) map[string]string {
 	labels := map[string]string{
 		labelKeyAppVersion: version,
 		labelKeyAppID:      appName,
@@ -266,6 +272,10 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 
 	if isolation != "" {
 		labels[labelKeyIsolation] = isolation
+	}
+
+	if len(dependsOn) > 0 {
+		labels[labelKeyDependsOn] = strings.Join(dependsOn, ",")
 	}
 
 	if restartPolicy != nil {
@@ -287,6 +297,22 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 	}
 
 	return labels
+}
+
+// parseDependsOn decodes the comma-separated labelKeyDependsOn value back into
+// a service list, tolerating and dropping any stray empty entries. It is the
+// inverse of the strings.Join in wendyLabels.
+func parseDependsOn(v string) []string {
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // parseEntitlementsFromAnnotations reconstructs an entitlement list from OCI

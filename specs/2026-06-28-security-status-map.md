@@ -42,7 +42,7 @@ Badge vocabulary: `✅ Shipped` / `🛠 In progress` / `📋 Planned`
 | WDY-1014 | Default network mode host → bridge/CNI | 📋 Planned | Default network mode not changed; Phase 2 (breaking) |
 | WDY-1008 | Camera entitlement rbind-mounts all of /dev | 📋 Planned | `applyCamera()` still uses `/dev` bind mount (`oci/entitlements.go:466`); WDY-1008 fix (enumerate only `/dev/video*`,`/dev/media*`) not yet shipped; Phase 2 |
 | WDY-1149 | CLI device cert/pubkey pinning on set-default | ✅ Shipped | Organisation + cloud host pinned in `shared/config/devicepin.go`; verified on `set-default` and subsequent connections (`cli/commands/device.go:329`, commit `7fc51b10`) |
-| WDY-1001 | Reproducible builds / SBOM / SLSA provenance | 🛠 In progress | Phase 1; signing infrastructure prerequisite for WDY-1088/1089 |
+| WDY-1001 | Reproducible builds / SBOM / SLSA provenance | 🛠 In progress | SBOM + provenance shipped: `build.yml` attaches per-binary/Swift/source SPDX SBOMs to every release with Sigstore SLSA build-provenance + SBOM attestations (see `security/VERIFICATION.md`); reproducible builds and dedicated signing keys not yet shipped — remains prerequisite for WDY-1088/1089 |
 | WDY-1086 | Pin/hard-code cloud CA in firmware | 🛠 In progress | Phase 1 |
 | WDY-1088 | OCI image signature verification (cosign/Notary v2) | 🛠 In progress | Phase 1; blocked on WDY-1001 signing keys |
 | WDY-1089 | Agent binary signature verification | 🛠 In progress | Phase 1; blocked on WDY-1001 |

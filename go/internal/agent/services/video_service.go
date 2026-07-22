@@ -268,6 +268,8 @@ type VideoService struct {
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 	isJetson           func() bool
+	readTegraRelease   func() ([]byte, error)
+	dumpBootSlots      func(context.Context) ([]byte, error)
 
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
@@ -309,6 +311,10 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
 		isJetson:           func() bool { return board.Detect().IsJetson() },
+		readTegraRelease:   func() ([]byte, error) { return os.ReadFile("/etc/nv_tegra_release") },
+		dumpBootSlots: func(ctx context.Context) ([]byte, error) {
+			return exec.CommandContext(ctx, "nvbootctrl", "dump-slots-info").CombinedOutput()
+		},
 	}
 }
 
@@ -594,6 +600,12 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 		return err
 	}
 	path := fmt.Sprintf("/dev/video%d", devID)
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	if transport == camera.TransportCSI && s.isJetson() {
+		if err := s.preflightTegraCSI(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Lstat validates the path before any open: the node must be a character
 	// device with V4L2 major number 81 and must not be a symlink. This catches

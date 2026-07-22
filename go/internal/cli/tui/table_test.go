@@ -1,11 +1,33 @@
 package tui
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	bubbleTable "github.com/charmbracelet/bubbles/table"
+	tea "github.com/charmbracelet/bubbletea"
 )
+
+// Regression test for the "wendy discover eats my terminal" bug: bubbletea
+// delivers a WindowSizeMsg at every program start, and BubbleTable.Update used
+// to answer it with tea.ClearScreen. That emits CSI 2J on the primary screen,
+// destroying the user's visible terminal content in place (erased lines never
+// reach scrollback). The renderer already repaints on WindowSizeMsg, so no
+// command is needed here at all.
+func TestBubbleTableWindowSizeMsgMustNotClearScreen(t *testing.T) {
+	cols := []bubbleTable.Column{{Title: "Name", Width: 20}}
+	tbl := NewBubbleTable(true, cols)
+
+	_, cmd := tbl.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); reflect.TypeOf(msg) == reflect.TypeOf(tea.ClearScreen()) {
+		t.Fatal("BubbleTable.Update answered WindowSizeMsg with tea.ClearScreen; " +
+			"this wipes the user's visible terminal content at TUI startup and on every resize")
+	}
+}
 
 // The underlying bubbles table.SetRows() drives its cursor to -1 whenever it is
 // called with an empty slice, and never restores it once rows reappear. A

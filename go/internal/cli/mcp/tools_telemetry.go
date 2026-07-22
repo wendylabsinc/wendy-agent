@@ -2,8 +2,8 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
-	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -20,7 +20,7 @@ var telemetryProtoJSON = protojson.MarshalOptions{
 }
 
 func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("telemetry_logs",
+	logsOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Stream a bounded snapshot of OTLP logs from the connected device"),
 		mcpgo.WithString("app_name",
 			mcpgo.Description("Filter by app/container name (optional)"),
@@ -34,9 +34,15 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
 		),
-	), s.handleTelemetryLogs)
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	logsOpts = append(logsOpts, readOnly()...)
+	logsOpts = append(logsOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("telemetry_logs", logsOpts...), s.handleTelemetryLogs)
 
-	srv.AddTool(mcpgo.NewTool("telemetry_metrics",
+	metricsOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Stream a bounded snapshot of OTLP metrics from the connected device"),
 		mcpgo.WithString("app_name",
 			mcpgo.Description("Filter by app/container name (optional)"),
@@ -50,9 +56,15 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
 		),
-	), s.handleTelemetryMetrics)
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	metricsOpts = append(metricsOpts, readOnly()...)
+	metricsOpts = append(metricsOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("telemetry_metrics", metricsOpts...), s.handleTelemetryMetrics)
 
-	srv.AddTool(mcpgo.NewTool("telemetry_traces",
+	tracesOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Stream a bounded snapshot of OTLP traces from the connected device"),
 		mcpgo.WithString("app_name",
 			mcpgo.Description("Filter by app/container name (optional)"),
@@ -66,18 +78,25 @@ func (s *mcpServer) registerTelemetryTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("max_batches",
 			mcpgo.Description("Maximum OTLP batches to collect (default 10)"),
 		),
-	), s.handleTelemetryTraces)
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	tracesOpts = append(tracesOpts, readOnly()...)
+	tracesOpts = append(tracesOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("telemetry_traces", tracesOpts...), s.handleTelemetryTraces)
 }
 
 // collectProtoStream receives up to maxBatches messages from stream, marshals
-// each to JSON with protojson, and returns them as a JSON array string.
-// Returns an error string on non-EOF stream failures.
+// each to JSON with protojson, and returns them as a slice of raw JSON
+// messages suitable for structured results. Returns an error on non-EOF
+// stream failures.
 func collectProtoStream[T proto.Message](
 	ctx context.Context,
 	recv func() (T, error),
 	maxBatches int,
-) (string, error) {
-	var parts []string
+) ([]json.RawMessage, error) {
+	parts := []json.RawMessage{}
 	for len(parts) < maxBatches {
 		msg, err := recv()
 		if err == io.EOF {
@@ -87,18 +106,15 @@ func collectProtoStream[T proto.Message](
 			if ctx.Err() != nil {
 				break
 			}
-			return "", err
+			return nil, err
 		}
 		b, err := telemetryProtoJSON.Marshal(msg)
 		if err != nil {
 			continue
 		}
-		parts = append(parts, string(b))
+		parts = append(parts, json.RawMessage(b))
 	}
-	if len(parts) == 0 {
-		return "[]", nil
-	}
-	return "[" + strings.Join(parts, ",\n") + "]", nil
+	return parts, nil
 }
 
 func (s *mcpServer) handleTelemetryLogs(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -125,15 +141,15 @@ func (s *mcpServer) handleTelemetryLogs(ctx context.Context, req mcpgo.CallToolR
 
 	stream, err := conn.TelemetryService.StreamLogs(ctx, logsReq)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	result, err := collectProtoStream(ctx, func() (*agentpb.StreamLogsResponse, error) {
 		return stream.Recv()
 	}, maxBatches)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -159,15 +175,15 @@ func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallTo
 
 	stream, err := conn.TelemetryService.StreamMetrics(ctx, metricsReq)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	result, err := collectProtoStream(ctx, func() (*agentpb.StreamMetricsResponse, error) {
 		return stream.Recv()
 	}, maxBatches)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -193,13 +209,13 @@ func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToo
 
 	stream, err := conn.TelemetryService.StreamTraces(ctx, tracesReq)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	result, err := collectProtoStream(ctx, func() (*agentpb.StreamTracesResponse, error) {
 		return stream.Recv()
 	}, maxBatches)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(result), nil
+	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
 }

@@ -74,6 +74,12 @@ jobs:
     name: ${{ matrix.artifact-name }}
     runs-on: ubuntu-latest
     needs: [determine-version]
+    # Attest SLSA build provenance in the job that produces the archive, so the
+    # provenance reflects the actual build environment (not a downstream job).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -132,6 +138,11 @@ jobs:
           fi
           echo "archive=$ARCHIVE" >> $GITHUB_ENV
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ env.archive }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -150,6 +161,12 @@ jobs:
     name: ${{ matrix.artifact-name }}
     runs-on: ${{ matrix.runner }}
     needs: [determine-version]
+    # Attest SLSA build provenance in the job that produces the archive, so the
+    # provenance reflects the actual build environment (not a downstream job).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -247,6 +264,12 @@ jobs:
     name: ${{ matrix.artifact-name }}
     runs-on: macos-15
     needs: [determine-version]
+    # Attest SLSA build provenance in the job that produces the archive, so the
+    # provenance reflects the actual build environment (not a downstream job).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -289,6 +312,11 @@ jobs:
           ARCHIVE="${{ matrix.artifact-name }}-${VERSION}.tar.gz"
           tar -czvf "$ARCHIVE" ${{ matrix.artifact-name }}/
           echo "archive=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: ${{ env.archive }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -363,6 +391,115 @@ jobs:
           if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH" || true
           fi
+
+  sbom-source:
+    name: SBOM (source + swift)
+    runs-on: ubuntu-latest
+    needs: [determine-version]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        with:
+          syft-version: v1.18.1
+      - name: Generate source + swift SBOMs
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-sbom.sh
+          mkdir -p sboms
+          scripts/generate-sbom.sh swift  "sboms/wendy-swift-${VERSION}.spdx.json"  --repo-root "$PWD"
+          scripts/generate-sbom.sh source "sboms/wendy-source-${VERSION}.spdx.json" --repo-root "$PWD"
+
+      - name: Upload swift SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-swift-${{ needs.determine-version.outputs.version }}
+          path: sboms/wendy-swift-${{ needs.determine-version.outputs.version }}.spdx.json
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload source SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-source-${{ needs.determine-version.outputs.version }}
+          path: sboms/wendy-source-${{ needs.determine-version.outputs.version }}.spdx.json
+          retention-days: 14
+          if-no-files-found: error
+
+  sbom-binaries:
+    name: SBOM+attest (${{ matrix.artifact-name }})
+    runs-on: ubuntu-latest
+    needs: [determine-version, build, build-go-macos]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { artifact-name: wendy-agent-linux-amd64, binary: wendy-agent, ext: tar.gz }
+          - { artifact-name: wendy-agent-linux-arm64, binary: wendy-agent, ext: tar.gz }
+          - { artifact-name: wendy-cli-linux-amd64,   binary: wendy,       ext: tar.gz }
+          - { artifact-name: wendy-cli-linux-arm64,   binary: wendy,       ext: tar.gz }
+          - { artifact-name: wendy-cli-windows-amd64, binary: wendy.exe,   ext: zip }
+          - { artifact-name: wendy-cli-windows-arm64, binary: wendy.exe,   ext: zip }
+          # Intel (amd64) macOS CLI is not built (see build-go-macos), so there
+          # is no wendy-cli-darwin-amd64 archive to attest.
+          - { artifact-name: wendy-cli-darwin-arm64,  binary: wendy,       ext: tar.gz }
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        with:
+          syft-version: v1.18.1
+
+      - name: Download archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}.${{ matrix.ext }}
+          path: dist
+
+      - name: Extract binary and generate SBOM
+        id: sbom
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+          ARTIFACT: ${{ matrix.artifact-name }}
+          BINARY: ${{ matrix.binary }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/generate-sbom.sh
+          ARCHIVE="dist/${ARTIFACT}-${VERSION}.${EXT}"
+          mkdir -p extracted
+          if [[ "$EXT" == "zip" ]]; then
+            unzip -o "$ARCHIVE" -d extracted
+          else
+            tar -xzf "$ARCHIVE" -C extracted
+          fi
+          mkdir -p sboms
+          SBOM="sboms/${ARTIFACT}-${VERSION}.spdx.json"
+          scripts/generate-sbom.sh binary "extracted/${ARTIFACT}/${BINARY}" "$SBOM"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "sbom=$SBOM" >> "$GITHUB_OUTPUT"
+
+      - name: Attest SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3
+        with:
+          subject-path: ${{ steps.sbom.outputs.archive }}
+          sbom-path: ${{ steps.sbom.outputs.sbom }}
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sbom-${{ matrix.artifact-name }}-${{ needs.determine-version.outputs.version }}
+          path: ${{ steps.sbom.outputs.sbom }}
+          retention-days: 14
+          if-no-files-found: error
 
   package-linux:
     name: Package Linux (${{ matrix.arch }})
@@ -453,8 +590,8 @@ jobs:
             -v "$VERSION" \
             --architecture ${{ matrix.arch }} \
             --description "Wendy CLI - Remote device debugging and deployment" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "devel" \
@@ -470,8 +607,8 @@ jobs:
             -v "$VERSION" \
             --architecture ${{ matrix.arch }} \
             --description "Wendy Agent - Runs on target devices for remote debugging" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "devel" \
@@ -507,8 +644,8 @@ jobs:
             -v "$RPM_VERSION" \
             --architecture ${{ matrix.rpm-arch }} \
             --description "Wendy CLI - Remote device debugging and deployment" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "Development/Tools" \
@@ -524,8 +661,8 @@ jobs:
             -v "$RPM_VERSION" \
             --architecture ${{ matrix.rpm-arch }} \
             --description "Wendy Agent - Runs on target devices for remote debugging" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "Development/Tools" \
@@ -802,6 +939,50 @@ jobs:
           PROJECT: ${{ vars.GCP_PROJECT_ID }}
         run: ./.github/scripts/publish-agent-gcs.sh
 
+  publish-install-scripts:
+    name: Publish install scripts to GCS
+    runs-on: ubuntu-latest
+    needs: [determine-version, build]
+    if: |
+      always() &&
+      needs.determine-version.result == 'success' &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Upload install scripts and update manifest
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+          IS_RELEASE: ${{ needs.determine-version.outputs.is_release }}
+          BUCKET: wendy-install-public
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: ./.github/scripts/publish-install-scripts.sh
+
+      - name: Verify scripts are reachable
+        # Verifies the bucket directly, since install.wendy.dev isn't fronted by the
+        # load balancer yet (see the Task 5 runbook for that DNS/LB cutover). Flip this
+        # to https://install.wendy.dev/${name} once that cutover is live.
+        run: |
+          set -euo pipefail
+          for name in agent.sh cli.sh manifest.json; do
+            curl -fsS --max-time 30 "https://storage.googleapis.com/wendy-install-public/${name}" >/dev/null
+            echo "ok: https://storage.googleapis.com/wendy-install-public/${name}"
+          done
+
   integration-tests:
     name: Integration Tests (macOS, stable gate)
     uses: ./.github/workflows/integration-tests.yml
@@ -812,13 +993,15 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [determine-version, build, build-go-macos, build-agent-macos-app, package-linux, package-windows, test-templates, integration-tests]
+    needs: [determine-version, build, build-go-macos, build-agent-macos-app, sbom-source, sbom-binaries, package-linux, package-windows, test-templates, integration-tests]
     if: |
       always() &&
       needs.determine-version.result == 'success' &&
       needs.build.result == 'success' &&
       needs.build-go-macos.result == 'success' &&
       needs.build-agent-macos-app.result == 'success' &&
+      needs.sbom-source.result == 'success' &&
+      needs.sbom-binaries.result == 'success' &&
       needs.package-linux.result == 'success' &&
       needs.package-windows.result == 'success' &&
       needs.test-templates.result == 'success' &&
@@ -835,7 +1018,7 @@ jobs:
           # Create a newline-delimited list of release files
           {
             echo 'FILES<<EOF'
-            find . -name "*.tar.gz" -o -name "*.zip" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" | sort
+            find . -name "*.tar.gz" -o -name "*.zip" -o -name "*.msi" -o -name "*.deb" -o -name "*.rpm" -o -name "*.spdx.json" | sort
             echo 'EOF'
           } >> $GITHUB_ENV
       - name: Create Release

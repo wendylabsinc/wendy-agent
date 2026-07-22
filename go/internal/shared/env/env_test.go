@@ -34,3 +34,16 @@ func TestIsCI_IgnoresWhitespaceOnlyValues(t *testing.T) {
 		t.Error("IsCI should be false for whitespace-only CI value")
 	}
 }
+
+func TestIsHomebrewInstall(t *testing.T) {
+	for _, key := range HomebrewEnvVars {
+		t.Setenv(key, "")
+	}
+	if IsHomebrewInstall() {
+		t.Fatal("expected false with no Homebrew env vars set")
+	}
+	t.Setenv("HOMEBREW_PREFIX", "/opt/homebrew")
+	if !IsHomebrewInstall() {
+		t.Fatal("expected true when HOMEBREW_PREFIX is set")
+	}
+}

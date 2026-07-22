@@ -177,6 +177,75 @@ func TestParseAvahiResolveLine(t *testing.T) {
 	}
 }
 
+func TestParseAvahiResolveLineAssetID(t *testing.T) {
+	line := `=;eth0;IPv4;WendyOS\032provisioned;_wendyos._udp;local;wendyos-prov.local;192.168.1.50;50052;"wendyosdevice=prov-uuid" "tls=true" "assetid=215"`
+	dev, ok := parseAvahiResolveLine(line)
+	if !ok {
+		t.Fatal("parseAvahiResolveLine returned !ok")
+	}
+	if dev.AssetID != 215 {
+		t.Fatalf("AssetID = %d, want 215", dev.AssetID)
+	}
+}
+
+func TestParseAvahiResolveLineNoAssetID(t *testing.T) {
+	line := `=;eth0;IPv4;WendyOS\032device;_wendyos._udp;local;wendyos.local;192.168.1.10;50051;"wendyosdevice=abc123"`
+	dev, ok := parseAvahiResolveLine(line)
+	if !ok {
+		t.Fatal("parseAvahiResolveLine returned !ok")
+	}
+	if dev.AssetID != 0 {
+		t.Fatalf("AssetID = %d, want 0 for unprovisioned device", dev.AssetID)
+	}
+}
+
+func TestParseAvahiResolveLineAssetIDZeroIgnored(t *testing.T) {
+	line := `=;eth0;IPv4;WendyOS\032device;_wendyos._udp;local;wendyos.local;192.168.1.10;50051;"wendyosdevice=abc123" "assetid=0"`
+	dev, ok := parseAvahiResolveLine(line)
+	if !ok {
+		t.Fatal("parseAvahiResolveLine returned !ok")
+	}
+	if dev.AssetID != 0 {
+		t.Fatalf("AssetID = %d, want 0 when assetid TXT record is 0", dev.AssetID)
+	}
+}
+
+func TestLANDeviceFromMDNSEntryParsesAssetID(t *testing.T) {
+	entry := &mdns.ServiceEntry{
+		Name:       "wendyos-prov._wendyos._udp.local.",
+		Host:       "wendyos-prov.local.",
+		AddrV4:     net.ParseIP("192.168.1.20"),
+		Port:       50052,
+		InfoFields: []string{"wendyosdevice=prov-uuid", "tls=true", "assetid=215"},
+	}
+
+	dev, ok := lanDeviceFromMDNSEntry(entry, nil)
+	if !ok {
+		t.Fatal("lanDeviceFromMDNSEntry returned false")
+	}
+	if dev.AssetID != 215 {
+		t.Fatalf("AssetID = %d, want 215", dev.AssetID)
+	}
+}
+
+func TestLANDeviceFromMDNSEntryNoAssetIDWithoutTXT(t *testing.T) {
+	entry := &mdns.ServiceEntry{
+		Name:       "wendyos-device._wendyos._udp.local.",
+		Host:       "wendyos-device.local.",
+		AddrV4:     net.ParseIP("192.168.1.10"),
+		Port:       50051,
+		InfoFields: []string{"wendyosdevice=some-uuid"},
+	}
+
+	dev, ok := lanDeviceFromMDNSEntry(entry, nil)
+	if !ok {
+		t.Fatal("lanDeviceFromMDNSEntry returned false")
+	}
+	if dev.AssetID != 0 {
+		t.Fatalf("AssetID = %d, want 0 when assetid TXT record is absent", dev.AssetID)
+	}
+}
+
 // ── lanDeviceFromMDNSEntry ──────────────────────────────────────────
 
 func TestLANDeviceFromMDNSEntrySetsMTLS(t *testing.T) {

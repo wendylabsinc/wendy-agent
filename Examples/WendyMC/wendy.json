@@ -1,0 +1,16 @@
+{
+  "appId": "sh.wendy.examples.wendymc",
+  "version": "0.1.0",
+  "entitlements": [
+    { "type": "network", "mode": "host" }
+  ],
+  "readiness": {
+    "tcpSocket": { "port": 8080 },
+    "timeoutSeconds": 180
+  },
+  "hooks": {
+    "postStart": {
+      "openURL": "http://${WENDY_HOSTNAME}:8080"
+    }
+  }
+}

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,24 +40,24 @@ var cliStyle = lipgloss.NewStyle().Foreground(tui.ColorDim)
 var cliNoticeStyle = lipgloss.NewStyle().Foreground(tui.ColorNotice)
 var execCommandContext = exec.CommandContext
 
-const macContainersUnsupportedMessage = "Project/target mismatch: selected target is Wendy Agent for Mac, but this project uses the Linux/container deployment path. Linux containers aren't supported on Macs yet. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device."
-
 func macPlatformMismatchMessage(platform string) string {
 	return fmt.Sprintf("Project/target mismatch: selected target is Wendy Agent for Mac, but wendy.json resolves to platform %q. Wendy Agent for Mac currently runs native macOS apps only. To fix this, set `platform: \"darwin\"` and use a Mac-compatible native SwiftPM or Xcode template, or target a Linux/WendyOS device.", platform)
 }
 
 func rejectUnsupportedMacRunProject(projectType, platform string) error {
-	if !strings.EqualFold(platformOS(platform), appconfig.PlatformDarwin) {
+	osName := platformOS(platform)
+	// Native darwin apps and Linux/WendyOS containers (via the Mac agent's
+	// container runtime) are both supported. Anything else is a real mismatch.
+	if !strings.EqualFold(osName, appconfig.PlatformDarwin) &&
+		!strings.EqualFold(osName, "linux") &&
+		!strings.EqualFold(osName, "wendyos") {
 		return errors.New(macPlatformMismatchMessage(platform))
 	}
-
 	switch projectType {
-	case "swift", "xcode":
+	case "swift", "xcode", "docker", "python", "compose", "multi-service":
 		return nil
-	case "docker", "python", "compose", "multi-service":
-		return errors.New(macContainersUnsupportedMessage)
 	default:
-		return nil
+		return fmt.Errorf("unable to detect project type for a Mac target: %q", projectType)
 	}
 }
 
@@ -487,6 +488,10 @@ type runOptions struct {
 	keepGoing            bool
 	maxConcurrency       int
 	userArgs             []string
+	// env are extra KEY=VALUE environment variables injected into the container
+	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
+	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
@@ -1025,6 +1030,9 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy: restartPolicy,
 		Cmd:           cmd,
 		UserArgs:      userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
@@ -1459,6 +1467,12 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// values that fail build-arg validation are skipped rather than fatal.
 	applyDeviceBuildArgHints(buildArgs, versionResp)
 
+	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
+	// (CDC) support, so every fast-deploy attempt just probes, fails, and falls
+	// back to a registry push — wasted round trips. Skip both fast-deploy paths
+	// entirely for darwin agents and go straight to the registry push below.
+	isDarwinAgent := strings.EqualFold(agentOS, appconfig.PlatformDarwin)
+
 	// Detached fast path: when nothing that affects the image has changed since
 	// the last successful deploy to this device, skip the build entirely and
 	// just ensure the existing container is running. Best-effort — a missing or
@@ -1466,7 +1480,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
-	if opts.detach && !opts.deploy && hashErr == nil {
+	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -1487,7 +1501,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
-	if !opts.deploy && opts.chunking != chunkingOff {
+	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
 		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
@@ -1557,9 +1571,70 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
+		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
+		// env (discovery peers). Fleet env is appended last so it wins on key clash.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+}
+
+// expandServiceEnv resolves one service's `env` map from wendy.json into the
+// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
+// host environment variables via ${VAR} (or $VAR); they are expanded here, on
+// the deploy host, since the agent has no access to this shell's environment.
+// An entry whose value expands to empty is dropped so the container falls
+// back to its own built-in default rather than receiving an empty override.
+// Output is sorted for deterministic requests; the agent re-validates every
+// entry (POSIX key, blocked prefixes) before applying it.
+func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
+	if svc == nil || len(svc.Env) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(svc.Env))
+	for k, v := range svc.Env {
+		if expanded := os.Expand(v, os.Getenv); expanded != "" {
+			out = append(out, k+"="+expanded)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
+// for single-service deploy paths that build one CreateContainerRequest for
+// the whole app rather than one per service (see multibuild.go for the
+// per-service path, which calls expandServiceEnv directly).
+func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
+	if appCfg == nil {
+		return nil
+	}
+	// Sort service names so cross-service key collisions resolve deterministically.
+	svcNames := make([]string, 0, len(appCfg.Services))
+	for name := range appCfg.Services {
+		svcNames = append(svcNames, name)
+	}
+	sort.Strings(svcNames)
+
+	merged := map[string]string{}
+	for _, name := range svcNames {
+		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
+			k, v, _ := strings.Cut(kv, "=")
+			merged[k] = v
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(merged))
+	for k, v := range merged {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
@@ -1592,13 +1667,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-		// Wait for readiness before firing hook.
-		if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-			warnReadiness(ctx, conn, appCfg.AppID, err)
-		}
-		announceReachableURL(ctx, conn, appCfg)
-		// Fire-and-forget: post-start hook outlives the CLI process.
-		startPostStartHook(context.Background(), appCfg, conn.Host)
+		// Announce + fire-and-forget post-start hook (outlives the CLI process),
+		// but only if the app passes readiness.
+		runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 		return nil
 	}
 
@@ -1625,20 +1696,16 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 		runCancel()
 	}()
 
-	// Wait for readiness before firing hook.
-	if err := waitForReadiness(runCtx, appCfg.Readiness, conn.Host); err != nil {
-		if runCtx.Err() == nil {
-			warnReadiness(runCtx, conn, appCfg.AppID, err)
-		}
-	}
-	if runCtx.Err() == nil {
-		announceReachableURL(runCtx, conn, appCfg)
-	}
-
-	// Post-start hook tied to runCtx so Ctrl+C kills it.
-	postStartCmd := startPostStartHook(runCtx, appCfg, conn.Host)
+	// Announce + post-start hook, gated on readiness; the hook is tied to
+	// runCtx so Ctrl+C kills it.
+	postStartCmd := runPostStartIfReady(runCtx, runCtx, conn, appCfg)
 
 	gotFirstResponse := false
+	// Set when the stream ends on a genuine failure (as opposed to a clean
+	// container exit, which arrives as io.EOF, or a user Ctrl+C, which cancels
+	// runCtx). Held so the normal stop/cleanup below still runs before we
+	// surface the failure and exit non-zero.
+	var runErr error
 	for {
 		resp, recvErr := outStream.Recv()
 		if recvErr == io.EOF {
@@ -1662,7 +1729,16 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 				stdinAttempted = false
 				continue
 			}
-			return fmt.Errorf("receiving container output: %w", recvErr)
+			// Any other stream error is a real failure: the container failed to
+			// start or exited abnormally (the agent wraps the real cause in the
+			// status message), or the stream itself broke (agent crash, network
+			// drop, auth). A clean container exit arrives as io.EOF above, so
+			// reaching here always means the run did not succeed. Record it, run
+			// the normal cleanup, then return it so `wendy run` exits non-zero
+			// instead of reporting a false success. Use the status message so the
+			// output reads as a container failure, not a CLI crash.
+			runErr = fmt.Errorf("container run failed: %s", status.Convert(recvErr).Message())
+			break
 		}
 		gotFirstResponse = true
 		if out := resp.GetStdoutOutput(); out != nil {
@@ -1678,6 +1754,9 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	runCancel()
 	if postStartCmd != nil {
 		_ = postStartCmd.Wait()
+	}
+	if runErr != nil {
+		return runErr
 	}
 	cliLogln("\nApplication %s stopped.", containerDisplayName(appCfg))
 	return nil
@@ -1734,19 +1813,26 @@ func shellCommand() (string, []string) {
 }
 
 // expandHookEnv resolves Wendy's documented placeholders in s. Both Unix-style
-// (${VAR}, $VAR) and Windows-style (%WENDY_*%) forms are accepted for the two
+// (${VAR}, $VAR) and Windows-style (%WENDY_*%) forms are accepted for the
 // Wendy-provided placeholders, so the same hook string parses identically in
 // sh and cmd.exe. Other ${VAR} forms fall through to os.Getenv; raw %VAR%
 // forms for non-Wendy variables are left for cmd.exe to expand natively.
-func expandHookEnv(s, hostname, appID string) string {
+//
+// serviceName is "" for single-container apps (and the app-level fallback
+// hook), which expands WENDY_SERVICE_NAME to the empty string rather than
+// leaving it verbatim — the placeholder simply isn't meaningful there.
+func expandHookEnv(s, hostname, appID, serviceName string) string {
 	s = strings.ReplaceAll(s, "%WENDY_HOSTNAME%", hostname)
 	s = strings.ReplaceAll(s, "%WENDY_APP_ID%", appID)
+	s = strings.ReplaceAll(s, "%WENDY_SERVICE_NAME%", serviceName)
 	return os.Expand(s, func(key string) string {
 		switch key {
 		case "WENDY_HOSTNAME":
 			return hostname
 		case "WENDY_APP_ID":
 			return appID
+		case "WENDY_SERVICE_NAME":
+			return serviceName
 		default:
 			return os.Getenv(key)
 		}
@@ -1764,28 +1850,69 @@ var browserOpen = browseropen.Open
 // from one of them. It is best-effort: it only queries the device when there is
 // something to show (a postStart openURL or a readiness TCP port) and stays
 // silent on any error or when no reachable address can be determined.
-func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
+// Returns the device IP the printed URL uses, or "" when nothing was announced.
+func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) string {
 	var hookURL string
 	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
 		hookURL = appCfg.Hooks.PostStart.OpenURL
 	}
 	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
 	if hookURL == "" && !hasPort {
-		return
+		return ""
 	}
 
 	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
-		return
+		return ""
 	}
-	url := reachableAppURL(hookURL, appCfg.AppID, bestReachableIP(resp.GetNetworkInterfaces()), appCfg.Readiness)
+	ip := bestReachableIP(resp.GetNetworkInterfaces())
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, appCfg.Readiness)
 	if url == "" {
-		return
+		return ""
 	}
 	cliLogln("App reachable at %s", tui.Value(url))
+	return ip
 }
 
-// startPostStartHook fires the postStart hook actions for appCfg.
+// runPostStartIfReady gates `wendy run`'s post-start side effects on the
+// readiness probe: the reachable-URL announcement and the host-side postStart
+// hook fire only when the app actually came up. Firing them after a failed
+// probe reported a success that never happened — "App reachable at ..." and a
+// browser tab pointed at a container that had already exited.
+//
+// hookCtx bounds the hook's CLI child process; detached callers pass
+// context.Background() so the hook outlives the CLI. Returns the hook's cmd
+// for the caller to reap, nil when no CLI hook ran.
+func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
+	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+		if ctx.Err() == nil {
+			warnReadiness(ctx, conn, appCfg.AppID, err)
+			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
+				(appCfg.Hooks.PostStart.OpenURL != "" || appCfg.Hooks.PostStart.CLI != "") {
+				cliLogln("Skipping postStart hook: %s is not ready.", containerDisplayName(appCfg))
+			}
+		}
+		return nil
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	hookHost := conn.Host
+	if ip := announceReachableURL(ctx, conn, appCfg); ip != "" && isIPv6Literal(conn.Host) {
+		// The CLI dialed the device at a bare IPv6 literal — often an RFC 4941
+		// temporary (privacy) address picked up from mDNS that rotates away.
+		// Point the hook at the device's best self-reported IP (IPv4-preferred)
+		// so the URL it opens matches the "App reachable at" line.
+		hookHost = ip
+	}
+	return startPostStartHook(hookCtx, appCfg, hookHost, appCfg.ServiceName)
+}
+
+// startPostStartHook fires the postStart hook actions for appCfg. serviceName
+// is threaded through separately from appCfg (rather than read off
+// appCfg.ServiceName internally) so callers building a synthetic/app-level
+// config can control it explicitly; existing single-container callers pass
+// appCfg.ServiceName, which is "" on true single-container paths.
 //
 // If openURL is set, it is expanded and opened in the developer's default
 // browser via the shared browseropen helper — no shell, no quoting. If cli
@@ -1793,14 +1920,16 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 // platform shell; the returned *exec.Cmd is the cli child for the caller to
 // wait on or kill. Returns nil when no cli command is configured (regardless
 // of whether openURL was fired).
-func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostname string) *exec.Cmd {
+func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostname, serviceName string) *exec.Cmd {
 	if appCfg.Hooks == nil || appCfg.Hooks.PostStart == nil {
 		return nil
 	}
 	hook := appCfg.Hooks.PostStart
 
 	if hook.OpenURL != "" {
-		url := expandHookEnv(hook.OpenURL, hostname, appCfg.AppID)
+		// openURL is a URL by definition, so an IPv6 hostname must be
+		// bracketed; the CLI hook below stays raw for shell contexts.
+		url := expandHookEnv(hook.OpenURL, urlSafeHost(hostname), appCfg.AppID, serviceName)
 		if err := browserOpen(url); err != nil {
 			cliLogln("Warning: postStart openURL failed: %v", err)
 		} else {
@@ -1812,7 +1941,7 @@ func startPostStartHook(ctx context.Context, appCfg *appconfig.AppConfig, hostna
 		return nil
 	}
 
-	expanded := expandHookEnv(hook.CLI, hostname, appCfg.AppID)
+	expanded := expandHookEnv(hook.CLI, hostname, appCfg.AppID, serviceName)
 	shell, flags := shellCommand()
 	cmd := execCommandContext(ctx, shell, append(flags, expanded)...)
 	cmd.Stdout = os.Stdout
@@ -1902,11 +2031,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 				// then return without tailing logs. The container keeps running
 				// independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					warnReadiness(ctx, conn, appCfg.AppID, err)
-				}
-				announceReachableURL(ctx, conn, appCfg)
-				startPostStartHook(context.Background(), appCfg, conn.Host)
+				runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
@@ -1916,11 +2041,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			// hookFired guards against a malformed stream sending Started twice.
 			if !hookFired {
 				hookFired = true
-				if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-					warnReadiness(ctx, conn, appCfg.AppID, err)
-				}
-				announceReachableURL(ctx, conn, appCfg)
-				postStartCmd = startPostStartHook(hookCtx, appCfg, conn.Host)
+				postStartCmd = runPostStartIfReady(ctx, hookCtx, conn, appCfg)
 			}
 			continue
 		}
@@ -1962,6 +2083,16 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 		return chunking == chunkingForce || isImageBuildFailure(err)
 	}
 }
+
+// imageSignaturePathEnv optionally points at a detached signature file over the
+// SHA256 digest of the OCI image config (e.g. an ML-DSA65 signature). No signer
+// exists yet, so this is unset in normal operation and RunContainerLayersRequest
+// carries an empty ImageSignature — the agent's verifier tolerates that until a
+// pinned key is embedded (see internal/shared/sigverify).
+// TODO(H2): once a signed-release pipeline ships, replace this env var with a
+// real sidecar/manifest convention resolved automatically alongside the build,
+// instead of requiring the caller to set it by hand.
+const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
@@ -2014,18 +2145,23 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, err
 	}
+	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
+	if err != nil {
+		return nil, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
 	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
-		ImageName:     imageName,
-		AppName:       appCfg.AppID,
-		Layers:        headers,
-		AppConfig:     appConfigData,
-		ImageConfig:   imageConfig,
-		RestartPolicy: resolveRestartPolicy(opts),
-		UserArgs:      opts.userArgs,
+		ImageName:      imageName,
+		AppName:        appCfg.AppID,
+		Layers:         headers,
+		AppConfig:      appConfigData,
+		ImageConfig:    imageConfig,
+		RestartPolicy:  resolveRestartPolicy(opts),
+		UserArgs:       opts.userArgs,
+		ImageSignature: imageSignature,
 	})
 	if err != nil {
 		return nil, err

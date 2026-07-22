@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -14,27 +13,43 @@ import (
 )
 
 func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("container_list",
+	listOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List all containers on the connected device"),
-	), s.handleContainerList)
+	}
+	listOpts = append(listOpts, readOnly()...)
+	listOpts = append(listOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_list", listOpts...), s.handleContainerList)
 
-	srv.AddTool(mcpgo.NewTool("container_start",
-		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot)"),
+	startOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Start a container and stream its output (bounded snapshot). The app runs with the entitlements declared in its wendy.json (e.g. gpu, network, persistence); if the device denies a required entitlement, the start fails (or the container exits) with error_code ENTITLEMENT_DENIED, also visible later as termination_reason in container_list."),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to start"),
 		),
-	), s.handleContainerStart)
+		mcpgo.WithNumber("max_chunks",
+			mcpgo.Description("Maximum output chunks to collect (default 200)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	startOpts = append(startOpts, mutating()...)
+	startOpts = append(startOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_start", startOpts...), s.handleContainerStart)
 
-	srv.AddTool(mcpgo.NewTool("container_stop",
+	stopOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Stop a running container"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to stop"),
 		),
-	), s.handleContainerStop)
+	}
+	stopOpts = append(stopOpts, destructive()...)
+	stopOpts = append(stopOpts, idempotent()...)
+	stopOpts = append(stopOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_stop", stopOpts...), s.handleContainerStop)
 
-	srv.AddTool(mcpgo.NewTool("container_delete",
+	deleteOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Delete a container, optionally removing its image and volumes"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
@@ -46,22 +61,38 @@ func (s *mcpServer) registerContainerTools(srv *server.MCPServer) {
 		mcpgo.WithBoolean("delete_volumes",
 			mcpgo.Description("Also delete persistent volumes"),
 		),
-	), s.handleContainerDelete)
+	}
+	deleteOpts = append(deleteOpts, destructive()...)
+	deleteOpts = append(deleteOpts, idempotent()...)
+	deleteOpts = append(deleteOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_delete", deleteOpts...), s.handleContainerDelete)
 
-	srv.AddTool(mcpgo.NewTool("container_stats",
+	statsOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Get memory and storage stats for all containers"),
-	), s.handleContainerStats)
+	}
+	statsOpts = append(statsOpts, readOnly()...)
+	statsOpts = append(statsOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_stats", statsOpts...), s.handleContainerStats)
 
-	srv.AddTool(mcpgo.NewTool("container_attach",
+	attachOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Attach to a running container and collect a bounded snapshot of its output"),
 		mcpgo.WithString("app_name",
 			mcpgo.Required(),
 			mcpgo.Description("App name of the container to attach to"),
 		),
-		mcpgo.WithNumber("max_lines",
+		mcpgo.WithNumber("max_chunks",
 			mcpgo.Description("Maximum output chunks to collect (default 100)"),
 		),
-	), s.handleContainerAttach)
+		mcpgo.WithNumber("max_lines",
+			mcpgo.Description("Deprecated alias for max_chunks (maximum output chunks to collect, default 100)"),
+		),
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	attachOpts = append(attachOpts, readOnly()...)
+	attachOpts = append(attachOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("container_attach", attachOpts...), s.handleContainerAttach)
 }
 
 func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -71,7 +102,7 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 	}
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	var containers []map[string]any
 	for {
@@ -80,7 +111,7 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 			break
 		}
 		if err != nil {
-			return mcpgo.NewToolResultError(grpcErrString(err)), nil
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 		}
 		c := resp.GetContainer()
 		if c == nil {
@@ -103,8 +134,7 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 	if containers == nil {
 		containers = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(containers, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(containers), nil
 }
 
 func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -114,7 +144,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
-		return mcpgo.NewToolResultError("app_name is required"), nil
+		return errResult(errCodeInvalidArgument, "app_name is required"), nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -122,11 +152,12 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 
 	stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{AppName: appName})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
+	maxChunks := intParam(req, "max_chunks", 200)
 	var sb strings.Builder
 	chunks := 0
-	for chunks < 200 {
+	for chunks < maxChunks {
 		resp, err := stream.Recv()
 		if err == io.EOF {
 			break
@@ -135,7 +166,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 			if ctx.Err() != nil {
 				break
 			}
-			return mcpgo.NewToolResultError(grpcErrString(err)), nil
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 		}
 		switch resp.ResponseType.(type) {
 		case *agentpb.RunContainerLayersResponse_StdoutOutput:
@@ -150,7 +181,7 @@ func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallTool
 	if out == "" {
 		out = fmt.Sprintf("container %s started", appName)
 	}
-	return mcpgo.NewToolResultText(out), nil
+	return okTextBounded(out, "", intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -160,13 +191,13 @@ func (s *mcpServer) handleContainerStop(ctx context.Context, req mcpgo.CallToolR
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
-		return mcpgo.NewToolResultError("app_name is required"), nil
+		return errResult(errCodeInvalidArgument, "app_name is required"), nil
 	}
 	_, err := conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: appName})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("container %s stopped", appName)), nil
+	return okText(fmt.Sprintf("container %s stopped", appName)), nil
 }
 
 func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -176,7 +207,7 @@ func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToo
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
-		return mcpgo.NewToolResultError("app_name is required"), nil
+		return errResult(errCodeInvalidArgument, "app_name is required"), nil
 	}
 	_, err := conn.ContainerService.DeleteContainer(ctx, &agentpb.DeleteContainerRequest{
 		AppName:       appName,
@@ -184,9 +215,9 @@ func (s *mcpServer) handleContainerDelete(ctx context.Context, req mcpgo.CallToo
 		DeleteVolumes: req.GetBool("delete_volumes", false),
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("container %s deleted", appName)), nil
+	return okText(fmt.Sprintf("container %s deleted", appName)), nil
 }
 
 func (s *mcpServer) handleContainerStats(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -196,7 +227,7 @@ func (s *mcpServer) handleContainerStats(ctx context.Context, _ mcpgo.CallToolRe
 	}
 	resp, err := conn.ContainerService.ListContainerStats(ctx, &agentpb.ListContainerStatsRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	var stats []map[string]any
 	for _, cs := range resp.GetStats() {
@@ -209,8 +240,7 @@ func (s *mcpServer) handleContainerStats(ctx context.Context, _ mcpgo.CallToolRe
 	if stats == nil {
 		stats = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(stats, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(stats), nil
 }
 
 func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -220,21 +250,21 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 	}
 	appName := stringParam(req, "app_name")
 	if appName == "" {
-		return mcpgo.NewToolResultError("app_name is required"), nil
+		return errResult(errCodeInvalidArgument, "app_name is required"), nil
 	}
-	maxChunks := intParam(req, "max_lines", 100)
+	maxChunks := intParamAlias(req, "max_chunks", "max_lines", 100)
 
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	stream, err := conn.ContainerService.AttachContainer(ctx)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	if err := stream.Send(&agentpb.AttachContainerRequest{
 		RequestType: &agentpb.AttachContainerRequest_AppName{AppName: appName},
 	}); err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	_ = stream.CloseSend()
 
@@ -249,7 +279,7 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 			if ctx.Err() != nil {
 				break
 			}
-			return mcpgo.NewToolResultError(grpcErrString(err)), nil
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 		}
 		switch resp.ResponseType.(type) {
 		case *agentpb.RunContainerLayersResponse_StdoutOutput:
@@ -260,5 +290,5 @@ func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToo
 			collected++
 		}
 	}
-	return mcpgo.NewToolResultText(sb.String()), nil
+	return okTextBounded(sb.String(), "", intParam(req, "max_bytes", 100000)), nil
 }

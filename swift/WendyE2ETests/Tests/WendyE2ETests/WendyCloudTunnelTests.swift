@@ -16,7 +16,7 @@ struct `'wendy cloud tunnel'` {
         // AI: Review the full help output as CLI documentation for a networking
         // command. Flag confusing port-mapping wording, missing safety cues,
         // duplicated global flags, or formatting that would make setup hard.
-        try await self.scenario.run { cli, _ in
+        try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy cloud tunnel --help") { result in
                 let stdout = result.stdout
 
@@ -47,19 +47,23 @@ struct `'wendy cloud tunnel'` {
      the requested remote port on the selected device through the Wendy
      Cloud tunnel broker.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `forwards local connections through the cloud broker`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1949: forwarding needs an isolated authenticated broker, disposable device endpoint, and observable bidirectional connection fixture."
+        )
+    )
+    func `forwards local connections through the cloud broker`() async throws {}
 
     /**
      `--device`, `--broker-url`, and `--cloud-grpc` bypass interactive
      selection and bind the tunnel to a specific cloud route.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `selects device and broker explicitly`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1949: explicit route selection needs isolated auth plus seeded broker and cloud-device inventory."
+        )
+    )
+    func `selects device and broker explicitly`() async throws {}
 
     /**
      Malformed mappings, privileged local ports without permission, or
@@ -68,7 +72,7 @@ struct `'wendy cloud tunnel'` {
      */
     @Test
     func `rejects invalid port mappings before listening`() async throws {
-        try await self.scenario.run { cli, _ in
+        try await self.scenario.run(authenticated: false) { cli, _ in
             try await cli.sh("wendy cloud tunnel notaport") { result in
                 let stderr = result.stderr
 
@@ -109,8 +113,10 @@ struct `'wendy cloud tunnel'` {
      Cancelling the tunnel closes active connections and the local
      listener without modifying configuration.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `shuts down cleanly on cancellation`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1949: cancellation cleanup needs an authenticated disposable tunnel plus harness process control and listener observability."
+        )
+    )
+    func `shuts down cleanly on cancellation`() async throws {}
 }

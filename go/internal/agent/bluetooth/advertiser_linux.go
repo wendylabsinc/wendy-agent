@@ -14,20 +14,12 @@ import (
 )
 
 const (
-	wendyServiceUUID    = "7565e9eb-4c20-4b67-9272-d708b397b631"
-	advObjectPath       = dbus.ObjectPath("/org/wendy/advertisement0")
-	bluezService        = "org.bluez"
-	defaultBluezAdapter = "/org/bluez/hci0"
-	advManagerIface     = "org.bluez.LEAdvertisingManager1"
-	advIface            = "org.bluez.LEAdvertisement1"
+	wendyServiceUUID = "7565e9eb-4c20-4b67-9272-d708b397b631"
+	advObjectPath    = dbus.ObjectPath("/org/wendy/advertisement0")
+	bluezService     = "org.bluez"
+	advManagerIface  = "org.bluez.LEAdvertisingManager1"
+	advIface         = "org.bluez.LEAdvertisement1"
 )
-
-func bluezAdapterPath() string {
-	if p := os.Getenv("WENDY_BT_ADAPTER"); p != "" {
-		return p
-	}
-	return defaultBluezAdapter
-}
 
 // advertisingAdapterPath selects the BlueZ adapter to advertise on. If
 // WENDY_BT_ADAPTER is set, that path is trusted verbatim. Otherwise it
@@ -46,10 +38,9 @@ func advertisingAdapterPath(conn *dbus.Conn) (string, error) {
 		return p, nil
 	}
 
-	var managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant
-	root := conn.Object(bluezService, "/")
-	if err := root.Call("org.freedesktop.DBus.ObjectManager.GetManagedObjects", 0).Store(&managed); err != nil {
-		return "", fmt.Errorf("enumerate bluez objects: %w", err)
+	managed, err := getManagedObjects(context.Background(), conn)
+	if err != nil {
+		return "", err
 	}
 
 	if p := findAdvertisingAdapter(managed); p != "" {
@@ -58,14 +49,14 @@ func advertisingAdapterPath(conn *dbus.Conn) (string, error) {
 	return "", fmt.Errorf("no bluetooth adapter implements %s (LE advertising unsupported)", advManagerIface)
 }
 
-// findAdvertisingAdapter returns the path of the adapter implementing
-// org.bluez.LEAdvertisingManager1, or "" if none do. When several adapters
-// qualify it returns the lexicographically lowest path so selection is stable
-// across runs despite Go's randomised map iteration order.
-func findAdvertisingAdapter(managed map[dbus.ObjectPath]map[string]map[string]dbus.Variant) string {
+// findAdapterByInterface returns the path of the adapter implementing iface,
+// or "" if none do. When several adapters qualify it returns the
+// lexicographically lowest path so selection is stable across runs despite
+// Go's randomised map iteration order.
+func findAdapterByInterface(managed managedObjects, iface string) string {
 	var best string
 	for path, ifaces := range managed {
-		if _, ok := ifaces[advManagerIface]; !ok {
+		if _, ok := ifaces[iface]; !ok {
 			continue
 		}
 		if s := string(path); best == "" || s < best {
@@ -73,6 +64,12 @@ func findAdvertisingAdapter(managed map[dbus.ObjectPath]map[string]map[string]db
 		}
 	}
 	return best
+}
+
+// findAdvertisingAdapter returns the path of the adapter implementing
+// org.bluez.LEAdvertisingManager1, or "" if none do.
+func findAdvertisingAdapter(managed managedObjects) string {
+	return findAdapterByInterface(managed, advManagerIface)
 }
 
 // advertisement implements org.bluez.LEAdvertisement1 on D-Bus.
@@ -121,12 +118,9 @@ func startAdvertising(ctx context.Context, logger *zap.Logger) error {
 	}
 	hci := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
 
-	// Ensure the adapter is powered on. The call is a no-op if it already is,
-	// but it also clears Command Disallowed state that lingers after a previous
-	// BLE connection wasn't fully torn down at the HCI level.
-	if call := hci.Call("org.freedesktop.DBus.Properties.Set", 0,
-		"org.bluez.Adapter1", "Powered", dbus.MakeVariant(true)); call.Err != nil {
-		logger.Warn("BLE adapter power-on failed", zap.Error(call.Err))
+	// Ensure the adapter is powered on before advertising.
+	if err := powerOnAdapter(ctx, conn, adapterPath); err != nil {
+		logger.Warn("BLE adapter power-on failed", zap.Error(err))
 	}
 
 	// Defensive unregister: if a previous run crashed without unregistering, the
@@ -149,9 +143,9 @@ func startAdvertising(ctx context.Context, logger *zap.Logger) error {
 		// Log the D-Bus error name on the first attempt so the operator can see
 		// the exact BlueZ error (e.g. org.bluez.Error.Failed vs NotPermitted).
 		if i == 0 {
-			if dbusErr, ok := call.Err.(*dbus.Error); ok {
+			if name, _, ok := dbusErrorInfo(call.Err); ok {
 				logger.Debug("BLE advertisement registration attempt failed",
-					zap.String("dbus_error", dbusErr.Name),
+					zap.String("dbus_error", name),
 					zap.Error(call.Err))
 			}
 		}

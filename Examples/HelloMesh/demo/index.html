@@ -1,0 +1,173 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WendyOS Mesh — live</title>
+<style>
+  :root{
+    --ground:#0d1117; --panel:#141a22; --panel2:#1a222c; --line:#232c38;
+    --text:#e8eef5; --muted:#8a97a8; --dim:#5d6b7d;
+    --mesh:#35e0d0; --mesh-dim:#1c6b64; --ok:#69db7c; --relay:#ffb454; --off:#f2637e;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ground);color:var(--text);font-family:var(--sans);line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(1200px 600px at 78% -10%,rgba(53,224,208,.10),transparent 60%);}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+
+  /* ---- LIVE strip ---- */
+  .live{position:sticky;top:0;z-index:5;background:rgba(13,17,23,.86);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line)}
+  .live .row{max-width:1080px;margin:0 auto;padding:11px 24px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .badge{font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;
+    display:inline-flex;align-items:center;gap:8px;color:var(--ok)}
+  .badge .d{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 0 rgba(105,219,124,.6);
+    animation:pl 2s infinite}
+  .badge.offline{color:var(--off)} .badge.offline .d{background:var(--off);animation:none}
+  @keyframes pl{0%{box-shadow:0 0 0 0 rgba(105,219,124,.5)}70%{box-shadow:0 0 0 8px rgba(105,219,124,0)}100%{box-shadow:0 0 0 0 rgba(105,219,124,0)}}
+  .live .chips{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);
+    background:var(--panel);color:var(--muted);white-space:nowrap}
+  .chip b{color:var(--text);font-weight:600} .chip .v{color:var(--mesh)}
+  .live .ts{font-family:var(--mono);font-size:11px;color:var(--dim);white-space:nowrap}
+
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;color:var(--mesh)}
+  header{padding:52px 0 24px}
+  h1{font-size:clamp(32px,5vw,56px);line-height:1.03;letter-spacing:-.02em;font-weight:800;margin:16px 0 0;text-wrap:balance;max-width:16ch}
+  h1 em{font-style:normal;color:var(--mesh)}
+  .lede{color:var(--muted);font-size:clamp(15px,1.9vw,18px);max-width:60ch;margin:16px 0 0}
+
+  .stage{margin:30px 0 8px;background:linear-gradient(180deg,var(--panel),#10151c);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .stage-top{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+  .stage-top .call b{color:var(--mesh);font-weight:600}
+  .modepill{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;padding:4px 9px;border-radius:999px;border:1px solid var(--mesh-dim);color:var(--mesh);background:rgba(53,224,208,.08);white-space:nowrap}
+  canvas{display:block;width:100%;height:320px}
+  .stage-foot{display:flex;flex-wrap:wrap;gap:22px;padding:12px 16px;border-top:1px solid var(--line);font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+  .stat b{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums} .stat .ok{color:var(--ok)}
+  .note{margin:10px 2px 0;font-family:var(--mono);font-size:12px;color:var(--dim)}
+
+  section{padding:40px 0;border-top:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}
+  h2{font-size:clamp(21px,3vw,28px);letter-spacing:-.015em;margin:10px 0 6px;font-weight:750;text-wrap:balance}
+  .sub{color:var(--muted);max-width:62ch;margin:0}
+  .lab{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:22px}
+  .dev{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;font-family:var(--mono)}
+  .dev .nm{font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px}
+  .dev .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dev .vip{color:var(--mesh);font-size:13px;margin-top:8px}
+  .dev .meta{color:var(--dim);font-size:12px;margin-top:4px}
+  footer{padding:36px 0 60px;border-top:1px solid var(--line);color:var(--dim);font-family:var(--mono);font-size:12px}
+  @media(prefers-reduced-motion:reduce){.badge .d{animation:none}}
+</style>
+
+<div class="live">
+  <div class="row">
+    <span class="badge" id="badge"><span class="d"></span><span id="badgetxt">connecting…</span></span>
+    <div class="chips" id="chips"></div>
+    <span class="ts" id="ts"></span>
+  </div>
+</div>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">WendyOS · device mesh</span>
+    <h1>Your edge devices, on a <em>first-name basis</em>.</h1>
+    <p class="lede">A container reaches a service on another WendyOS device by name —
+      <span style="font-family:var(--mono);color:var(--text)">device-215.cloud.wendy.dev:8080</span> —
+      with one line of config. LAN-direct when the peer is local, cloud-relay when it isn't. The strip above is your live fleet.</p>
+  </header>
+
+  <div class="stage">
+    <div class="stage-top">
+      <span class="call">GET <b>http://device-215.cloud.wendy.dev:8080/</b></span>
+      <span class="modepill" id="modepill">LAN-direct</span>
+    </div>
+    <canvas id="mesh" aria-label="Animated diagram of a mesh call: device A resolves device-215 to a VIP, the packet travels to device B, which returns 200 OK."></canvas>
+    <div class="stage-foot">
+      <span class="stat">requests <b id="reqc">0</b></span>
+      <span class="stat">last <b id="lat">—</b></span>
+      <span class="stat">status <b class="ok" id="status">—</b></span>
+      <span class="stat" style="margin-left:auto;color:var(--dim)">data-path animation</span>
+    </div>
+  </div>
+  <p class="note">Live fleet is real (polled from your cloud). The traffic stage is an illustration of the data path.</p>
+
+  <section>
+    <span class="kicker">On the mesh right now</span>
+    <h2>Enrolled devices &amp; their addresses</h2>
+    <p class="sub">Pulled live from <span style="font-family:var(--mono);color:var(--text)">wendy cloud discover</span>. Each device's VIP is <span style="font-family:var(--mono);color:var(--text)">10.99.&lt;id÷256&gt;.&lt;id mod 256&gt;</span> — pure arithmetic, no lookup service.</p>
+    <div class="lab" id="lab"><div class="dev"><div class="nm">loading fleet…</div></div></div>
+  </section>
+
+  <footer class="wrap" style="padding-left:0;padding-right:0">
+    WendyOS mesh — agent DNS + transparent proxy + LAN-first dialer with cloud-relay fallback. Addresses are virtual; routing is real.
+  </footer>
+</div>
+
+<script>
+(function(){
+  const MONO='ui-monospace,SFMono-Regular,Menlo,monospace';
+  /* ---------- live fleet ---------- */
+  const badge=document.getElementById('badge'),badgetxt=document.getElementById('badgetxt'),
+        chips=document.getElementById('chips'),ts=document.getElementById('ts'),lab=document.getElementById('lab');
+  const vip=n=>`10.99.${Math.floor(n/256)}.${n%256}`;
+  async function poll(){
+    try{
+      const r=await fetch('/api/fleet',{cache:'no-store'}); const j=await r.json();
+      if(!j.ok) throw new Error(j.error||'unavailable');
+      const ds=j.devices||[];
+      badge.className='badge'; badgetxt.textContent=`live · ${ds.length} device${ds.length===1?'':'s'} on the mesh`;
+      chips.innerHTML=ds.slice(0,6).map(d=>`<span class="chip"><b>${esc(d.name)}</b> <span class="v">${d.vip}</span></span>`).join('');
+      lab.innerHTML=ds.map(d=>`<div class="dev"><div class="nm"><span class="dot"></span>${esc(d.name)}</div>
+        <div class="vip">device-${d.id}.cloud.wendy.dev</div>
+        <div class="meta">cloud id ${d.id} · ${d.vip}</div></div>`).join('') || '<div class="dev"><div class="nm">no devices from this cloud — point the CLI at your local cloud</div></div>';
+      ts.textContent='updated '+new Date().toLocaleTimeString();
+    }catch(e){
+      badge.className='badge offline'; badgetxt.textContent='live server unreachable';
+      chips.innerHTML='<span class="chip">start it: <b>WENDY_CLOUD_GRPC=&lt;local-grpc&gt; python3 server.py</b></span>';
+      ts.textContent='';
+    }
+  }
+  function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+  poll(); setInterval(poll,5000);
+
+  /* ---------- data-path animation (illustrative) ---------- */
+  const cv=document.getElementById('mesh'),ctx=cv.getContext('2d');
+  const reduce=matchMedia('(prefers-reduced-motion:reduce)').matches;
+  let W=0,H=0,dpr=Math.min(devicePixelRatio||1,2);
+  function size(){const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*dpr;cv.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);}
+  size(); addEventListener('resize',size);
+  function rr(x,y,w,h,r){if(typeof r==='number')r={tl:r,tr:r,br:r,bl:r};ctx.beginPath();ctx.moveTo(x+r.tl,y);ctx.lineTo(x+w-r.tr,y);ctx.arcTo(x+w,y,x+w,y+r.tr,r.tr);ctx.lineTo(x+w,y+h-r.br);ctx.arcTo(x+w,y+h,x+w-r.br,y+h,r.br);ctx.lineTo(x+r.bl,y+h);ctx.arcTo(x,y+h,x,y+h-r.bl,r.bl);ctx.lineTo(x,y+r.tl);ctx.arcTo(x,y,x+r.tl,y,r.tl);ctx.closePath();}
+  function dev(cx,cy,role,label,sub,active){const w=Math.min(150,W*0.2),h=62,x=cx-w/2,y=cy-h/2;
+    rr(x,y,w,h,12);ctx.fillStyle='#131b24';ctx.fill();ctx.lineWidth=1.5;ctx.strokeStyle=active?'#35e0d0':'#2a3542';ctx.stroke();
+    ctx.fillStyle='#0e141b';rr(x,y,w,20,{tl:12,tr:12,br:0,bl:0});ctx.fill();
+    ctx.fillStyle='#5d6b7d';ctx.font='10px '+MONO;ctx.textBaseline='middle';ctx.textAlign='left';ctx.fillText(role,x+10,y+10);
+    ctx.textAlign='center';ctx.fillStyle='#e8eef5';ctx.font='600 13px '+MONO;ctx.fillText(label,cx,cy+2);
+    ctx.fillStyle='#8a97a8';ctx.font='11px '+MONO;ctx.fillText(sub,cx,cy+18);}
+  const reqEl=document.getElementById('reqc'),latEl=document.getElementById('lat'),stEl=document.getElementById('status'),modeEl=document.getElementById('modepill');
+  let phase=0,phaseStart=0,reqs=1238,relay=false; const PH=[900,1400,1100,700];
+  function lbl(x,y,t,c){ctx.font='12px '+MONO;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle=c;ctx.fillText(t,x,y);}
+  function draw(now){
+    if(!phaseStart)phaseStart=now; const el=now-phaseStart,dur=PH[phase],p=Math.min(el/dur,1);
+    ctx.clearRect(0,0,W,H);
+    const y=H*0.54,m=Math.max(64,W*0.13),Ax=m,Bx=W-m,x0=Ax+40,x1=Bx-40,midY=y-66;
+    ctx.lineWidth=2;ctx.strokeStyle='#1e2732';ctx.beginPath();ctx.moveTo(x0,y);ctx.lineTo(x1,y);ctx.stroke();
+    ctx.setLineDash([4,6]);ctx.strokeStyle=relay?'#5a4426':'#242c22';ctx.beginPath();ctx.moveTo(x0,y);ctx.quadraticCurveTo((Ax+Bx)/2,y-140,x1,y);ctx.stroke();ctx.setLineDash([]);
+    lbl((Ax+Bx)/2,y-128,'cloud relay · fallback',relay?'#ffb454':'#3b4653');
+    const vipS='10.99.0.215';
+    lbl((Ax+Bx)/2,midY,'device-215.cloud.wendy.dev  →  '+(phase===0?vipS.slice(0,Math.floor(p*vipS.length))+(p<1?'▌':''):vipS),'#35e0d0');
+    const ease=x=>x<.5?2*x*x:1-Math.pow(-2*x+2,2)/2;
+    dev(Ax,y,'CONTAINER','agx-orin','HelloMesh',phase===1);
+    dev(Bx,y,'SERVICE','wendyos-jetson',':8080',phase===1||phase===2);
+    if(phase===1){const x=x0+(x1-x0)*ease(p);const g=ctx.createRadialGradient(x,y,0,x,y,16);g.addColorStop(0,'rgba(53,224,208,.9)');g.addColorStop(1,'rgba(53,224,208,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,16,0,7);ctx.fill();ctx.fillStyle='#eafffb';ctx.beginPath();ctx.arc(x,y,4,0,7);ctx.fill();}
+    if(phase===2){const x=x1-(x1-x0)*ease(p);const g=ctx.createRadialGradient(x,y,0,x,y,18);g.addColorStop(0,'rgba(105,219,124,.85)');g.addColorStop(1,'rgba(105,219,124,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,18,0,7);ctx.fill();ctx.fillStyle='#69db7c';rr(x-19,y-11,38,22,11);ctx.fill();ctx.fillStyle='#0d1117';ctx.font='700 12px '+MONO;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('200',x,y+1);}
+    if(p>=1){phase=(phase+1)%PH.length;phaseStart=now;
+      if(phase===0){reqs++;const L=2+Math.floor(Math.random()*4);reqEl.textContent=reqs.toLocaleString();latEl.textContent=L+' ms';stEl.textContent='200 OK';
+        relay=Math.random()<0.18;modeEl.textContent=relay?'cloud relay':'LAN-direct';modeEl.style.color=relay?'#ffb454':'#35e0d0';modeEl.style.borderColor=relay?'#5a4426':'#1c6b64';}}
+    if(!reduce)requestAnimationFrame(draw);
+  }
+  reqEl.textContent=reqs.toLocaleString();latEl.textContent='3 ms';stEl.textContent='200 OK';
+  if(reduce){phase=2;phaseStart=-PH[2];draw(1);}else requestAnimationFrame(draw);
+})();
+</script>

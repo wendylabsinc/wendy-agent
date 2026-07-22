@@ -11,7 +11,7 @@ import (
 
 func selectorConfig() *config.Config {
 	return &config.Config{Auth: []config.AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod.example.com:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod.example.com:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
 		{CloudDashboard: "http://localhost:3000", CloudGRPC: "localhost:50051", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
 	}}
 }

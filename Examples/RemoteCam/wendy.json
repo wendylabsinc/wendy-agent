@@ -1,0 +1,25 @@
+{
+    "appId": "sh.wendy.examples.remotecam2",
+    "platform": "linux",
+    "version": "1.0.0",
+    "language": "swift",
+    "isolation": "isolated",
+    "services": {
+        "camserver": {
+            "context": ".",
+            "entitlements": [
+                {
+                    "type": "camera"
+                },
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16",
+                    "ports": [
+                        { "host": 9090, "container": 9090 }
+                    ]
+                }
+            ]
+        }
+    }
+}

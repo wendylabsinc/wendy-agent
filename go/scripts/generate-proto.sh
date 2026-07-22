@@ -20,6 +20,7 @@ AGENT_PROTOS=(
     "wendy/agent/services/v1/shared.proto"
     "wendy/agent/services/v1/wendy_agent_v1_service.proto"
     "wendy/agent/services/v1/wendy_agent_v1_container_service.proto"
+    "wendy/agent/services/v1/wendy_agent_v1_shell_service.proto"
     "wendy/agent/services/v1/wendy_agent_v1_audio_service.proto"
     "wendy/agent/services/v1/wendy_agent_v1_provisioning_service.proto"
     "wendy/agent/services/v1/wendy_agent_v1_telemetry_service.proto"
@@ -50,6 +51,7 @@ V2_AGENT_PROTOS=(
     "wendy/agent/services/v2/audio_service.proto"
     "wendy/agent/services/v2/telemetry_service.proto"
     "wendy/agent/services/v2/file_sync_service.proto"
+    "wendy/agent/services/v2/mesh_service.proto"
     "wendy/agent/services/v2/ros2_service.proto"
     "wendy/agent/services/v2/timesync_service.proto"
 )

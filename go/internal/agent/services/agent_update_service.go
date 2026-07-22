@@ -5,12 +5,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"os"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -18,10 +20,35 @@ type AgentUpdateService struct {
 	agentpbv2.UnimplementedWendyAgentUpdateServiceServer
 	logger    *zap.Logger
 	installer *AgentInstaller
+
+	// verifier checks the update binary's signature before install. Defaults
+	// to sigverify.DefaultVerifier (disabled until a real pinned key is
+	// embedded); settable within-package so tests can inject an enabled
+	// verifier without changing the exported constructor signature.
+	verifier *sigverify.Verifier
+
+	// execPathResolver resolves the agent's own executable path and mode.
+	// Defaults to resolveExecPath (which resolves os.Executable()); settable
+	// within-package so tests can redirect commitBinaryUpdate's rename target
+	// away from the running test binary.
+	execPathResolver func() (string, os.FileMode, error)
+
+	// restartFn is invoked once the binary is committed to schedule the
+	// process exit that lets systemd restart into the new binary. Defaults
+	// to scheduleAgentRestartExit (a real os.Exit(0) after a grace period);
+	// settable within-package so tests exercising a successful install don't
+	// kill the test process.
+	restartFn func()
 }
 
 func NewAgentUpdateService(logger *zap.Logger, installer *AgentInstaller) *AgentUpdateService {
-	return &AgentUpdateService{logger: logger, installer: installer}
+	return &AgentUpdateService{
+		logger:           logger,
+		installer:        installer,
+		verifier:         sigverify.DefaultVerifier,
+		execPathResolver: resolveExecPath,
+		restartFn:        scheduleAgentRestartExit,
+	}
 }
 
 func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpbv2.UpdateAgentRequest, agentpbv2.UpdateAgentResponse]) error {
@@ -39,7 +66,7 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := resolveExecPath()
+	execPath, originalPerm, err := s.execPathResolver()
 	if err != nil {
 		return err
 	}
@@ -82,11 +109,27 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 
 		if ctrl := msg.GetControl(); ctrl != nil {
 			if ctrl.GetUpdate() != nil {
-				computedHash := hex.EncodeToString(hasher.Sum(nil))
+				digest := hasher.Sum(nil)
+				computedHash := hex.EncodeToString(digest)
 				expectedHash := ctrl.GetUpdate().GetSha256()
 				if expectedHash != "" && computedHash != expectedHash {
 					return status.Errorf(codes.DataLoss,
 						"SHA256 mismatch: expected %s, got %s", expectedHash, computedHash)
+				}
+
+				// Verify the binary's signature over its SHA256 digest before
+				// installing. When the verifier is disabled (no pinned key
+				// embedded yet), Verify is a fail-safe no-op and install
+				// proceeds exactly as before this check existed.
+				if err := s.verifier.Verify(digest, ctrl.GetUpdate().GetSignature()); err != nil {
+					switch {
+					case errors.Is(err, sigverify.ErrUnsigned):
+						return status.Error(codes.FailedPrecondition, "agent update binary is unsigned; refusing install")
+					case errors.Is(err, sigverify.ErrBadSignature):
+						return status.Error(codes.DataLoss, "agent update binary signature verification failed; refusing install")
+					default:
+						return status.Errorf(codes.Internal, "agent update binary signature verification error: %v", err)
+					}
 				}
 
 				if _, err := commitBinaryUpdate(tmpFile, tmpPath, execPath, computedHash, originalPerm, s.logger); err != nil {
@@ -104,7 +147,7 @@ func (s *AgentUpdateService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb
 							Updated: &agentpbv2.UpdateAgentResponse_Updated{},
 						},
 					})
-				}, scheduleAgentRestartExit)
+				}, s.restartFn)
 			}
 		}
 	}

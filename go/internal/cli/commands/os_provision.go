@@ -188,10 +188,30 @@ func provisioningRequired(creds []wendyconf.WifiCredential, deviceName string, p
 	return len(creds) > 0 || deviceName != "" || len(provisioningJSON) > 0
 }
 
+// configTarget receives the config-partition files: a mounted directory (disk
+// installs) or a FAT32 image (Thor).
+type configTarget interface {
+	WriteFile(name string, data []byte, perm os.FileMode) error
+}
+
+// dirTarget writes into a mounted config-partition directory.
+type dirTarget string
+
+func (d dirTarget) WriteFile(name string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(filepath.Join(string(d), name), data, perm)
+}
+
 func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
-	binPath := filepath.Join(mountPoint, "wendy-agent")
-	if err := os.WriteFile(binPath, agentBinary, 0o755); err != nil {
-		return fmt.Errorf("writing wendy-agent to config partition: %w", err)
+	return writeConfigFilesTo(dirTarget(mountPoint), agentBinary, creds, deviceName, provisioningJSON)
+}
+
+// writeConfigFilesTo writes the config-partition files to any target. agentBinary
+// is skipped when empty (Thor omits it only if a caller passes none).
+func writeConfigFilesTo(t configTarget, agentBinary []byte, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
+	if len(agentBinary) > 0 {
+		if err := t.WriteFile("wendy-agent", agentBinary, 0o755); err != nil {
+			return fmt.Errorf("writing wendy-agent to config partition: %w", err)
+		}
 	}
 
 	if len(creds) > 0 || deviceName != "" {
@@ -215,22 +235,19 @@ func writeConfigFiles(mountPoint string, agentBinary []byte, creds []wendyconf.W
 			conf = append(conf, []byte(fmt.Sprintf("[device]\nname = %s\n", deviceName))...)
 		}
 
-		confPath := filepath.Join(mountPoint, "wendy.conf")
-		if err := os.WriteFile(confPath, conf, 0o644); err != nil {
+		if err := t.WriteFile("wendy.conf", conf, 0o644); err != nil {
 			return fmt.Errorf("writing wendy.conf to config partition: %w", err)
 		}
 	}
 
 	if len(provisioningJSON) > 0 {
-		provPath := filepath.Join(mountPoint, "provisioning.json")
-		if err := os.WriteFile(provPath, provisioningJSON, 0o600); err != nil {
+		if err := t.WriteFile("provisioning.json", provisioningJSON, 0o600); err != nil {
 			return fmt.Errorf("writing provisioning.json to config partition: %w", err)
 		}
 	}
 
-	// Write current time as a clock floor so the device boots with a sane clock
-	// even before NTP or Roughtime sync completes.
-	if err := timesync.WriteFloor(mountPoint, time.Now()); err != nil {
+	// Clock floor so the device boots with a sane clock even before NTP/Roughtime sync.
+	if err := t.WriteFile("clock_floor", timesync.FloorBytes(time.Now()), 0o644); err != nil {
 		return fmt.Errorf("writing clock_floor to config partition: %w", err)
 	}
 

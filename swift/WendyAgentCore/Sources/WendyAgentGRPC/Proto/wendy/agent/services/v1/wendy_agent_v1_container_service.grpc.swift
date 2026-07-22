@@ -111,6 +111,19 @@ public enum Wendy_Agent_Services_V1_WendyContainerService: Sendable {
                 type: .bidirectionalStreaming
             )
         }
+        /// Namespace for "ExecContainer" metadata.
+        public enum ExecContainer: Sendable {
+            /// Request type for "ExecContainer".
+            public typealias Input = Wendy_Agent_Services_V1_ExecContainerRequest
+            /// Response type for "ExecContainer".
+            public typealias Output = Wendy_Agent_Services_V1_ExecContainerResponse
+            /// Descriptor for "ExecContainer".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendy.agent.services.v1.WendyContainerService"),
+                method: "ExecContainer",
+                type: .bidirectionalStreaming
+            )
+        }
         /// Namespace for "StopContainer" metadata.
         public enum StopContainer: Sendable {
             /// Request type for "StopContainer".
@@ -276,6 +289,7 @@ public enum Wendy_Agent_Services_V1_WendyContainerService: Sendable {
             RunContainer.descriptor,
             StartContainer.descriptor,
             AttachContainer.descriptor,
+            ExecContainer.descriptor,
             StopContainer.descriptor,
             DeleteContainer.descriptor,
             ListContainers.descriptor,
@@ -410,6 +424,27 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_AttachContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse>
+
+        /// Handle the "ExecContainer" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ExecContainer runs a process inside an existing container with an
+        /// > interactive PTY (docker `exec -it` style). The first client message MUST
+        /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+        /// > server streams stdout/stderr and a final exit_code.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_ExecContainerResponse` messages.
+        func execContainer(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse>
 
         /// Handle the "StopContainer" method.
         ///
@@ -692,6 +727,27 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_AttachContainerRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse>
+
+        /// Handle the "ExecContainer" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ExecContainer runs a process inside an existing container with an
+        /// > interactive PTY (docker `exec -it` style). The first client message MUST
+        /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+        /// > server streams stdout/stderr and a final exit_code.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendy_Agent_Services_V1_ExecContainerResponse` messages.
+        func execContainer(
+            request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse>
 
         /// Handle the "StopContainer" method.
         ///
@@ -979,6 +1035,28 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             context: GRPCCore.ServerContext
         ) async throws
 
+        /// Handle the "ExecContainer" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ExecContainer runs a process inside an existing container with an
+        /// > interactive PTY (docker `exec -it` style). The first client message MUST
+        /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+        /// > server streams stdout/stderr and a final exit_code.
+        ///
+        /// - Parameters:
+        ///   - request: A stream of `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - response: A response stream of `Wendy_Agent_Services_V1_ExecContainerResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        func execContainer(
+            request: GRPCCore.RPCAsyncSequence<Wendy_Agent_Services_V1_ExecContainerRequest, any Swift.Error>,
+            response: GRPCCore.RPCWriter<Wendy_Agent_Services_V1_ExecContainerResponse>,
+            context: GRPCCore.ServerContext
+        ) async throws
+
         /// Handle the "StopContainer" method.
         ///
         /// - Parameters:
@@ -1234,6 +1312,17 @@ extension Wendy_Agent_Services_V1_WendyContainerService.StreamingServiceProtocol
             serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_RunContainerLayersResponse>(),
             handler: { request, context in
                 try await self.attachContainer(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendy_Agent_Services_V1_WendyContainerService.Method.ExecContainer.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_ExecContainerRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_ExecContainerResponse>(),
+            handler: { request, context in
+                try await self.execContainer(
                     request: request,
                     context: context
                 )
@@ -1672,6 +1761,23 @@ extension Wendy_Agent_Services_V1_WendyContainerService.SimpleServiceProtocol {
         )
     }
 
+    public func execContainer(
+        request: GRPCCore.StreamingServerRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse> {
+        return GRPCCore.StreamingServerResponse<Wendy_Agent_Services_V1_ExecContainerResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.execContainer(
+                    request: request.messages,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
+        )
+    }
+
     public func stopContainer(
         request: GRPCCore.ServerRequest<Wendy_Agent_Services_V1_StopContainerRequest>,
         context: GRPCCore.ServerContext
@@ -1977,6 +2083,32 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_RunContainerLayersResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_RunContainerLayersResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "ExecContainer" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ExecContainer runs a process inside an existing container with an
+        /// > interactive PTY (docker `exec -it` style). The first client message MUST
+        /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+        /// > server streams stdout/stderr and a final exit_code.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_ExecContainerResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func execContainer<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_ExecContainerResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ExecContainerResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "StopContainer" method.
@@ -2422,6 +2554,41 @@ extension Wendy_Agent_Services_V1_WendyContainerService {
             try await self.client.bidirectionalStreaming(
                 request: request,
                 descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.AttachContainer.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
+        /// Call the "ExecContainer" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > ExecContainer runs a process inside an existing container with an
+        /// > interactive PTY (docker `exec -it` style). The first client message MUST
+        /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+        /// > server streams stdout/stderr and a final exit_code.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - serializer: A serializer for `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+        ///   - deserializer: A deserializer for `Wendy_Agent_Services_V1_ExecContainerResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func execContainer<Result>(
+            request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            serializer: some GRPCCore.MessageSerializer<Wendy_Agent_Services_V1_ExecContainerRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendy_Agent_Services_V1_ExecContainerResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ExecContainerResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.bidirectionalStreaming(
+                request: request,
+                descriptor: Wendy_Agent_Services_V1_WendyContainerService.Method.ExecContainer.descriptor,
                 serializer: serializer,
                 deserializer: deserializer,
                 options: options,
@@ -2960,6 +3127,36 @@ extension Wendy_Agent_Services_V1_WendyContainerService.ClientProtocol {
         )
     }
 
+    /// Call the "ExecContainer" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ExecContainer runs a process inside an existing container with an
+    /// > interactive PTY (docker `exec -it` style). The first client message MUST
+    /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+    /// > server streams stdout/stderr and a final exit_code.
+    ///
+    /// - Parameters:
+    ///   - request: A streaming request producing `Wendy_Agent_Services_V1_ExecContainerRequest` messages.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func execContainer<Result>(
+        request: GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ExecContainerRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ExecContainerResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        try await self.execContainer(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendy_Agent_Services_V1_ExecContainerRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendy_Agent_Services_V1_ExecContainerResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "StopContainer" method.
     ///
     /// - Parameters:
@@ -3454,6 +3651,41 @@ extension Wendy_Agent_Services_V1_WendyContainerService.ClientProtocol {
             producer: producer
         )
         return try await self.attachContainer(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "ExecContainer" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > ExecContainer runs a process inside an existing container with an
+    /// > interactive PTY (docker `exec -it` style). The first client message MUST
+    /// > be ExecStart; subsequent messages carry stdin or window resizes. The
+    /// > server streams stdout/stderr and a final exit_code.
+    ///
+    /// - Parameters:
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - producer: A closure producing request messages to send to the server. The request
+    ///       stream is closed when the closure returns.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func execContainer<Result>(
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        requestProducer producer: @Sendable @escaping (GRPCCore.RPCWriter<Wendy_Agent_Services_V1_ExecContainerRequest>) async throws -> Void,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendy_Agent_Services_V1_ExecContainerResponse>) async throws -> Result
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.StreamingClientRequest<Wendy_Agent_Services_V1_ExecContainerRequest>(
+            metadata: metadata,
+            producer: producer
+        )
+        return try await self.execContainer(
             request: request,
             options: options,
             onResponse: handleResponse

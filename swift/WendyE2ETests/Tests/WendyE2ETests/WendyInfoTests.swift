@@ -1,16 +1,33 @@
+import Foundation
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy info'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy info`. The output includes the command synopsis,
      local flags, inherited global flags, and concise descriptions. Help exits
      successfully, writes to stdout, emits no stderr, and leaves configuration,
      cache, project, cloud, and device state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy info --help") { result in
+                let stdout = result.stdout
+
+                #expect(result.status.isSuccess)
+                #expect(stdout.contains("Display CLI version and system information"))
+                #expect(stdout.contains("Usage:"))
+                #expect(stdout.contains("wendy info [flags]"))
+                #expect(stdout.contains("--help"))
+                #expect(stdout.contains("--device"))
+                #expect(stdout.contains("--json"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -18,9 +35,22 @@ struct `'wendy info'` {
      support, including operating system and architecture. The command does
      not contact devices, cloud services, or update endpoints.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints CLI and system information`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy --json=false info") { result in
+                let stdout = result.stdout
+
+                #expect(result.status.isSuccess)
+                #expect(stdout.contains("Wendy CLI"))
+                #expect(stdout.contains("Version:"))
+                #expect(stdout.contains("OS:"))
+                #expect(stdout.contains("Arch:"))
+                #expect(stdout.contains("Go Version:"))
+                #expect(!stdout.contains("{"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -28,19 +58,57 @@ struct `'wendy info'` {
      fields with stable names and value types. JSON mode emits no stderr on
      success.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints JSON info for automation`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy --json info") { result in
+                let stdout = result.stdout
+
+                #expect(result.status.isSuccess)
+                #expect(result.stderr == "")
+                #expect(!stdout.contains("Wendy CLI"))
+
+                let json = try #require(
+                    try JSONSerialization.jsonObject(with: Data(stdout.utf8))
+                        as? [String: Any]
+                )
+
+                #expect(!(json["version"] as? String ?? "").isEmpty)
+                #expect(!(json["os"] as? String ?? "").isEmpty)
+                #expect(!(json["arch"] as? String ?? "").isEmpty)
+                #expect(!(json["goVersion"] as? String ?? "").isEmpty)
+            }
+        }
     }
 
     /**
      Runs successfully outside a Wendy project, with no default device, and
-     with no auth session. Malformed optional config is reported separately
-     from local system probing.
+     with no auth session. Device configuration is not contacted by this local
+     diagnostic command.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `does not require project, device, or auth state`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix: """
+                    mkdir -p "$HOME/.wendy"
+                    printf '{"defaultDevice":"do-not-contact.invalid"}\n' > "$HOME/.wendy/config.json"
+                    wendy --json=false info
+                    """,
+                power: """
+                    New-Item -ItemType Directory -Force -Path (Join-Path $env:HOME '.wendy') | Out-Null
+                    Set-Content -LiteralPath (Join-Path $env:HOME '.wendy/config.json') -Value '{"defaultDevice":"do-not-contact.invalid"}'
+                    wendy --json=false info
+                    """
+            ) { result in
+                let stdout = result.stdout
+
+                #expect(result.status.isSuccess)
+                #expect(stdout.contains("Wendy CLI"))
+                #expect(!stdout.contains("do-not-contact.invalid"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -49,8 +117,26 @@ struct `'wendy info'` {
      stderr, return a failure status, emit no success output, and leave
      existing state unchanged.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy info extra") { result in
+                let stderr = result.stderr
+
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(stderr.contains("unknown command"))
+                #expect(stderr.contains("extra"))
+            }
+
+            try await cli.sh("wendy info --bogus") { result in
+                let stderr = result.stderr
+
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(stderr.contains("unknown flag"))
+                #expect(stderr.contains("--bogus"))
+            }
+        }
     }
 }

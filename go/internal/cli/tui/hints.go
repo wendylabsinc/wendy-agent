@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // hintInterval is how often a running progress indicator rotates to a new hint.
@@ -72,9 +73,22 @@ func (r *hintRotator) next() {
 }
 
 // view renders the current hint as a dimmed line, or "" when there is no hint.
-func (r hintRotator) view() string {
+//
+// maxWidth is the terminal width in display columns. When it is > 0 the rendered
+// line is truncated (ANSI-aware, accounting for the width-2 "💡 " prefix) so it
+// occupies exactly one physical row. This matters because Bubble Tea redraws its
+// frames in place by counting logical lines: a hint longer than the terminal
+// width would soft-wrap onto a second physical row that Bubble Tea does not
+// account for, desyncing the redraw and leaving garbled/duplicated spinner
+// lines. A maxWidth <= 0 (no tea.WindowSizeMsg seen yet) disables truncation and
+// preserves the original behavior.
+func (r hintRotator) view(maxWidth int) string {
 	if r.current == "" {
 		return ""
 	}
-	return hintStyle.Render("💡 " + r.current)
+	rendered := hintStyle.Render("💡 " + r.current)
+	if maxWidth > 0 {
+		rendered = ansi.Truncate(rendered, maxWidth, "…")
+	}
+	return rendered
 }

@@ -50,12 +50,15 @@ func (d USBDevice) HumanReadable() string {
 
 // LANDevice represents a device discovered via mDNS on the local network.
 type LANDevice struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"displayName"`
-	Hostname         string `json:"hostname"`
-	IPAddress        string `json:"ipAddress,omitempty"`
-	Port             int    `json:"port"`
-	IsMTLS           bool   `json:"isMTLS,omitempty"`
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+	Hostname    string `json:"hostname"`
+	IPAddress   string `json:"ipAddress,omitempty"`
+	Port        int    `json:"port"`
+	IsMTLS      bool   `json:"isMTLS,omitempty"`
+	// AssetID is the cloud asset ID from the assetid TXT record; 0 when the
+	// device is unprovisioned or pre-mesh.
+	AssetID          int32  `json:"assetId,omitempty"`
 	InterfaceType    string `json:"interfaceType"`
 	NetworkInterface string `json:"-"`
 	USB              string `json:"usb,omitempty"`

@@ -164,4 +164,4 @@ Load these files as needed for specific topics:
 
 ## Further Reading
 
-WendyOS documentation at https://wendy.sh/docs/
+WendyOS documentation at https://docs.wendy.dev/latest/

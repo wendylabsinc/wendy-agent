@@ -124,6 +124,127 @@ func TestValidate_NetworkHostAdminMode(t *testing.T) {
 	}
 }
 
+// TestValidate_NetworkMeshMode covers the "mesh" network mode added for the
+// wendy-mesh CNI chaining feature: mesh mode requires a valid, non-empty
+// serviceCIDR, and serviceCIDR must not be set on any other mode.
+func TestValidate_NetworkMeshMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		ent     Entitlement
+		wantErr bool
+	}{
+		{
+			name:    "mesh mode with valid serviceCIDR is valid",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: false,
+		},
+		{
+			name:    "mesh mode with missing serviceCIDR errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh"},
+			wantErr: true,
+		},
+		{
+			name:    "mesh mode with invalid serviceCIDR errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "not-a-cidr"},
+			wantErr: true,
+		},
+		{
+			name:    "mesh mode with non-CIDR IP errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.42.0.1"},
+			wantErr: true,
+		},
+		{
+			name:    "host mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host"},
+			wantErr: false,
+		},
+		{
+			name:    "host-admin mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host-admin"},
+			wantErr: false,
+		},
+		{
+			name:    "none mode still valid without serviceCIDR",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "none"},
+			wantErr: false,
+		},
+		{
+			name:    "serviceCIDR on host mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "serviceCIDR on none mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "none", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "serviceCIDR on host-admin mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "host-admin", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{tt.ent},
+			}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate() expected error for %+v, got nil", tt.ent)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate() unexpected error for %+v: %v", tt.ent, err)
+			}
+		})
+	}
+}
+
+// TestValidate_NetworkBridgeMode covers the "bridge" network mode added by
+// specs/2026-07-05-network-bridge-default-design.md: an isolated network
+// namespace with NAT egress. Unlike "mesh", "bridge" takes no serviceCIDR.
+func TestValidate_NetworkBridgeMode(t *testing.T) {
+	tests := []struct {
+		name    string
+		ent     Entitlement
+		wantErr bool
+	}{
+		{
+			name:    "bridge mode without serviceCIDR is valid",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridge"},
+			wantErr: false,
+		},
+		{
+			name:    "serviceCIDR on bridge mode errors",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridge", ServiceCIDR: "10.42.0.0/16"},
+			wantErr: true,
+		},
+		{
+			name:    "an unrelated unknown mode is still rejected",
+			ent:     Entitlement{Type: EntitlementNetwork, Mode: "bridged"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{tt.ent},
+			}
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Errorf("Validate() expected error for %+v, got nil", tt.ent)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("Validate() unexpected error for %+v: %v", tt.ent, err)
+			}
+		})
+	}
+}
+
 func TestValidate_MissingAppID(t *testing.T) {
 	cfg := &AppConfig{}
 	err := cfg.Validate()
@@ -764,6 +885,105 @@ func TestValidate_ReadinessValidConfig(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromFile_ServiceReadinessHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.app",
+		"services": {
+			"web": {
+				"context": "web",
+				"readiness": {
+					"tcpSocket": { "port": 3002 },
+					"timeoutSeconds": 15
+				},
+				"hooks": {
+					"postStart": {
+						"openURL": "http://${WENDY_HOSTNAME}:3000",
+						"agent": "echo ready"
+					}
+				}
+			}
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	web := cfg.Services["web"]
+	if web == nil {
+		t.Fatal(`services["web"] is nil`)
+	}
+	if web.Readiness == nil || web.Readiness.TCPSocket == nil {
+		t.Fatal(`services["web"].Readiness.TCPSocket is nil`)
+	}
+	if web.Readiness.TCPSocket.Port != 3002 {
+		t.Errorf("Readiness.TCPSocket.Port = %d, want 3002", web.Readiness.TCPSocket.Port)
+	}
+	if web.Readiness.TimeoutSeconds != 15 {
+		t.Errorf("Readiness.TimeoutSeconds = %d, want 15", web.Readiness.TimeoutSeconds)
+	}
+	if web.Hooks == nil || web.Hooks.PostStart == nil {
+		t.Fatal(`services["web"].Hooks.PostStart is nil`)
+	}
+	if web.Hooks.PostStart.OpenURL != "http://${WENDY_HOSTNAME}:3000" {
+		t.Errorf("Hooks.PostStart.OpenURL = %q, want %q", web.Hooks.PostStart.OpenURL, "http://${WENDY_HOSTNAME}:3000")
+	}
+	if web.Hooks.PostStart.Agent != "echo ready" {
+		t.Errorf("Hooks.PostStart.Agent = %q, want %q", web.Hooks.PostStart.Agent, "echo ready")
+	}
+}
+
+func TestValidate_ServiceReadinessInvalidPort(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"web": {
+				Context: "web",
+				Readiness: &ReadinessConfig{
+					TCPSocket: &TCPSocketProbe{Port: 70000},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected error for invalid service readiness port, got nil")
+	}
+	if !strings.Contains(err.Error(), `services["web"].readiness`) {
+		t.Errorf(`error %q does not mention services["web"].readiness`, err.Error())
+	}
+}
+
+func TestValidate_ServiceReadinessNegativeTimeout(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"web": {
+				Context: "web",
+				Readiness: &ReadinessConfig{
+					TCPSocket:      &TCPSocketProbe{Port: 3000},
+					TimeoutSeconds: -5,
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected error for negative service readiness timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), `services["web"].readiness`) {
+		t.Errorf(`error %q does not mention services["web"].readiness`, err.Error())
 	}
 }
 
@@ -1420,7 +1640,7 @@ func TestServiceConfigValidation(t *testing.T) {
 				"svc": {
 					Context: "svc",
 					Entitlements: []Entitlement{
-						{Type: EntitlementNetwork, Mode: "bridge"},
+						{Type: EntitlementNetwork, Mode: "bogus"},
 					},
 				},
 			},
@@ -1431,6 +1651,23 @@ func TestServiceConfigValidation(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "mode") {
 			t.Fatalf("expected error to mention mode, got: %v", err)
+		}
+	})
+
+	t.Run("network entitlement bridge mode in service is valid", func(t *testing.T) {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Services: map[string]*ServiceConfig{
+				"svc": {
+					Context: "svc",
+					Entitlements: []Entitlement{
+						{Type: EntitlementNetwork, Mode: "bridge"},
+					},
+				},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() rejected bridge network mode in service: %v", err)
 		}
 	})
 
@@ -1546,6 +1783,61 @@ func TestLoadComposeCompanion_WithServices(t *testing.T) {
 	}
 	if cfg.Services["detector"] == nil {
 		t.Fatal("detector service is nil")
+	}
+}
+
+func TestLoadComposeCompanion_ServiceReadinessHooks(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"web": {
+				"readiness": { "tcpSocket": { "port": 8080 }, "timeoutSeconds": 20 },
+				"hooks": { "postStart": { "openURL": "http://localhost:8080" } }
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	web := cfg.Services["web"]
+	if web == nil {
+		t.Fatal("web service is nil")
+	}
+	if web.Readiness == nil || web.Readiness.TCPSocket == nil || web.Readiness.TCPSocket.Port != 8080 {
+		t.Errorf("web.Readiness mismatch: %+v", web.Readiness)
+	}
+	if web.Readiness.TimeoutSeconds != 20 {
+		t.Errorf("web.Readiness.TimeoutSeconds = %d, want 20", web.Readiness.TimeoutSeconds)
+	}
+	if web.Hooks == nil || web.Hooks.PostStart == nil || web.Hooks.PostStart.OpenURL != "http://localhost:8080" {
+		t.Errorf("web.Hooks mismatch: %+v", web.Hooks)
+	}
+}
+
+func TestLoadComposeCompanion_InvalidServiceReadinessFails(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{"zero port", `{"appId": "com.example.robot", "services": {"web": {"readiness": {"tcpSocket": {"port": 0}}}}}`},
+		{"port too high", `{"appId": "com.example.robot", "services": {"web": {"readiness": {"tcpSocket": {"port": 70000}}}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(tt.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := LoadComposeCompanion(dir); err == nil {
+				t.Fatal("expected error for invalid service readiness port")
+			}
+		})
 	}
 }
 
@@ -1711,6 +2003,91 @@ func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 		warnings := ValidateJSON(data)
 		if len(warnings) != 0 {
 			t.Fatalf("ValidateJSON() expected no warnings for valid service entitlement, got: %v", warnings)
+		}
+	})
+}
+
+func TestValidateJSON_ServiceHooksCLILegacyOpener(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"services": {
+			"web": {
+				"context": "web",
+				"hooks": {
+					"postStart": {
+						"cli": "open http://localhost:3000"
+					}
+				}
+			}
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("ValidateJSON() got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], `services["web"].hooks`) {
+		t.Errorf("warning %q does not carry the service prefix", warnings[0])
+	}
+
+	clean := []byte(`{
+		"appId": "com.example.app",
+		"hooks": { "postStart": { "openURL": "http://localhost:3000" } }
+	}`)
+	if warnings := ValidateJSON(clean); len(warnings) != 0 {
+		t.Errorf("ValidateJSON() expected no warnings for clean top-level config, got: %v", warnings)
+	}
+}
+
+func TestValidateJSON_TopLevelAgentHookOnMultiServiceWarns(t *testing.T) {
+	const warningSubstr = "top-level hooks.postStart.agent is ignored for multi-service apps"
+
+	t.Run("warns with services map and top-level agent hook", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "agent": "echo ready" } },
+			"services": {
+				"web": { "context": "web" }
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected warning about ignored top-level agent hook, got: %v", warnings)
+		}
+	})
+
+	t.Run("no warning without services map", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "agent": "echo ready" } }
+		}`)
+		warnings := ValidateJSON(data)
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				t.Fatalf("unexpected warning without services map: %q", w)
+			}
+		}
+	})
+
+	t.Run("no warning when top-level hook is openURL/cli only", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "openURL": "http://localhost:3000", "cli": "echo hi" } },
+			"services": {
+				"web": { "context": "web" }
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				t.Fatalf("unexpected warning for openURL/cli-only top-level hook: %q", w)
+			}
 		}
 	})
 }

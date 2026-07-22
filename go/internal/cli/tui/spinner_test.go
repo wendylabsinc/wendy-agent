@@ -137,8 +137,11 @@ func TestBubbleTable_CropsWideViewAndScrolls(t *testing.T) {
 	table.SetHeight(3)
 	updated, cmd := table.Update(tea.WindowSizeMsg{Width: 24, Height: 10})
 	table = updated
-	if cmd == nil {
-		t.Fatal("expected resize to request a screen clear")
+	if cmd != nil {
+		// A resize must not trigger commands — in particular not a screen
+		// clear, which destroys the user's visible terminal content (see
+		// TestBubbleTableWindowSizeMsgMustNotClearScreen).
+		t.Fatal("expected resize to request no command")
 	}
 
 	before := table.View()

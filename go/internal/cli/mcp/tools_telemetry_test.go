@@ -108,6 +108,28 @@ func TestTelemetryLogs_ReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestTelemetryLogs_HasStructuredContent(t *testing.T) {
+	fake := &fakeTelemetryServer{
+		logBatches: []*agentpb.StreamLogsResponse{
+			{Logs: &otelpb.ExportLogsServiceRequest{}},
+		},
+	}
+	conn := startFakeTelemetryServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "telemetry_logs", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("telemetry_logs should return structuredContent")
+	}
+}
+
 func TestTelemetryLogs_EmptyReturnsEmptyArray(t *testing.T) {
 	fake := &fakeTelemetryServer{}
 	conn := startFakeTelemetryServer(t, fake)

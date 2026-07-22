@@ -21,7 +21,7 @@ func TestAuthSessionLabel(t *testing.T) {
 
 func TestAuthPickerItems(t *testing.T) {
 	cfg := &config.Config{Auth: []config.AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
 		{CloudGRPC: "local:50051", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
 	}}
 
@@ -38,8 +38,8 @@ func TestAuthPickerItems(t *testing.T) {
 		t.Errorf("item 0 description = %q, want 7", items[0].Description)
 	}
 	// Environment column carries the dashboard URL.
-	if items[0].Type != "https://cloud.wendy.sh" {
-		t.Errorf("item 0 env = %q, want https://cloud.wendy.sh", items[0].Type)
+	if items[0].Type != "https://cloud.wendy.dev" {
+		t.Errorf("item 0 env = %q, want https://cloud.wendy.dev", items[0].Type)
 	}
 	// DedupKey and Value include the org ID so two orgs on the same endpoint
 	// are represented as separate rows.

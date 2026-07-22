@@ -59,6 +59,26 @@ func IsCI() bool {
 	return false
 }
 
+// HomebrewEnvVars are set by Homebrew during a formula install/post-install
+// step. Their presence during a `wendy completion install` invocation means the
+// call is the automated post-install hook, not a deliberate user action.
+var HomebrewEnvVars = []string{
+	"HOMEBREW_PREFIX",
+	"HOMEBREW_CELLAR",
+	"HOMEBREW_REPOSITORY",
+}
+
+// IsHomebrewInstall reports whether the process appears to be running inside a
+// Homebrew formula install/post-install step.
+func IsHomebrewInstall() bool {
+	for _, key := range HomebrewEnvVars {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func SystemdServiceName() string {
 	return stringOrDefault("WENDY_SYSTEMD_SERVICE_NAME", "edge-agent")
 }

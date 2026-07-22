@@ -121,6 +121,28 @@ func TestHardwareCapabilities_ReturnsList(t *testing.T) {
 	}
 }
 
+func TestHardwareCapabilities_HasStructuredContent(t *testing.T) {
+	fake := &fakeHWProvisioningOSServer{
+		capabilities: []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+			{Category: "gpu", DevicePath: "/dev/gpu0", Description: "NVIDIA GPU"},
+		},
+	}
+	conn := startFakeHWProvisioningServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "hardware_capabilities", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("hardware_capabilities should return structuredContent")
+	}
+}
+
 func TestHardwareCapabilities_EmptyList(t *testing.T) {
 	fake := &fakeHWProvisioningOSServer{}
 	conn := startFakeHWProvisioningServer(t, fake)
@@ -181,7 +203,7 @@ func TestProvisioningStatus_Provisioned(t *testing.T) {
 		isProvisioned: &agentpb.IsProvisionedResponse{
 			Response: &agentpb.IsProvisionedResponse_Provisioned{
 				Provisioned: &agentpb.ProvisionedResponse{
-					CloudHost:      "cloud.wendy.sh",
+					CloudHost:      "cloud.wendy.dev",
 					OrganizationId: 42,
 					AssetId:        7,
 				},
@@ -207,8 +229,46 @@ func TestProvisioningStatus_Provisioned(t *testing.T) {
 	if status["provisioned"] != true {
 		t.Errorf("provisioned = %v, want true", status["provisioned"])
 	}
-	if status["cloud_host"] != "cloud.wendy.sh" {
-		t.Errorf("cloud_host = %v, want cloud.wendy.sh", status["cloud_host"])
+	if status["cloud_host"] != "cloud.wendy.dev" {
+		t.Errorf("cloud_host = %v, want cloud.wendy.dev", status["cloud_host"])
+	}
+}
+
+func TestProvisioningStatus_HasStructuredContent(t *testing.T) {
+	fake := &fakeHWProvisioningOSServer{
+		isProvisioned: &agentpb.IsProvisionedResponse{
+			Response: &agentpb.IsProvisionedResponse_Provisioned{
+				Provisioned: &agentpb.ProvisionedResponse{
+					CloudHost:      "cloud.wendy.dev",
+					OrganizationId: 42,
+					AssetId:        7,
+				},
+			},
+		},
+	}
+	conn := startFakeHWProvisioningServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "provisioning_status", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("provisioning_status should return structuredContent")
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent has unexpected type %T", result.StructuredContent)
+	}
+	if sc["provisioned"] != true {
+		t.Errorf("provisioned = %v, want true", sc["provisioned"])
+	}
+	if sc["cloud_host"] != "cloud.wendy.dev" {
+		t.Errorf("cloud_host = %v, want cloud.wendy.dev", sc["cloud_host"])
 	}
 }
 
@@ -217,7 +277,7 @@ func TestProvisioningStart_Success(t *testing.T) {
 		isProvisioned: &agentpb.IsProvisionedResponse{
 			Response: &agentpb.IsProvisionedResponse_Provisioned{
 				Provisioned: &agentpb.ProvisionedResponse{
-					CloudHost:      "cloud.wendy.sh",
+					CloudHost:      "cloud.wendy.dev",
 					OrganizationId: 1,
 				},
 			},
@@ -229,7 +289,7 @@ func TestProvisioningStart_Success(t *testing.T) {
 
 	result, err := srv.callTool(context.Background(), "provisioning_start", map[string]any{
 		"enrollment_token": "tok123",
-		"cloud_host":       "cloud.wendy.sh",
+		"cloud_host":       "cloud.wendy.dev",
 		"organization_id":  float64(1),
 	})
 	if err != nil {
@@ -239,7 +299,7 @@ func TestProvisioningStart_Success(t *testing.T) {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
 	text := result.Content[0].(mcpgo.TextContent).Text
-	if !strings.Contains(text, "cloud.wendy.sh") {
+	if !strings.Contains(text, "cloud.wendy.dev") {
 		t.Errorf("expected cloud host in result, got %q", text)
 	}
 }
@@ -258,23 +318,6 @@ func TestProvisioningStart_MissingRequired(t *testing.T) {
 	}
 	if !result.IsError {
 		t.Fatal("expected IsError=true when required fields are missing")
-	}
-}
-
-// --- FileSync tests ---
-
-func TestFileSyncSync_AlwaysReturnsError(t *testing.T) {
-	srv := New(&config.Config{}, nil)
-	result, err := srv.callTool(context.Background(), "filesync_sync", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected IsError=true — filesync is unavailable via MCP")
-	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if !strings.Contains(text, "wendy run") {
-		t.Errorf("expected CLI redirect hint in error, got %q", text)
 	}
 }
 

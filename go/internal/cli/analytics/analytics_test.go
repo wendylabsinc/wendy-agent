@@ -1,6 +1,8 @@
 package analytics
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -145,5 +147,30 @@ func TestTrackHookFiresEvenWhenDisabled(t *testing.T) {
 	}
 	if client != nil {
 		t.Error("client must remain nil when disabled")
+	}
+}
+
+func TestTrackMilestoneOnceInDir_EmitsOnce(t *testing.T) {
+	dir := t.TempDir()
+	var count int
+	SetTrackHookForTesting(func(event string, _ map[string]string) {
+		if event == "first_deploy_success" {
+			count++
+		}
+	})
+	t.Cleanup(func() { SetTrackHookForTesting(nil) })
+
+	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+	TrackMilestoneOnceInDir(dir, "first_deploy_success")
+
+	if count != 1 {
+		t.Fatalf("expected milestone to emit exactly once, got %d", count)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "milestones"))
+	if err != nil {
+		t.Fatalf("reading milestones file: %v", err)
+	}
+	if string(data) != "first_deploy_success\n" {
+		t.Fatalf("unexpected milestones file contents: %q", string(data))
 	}
 }

@@ -430,7 +430,8 @@ public actor WendyE2ESession {
             workingDirectory: nil
         )
         let duration = start.duration(to: .now)
-        let standardOutput = self.machine.os == .macOS
+        let standardOutput =
+            self.machine.os == .macOS
             ? Self.trimmingLeadingPTYEOFControlEcho(output.standardOutput)
             : output.standardOutput
         return WendyE2EShellResult(

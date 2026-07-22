@@ -1,17 +1,19 @@
 import AVFoundation
 import AppKit
 import CoreBluetooth
+import CoreLocation
 import OSLog
 import Observation
 import ServiceManagement
 
-@MainActor
 @Observable
-final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
+@MainActor
+final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate, CLLocationManagerDelegate {
     enum Permission: CaseIterable, Hashable {
         case bluetooth
         case camera
         case microphone
+        case location
 
         var title: String {
             switch self {
@@ -21,6 +23,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
                 return "Camera"
             case .microphone:
                 return "Microphone"
+            case .location:
+                return "Location"
             }
         }
 
@@ -32,6 +36,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
                 return "For Wendy apps that use video"
             case .microphone:
                 return "For Wendy apps that use audio"
+            case .location:
+                return "Wi-Fi network scanning"
             }
         }
 
@@ -43,6 +49,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
                 return "camera"
             case .microphone:
                 return "mic"
+            case .location:
+                return "location"
             }
         }
     }
@@ -65,10 +73,13 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
     var bluetoothStatus: PermissionStatus = .pending
     var cameraStatus: PermissionStatus = .pending
     var microphoneStatus: PermissionStatus = .pending
+    var locationStatus: PermissionStatus = .pending
     var requestingPermission: Permission?
 
     private var bluetoothManager: CBCentralManager?
     private var bluetoothContinuation: CheckedContinuation<PermissionStatus, Never>?
+    private var locationManager: CLLocationManager?
+    private var locationContinuation: CheckedContinuation<PermissionStatus, Never>?
 
     override init() {
         self.launchAtLoginEnabled = Self.currentLaunchAtLoginEnabled()
@@ -81,12 +92,14 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         self.currentBluetoothStatus() == .pending
             || self.currentCameraStatus() == .pending
             || self.currentMicrophoneStatus() == .pending
+            || self.currentLocationStatus() == .pending
     }
 
     var canFinish: Bool {
         self.bluetoothStatus == .allowed
             && self.cameraStatus == .allowed
             && self.microphoneStatus == .allowed
+            && self.locationStatus == .allowed
     }
 
     var isWorking: Bool {
@@ -129,6 +142,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
             self.cameraStatus = await self.requestCameraAccess()
         case .microphone:
             self.microphoneStatus = await self.requestMicrophoneAccess()
+        case .location:
+            self.locationStatus = await self.requestLocationAccess()
         }
     }
 
@@ -140,6 +155,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
             return self.cameraStatus
         case .microphone:
             return self.microphoneStatus
+        case .location:
+            return self.locationStatus
         }
     }
 
@@ -164,10 +181,30 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         bluetoothContinuation.resume(returning: self.currentBluetoothStatus())
     }
 
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        // Read the Sendable status here, in the nonisolated context: the
+        // non-Sendable `manager` must not be captured into the MainActor hop.
+        let authorizationStatus = manager.authorizationStatus
+        MainActor.assumeIsolated {
+            guard let locationContinuation = self.locationContinuation else {
+                self.refreshPermissionStatuses()
+                return
+            }
+            // The first callback fires immediately on delegate assignment with
+            // .notDetermined; wait for the user's actual decision.
+            guard authorizationStatus != .notDetermined else { return }
+
+            self.locationContinuation = nil
+            self.locationManager = nil
+            locationContinuation.resume(returning: self.currentLocationStatus())
+        }
+    }
+
     private func refreshPermissionStatuses() {
         self.bluetoothStatus = self.currentBluetoothStatus()
         self.cameraStatus = self.currentCameraStatus()
         self.microphoneStatus = self.currentMicrophoneStatus()
+        self.locationStatus = self.currentLocationStatus()
     }
 
     private func systemSettingsURL(for permission: Permission) -> URL? {
@@ -179,6 +216,8 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
             privacyPane = "Privacy_Camera"
         case .microphone:
             privacyPane = "Privacy_Microphone"
+        case .location:
+            privacyPane = "Privacy_LocationServices"
         }
 
         return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(privacyPane)")
@@ -273,6 +312,22 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
         }
     }
 
+    private func currentLocationStatus() -> PermissionStatus {
+        let manager = self.locationManager ?? CLLocationManager()
+        switch manager.authorizationStatus {
+        case .authorizedAlways:
+            return .allowed
+        case .denied:
+            return .denied
+        case .restricted:
+            return .restricted
+        case .notDetermined:
+            return .pending
+        @unknown default:
+            return .pending
+        }
+    }
+
     private func currentCameraStatus() -> PermissionStatus {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
@@ -318,6 +373,19 @@ final class WelcomeAndPermissions: NSObject, CBCentralManagerDelegate {
             }
         @unknown default:
             return .pending
+        }
+    }
+
+    private func requestLocationAccess() async -> PermissionStatus {
+        let current = self.currentLocationStatus()
+        guard current == .pending else { return current }
+
+        return await withCheckedContinuation { continuation in
+            self.locationContinuation = continuation
+            let manager = CLLocationManager()
+            manager.delegate = self
+            self.locationManager = manager
+            manager.requestWhenInUseAuthorization()
         }
     }
 

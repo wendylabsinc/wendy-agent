@@ -1,9 +1,10 @@
 {
   "title": "Installation",
   "pages": [
-    "wendyos-nvidia-jetson",
+    "wendyos-nvidia-jetson-orin-nano",
+    "wendyos-nvidia-jetson-agx-thor",
     "wendyos-raspberry-pi-5",
-    "wendy-agent-linux",
+    "linux",
     "wendy-agent-macos",
     "wendy-lite-esp32"
   ]

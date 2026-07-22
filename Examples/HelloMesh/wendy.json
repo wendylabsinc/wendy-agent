@@ -1,0 +1,27 @@
+{
+    "appId": "sh.wendy.examples.hellomesh",
+    "platform": "linux",
+    "version": "1.0.0",
+    "isolation": "isolated",
+    "services": {
+        "node": {
+            "context": "./client",
+            "entitlements": [
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16",
+                    "ports": [
+                        { "host": 8080, "container": 8080 }
+                    ]
+                }
+            ],
+            "env": {
+                "MESH_PEERS": "${MESH_PEERS}",
+                "MESH_SELF": "${MESH_SELF}",
+                "NODE_NAME": "${NODE_NAME}",
+                "POLL_INTERVAL": "${POLL_INTERVAL}"
+            }
+        }
+    }
+}

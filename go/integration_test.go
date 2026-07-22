@@ -76,8 +76,8 @@ func (m *integrationBluetoothManager) Scan(_ context.Context) (<-chan []*agentpb
 	close(ch)
 	return ch, nil
 }
-func (m *integrationBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) error {
-	return nil
+func (m *integrationBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return true, nil
 }
 func (m *integrationBluetoothManager) Disconnect(_ context.Context, _ string) error { return nil }
 func (m *integrationBluetoothManager) Forget(_ context.Context, _ string) error     { return nil }

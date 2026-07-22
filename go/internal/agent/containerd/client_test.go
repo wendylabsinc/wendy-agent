@@ -1164,3 +1164,115 @@ func TestRMWFromEnv(t *testing.T) {
 		t.Errorf("rmwFromEnv(nil) = %q, want empty", got)
 	}
 }
+
+func TestRebuildCachesFromLabels(t *testing.T) {
+	labels := []map[string]string{
+		// isolated single-service app
+		{labelKeyAppID: "cam", labelKeyServiceName: "cam", labelKeyIsolation: "isolated"},
+		// shared-namespace group: two services, one with a dependency
+		{labelKeyAppID: "stack", labelKeyServiceName: "web", labelKeyIsolation: "shared-network", labelKeyDependsOn: "db"},
+		{labelKeyAppID: "stack", labelKeyServiceName: "db", labelKeyIsolation: "shared-network"},
+		// non-isolated app: no isolation label
+		{labelKeyAppID: "plain", labelKeyServiceName: "plain"},
+		// junk row with no appID is ignored
+		{labelKeyServiceName: "orphan"},
+	}
+
+	isolation, services := rebuildCachesFromLabels(labels)
+
+	if isolation["cam"] != "isolated" {
+		t.Fatalf("cam isolation = %q, want isolated", isolation["cam"])
+	}
+	if isolation["stack"] != "shared-network" {
+		t.Fatalf("stack isolation = %q, want shared-network", isolation["stack"])
+	}
+	if _, ok := isolation["plain"]; ok {
+		t.Fatal("plain must not have an isolation entry")
+	}
+	if len(services["stack"]) != 2 {
+		t.Fatalf("stack services = %d, want 2", len(services["stack"]))
+	}
+	web := services["stack"]["web"]
+	if web == nil || len(web.DependsOn) != 1 || web.DependsOn[0] != "db" {
+		t.Fatalf("stack/web dependsOn = %+v, want [db]", web)
+	}
+	if db := services["stack"]["db"]; db == nil || len(db.DependsOn) != 0 {
+		t.Fatalf("stack/db dependsOn = %+v, want empty", db)
+	}
+	if _, ok := services[""]; ok {
+		t.Fatal("orphan row (no appID) must be ignored")
+	}
+}
+
+func TestEntitlementsUseHostNetwork(t *testing.T) {
+	host := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host"}}
+	hostAdmin := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "host-admin"}}
+	omitted := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: ""}}
+	mesh := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "mesh"}}
+	none := []appconfig.Entitlement{{Type: appconfig.EntitlementNetwork, Mode: "none"}}
+	noNet := []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}}
+
+	for _, tc := range []struct {
+		name string
+		ents []appconfig.Entitlement
+		want bool
+	}{
+		{"host", host, true},
+		{"host-admin", hostAdmin, true},
+		{"omitted", omitted, true},
+		{"mesh", mesh, false},
+		{"none", none, false},
+		{"no network entitlement", noNet, false},
+	} {
+		if got := entitlementsUseHostNetwork(tc.ents); got != tc.want {
+			t.Errorf("%s: entitlementsUseHostNetwork = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestIsPubliclyBoundAddress(t *testing.T) {
+	for _, tc := range []struct {
+		addr string
+		want bool
+	}{
+		{"0.0.0.0", true},      // IPv4 wildcard = all interfaces
+		{"::", true},           // IPv6 wildcard
+		{"192.168.1.10", true}, // specific non-loopback
+		{"127.0.0.1", false},   // IPv4 loopback
+		{"127.0.0.53", false},  // loopback range
+		{"::1", false},         // IPv6 loopback
+		{"", false},            // empty
+		{"garbage", false},     // unparseable
+	} {
+		if got := isPubliclyBoundAddress(tc.addr); got != tc.want {
+			t.Errorf("isPubliclyBoundAddress(%q) = %v, want %v", tc.addr, got, tc.want)
+		}
+	}
+}
+
+func TestCollectExposures(t *testing.T) {
+	portsByApp := map[string][]*agentpb.PortEntry{
+		"web": {
+			{Protocol: "tcp", Port: 8080, Address: "0.0.0.0"},   // public
+			{Protocol: "tcp", Port: 9000, Address: "127.0.0.1"}, // private, skipped
+		},
+		"api": {
+			{Protocol: "tcp", Port: 443, Address: "192.168.1.5"}, // public
+		},
+	}
+	got := collectExposures(portsByApp)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 exposures, got %d: %v", len(got), got)
+	}
+	if _, ok := got[exposureKey(exposedPort{appID: "web", protocol: "tcp", port: 8080, address: "0.0.0.0"})]; !ok {
+		t.Error("web:8080/0.0.0.0 should be an exposure")
+	}
+	if _, ok := got[exposureKey(exposedPort{appID: "api", protocol: "tcp", port: 443, address: "192.168.1.5"})]; !ok {
+		t.Error("api:443/192.168.1.5 should be an exposure")
+	}
+	for k := range got {
+		if strings.Contains(k, "9000") {
+			t.Errorf("loopback port 9000 must not be an exposure (key %q)", k)
+		}
+	}
+}

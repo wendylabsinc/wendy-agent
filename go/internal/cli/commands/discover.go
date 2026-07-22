@@ -212,7 +212,9 @@ func noDevicesHint() string {
 func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, includeLocal bool) error {
 	opts.Timeout = 3 * time.Second // per-scan timeout
 	m := newDiscoverModel(ctx, opts, includeLocal)
-	p := tea.NewProgram(m)
+	// Alt screen: the table grows to fill the window, and the alternate
+	// buffer restores the user's terminal content when the TUI exits.
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("TUI error: %w", err)
 	}

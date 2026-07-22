@@ -60,6 +60,7 @@ type AgentConnection struct {
 	Reconnect           func(context.Context) (*AgentConnection, error)
 	AgentService        agentpb.WendyAgentServiceClient
 	ContainerService    agentpb.WendyContainerServiceClient
+	ShellService        agentpb.WendyShellServiceClient
 	AudioService        agentpb.WendyAudioServiceClient
 	VideoService        agentpb.WendyVideoServiceClient
 	ProvisioningService agentpb.WendyProvisioningServiceClient
@@ -268,6 +269,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		Conn:                conn,
 		AgentService:        agentpb.NewWendyAgentServiceClient(conn),
 		ContainerService:    agentpb.NewWendyContainerServiceClient(conn),
+		ShellService:        agentpb.NewWendyShellServiceClient(conn),
 		AudioService:        agentpb.NewWendyAudioServiceClient(conn),
 		VideoService:        agentpb.NewWendyVideoServiceClient(conn),
 		ProvisioningService: agentpb.NewWendyProvisioningServiceClient(conn),

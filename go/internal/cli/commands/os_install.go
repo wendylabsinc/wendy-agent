@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-
 	"fmt"
 	"io"
 	"log"
@@ -37,6 +36,18 @@ import (
 
 type preEnrollMode int
 
+type t234InstallOptions struct {
+	DeviceType    string
+	DeviceName    string
+	Version       string
+	Storage       string
+	Artifact      *recoveryFlashpackInfo
+	Force         bool
+	WiFi          wifiCLIOptions
+	RequestedName string
+	PreEnroll     preEnrollOptions
+}
+
 const (
 	preEnrollAuto   preEnrollMode = iota // prompt if interactive terminal + auth session exists
 	preEnrollForced                      // --pre-enroll explicitly set to true
@@ -47,6 +58,7 @@ func newOSInstallCmd() *cobra.Command {
 	var nightly bool
 	var force bool
 	var noBmap bool
+	var rootfsOnly bool
 	var storageOverride string
 	var yesOverwriteInternal bool
 	var preEnroll bool
@@ -90,12 +102,12 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if rootfsOnly && len(args) > 0 {
+				return fmt.Errorf("--rootfs-only cannot be combined with positional [image] [drive] arguments")
+			}
 			if prNumber > 0 {
 				if nightly || versionFlag != "" || len(args) > 0 {
 					return fmt.Errorf("--pr cannot be combined with --nightly, --version, or positional image/drive arguments")
-				}
-				if deviceType == thorDeviceType {
-					return fmt.Errorf("--pr does not support jetson-agx-thor yet")
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
@@ -125,14 +137,16 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
+			rootfsOnlyExplicit := cmd.Flags().Changed("rootfs-only")
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, rootfsOnly, rootfsOnlyExplicit, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
 		},
 	}
 
 	cmd.Flags().BoolVar(&nightly, "nightly", false, "Use nightly/prerelease builds")
 	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 	cmd.Flags().BoolVar(&noBmap, "no-bmap", false, "Disable bmap-accelerated flashing even when a block map is available")
-	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures)")
+	cmd.Flags().BoolVar(&rootfsOnly, "rootfs-only", false, "Write only the SD/NVMe rootfs image; does not update Jetson QSPI boot firmware")
+	cmd.Flags().StringVar(&storageOverride, "storage", "", "Force image storage variant: nvme or sd (default: auto-detect — real NVMe drives use nvme; a USB-attached drive uses the device's published image, SD for Raspberry Pi / NVMe for Jetson SSD enclosures). For jetson-agx-orin, emmc flashes the onboard eMMC over USB recovery instead of writing a drive")
 	cmd.Flags().BoolVar(&yesOverwriteInternal, "yes-overwrite-internal", false, "Required to wipe an internal (non-removable) drive in non-interactive mode")
 	cmd.Flags().StringVar(&deviceType, "device-type", "", "Device type from manifest (e.g. raspberry-pi-5)")
 	cmd.Flags().StringVar(&versionFlag, "version", "", "WendyOS version to install (interactive if omitted)")
@@ -257,17 +271,36 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
-	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" {
-		return fmt.Errorf("invalid --storage %q: must be \"nvme\" or \"sd\"", storageOverride)
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
+		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
+	}
+	if storageOverride == "emmc" && flagDeviceType != "" && flagDeviceType != orinDeviceType {
+		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
+	}
+	if rootfsOnly && storageOverride == "emmc" {
+		return fmt.Errorf("--storage emmc cannot be combined with --rootfs-only; eMMC is available only through full recovery")
+	}
+	if isT234RecoveryDevice(flagDeviceType) && !rootfsOnly {
+		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
+			return err
+		}
 	}
 
 	// AGX Thor flashes over USB recovery (not a drive), via its own flashpack
 	// artifact and device selection — a separate path from the disk-image flow below.
 	if flagDeviceType == thorDeviceType {
-		return installThor(ctx, flagVersion, nightly, force)
+		if rootfsOnly {
+			return fmt.Errorf("--rootfs-only is not available for Jetson AGX Thor")
+		}
+		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
+			return err
+		}
+		if storageOverride != "" {
+			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
+		}
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
 	}
-
 	fmt.Println("Fetching available devices...")
 
 	// Fetch Linux devices from GCS manifest — the per-PR manifest when --pr is
@@ -349,6 +382,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			SortKey:     "2_linux_desktop",
 			Value:       linuxDesktopValue,
 		})
+
+		items = append(items, tui.PickerItem{
+			Name:        "Headless Mac",
+			Description: "Install wendy-agent on an existing Mac (Apple Silicon)",
+			Section:     "Headless Mac",
+			SortKey:     "3_headless_mac",
+			Value:       headlessMacValue,
+		})
 	}
 
 	// Resolve device — use flag or interactive picker.
@@ -389,11 +430,24 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// installThor here as well — otherwise it falls through to the disk-image
 	// flow and dd's the wrong artifact onto an external drive.
 	if selected == thorDeviceType {
-		return installThor(ctx, flagVersion, nightly, force)
+		if rootfsOnly {
+			return fmt.Errorf("--rootfs-only is not available for Jetson AGX Thor")
+		}
+		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
+			return err
+		}
+		if storageOverride != "" {
+			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
+		}
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
 	}
 
 	if selected == linuxDesktopValue {
-		return installLinuxDesktop(ctx, preOpts, deviceName)
+		return installDesktop(ctx, preOpts, deviceName, linuxDesktopMachineLabel)
+	}
+
+	if selected == headlessMacValue {
+		return installDesktop(ctx, preOpts, deviceName, headlessMacMachineLabel)
 	}
 
 	device := deviceMap[selected]
@@ -401,12 +455,201 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if device.IsESP32 {
 		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
 	}
-	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, storageOverride, wifi, deviceName, preOpts)
+	if storageOverride == "emmc" && selected != orinDeviceType {
+		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
+	}
+
+	selectedVersion := device.RawVersion
+	if flagVersion != "" {
+		selectedVersion = flagVersion
+	}
+	ver, ok := device.Manifest.Versions[selectedVersion]
+	if !ok {
+		return fmt.Errorf("version %q not found for %s", selectedVersion, device.Name)
+	}
+	if rootfsOnly && !isT234RecoveryDevice(selected) {
+		return fmt.Errorf("--rootfs-only is supported only for Jetson Orin recovery targets")
+	}
+	if isT234RecoveryDevice(selected) && storageOverride == "emmc" && ver.InstallMode != "recovery" {
+		return fmt.Errorf("version %s does not publish an eMMC recovery flashpack", selectedVersion)
+	}
+	if isT234RecoveryDevice(selected) && ver.InstallMode != "recovery" && !rootfsOnly {
+		// The version has no recovery flashpack, so its legacy SD/NVMe image is
+		// the only way to install it. Fall back to rootfs-only imaging instead
+		// of making the user rediscover the flag — unless they explicitly
+		// pinned --rootfs-only=false, which asks for a flash this version
+		// cannot deliver.
+		if rootfsOnlyExplicit {
+			return fmt.Errorf("version %s predates full recovery flashpacks and cannot flash boot firmware; drop --rootfs-only=false or pick a newer version", selectedVersion)
+		}
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(fmt.Sprintf("Version %s predates full recovery flashpacks; falling back to its SD/NVMe OS image. QSPI boot firmware will not be updated.", selectedVersion)))
+		rootfsOnly = true
+		// Windows: the raw disk write needs elevation, and the UAC relaunch
+		// starts a fresh process — pin the device and fallback mode on the
+		// child's command line so the elevated instance resumes at the
+		// storage question. No-op on Unix.
+		if err := elevateForT234Flash(selected, true); err != nil {
+			return err
+		}
+	}
+	// Interactively choose the flash mode for Jetson Orin recovery targets so users
+	// don't have to know the --rootfs-only flag. shouldPromptFlashMode skips it
+	// whenever a flag already pins the mode or we're non-interactive, keeping
+	// today's behavior unchanged.
+	if shouldPromptFlashMode(selected, ver.InstallMode, rootfsOnlyExplicit, storageOverride, isInteractiveTerminal()) {
+		rootfsOnly, err = chooseT234FlashMode()
+		if err != nil {
+			return err // ErrUserCancelled -> clean exit
+		}
+		if rootfsOnly {
+			// Windows: the raw disk write needs elevation, and the UAC relaunch
+			// starts a fresh process — elevate now with the device and mode
+			// pinned on the child's command line so the elevated instance
+			// resumes at the storage question instead of re-asking these. The
+			// full-recovery choice elevates below, after its flag validation.
+			if err := elevateForT234Flash(selected, true); err != nil {
+				return err
+			}
+		}
+	}
+	if isT234RecoveryDevice(selected) && ver.InstallMode == "recovery" && !rootfsOnly {
+		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
+			return err
+		}
+		// Windows: elevate now, before the remaining wizard questions. The UAC
+		// relaunch starts a fresh process in a new console, so any answers
+		// already given would have to be re-entered there; the device choice
+		// and flash mode carry over as --device-type/--rootfs-only. Pinning
+		// the mode also keeps the elevated child (whose fresh console IS
+		// interactive) from raising the flash-mode prompt a non-interactive
+		// parent never showed.
+		if err := elevateForT234Flash(selected, false); err != nil {
+			return err
+		}
+		storage, err := chooseT234RecoveryStorage(selected, storageOverride)
+		if err != nil {
+			return err
+		}
+		artifact, err := getRecoveryFlashpackInfo(device.Manifest, selected, selectedVersion, storage)
+		if err != nil {
+			return err
+		}
+		return installOrin(ctx, t234InstallOptions{
+			DeviceType: selected, DeviceName: device.Name, Version: selectedVersion,
+			Storage: storage, Artifact: artifact, Force: force, WiFi: wifi,
+			RequestedName: deviceName, PreEnroll: preOpts,
+		})
+	}
+	if isT234RecoveryDevice(selected) && rootfsOnly {
+		// The legacy-version fallback above prints its own QSPI notice, and
+		// recommending full recovery would be wrong there — the version has
+		// no flashpack to recover with.
+		if ver.InstallMode == "recovery" {
+			fmt.Fprintln(os.Stderr, tui.WarningMessage("Rootfs-only imaging does not update Jetson QSPI boot firmware; use full recovery to guarantee matching boot firmware and rootfs."))
+		}
+		storageOverride, err = chooseT234RootfsOnlyStorage(selected, storageOverride)
+		if err != nil {
+			return err
+		}
+	}
+	return installLinuxImage(ctx, selected, device, nightly, flagVersion, flagDrive, force, yesOverwriteInternal, noBmap, rootfsOnly, storageOverride, wifi, deviceName, preOpts)
+}
+
+func rejectRecoveryDriveFlags(drive string, noBmap, overwriteInternal bool) error {
+	var flags []string
+	if drive != "" {
+		flags = append(flags, "--drive")
+	}
+	if noBmap {
+		flags = append(flags, "--no-bmap")
+	}
+	if overwriteInternal {
+		flags = append(flags, "--yes-overwrite-internal")
+	}
+	if len(flags) > 0 {
+		return fmt.Errorf("%s require --rootfs-only; full recovery selects storage on the Jetson over USB", strings.Join(flags, ", "))
+	}
+	return nil
+}
+
+// shouldPromptFlashMode reports whether to interactively ask the user to choose
+// between full USB recovery (firmware + OS) and rootfs-only imaging. It fires
+// only for Jetson Orin recovery targets when full recovery is actually available
+// (InstallMode == "recovery"), the user did not pin the mode via --rootfs-only,
+// the mode is not already forced by --storage emmc (full recovery only), and we
+// have an interactive terminal. Non-interactive runs and any explicit flag keep
+// today's behavior untouched.
+func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bool, storageOverride string, interactive bool) bool {
+	return isT234RecoveryDevice(deviceType) &&
+		installMode == "recovery" &&
+		!rootfsOnlyExplicit &&
+		storageOverride != "emmc" &&
+		interactive
+}
+
+// chooseT234FlashMode prompts the user to pick between full USB recovery
+// (firmware + OS) and OS-image-only imaging, returning rootfsOnly=true for the
+// image-only choice. A cancelled picker surfaces ErrUserCancelled, which the
+// top-level command maps to a clean exit.
+func chooseT234FlashMode() (rootfsOnly bool, err error) {
+	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
+		{Name: "Full flash over USB", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
+		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+	})
+	if err != nil {
+		return false, err // ErrUserCancelled propagates unchanged
+	}
+	return choice == "rootfs", nil
+}
+
+func chooseT234RecoveryStorage(device, override string) (string, error) {
+	if device == orinNanoDeviceType {
+		if override != "" && override != "nvme" {
+			return "", fmt.Errorf("%s recovery supports NVMe only", orinNanoDeviceType)
+		}
+		return "nvme", nil
+	}
+	if device != orinDeviceType {
+		return "", fmt.Errorf("unsupported T234 recovery device %q", device)
+	}
+	if override == "nvme" || override == "emmc" {
+		return override, nil
+	}
+	if override != "" {
+		return "", fmt.Errorf("%s recovery storage must be nvme or emmc", orinDeviceType)
+	}
+	if !isInteractiveTerminal() {
+		return "", fmt.Errorf("--storage nvme or --storage emmc is required for noninteractive AGX Orin recovery")
+	}
+	return pickFromItems("Select recovery storage", []tui.PickerItem{
+		{Name: "NVMe SSD", Description: "erase QSPI and the installed NVMe", Value: "nvme"},
+		{Name: "Onboard eMMC", Description: "erase QSPI and onboard eMMC", Value: "emmc"},
+	})
+}
+
+func chooseT234RootfsOnlyStorage(device, override string) (string, error) {
+	switch device {
+	case orinNanoDeviceType:
+		if override == "" {
+			return "nvme", nil
+		}
+		if override == "nvme" || override == "sd" {
+			return override, nil
+		}
+		return "", fmt.Errorf("%s rootfs-only imaging supports NVMe or SD", orinNanoDeviceType)
+	case orinDeviceType:
+		if override == "" || override == "nvme" {
+			return "nvme", nil
+		}
+		return "", fmt.Errorf("%s rootfs-only imaging supports NVMe only", orinDeviceType)
+	default:
+		return "", fmt.Errorf("unsupported T234 rootfs-only device %q", device)
+	}
 }
 
 // installLinuxImage handles the Linux device path: pick version → pick drive → download → write.
 // nightly, flagVersion, flagDrive, and force allow skipping the corresponding interactive prompts.
-func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevice, nightly bool, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	// Authenticate elevation up front so we don't pay for the multi-hundred-MB
 	// image download just to discover the user can't write to a raw disk. On
 	// Windows this offers a UAC re-launch when not elevated; on Unix it
@@ -425,7 +668,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	selectedVersion := device.RawVersion // default: latest (or nightly if --nightly)
 	if flagVersion != "" {
 		// Validate the requested version exists in the manifest.
-		if _, err := getImageInfo(device.Manifest, flagVersion, ""); err != nil {
+		if _, ok := device.Manifest.Versions[flagVersion]; !ok {
 			return fmt.Errorf("version %q not found for %s", flagVersion, device.Name)
 		}
 		selectedVersion = flagVersion
@@ -484,27 +727,11 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		return err
 	}
 
-	// Resolve pre-enrollment — must happen before provisionConfigPartition because
-	// the config partition is mounted and unmounted inside that call.
-	var provisioningJSON []byte
-	if preOpts.mode != preEnrollSkip {
-		cfg, cfgErr := config.Load()
-		if cfgErr != nil {
-			if preOpts.mode == preEnrollForced {
-				return fmt.Errorf("--pre-enroll: loading config: %w", cfgErr)
-			}
-			cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
-		}
-		provisioning, resolveErr := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), provDeviceName)
-		if resolveErr != nil {
-			return resolveErr
-		}
-		if provisioning != nil {
-			provisioningJSON, err = json.Marshal(provisioning)
-			if err != nil {
-				return fmt.Errorf("marshaling provisioning state: %w", err)
-			}
-		}
+	// Resolve pre-enrollment before provisioning — the config partition is mounted
+	// and unmounted inside provisionConfigWithRetry below.
+	provisioningJSON, err := resolveProvisioningJSON(ctx, preOpts, provDeviceName)
+	if err != nil {
+		return err
 	}
 
 	// Step 5: Resolve image metadata for the target storage. A USB-attached
@@ -541,7 +768,12 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	fmt.Printf("\nPreparing %s %s image...\n", device.Name, selectedVersion)
-	imgInfo, err := getImageInfo(device.Manifest, selectedVersion, storage)
+	var imgInfo *imageInfo
+	if rootfsOnly && ver.InstallMode == "recovery" {
+		imgInfo, err = getRootfsOnlyImageInfo(device.Manifest, selectedVersion, storage)
+	} else {
+		imgInfo, err = getImageInfo(device.Manifest, selectedVersion, storage)
+	}
 	if err != nil {
 		return fmt.Errorf("getting image info: %w", err)
 	}
@@ -1997,6 +2229,26 @@ func resolveDeviceName(flagName string) (string, error) {
 		return "", fmt.Errorf("device-name prompt: %w", err)
 	}
 	return strings.TrimSpace(name), nil
+}
+
+// resolveProvisioningJSON runs pre-enrollment per preOpts and returns the
+// marshaled provisioning.json, or nil when enrollment is skipped or not available.
+func resolveProvisioningJSON(ctx context.Context, preOpts preEnrollOptions, deviceName string) ([]byte, error) {
+	if preOpts.mode == preEnrollSkip {
+		return nil, nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		if preOpts.mode == preEnrollForced {
+			return nil, fmt.Errorf("--pre-enroll: loading config: %w", err)
+		}
+		cfg = &config.Config{} // auto mode: treat an unreadable config as not logged in
+	}
+	prov, err := resolvePreEnrollment(ctx, cfg, preOpts, isInteractiveTerminal(), deviceName)
+	if err != nil || prov == nil {
+		return nil, err
+	}
+	return json.Marshal(prov)
 }
 
 // confirmOverwriteInternalDrive guards against accidentally wiping internal

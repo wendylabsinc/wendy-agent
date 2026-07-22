@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -11,11 +10,14 @@ import (
 )
 
 func (s *mcpServer) registerProvisioningTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("provisioning_status",
+	statusOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Check whether the connected device is provisioned with Wendy Cloud"),
-	), s.handleProvisioningStatus)
+	}
+	statusOpts = append(statusOpts, readOnly()...)
+	statusOpts = append(statusOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("provisioning_status", statusOpts...), s.handleProvisioningStatus)
 
-	srv.AddTool(mcpgo.NewTool("provisioning_start",
+	startOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Provision the device with Wendy Cloud and wait for completion (up to 2 minutes)"),
 		mcpgo.WithString("enrollment_token",
 			mcpgo.Required(),
@@ -23,7 +25,7 @@ func (s *mcpServer) registerProvisioningTools(srv *server.MCPServer) {
 		),
 		mcpgo.WithString("cloud_host",
 			mcpgo.Required(),
-			mcpgo.Description("Wendy Cloud hostname, e.g. cloud.wendy.sh"),
+			mcpgo.Description("Wendy Cloud hostname, e.g. cloud.wendy.dev"),
 		),
 		mcpgo.WithNumber("organization_id",
 			mcpgo.Required(),
@@ -32,7 +34,11 @@ func (s *mcpServer) registerProvisioningTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("asset_id",
 			mcpgo.Description("Asset ID to assign to this device (optional)"),
 		),
-	), s.handleProvisioningStart)
+	}
+	startOpts = append(startOpts, mutating()...)
+	startOpts = append(startOpts, openWorld()...)
+	startOpts = append(startOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("provisioning_start", startOpts...), s.handleProvisioningStart)
 }
 
 func (s *mcpServer) handleProvisioningStatus(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -42,7 +48,7 @@ func (s *mcpServer) handleProvisioningStatus(ctx context.Context, _ mcpgo.CallTo
 	}
 	resp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	var result map[string]any
 	switch r := resp.GetResponse().(type) {
@@ -60,8 +66,7 @@ func (s *mcpServer) handleProvisioningStatus(ctx context.Context, _ mcpgo.CallTo
 	default:
 		result = map[string]any{"provisioned": false}
 	}
-	b, _ := json.MarshalIndent(result, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(result), nil
 }
 
 func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -72,9 +77,16 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 	token := stringParam(req, "enrollment_token")
 	cloudHost := stringParam(req, "cloud_host")
 	orgID := intParam(req, "organization_id", 0)
-	if token == "" || cloudHost == "" || orgID == 0 {
-		return mcpgo.NewToolResultError("enrollment_token, cloud_host, and organization_id are required"), nil
+	if token == "" {
+		return errResult(errCodeInvalidArgument, "enrollment_token is required"), nil
 	}
+	if cloudHost == "" {
+		return errResult(errCodeInvalidArgument, "cloud_host is required"), nil
+	}
+	if orgID == 0 {
+		return errResult(errCodeInvalidArgument, "organization_id is required"), nil
+	}
+	tok := progressToken(req)
 	_, err := conn.ProvisioningService.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
 		EnrollmentToken: token,
 		CloudHost:       cloudHost,
@@ -82,7 +94,7 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 		AssetId:         int32(intParam(req, "asset_id", 0)),
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 
 	// Poll until provisioned, caller cancelled, or 2-minute timeout.
@@ -90,14 +102,19 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 	defer cancel()
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
+	var tick float64
 	for {
 		select {
 		case <-pollCtx.Done():
-			return mcpgo.NewToolResultError("provisioning timed out — check status with provisioning_status"), nil
+			return errResult(errCodeTimeout, "provisioning timed out — check status with provisioning_status"), nil
 		case <-ticker.C:
+			// Indeterminate progress: total unknown, but the value must advance
+			// monotonically per the MCP spec, so emit the tick count.
+			tick++
+			reportProgress(ctx, tok, tick, 0, "waiting for device to finish provisioning…")
 			statusResp, err := conn.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 			if err != nil {
-				return mcpgo.NewToolResultError(grpcErrString(err)), nil
+				return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 			}
 			if p, ok := statusResp.GetResponse().(*agentpb.IsProvisionedResponse_Provisioned); ok {
 				result := map[string]any{
@@ -106,8 +123,7 @@ func (s *mcpServer) handleProvisioningStart(ctx context.Context, req mcpgo.CallT
 					"organization_id": p.Provisioned.GetOrganizationId(),
 					"asset_id":        p.Provisioned.GetAssetId(),
 				}
-				b, _ := json.MarshalIndent(result, "", "  ")
-				return mcpgo.NewToolResultText(string(b)), nil
+				return okResult(result), nil
 			}
 		}
 	}

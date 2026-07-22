@@ -92,8 +92,14 @@ func NewBubbleTable(interactive bool, columns []bubbleTable.Column) BubbleTable 
 func (t BubbleTable) Update(msg tea.Msg) (BubbleTable, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// Never answer a resize with tea.ClearScreen: bubbletea sends a
+		// WindowSizeMsg at every program start, and ClearScreen erases the
+		// user's entire visible terminal in place (CSI 2J) — destroyed lines
+		// never reach scrollback. The renderer already repaints all lines on
+		// WindowSizeMsg, so no command is needed. Guarded by
+		// TestNoScreenClearingInCLISource.
 		t.SetViewportWidth(msg.Width)
-		return t, tea.ClearScreen
+		return t, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "left", "h":

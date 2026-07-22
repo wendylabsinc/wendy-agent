@@ -2,7 +2,7 @@
   <img src="docs/media/demo.gif" alt="Wendy on NVIDIA Jetson" width="360">
 </p>
 
-Visit our developer docs at https://wendy.sh/docs
+Visit our developer docs at https://docs.wendy.dev/latest
 
 # Install
 
@@ -90,6 +90,10 @@ sudo systemctl enable --now containerd
 ```
 
 ## Building from Source
+
+For the full developer workflow — running a dev CLI and agent, tests, protobuf
+regeneration, testing WendyOS builds from a PR (`--pr`), and environment
+variables — see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### CLI
 

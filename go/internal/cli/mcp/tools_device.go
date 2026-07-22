@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -13,36 +12,42 @@ import (
 )
 
 func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("device_list",
+	listOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List wendy devices from config and known addresses. Pass scan=true to also run a live 3-second mDNS scan for devices on the local network."),
-		mcpgo.WithBoolean("scan",
-			mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices"),
-		),
-	), s.handleDeviceList)
+		mcpgo.WithBoolean("scan", mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices")),
+	}
+	listOpts = append(listOpts, readOnly()...)
+	listOpts = append(listOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("device_list", listOpts...), s.handleDeviceList)
 
-	srv.AddTool(mcpgo.NewTool("device_connect",
+	connectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Connect to a wendy device by address (host:port)"),
-		mcpgo.WithString("address",
-			mcpgo.Required(),
-			mcpgo.Description("Device address, e.g. mydevice.local:50051 or 192.168.1.10:50051"),
-		),
-	), s.handleDeviceConnect)
+		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address, e.g. mydevice.local:50051 or 192.168.1.10:50051")),
+	}
+	connectOpts = append(connectOpts, mutating()...)
+	connectOpts = append(connectOpts, idempotent()...)
+	connectOpts = append(connectOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("device_connect", connectOpts...), s.handleDeviceConnect)
 
-	srv.AddTool(mcpgo.NewTool("device_disconnect",
-		mcpgo.WithDescription("Disconnect from the currently connected device"),
-	), s.handleDeviceDisconnect)
+	disconnectOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Disconnect from the currently connected device")}
+	disconnectOpts = append(disconnectOpts, mutating()...)
+	disconnectOpts = append(disconnectOpts, idempotent()...)
+	disconnectOpts = append(disconnectOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("device_disconnect", disconnectOpts...), s.handleDeviceDisconnect)
 
-	srv.AddTool(mcpgo.NewTool("device_info",
-		mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device"),
-	), s.handleDeviceInfo)
+	infoOpts := []mcpgo.ToolOption{mcpgo.WithDescription("Get agent version, OS, CPU architecture, GPU info, and feature set of connected device")}
+	infoOpts = append(infoOpts, readOnly()...)
+	infoOpts = append(infoOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("device_info", infoOpts...), s.handleDeviceInfo)
 
-	srv.AddTool(mcpgo.NewTool("device_set_default",
+	setDefaultOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Save an address as the default device in ~/.wendy/config.json"),
-		mcpgo.WithString("address",
-			mcpgo.Required(),
-			mcpgo.Description("Device address to save as default"),
-		),
-	), s.handleDeviceSetDefault)
+		mcpgo.WithString("address", mcpgo.Required(), mcpgo.Description("Device address to save as default, e.g. mydevice.local:50051")),
+	}
+	setDefaultOpts = append(setDefaultOpts, mutating()...)
+	setDefaultOpts = append(setDefaultOpts, idempotent()...)
+	setDefaultOpts = append(setDefaultOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("device_set_default", setDefaultOpts...), s.handleDeviceSetDefault)
 }
 
 func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -96,29 +101,28 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 	if len(devices) == 0 {
 		devices = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(devices, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(devices), nil
 }
 
 func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	address := stringParam(req, "address")
 	if address == "" {
-		return mcpgo.NewToolResultError("address is required"), nil
+		return errResult(errCodeInvalidArgument, "address is required"), nil
 	}
 	if err := s.ConnectTo(ctx, address); err != nil {
-		return mcpgo.NewToolResultError(fmt.Sprintf("connecting to %s: %s", address, err.Error())), nil
+		return errResultf(errCodeDeviceUnreachable, "connecting to %s: %s", address, err.Error()), nil
 	}
 	s.SetConnType("direct")
-	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s", address)), nil
+	return okText(fmt.Sprintf("connected to %s", address)), nil
 }
 
 func (s *mcpServer) handleDeviceDisconnect(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn := s.GetConn()
 	if conn == nil {
-		return mcpgo.NewToolResultText("not connected"), nil
+		return okText("not connected"), nil
 	}
 	s.SetConn(nil)
-	return mcpgo.NewToolResultText("disconnected"), nil
+	return okText("disconnected"), nil
 }
 
 func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -128,7 +132,7 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	}
 	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	info := map[string]any{
 		"version":          resp.GetVersion(),
@@ -177,18 +181,17 @@ func (s *mcpServer) handleDeviceInfo(ctx context.Context, _ mcpgo.CallToolReques
 	if resp.GpuArch != nil {
 		info["gpu_arch"] = resp.GetGpuArch()
 	}
-	b, _ := json.MarshalIndent(info, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(info), nil
 }
 
 func (s *mcpServer) handleDeviceSetDefault(_ context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	address := stringParam(req, "address")
 	if address == "" {
-		return mcpgo.NewToolResultError("address is required"), nil
+		return errResult(errCodeInvalidArgument, "address is required"), nil
 	}
 	s.cfg.DefaultDevice = address
 	if err := config.Save(s.cfg); err != nil {
-		return mcpgo.NewToolResultError(fmt.Sprintf("saving config: %s", err.Error())), nil
+		return errResultf(errCodeInternal, "saving config: %s", err.Error()), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("default device set to %s", address)), nil
+	return okText(fmt.Sprintf("default device set to %s", address)), nil
 }

@@ -363,10 +363,18 @@ func newAppsStartCmd() *cobra.Command {
 
 			if target.Agent != nil {
 				if detach {
-					if _, err := target.Agent.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
+					stream, err := target.Agent.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
 						AppName:       appName,
 						RestartPolicy: &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED},
-					}); err != nil {
+					})
+					if err != nil {
+						return fmt.Errorf("starting container: %w", err)
+					}
+					// Wait for the agent's Started confirmation before returning.
+					// Returning immediately (the old behavior) closed the connection
+					// and canceled the RPC before the agent had loaded the container,
+					// so the start silently failed while we reported success.
+					if err := awaitStarted(stream); err != nil {
 						return fmt.Errorf("starting container: %w", err)
 					}
 					cliSuccess("Application %s started.", appName)
@@ -377,7 +385,7 @@ func newAppsStartCmd() *cobra.Command {
 					return err
 				}
 				gotFirstResponse := false
-				gotOutput := false
+				gotStarted := false
 				for {
 					resp, err := outStream.Recv()
 					if err == io.EOF {
@@ -399,22 +407,25 @@ func newAppsStartCmd() *cobra.Command {
 						return fmt.Errorf("receiving start response: %w", err)
 					}
 					gotFirstResponse = true
+					if resp.GetStarted() != nil {
+						gotStarted = true
+					}
 					if out := resp.GetStdoutOutput(); out != nil {
 						os.Stdout.Write(out.GetData())
-						gotOutput = true
 					}
 					if out := resp.GetStderrOutput(); out != nil {
 						os.Stderr.Write(out.GetData())
-						gotOutput = true
 					}
 				}
-				// Group starts return immediately without streaming output; distinguish
-				// from single containers that ran and exited.
-				if gotOutput {
-					cliSuccess("Application %s stopped.", appName)
-				} else {
-					cliSuccess("Application %s started.", appName)
+				// The agent never confirmed the start: the container did not run.
+				if !gotStarted {
+					return fmt.Errorf("container %q did not start", appName)
 				}
+				// The stream ended. A single container's stream ends when it
+				// exits; a group start's stream ends immediately while the
+				// services keep running. Report the actual state instead of
+				// guessing from whether any output was seen.
+				reportStartOutcome(ctx, target.Agent.ContainerService, appName)
 				return nil
 			}
 
@@ -436,6 +447,79 @@ func newAppsStartCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Start without streaming output")
 	return cmd
+}
+
+// awaitStarted consumes a start/run response stream until the agent sends its
+// Started marker (returning nil). It returns an error if the stream fails or
+// closes before Started arrives — which means the container never started.
+// Interleaved output frames before Started are discarded (detached callers do
+// not stream output).
+func awaitStarted(stream containerOutputStream) error {
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			return fmt.Errorf("agent closed the stream before confirming the container started")
+		}
+		if err != nil {
+			return err
+		}
+		if resp.GetStarted() != nil {
+			return nil
+		}
+	}
+}
+
+// reportStartOutcome prints the container's actual post-start state after a
+// non-detached start stream ends, so the message reflects reality rather than
+// guessing from streamed output. RUNNING (a group start, or a container still
+// up) reads as started; a terminated single container reports how it ended.
+// A failure state (crash, crash-loop) is a neutral notice, not success styling;
+// the exit status stays 0 because the start itself was confirmed.
+func reportStartOutcome(ctx context.Context, svc agentpb.WendyContainerServiceClient, appName string) {
+	c := fetchAppContainer(ctx, svc, appName)
+	if c == nil {
+		cliSuccess("Application %s started.", appName)
+		return
+	}
+	switch c.GetRunningState() {
+	case agentpb.AppRunningState_RUNNING:
+		cliSuccess("Application %s started.", appName)
+	case agentpb.AppRunningState_CRASH_LOOPING:
+		cliNotice("Application %s is crash-looping (%s).", appName,
+			terminationSummary(c.GetTerminationReason(), c.GetExitCode()))
+	default: // STOPPED
+		switch c.GetTerminationReason() {
+		case "", "exited":
+			if summary := terminationSummary(c.GetTerminationReason(), c.GetExitCode()); summary != "" {
+				cliSuccess("Application %s %s.", appName, summary)
+			} else {
+				cliSuccess("Application %s stopped.", appName)
+			}
+		default: // crashed / oom_killed / start_failed / entitlement_denied
+			cliNotice("Application %s %s.", appName,
+				terminationSummary(c.GetTerminationReason(), c.GetExitCode()))
+		}
+	}
+}
+
+// fetchAppContainer returns the AppContainer for appName from the agent's
+// container list, or nil if it cannot be read or found.
+func fetchAppContainer(ctx context.Context, svc agentpb.WendyContainerServiceClient, appName string) *agentpb.AppContainer {
+	stream, err := svc.ListContainers(ctx, &agentpb.ListContainersRequest{})
+	if err != nil {
+		return nil
+	}
+	var found *agentpb.AppContainer
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		if c := resp.GetContainer(); c != nil && c.GetAppName() == appName {
+			found = c
+		}
+	}
+	return found
 }
 
 func newAppsStopCmd() *cobra.Command {

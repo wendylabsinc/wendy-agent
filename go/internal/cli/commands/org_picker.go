@@ -345,6 +345,14 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 		// Default no longer valid (org removed from membership); fall through to picker.
 	}
 
+	// Scenarios 2 and 4 need the interactive picker, which opens /dev/tty. In
+	// non-interactive mode (--json, or output is not a terminal) that would
+	// crash with "could not open a new TTY"; fail with actionable guidance
+	// instead so scripts and `--json` callers get a usable error.
+	if !canPromptForOrgFn() {
+		return OrgResolution{}, nonInteractiveOrgErr(orgs, cfg.DefaultOrgID)
+	}
+
 	// Scenarios 2 and 4: show the interactive picker. copyOnEnter is false so
 	// Enter selects an org and lets the wizard proceed (WDY-1840).
 	id, name, err := pickOrgInteractiveFn(orgs, cfg, false)
@@ -356,3 +364,24 @@ func resolveOrgWithConfig(ctx context.Context, cfg *config.Config, auth *config.
 
 // pickOrgInteractiveFn is stubbed in tests.
 var pickOrgInteractiveFn = pickOrgInteractive
+
+// canPromptForOrgFn reports whether an interactive org picker can be shown.
+// It is false under --json or when output is not a terminal (jsonOutput is set
+// from both; see root.go). Overridable in tests.
+var canPromptForOrgFn = func() bool { return !jsonOutput }
+
+// nonInteractiveOrgErr explains why an org could not be resolved without a
+// prompt and how to fix it, listing the available organizations.
+func nonInteractiveOrgErr(orgs []*cloudpb.Organization, defaultOrgID int32) error {
+	avail := ""
+	for i, o := range orgs {
+		if i > 0 {
+			avail += ", "
+		}
+		avail += fmt.Sprintf("%d (%s)", o.GetId(), o.GetName())
+	}
+	if defaultOrgID != 0 {
+		return fmt.Errorf("default organization %d is not one of your organizations [%s]; pass --org <id> (where supported) or set a valid default with 'wendy auth list-orgs' in an interactive terminal", defaultOrgID, avail)
+	}
+	return fmt.Errorf("cannot select an organization non-interactively: your account belongs to multiple organizations [%s]; pass --org <id> (where supported) or set a default with 'wendy auth list-orgs' in an interactive terminal", avail)
+}

@@ -57,7 +57,7 @@ Any 64-bit Intel or AMD PC, workstation, or server runs Wendy by installing `wen
 | Intel x86-64 (Core, Xeon) | Install `wendy-agent` on existing Linux |
 | AMD x86-64 (Ryzen, EPYC) | Install `wendy-agent` on existing Linux |
 
-See [Install wendy-agent on Linux](/docs/installation/wendy-agent-linux).
+See [Install wendy-agent on Linux](/docs/installation/linux).
 
 ## GPU acceleration
 

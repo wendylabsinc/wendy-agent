@@ -30,8 +30,8 @@ func (m *mockBluetoothManagerWithPeripherals) Scan(_ context.Context) (<-chan []
 	close(ch)
 	return ch, nil
 }
-func (m *mockBluetoothManagerWithPeripherals) Connect(_ context.Context, _ string, _, _ bool) error {
-	return nil
+func (m *mockBluetoothManagerWithPeripherals) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return true, nil
 }
 func (m *mockBluetoothManagerWithPeripherals) Disconnect(_ context.Context, _ string) error {
 	return nil
@@ -50,8 +50,8 @@ func (m *mockBluetoothManagerError) Scan(_ context.Context) (<-chan []*agentpb.D
 	close(ch)
 	return ch, nil
 }
-func (m *mockBluetoothManagerError) Connect(_ context.Context, _ string, _, _ bool) error {
-	return m.connectErr
+func (m *mockBluetoothManagerError) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return m.connectErr == nil, m.connectErr
 }
 func (m *mockBluetoothManagerError) Disconnect(_ context.Context, _ string) error {
 	return m.disconnectErr

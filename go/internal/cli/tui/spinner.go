@@ -25,6 +25,7 @@ type SpinnerModel struct {
 	spinner  spinner.Model
 	title    string
 	hints    hintRotator
+	width    int
 	done     bool
 	err      error
 	result   interface{}
@@ -50,6 +51,10 @@ func (m SpinnerModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m SpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -92,7 +97,7 @@ func (m SpinnerModel) View() string {
 		return ""
 	}
 	out := fmt.Sprintf("%s %s\n", m.spinner.View(), m.title)
-	if hint := m.hints.view(); hint != "" {
+	if hint := m.hints.view(m.width); hint != "" {
 		out += hint + "\n"
 	}
 	return out

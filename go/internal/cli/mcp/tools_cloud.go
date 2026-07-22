@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,10 +62,10 @@ func (t *mcpCloudTunnel) Close() error {
 }
 
 func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("cloud_discover",
+	discoverOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List enrolled cloud devices for the selected Wendy Cloud auth session"),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithBoolean("online_only",
 			mcpgo.Description("Only list devices with active tunnel broker presence (default true)"),
@@ -74,67 +73,86 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithString("filter",
 			mcpgo.Description("Optional cloud-side asset filter"),
 		),
-	), s.handleCloudDiscover)
+	}
+	discoverOpts = append(discoverOpts, readOnly()...)
+	discoverOpts = append(discoverOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_discover", discoverOpts...), s.handleCloudDiscover)
 
-	srv.AddTool(mcpgo.NewTool("cloud_connect",
+	connectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Connect the MCP session to a cloud-enrolled device through the Wendy Cloud tunnel"),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
 		),
-	), s.handleCloudConnect)
+	}
+	connectOpts = append(connectOpts, mutating()...)
+	connectOpts = append(connectOpts, idempotent()...)
+	connectOpts = append(connectOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_connect", connectOpts...), s.handleCloudConnect)
 
-	srv.AddTool(mcpgo.NewTool("cloud_device_connect",
+	deviceConnectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Alias for cloud_connect; connects existing MCP device tools through the Wendy Cloud tunnel"),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
 		),
-	), s.handleCloudConnect)
+	}
+	deviceConnectOpts = append(deviceConnectOpts, mutating()...)
+	deviceConnectOpts = append(deviceConnectOpts, idempotent()...)
+	deviceConnectOpts = append(deviceConnectOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_device_connect", deviceConnectOpts...), s.handleCloudConnect)
 
-	srv.AddTool(mcpgo.NewTool("cloud_enroll_device",
+	enrollOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Enroll the currently connected device with Wendy Cloud"),
 		mcpgo.WithString("name",
 			mcpgo.Required(),
 			mcpgo.Description("Name to assign to the device in Wendy Cloud"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
-	), s.handleCloudEnrollDevice)
+	}
+	enrollOpts = append(enrollOpts, mutating()...)
+	enrollOpts = append(enrollOpts, idempotent()...)
+	enrollOpts = append(enrollOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_enroll_device", enrollOpts...), s.handleCloudEnrollDevice)
 
-	srv.AddTool(mcpgo.NewTool("cloud_tunnel",
+	tunnelOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Forward a local TCP port to a port on a cloud-enrolled device"),
 		mcpgo.WithNumber("local_port",
 			mcpgo.Required(),
-			mcpgo.Description("Local TCP port to listen on"),
+			mcpgo.Description("Local TCP port to listen on (1-65535)"),
 		),
 		mcpgo.WithNumber("remote_port",
-			mcpgo.Description("Remote device port; defaults to local_port"),
+			mcpgo.Description("Remote device port (1-65535); defaults to local_port"),
 		),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
 		),
-	), s.handleCloudTunnel)
+	}
+	tunnelOpts = append(tunnelOpts, mutating()...)
+	tunnelOpts = append(tunnelOpts, idempotent()...)
+	tunnelOpts = append(tunnelOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_tunnel", tunnelOpts...), s.handleCloudTunnel)
 
-	srv.AddTool(mcpgo.NewTool("run",
-		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials."),
+	runOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
 		mcpgo.WithString("project_path",
 			mcpgo.Required(),
 			mcpgo.Description("Project directory containing wendy.json"),
@@ -143,7 +161,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port; omit to use the default derived from cloud_grpc (port 443 when cloud_grpc ends in :443, otherwise port 50052)"),
@@ -166,10 +184,16 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
 		),
-	), s.handleRun)
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	runOpts = append(runOpts, mutating()...)
+	runOpts = append(runOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
 
-	srv.AddTool(mcpgo.NewTool("cloud_run",
-		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output"),
+	cloudRunOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output. The project's wendy.json entitlements apply on the device; a denied entitlement returns error_code ENTITLEMENT_DENIED."),
 		mcpgo.WithString("project_path",
 			mcpgo.Required(),
 			mcpgo.Description("Project directory containing wendy.json"),
@@ -178,7 +202,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 			mcpgo.Description("Cloud device name"),
 		),
 		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use (optional when a default session is set via 'wendy auth use')"),
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
 		),
 		mcpgo.WithString("broker_url",
 			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
@@ -201,34 +225,39 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
 		),
-	), s.handleRun)
+		mcpgo.WithNumber("max_bytes",
+			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
+		),
+	}
+	cloudRunOpts = append(cloudRunOpts, mutating()...)
+	cloudRunOpts = append(cloudRunOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_run", cloudRunOpts...), s.handleRun)
 }
 
 func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	assets, err := mcpListCloudAssets(ctx, auth, stringParam(req, "filter"), req.GetBool("online_only", true))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	out := make([]map[string]any, 0, len(assets))
 	for _, a := range assets {
 		out = append(out, cloudAssetToMap(a))
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(out), nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn, asset, err := s.connectToCloudAgent(ctx, stringParam(req, "cloud_grpc"), stringParam(req, "device_name"), stringParam(req, "broker_url"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	s.SetConn(conn)
 	s.SetConnType("cloud")
-	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s via cloud", asset.GetName())), nil
+	return okText(fmt.Sprintf("connected to %s via cloud", asset.GetName())), nil
 }
 
 func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -238,15 +267,15 @@ func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallT
 	}
 	name := stringParam(req, "name")
 	if name == "" {
-		return mcpgo.NewToolResultError("name is required"), nil
+		return errResult(errCodeInvalidArgument, "name is required"), nil
 	}
 	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	tokenResp, err := mcpCreateAssetEnrollmentToken(ctx, auth, name)
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	_, err = conn.ProvisioningService.StartProvisioning(ctx, &agentpb.StartProvisioningRequest{
 		OrganizationId:  tokenResp.GetOrganizationId(),
@@ -255,45 +284,44 @@ func (s *mcpServer) handleCloudEnrollDevice(ctx context.Context, req mcpgo.CallT
 		CloudHost:       auth.CloudGRPC,
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	out := map[string]any{
 		"organization_id": tokenResp.GetOrganizationId(),
 		"asset_id":        tokenResp.GetAssetId(),
 		"cloud_host":      auth.CloudGRPC,
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(out), nil
 }
 
 func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	localPort := intParam(req, "local_port", 0)
 	remotePort := intParam(req, "remote_port", localPort)
 	if err := validatePort(localPort); err != nil {
-		return mcpgo.NewToolResultError("local_port " + err.Error()), nil
+		return errResult(errCodeInvalidArgument, "local_port "+err.Error()), nil
 	}
 	if err := validatePort(remotePort); err != nil {
-		return mcpgo.NewToolResultError("remote_port " + err.Error()), nil
+		return errResult(errCodeInvalidArgument, "remote_port "+err.Error()), nil
 	}
 
 	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	asset, err := s.pickCloudAsset(ctx, auth, stringParam(req, "device_name"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
 	if err != nil {
-		return mcpgo.NewToolResultError(err.Error()), nil
+		return errResult(errCodeDeviceUnreachable, err.Error()), nil
 	}
 
 	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		_ = brokerConn.Close()
-		return mcpgo.NewToolResultError(fmt.Sprintf("listening on %s: %s", listenAddr, err.Error())), nil
+		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
 	tunnelCtx, cancel := context.WithCancel(context.Background())
 	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
@@ -322,14 +350,13 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		"asset_id":    asset.GetId(),
 		"remote_port": remotePort,
 	}
-	b, _ := json.MarshalIndent(out, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(out), nil
 }
 
 func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	projectPath := stringParam(req, "project_path")
 	if projectPath == "" {
-		return mcpgo.NewToolResultError("project_path is required"), nil
+		return errResult(errCodeInvalidArgument, "project_path is required"), nil
 	}
 	timeout := time.Duration(intParam(req, "timeout_seconds", 300)) * time.Second
 	if timeout <= 0 {
@@ -368,25 +395,50 @@ func (s *mcpServer) handleRun(ctx context.Context, req mcpgo.CallToolRequest) (*
 		args = append(args, "--detach")
 	}
 
+	tok := progressToken(req)
 	cmd := exec.CommandContext(runCtx, bin, args...)
+	reportProgress(ctx, tok, 0, 0, "running wendy…")
 	out, err := cmd.CombinedOutput()
+	reportProgress(ctx, tok, 1, 1, "done")
 	text := strings.TrimSpace(string(out))
 	if runCtx.Err() != nil {
 		if text == "" {
 			text = runCtx.Err().Error()
 		}
-		return mcpgo.NewToolResultError(text), nil
+		return errResultf(errCodeTimeout, "%s", text), nil
 	}
 	if err != nil {
 		if text == "" {
 			text = err.Error()
 		}
-		return mcpgo.NewToolResultError(text), nil
+		return errResultf(errCodeInternal, "%s", text), nil
 	}
 	if text == "" {
 		text = "cloud run completed"
 	}
-	return mcpgo.NewToolResultText(text), nil
+	return okTextBounded(text, "reduce timeout_seconds, redirect the app's own output, or raise max_bytes", intParam(req, "max_bytes", 100000)), nil
+}
+
+// cloudResolveErr is returned by the cloud auth/asset-resolution helpers
+// carrying the precise error_code the MCP layer should surface.
+type cloudResolveErr struct {
+	code errorCode
+	msg  string
+}
+
+func (e *cloudResolveErr) Error() string { return e.msg }
+
+// cloudErrResult maps an error from the cloud auth/asset-resolution helpers
+// (cloudAuthEntry, pickCloudAsset, connectToCloudAgent, mcpListCloudAssets) to
+// an MCP error result with the correct error_code. Tagged errors get their
+// specific code; anything else (including real gRPC errors, which may be
+// wrapped with fmt.Errorf %w) falls back to codeFromGRPC.
+func cloudErrResult(err error) *mcpgo.CallToolResult {
+	var re *cloudResolveErr
+	if errors.As(err, &re) {
+		return errResult(re.code, re.msg)
+	}
+	return errResult(codeFromGRPC(err), grpcErrString(err))
 }
 
 func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error) {
@@ -394,7 +446,7 @@ func (s *mcpServer) cloudAuthEntry(cloudGRPC string) (*config.AuthConfig, error)
 	// persisted default (or errors when several sessions remain ambiguous).
 	auth, err := config.ResolveAuth(s.cfg, cloudGRPC, nil)
 	if errors.Is(err, config.ErrMultipleSessions) {
-		return nil, fmt.Errorf("multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'")
+		return nil, &cloudResolveErr{code: errCodeMultipleSessions, msg: "multiple auth sessions exist; pass cloud_grpc to select one, or set a default with 'wendy auth use'"}
 	}
 	return auth, err
 }
@@ -471,26 +523,26 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		return nil, err
 	}
 	if len(assets) == 0 {
-		return nil, fmt.Errorf("no enrolled devices found for this org; enroll a device with cloud_enroll_device")
+		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
 	}
 	if deviceName == "" {
 		if len(assets) == 1 {
 			return assets[0], nil
 		}
-		return nil, fmt.Errorf("multiple cloud devices found; pass device_name")
+		return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: "multiple cloud devices found; pass device_name"}
 	}
 	lower := strings.ToLower(deviceName)
 	var matched *cloudpb.Asset
 	for _, a := range assets {
 		if strings.ToLower(a.GetName()) == lower {
 			if matched != nil {
-				return nil, fmt.Errorf("multiple devices match %q; use a more specific name", deviceName)
+				return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: fmt.Sprintf("multiple devices match %q; use a more specific name", deviceName)}
 			}
 			matched = a
 		}
 	}
 	if matched == nil {
-		return nil, fmt.Errorf("no device named %q found; call cloud_discover to list devices", deviceName)
+		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
 	}
 	return matched, nil
 }
@@ -544,7 +596,7 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}
 		if len(assets) >= maxAssets {
-			return nil, fmt.Errorf("cloud returned more than %d devices", maxAssets)
+			return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: fmt.Sprintf("cloud returned more than %d devices", maxAssets)}
 		}
 		assets = append(assets, resp.GetAsset())
 	}

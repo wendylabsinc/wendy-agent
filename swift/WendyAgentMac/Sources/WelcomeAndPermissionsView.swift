@@ -137,7 +137,7 @@ struct WelcomeAndPermissionsView: View {
         switch status {
         case .pending:
             Button("Allow") {
-                Task { @MainActor in
+                Task {
                     await self.welcomeAndPermissions.requestPermission(permission)
                     self.onPermissionRequestCompleted()
                 }

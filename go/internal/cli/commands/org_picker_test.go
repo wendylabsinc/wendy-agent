@@ -283,3 +283,49 @@ func TestResolveOrgPickerCancelled(t *testing.T) {
 		t.Fatalf("expected ErrUserCancelled, got %v", err)
 	}
 }
+
+// stubCannotPrompt forces non-interactive mode (as under --json or no TTY).
+func stubCannotPrompt(t *testing.T) {
+	t.Helper()
+	orig := canPromptForOrgFn
+	canPromptForOrgFn = func() bool { return false }
+	t.Cleanup(func() { canPromptForOrgFn = orig })
+}
+
+// Non-interactive + stale default -> actionable error, never the TTY picker.
+func TestResolveOrgNonInteractiveStaleDefault(t *testing.T) {
+	stubListOrgs(t, []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}, nil)
+	stubOrgPicker(t, 3, "Org A", nil) // must NOT be reached
+	stubCannotPrompt(t)
+
+	_, err := resolveOrgWithConfig(context.Background(), &config.Config{DefaultOrgID: 99}, testAuth(), false)
+	if err == nil {
+		t.Fatal("expected an error in non-interactive mode with a stale default, got nil")
+	}
+}
+
+// Non-interactive + multiple orgs + no default -> error, not the picker.
+func TestResolveOrgNonInteractiveNoDefault(t *testing.T) {
+	stubListOrgs(t, []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}, nil)
+	stubOrgPicker(t, 3, "Org A", nil) // must NOT be reached
+	stubCannotPrompt(t)
+
+	_, err := resolveOrgWithConfig(context.Background(), &config.Config{}, testAuth(), false)
+	if err == nil {
+		t.Fatal("expected an error selecting among multiple orgs non-interactively, got nil")
+	}
+}
+
+// Non-interactive + valid default -> resolves without prompting.
+func TestResolveOrgNonInteractiveValidDefault(t *testing.T) {
+	stubListOrgs(t, []*cloudpb.Organization{makeOrg(3, "Org A"), makeOrg(9, "Org B")}, nil)
+	stubCannotPrompt(t)
+
+	res, err := resolveOrgWithConfig(context.Background(), &config.Config{DefaultOrgID: 9}, testAuth(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.ID != 9 {
+		t.Errorf("got %+v; want ID=9", res)
+	}
+}

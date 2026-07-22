@@ -32,7 +32,7 @@ type hardwareOps interface {
 
 type bluetoothOps interface {
 	Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error)
-	Connect(ctx context.Context, address string, pair, trust bool) error
+	Connect(ctx context.Context, address string, pair, trust bool) (paired bool, err error)
 	Disconnect(ctx context.Context, address string) error
 	Forget(ctx context.Context, address string) error
 }
@@ -309,7 +309,7 @@ func (d *Dispatcher) bluetoothConnect(ctx context.Context, cmd *agentpb.Bluetoot
 	if isNil(d.bluetooth) {
 		return errResp("bluetooth manager unavailable")
 	}
-	if err := d.bluetooth.Connect(ctx, cmd.GetAddress(), true, true); err != nil {
+	if _, err := d.bluetooth.Connect(ctx, cmd.GetAddress(), true, true); err != nil {
 		return errResp(err.Error())
 	}
 	return &agentpb.BluetoothResponse{

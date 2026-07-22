@@ -6,21 +6,19 @@ private let legacyIntegrationTestsEnabled = LegacyIntegrationTestEnvironment.fla
     "WENDY_E2E_LEGACY_INTEGRATION"
 )
 
-/**
- Legacy integration tests preserve parity with `go/scripts/test-ci.sh`.
-
- These tests deploy the existing `.github/ci-tests` fixtures against a real
- WendyOS device. They are intentionally separated from the CLI spec suites so
- the shell-driven app integration coverage can move into the Swift E2E harness
- without redefining the formal command contract.
-
- All scenarios run unauthenticated (`authenticated: false`) for parity with
- the shell driver, which pre-dates CLI auth; authenticated variants are a
- migration follow-up.
-
- Set `WENDY_E2E_LEGACY_INTEGRATION=true` and filter this suite to run it during
- the migration period.
- */
+/// Legacy integration tests preserve parity with `go/scripts/test-ci.sh`.
+///
+/// These tests deploy the existing `.github/ci-tests` fixtures against a real
+/// WendyOS device. They are intentionally separated from the CLI spec suites so
+/// the shell-driven app integration coverage can move into the Swift E2E harness
+/// without redefining the formal command contract.
+///
+/// All scenarios run unauthenticated (`authenticated: false`) for parity with
+/// the shell driver, which pre-dates CLI auth; authenticated variants are a
+/// migration follow-up.
+///
+/// Set `WENDY_E2E_LEGACY_INTEGRATION=true` and filter this suite to run it during
+/// the migration period.
 @Suite(.serialized, .enabled(if: legacyIntegrationTestsEnabled))
 struct `legacy integration tests` {
     let scenario = CLIAndAgentScenario()
@@ -518,7 +516,8 @@ struct `legacy integration tests` {
                 "run",
                 "--device", Self.validatedHost(device),
                 "--prefix", fixture,
-            ] + extraArguments)
+            ] + extraArguments
+        )
     }
 
     private static func wendyCommand(_ arguments: [String]) -> ShellCommand {
@@ -531,19 +530,21 @@ struct `legacy integration tests` {
     private static func fixturePath(_ name: String) throws -> String {
         try Self.path(
             Self.validatedRepositoryRoot(Self.repositoryRootPathOnCLIMachine),
-            ".github", "ci-tests", name
+            ".github",
+            "ci-tests",
+            name
         )
     }
 
     private static var repositoryRootPathOnCLIMachine: String {
         WendyE2EEnvironment.cliRepoDirectory
             ?? URL(fileURLWithPath: #filePath, isDirectory: false)
-                .deletingLastPathComponent()  // Tests/WendyE2ETests
-                .deletingLastPathComponent()  // Tests
-                .deletingLastPathComponent()  // swift/WendyE2ETests
-                .deletingLastPathComponent()  // swift
-                .deletingLastPathComponent()  // repository root
-                .path
+            .deletingLastPathComponent()  // Tests/WendyE2ETests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // swift/WendyE2ETests
+            .deletingLastPathComponent()  // swift
+            .deletingLastPathComponent()  // repository root
+            .path
     }
 
     private static func path(_ first: String, _ rest: String...) -> String {

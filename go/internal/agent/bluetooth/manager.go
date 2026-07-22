@@ -14,7 +14,10 @@ import (
 // Manager defines the interface for Bluetooth operations.
 type Manager interface {
 	Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error)
-	Connect(ctx context.Context, address string, pair, trust bool) error
+	// Connect connects to the peripheral and reports whether it is paired
+	// once the connection is established — a successful connect does not
+	// imply pairing (some BLE devices reject pairing yet accept connections).
+	Connect(ctx context.Context, address string, pair, trust bool) (paired bool, err error)
 	Disconnect(ctx context.Context, address string) error
 	Forget(ctx context.Context, address string) error
 }

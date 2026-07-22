@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -14,10 +16,13 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -76,9 +81,11 @@ func (m *mockBluetoothManager) Scan(_ context.Context) (<-chan []*agentpb.Discov
 	close(ch)
 	return ch, nil
 }
-func (m *mockBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) error { return nil }
-func (m *mockBluetoothManager) Disconnect(_ context.Context, _ string) error         { return nil }
-func (m *mockBluetoothManager) Forget(_ context.Context, _ string) error             { return nil }
+func (m *mockBluetoothManager) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return true, nil
+}
+func (m *mockBluetoothManager) Disconnect(_ context.Context, _ string) error { return nil }
+func (m *mockBluetoothManager) Forget(_ context.Context, _ string) error     { return nil }
 
 // ---------- bufconn helper ----------
 
@@ -419,6 +426,171 @@ func TestUpdateAgent_ConcurrentLock(t *testing.T) {
 	}
 
 	installer.Unlock()
+}
+
+// startAgentServerForUpdate starts an AgentService (the v1 WendyAgentService
+// handler) over bufconn, targeting a temp file as the "executable" so
+// commitBinaryUpdate's rename lands somewhere inspectable, and with the
+// restart exit stubbed out so a successful install doesn't kill the test
+// process. Mirrors startAgentUpdateServer in agent_update_service_test.go for
+// the v2 sibling handler.
+func startAgentServerForUpdate(t *testing.T, verifier *sigverify.Verifier) (agentpb.WendyAgentServiceClient, string, func()) {
+	t.Helper()
+
+	dir := t.TempDir()
+	execPath := filepath.Join(dir, "wendy-agent")
+	if err := os.WriteFile(execPath, []byte("original-binary-contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) {
+			// The real resolveExecPath() resolves os.Executable() (the running
+			// test binary itself); overriding it here points
+			// commitBinaryUpdate's rename at a disposable temp file instead so
+			// a "valid signature" test case doesn't clobber the test binary
+			// mid-run.
+			svc.execPathResolver = func() (string, os.FileMode, error) {
+				return execPath, 0o755, nil
+			}
+			// The real scheduleAgentRestartExit calls os.Exit(0) shortly after
+			// a successful commit; a no-op keeps the "valid signature
+			// installs" case from killing the test process.
+			svc.restartFn = func() {}
+			if verifier != nil {
+				svc.verifier = verifier
+			}
+		},
+	)
+	return client, execPath, cleanup
+}
+
+// sendV1UpdateStream drives an AgentService.UpdateAgent (v1) bidi stream: a
+// single chunk carrying binaryData, followed by an Update control command
+// carrying sha256Hash and signature. It returns the terminal error from
+// Recv (nil on success). Mirrors sendUpdateStream in
+// agent_update_service_test.go for the v2 sibling handler.
+func sendV1UpdateStream(t *testing.T, stream grpc.BidiStreamingClient[agentpb.UpdateAgentRequest, agentpb.UpdateAgentResponse], binaryData []byte, sha256Hash string, signature []byte) error {
+	t.Helper()
+
+	if err := stream.Send(&agentpb.UpdateAgentRequest{
+		RequestType: &agentpb.UpdateAgentRequest_Chunk_{
+			Chunk: &agentpb.UpdateAgentRequest_Chunk{Data: binaryData},
+		},
+	}); err != nil {
+		t.Fatalf("send chunk: %v", err)
+	}
+
+	if err := stream.Send(&agentpb.UpdateAgentRequest{
+		RequestType: &agentpb.UpdateAgentRequest_Control{
+			Control: &agentpb.UpdateAgentRequest_ControlCommand{
+				Command: &agentpb.UpdateAgentRequest_ControlCommand_Update_{
+					Update: &agentpb.UpdateAgentRequest_ControlCommand_Update{
+						Sha256:    sha256Hash,
+						Signature: signature,
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("send control: %v", err)
+	}
+	if err := stream.CloseSend(); err != nil {
+		t.Fatalf("CloseSend: %v", err)
+	}
+
+	_, err := stream.Recv()
+	return err
+}
+
+func TestUpdateAgentV1_SignatureVerification(t *testing.T) {
+	verifier, sign := mldsaKeypairForTest(t)
+
+	binaryData := []byte("new-agent-binary-contents-for-v1-signature-test")
+	sum := sha256.Sum256(binaryData)
+	digest := sum[:]
+	sha256Hash := hex.EncodeToString(digest)
+
+	t.Run("valid signature installs", func(t *testing.T) {
+		client, execPath, cleanup := startAgentServerForUpdate(t, verifier)
+		defer cleanup()
+
+		stream, err := client.UpdateAgent(context.Background())
+		if err != nil {
+			t.Fatalf("UpdateAgent: %v", err)
+		}
+
+		sig := sign(digest)
+		if err := sendV1UpdateStream(t, stream, binaryData, sha256Hash, sig); err != nil {
+			t.Fatalf("expected success, got: %v", err)
+		}
+
+		installed, err := os.ReadFile(execPath)
+		if err != nil {
+			t.Fatalf("reading installed binary: %v", err)
+		}
+		if string(installed) != string(binaryData) {
+			t.Fatalf("installed binary = %q, want %q", installed, binaryData)
+		}
+	})
+
+	t.Run("empty signature is rejected and not installed", func(t *testing.T) {
+		client, execPath, cleanup := startAgentServerForUpdate(t, verifier)
+		defer cleanup()
+
+		stream, err := client.UpdateAgent(context.Background())
+		if err != nil {
+			t.Fatalf("UpdateAgent: %v", err)
+		}
+
+		err = sendV1UpdateStream(t, stream, binaryData, sha256Hash, nil)
+		if err == nil {
+			t.Fatal("expected error for empty signature while verifier enabled")
+		}
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("code = %v, want FailedPrecondition; err = %v", status.Code(err), err)
+		}
+
+		installed, readErr := os.ReadFile(execPath)
+		if readErr != nil {
+			t.Fatalf("reading exec path: %v", readErr)
+		}
+		if string(installed) == string(binaryData) {
+			t.Fatal("binary was installed despite missing signature")
+		}
+	})
+
+	t.Run("tampered signature is rejected and not installed", func(t *testing.T) {
+		client, execPath, cleanup := startAgentServerForUpdate(t, verifier)
+		defer cleanup()
+
+		stream, err := client.UpdateAgent(context.Background())
+		if err != nil {
+			t.Fatalf("UpdateAgent: %v", err)
+		}
+
+		sig := sign(digest)
+		sig[0] ^= 0xFF // tamper
+
+		err = sendV1UpdateStream(t, stream, binaryData, sha256Hash, sig)
+		if err == nil {
+			t.Fatal("expected error for tampered signature")
+		}
+		if status.Code(err) != codes.DataLoss {
+			t.Fatalf("code = %v, want DataLoss; err = %v", status.Code(err), err)
+		}
+
+		installed, readErr := os.ReadFile(execPath)
+		if readErr != nil {
+			t.Fatalf("reading exec path: %v", readErr)
+		}
+		if string(installed) == string(binaryData) {
+			t.Fatal("binary was installed despite tampered signature")
+		}
+	})
 }
 
 func TestRunContainer_Deprecated(t *testing.T) {

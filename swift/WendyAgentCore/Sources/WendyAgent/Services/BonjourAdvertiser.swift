@@ -12,6 +12,8 @@ struct BonjourAdvertiser {
     let port: Int
     let displayName: String
     let deviceID: String
+    var tls: Bool = false
+    var assetID: Int32? = nil
 
     private let logger = Logger(label: "sh.wendy.agent.bonjour")
 
@@ -29,8 +31,24 @@ struct BonjourAdvertiser {
     }
 
     private var txtData: Data {
-        let txtFields = ["displayname=\(self.displayName)", "id=\(self.deviceID)"]
-        return txtFields.reduce(into: Data()) { data, field in
+        Self.encodeTXT(
+            displayName: self.displayName,
+            deviceID: self.deviceID,
+            tls: self.tls,
+            assetID: self.assetID
+        )
+    }
+
+    /// Encodes DNS-SD TXT records as length-prefixed `key=value` fields. `tls`
+    /// and `assetid` mirror what the wendy CLI reads to decide mTLS vs plaintext
+    /// and to label the device (see discovery_*.go).
+    static func encodeTXT(displayName: String, deviceID: String, tls: Bool, assetID: Int32?) -> Data
+    {
+        var fields = ["displayname=\(displayName)", "id=\(deviceID)", "tls=\(tls)"]
+        if let assetID {
+            fields.append("assetid=\(assetID)")
+        }
+        return fields.reduce(into: Data()) { data, field in
             data.append(UInt8(field.utf8.count))
             data.append(contentsOf: field.utf8)
         }

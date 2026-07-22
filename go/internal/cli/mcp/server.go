@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ type mcpServer struct {
 	cloudTunnels  map[string]*mcpCloudTunnel
 	discoverLANFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
 	mu            sync.RWMutex
+	proxyDiag     []proxyDiagEntry
 }
 
 func New(cfg *config.Config, connectFn ConnectFunc) *mcpServer {
@@ -93,16 +95,18 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	srv := server.NewMCPServer("wendy", version.Version,
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, false),
+		server.WithPromptCapabilities(false),
 	)
 	s.registerStatusTools(srv)
 	s.registerGuideResource(srv)
+	s.registerDiagnosticsResource(srv)
+	s.registerPrompts(srv)
 	s.registerDeviceTools(srv)
 	s.registerContainerTools(srv)
 	s.registerTelemetryTools(srv)
 	s.registerWiFiTools(srv)
 	s.registerBluetoothTools(srv)
 	s.registerHardwareTools(srv)
-	s.registerFileSyncTools(srv)
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)
@@ -116,7 +120,7 @@ func (s *mcpServer) Start(ctx context.Context) error {
 }
 
 func errNotConnected() *mcpgo.CallToolResult {
-	return mcpgo.NewToolResultError("no device connected — use device_connect first")
+	return errResult(errCodeNotConnected, "no device connected — use device_connect first")
 }
 
 // grpcErrString unwraps a gRPC status error into a human-readable string.
@@ -137,6 +141,17 @@ func intParam(req mcpgo.CallToolRequest, name string, defaultVal int) int {
 	return req.GetInt(name, defaultVal)
 }
 
+// intParamAlias reads primary, falling back to alias, then defaultVal.
+func intParamAlias(req mcpgo.CallToolRequest, primary, alias string, defaultVal int) int {
+	// math.MinInt is a sentinel no realistic caller supplies; using it (rather
+	// than an int-overflowing constant like -1<<62) keeps this portable across
+	// 32- and 64-bit build targets.
+	if v := req.GetInt(primary, math.MinInt); v != math.MinInt {
+		return v
+	}
+	return req.GetInt(alias, defaultVal)
+}
+
 // registerContainerMCPTools scans running containers for mcp_port > 0 and
 // registers each container's tools on srv, prefixed with the app name.
 // Errors per-container are warnings; they do not prevent the session from starting.
@@ -148,6 +163,7 @@ func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.M
 
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
+		s.recordProxyDiag("", "list-containers", err)
 		fmt.Fprintf(os.Stderr, "Warning: listing containers for MCP tools: %v\n", err)
 		return nil
 	}
@@ -159,6 +175,7 @@ func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.M
 			break
 		}
 		if err != nil {
+			s.recordProxyDiag("", "read-container-list", err)
 			fmt.Fprintf(os.Stderr, "Warning: reading container list: %v\n", err)
 			return cleanups
 		}
@@ -180,6 +197,7 @@ func (s *mcpServer) registerContainerMCPTools(ctx context.Context, srv *server.M
 func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MCPServer, conn *grpcclient.AgentConnection, appName string) func() {
 	addr, closeProxy, err := startMCPProxy(ctx, conn, appName)
 	if err != nil {
+		s.recordProxyDiag(appName, "proxy", err)
 		fmt.Fprintf(os.Stderr, "Warning: MCP proxy for %s: %v\n", appName, err)
 		return nil
 	}
@@ -187,6 +205,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 	mcpCli, err := mcpclient.NewStreamableHttpClient("http://" + addr)
 	if err != nil {
 		closeProxy()
+		s.recordProxyDiag(appName, "client", err)
 		fmt.Fprintf(os.Stderr, "Warning: MCP client for %s: %v\n", appName, err)
 		return nil
 	}
@@ -208,6 +227,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 	}
 	if initErr != nil {
 		closeProxy()
+		s.recordProxyDiag(appName, "initialize", initErr)
 		fmt.Fprintf(os.Stderr, "Warning: MCP init for %s: %v\n", appName, initErr)
 		return nil
 	}
@@ -215,6 +235,7 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 	result, err := mcpCli.ListTools(ctx, mcpgo.ListToolsRequest{})
 	if err != nil {
 		closeProxy()
+		s.recordProxyDiag(appName, "list-tools", err)
 		fmt.Fprintf(os.Stderr, "Warning: listing MCP tools for %s: %v\n", appName, err)
 		return nil
 	}

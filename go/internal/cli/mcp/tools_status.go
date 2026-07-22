@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -10,9 +9,12 @@ import (
 )
 
 func (s *mcpServer) registerStatusTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("wendy_status",
+	statusOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Return current MCP session connection state and a plain-English suggested next step. Call this first to orient yourself."),
-	), s.handleWendyStatus)
+	}
+	statusOpts = append(statusOpts, readOnly()...)
+	statusOpts = append(statusOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("wendy_status", statusOpts...), s.handleWendyStatus)
 }
 
 func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -23,9 +25,9 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		out := map[string]any{
 			"connected":           false,
 			"suggested_next_step": "not connected — call device_list to see available devices then device_connect, or cloud_discover + cloud_connect for cloud-enrolled devices",
+			"proxy_diagnostics":   s.proxyDiagnostics(),
 		}
-		b, _ := json.Marshal(out)
-		return mcpgo.NewToolResultText(string(b)), nil
+		return okResult(out), nil
 	}
 
 	host := conn.Host
@@ -37,7 +39,7 @@ func (s *mcpServer) handleWendyStatus(_ context.Context, _ mcpgo.CallToolRequest
 		"device":              host,
 		"connection_type":     connType,
 		"suggested_next_step": fmt.Sprintf("connected to %s via %s — ready to use container, wifi, hardware, telemetry, and os tools", host, connType),
+		"proxy_diagnostics":   s.proxyDiagnostics(),
 	}
-	b, _ := json.Marshal(out)
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(out), nil
 }

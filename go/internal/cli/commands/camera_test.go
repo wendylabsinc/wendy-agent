@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -169,6 +170,35 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 	}
 	if strings.Contains(err.Error(), "not found") {
 		t.Fatalf("remote unsupported error should not be masked by missing GStreamer: %v", err)
+	}
+}
+
+func firmwareMismatchError(t *testing.T) error {
+	t.Helper()
+	st := status.New(codes.FailedPrecondition, "firmware mismatch")
+	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: "TEGRA_FIRMWARE_MISMATCH", Metadata: map[string]string{
+		"rootfs_l4t": "R38.2.0", "boot_firmware_l4t": "R36.4.3",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return with.Err()
+}
+
+func TestCameraFirmwareDiagnostic(t *testing.T) {
+	err := cameraFirmwareDiagnostic(firmwareMismatchError(t))
+	for _, want := range []string{"R38.2.0", "R36.4.3", "wendy os install", "do not use --rootfs-only"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("diagnostic %q missing %q", err, want)
+		}
+	}
+}
+
+func TestCameraFirmwareDiagnosticOnFirstRecv(t *testing.T) {
+	stream := &cameraDiagnosticStream{videoStream: &mockVideoStream{err: firmwareMismatchError(t)}}
+	_, err := stream.Recv()
+	if err == nil || !strings.Contains(err.Error(), "full USB recovery") {
+		t.Fatalf("first Recv diagnostic = %v", err)
 	}
 }
 

@@ -26,8 +26,8 @@ func (m *StubManager) Scan(_ context.Context) (<-chan []*agentpb.DiscoveredBluet
 	return nil, errUnsupported
 }
 
-func (m *StubManager) Connect(_ context.Context, _ string, _, _ bool) error {
-	return errUnsupported
+func (m *StubManager) Connect(_ context.Context, _ string, _, _ bool) (bool, error) {
+	return false, errUnsupported
 }
 
 func (m *StubManager) Disconnect(_ context.Context, _ string) error {

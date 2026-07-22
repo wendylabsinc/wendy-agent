@@ -63,12 +63,14 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
+		newFoxgloveCmd(),
 		newDeviceDashboardCmd(),
 		newTopCmd(),
 	)
 	addToGroup("manage",
 		newDeviceInfoCmd(),
 		newDeviceAttachCmd(),
+		newDeviceShellCmd(),
 		newDeprecatedDeviceVersionCmd(),
 		newDeviceSetDefaultCmd(),
 		newDeviceGetDefaultCmd(),
@@ -602,7 +604,7 @@ func newDeviceSetupCmd() *cobra.Command {
 					if deviceName == "" {
 						return fmt.Errorf("device name is required")
 					}
-					if enrollErr := runEnrollDevice(ctx, conn, auth, deviceName); enrollErr != nil {
+					if enrollErr := runEnrollDevice(ctx, conn, auth, deviceName, 0); enrollErr != nil {
 						fmt.Printf("Enrollment failed: %v\n", enrollErr)
 					}
 				}
@@ -662,6 +664,7 @@ func newDeviceSetupCmd() *cobra.Command {
 func newDeviceEnrollCmd() *cobra.Command {
 	var name string
 	var cloudGRPC string
+	var orgID int32
 
 	cmd := &cobra.Command{
 		Use:    "enroll",
@@ -684,11 +687,12 @@ func newDeviceEnrollCmd() *cobra.Command {
 				return err
 			}
 
-			return runEnrollDevice(ctx, conn, auth, name)
+			return runEnrollDevice(ctx, conn, auth, name, orgID)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
+	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID to enroll into; skips the interactive org picker (required in non-interactive/--json runs when you belong to multiple orgs)")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
 	return cmd
 }
@@ -754,7 +758,7 @@ func defaultEnrollmentName(host string) string {
 	return strings.TrimSuffix(h, ".local")
 }
 
-func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string) error {
+func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth *config.AuthConfig, name string, orgOverride int32) error {
 	if len(auth.Certificates) == 0 {
 		return fmt.Errorf("selected auth entry has no certificates; re-run 'wendy auth login'")
 	}
@@ -813,9 +817,17 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	tokenCtx := cloudContext(ctx, auth)
 
-	org, orgErr := resolveOrg(ctx, auth, false)
-	if orgErr != nil {
-		return fmt.Errorf("resolving organization: %w", orgErr)
+	var org OrgResolution
+	if orgOverride != 0 {
+		// Explicit --org: use it directly (the cloud rejects it if the caller
+		// isn't a member), skipping org listing and the interactive picker.
+		org = OrgResolution{ID: orgOverride, Name: fmt.Sprintf("org %d", orgOverride)}
+	} else {
+		var orgErr error
+		org, orgErr = resolveOrg(ctx, auth, false)
+		if orgErr != nil {
+			return fmt.Errorf("resolving organization: %w", orgErr)
+		}
 	}
 
 	certClient := cloudpb.NewCertificateServiceClient(cloudConn)
@@ -2172,6 +2184,10 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}()
 
 			var preUpdateVersion *agentpb.GetAgentVersionResponse
+			// Set on the auto-download path when the device already runs (at
+			// least) the version we would fetch, so we report that honestly and
+			// skip the no-op re-upload + agent restart.
+			agentAlreadyCurrent := false
 
 			var binaryData []byte
 			// Set on the auto-download path; used to verify an upload whose
@@ -2199,7 +2215,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 					}
 				}
 			} else {
-				// Auto-download: detect arch, fetch release, download binary.
+				// Auto-download: detect arch, resolve the release version, and
+				// download the binary only when the device isn't already on it.
 				if !jsonOutput {
 					fmt.Println(tui.InfoMessage("Detecting device architecture..."))
 				}
@@ -2217,88 +2234,123 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				if !jsonOutput {
-					releaseType := "stable"
-					if nightly {
-						releaseType = "nightly"
-					}
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
-				}
-
-				var source, resolvedVer string
-				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
+				// Resolve the version first — this reads only manifest/release
+				// metadata, so an already-current device never downloads the
+				// tarball. Record it so an upload whose confirmation was lost to
+				// a mid-stream agent restart can still be verified.
+				resolvedVer, source, err := resolveAgentVersion(nightly)
 				if err != nil {
-					return fmt.Errorf("resolving agent binary: %w", err)
+					return fmt.Errorf("resolving agent version: %w", err)
 				}
-				// Record the resolved version so an upload whose confirmation
-				// was lost to a mid-stream agent restart can still be verified.
 				expectedAgentVersion = resolvedVer
 				if !jsonOutput {
 					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
+				// Reported >= resolved means the device is already at (or ahead
+				// of) the version we'd install; nothing to upload. A dev build
+				// compares as newest, but an explicit update must overwrite it
+				// with the release, so dev builds never count as current here.
+				agentAlreadyCurrent = !version.IsDev(preUpdateVersion.GetVersion()) &&
+					agentUpdateVerified(preUpdateVersion.GetVersion(), resolvedVer)
+
+				if !agentAlreadyCurrent {
+					if !jsonOutput {
+						releaseType := "stable"
+						if nightly {
+							releaseType = "nightly"
+						}
+						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
+					}
+					binaryData, _, _, err = resolveAgentBinary(arch, nightly)
+					if err != nil {
+						return fmt.Errorf("resolving agent binary: %w", err)
+					}
+				}
 			}
 
-			// Compute SHA256.
-			h := sha256.Sum256(binaryData)
-			sha256Hash := hex.EncodeToString(h[:])
+			// Hash the binary we're about to upload. Skipped when already
+			// current: no binary was downloaded and no upload happens.
+			var sha256Hash string
+			if !agentAlreadyCurrent {
+				h := sha256.Sum256(binaryData)
+				sha256Hash = hex.EncodeToString(h[:])
+			}
 
-			// An unconfirmed upload is not a failure: the agent restarts the
-			// moment the binary lands, which can drop the stream before its
-			// ack arrives. Reconnect below and verify what the device runs.
-			unconfirmed := false
-			if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
-				if !errors.Is(err, errAgentUpdateUnconfirmed) {
+			if agentAlreadyCurrent {
+				if jsonOutput {
+					resp := map[string]string{
+						"status":  "up-to-date",
+						"message": "Agent is already up to date.",
+						"version": preUpdateVersion.GetVersion(),
+					}
+					b, err := json.Marshal(resp)
+					if err != nil {
+						return fmt.Errorf("failed to marshal JSON response: %w", err)
+					}
+					fmt.Println(string(b))
+					// OS update check is skipped in JSON mode to keep output stable.
+					return nil
+				}
+				fmt.Println(tui.SuccessMessage(fmt.Sprintf("Agent is already up to date (%s).", preUpdateVersion.GetVersion())))
+			} else {
+				// An unconfirmed upload is not a failure: the agent restarts the
+				// moment the binary lands, which can drop the stream before its
+				// ack arrives. Reconnect below and verify what the device runs.
+				unconfirmed := false
+				if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
+					if !errors.Is(err, errAgentUpdateUnconfirmed) {
+						return err
+					}
+					unconfirmed = true
+					if !jsonOutput {
+						fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
+					}
+				}
+
+				// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
+				// needs a live conn (and its Host/Reconnect) both to drive the OS
+				// update and to re-dial the SAME device after the reboot; passing nil
+				// here would nil-deref once the OS-update gate lets a device through.
+				reconnect := updatedAgentReconnectFunc(ctx, conn)
+				if conn != nil {
+					_ = conn.Close()
+					conn = nil
+				}
+				conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
+				if err != nil {
 					return err
 				}
-				unconfirmed = true
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
-				}
-			}
 
-			// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
-			// needs a live conn (and its Host/Reconnect) both to drive the OS
-			// update and to re-dial the SAME device after the reboot; passing nil
-			// here would nil-deref once the OS-update gate lets a device through.
-			reconnect := updatedAgentReconnectFunc(ctx, conn)
-			if conn != nil {
-				_ = conn.Close()
-				conn = nil
-			}
-			conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
-			if err != nil {
-				return err
-			}
+				if unconfirmed {
+					verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+					if verifyErr != nil {
+						return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
+					}
+					if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
+						return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
+							"the upload did not apply — re-run 'wendy device update'",
+							verifyResp.GetVersion(), expectedAgentVersion)
+					}
+					if !jsonOutput {
+						fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
+					}
+				}
 
-			if unconfirmed {
-				verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-				if verifyErr != nil {
-					return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
+				if jsonOutput {
+					resp := map[string]string{
+						"status":  "success",
+						"message": "Agent updated successfully.",
+					}
+					b, err := json.Marshal(resp)
+					if err != nil {
+						return fmt.Errorf("failed to marshal JSON response: %w", err)
+					}
+					fmt.Println(string(b))
+					// OS update check is skipped in JSON mode to keep output stable.
+					return nil
 				}
-				if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
-					return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
-						"the upload did not apply — re-run 'wendy device update'",
-						verifyResp.GetVersion(), expectedAgentVersion)
-				}
-				if !jsonOutput {
-					fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
-				}
+				fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 			}
-
-			if jsonOutput {
-				resp := map[string]string{
-					"status":  "success",
-					"message": "Agent updated successfully.",
-				}
-				b, err := json.Marshal(resp)
-				if err != nil {
-					return fmt.Errorf("failed to marshal JSON response: %w", err)
-				}
-				fmt.Println(string(b))
-				// OS update check is skipped in JSON mode to keep output stable.
-				return nil
-			}
-			fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 
 			var outcome osUpdateOutcome
 			if conn != nil {
@@ -2487,7 +2539,23 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 // should reconnect and verify what the device now runs instead of aborting.
 var errAgentUpdateUnconfirmed = errors.New("the connection was lost before the agent confirmed the update")
 
+// agentSignaturePathEnv optionally points at a detached signature file for the
+// agent binary being uploaded (e.g. an ML-DSA65 signature over the SHA256 digest
+// of the agent binary). No
+// signer exists yet, so this is unset in normal operation and the update
+// carries an empty signature — the agent's verifier (internal/shared/sigverify)
+// tolerates that until a pinned key is embedded.
+// TODO(H2): once a signed-release pipeline ships, replace this env var with a
+// real sidecar convention (or a signed-manifest lookup) resolved automatically
+// alongside the binary, instead of requiring the caller to set it by hand.
+const agentSignaturePathEnv = "WENDY_AGENT_SIGNATURE_PATH"
+
 func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServiceClient, binaryData []byte, sha256Hash string) error {
+	signature, err := readOptionalSignature(os.Getenv(agentSignaturePathEnv))
+	if err != nil {
+		return fmt.Errorf("reading agent signature from %s: %w", agentSignaturePathEnv, err)
+	}
+
 	stream, err := agentService.UpdateAgent(ctx)
 	if err != nil {
 		return fmt.Errorf("starting agent update: %w", err)
@@ -2498,7 +2566,7 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 	// may still have received everything (it commits and restarts, dropping
 	// the transport under us). The stream's terminal status from Recv is the
 	// authoritative outcome, so always drain it.
-	_ = sendAgentUpdate(stream, binaryData, sha256Hash)
+	_ = sendAgentUpdate(stream, binaryData, sha256Hash, signature)
 
 	for {
 		resp, recvErr := stream.Recv()
@@ -2513,8 +2581,10 @@ func deviceUpdateUpload(ctx context.Context, agentService agentpb.WendyAgentServ
 
 // sendAgentUpdate streams the binary chunks and the final update command,
 // returning the first send error (used only to stop sending — the stream's
-// Recv terminal status is what callers act on).
-func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string) error {
+// Recv terminal status is what callers act on). signature is the (currently
+// almost-always-nil) detached signature over the SHA256 digest of binaryData; see
+// agentSignaturePathEnv and readOptionalSignature.
+func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryData []byte, sha256Hash string, signature []byte) error {
 	const chunkSize = 64 * 1024
 	for offset := 0; offset < len(binaryData); offset += chunkSize {
 		end := offset + chunkSize
@@ -2538,7 +2608,8 @@ func sendAgentUpdate(stream agentpb.WendyAgentService_UpdateAgentClient, binaryD
 			Control: &agentpb.UpdateAgentRequest_ControlCommand{
 				Command: &agentpb.UpdateAgentRequest_ControlCommand_Update_{
 					Update: &agentpb.UpdateAgentRequest_ControlCommand_Update{
-						Sha256: sha256Hash,
+						Sha256:    sha256Hash,
+						Signature: signature,
 					},
 				},
 			},

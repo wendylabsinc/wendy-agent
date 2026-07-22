@@ -1,0 +1,104 @@
+---
+title: NVIDIA Jetson AGX Thor
+description: Install WendyOS on an NVIDIA Jetson AGX Thor over USB recovery
+---
+
+Jetson AGX Thor uses a dedicated USB recovery flash path. WendyOS flashes the Thor's QSPI and internal NVMe directly; no external drive is required.
+
+## What You Need
+
+- NVIDIA Jetson AGX Thor Developer Kit
+- USB-C data cable for your MacBook or other development machine
+- Supplied Thor power supply
+- Wendy CLI installed on your development machine
+
+<figure style={{ margin: '1.5rem 0' }}>
+  <img
+    src="/images/installation/jetson-thor-usb-c-ports.webp"
+    alt="Back of the NVIDIA Jetson AGX Thor with the left USB-C port labeled USB-C to Power Supply and the right USB-C port labeled USB-C to Developer Machine"
+    style={{ width: '100%', borderRadius: '8px' }}
+  />
+  <figcaption style={{ textAlign: 'center', fontSize: '0.875rem', color: 'var(--color-fd-muted-foreground)', marginTop: '0.5rem' }}>
+    USB-C cable for the left goes into the power supply and the right goes into your Macbook
+  </figcaption>
+</figure>
+
+## Installation Steps
+
+<Steps>
+  <Step>
+    ### Connect the Cables and Enter Recovery Mode
+
+    Start with the Thor powered off. Turn it so the **back faces you**; you should see all of the ports. Connect the USB-C cable from your MacBook to the **right** USB-C port, next to HDMI.
+
+    <video width="100%" autoPlay loop muted playsInline>
+      <source src="/videos/installation/jetson-thor-usb-c-connection.mp4" type="video/mp4" />
+      Your browser does not support the video tag.
+    </video>
+
+    Plug the power-supply cable into a power outlet, then connect it to the **left** USB-C port on the Thor.
+
+    <video width="100%" autoPlay loop muted playsInline>
+      <source src="/videos/installation/jetson-thor-power-connection.mp4" type="video/mp4" />
+      Your browser does not support the video tag.
+    </video>
+
+    Turn the Thor so the **front faces you**. You should see three small buttons and an LED light.
+
+    1. Press and **hold** the **middle** button.
+    2. Tap the **right** button.
+    3. Wait a moment, then release the **middle** button.
+
+    <video width="100%" autoPlay loop muted playsInline>
+      <source src="/videos/installation/jetson-thor-recovery-mode.mp4" type="video/mp4" />
+      Your browser does not support the video tag.
+    </video>
+
+    You should hear the fans quiet down. The Thor is now ready to flash.
+  </Step>
+
+  <Step>
+    ### Install WendyOS
+
+    Run the installer from your terminal:
+
+    ```bash
+    sudo wendy os install
+    ```
+
+    Follow the on-screen instructions. The CLI downloads a Thor flashpack, detects the Thor in USB recovery mode, and flashes QSPI plus its internal NVMe.
+
+    <video width="100%" autoPlay loop muted playsInline>
+      <source src="/videos/installation/jetson-thor-flash-cli.mp4" type="video/mp4" />
+      Your browser does not support the video tag.
+    </video>
+  </Step>
+
+  <Step>
+    ### Boot WendyOS
+
+    After the CLI reports a successful flash, power-cycle the Thor out of recovery mode. It will boot WendyOS from internal storage; leave the data-capable USB-C cable connected to your computer.
+  </Step>
+
+  <Step>
+    ### Discover Your Device
+
+    Wait 1-2 minutes for WendyOS to boot, then run:
+
+    ```bash
+    wendy discover
+    ```
+
+    <img
+      src={`${(process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/$/, '')}/images/docs/cli/discover/devices-thor-dark.png`}
+      alt="The Wendy CLI listing a discovered NVIDIA Jetson AGX Thor on the network"
+      style={{ width: '100%' }}
+    />
+
+    Your Thor is ready for development. See [Discovering Devices](/docs/device/discovering-devices) to learn more.
+  </Step>
+</Steps>
+
+## Next Steps
+
+Build and deploy your first app with the [Python Hello World Guide](/docs/guides/tutorials/python/hello-world).

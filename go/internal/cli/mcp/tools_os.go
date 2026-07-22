@@ -12,16 +12,22 @@ import (
 )
 
 func (s *mcpServer) registerOSTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("os_update",
+	updateOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Trigger an OS update on the connected device and stream progress"),
 		mcpgo.WithString("artifact_url",
 			mcpgo.Description("URL of the OS update artifact (leave empty to use the device's configured update channel)"),
 		),
-	), s.handleOSUpdate)
+	}
+	updateOpts = append(updateOpts, destructive()...)
+	updateOpts = append(updateOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("os_update", updateOpts...), s.handleOSUpdate)
 
-	srv.AddTool(mcpgo.NewTool("os_update_status",
+	statusOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Report the outcome of the device's most recent OS update: committed after post-reboot healthchecks, or rolled back with the services that failed"),
-	), s.handleOSUpdateStatus)
+	}
+	statusOpts = append(statusOpts, readOnly()...)
+	statusOpts = append(statusOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("os_update_status", statusOpts...), s.handleOSUpdateStatus)
 }
 
 func (s *mcpServer) handleOSUpdateStatus(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -31,33 +37,42 @@ func (s *mcpServer) handleOSUpdateStatus(ctx context.Context, _ mcpgo.CallToolRe
 	}
 	resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	if !resp.GetHasResult() {
-		return mcpgo.NewToolResultText("no OS update result recorded on this device"), nil
+		return okResult(map[string]any{"has_result": false}), nil
 	}
 
-	var sb strings.Builder
-	outcome := strings.TrimPrefix(resp.GetOutcome().String(), "OUTCOME_")
-	sb.WriteString(fmt.Sprintf("outcome: %s\n", strings.ToLower(outcome)))
+	outcome := strings.ToLower(strings.TrimPrefix(resp.GetOutcome().String(), "OUTCOME_"))
+	result := map[string]any{
+		"has_result": true,
+		"outcome":    outcome,
+	}
 	if v := resp.GetOldOsVersion(); v != "" {
-		sb.WriteString(fmt.Sprintf("old OS version: %s\n", v))
+		result["old_os_version"] = v
 	}
 	if v := resp.GetNewOsVersion(); v != "" {
-		sb.WriteString(fmt.Sprintf("new OS version: %s\n", v))
+		result["new_os_version"] = v
 	}
+	var services []map[string]any
 	for _, svc := range resp.GetServices() {
 		status := strings.ToLower(strings.TrimPrefix(svc.GetStatus().String(), "STATUS_"))
-		if reason := svc.GetReason(); reason != "" {
-			sb.WriteString(fmt.Sprintf("service %s: %s (%s)\n", svc.GetUnit(), status, reason))
-		} else {
-			sb.WriteString(fmt.Sprintf("service %s: %s\n", svc.GetUnit(), status))
+		entry := map[string]any{
+			"unit":   svc.GetUnit(),
+			"status": status,
 		}
+		if reason := svc.GetReason(); reason != "" {
+			entry["reason"] = reason
+		}
+		services = append(services, entry)
+	}
+	if services != nil {
+		result["services"] = services
 	}
 	if re := resp.GetRollbackError(); re != "" {
-		sb.WriteString(fmt.Sprintf("rollback error: %s\n", re))
+		result["rollback_error"] = re
 	}
-	return mcpgo.NewToolResultText(strings.TrimRight(sb.String(), "\n")), nil
+	return okResult(result), nil
 }
 
 func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -70,9 +85,10 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 		UpdaterBackend: "",
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 
+	tok := progressToken(req)
 	var sb strings.Builder
 	for {
 		resp, err := stream.Recv()
@@ -80,12 +96,13 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 			break
 		}
 		if err != nil {
-			return mcpgo.NewToolResultError(grpcErrString(err)), nil
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 		}
 		switch resp.ResponseType.(type) {
 		case *agentpb.UpdateOSResponse_Progress_:
 			p := resp.GetProgress()
 			sb.WriteString(fmt.Sprintf("[%s] %d%%\n", p.GetPhase(), p.GetPercent()))
+			reportProgress(ctx, tok, float64(p.GetPercent()), 100, fmt.Sprintf("[%s] %d%%", p.GetPhase(), p.GetPercent()))
 		case *agentpb.UpdateOSResponse_Completed_:
 			c := resp.GetCompleted()
 			if c.GetRebootRequired() {
@@ -94,12 +111,12 @@ func (s *mcpServer) handleOSUpdate(ctx context.Context, req mcpgo.CallToolReques
 				sb.WriteString("update complete\n")
 			}
 		case *agentpb.UpdateOSResponse_Failed_:
-			return mcpgo.NewToolResultError(fmt.Sprintf("update failed: %s", resp.GetFailed().GetErrorMessage())), nil
+			return errResultf(errCodeInternal, "update failed: %s", resp.GetFailed().GetErrorMessage()), nil
 		}
 	}
 	out := sb.String()
 	if out == "" {
 		out = "OS update initiated"
 	}
-	return mcpgo.NewToolResultText(out), nil
+	return okText(out), nil
 }

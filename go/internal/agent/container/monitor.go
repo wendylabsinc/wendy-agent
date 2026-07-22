@@ -165,6 +165,14 @@ func (m *ContainerMonitor) RestartStatuses() map[string]services.RestartStatus {
 // Apps deployed with the default policy (unless-stopped) come back; apps
 // deployed with --no-restart, and apps the user explicitly stopped, stay down.
 func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
+	// Warm the isolation/service caches from persisted labels before anything
+	// starts a container: after a reboot these in-memory caches are empty, and
+	// StartContainer would otherwise skip CNI networking + mesh egress for
+	// isolated apps. Optional capability, mirroring GroupRestarter.
+	if r, ok := m.containerd.(services.AppStateRebuilder); ok {
+		r.RebuildAppStateCaches(ctx)
+	}
+
 	// One-time upgrade back-fill: apps stopped under an older agent carry no
 	// stopped-by-user mark, so without this the first post-upgrade boot would
 	// resurrect them. Runs once (persistent marker); must precede the listing
@@ -212,7 +220,17 @@ func (m *ContainerMonitor) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.checkContainers(ctx)
+			m.probeExposedPorts(ctx)
 		}
+	}
+}
+
+// probeExposedPorts asks the containerd client (if it supports it) to warn
+// about publicly-bound ports on running host-network apps. Optional capability,
+// mirroring the AppStateRebuilder hook.
+func (m *ContainerMonitor) probeExposedPorts(ctx context.Context) {
+	if p, ok := m.containerd.(services.PortExposureProber); ok {
+		p.WarnPubliclyExposedPorts(ctx)
 	}
 }
 
@@ -372,6 +390,13 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 			}
 			// Keep in sync with containerd.ContainerName.
 			running[c.GetAppName()+"_"+s.GetName()] = true
+			// Single-service apps deploy as a bare-named container (see
+			// AppConfig.ContainerName: ServiceName == "" → bare appID) while
+			// still reporting a services list here, so their monitor state is
+			// registered under the bare appID. Without the bare-key mark the
+			// monitor believes the app is down and force-restarts a healthy
+			// container every tick — the same failure mode as WDY-1552.
+			running[c.GetAppName()] = true
 		}
 	}
 

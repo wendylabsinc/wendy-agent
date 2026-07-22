@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,10 +39,16 @@ type Device struct {
 
 func openDevice(ctx *gousb.Context, dev *gousb.Device) (*Device, error) {
 	// On Linux a kernel driver bound to the interface makes the claim fail with
-	// "busy"; auto-detach clears it. On macOS the detach can instead fail with
-	// LIBUSB_ERROR_ACCESS (the OS won't let a non-root process seize its driver) —
-	// that surfaces at Config/DefaultInterface below, classified via isUSBAccessErr.
-	_ = dev.SetAutoDetach(true)
+	// "busy"; auto-detach clears it. On macOS auto-detach must stay OFF: libusb
+	// implements detach there as a device capture that requires root, so it
+	// fails with ERROR_ACCESS on any device a kernel driver matched. The T234
+	// (Orin) APX device is a composite device that AppleUSBHostCompositeDevice
+	// claims, tripping exactly that path — and no detach is needed, since that
+	// driver only sets the configuration and leaves interface 0 unclaimed.
+	// (T264/Thor never hit this: its recovery device matches no kernel driver.)
+	if runtime.GOOS == "linux" {
+		_ = dev.SetAutoDetach(true)
+	}
 
 	cfg, err := dev.Config(1)
 	if err != nil {

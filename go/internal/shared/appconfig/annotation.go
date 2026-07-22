@@ -65,6 +65,12 @@ func EntitlementAnnotationValue(e Entitlement) string {
 		}
 		parts = append(parts, "ports="+strings.Join(pmStrs, ","))
 	}
+	if e.ServiceCIDR != "" {
+		// Lowercase key ("servicecidr") to satisfy isAnnotationKey, which only
+		// recognises all-lowercase-alphanumeric identifiers when splitting
+		// comma-joined parameters (see splitAnnotationParams).
+		parts = append(parts, "servicecidr="+e.ServiceCIDR)
+	}
 	return strings.Join(parts, ",")
 }
 
@@ -115,6 +121,8 @@ func ParseEntitlementAnnotation(entType, value string) Entitlement {
 				}
 				ent.Ports = append(ent.Ports, PortMapping{Host: uint16(h), Container: uint16(c)})
 			}
+		case "servicecidr":
+			ent.ServiceCIDR = val
 		}
 	}
 	return ent

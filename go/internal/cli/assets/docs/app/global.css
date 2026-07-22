@@ -31,7 +31,7 @@ html > body[data-scroll-locked] {
 :root {
   --radius: 0px;
   --fd-radius: 0px;
-  --color-fd-primary: var(--color-wendy-seafoam);
+  --color-fd-primary: var(--color-wendy-seafoam-strong);
   --color-fd-primary-foreground: hsl(0, 0%, 9%);
 }
 

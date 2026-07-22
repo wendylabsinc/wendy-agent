@@ -82,8 +82,6 @@ func (s *mcpServer) callTool(ctx context.Context, name string, args map[string]a
 		return s.handleBluetoothDisconnect(ctx, req)
 	case "hardware_capabilities":
 		return s.handleHardwareCapabilities(ctx, req)
-	case "filesync_sync":
-		return s.handleFileSyncSync(ctx, req)
 	case "provisioning_status":
 		return s.handleProvisioningStatus(ctx, req)
 	case "provisioning_start":

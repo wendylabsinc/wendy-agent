@@ -1,4 +1,4 @@
-// Package analytics provides anonymous usage tracking via cloud.wendy.sh.
+// Package analytics provides anonymous usage tracking via cloud.wendy.dev.
 package analytics
 
 import (
@@ -133,6 +133,58 @@ func Track(event string, properties map[string]string) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}()
+}
+
+const milestonesFileName = "milestones"
+
+// milestoneSent reports whether name was already recorded in dir/milestones.
+func milestoneSent(dir, name string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, milestonesFileName))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// recordMilestone appends name to dir/milestones.
+func recordMilestone(dir, name string) error {
+	f, err := os.OpenFile(filepath.Join(dir, milestonesFileName),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(name + "\n")
+	return err
+}
+
+// TrackMilestoneOnceInDir emits the named milestone event exactly once for the
+// given state dir. The dir is a parameter so tests can use a temp dir.
+func TrackMilestoneOnceInDir(dir, name string) {
+	if milestoneSent(dir, name) {
+		return
+	}
+	Track(name, map[string]string{"command_name": name})
+	_ = recordMilestone(dir, name)
+}
+
+// TrackMilestoneOnce emits the named milestone event exactly once per
+// installation. It is a no-op when analytics is disabled. Milestone state lives
+// alongside analytics_id in the config dir.
+func TrackMilestoneOnce(name string) {
+	if !enabled {
+		return
+	}
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return
+	}
+	TrackMilestoneOnceInDir(dir, name)
 }
 
 // Close waits for any in-flight events to finish sending and resets the client.

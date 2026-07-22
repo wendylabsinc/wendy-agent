@@ -1,7 +1,11 @@
+import Foundation
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy project entitlements remove'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy project entitlements remove`. The output
      includes the command synopsis, local flags, inherited global flags,
@@ -9,9 +13,22 @@ struct `'wendy project entitlements remove'` {
      emits no stderr, and leaves configuration, cache, project, cloud, and
      device state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy project entitlements remove --help") { result in
+                let stdout = result.stdout
+
+                #expect(result.status.isSuccess)
+                #expect(stdout.contains("Remove an entitlement from the project"))
+                #expect(stdout.contains("Usage:"))
+                #expect(stdout.contains("wendy project entitlements remove [type] [flags]"))
+                #expect(stdout.contains("--help"))
+                #expect(stdout.contains("--device"))
+                #expect(stdout.contains("--json"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -19,56 +36,167 @@ struct `'wendy project entitlements remove'` {
      `wendy.json` while preserving unrelated project metadata and other
      entitlements.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `removes an entitlement from wendy.json`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix:
+                    "printf '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"network\"},{\"type\":\"audio\"}]}\\n' > wendy.json",
+                power:
+                    "Set-Content -LiteralPath 'wendy.json' -Value '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"network\"},{\"type\":\"audio\"}]}'"
+            )
+
+            try await cli.sh("wendy project entitlements remove network") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Removed \"network\" entitlement"))
+                #expect(result.stderr == "")
+            }
+
+            try await cli.sh(
+                posix: "cat wendy.json",
+                power: "Get-Content -LiteralPath 'wendy.json'"
+            ) { result in
+                let json = try #require(
+                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
+                        as? [String: Any]
+                )
+                #expect(json["appId"] as? String == "sh.wendy.demo")
+                let entitlements = (json["entitlements"] as? [[String: Any]]) ?? []
+                #expect(!entitlements.contains { $0["type"] as? String == "network" })
+                #expect(entitlements.contains { $0["type"] as? String == "audio" })
+            }
+        }
     }
 
     /**
-     Removing an entitlement that is not present reports a no-op result and
-     leaves the project file unchanged.
+     Removing an entitlement that is not present reports that it was not
+     found and leaves the project file unchanged.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `is idempotent when the entitlement is absent`() async throws {
-        // TODO: implement.
+    @Test
+    func `reports an absent entitlement without mutation`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix:
+                    "printf '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"audio\"}]}\\n' > wendy.json",
+                power:
+                    "Set-Content -LiteralPath 'wendy.json' -Value '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"audio\"}]}'"
+            )
+
+            try await cli.sh("wendy project entitlements remove network") { result in
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("not found"))
+            }
+
+            try await cli.sh(
+                posix: "cat wendy.json",
+                power: "Get-Content -LiteralPath 'wendy.json'"
+            ) { result in
+                let json = try #require(
+                    try JSONSerialization.jsonObject(with: Data(result.stdout.utf8))
+                        as? [String: Any]
+                )
+                let entitlements = try #require(json["entitlements"] as? [[String: Any]])
+                #expect(entitlements.contains { $0["type"] as? String == "audio" })
+            }
+        }
     }
 
     /**
-     Only the entitlement entry is changed. Source files, generated assets,
-     volumes, and other project content remain in place for the user to
-     manage separately.
+     Only the entitlement entry is changed. Other project content, such as
+     the app id and source files, remains in place for the user to manage
+     separately.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `does not remove dependent project files automatically`() async throws {
-        // TODO: implement.
-    }
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix: """
+                    printf '{"appId":"sh.wendy.demo","entitlements":[{"type":"network"}]}\n' > wendy.json
+                    printf 'source\n' > main.swift
+                    """,
+                power: """
+                    Set-Content -LiteralPath 'wendy.json' -Value '{"appId":"sh.wendy.demo","entitlements":[{"type":"network"}]}'
+                    Set-Content -LiteralPath 'main.swift' -Value 'source'
+                    """
+            )
 
-    /**
-     With `--json`, emits one JSON object describing the entitlement,
-     whether the file changed, and the project path.
-     */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `prints JSON remove result for automation`() async throws {
-        // TODO: implement.
+            try await cli.sh("wendy project entitlements remove network") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Removed \"network\" entitlement"))
+            }
+
+            try await cli.sh(
+                posix: "test -f main.swift && grep -q sh.wendy.demo wendy.json",
+                power: """
+                    if (-not (Test-Path -LiteralPath 'main.swift')) { throw 'source file removed' }
+                    if (-not (Select-String -LiteralPath 'wendy.json' -Pattern 'sh.wendy.demo' -Quiet)) { throw 'appId removed' }
+                    """
+            )
+        }
     }
 
     /**
      Outside a Wendy project, reports that no `wendy.json` is available and
      does not create or delete files.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports missing project files without mutation`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy project entitlements remove network") { result in
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("wendy.json"))
+            }
+
+            try await cli.sh(
+                posix: "test ! -e wendy.json",
+                power: "if (Test-Path -LiteralPath 'wendy.json') { throw 'wendy.json was created' }"
+            )
+        }
     }
 
     /**
      Accepts only the documented arguments and flags for `wendy project
-     entitlements remove`. Extra positional arguments or unknown flags
+     entitlements remove`. Extra positional arguments and unknown flags
      produce a usage diagnostic on stderr, return a failure status, emit no
      success output, and leave existing state unchanged.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix:
+                    "printf '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"network\"}]}\\n' > wendy.json",
+                power:
+                    "Set-Content -LiteralPath 'wendy.json' -Value '{\"appId\":\"sh.wendy.demo\",\"entitlements\":[{\"type\":\"network\"}]}'"
+            )
+
+            try await cli.sh("wendy project entitlements remove network extra") { result in
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("accepts at most 1 arg"))
+            }
+
+            try await cli.sh("wendy project entitlements remove network --bogus") { result in
+                #expect(!result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+                #expect(result.stderr.contains("--bogus"))
+            }
+        }
+    }
+
+    /**
+     With `--json`, emits one JSON object describing the entitlement, whether
+     the file changed, and the project path.
+     */
+    @Test(
+        .disabled(
+            "WDY-1909: 'wendy project entitlements remove' ignores global --json and prints the human confirmation only; JSON output is not implemented."
+        )
+    )
+    func `prints JSON remove result for automation`() async throws {
+        // TODO: enable once 'wendy project entitlements remove' emits a JSON result under --json (WDY-1909).
     }
 }

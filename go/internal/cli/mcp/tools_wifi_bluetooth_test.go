@@ -133,6 +133,28 @@ func TestWiFiList_ReturnsNetworks(t *testing.T) {
 	}
 }
 
+func TestWiFiList_HasStructuredContent(t *testing.T) {
+	fake := &fakeWiFiBluetoothServer{
+		wifiNetworks: []*agentpb.ListWiFiNetworksResponse_WiFiNetwork{
+			{Ssid: "MyNetwork", IsConnected: true},
+		},
+	}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "wifi_list", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("wifi_list should return structuredContent")
+	}
+}
+
 func TestWiFiConnect_Success(t *testing.T) {
 	fake := &fakeWiFiBluetoothServer{
 		wifiConnectResp: &agentpb.ConnectToWiFiResponse{Success: true},
@@ -273,6 +295,28 @@ func TestBluetoothScan_ReturnsPeripherals(t *testing.T) {
 	}
 	if devices[0]["name"] != "HeadPhones" {
 		t.Errorf("name = %v, want HeadPhones", devices[0]["name"])
+	}
+}
+
+func TestBluetoothScan_HasStructuredContent(t *testing.T) {
+	fake := &fakeWiFiBluetoothServer{
+		btPeripherals: []*agentpb.DiscoveredBluetoothPeripheral{
+			{Name: "HeadPhones", Address: "AA:BB:CC:DD:EE:FF", Rssi: -60},
+		},
+	}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "bluetooth_scan", map[string]any{"timeout_seconds": 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("bluetooth_scan should return structuredContent")
 	}
 }
 

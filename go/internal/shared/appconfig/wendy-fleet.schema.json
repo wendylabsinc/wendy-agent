@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WendyOS fleet manifest (wendy-fleet.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["components"],
+  "description": "A fleet placement/topology manifest kept separate from a project's single-app wendy.json. It describes topology only: each component references an app directory (whose own wendy.json defines the app) and the device tags it deploys to. The Go parser (appconfig.FleetManifest) is the source of truth.",
+  "properties": {
+    "appId": { "type": "string", "description": "Optional fleet-level label; each app carries its own appId." },
+    "components": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "The apps that make up the fleet, keyed by a label.",
+      "additionalProperties": { "$ref": "#/$defs/component" }
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "tags"],
+      "description": "One app of the fleet: an app directory plus the device tags it deploys to.",
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "App directory relative to wendy-fleet.json; must contain the app's own wendy.json." },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Device tags this component deploys to: a device matches when any tag matches its name (glob, e.g. \"camera-*\"). \"central\" is just a conventional tag.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "expose": { "$ref": "#/$defs/componentExpose" },
+        "discovers": {
+          "type": "array",
+          "description": "Other components whose live endpoints are injected into this component.",
+          "items": { "$ref": "#/$defs/discoverRef" }
+        }
+      }
+    },
+    "componentExpose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "description": "The network endpoint this component serves, advertised for cross-component discovery.",
+      "properties": {
+        "name": { "type": "string", "description": "Optional endpoint name." },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Port the component listens on." },
+        "path": { "type": "string", "pattern": "^/", "description": "Optional URL path the component serves (e.g. \"/stream\"). The advertised discovery URL is the origin (scheme://host:port); consumers append their own paths." }
+      }
+    },
+    "discoverRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "as"],
+      "description": "Inject another component's live endpoints into this component.",
+      "properties": {
+        "component": { "type": "string", "minLength": 1, "description": "Name of the exposing component to discover." },
+        "as": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "Environment variable to receive the JSON peer snapshot. WENDY_DISCOVERY_URL (live API) is auto-injected and reserved." }
+      }
+    }
+  }
+}

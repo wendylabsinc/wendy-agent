@@ -1,4 +1,4 @@
-# Maintainer: Wendy Labs Inc. <support@wendy.sh>
+# Maintainer: Wendy Labs Inc. <support@wendy.dev>
 pkgname=wendy
 _pkgver=VERSION_PLACEHOLDER
 _pkgtag=TAG_PLACEHOLDER
@@ -6,7 +6,7 @@ pkgver=${_pkgver//-/_}
 pkgrel=1
 pkgdesc="Wendy CLI - Remote device debugging and deployment for Raspberry Pi, NVIDIA Jetson, and other Linux devices"
 arch=('x86_64' 'aarch64')
-url="https://wendy.sh"
+url="https://wendy.dev"
 license=('custom:proprietary')
 provides=('wendy')
 conflicts=('wendy-git')

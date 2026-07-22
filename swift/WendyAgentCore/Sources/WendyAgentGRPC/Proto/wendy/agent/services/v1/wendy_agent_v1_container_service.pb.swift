@@ -242,6 +242,9 @@ public nonisolated struct Wendy_Agent_Services_V1_RunContainerLayersRequest: Sen
   /// empty the agent synthesises a minimal config (legacy behaviour).
   public var imageConfig: Data = Data()
 
+  /// Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
+  public var imageSignature: Data = Data()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -451,6 +454,135 @@ public nonisolated struct Wendy_Agent_Services_V1_AttachContainerRequest: Sendab
   public nonisolated enum OneOf_RequestType: Equatable, Sendable {
     case appName(String)
     case stdinData(Data)
+
+  }
+
+  public init() {}
+}
+
+public nonisolated struct Wendy_Agent_Services_V1_WindowSize: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var rows: UInt32 = 0
+
+  public var cols: UInt32 = 0
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+/// ExecContainer runs a process in a container with an interactive PTY. The
+/// first message MUST be ExecStart; subsequent messages carry stdin or resizes.
+public nonisolated struct Wendy_Agent_Services_V1_ExecContainerRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var requestType: Wendy_Agent_Services_V1_ExecContainerRequest.OneOf_RequestType? = nil
+
+  public var start: Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart {
+    get {
+      if case .start(let v)? = requestType {return v}
+      return Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart()
+    }
+    set {requestType = .start(newValue)}
+  }
+
+  public var stdinData: Data {
+    get {
+      if case .stdinData(let v)? = requestType {return v}
+      return Data()
+    }
+    set {requestType = .stdinData(newValue)}
+  }
+
+  public var resize: Wendy_Agent_Services_V1_WindowSize {
+    get {
+      if case .resize(let v)? = requestType {return v}
+      return Wendy_Agent_Services_V1_WindowSize()
+    }
+    set {requestType = .resize(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum OneOf_RequestType: Equatable, Sendable {
+    case start(Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart)
+    case stdinData(Data)
+    case resize(Wendy_Agent_Services_V1_WindowSize)
+
+  }
+
+  public nonisolated struct ExecStart: Sendable {
+    // SwiftProtobuf.Message conformance is added in an extension below. See the
+    // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+    // methods supported on all messages.
+
+    public var appName: String = String()
+
+    public var command: [String] = []
+
+    public var tty: Bool = false
+
+    public var termSize: Wendy_Agent_Services_V1_WindowSize {
+      get {_termSize ?? Wendy_Agent_Services_V1_WindowSize()}
+      set {_termSize = newValue}
+    }
+    /// Returns true if `termSize` has been explicitly set.
+    public var hasTermSize: Bool {self._termSize != nil}
+    /// Clears the value of `termSize`. Subsequent reads from it will return its default value.
+    public mutating func clearTermSize() {self._termSize = nil}
+
+    public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+    public init() {}
+
+    fileprivate var _termSize: Wendy_Agent_Services_V1_WindowSize? = nil
+  }
+
+  public init() {}
+}
+
+public nonisolated struct Wendy_Agent_Services_V1_ExecContainerResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  public var responseType: Wendy_Agent_Services_V1_ExecContainerResponse.OneOf_ResponseType? = nil
+
+  public var stdoutData: Data {
+    get {
+      if case .stdoutData(let v)? = responseType {return v}
+      return Data()
+    }
+    set {responseType = .stdoutData(newValue)}
+  }
+
+  public var stderrData: Data {
+    get {
+      if case .stderrData(let v)? = responseType {return v}
+      return Data()
+    }
+    set {responseType = .stderrData(newValue)}
+  }
+
+  public var exitCode: Int32 {
+    get {
+      if case .exitCode(let v)? = responseType {return v}
+      return 0
+    }
+    set {responseType = .exitCode(newValue)}
+  }
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public nonisolated enum OneOf_ResponseType: Equatable, Sendable {
+    case stdoutData(Data)
+    case stderrData(Data)
+    case exitCode(Int32)
 
   }
 
@@ -1323,7 +1455,7 @@ nonisolated extension Wendy_Agent_Services_V1_LayerHeader: SwiftProtobuf.Message
 
 nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerLayersRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0\u{3}working_dir\0\u{3}user_args\0\u{3}image_config\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0\u{3}working_dir\0\u{3}user_args\0\u{3}image_config\0\u{3}image_signature\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1340,6 +1472,7 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
       case 7: try { try decoder.decodeSingularStringField(value: &self.workingDir) }()
       case 8: try { try decoder.decodeRepeatedStringField(value: &self.userArgs) }()
       case 9: try { try decoder.decodeSingularBytesField(value: &self.imageConfig) }()
+      case 10: try { try decoder.decodeSingularBytesField(value: &self.imageSignature) }()
       default: break
       }
     }
@@ -1377,6 +1510,9 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
     if !self.imageConfig.isEmpty {
       try visitor.visitSingularBytesField(value: self.imageConfig, fieldNumber: 9)
     }
+    if !self.imageSignature.isEmpty {
+      try visitor.visitSingularBytesField(value: self.imageSignature, fieldNumber: 10)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1390,6 +1526,7 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
     if lhs.workingDir != rhs.workingDir {return false}
     if lhs.userArgs != rhs.userArgs {return false}
     if lhs.imageConfig != rhs.imageConfig {return false}
+    if lhs.imageSignature != rhs.imageSignature {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -1695,6 +1832,238 @@ nonisolated extension Wendy_Agent_Services_V1_AttachContainerRequest: SwiftProto
 
   public static func ==(lhs: Wendy_Agent_Services_V1_AttachContainerRequest, rhs: Wendy_Agent_Services_V1_AttachContainerRequest) -> Bool {
     if lhs.requestType != rhs.requestType {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_WindowSize: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".WindowSize"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}rows\0\u{1}cols\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularUInt32Field(value: &self.rows) }()
+      case 2: try { try decoder.decodeSingularUInt32Field(value: &self.cols) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.rows != 0 {
+      try visitor.visitSingularUInt32Field(value: self.rows, fieldNumber: 1)
+    }
+    if self.cols != 0 {
+      try visitor.visitSingularUInt32Field(value: self.cols, fieldNumber: 2)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_WindowSize, rhs: Wendy_Agent_Services_V1_WindowSize) -> Bool {
+    if lhs.rows != rhs.rows {return false}
+    if lhs.cols != rhs.cols {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_ExecContainerRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ExecContainerRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}start\0\u{3}stdin_data\0\u{1}resize\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try {
+        var v: Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart?
+        var hadOneofValue = false
+        if let current = self.requestType {
+          hadOneofValue = true
+          if case .start(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.requestType = .start(v)
+        }
+      }()
+      case 2: try {
+        var v: Data?
+        try decoder.decodeSingularBytesField(value: &v)
+        if let v = v {
+          if self.requestType != nil {try decoder.handleConflictingOneOf()}
+          self.requestType = .stdinData(v)
+        }
+      }()
+      case 3: try {
+        var v: Wendy_Agent_Services_V1_WindowSize?
+        var hadOneofValue = false
+        if let current = self.requestType {
+          hadOneofValue = true
+          if case .resize(let m) = current {v = m}
+        }
+        try decoder.decodeSingularMessageField(value: &v)
+        if let v = v {
+          if hadOneofValue {try decoder.handleConflictingOneOf()}
+          self.requestType = .resize(v)
+        }
+      }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    switch self.requestType {
+    case .start?: try {
+      guard case .start(let v)? = self.requestType else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    }()
+    case .stdinData?: try {
+      guard case .stdinData(let v)? = self.requestType else { preconditionFailure() }
+      try visitor.visitSingularBytesField(value: v, fieldNumber: 2)
+    }()
+    case .resize?: try {
+      guard case .resize(let v)? = self.requestType else { preconditionFailure() }
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 3)
+    }()
+    case nil: break
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_ExecContainerRequest, rhs: Wendy_Agent_Services_V1_ExecContainerRequest) -> Bool {
+    if lhs.requestType != rhs.requestType {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = Wendy_Agent_Services_V1_ExecContainerRequest.protoMessageName + ".ExecStart"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{1}command\0\u{1}tty\0\u{3}term_size\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.appName) }()
+      case 2: try { try decoder.decodeRepeatedStringField(value: &self.command) }()
+      case 3: try { try decoder.decodeSingularBoolField(value: &self.tty) }()
+      case 4: try { try decoder.decodeSingularMessageField(value: &self._termSize) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    if !self.appName.isEmpty {
+      try visitor.visitSingularStringField(value: self.appName, fieldNumber: 1)
+    }
+    if !self.command.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.command, fieldNumber: 2)
+    }
+    if self.tty != false {
+      try visitor.visitSingularBoolField(value: self.tty, fieldNumber: 3)
+    }
+    try { if let v = self._termSize {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 4)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart, rhs: Wendy_Agent_Services_V1_ExecContainerRequest.ExecStart) -> Bool {
+    if lhs.appName != rhs.appName {return false}
+    if lhs.command != rhs.command {return false}
+    if lhs.tty != rhs.tty {return false}
+    if lhs._termSize != rhs._termSize {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendy_Agent_Services_V1_ExecContainerResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".ExecContainerResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}stdout_data\0\u{3}stderr_data\0\u{3}exit_code\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try {
+        var v: Data?
+        try decoder.decodeSingularBytesField(value: &v)
+        if let v = v {
+          if self.responseType != nil {try decoder.handleConflictingOneOf()}
+          self.responseType = .stdoutData(v)
+        }
+      }()
+      case 2: try {
+        var v: Data?
+        try decoder.decodeSingularBytesField(value: &v)
+        if let v = v {
+          if self.responseType != nil {try decoder.handleConflictingOneOf()}
+          self.responseType = .stderrData(v)
+        }
+      }()
+      case 3: try {
+        var v: Int32?
+        try decoder.decodeSingularInt32Field(value: &v)
+        if let v = v {
+          if self.responseType != nil {try decoder.handleConflictingOneOf()}
+          self.responseType = .exitCode(v)
+        }
+      }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    switch self.responseType {
+    case .stdoutData?: try {
+      guard case .stdoutData(let v)? = self.responseType else { preconditionFailure() }
+      try visitor.visitSingularBytesField(value: v, fieldNumber: 1)
+    }()
+    case .stderrData?: try {
+      guard case .stderrData(let v)? = self.responseType else { preconditionFailure() }
+      try visitor.visitSingularBytesField(value: v, fieldNumber: 2)
+    }()
+    case .exitCode?: try {
+      guard case .exitCode(let v)? = self.responseType else { preconditionFailure() }
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 3)
+    }()
+    case nil: break
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendy_Agent_Services_V1_ExecContainerResponse, rhs: Wendy_Agent_Services_V1_ExecContainerResponse) -> Bool {
+    if lhs.responseType != rhs.responseType {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

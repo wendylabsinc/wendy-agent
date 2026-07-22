@@ -57,11 +57,11 @@ Concurrent runs for the same PR are cancelled automatically (`cancel-in-progress
 #### What it does
 
 1. **Fetches the PR diff** using the GitHub CLI (`gh pr diff`).
-2. **Invokes Claude** (`claude-sonnet-4-6`, `max_tokens=8096`) with a detailed system prompt covering security and compliance analysis.
-3. **Writes a Markdown report** (`review.md`) to the workspace.
-4. **Parses the report for severity findings** — the findings table is scanned for rows with `CRITICAL` or `HIGH` severity. When any are found, `HAS_HIGH_SEVERITY=true` is written to `GITHUB_ENV`.
-5. **Posts or updates a PR comment** headed `## AI Security Review`. The comment uses a `<details>`/`<summary>` block: the first non-heading paragraph of the report appears as the collapsed summary, and the full report is shown when expanded. If a previous security review comment already exists on the PR it is edited in place; otherwise a new comment is created. The comment is always posted, even when the check subsequently fails.
-6. **Blocks merging on high-severity findings** — a final step exits non-zero if `HAS_HIGH_SEVERITY` is `true`, causing the check to fail and preventing the PR from merging until the findings are addressed.
+2. **Fetches prior review state** from the existing security-review comment identified by the `<!-- ai-security-review:v1 -->` marker.
+3. **Invokes Claude** (`CLAUDE_MODEL`, currently `claude-opus-4-8`, `max_tokens=16000`) with a detailed system prompt covering security, compliance, prior review state, and explicit `SECURITY:` silencing comments.
+4. **Renders a structured Markdown comment** from Claude's JSON response: one glanceable line per finding, with full details behind per-finding `<details>` disclosures.
+5. **Posts or updates a PR comment** headed `# AI Security Review`. Existing comments are edited in place via the stable marker; duplicate security-review comments are deleted.
+6. **Blocks merging only on open high-severity findings** — a final step exits non-zero only when an unsilenced `open` finding is `HIGH` or `CRITICAL`.
 
 #### Security analysis scope
 
@@ -93,15 +93,25 @@ Each finding is rated **CRITICAL**, **HIGH**, **MEDIUM**, **LOW**, or **INFORMAT
 
 #### Report structure
 
-1. One-paragraph executive summary
-2. Findings table: `| Severity | Standards | File | Line(s) | Title |`
-3. Detailed section per finding with description, quoted snippet, remediation advice, and controls violated
-4. Compliance summary listing which frameworks were checked and whether violations were found
-5. Explicit "no findings" statement if the diff looks safe
+The comment is rendered from a JSON payload with:
+
+| Field | Description |
+|---|---|
+| `summary` | One-line overview of the review |
+| `findings[]` | Up to 10 security findings |
+| `compliance_summary` | Short Markdown compliance summary |
+
+Each finding includes severity, status, standards, title, path, line(s), visible overview, and detailed Markdown remediation. Valid statuses are `open`, `addressed`, `cancelled`, and `silenced`.
+
+#### Stateful review and silencing
+
+The previous AI Security Review comment is included as untrusted prior review state. Claude preserves still-relevant findings, marks fixed findings as `addressed`, marks no-longer-applicable findings as `cancelled`, and appends genuinely new findings as `open`.
+
+A nearby developer comment containing `SECURITY: <reason>` explicitly accepts the risk. The renderer also checks the PR diff for nearby `SECURITY:` comments and marks matching open findings as `silenced`, keeping them visible but non-blocking.
 
 #### Severity gate
 
-After the report is posted, the workflow parses the findings table for `CRITICAL` or `HIGH` severity rows. If any are found, the workflow exits non-zero, blocking the PR from merging. `MEDIUM`, `LOW`, and `INFORMATIONAL` findings are reported in the comment but do not fail the check.
+The gate counts only findings whose status remains `open` and whose severity is `HIGH` or `CRITICAL`. Silenced, addressed, and cancelled findings do not fail the check. `MEDIUM`, `LOW`, and `INFORMATIONAL` findings are reported in the comment but do not fail the check.
 
 #### Permissions
 
@@ -109,7 +119,7 @@ The job requests only `contents: read` and `pull-requests: write`. It only runs 
 
 #### Prompt injection mitigation
 
-PR title, body, and diff are wrapped in `<untrusted_pr_content>` tags, and the system prompt explicitly instructs the model to ignore any instructions embedded within that content.
+PR title, body, and diff are wrapped in `<untrusted_pr_content>` tags. Prior review state is wrapped in `<untrusted_previous_review>` tags, and malformed model output sent through the repair pass is wrapped in `<untrusted_model_response>` tags. The prompts explicitly instruct the model to ignore instructions embedded within those untrusted sections.
 
 #### Required secrets
 

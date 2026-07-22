@@ -9,6 +9,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 )
 
@@ -30,10 +31,11 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip heavy init for commands that don't need device/cloud setup.
-			// __usb-setup runs as root under sudo; skipping init avoids doing
-			// config/analytics writes (and an update check) as root.
+			// __usb-setup and __t234-write run as root under sudo; skipping init
+			// avoids config/analytics writes (and an update check) as root, and
+			// keeps the first-run banner out of the helper's captured output.
 			switch cmd.Name() {
-			case "__ble-check", "__usb-setup", "open-browser":
+			case "__ble-check", "__usb-setup", "__t234-write", "open-browser":
 				return nil
 			}
 
@@ -61,6 +63,9 @@ func NewRootCmd() *cobra.Command {
 				cmd.PrintErrln("Or, set the following environment variable:")
 				cmd.PrintErrln("  WENDY_ANALYTICS=false")
 
+				cmd.PrintErrln("")
+				cmd.PrintErrln("New to Wendy? Run `wendy tour` for a guided setup.")
+
 				cfg.Analytics = &config.AnalyticsConfig{Enabled: true}
 				if err := config.Save(cfg); err != nil {
 					return err
@@ -84,6 +89,7 @@ func NewRootCmd() *cobra.Command {
 			// Surface a throttled tip about `wendy project optimize` after a
 			// successful build/run (no-op for other commands and in CI).
 			maybeShowOptimizeTip(cmd)
+			maybeShowNextStep(cmd)
 
 			// Surface any pending CLI-update notice first. If it showed a prompt,
 			// don't stack the completion prompt on top of it this invocation.
@@ -129,6 +135,8 @@ func NewRootCmd() *cobra.Command {
 	projectCmd.GroupID = "manage"
 	deviceCmd := newDeviceCmd()
 	deviceCmd.GroupID = "manage"
+	fleetCmd := newFleetCmd()
+	fleetCmd.GroupID = "manage"
 
 	// Cloud
 	cloudCmd := newCloudCmd()
@@ -160,7 +168,7 @@ func NewRootCmd() *cobra.Command {
 	utilsCmd := newUtilsCmd()
 	utilsCmd.Hidden = true
 	tourCmd := newTourCmd()
-	tourCmd.Hidden = true
+	tourCmd.GroupID = "develop"
 	mcpCmd := newMCPCmd()
 	mcpCmd.Hidden = true
 	completionCmd := newCompletionCmd()
@@ -209,6 +217,7 @@ func NewRootCmd() *cobra.Command {
 		// Manage
 		projectCmd,
 		deviceCmd,
+		fleetCmd,
 		// Cloud
 		cloudCmd,
 		// Settings
@@ -217,6 +226,7 @@ func NewRootCmd() *cobra.Command {
 		// Hidden
 		bleCheckCmd,
 		bmapWriteCmd,
+		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
 		watchCmd,
 		buildCmd,
@@ -236,6 +246,33 @@ func NewRootCmd() *cobra.Command {
 
 	root.Version = version.Version
 	return root
+}
+
+// nextStepHint returns a one-line suggestion for the next command to run after
+// commandPath succeeds, or "" when there is no suggestion. Keyed off the full
+// cobra command path (e.g. "wendy device info").
+func nextStepHint(commandPath string) string {
+	switch commandPath {
+	case "wendy discover":
+		return "Next: run `wendy init` to create an app, then `wendy run` to deploy it."
+	case "wendy device info", "wendy device top", "wendy device apps list":
+		return "Next: run `wendy run` to build and deploy an app to this device."
+	case "wendy run":
+		return "Next: run `wendy device logs` to stream your app's logs."
+	}
+	return ""
+}
+
+// maybeShowNextStep prints a next-step hint after a successful command. cobra
+// only runs PersistentPostRunE when RunE succeeded, so this is success-only. It
+// is suppressed for JSON output, non-interactive terminals, and CI.
+func maybeShowNextStep(cmd *cobra.Command) {
+	if jsonOutput || !isInteractiveTerminal() || env.IsCI() {
+		return
+	}
+	if hint := nextStepHint(cmd.CommandPath()); hint != "" {
+		cmd.PrintErrln(hint)
+	}
 }
 
 // newUSBSetupHiddenCmd builds the hidden "__usb-setup" subcommand. It is the

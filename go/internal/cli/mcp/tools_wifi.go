@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -11,11 +10,14 @@ import (
 )
 
 func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("wifi_list",
+	listOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List available WiFi networks visible to the connected device"),
-	), s.handleWiFiList)
+	}
+	listOpts = append(listOpts, readOnly()...)
+	listOpts = append(listOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("wifi_list", listOpts...), s.handleWiFiList)
 
-	srv.AddTool(mcpgo.NewTool("wifi_connect",
+	connectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Connect the device to a WiFi network"),
 		mcpgo.WithString("ssid",
 			mcpgo.Required(),
@@ -24,19 +26,33 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 		mcpgo.WithString("password",
 			mcpgo.Description("WiFi password (leave empty for open networks)"),
 		),
-	), s.handleWiFiConnect)
+	}
+	connectOpts = append(connectOpts, mutating()...)
+	connectOpts = append(connectOpts, openWorld()...)
+	connectOpts = append(connectOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("wifi_connect", connectOpts...), s.handleWiFiConnect)
 
-	srv.AddTool(mcpgo.NewTool("wifi_status",
+	statusOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Get the current WiFi connection status of the connected device"),
-	), s.handleWiFiStatus)
+	}
+	statusOpts = append(statusOpts, readOnly()...)
+	statusOpts = append(statusOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("wifi_status", statusOpts...), s.handleWiFiStatus)
 
-	srv.AddTool(mcpgo.NewTool("wifi_disconnect",
+	disconnectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Disconnect the device from its current WiFi network"),
-	), s.handleWiFiDisconnect)
+	}
+	disconnectOpts = append(disconnectOpts, destructive()...)
+	disconnectOpts = append(disconnectOpts, openWorld()...)
+	disconnectOpts = append(disconnectOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("wifi_disconnect", disconnectOpts...), s.handleWiFiDisconnect)
 
-	srv.AddTool(mcpgo.NewTool("wifi_known_networks",
+	knownOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List WiFi networks with saved profiles on the connected device"),
-	), s.handleWiFiKnownNetworks)
+	}
+	knownOpts = append(knownOpts, readOnly()...)
+	knownOpts = append(knownOpts, localOnly()...)
+	srv.AddTool(mcpgo.NewTool("wifi_known_networks", knownOpts...), s.handleWiFiKnownNetworks)
 }
 
 func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -46,7 +62,7 @@ func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest)
 	}
 	resp, err := conn.AgentService.ListWiFiNetworks(ctx, &agentpb.ListWiFiNetworksRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	var networks []map[string]any
 	for _, n := range resp.GetNetworks() {
@@ -63,8 +79,7 @@ func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest)
 	if networks == nil {
 		networks = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(networks, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(networks), nil
 }
 
 func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -74,19 +89,19 @@ func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolReq
 	}
 	ssid := stringParam(req, "ssid")
 	if ssid == "" {
-		return mcpgo.NewToolResultError("ssid is required"), nil
+		return errResult(errCodeInvalidArgument, "ssid is required"), nil
 	}
 	resp, err := conn.AgentService.ConnectToWiFi(ctx, &agentpb.ConnectToWiFiRequest{
 		Ssid:     ssid,
 		Password: stringParam(req, "password"),
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	if !resp.GetSuccess() {
-		return mcpgo.NewToolResultError(fmt.Sprintf("connect failed: %s", resp.GetErrorMessage())), nil
+		return errResultf(errCodeInternal, "connect failed: %s", resp.GetErrorMessage()), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s", ssid)), nil
+	return okText(fmt.Sprintf("connected to %s", ssid)), nil
 }
 
 func (s *mcpServer) handleWiFiStatus(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -96,7 +111,7 @@ func (s *mcpServer) handleWiFiStatus(ctx context.Context, _ mcpgo.CallToolReques
 	}
 	resp, err := conn.AgentService.GetWiFiStatus(ctx, &agentpb.GetWiFiStatusRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	status := map[string]any{
 		"connected": resp.GetConnected(),
@@ -105,8 +120,7 @@ func (s *mcpServer) handleWiFiStatus(ctx context.Context, _ mcpgo.CallToolReques
 	if msg := resp.GetErrorMessage(); msg != "" {
 		status["error"] = msg
 	}
-	b, _ := json.MarshalIndent(status, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(status), nil
 }
 
 func (s *mcpServer) handleWiFiDisconnect(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -116,12 +130,12 @@ func (s *mcpServer) handleWiFiDisconnect(ctx context.Context, _ mcpgo.CallToolRe
 	}
 	resp, err := conn.AgentService.DisconnectWiFi(ctx, &agentpb.DisconnectWiFiRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	if !resp.GetSuccess() {
-		return mcpgo.NewToolResultError(fmt.Sprintf("disconnect failed: %s", resp.GetErrorMessage())), nil
+		return errResultf(errCodeInternal, "disconnect failed: %s", resp.GetErrorMessage()), nil
 	}
-	return mcpgo.NewToolResultText("disconnected from WiFi"), nil
+	return okText("disconnected from WiFi"), nil
 }
 
 func (s *mcpServer) handleWiFiKnownNetworks(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -131,7 +145,7 @@ func (s *mcpServer) handleWiFiKnownNetworks(ctx context.Context, _ mcpgo.CallToo
 	}
 	resp, err := conn.AgentService.ListKnownWiFiNetworks(ctx, &agentpb.ListKnownWiFiNetworksRequest{})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	var networks []map[string]any
 	for _, n := range resp.GetNetworks() {
@@ -145,6 +159,5 @@ func (s *mcpServer) handleWiFiKnownNetworks(ctx context.Context, _ mcpgo.CallToo
 	if networks == nil {
 		networks = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(networks, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(networks), nil
 }

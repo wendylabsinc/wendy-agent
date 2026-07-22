@@ -1,7 +1,10 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy device bluetooth forget'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy device bluetooth forget`. The output includes
      the command synopsis, local flags, inherited global flags, and concise
@@ -9,9 +12,17 @@ struct `'wendy device bluetooth forget'` {
      stderr, and leaves configuration, cache, project, cloud, and device
      state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device bluetooth forget --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Forget a paired Bluetooth peripheral"))
+                #expect(result.stdout.contains("wendy device bluetooth forget [address] [flags]"))
+                #expect(result.stdout.contains("--device"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -19,19 +30,28 @@ struct `'wendy device bluetooth forget'` {
      pickers. The command does not read or change the saved default device when
      an explicit target is supplied.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `uses explicit device selection without prompting`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: explicit-target forget needs a seeded managed agent and simulated Bluetooth capability without physical hardware."
+        )
+    )
+    func `uses explicit device selection without prompting`() async throws {}
 
     /**
      Without an explicit or configured device in a non-interactive context,
      reports that a device selection is required, emits no prompt escape
      sequences, and performs no device operation.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `reports missing device selection in non-interactive mode`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device bluetooth forget AA:BB:CC:DD:EE:FF --json") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("no device specified"))
+                #expect(!result.stderr.contains("Select a device"))
+            }
+        }
     }
 
     /**
@@ -39,46 +59,94 @@ struct `'wendy device bluetooth forget'` {
      stderr diagnostics and a failure status. Output does not claim that the
      operation succeeded.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `reports unreachable devices without partial success`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: connection and incompatible-RPC failures need controllable seeded managed-agent responses."
+        )
+    )
+    func `reports unreachable devices without partial success`() async throws {}
 
     /**
      Removes pairing and trust state for the requested peripheral address
      without changing unrelated peripherals.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `forgets a paired Bluetooth peripheral`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: successful forget needs simulated managed-agent pairing/trust state without physical radios."
+        )
+    )
+    func `forgets a paired Bluetooth peripheral`() async throws {}
 
     /**
      Missing or malformed addresses produce a usage diagnostic and no Bluetooth
      operation.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `requires a peripheral address`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device bluetooth forget") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("accepts 1 arg(s), received 0"))
+            }
+        }
     }
+
+    /**
+     Rejects peripheral addresses that do not use the documented Bluetooth
+     address format.
+
+     Validation fails before connecting to a device or changing Bluetooth state.
+     */
+    @Test(
+        .disabled(
+            "WDY-1957: malformed Bluetooth addresses are forwarded to target resolution/RPC without local validation."
+        )
+    )
+    func `rejects malformed peripheral addresses`() async throws {}
 
     /**
      Forgetting an address unknown to the device reports a not-found result and
      preserves other pairings.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `reports unknown peripherals without changing known devices`() async throws {
-        // TODO: implement.
+    @Test(
+        .disabled(
+            "WDY-1952: unknown-address isolation needs seeded neighboring managed-agent pairing state."
+        )
+    )
+    func `reports unknown peripherals without changing known devices`() async throws {}
+
+    /**
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
+     */
+    @Test
+    func `rejects undocumented flags`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device bluetooth forget AA:BB:CC:DD:EE:FF --bogus") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+            }
+        }
     }
 
     /**
-     Accepts only the documented arguments and flags for `wendy device
-     bluetooth forget`. Extra positional arguments or unknown flags produce
-     a usage diagnostic on stderr, return a failure status, emit no success
-     output, and leave existing state unchanged.
+     Rejects more positional arguments than the command's documented interface
+     accepts.
+
+     Validation fails before the requested cloud or device operation begins.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+    @Test
+    func `rejects extra positional arguments`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy device bluetooth forget one two") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("accepts 1 arg(s), received 2"))
+            }
+        }
     }
 }

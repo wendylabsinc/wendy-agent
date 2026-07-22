@@ -264,7 +264,7 @@ func TestGCTimestamp_IsUTC(t *testing.T) {
 }
 
 func TestWendyLabels_Basic(t *testing.T) {
-	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "")
+	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "", nil)
 
 	if v, ok := labels[labelKeyAppVersion]; !ok {
 		t.Error("missing app version label")
@@ -284,7 +284,7 @@ func TestWendyLabels_Basic(t *testing.T) {
 }
 
 func TestWendyLabels_MultiService(t *testing.T) {
-	labels := wendyLabels("com.example.app", "api", "2.0", nil, nil, "")
+	labels := wendyLabels("com.example.app", "api", "2.0", nil, nil, "", nil)
 
 	if v := labels[labelKeyServiceName]; v != "api" {
 		t.Errorf("service label = %q; want %q", v, "api")
@@ -299,7 +299,7 @@ func TestWendyLabels_MultiService(t *testing.T) {
 // agent restart / device reboot, when c.appIsolation (in-memory only) starts
 // out empty (WDY reboot-fix).
 func TestWendyLabels_WithIsolation(t *testing.T) {
-	labels := wendyLabels("app", "", "1.0", nil, nil, "isolated")
+	labels := wendyLabels("app", "", "1.0", nil, nil, "isolated", nil)
 	if v, ok := labels[labelKeyIsolation]; !ok {
 		t.Error("missing isolation label")
 	} else if v != "isolated" {
@@ -312,7 +312,7 @@ func TestWendyLabels_WithIsolation(t *testing.T) {
 // not carry the label at all (distinguishing "not isolated" from "isolated
 // mode not yet known").
 func TestWendyLabels_EmptyIsolationOmitsLabel(t *testing.T) {
-	labels := wendyLabels("app", "", "1.0", nil, nil, "")
+	labels := wendyLabels("app", "", "1.0", nil, nil, "", nil)
 	if v, ok := labels[labelKeyIsolation]; ok {
 		t.Errorf("should not have isolation label when isolation is empty, got %q", v)
 	}
@@ -320,7 +320,7 @@ func TestWendyLabels_EmptyIsolationOmitsLabel(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyUnlessStopped(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
-	labels := wendyLabels("app", "", "2.0", rp, nil, "")
+	labels := wendyLabels("app", "", "2.0", rp, nil, "", nil)
 
 	if v, ok := labels[labelKeyRestartPolicy]; !ok {
 		t.Error("missing restart policy label")
@@ -334,7 +334,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 		Mode:                agentpb.RestartPolicyMode_ON_FAILURE,
 		OnFailureMaxRetries: 3,
 	}
-	labels := wendyLabels("app", "", "1.0", rp, nil, "")
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "on-failure:3" {
 		t.Errorf("restart policy = %q; want %q", v, "on-failure:3")
@@ -343,7 +343,7 @@ func TestWendyLabels_WithRestartPolicyOnFailure(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}
-	labels := wendyLabels("app", "", "1.0", rp, nil, "")
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "no" {
 		t.Errorf("restart policy = %q; want %q", v, "no")
@@ -352,7 +352,7 @@ func TestWendyLabels_WithRestartPolicyNo(t *testing.T) {
 
 func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 	rp := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_DEFAULT}
-	labels := wendyLabels("app", "", "1.0", rp, nil, "")
+	labels := wendyLabels("app", "", "1.0", rp, nil, "", nil)
 
 	if v := labels[labelKeyRestartPolicy]; v != "unless-stopped" {
 		t.Errorf("restart policy = %q; want %q (DEFAULT maps to unless-stopped)", v, "unless-stopped")
@@ -361,7 +361,7 @@ func TestWendyLabels_WithRestartPolicyDefault(t *testing.T) {
 
 func TestWendyLabels_WithMCPEntitlement(t *testing.T) {
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 3000}}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements, "")
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", nil)
 	if v, ok := labels[labelKeyMCPPort]; !ok {
 		t.Error("missing mcp port label")
 	} else if v != "3000" {
@@ -371,7 +371,7 @@ func TestWendyLabels_WithMCPEntitlement(t *testing.T) {
 
 func TestWendyLabels_WithMCPPortZero(t *testing.T) {
 	entitlements := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 0}}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements, "")
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", nil)
 	if _, ok := labels[labelKeyMCPPort]; ok {
 		t.Error("should not have mcp port label when port is 0")
 	}
@@ -382,7 +382,7 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		{Type: appconfig.EntitlementNetwork, Mode: "host"},
 		{Type: appconfig.EntitlementGPU},
 	}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements, "")
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", nil)
 
 	cases := []struct {
 		key     string
@@ -407,7 +407,7 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"},
 		{Type: appconfig.EntitlementPersist, Name: "logs", Path: "/logs"},
 	}
-	labels := wendyLabels("app", "", "1.0", nil, entitlements, "")
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", nil)
 
 	for i, want := range entitlements {
 		key := fmt.Sprintf("%s%s.%d", appconfig.EntitlementAnnotationKeyPrefix, appconfig.EntitlementPersist, i)
@@ -422,8 +422,51 @@ func TestWendyLabels_DuplicateEntitlementType(t *testing.T) {
 	}
 }
 
+func TestWendyLabels_IsolationAndDependsOn(t *testing.T) {
+	labels := wendyLabels("myapp", "web", "1.0.0", nil, nil, "isolated", []string{"db", "cache"})
+	if got := labels[labelKeyIsolation]; got != "isolated" {
+		t.Fatalf("isolation label = %q, want %q", got, "isolated")
+	}
+	if got := labels[labelKeyDependsOn]; got != "db,cache" {
+		t.Fatalf("depends-on label = %q, want %q", got, "db,cache")
+	}
+}
+
+func TestWendyLabels_OmitsWhenEmpty(t *testing.T) {
+	labels := wendyLabels("myapp", "", "1.0.0", nil, nil, "", nil)
+	if _, ok := labels[labelKeyIsolation]; ok {
+		t.Fatal("isolation label should be absent when isolation is empty")
+	}
+	if _, ok := labels[labelKeyDependsOn]; ok {
+		t.Fatal("depends-on label should be absent when dependsOn is empty")
+	}
+}
+
+func TestParseDependsOn(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"db", []string{"db"}},
+		{"db,cache", []string{"db", "cache"}},
+		{"db,,cache", []string{"db", "cache"}}, // tolerate stray empties
+	}
+	for _, tc := range cases {
+		got := parseDependsOn(tc.in)
+		if len(got) != len(tc.want) {
+			t.Fatalf("parseDependsOn(%q) = %v, want %v", tc.in, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("parseDependsOn(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
 func TestWendyLabels_NoEntitlementsLabel(t *testing.T) {
-	labels := wendyLabels("app", "", "1.0", nil, nil, "")
+	labels := wendyLabels("app", "", "1.0", nil, nil, "", nil)
 	for k := range labels {
 		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {
 			t.Errorf("should not have entitlement label when entitlements are empty, got %q", k)
@@ -491,7 +534,7 @@ func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
 		{Type: appconfig.EntitlementGPU},
 	}
 
-	labels := wendyLabels("app", "", "1.0", nil, original, "")
+	labels := wendyLabels("app", "", "1.0", nil, original, "", nil)
 	annotations := make(map[string]string)
 	for k, v := range labels {
 		if strings.HasPrefix(k, appconfig.EntitlementAnnotationKeyPrefix) {

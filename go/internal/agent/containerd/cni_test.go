@@ -161,3 +161,30 @@ func TestWriteHostsFile(t *testing.T) {
 		t.Errorf("hosts file missing localhost entry, got:\n%s", s)
 	}
 }
+
+// TestCNIExecPATHIncludesSystemDirs guards against a real bug: the bridge
+// exec's PATH was restricted to CNIBinDir only (to prevent third-party binary
+// hijacking), which is correct for resolving "bridge"/"host-local" but broke
+// the vendored bridge plugin's own real "iptables" shell-out (NAT/masquerade
+// setup) with "executable file not found in $PATH" — every CNI ADD failed.
+// CNIBinDir must stay first (delegation resolution takes priority); the
+// system dirs must still be present for iptables to be found.
+func TestCNIExecPATHIncludesSystemDirs(t *testing.T) {
+	path := CNIBinDir + cniSystemPathDirs
+	dirs := strings.Split(path, ":")
+	if dirs[0] != CNIBinDir {
+		t.Fatalf("PATH must start with CNIBinDir for delegation resolution, got %q", path)
+	}
+	for _, want := range []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		found := false
+		for _, d := range dirs {
+			if d == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("PATH %q missing %q (needed to locate iptables)", path, want)
+		}
+	}
+}

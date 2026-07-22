@@ -32,6 +32,7 @@ type BuildStepsModel struct {
 	byID    map[int]int
 	spinner spinner.Model
 	hints   hintRotator
+	width   int
 	tally   BuildTally
 	done    bool
 	err     error
@@ -59,6 +60,9 @@ func (m BuildStepsModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m BuildStepsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.done = true
@@ -133,7 +137,7 @@ func (m BuildStepsModel) View() string {
 			sb.WriteString(fmt.Sprintf("  %s %s\n", bsCross.Render("✗"), label))
 		}
 	}
-	if hint := m.hints.view(); hint != "" {
+	if hint := m.hints.view(m.width); hint != "" {
 		sb.WriteString(hint)
 		sb.WriteString("\n")
 	}

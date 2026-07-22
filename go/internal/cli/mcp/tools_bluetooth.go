@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -13,18 +12,21 @@ import (
 )
 
 func (s *mcpServer) registerBluetoothTools(srv *server.MCPServer) {
-	srv.AddTool(mcpgo.NewTool("bluetooth_scan",
+	scanOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Scan for Bluetooth peripherals near the connected device"),
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Scan duration in seconds (default 5)"),
 		),
-	), s.handleBluetoothScan)
+	}
+	scanOpts = append(scanOpts, readOnly()...)
+	scanOpts = append(scanOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("bluetooth_scan", scanOpts...), s.handleBluetoothScan)
 
-	srv.AddTool(mcpgo.NewTool("bluetooth_connect",
+	connectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Connect to a Bluetooth peripheral by address"),
 		mcpgo.WithString("address",
 			mcpgo.Required(),
-			mcpgo.Description("Bluetooth peripheral address"),
+			mcpgo.Description("Bluetooth peripheral address, e.g. AA:BB:CC:DD:EE:FF"),
 		),
 		mcpgo.WithBoolean("pair",
 			mcpgo.Description("Pair the peripheral during connection"),
@@ -32,15 +34,23 @@ func (s *mcpServer) registerBluetoothTools(srv *server.MCPServer) {
 		mcpgo.WithBoolean("trust",
 			mcpgo.Description("Trust the peripheral after connecting"),
 		),
-	), s.handleBluetoothConnect)
+	}
+	connectOpts = append(connectOpts, mutating()...)
+	connectOpts = append(connectOpts, openWorld()...)
+	connectOpts = append(connectOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("bluetooth_connect", connectOpts...), s.handleBluetoothConnect)
 
-	srv.AddTool(mcpgo.NewTool("bluetooth_disconnect",
+	disconnectOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Disconnect from a Bluetooth peripheral by address"),
 		mcpgo.WithString("address",
 			mcpgo.Required(),
-			mcpgo.Description("Bluetooth peripheral address"),
+			mcpgo.Description("Bluetooth peripheral address, e.g. AA:BB:CC:DD:EE:FF"),
 		),
-	), s.handleBluetoothDisconnect)
+	}
+	disconnectOpts = append(disconnectOpts, destructive()...)
+	disconnectOpts = append(disconnectOpts, openWorld()...)
+	disconnectOpts = append(disconnectOpts, idempotent()...)
+	srv.AddTool(mcpgo.NewTool("bluetooth_disconnect", disconnectOpts...), s.handleBluetoothDisconnect)
 }
 
 func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -55,10 +65,10 @@ func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolR
 
 	stream, err := conn.AgentService.ScanBluetoothPeripherals(ctx)
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	if err := stream.Send(&agentpb.ScanBluetoothPeripheralsRequest{}); err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
 	_ = stream.CloseSend()
 
@@ -72,7 +82,7 @@ func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolR
 			if ctx.Err() != nil {
 				break
 			}
-			return mcpgo.NewToolResultError(grpcErrString(err)), nil
+			return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 		}
 		for _, d := range resp.GetDiscoveredDevices() {
 			seen[d.GetAddress()] = map[string]any{
@@ -94,8 +104,7 @@ func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolR
 	if devices == nil {
 		devices = []map[string]any{}
 	}
-	b, _ := json.MarshalIndent(devices, "", "  ")
-	return mcpgo.NewToolResultText(string(b)), nil
+	return okResult(devices), nil
 }
 
 func (s *mcpServer) handleBluetoothConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -105,7 +114,7 @@ func (s *mcpServer) handleBluetoothConnect(ctx context.Context, req mcpgo.CallTo
 	}
 	address := stringParam(req, "address")
 	if address == "" {
-		return mcpgo.NewToolResultError("address is required"), nil
+		return errResult(errCodeInvalidArgument, "address is required"), nil
 	}
 	_, err := conn.AgentService.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
 		Address: address,
@@ -113,9 +122,9 @@ func (s *mcpServer) handleBluetoothConnect(ctx context.Context, req mcpgo.CallTo
 		Trust:   req.GetBool("trust", false),
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("connected to %s", address)), nil
+	return okText(fmt.Sprintf("connected to %s", address)), nil
 }
 
 func (s *mcpServer) handleBluetoothDisconnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -125,13 +134,13 @@ func (s *mcpServer) handleBluetoothDisconnect(ctx context.Context, req mcpgo.Cal
 	}
 	address := stringParam(req, "address")
 	if address == "" {
-		return mcpgo.NewToolResultError("address is required"), nil
+		return errResult(errCodeInvalidArgument, "address is required"), nil
 	}
 	_, err := conn.AgentService.DisconnectBluetoothPeripheral(ctx, &agentpb.DisconnectBluetoothPeripheralRequest{
 		Address: address,
 	})
 	if err != nil {
-		return mcpgo.NewToolResultError(grpcErrString(err)), nil
+		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return mcpgo.NewToolResultText(fmt.Sprintf("disconnected from %s", address)), nil
+	return okText(fmt.Sprintf("disconnected from %s", address)), nil
 }

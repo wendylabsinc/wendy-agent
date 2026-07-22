@@ -8,9 +8,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
+
+// fakeAgentVersionClient stubs the single AgentService RPC that
+// announceReachableURL issues, so runPostStartIfReady tests can control which
+// device IPs the agent reports (or fail the query outright).
+type fakeAgentVersionClient struct {
+	agentpb.WendyAgentServiceClient // embedded nil — satisfies interface
+
+	resp *agentpb.GetAgentVersionResponse
+	err  error
+}
+
+func (f *fakeAgentVersionClient) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest, _ ...grpc.CallOption) (*agentpb.GetAgentVersionResponse, error) {
+	return f.resp, f.err
+}
 
 func testPort(t *testing.T, ln net.Listener) int {
 	t.Helper()
@@ -164,9 +181,137 @@ func TestWaitForReadiness_ContextCancelled(t *testing.T) {
 	}
 }
 
+// TestRunPostStartIfReady_SkipsHookWhenProbeFails locks the fix for the bug
+// where `wendy run` printed "App reachable at ..." and opened the postStart
+// URL even after the readiness probe timed out and the container had exited.
+func TestRunPostStartIfReady_SkipsHookWhenProbeFails(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	opened := false
+	browserOpen = func(string) error {
+		opened = true
+		return nil
+	}
+
+	// Grab a free port, then release it so nothing listens and the probe fails.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close()
+
+	appCfg := &appconfig.AppConfig{
+		AppID:     "not-ready-app",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 1},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{
+				OpenURL: "http://${WENDY_HOSTNAME}:3001",
+				CLI:     "echo should-not-run",
+			},
+		},
+	}
+	// ContainerService backs warnReadiness's exit-detail lookup; AgentService
+	// must not be reached at all when the probe fails (it is nil, so a call
+	// would panic the test).
+	conn := &grpcclient.AgentConnection{
+		Host:             "127.0.0.1",
+		ContainerService: &fastPathContainerClient{appName: appCfg.AppID, state: agentpb.AppRunningState_STOPPED},
+	}
+
+	cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	if cmd != nil {
+		t.Errorf("runPostStartIfReady returned a hook cmd despite a failed probe")
+	}
+	if opened {
+		t.Errorf("postStart openURL fired despite a failed readiness probe")
+	}
+}
+
+// TestRunPostStartIfReady_IPv6HostSwappedForReportedIP verifies that when the
+// CLI dialed the device at an IPv6 literal (often a rotating RFC 4941
+// temporary address from mDNS), the postStart openURL targets the device's
+// best self-reported IP instead — the same address the "App reachable at"
+// line prints.
+func TestRunPostStartIfReady_IPv6HostSwappedForReportedIP(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:     "v6-app",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:3001"},
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host: "::1",
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"192.168.0.159"}}},
+		}},
+	}
+
+	if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+		t.Errorf("expected nil cmd for openURL-only hook, got %v", cmd)
+	}
+	if opened != "http://192.168.0.159:3001" {
+		t.Errorf("openURL = %q, want the device-reported IPv4 URL", opened)
+	}
+}
+
+// TestRunPostStartIfReady_IPv6FallbackIsBracketed verifies that when the
+// device's IPs can't be queried, the hook falls back to the dialed IPv6
+// literal — bracketed, so the URL parses (an unbracketed IPv6 literal reads
+// the port as one more hextet).
+func TestRunPostStartIfReady_IPv6FallbackIsBracketed(t *testing.T) {
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:     "v6-fallback-app",
+		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:3001"},
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host:         "::1",
+		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
+	}
+
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	if opened != "http://[::1]:3001" {
+		t.Errorf("openURL = %q, want bracketed IPv6 fallback URL", opened)
+	}
+}
+
 func TestStartPostStartHook_NilHooks(t *testing.T) {
 	cfg := &appconfig.AppConfig{AppID: "test"}
-	cmd := startPostStartHook(context.Background(), cfg, "localhost")
+	cmd := startPostStartHook(context.Background(), cfg, "localhost", "")
 	if cmd != nil {
 		t.Error("expected nil cmd for nil hooks")
 	}
@@ -179,9 +324,36 @@ func TestStartPostStartHook_EmptyCLI(t *testing.T) {
 			PostStart: &appconfig.HookCommand{Agent: "echo agent-only"},
 		},
 	}
-	cmd := startPostStartHook(context.Background(), cfg, "localhost")
+	cmd := startPostStartHook(context.Background(), cfg, "localhost", "")
 	if cmd != nil {
 		t.Error("expected nil cmd when CLI is empty")
+	}
+}
+
+// TestExpandHookEnv_ServiceName verifies WENDY_SERVICE_NAME expands in both
+// Unix and Windows placeholder forms, and expands to the empty string for
+// single-container apps (which pass serviceName == "") rather than being left
+// verbatim — matching how WENDY_HOSTNAME/WENDY_APP_ID already behave.
+func TestExpandHookEnv_ServiceName(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		serviceName string
+		want        string
+	}{
+		{"unix style", "echo ${WENDY_SERVICE_NAME}", "worker", "echo worker"},
+		{"windows style", "echo %WENDY_SERVICE_NAME%", "worker", "echo worker"},
+		{"empty serviceName expands to empty, unix", "[${WENDY_SERVICE_NAME}]", "", "[]"},
+		{"empty serviceName expands to empty, windows", "[%WENDY_SERVICE_NAME%]", "", "[]"},
+		{"mixed with hostname and appID", "%WENDY_SERVICE_NAME%@${WENDY_HOSTNAME}/${WENDY_APP_ID}", "worker", "worker@device.local/com.example.app"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expandHookEnv(tc.input, "device.local", "com.example.app", tc.serviceName)
+			if got != tc.want {
+				t.Errorf("expandHookEnv(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
 	}
 }
 

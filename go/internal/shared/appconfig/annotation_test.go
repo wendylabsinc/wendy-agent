@@ -56,6 +56,11 @@ func TestEntitlementAnnotationValue(t *testing.T) {
 			ent:  Entitlement{Type: EntitlementNetwork, Mode: "host", Ports: []PortMapping{{Host: 8080, Container: 80}}},
 			want: "mode=host,ports=8080:80",
 		},
+		{
+			name: "mesh mode with serviceCIDR",
+			ent:  Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+			want: "mode=mesh,servicecidr=10.99.0.0/16",
+		},
 	}
 
 	for _, tc := range tests {
@@ -129,6 +134,12 @@ func TestParseEntitlementAnnotation(t *testing.T) {
 			value:   "mode=host,ports=8080:80",
 			want:    Entitlement{Type: EntitlementNetwork, Mode: "host", Ports: []PortMapping{{Host: 8080, Container: 80}}},
 		},
+		{
+			name:    "mesh mode with serviceCIDR",
+			entType: EntitlementNetwork,
+			value:   "mode=mesh,servicecidr=10.99.0.0/16",
+			want:    Entitlement{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+		},
 	}
 
 	for _, tc := range tests {
@@ -152,6 +163,7 @@ func TestEntitlementAnnotationRoundTrip(t *testing.T) {
 		{Type: EntitlementGPIO, Pins: []int{17, 18, 27}},
 		{Type: EntitlementMCP, Port: 8080},
 		{Type: EntitlementI2C, Device: "i2c-1"},
+		{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
 	}
 
 	for _, want := range entitlements {

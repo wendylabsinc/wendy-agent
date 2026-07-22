@@ -76,9 +76,9 @@ func (m *mockBluetooth) Scan(_ context.Context) (<-chan []*agentpb.DiscoveredBlu
 	close(ch)
 	return ch, nil
 }
-func (m *mockBluetooth) Connect(_ context.Context, addr string, _, _ bool) error {
+func (m *mockBluetooth) Connect(_ context.Context, addr string, _, _ bool) (bool, error) {
 	m.connected = addr
-	return m.err
+	return m.err == nil, m.err
 }
 func (m *mockBluetooth) Disconnect(_ context.Context, addr string) error {
 	m.disconnected = addr

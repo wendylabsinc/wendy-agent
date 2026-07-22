@@ -4,6 +4,7 @@ package appconfig
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path"
 	"path/filepath"
@@ -84,7 +85,7 @@ var deprecatedEntitlementReplacements = map[string]string{
 
 // allowedKeys maps each entitlement type to the set of JSON keys that are valid for it.
 var allowedKeys = map[string][]string{
-	EntitlementNetwork:   {"type", "mode", "ports"},
+	EntitlementNetwork:   {"type", "mode", "ports", "serviceCIDR"},
 	EntitlementBluetooth: {"type", "mode"},
 	EntitlementVideo:     {"type", "mode", "allowlist"},
 	EntitlementGPU:       {"type"},
@@ -155,10 +156,64 @@ type ServiceConfig struct {
 	Entitlements []Entitlement     `json:"entitlements,omitempty"`
 	DependsOn    []string          `json:"dependsOn,omitempty"`
 	Frameworks   *FrameworksConfig `json:"frameworks,omitempty"`
+	// Env are environment variables injected into this service's container.
+	// Values may reference host env vars via ${VAR}; `wendy run` expands them
+	// at deploy time (see resolveServiceEnv) and sends the result in the
+	// CreateContainerRequest, which the agent validates and applies.
+	Env map[string]string `json:"env,omitempty"`
 	// Resources optionally caps this service's CPU/memory/PID usage, overriding
 	// any app-level resources wholesale.
 	Resources *ResourceLimits `json:"resources,omitempty"`
+	// Readiness gates only this service's postStart hooks — it never delays
+	// other services' startup order (that is dependsOn/WDY-879 territory).
+	Readiness *ReadinessConfig `json:"readiness,omitempty"`
+	Hooks     *HooksConfig     `json:"hooks,omitempty"`
 }
+
+// ComponentConfig references one app of a fleet (WDY-1755/1776). The fleet
+// manifest describes topology, not app config: each component points at an app
+// directory (Path) whose own wendy.json defines the app's build/runtime config,
+// and lists the device Tags the app deploys to. There is no group/central
+// distinction — "central" is just a conventional tag.
+type ComponentConfig struct {
+	// Path is the app directory, relative to wendy-fleet.json. It must contain a
+	// wendy.json defining the app. Required.
+	Path string `json:"path"`
+	// Tags select the devices this component deploys to: a device matches when
+	// any tag matches its name (glob, e.g. "camera-*"). Required, non-empty.
+	Tags []string `json:"tags"`
+	// Expose declares the endpoint this component serves, for cross-component
+	// discovery. Interim — WDY-1777 moves discovery to mDNS advertising.
+	Expose *ComponentExpose `json:"expose,omitempty"`
+	// Discovers wires another component's live endpoints into this one.
+	Discovers []DiscoverRef `json:"discovers,omitempty"`
+}
+
+// ComponentExpose declares the network endpoint a component serves so the
+// platform can advertise it for cross-device discovery. Named "expose" rather
+// than "service" to avoid collision with the multi-container Services map.
+type ComponentExpose struct {
+	Name string `json:"name,omitempty"`
+	Port int    `json:"port"`
+	Path string `json:"path,omitempty"`
+}
+
+// DiscoverRef wires one component's live endpoints into another. The resolved
+// peer list is injected into the consuming container as a JSON snapshot under
+// the env var named by As, plus a live discovery API under WENDY_DISCOVERY_URL.
+type DiscoverRef struct {
+	Component string `json:"component"`
+	As        string `json:"as"`
+}
+
+// DiscoveryURLEnvVar is the env var the platform auto-injects into any component
+// that declares a "discovers" entry, pointing at a local discovery API the app
+// can poll/subscribe to for live membership. It is reserved: a discovers[].as
+// may not reuse it.
+const DiscoveryURLEnvVar = "WENDY_DISCOVERY_URL"
+
+// envVarNamePattern matches a POSIX-portable environment variable name.
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // AppConfig represents the wendy.json application configuration.
 type AppConfig struct {
@@ -265,6 +320,10 @@ type Entitlement struct {
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
 	Port      int           `json:"port,omitempty"`      // MCP
+	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
+	// The agent derives the gateway from the bridge subnet separately; this
+	// field only carries the service CIDR policy.
+	ServiceCIDR string `json:"serviceCIDR,omitempty"` // Network (mesh mode)
 }
 
 // DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
@@ -316,8 +375,18 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 
 		switch e.Type {
 		case EntitlementNetwork:
-			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" {
-				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", or \"none\", got %q", prefix, i, e.Mode)
+			if e.Mode != "" && e.Mode != "host" && e.Mode != "host-admin" && e.Mode != "none" && e.Mode != "mesh" && e.Mode != "bridge" {
+				return fmt.Errorf("%s[%d]: network mode must be \"host\", \"host-admin\", \"none\", \"bridge\", or \"mesh\", got %q", prefix, i, e.Mode)
+			}
+			if e.Mode == "mesh" {
+				if e.ServiceCIDR == "" {
+					return fmt.Errorf("%s[%d]: network mode \"mesh\" requires a serviceCIDR", prefix, i)
+				}
+				if _, _, err := net.ParseCIDR(e.ServiceCIDR); err != nil {
+					return fmt.Errorf("%s[%d]: network serviceCIDR must be a valid CIDR, got %q", prefix, i, e.ServiceCIDR)
+				}
+			} else if e.ServiceCIDR != "" {
+				return fmt.Errorf("%s[%d]: network serviceCIDR is only valid with mode \"mesh\", got mode %q", prefix, i, e.Mode)
 			}
 		case EntitlementPersist:
 			if e.Name == "" {
@@ -433,6 +502,26 @@ func ValidateServiceName(name string) error {
 	return nil
 }
 
+// ValidateReadiness checks a readiness probe configuration: tcpSocket.port
+// must be 1-65535 and timeoutSeconds must be non-negative. prefix is used in
+// error messages (e.g. "readiness" for top-level, or
+// `services["foo"].readiness` for service-level readiness). A nil r is valid.
+func ValidateReadiness(prefix string, r *ReadinessConfig) error {
+	if r == nil {
+		return nil
+	}
+	if r.TCPSocket != nil {
+		port := r.TCPSocket.Port
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("%s.tcpSocket.port must be between 1 and 65535, got %d", prefix, port)
+		}
+	}
+	if r.TimeoutSeconds < 0 {
+		return fmt.Errorf("%s.timeoutSeconds must not be negative, got %d", prefix, r.TimeoutSeconds)
+	}
+	return nil
+}
+
 // Validate checks the AppConfig for required fields and valid entitlement types.
 func (c *AppConfig) Validate() error {
 	if err := ValidateAppID(c.AppID); err != nil {
@@ -475,16 +564,8 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
-	if c.Readiness != nil {
-		if c.Readiness.TCPSocket != nil {
-			port := c.Readiness.TCPSocket.Port
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("readiness.tcpSocket.port must be between 1 and 65535, got %d", port)
-			}
-		}
-		if c.Readiness.TimeoutSeconds < 0 {
-			return fmt.Errorf("readiness.timeoutSeconds must not be negative, got %d", c.Readiness.TimeoutSeconds)
-		}
+	if err := ValidateReadiness("readiness", c.Readiness); err != nil {
+		return err
 	}
 
 	if c.Frameworks != nil {
@@ -518,6 +599,9 @@ func (c *AppConfig) Validate() error {
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
 			return err
 		}
+		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
+			return err
+		}
 		if svc.Frameworks != nil {
 			if err := validateROS2Config(fmt.Sprintf("services[%q].frameworks.ros2", name), svc.Frameworks.ROS2); err != nil {
 				return err
@@ -528,6 +612,124 @@ func (c *AppConfig) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+// FleetManifestFileName is the conventional filename for a fleet manifest — a
+// placement/topology file kept separate from a project's single-app wendy.json.
+const FleetManifestFileName = "wendy-fleet.json"
+
+// FleetManifest is the parsed wendy-fleet.json: which components (apps) the
+// fleet is made of and, for each, the device tags it deploys to. It is topology
+// only — each component's build/runtime config lives in its app's own
+// wendy.json — kept in a separate file from any single-app wendy.json.
+type FleetManifest struct {
+	// AppID is an optional fleet-level label; each app carries its own appId.
+	AppID      string                      `json:"appId,omitempty"`
+	Components map[string]*ComponentConfig `json:"components"`
+}
+
+// LoadFleetManifest reads and validates a wendy-fleet.json from disk.
+func LoadFleetManifest(path string) (*FleetManifest, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ParseFleetManifest(data)
+}
+
+// ParseFleetManifest parses and validates a fleet manifest from raw JSON.
+func ParseFleetManifest(data []byte) (*FleetManifest, error) {
+	var m FleetManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", FleetManifestFileName, err)
+	}
+	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
+
+// Validate checks a fleet manifest: each component references an app directory,
+// lists the device tags it deploys to, and any discovers wiring is resolvable.
+// Per-app build/runtime config is validated separately when the app's own
+// wendy.json is loaded.
+func (m *FleetManifest) Validate() error {
+	if len(m.Components) == 0 {
+		return fmt.Errorf("a fleet manifest must declare at least one component")
+	}
+
+	for name, comp := range m.Components {
+		if comp == nil {
+			return fmt.Errorf("components[%q]: must not be null", name)
+		}
+		if comp.Path == "" {
+			return fmt.Errorf("components[%q]: path is required (the app directory)", name)
+		}
+		if filepath.IsAbs(comp.Path) {
+			return fmt.Errorf("components[%q]: path must be relative", name)
+		}
+		if cleaned := filepath.Clean(comp.Path); strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("components[%q]: path must not contain '..' components", name)
+		}
+		if len(comp.Tags) == 0 {
+			return fmt.Errorf("components[%q]: at least one tag is required (the devices to deploy to)", name)
+		}
+		for i, tag := range comp.Tags {
+			if strings.TrimSpace(tag) == "" {
+				return fmt.Errorf("components[%q].tags[%d]: must not be empty", name, i)
+			}
+		}
+		if err := validateComponentExpose(name, comp.Expose); err != nil {
+			return err
+		}
+	}
+
+	// discovers wiring is validated in a second pass so it can reference any
+	// declared component regardless of map iteration order.
+	for name, comp := range m.Components {
+		for i, d := range comp.Discovers {
+			if d.Component == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: component is required", name, i)
+			}
+			target, ok := m.Components[d.Component]
+			if !ok {
+				return fmt.Errorf("components[%q].discovers[%d]: references unknown component %q", name, i, d.Component)
+			}
+			if target.Expose == nil {
+				return fmt.Errorf("components[%q].discovers[%d]: %q declares no \"expose\" endpoint to discover", name, i, d.Component)
+			}
+			if d.As == "" {
+				return fmt.Errorf("components[%q].discovers[%d]: as (env var name) is required", name, i)
+			}
+			if d.As == DiscoveryURLEnvVar {
+				return fmt.Errorf("components[%q].discovers[%d]: as must not be %q (reserved, auto-injected)", name, i, DiscoveryURLEnvVar)
+			}
+			if !envVarNamePattern.MatchString(d.As) {
+				return fmt.Errorf("components[%q].discovers[%d]: as %q is not a valid environment variable name", name, i, d.As)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateComponentExpose checks an optional exposed endpoint declaration.
+func validateComponentExpose(name string, e *ComponentExpose) error {
+	if e == nil {
+		return nil
+	}
+	if e.Port < 1 || e.Port > 65535 {
+		return fmt.Errorf("components[%q].expose.port must be between 1 and 65535, got %d", name, e.Port)
+	}
+	if e.Name != "" {
+		if err := ValidateServiceName(e.Name); err != nil {
+			return fmt.Errorf("components[%q].expose.name: %w", name, err)
+		}
+	}
+	if e.Path != "" && !strings.HasPrefix(e.Path, "/") {
+		return fmt.Errorf("components[%q].expose.path must start with '/', got %q", name, e.Path)
+	}
 	return nil
 }
 
@@ -591,11 +793,18 @@ func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
 		return nil, nil, err
 	}
 
+	if err := ValidateReadiness("readiness", cfg.Readiness); err != nil {
+		return nil, nil, err
+	}
+
 	for name, svc := range cfg.Services {
 		if svc == nil {
 			return nil, nil, fmt.Errorf("services[%q]: must not be null", name)
 		}
 		if err := validateEntitlements(svc.Entitlements, fmt.Sprintf("services[%q].entitlement", name)); err != nil {
+			return nil, nil, err
+		}
+		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -666,12 +875,13 @@ func ValidateJSON(data []byte) []string {
 
 	var warnings []string
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
-	warnings = append(warnings, validateHooksJSON(raw["hooks"])...)
+	warnings = append(warnings, validateHooksJSON(raw["hooks"], "hooks")...)
 	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
 
-	// Validate service-level entitlements and frameworks when a services map is present.
-	// Unmarshal into map[string]json.RawMessage first so a null/invalid entry
-	// for one service doesn't silently drop warnings for all other services.
+	// Validate service-level entitlements, frameworks, and hooks when a
+	// services map is present. Unmarshal into map[string]json.RawMessage first
+	// so a null/invalid entry for one service doesn't silently drop warnings
+	// for all other services.
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
 		var serviceEntries map[string]json.RawMessage
 		if err := json.Unmarshal(servicesRaw, &serviceEntries); err == nil {
@@ -683,6 +893,31 @@ func ValidateJSON(data []byte) []string {
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
+				warnings = append(warnings, validateHooksJSON(svc["hooks"], fmt.Sprintf("services[%q].hooks", name))...)
+			}
+
+			// A top-level hooks.postStart.agent has no app-level container to
+			// run in once the app is split into services — only the
+			// .agent variant is impossible app-level; readiness and the rest
+			// of hooks remain legal as an app-level fallback (later stage).
+			if len(serviceEntries) > 0 && hooksPostStartAgentSet(raw["hooks"]) {
+				warnings = append(warnings, "top-level hooks.postStart.agent is ignored for multi-service apps (there is no app-level container to run it in); declare it under services.<name>.hooks")
+			}
+		}
+	}
+
+	// Validate component-level entitlements and frameworks for fleet manifests.
+	if componentsRaw, ok := raw["components"]; ok && len(componentsRaw) > 0 {
+		var componentEntries map[string]json.RawMessage
+		if err := json.Unmarshal(componentsRaw, &componentEntries); err == nil {
+			for name, compRaw := range componentEntries {
+				var comp map[string]json.RawMessage
+				if err := json.Unmarshal(compRaw, &comp); err != nil {
+					continue
+				}
+				prefix := fmt.Sprintf("components[%q].entitlement", name)
+				warnings = append(warnings, validateEntitlementsJSON(comp["entitlements"], prefix)...)
+				warnings = append(warnings, validateFrameworksJSON(comp["frameworks"], fmt.Sprintf("components[%q].frameworks", name))...)
 			}
 		}
 	}
@@ -796,33 +1031,52 @@ var nonPortableOpenerCommands = map[string]string{
 	"start":    "Windows",
 }
 
-func validateHooksJSON(hooksRaw json.RawMessage) []string {
-	if len(hooksRaw) == 0 {
+// LintHooks returns portability warnings for h (currently: postStart.cli
+// commands that shell out to platform-specific URL openers). prefix is used
+// in the warning message (e.g. "hooks" for top-level, or
+// `services["foo"].hooks` for service-level hooks). A nil h returns nil.
+func LintHooks(h *HooksConfig, prefix string) []string {
+	if h == nil || h.PostStart == nil || h.PostStart.CLI == "" {
 		return nil
 	}
 
-	var hooks struct {
-		PostStart *struct {
-			CLI string `json:"cli"`
-		} `json:"postStart"`
-	}
-	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
-		return nil
-	}
-	if hooks.PostStart == nil || hooks.PostStart.CLI == "" {
-		return nil
-	}
-
-	cli := strings.TrimLeft(hooks.PostStart.CLI, " \t")
+	cli := strings.TrimLeft(h.PostStart.CLI, " \t")
 	for opener, platform := range nonPortableOpenerCommands {
 		if cli == opener || strings.HasPrefix(cli, opener+" ") || strings.HasPrefix(cli, opener+"\t") {
 			return []string{fmt.Sprintf(
-				"hooks.postStart.cli starts with %q, which only works on %s; use \"openURL\" to open a URL portably across macOS, Linux, and Windows",
-				opener, platform,
+				"%s.postStart.cli starts with %q, which only works on %s; use \"openURL\" to open a URL portably across macOS, Linux, and Windows",
+				prefix, opener, platform,
 			)}
 		}
 	}
 	return nil
+}
+
+// validateHooksJSON decodes raw hooks JSON and lints it via LintHooks. prefix
+// is used in the warning message (see LintHooks).
+func validateHooksJSON(hooksRaw json.RawMessage, prefix string) []string {
+	if len(hooksRaw) == 0 {
+		return nil
+	}
+
+	var hooks HooksConfig
+	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+		return nil
+	}
+	return LintHooks(&hooks, prefix)
+}
+
+// hooksPostStartAgentSet reports whether hooksRaw decodes to a non-empty
+// hooks.postStart.agent field.
+func hooksPostStartAgentSet(hooksRaw json.RawMessage) bool {
+	if len(hooksRaw) == 0 {
+		return false
+	}
+	var hooks HooksConfig
+	if err := json.Unmarshal(hooksRaw, &hooks); err != nil {
+		return false
+	}
+	return hooks.PostStart != nil && hooks.PostStart.Agent != ""
 }
 
 // IsSharedNamespaceIsolation reports whether isolation is a mode that shares

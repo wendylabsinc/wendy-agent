@@ -29,7 +29,9 @@ type HardwareDiscoverer interface {
 // BluetoothManager abstracts Bluetooth peripheral management.
 type BluetoothManager interface {
 	Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error)
-	Connect(ctx context.Context, address string, pair, trust bool) error
+	// Connect reports whether the device is paired after the connection is
+	// established (pairing can fail while the connection still succeeds).
+	Connect(ctx context.Context, address string, pair, trust bool) (paired bool, err error)
 	Disconnect(ctx context.Context, address string) error
 	Forget(ctx context.Context, address string) error
 }
@@ -133,6 +135,28 @@ type GroupRestarter interface {
 	// it — and returns the per-service output channels keyed by full container
 	// name.
 	RestartGroup(ctx context.Context, appID string) (map[string]<-chan ContainerOutput, error)
+}
+
+// AppStateRebuilder is the optional capability a ContainerdClient may provide to
+// rebuild its in-memory per-app caches (isolation mode + service graph) from
+// persisted container labels. ReconcileBootContainers type-asserts for it and
+// calls it before listing boot containers, so the caches are warm before any
+// StartContainer runs (an empty appIsolation after a reboot would otherwise make
+// StartContainer skip CNI networking + mesh egress for isolated apps). Kept
+// separate from ContainerdClient so the large interface and its mocks stay
+// untouched, mirroring GroupRestarter.
+type AppStateRebuilder interface {
+	RebuildAppStateCaches(ctx context.Context)
+}
+
+// PortExposureProber is the optional capability to scan running host-network
+// apps for publicly-bound listening ports and log a warning for each new
+// exposure. The container monitor calls it once per health tick; the
+// implementation dedups so a given exposure is logged once. Kept separate from
+// ContainerdClient so the large interface and its mocks stay untouched
+// (mirrors GroupRestarter / AppStateRebuilder).
+type PortExposureProber interface {
+	WarnPubliclyExposedPorts(ctx context.Context)
 }
 
 // Restart policy constants mirror container.RestartPolicy values and are used

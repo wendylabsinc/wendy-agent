@@ -54,6 +54,53 @@ Each key is a service name. Each value is a `ServiceConfig` object:
 
 `ValidateJSON` additionally warns on deprecated entitlement types and unknown entitlement keys within service-level `entitlements` arrays, using the same rules applied to the top-level `entitlements` field.
 
+## Readiness and lifecycle hooks
+
+Any service in the `services` map may declare its own `readiness` probe and `hooks.postStart`, using the same schema as the top-level `readiness`/`hooks` fields:
+
+```json
+{
+  "appId": "com.example.stack",
+  "services": {
+    "db": { "context": "db" },
+    "cache": { "context": "cache" },
+    "api": { "context": "api", "dependsOn": ["db", "cache"] },
+    "frontend": {
+      "context": "frontend",
+      "dependsOn": ["api"],
+      "readiness": {
+        "tcpSocket": { "port": 3000 },
+        "timeoutSeconds": 30
+      },
+      "hooks": {
+        "postStart": {
+          "openURL": "http://${WENDY_HOSTNAME}:3000"
+        }
+      }
+    }
+  }
+}
+```
+
+Only a service that declares `readiness` or `hooks` runs the readiness→postStart sequence; `db`, `cache`, and `api` above are unaffected.
+
+### Scoping
+
+- `readiness` gates only the declaring service's own `postStart` hook — it never delays other services' startup order (`dependsOn` ordering is a separate mechanism).
+- `hooks.postStart.agent` (a command run on the device) is delivered only to the declaring service's own container start call; it never runs in any other service's container.
+- Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` — the declaring service's name, empty for single-container apps and for the app-level fallback below. Windows-style `%VAR%` forms are accepted too.
+
+### App-level fallback
+
+A top-level `readiness`/`hooks` in `wendy.json` acts as an app-level fallback: it fires once after every service has started, rather than gating any single service. Both the fallback and a service's own `readiness`/`hooks` fire if both are declared. Two exceptions:
+
+- A top-level `hooks.postStart.agent` is ignored for multi-service apps — there is no app-level container to run it in. `wendy run` warns about this when it loads `wendy.json`; declare it under `services.<name>.hooks` instead.
+- The fallback is skipped when `wendy run --service` selects a subset of services, since "every service has started" can't be guaranteed on a partial run.
+
+### Attached vs. detached
+
+In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode, readiness is waited sequentially in dependency order after every service has started; hooks outlive the CLI once it exits, and a readiness failure only prints a warning — it never fails the command.
+
 ## How `wendy run` handles multi-service projects
 
 When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
@@ -66,9 +113,10 @@ Press **Ctrl-C** to stop all services. The CLI cancels all streams, issues a `St
 
 ### Container naming
 
-Each service container ID follows the `{appId}/{serviceName}` convention. For
+Each service container ID follows the `{appId}_{serviceName}` convention (`_`
+is the separator because `/` is not permitted in containerd container IDs). For
 example, with `appId: "com.example.myapp"` and service `"api"`, the containerd
-container ID is `com.example.myapp/api`. The corresponding snapshot key uses
+container ID is `com.example.myapp_api`. The corresponding snapshot key uses
 `@` as the separator (`wendy-com.example.myapp@api`) to remain unambiguous when
 either component contains a hyphen. The cgroup path component uses `@` as the
 separator: `system.slice:edge-agent:com.example.myapp@api` (the systemd service segment

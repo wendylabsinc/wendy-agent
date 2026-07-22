@@ -51,6 +51,7 @@ type mockContainerdClient struct {
 	stoppedByUserCalls    []stoppedByUserCall
 	declaredVolumes       map[string][]string
 	declaredVolumesErr    error
+	assembleImageCalls    int
 }
 
 type stoppedByUserCall struct {
@@ -96,6 +97,7 @@ func (m *mockContainerdClient) WriteLayer(_ context.Context, digest string, read
 	return m.writeLayerErr
 }
 func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
+	m.assembleImageCalls++
 	return nil
 }
 func (m *mockContainerdClient) CreateContainer(_ context.Context, _ *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {

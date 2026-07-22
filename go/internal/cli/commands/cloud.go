@@ -107,6 +107,7 @@ func cloudDeviceConfigFromContext(ctx context.Context) (cloudDeviceConfig, bool)
 func newCloudEnrollDeviceCmd() *cobra.Command {
 	var name string
 	var cloudGRPC string
+	var orgID int32
 
 	cmd := &cobra.Command{
 		Use:   "enroll-device",
@@ -128,11 +129,12 @@ func newCloudEnrollDeviceCmd() *cobra.Command {
 				return err
 			}
 
-			return runEnrollDevice(ctx, conn, auth, name)
+			return runEnrollDevice(ctx, conn, auth, name, orgID)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Device name")
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud/pki-core gRPC endpoint to use (optional when a default session is set via 'wendy auth use')")
+	cmd.Flags().Int32Var(&orgID, "org", 0, "Organization ID to enroll into; skips the interactive org picker (required in non-interactive/--json runs when you belong to multiple orgs)")
 	return cmd
 }

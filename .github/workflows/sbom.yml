@@ -1,0 +1,53 @@
+name: SBOM tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/generate-sbom.sh'
+      - 'scripts/test/**'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/sbom.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/generate-sbom.sh'
+      - 'scripts/test/**'
+      - '.github/workflows/build.yml'
+      - '.github/workflows/sbom.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: sbom-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbom-tests:
+    name: SBOM script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@e11c554f704a0b820cbf8c51673f6945e0731532 # v0.20.0
+        with:
+          syft-version: v1.18.1
+
+      # The integration test compiles the wendy CLI, which links libusb via cgo
+      # (gousb, for Thor USB recovery flashing). Provide the libusb dev headers
+      # and pkg-config so CGO_ENABLED=1 `go build ./cmd/wendy` resolves
+      # `#cgo pkg-config: libusb-1.0`.
+      - name: Install libusb (cgo dependency of the CLI)
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
+
+      - name: Unit tests (fake syft)
+        run: bash scripts/test/generate-sbom.test.sh
+
+      - name: Integration test (real syft)
+        run: bash scripts/test/generate-sbom.integration.sh

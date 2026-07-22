@@ -372,6 +372,49 @@ func TestApplyEntitlements_Network_Default(t *testing.T) {
 	}
 }
 
+// TestApplyEntitlements_Network_Bridge covers the "bridge" mode added by
+// specs/2026-07-05-network-bridge-default-design.md. applyNetwork's job for
+// bridge mode is limited to keeping the container's own network namespace,
+// mirroring "none": no host mounts (no /sys bind, no host resolv.conf) and no
+// CAP_NET_ADMIN. The private IP, NAT egress, and DNS that make "bridge"
+// different from "none" are wired up by the containerd layer attaching the
+// container to the per-app CNI bridge, which this oci-package-only test
+// cannot exercise (no live containerd/CNI here).
+func TestApplyEntitlements_Network_Bridge(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "bridge"},
+		},
+	}
+
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if !hasNamespace(spec, "network") {
+		t.Error("network mode 'bridge' should keep network namespace")
+	}
+	if hasMountDest(spec, "/etc/resolv.conf") {
+		t.Error("network mode 'bridge' must not add a host resolv.conf mount (DNS is wired by the containerd layer)")
+	}
+	for _, m := range spec.Mounts {
+		if m.Destination == "/sys" && m.Type == "bind" {
+			t.Error("network mode 'bridge' must not replace /sys with a host bind mount (that is host-networking-only)")
+		}
+	}
+	for _, set := range [][]string{
+		spec.Process.Capabilities.Bounding,
+		spec.Process.Capabilities.Effective,
+		spec.Process.Capabilities.Permitted,
+	} {
+		if slices.Contains(set, "CAP_NET_ADMIN") {
+			t.Error("network mode 'bridge' must not grant CAP_NET_ADMIN")
+		}
+	}
+}
+
 func TestApplyEntitlements_Audio(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{

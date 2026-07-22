@@ -4,5 +4,7 @@
 <dict>
 	<key>WLWendyAgentVersion</key>
 	<string>$(WENDY_AGENT_VERSION)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Wendy uses your location to scan and report nearby Wi-Fi networks.</string>
 </dict>
 </plist>

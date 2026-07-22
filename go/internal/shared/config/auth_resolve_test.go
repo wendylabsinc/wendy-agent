@@ -8,7 +8,7 @@ import (
 
 func twoSessions() *Config {
 	return &Config{Auth: []AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 7}}},
 		{CloudDashboard: "http://localhost:3000", CloudGRPC: "localhost:50051", Certificates: []CertificateInfo{{OrganizationID: 1}}},
 	}}
 }

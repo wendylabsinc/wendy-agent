@@ -102,12 +102,19 @@ func Start(ctx context.Context, containerdAddr, listenAddr string, logger *zap.L
 		serveListener = tls.NewListener(tcpLis, tlsConfig)
 	}
 
+	// NB: ReadTimeout/WriteTimeout are absolute deadlines on the whole request
+	// body read / whole response body write, NOT idle timeouts. Setting them
+	// caps a single blob transfer to that duration even while bytes are actively
+	// streaming, so a large layer (multi-GB Jetson image) over a slow or tunneled
+	// link gets its connection torn down mid-upload — surfacing to BuildKit as the
+	// misleading "tls: bad record MAC". Leave the body read/write uncapped and use
+	// ReadHeaderTimeout to bound header stalls (slowloris) instead. IdleTimeout
+	// still bounds idle keep-alive connections between requests.
 	srv := &http.Server{
-		Handler:        handler,
-		ReadTimeout:    5 * time.Minute,
-		WriteTimeout:   5 * time.Minute,
-		IdleTimeout:    120 * time.Second,
-		MaxHeaderBytes: 1 << 20,
+		Handler:           handler,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	s := &Server{httpServer: srv, client: client, logger: logger}

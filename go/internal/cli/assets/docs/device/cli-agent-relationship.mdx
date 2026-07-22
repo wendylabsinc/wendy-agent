@@ -3,10 +3,20 @@ title: CLI and Agent Relationship
 description: How the Wendy CLI discovers devices and deploys apps through wendy-agent
 ---
 
+<iframe
+  className="aspect-video w-full rounded-lg border-0"
+  src="https://www.youtube.com/embed/c_UujqFIqT4"
+  title="Wendy CLI and wendy-agent relationship"
+  loading="lazy"
+  referrerPolicy="strict-origin-when-cross-origin"
+  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+  allowFullScreen
+/>
+
 The diagram below illustrates the relationship between the `wendy` CLI on your developer machine and the `wendy-agent` running on your target hardware.
 
 The `wendy` CLI is the developer-facing tool you install on your Mac, Linux, or Windows machine. It handles project scaffolding, cross-compilation, device discovery, and deployment. The `wendy-agent` is a service that runs on the target device and manages the container lifecycle, hardware access (GPU, audio, Bluetooth, GPIO), networking, and telemetry. When you run `wendy run`, the CLI cross-compiles your app, pushes the container image to the agent, and streams logs back to your terminal.
 
-The CLI discovers agents over the local network using mDNS, over a direct USB-C cable connection, or by targeting a remote hostname for devices behind a VPN. The `wendy-agent` comes pre-installed on [WendyOS](/docs/installation/wendyos-nvidia-jetson) devices, or you can install it on an [existing Linux machine](/docs/installation/wendy-agent-linux) (Ubuntu, Raspberry Pi OS, Debian, Arch, and more). [Headless Mac](/docs/installation/wendy-agent-macos) is available as a beta for Apple Silicon Mac targets.
+The CLI discovers agents over the local network using mDNS, over a direct USB-C cable connection, or by targeting a remote hostname for devices behind a VPN. The `wendy-agent` comes pre-installed on [WendyOS](/docs/installation/wendyos-nvidia-jetson-orin-nano) devices, or you can install it on an [existing Linux machine](/docs/installation/linux) (Ubuntu, Raspberry Pi OS, Debian, Arch, and more). [Headless Mac](/docs/installation/wendy-agent-macos) is available as a beta for Apple Silicon Mac targets.
 
 <CliToAgentRelationshipDiagram />

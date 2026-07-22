@@ -132,12 +132,19 @@ func (h *btTUIHandler) Connect(address string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(h.ctx, btConnectTimeout)
 		defer cancel()
-		_, err := h.agent.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
+		resp, err := h.agent.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
 			Address: address,
 			Pair:    true,
 			Trust:   true,
 		})
-		return bttable.OpResultMsg{Action: bttable.ActionConnect, Address: address, Err: err}
+		msg := bttable.OpResultMsg{Action: bttable.ActionConnect, Address: address, Err: err}
+		// Older agents don't report the post-connect pairing state; the model
+		// falls back to its optimistic assumption when PairedKnown is false.
+		if err == nil && resp.Paired != nil {
+			msg.PairedKnown = true
+			msg.Paired = resp.GetPaired()
+		}
+		return msg
 	}
 }
 
@@ -274,7 +281,7 @@ func newBluetoothConnectCmd() *cobra.Command {
 			}
 			defer conn.Close()
 
-			_, err = conn.AgentService.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
+			resp, err := conn.AgentService.ConnectBluetoothPeripheral(ctx, &agentpb.ConnectBluetoothPeripheralRequest{
 				Address: args[0],
 				Pair:    pair,
 				Trust:   trust,
@@ -283,7 +290,11 @@ func newBluetoothConnectCmd() *cobra.Command {
 				return fmt.Errorf("connecting to Bluetooth device: %w", err)
 			}
 
-			cliSuccess("Connected to %s", args[0])
+			if pair && resp.Paired != nil && !resp.GetPaired() {
+				cliSuccess("Connected to %s (not paired — the device accepted the connection without pairing)", args[0])
+			} else {
+				cliSuccess("Connected to %s", args[0])
+			}
 			return nil
 		},
 	}

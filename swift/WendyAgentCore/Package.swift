@@ -13,6 +13,11 @@ let swiftSettings: [SwiftSetting] = [
 
     .enableUpcomingFeature("InferIsolatedConformances"),
     .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+
+    // https://github.com/swiftlang/swift-evolution/blob/main/proposals/0458-strict-memory-safety.md
+    // Opt into strict memory safety: uses of memory-unsafe APIs must be spelled
+    // `unsafe`, so any new unchecked pointer/buffer usage is surfaced at review.
+    .strictMemorySafety(),
 ]
 
 let package = Package(
@@ -31,6 +36,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.6.3"),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.37.0"),
         .package(url: "https://github.com/swift-server/swift-service-lifecycle.git", from: "2.9.1"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.0.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.0.0"),
+        .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
     ],
     targets: [
         .testTarget(
@@ -55,6 +63,9 @@ let package = Package(
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "GRPCServiceLifecycle", package: "grpc-swift-extras"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "Hummingbird", package: "hummingbird"),
                 .target(name: "WendyAgentGRPC"),
                 .target(name: "WendyCloudGRPC"),
             ],

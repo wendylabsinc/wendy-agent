@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -139,11 +140,23 @@ func lanDeviceFromMDNSEntry(entry *mdns.ServiceEntry, iface *net.Interface, adap
 		InterfaceType: string(models.InterfaceLAN),
 		IsWendyDevice: true,
 	}
+	setAssetID(&dev, txtRecords)
 	if iface != nil {
 		displayName, linkSpeed := adapterLookup.details(iface)
 		setLANNetworkInterface(&dev, iface.Name, displayName, linkSpeed)
 	}
 	return dev, true
+}
+
+// setAssetID parses the assetid TXT record into dev.AssetID. Only positive
+// values are accepted; 0 (or an absent/unparseable record) leaves AssetID at
+// its zero value, meaning unknown or unprovisioned.
+func setAssetID(dev *models.LANDevice, txtRecords map[string]string) {
+	if v, ok := txtRecords["assetid"]; ok {
+		if id, err := strconv.ParseInt(v, 10, 32); err == nil && id > 0 {
+			dev.AssetID = int32(id)
+		}
+	}
 }
 
 type windowsNetworkAdapterLookup struct {

@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -33,6 +34,26 @@ type AgentService struct {
 	installer          *AgentInstaller
 	isWendyOSHost      func() bool
 	osUpdateStateDir   string
+
+	// verifier checks the update binary's signature before install. Defaults
+	// to sigverify.DefaultVerifier (disabled until a real pinned key is
+	// embedded); settable within-package so tests can inject an enabled
+	// verifier without changing the exported constructor signature. See
+	// AgentUpdateService (the v2 sibling handler) for the same pattern.
+	verifier *sigverify.Verifier
+
+	// execPathResolver resolves the agent's own executable path and mode.
+	// Defaults to resolveExecPath (which resolves os.Executable()); settable
+	// within-package so tests can redirect commitBinaryUpdate's rename target
+	// away from the running test binary.
+	execPathResolver func() (string, os.FileMode, error)
+
+	// restartFn is invoked once the binary is committed to schedule the
+	// process exit that lets systemd restart into the new binary. Defaults
+	// to scheduleAgentRestartExit (a real os.Exit(0) after a grace period);
+	// settable within-package so tests exercising a successful install don't
+	// kill the test process.
+	restartFn func()
 }
 
 func NewAgentService(
@@ -50,6 +71,9 @@ func NewAgentService(
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
 		osUpdateStateDir:   oshealth.DefaultStateDir,
+		verifier:           sigverify.DefaultVerifier,
+		execPathResolver:   resolveExecPath,
+		restartFn:          scheduleAgentRestartExit,
 	}
 }
 
@@ -426,7 +450,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := resolveExecPath()
+	execPath, originalPerm, err := s.execPathResolver()
 	if err != nil {
 		return err
 	}
@@ -469,11 +493,27 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 		if ctrl := msg.GetControl(); ctrl != nil {
 			if ctrl.GetUpdate() != nil {
-				computedHash := hex.EncodeToString(hasher.Sum(nil))
+				digest := hasher.Sum(nil)
+				computedHash := hex.EncodeToString(digest)
 				expectedHash := ctrl.GetUpdate().GetSha256()
 				if expectedHash != "" && computedHash != expectedHash {
 					return status.Errorf(codes.DataLoss,
 						"SHA256 mismatch: expected %s, got %s", expectedHash, computedHash)
+				}
+
+				// Verify the binary's signature over its SHA256 digest before
+				// installing. When the verifier is disabled (no pinned key
+				// embedded yet), Verify is a fail-safe no-op and install
+				// proceeds exactly as before this check existed.
+				if err := s.verifier.Verify(digest, ctrl.GetUpdate().GetSignature()); err != nil {
+					switch {
+					case errors.Is(err, sigverify.ErrUnsigned):
+						return status.Error(codes.FailedPrecondition, "agent update binary is unsigned; refusing install")
+					case errors.Is(err, sigverify.ErrBadSignature):
+						return status.Error(codes.DataLoss, "agent update binary signature verification failed; refusing install")
+					default:
+						return status.Errorf(codes.Internal, "agent update binary signature verification error: %v", err)
+					}
 				}
 
 				if _, err := commitBinaryUpdate(tmpFile, tmpPath, execPath, computedHash, originalPerm, s.logger); err != nil {
@@ -492,7 +532,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 							Updated: &agentpb.UpdateAgentResponse_Updated{},
 						},
 					})
-				}, scheduleAgentRestartExit)
+				}, s.restartFn)
 			}
 		}
 	}
@@ -649,22 +689,23 @@ func (s *AgentService) ScanBluetoothPeripherals(stream grpc.BidiStreamingServer[
 }
 
 func (s *AgentService) ConnectBluetoothPeripheral(ctx context.Context, req *agentpb.ConnectBluetoothPeripheralRequest) (*agentpb.ConnectBluetoothPeripheralResponse, error) {
-	if err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to connect bluetooth peripheral: %v", err)
+	paired, err := s.bluetoothManager.Connect(ctx, req.GetAddress(), req.GetPair(), req.GetTrust())
+	if err != nil {
+		return nil, btStatusError("connect bluetooth peripheral", err)
 	}
-	return &agentpb.ConnectBluetoothPeripheralResponse{}, nil
+	return &agentpb.ConnectBluetoothPeripheralResponse{Paired: &paired}, nil
 }
 
 func (s *AgentService) DisconnectBluetoothPeripheral(ctx context.Context, req *agentpb.DisconnectBluetoothPeripheralRequest) (*agentpb.DisconnectBluetoothPeripheralResponse, error) {
 	if err := s.bluetoothManager.Disconnect(ctx, req.GetAddress()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to disconnect bluetooth peripheral: %v", err)
+		return nil, btStatusError("disconnect bluetooth peripheral", err)
 	}
 	return &agentpb.DisconnectBluetoothPeripheralResponse{}, nil
 }
 
 func (s *AgentService) ForgetBluetoothPeripheral(ctx context.Context, req *agentpb.ForgetBluetoothPeripheralRequest) (*agentpb.ForgetBluetoothPeripheralResponse, error) {
 	if err := s.bluetoothManager.Forget(ctx, req.GetAddress()); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to forget bluetooth peripheral: %v", err)
+		return nil, btStatusError("forget bluetooth peripheral", err)
 	}
 	return &agentpb.ForgetBluetoothPeripheralResponse{}, nil
 }

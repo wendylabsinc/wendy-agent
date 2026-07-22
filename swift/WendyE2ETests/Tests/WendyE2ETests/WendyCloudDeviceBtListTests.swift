@@ -1,30 +1,45 @@
 import Testing
+import WendyE2ETesting
 
 /// Public alias path for `wendy cloud device bluetooth list`.
-///
-/// The `bt` shorthand remains available for cloud-routed command entry and shell
-/// completion, while canonical documentation continues to prefer `bluetooth`.
 @Suite
 struct `'wendy cloud device bt list'` {
-    // MARK: - Compatibility
+    let scenario = CLIAndAgentScenario()
 
     /**
-     Resolves through the `bt` alias and displays the same help as `wendy cloud
-     device bluetooth list`, including inherited cloud/device/global flags and
-     validation behavior.
+     Displays the canonical Bluetooth-list help when invoked through the legacy
+     `bt list` alias.
+
+     The output identifies the current command interface and exits successfully
+     without contacting a device.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `prints '... bluetooth list help' through the 'bt' alias`() async throws {
-        // TODO: implement.
+    @Test
+    func `prints canonical Bluetooth list help through the bt alias`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy cloud device bt list --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Scan for Bluetooth peripherals"))
+                #expect(result.stdout.contains("wendy cloud device bluetooth list [flags]"))
+                #expect(result.stdout.contains("--cloud-grpc"))
+                #expect(result.stdout.contains("--broker-url"))
+                #expect(result.stdout.contains("--device"))
+                #expect(result.stdout.contains("--json"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
-     Lists Bluetooth peripherals over the cloud tunnel using the same output
-     contract as `wendy cloud device bluetooth list`. The alias does not change
-     cloud authentication, target selection, JSON output, or error diagnostics.
+     Routes the cloud `bt list` compatibility command to the canonical Bluetooth
+     list implementation.
+
+     Selection, output, failure, and JSON behavior remain consistent with the
+     canonical command.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `aliases '... cloud device bluetooth list'`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: cloud-routed alias equivalence needs seeded tunnel/auth and simulated managed-agent Bluetooth state."
+        )
+    )
+    func `aliases cloud device bluetooth list`() async throws {}
 }

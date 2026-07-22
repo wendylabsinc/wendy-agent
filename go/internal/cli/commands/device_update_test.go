@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,11 +9,76 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// fakeUpdateAgentStream satisfies agentpb.WendyAgentService_UpdateAgentClient
+// (a grpc.BidiStreamingClient[UpdateAgentRequest, UpdateAgentResponse]) via
+// the embedded-nil trick used elsewhere in this package (see
+// fakeWriteChunksStream in chunkpush_test.go). It only records the requests
+// sent so a test can inspect the final control command.
+type fakeUpdateAgentStream struct {
+	grpc.BidiStreamingClient[agentpb.UpdateAgentRequest, agentpb.UpdateAgentResponse]
+	sent []*agentpb.UpdateAgentRequest
+}
+
+func (s *fakeUpdateAgentStream) Send(req *agentpb.UpdateAgentRequest) error {
+	s.sent = append(s.sent, req)
+	return nil
+}
+
+func (s *fakeUpdateAgentStream) CloseSend() error {
+	return nil
+}
+
+// sendAgentUpdate streams the binary in chunks and then a final control
+// command carrying the sha256 and (optionally) a detached signature. This
+// pins the seam a signer will populate: whatever bytes the caller passes as
+// signature must land verbatim on the v1 proto's Update.Signature field,
+// which is what the agent's (currently-disabled) verifier reads.
+func TestSendAgentUpdateSignatureReachesProtoField(t *testing.T) {
+	stream := &fakeUpdateAgentStream{}
+	binaryData := []byte("fake-agent-binary")
+	sha256Hash := "deadbeef"
+	signature := []byte("fake-ml-dsa65-signature")
+
+	if err := sendAgentUpdate(stream, binaryData, sha256Hash, signature); err != nil {
+		t.Fatalf("sendAgentUpdate() error = %v", err)
+	}
+
+	if len(stream.sent) == 0 {
+		t.Fatal("sendAgentUpdate() sent no requests")
+	}
+	last := stream.sent[len(stream.sent)-1]
+	update := last.GetControl().GetUpdate()
+	if update == nil {
+		t.Fatalf("last sent request has no Control.Update: %+v", last)
+	}
+	if update.GetSha256() != sha256Hash {
+		t.Errorf("Update.Sha256 = %q, want %q", update.GetSha256(), sha256Hash)
+	}
+	if !bytes.Equal(update.GetSignature(), signature) {
+		t.Errorf("Update.Signature = %q, want %q", update.GetSignature(), signature)
+	}
+}
+
+// TestSendAgentUpdateNilSignatureLeavesFieldEmpty locks in the no-signer-yet
+// default: an absent signature must not synthesize any bytes on the wire.
+func TestSendAgentUpdateNilSignatureLeavesFieldEmpty(t *testing.T) {
+	stream := &fakeUpdateAgentStream{}
+	if err := sendAgentUpdate(stream, []byte("data"), "abc123", nil); err != nil {
+		t.Fatalf("sendAgentUpdate() error = %v", err)
+	}
+	last := stream.sent[len(stream.sent)-1]
+	if sig := last.GetControl().GetUpdate().GetSignature(); len(sig) != 0 {
+		t.Errorf("Update.Signature = %q, want empty", sig)
+	}
+}
 
 func TestShouldReapplyBinary(t *testing.T) {
 	tests := []struct {

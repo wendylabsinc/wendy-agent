@@ -109,6 +109,40 @@ func TestSchemaJSON_HasResources(t *testing.T) {
 	}
 }
 
+// TestSchemaJSON_ServiceHasReadinessAndHooks verifies that per-service
+// readiness and hooks (WDY-1271) are declared on $defs.service as $refs to the
+// shared $defs.readiness / $defs.hooks, so editors validate x-wendy-equivalent
+// service-level lifecycle config instead of rejecting it under
+// additionalProperties:false.
+func TestSchemaJSON_ServiceHasReadinessAndHooks(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	defs, _ := schema["$defs"].(map[string]any)
+	svc, _ := defs["service"].(map[string]any)
+	if svc == nil {
+		t.Fatal("schema missing $defs.service")
+	}
+	svcProps, _ := svc["properties"].(map[string]any)
+
+	for _, key := range []string{"readiness", "hooks"} {
+		prop, ok := svcProps[key].(map[string]any)
+		if !ok {
+			t.Errorf("$defs.service missing %q property", key)
+			continue
+		}
+		wantRef := "#/$defs/" + key
+		if ref, _ := prop["$ref"].(string); ref != wantRef {
+			t.Errorf("$defs.service.%s $ref = %q, want %q", key, ref, wantRef)
+		}
+		if _, ok := defs[key].(map[string]any); !ok {
+			t.Errorf("schema missing $defs.%s referenced by $defs.service.%s", key, key)
+		}
+	}
+}
+
 func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 	// The flagship ROS 2 example must validate against the schema (WDY-1700):
 	// every top-level key it uses must be a declared property, else

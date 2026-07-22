@@ -10,14 +10,17 @@ set -euo pipefail
 REPO="wendylabsinc/wendy-agent"
 INSTALL_DIR="/usr/local/bin"
 BINARY_NAME="wendy-agent"
+HOMEBREW_TAP="wendylabsinc/tap"
+HOMEBREW_CASK="wendy-agent"
+HOMEBREW_CASK_QUALIFIED="wendylabsinc/tap/wendy-agent"
 YES=false
 
 usage() {
   cat <<EOF
 Install the Wendy Agent.
 
-The agent runs on Linux devices and provides remote debugging and deployment
-capabilities.
+The agent runs on Linux devices and Apple Silicon Macs, and provides remote
+debugging and deployment capabilities.
 
 Usage: install-agent.sh [OPTIONS]
 
@@ -30,7 +33,7 @@ Environment:
   WENDY_VERSION   Install a specific version (e.g. v0.2.0) instead of latest
   WENDY_ENROLLMENT_TOKEN
                   Pre-enroll this device into a Wendy Cloud org on first start.
-                  Obtain it from 'wendy install' → "Linux Desktop".
+                  Obtain it from 'wendy install' → "Linux Desktop" or "Headless Mac".
   WENDY_CLOUD_HOST
                   Wendy Cloud gRPC host (required when WENDY_ENROLLMENT_TOKEN is set).
 EOF
@@ -46,12 +49,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --- Require Linux ---
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "Error: The Wendy Agent only runs on Linux."
-  echo "  Detected OS: $(uname -s)"
-  exit 1
-fi
+# --- Detect OS (the darwin/linux dispatch happens after helpers are defined) ---
+case "$(uname -s)" in
+  Linux*)  OS="linux" ;;
+  Darwin*) OS="darwin" ;;
+  *)       OS="unsupported" ;;
+esac
 
 # --- Determine sudo prefix ---
 SUDO=""
@@ -68,23 +71,61 @@ detect_arch() {
   esac
 }
 
-# --- Resolve latest release tag ---
+# >>> wendy-install-shared
+# Shared installer helpers. This block MUST be byte-identical in cli.sh and
+# agent.sh (enforced by .github/scripts/install-scripts_test.sh). It resolves
+# the latest version from the GCS-hosted manifest first, so the mainstream
+# install paths never call the rate-limited GitHub API.
+MANIFEST_URL="https://install.wendy.dev/manifest.json"
+
+# Fetch a raw URL to stdout using curl or wget.
+fetch_stdout() {
+  local url="$1"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$url"
+  elif command -v wget &>/dev/null; then
+    wget -qO- "$url"
+  else
+    return 1
+  fi
+}
+
+# Print the manifest's stable "latest" version, or nothing on any failure.
+# Matches the "latest" key only (not "latest_nightly").
+manifest_latest() {
+  fetch_stdout "$MANIFEST_URL" 2>/dev/null \
+    | grep -oE '"latest"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# Print the newest GitHub release tag, or nothing on failure.
+github_latest() {
+  fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+}
+
+# Resolve the version to install: explicit override, else GCS manifest, else GitHub.
 resolve_version() {
   if [[ -n "${WENDY_VERSION:-}" ]]; then
     echo "$WENDY_VERSION"
     return
   fi
-
-  if command -v curl &>/dev/null; then
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  elif command -v wget &>/dev/null; then
-    wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  else
-    echo "Error: curl or wget is required" >&2
-    exit 1
+  # `|| true` keeps a failed fetch (e.g. missing manifest) from tripping the
+  # script's `set -e` inside the command substitution, so we can fall through.
+  local v
+  v="$(manifest_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
   fi
+  v="$(github_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
+  fi
+  echo "Error: could not resolve the latest version from GCS or GitHub." >&2
+  return 1
 }
 
 # --- Download helper ---
@@ -95,6 +136,48 @@ download() {
   elif command -v wget &>/dev/null; then
     wget -qO "$dest" "$url"
   fi
+}
+# <<< wendy-install-shared
+
+# --- Homebrew helpers (macOS) ---
+homebrew_supports_trust() {
+  brew help trust >/dev/null 2>&1
+}
+
+trust_homebrew_tap() {
+  local tap="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew tap: ${tap}"
+  if brew trust "$tap"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${tap}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust ${tap}" >&2
+  exit 1
+}
+
+trust_homebrew_cask() {
+  local cask="$1"
+
+  if ! homebrew_supports_trust; then
+    return 0
+  fi
+
+  echo "Trusting Homebrew cask: ${cask}"
+  if brew trust --cask "$cask"; then
+    return 0
+  fi
+
+  echo "Error: Homebrew could not trust ${cask}." >&2
+  echo "Run this command, then re-run the installer:" >&2
+  echo "  brew trust --cask ${cask}" >&2
+  exit 1
 }
 
 apt_install_or_upgrade() {
@@ -173,6 +256,114 @@ ARCH=$(detect_arch)
 
 if [[ "$ARCH" == "unsupported" ]]; then
   echo "Error: Unsupported architecture: $(uname -m)"
+  exit 1
+fi
+
+# ===== macOS: install the Wendy Agent app (Homebrew cask, or the signed zip) =====
+if [[ "$OS" == "darwin" ]]; then
+  if [[ "$ARCH" != "arm64" ]]; then
+    # On Apple Silicon running under Rosetta, uname -m reports x86_64; still install arm64.
+    if [[ "$(sysctl -in hw.optional.arm64 2>/dev/null || echo 0)" == "1" ]]; then
+      ARCH="arm64"
+    else
+      echo "Error: the Wendy Agent for macOS requires Apple Silicon (arm64)." >&2
+      echo "Intel (x86_64) Macs are not supported." >&2
+      exit 1
+    fi
+  fi
+
+  if command -v brew &>/dev/null; then
+    if homebrew_supports_trust; then
+      echo "Homebrew detected. Will trust and install via:"
+      echo "  brew tap ${HOMEBREW_TAP}"
+      echo "  brew trust ${HOMEBREW_TAP}"
+      echo "  brew trust --cask ${HOMEBREW_CASK_QUALIFIED}"
+      echo "  brew install --cask ${HOMEBREW_CASK}"
+    else
+      echo "Homebrew detected. Will install via:"
+      echo "  brew tap ${HOMEBREW_TAP}"
+      echo "  brew install --cask ${HOMEBREW_CASK}"
+    fi
+    confirm "Proceed?"
+    # Let a genuine tap failure abort (set -e) before the trust/install steps
+    # run against a missing or partial tap. Re-tapping an existing tap is a
+    # successful no-op, so this is safe to run unconditionally.
+    brew tap "$HOMEBREW_TAP"
+    trust_homebrew_tap "$HOMEBREW_TAP"
+    trust_homebrew_cask "$HOMEBREW_CASK_QUALIFIED"
+    brew install --cask "$HOMEBREW_CASK"
+  else
+    # No Homebrew — download the signed, notarized app bundle from GitHub and
+    # install it to /Applications.
+    TAG=$(resolve_version) || exit 1
+    VERSION="${TAG#v}"
+    ARTIFACT="wendy-agent-macos-${ARCH}-${VERSION}.zip"
+    URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
+    echo "Homebrew not found. Will download ${ARTIFACT}"
+    echo "  and install WendyAgentMac.app to /Applications."
+    confirm "Proceed?"
+
+    TMPDIR_DL=$(mktemp -d)
+    trap 'rm -rf "$TMPDIR_DL"' EXIT
+
+    echo "Downloading ${URL}..."
+    download "$URL" "${TMPDIR_DL}/${ARTIFACT}"
+
+    # Extract with ditto: it is the macOS-native unarchiver, preserves .app
+    # bundle metadata (including the notarization ticket), and confines writes
+    # to the destination directory rather than honoring archive path-traversal
+    # entries the way a bare `unzip` might.
+    ditto -x -k "${TMPDIR_DL}/${ARTIFACT}" "${TMPDIR_DL}/extracted"
+
+    APP_SRC=$(/usr/bin/find "${TMPDIR_DL}/extracted" -maxdepth 2 -name 'WendyAgentMac.app' -type d | head -1)
+    if [[ -z "$APP_SRC" ]]; then
+      echo "Error: WendyAgentMac.app not found in ${ARTIFACT}." >&2
+      exit 1
+    fi
+    # Defense-in-depth: the located bundle must live inside our temp dir.
+    case "$APP_SRC" in
+      "${TMPDIR_DL}/extracted"/*) ;;
+      *) echo "Error: unexpected app path outside the download directory: ${APP_SRC}" >&2; exit 1 ;;
+    esac
+
+    # Verify the bundle's code signature before copying it into /Applications.
+    # A tampered artifact (compromised release/CDN) fails this check, so we
+    # reject it here instead of relying on Gatekeeper's first-launch check,
+    # which happens only after the bytes are already on disk.
+    if ! codesign --verify --deep --strict "$APP_SRC" 2>/dev/null; then
+      echo "Error: WendyAgentMac.app failed code-signature verification; refusing to install." >&2
+      exit 1
+    fi
+    # Notarization/Gatekeeper policy is advisory here (a validly signed but
+    # unstapled build should still install); surface a warning rather than block.
+    if command -v spctl &>/dev/null && ! spctl --assess --type execute "$APP_SRC" >/dev/null 2>&1; then
+      echo "Warning: Gatekeeper could not confirm notarization for WendyAgentMac.app." >&2
+    fi
+
+    # Replace any existing install, elevating only when the unprivileged
+    # operation fails and announcing the escalation for auditability.
+    if [[ -e "/Applications/WendyAgentMac.app" ]]; then
+      rm -rf "/Applications/WendyAgentMac.app" 2>/dev/null || {
+        echo "Elevated permissions required to replace /Applications/WendyAgentMac.app"
+        $SUDO rm -rf "/Applications/WendyAgentMac.app"
+      }
+    fi
+    cp -R "$APP_SRC" /Applications/ 2>/dev/null || {
+      echo "Elevated permissions required to install into /Applications"
+      $SUDO cp -R "$APP_SRC" /Applications/
+    }
+    echo "Installed /Applications/WendyAgentMac.app"
+    open /Applications/WendyAgentMac.app || true
+  fi
+
+  echo ""
+  echo "Wendy Agent for macOS installed. Look for it in the menu bar."
+  echo "See https://docs.wendy.dev/latest/installation/wendy-agent-macos for setup."
+  exit 0
+
+elif [[ "$OS" != "linux" ]]; then
+  echo "Error: The Wendy Agent runs on Linux and Apple Silicon macOS."
+  echo "  Detected OS: $(uname -s)"
   exit 1
 fi
 
@@ -258,11 +449,7 @@ elif command -v pacman &>/dev/null; then
 else
   # No package manager — fall back to downloading the tarball from GitHub
   # and manually installing the binary, systemd services, and dev registry.
-  TAG=$(resolve_version)
-  if [[ -z "$TAG" ]]; then
-    echo "Error: Could not determine latest version."
-    exit 1
-  fi
+  TAG=$(resolve_version) || exit 1
   VERSION="${TAG#v}"
 
   ARTIFACT="wendy-agent-linux-${ARCH}-${VERSION}.tar.gz"

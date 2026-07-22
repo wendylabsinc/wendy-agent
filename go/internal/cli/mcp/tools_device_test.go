@@ -88,6 +88,20 @@ func TestDeviceInfo_ReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestDeviceInfo_HasStructuredContent(t *testing.T) {
+	fake := &fakeAgentServer{versionResp: &agentpb.GetAgentVersionResponse{Version: "9.9.9", Os: "linux"}}
+	conn, _ := startFakeAgentServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+	result, err := srv.callTool(context.Background(), "device_info", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("device_info should return structuredContent")
+	}
+}
+
 func TestDeviceList_ReturnsConfiguredDevices(t *testing.T) {
 	cfg := &config.Config{
 		Auth: []config.AuthConfig{

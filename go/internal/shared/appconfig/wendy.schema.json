@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wendy.sh/schemas/wendy.json",
+  "$id": "https://wendy.dev/schemas/wendy.json",
   "title": "Wendy App Configuration",
   "description": "Configuration file for Wendy edge computing applications (wendy.json).",
   "type": "object",
@@ -91,12 +91,41 @@
             "type": { "const": "network" },
             "mode": {
               "type": "string",
-              "enum": ["host", "host-admin", "none"],
-              "description": "Network mode. \"host\" shares the host network stack (visibility only); \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking."
+              "enum": ["host", "host-admin", "none", "bridge", "mesh"],
+              "description": "Network mode. Omitted (and \"host\") shares the host network stack (visibility only) — this implicit default is deprecated and will change to \"bridge\" in a future release; \"host-admin\" additionally grants CAP_NET_ADMIN to reconfigure host networking; \"none\" disables networking; \"bridge\" gives the container its own network namespace with a private IP and outbound internet via NAT, but no host-published ports; \"mesh\" chains the wendy-mesh CNI plugin, giving the container its own network namespace with a route to a mesh service CIDR."
+            },
+            "serviceCIDR": {
+              "type": "string",
+              "description": "The mesh service CIDR the container may reach (must be a valid CIDR, IPv4 or IPv6). Required when mode is \"mesh\"; invalid for any other mode."
+            },
+            "ports": {
+              "type": "array",
+              "description": "Host→container port mappings to publish for this service (e.g. so mesh peers can reach a server it runs).",
+              "items": {
+                "type": "object",
+                "required": ["host", "container"],
+                "additionalProperties": false,
+                "properties": {
+                  "host": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Host port to publish on." },
+                  "container": { "type": "integer", "minimum": 1, "maximum": 65535, "description": "Container port to forward to." }
+                }
+              }
             }
           },
           "required": ["type"],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "if": {
+            "properties": { "mode": { "const": "mesh" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "required": ["serviceCIDR"]
+          },
+          "else": {
+            "properties": {
+              "serviceCIDR": false
+            }
+          }
         },
         {
           "properties": {
@@ -418,7 +447,14 @@
         "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Service names this service starts after." },
         "entitlements": { "type": "array", "items": { "$ref": "#/$defs/entitlement" } },
         "frameworks": { "$ref": "#/$defs/frameworks" },
-        "resources": { "$ref": "#/$defs/resourceLimits" }
+        "resources": { "$ref": "#/$defs/resourceLimits" },
+        "env": {
+          "type": "object",
+          "description": "Environment variables to inject into the service's container. Values may reference host environment variables with ${VAR} (or $VAR), expanded by `wendy run` at deploy time; an entry whose value expands to empty is dropped so the container falls back to its own default.",
+          "additionalProperties": { "type": "string" }
+        },
+        "readiness": { "$ref": "#/$defs/readiness" },
+        "hooks": { "$ref": "#/$defs/hooks" }
       }
     },
     "resourceLimits": {

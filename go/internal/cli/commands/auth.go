@@ -27,7 +27,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const defaultCloudDashboard = "https://cloud.wendy.sh"
+const defaultCloudDashboard = "https://cloud.wendy.dev"
 const defaultCloudGRPC = "wendy-cloud-services-114319063177.us-central1.run.app:443"
 
 func newAuthCmd() *cobra.Command {
@@ -419,7 +419,19 @@ func newAuthRefreshCertsCmd() *cobra.Command {
 		Short: "Refresh mTLS certificates",
 		Long:  "Generates a new key pair and CSR, then issues new certificates using existing credentials.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return refreshAllCerts(cmd.Context())
+			ctx := cmd.Context()
+			err := refreshAllCerts(ctx)
+			if err == nil {
+				return nil
+			}
+			// An expired/absent session cannot be fixed by refreshing (there is no
+			// valid identity to refresh with) — offer to log in again instead, which
+			// issues fresh certificates directly.
+			if offerReloginOnUnauthenticated(ctx, firstAuthEntryForRelogin(), err) {
+				fmt.Println(tui.SuccessMessage("Logged in again and issued fresh certificates."))
+				return nil
+			}
+			return err
 		},
 	}
 }
@@ -439,6 +451,7 @@ func refreshAllCerts(ctx context.Context) error {
 	}
 
 	refreshed := 0
+	var lastErr error
 	for i, auth := range cfg.Auth {
 		if len(auth.Certificates) == 0 {
 			fmt.Println(tui.WarningMessage(fmt.Sprintf("Skipping %s: no certificates to refresh", auth.CloudDashboard)))
@@ -449,6 +462,7 @@ func refreshAllCerts(ctx context.Context) error {
 
 		if err := refreshCertsForAuth(ctx, &cfg.Auth[i]); err != nil {
 			fmt.Println(tui.ErrorMessage(fmt.Sprintf("Failed to refresh for %s: %v", auth.CloudDashboard, err)))
+			lastErr = err
 			continue
 		}
 
@@ -461,9 +475,32 @@ func refreshAllCerts(ctx context.Context) error {
 	}
 
 	if refreshed == 0 {
+		// Preserve the underlying failure (e.g. an unauthorized CertificateError)
+		// so the caller can detect an expired session and offer re-login.
+		if lastErr != nil {
+			return lastErr
+		}
 		return fmt.Errorf("no certificates were refreshed")
 	}
 	return nil
+}
+
+// firstAuthEntryForRelogin returns the stored auth entry a re-login should target
+// — the default session when one is set, otherwise the first entry — or nil when
+// there is nothing stored (the caller then falls back to the built-in defaults).
+func firstAuthEntryForRelogin() *config.AuthConfig {
+	cfg, err := config.Load()
+	if err != nil || len(cfg.Auth) == 0 {
+		return nil
+	}
+	if cfg.DefaultCloudGRPC != "" {
+		for i := range cfg.Auth {
+			if cfg.Auth[i].CloudGRPC == cfg.DefaultCloudGRPC {
+				return &cfg.Auth[i]
+			}
+		}
+	}
+	return &cfg.Auth[0]
 }
 
 // certCommonName extracts the Subject CN from a PEM-encoded certificate.
@@ -540,6 +577,14 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	})
 	if err != nil {
 		return fmt.Errorf("refreshing certificate: %w", err)
+	}
+
+	// The cloud reports refresh failures via a structured error field on an
+	// otherwise-successful response (not a gRPC status). Surface its code/message
+	// so the caller can react — an unauthorized code means the session expired and
+	// the user should log in again — instead of the generic "no certificate" below.
+	if respErr := refreshResp.GetError(); respErr != nil {
+		return cloudCertError{code: respErr.GetCode(), message: respErr.GetMessage()}
 	}
 
 	cert := refreshResp.GetCertificate()

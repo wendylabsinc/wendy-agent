@@ -34,6 +34,7 @@ type ProgressModel struct {
 	title    string
 	details  []string
 	hints    hintRotator
+	width    int
 	percent  float64
 	written  int64
 	total    int64
@@ -69,6 +70,10 @@ func (m ProgressModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m ProgressModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -139,7 +144,7 @@ func (m ProgressModel) View() string {
 		return fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(1.0), byteInfo)
 	}
 	out := fmt.Sprintf("%s\n%s%s%s\n", m.title, details, m.progress.ViewAs(m.percent), byteInfo)
-	if hint := m.hints.view(); hint != "" {
+	if hint := m.hints.view(m.width); hint != "" {
 		out += hint + "\n"
 	}
 	return out

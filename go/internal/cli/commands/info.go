@@ -13,6 +13,7 @@ func newInfoCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "info",
 		Short: "Display CLI version and system information",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := map[string]string{
 				"version":   version.Version,

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,8 +24,33 @@ import (
 )
 
 const (
-	cniPluginDir = "/opt/cni/bin"
-	cniStateDir  = "/run/wendy/cni"
+	cniStateDir = "/run/wendy/cni"
+
+	// CNIBinDir is the directory the agent maintains with "bridge" and
+	// "host-local" symlinks that point back at its own running executable
+	// (see ensureCNIBinDir in cmd/wendy-agent, invoked at daemon startup).
+	// CNIAdd/CNIDel set CNI_PATH to this directory so the vendored bridge
+	// plugin's IPAM delegation (it execs "host-local" via CNI_PATH) also
+	// resolves back into the agent binary rather than a third-party
+	// /opt/cni/bin binary.
+	CNIBinDir = "/run/wendy/cni/bin"
+
+	// cniSystemPathDirs are appended to PATH (after CNIBinDir) for the bridge
+	// exec below. The vendored bridge plugin shells out to the real
+	// "iptables" for NAT/masquerade rules, which lives here, not in
+	// CNIBinDir. These are standard root-owned system directories — not
+	// writable by an unrelated/unprivileged process — so including them
+	// doesn't reopen the PATH-hijack risk that restricting PATH to CNIBinDir
+	// alone was guarding against (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
+	cniSystemPathDirs = ":/usr/sbin:/usr/bin:/sbin:/bin"
+
+	// selfExePath execs the exact inode of the currently-running process.
+	// Unlike a path such as /opt/cni/bin/bridge, this is TOCTOU-safe by
+	// construction — the kernel resolves it to the already-running agent
+	// binary, so there is no window in which a third party could swap the
+	// target between a check and the exec, and no third-party binary to pin
+	// a digest for (SOC2-CC6, ISO27001-A.8, NIST-SI-3).
+	selfExePath = "/proc/self/exe"
 )
 
 // serviceNamePattern is the allowlist for service names written into
@@ -195,6 +219,15 @@ outer:
 // The kernel limit is 15 chars (IFNAMSIZ-1). Short appIDs that fit are embedded
 // directly; longer ones fall back to an 8-hex-digit SHA-256 prefix for uniform
 // distribution (birthday collision probability ~0.12% at 100 apps).
+// cniDuplicateAllocation reports whether a CNI plugin's stdout indicates the
+// host-local IPAM refused to re-allocate an IP the container already holds.
+// host-local emits code 999 with "duplicate allocation is not allowed" / "has
+// been allocated" in this case.
+func cniDuplicateAllocation(stdout string) bool {
+	return strings.Contains(stdout, "duplicate allocation is not allowed") ||
+		strings.Contains(stdout, "has been allocated")
+}
+
 func bridgeName(appID string) string {
 	const prefix = "wendy-br-"
 	if len(prefix)+len(appID) <= 15 {
@@ -241,99 +274,9 @@ func buildBridgeCNIConfig(appID, subnet string) string {
 
 // cniStdoutLimit is the maximum bytes read from the CNI plugin's stdout.
 // A valid CNI ADD response is well under 1 KB; this cap prevents memory
-// exhaustion if the binary at cniPluginDir is replaced or emits junk
-// (SOC2-CC6, NIST-SI-10: input bounds enforcement).
+// exhaustion if the vendored plugin logic ever emits unexpectedly large
+// output (SOC2-CC6, NIST-SI-10: input bounds enforcement).
 const cniStdoutLimit = 64 << 10 // 64 KB
-
-// cniBridgeBin is the full path to the CNI bridge plugin binary.
-const cniBridgeBin = cniPluginDir + "/bridge"
-
-// cniHashesPath is the optional pinned-digest file for CNI plugin binaries.
-// Format: {"bridge": "sha256:<hex>"}.
-// When present, the digest of the opened binary fd is compared before exec.
-const cniHashesPath = "/etc/wendy/cni-hashes.json"
-
-// openAndVerifyCNIBinary opens the CNI bridge binary and verifies both the
-// binary and its parent directory. Stat-on-fd eliminates the TOCTOU window for
-// the binary itself; the directory check prevents a world-writable parent from
-// allowing a swap attack between Open() and exec. If /etc/wendy/cni-hashes.json
-// exists with a "bridge" entry, the binary content is verified against the
-// pinned SHA-256 digest to guard against supply-chain compromise. The caller
-// MUST keep the returned file open until exec completes (SOC2-CC6,
-// ISO27001-A.8, NIST-SI-3).
-func openAndVerifyCNIBinary() (*os.File, error) {
-	// Verify parent directory is root-owned and not group/world-writable.
-	dirInfo, err := os.Stat(cniPluginDir)
-	if err != nil {
-		return nil, fmt.Errorf("CNI plugin directory %q not accessible: %w", cniPluginDir, err)
-	}
-	if dst, ok := dirInfo.Sys().(*syscall.Stat_t); !ok || dst.Uid != 0 {
-		return nil, fmt.Errorf("CNI plugin directory %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniPluginDir)
-	}
-	if dirInfo.Mode()&0o022 != 0 {
-		return nil, fmt.Errorf("CNI plugin directory %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniPluginDir)
-	}
-
-	f, err := os.Open(cniBridgeBin)
-	if err != nil {
-		return nil, fmt.Errorf("CNI bridge binary %q not accessible: %w", cniBridgeBin, err)
-	}
-	fi, err := f.Stat() // stat on the open fd, not the path — TOCTOU-safe
-	if err != nil {
-		f.Close()
-		return nil, fmt.Errorf("CNI bridge binary %q: fstat failed: %w", cniBridgeBin, err)
-	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
-		f.Close()
-		return nil, fmt.Errorf("CNI bridge binary %q must be owned by root (uid 0) — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
-	}
-	if fi.Mode()&0o022 != 0 {
-		f.Close()
-		return nil, fmt.Errorf("CNI bridge binary %q has group-write or world-write permission — refusing to execute (SOC2-CC6, NIST-SI-3)", cniBridgeBin)
-	}
-
-	// Optional content-hash verification: if cniHashesPath lists a "bridge"
-	// digest, compare against the SHA-256 of the opened fd. Reading via the fd
-	// is TOCTOU-safe — the hash covers exactly the inode that will be exec'd.
-	// Always log a warning when the file is absent so operators see it in audit
-	// logs and can pin the digest (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
-	// Hash file is mandatory: absence is a hard configuration error, not a
-	// degraded-mode warning. Operators must pin the CNI binary digest before
-	// the agent will exec it (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
-	// To generate the hash: sha256sum /opt/cni/bin/bridge | awk '{print "sha256:"$1}'
-	hashData, hashErr := os.ReadFile(cniHashesPath)
-	if hashErr != nil {
-		f.Close()
-		return nil, fmt.Errorf("CNI binary integrity check: hash file %q is required but missing or unreadable — pin the bridge digest to enable CNI (SOC2-CC6, NIST-SI-3): %w", cniHashesPath, hashErr)
-	}
-	var hashes map[string]string
-	if err := json.Unmarshal(hashData, &hashes); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("CNI hash file %q is malformed — must be valid JSON (SOC2-CC6, NIST-SI-3): %w", cniHashesPath, err)
-	}
-	pinned, ok := hashes["bridge"]
-	if !ok || pinned == "" {
-		f.Close()
-		return nil, fmt.Errorf("CNI hash file %q must contain a non-empty 'bridge' digest — run: sha256sum /opt/cni/bin/bridge | awk '{print \"sha256:\"$1}' (SOC2-CC6, NIST-SI-3)", cniHashesPath)
-	}
-	hasher := sha256.New()
-	if _, err := io.Copy(hasher, f); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("hashing CNI bridge binary: %w", err)
-	}
-	actual := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
-	if actual != pinned {
-		f.Close()
-		return nil, fmt.Errorf("CNI bridge binary hash mismatch: got %s, want %s — update %s or reinstall the plugin (SOC2-CC6, NIST-SI-3)", actual, pinned, cniHashesPath)
-	}
-	// Rewind so the caller (cmd.Path via /proc/self/fd/<n>) reads from the
-	// start of the binary, not from EOF where io.Copy left the offset.
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("seeking CNI binary after hash verification: %w", err)
-	}
-	return f, nil
-}
 
 // warnSubnetCollision checks whether the allocated /28 subnet overlaps with
 // any address already assigned to a network interface on this host. A collision
@@ -373,29 +316,29 @@ func warnSubnetCollision(logger *zap.Logger, appID, subnet string) {
 	}
 }
 
-// CNIAdd calls the CNI bridge plugin ADD for a container, returning its
-// assigned IP address. netnsPath is the container's network namespace path
-// (e.g. /proc/self/fd/{n} for fd-anchored references, or /proc/{pid}/ns/net).
+// CNIAdd calls the vendored CNI bridge plugin ADD for a container, returning
+// its assigned IP address. netnsPath is the container's network namespace
+// path (e.g. /proc/self/fd/{n} for fd-anchored references, or
+// /proc/{pid}/ns/net).
+//
+// The agent execs itself (selfExePath, i.e. /proc/self/exe) with argv0
+// overridden to "bridge" rather than shelling out to a third-party
+// /opt/cni/bin/bridge binary. /proc/self/exe always resolves to the exact
+// inode of the currently-running agent process, so there is no TOCTOU
+// window and — because the exec path never leaves the agent's own already-
+// running, already-trusted code — no third-party binary to pin a digest for
+// (SOC2-CC6, ISO27001-A.8, NIST-SI-3). CNI_PATH points at CNIBinDir, where
+// the agent maintains "bridge"/"host-local" symlinks back at itself (see
+// ensureCNIBinDir in cmd/wendy-agent), so the vendored bridge plugin's IPAM
+// delegation (it execs "host-local" via CNI_PATH) also resolves back into
+// this same binary instead of a third-party binary.
 func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath string) (string, error) {
 	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
 		return "", err
 	}
-	// Open and verify the binary on its fd — fd-anchored stat eliminates the
-	// TOCTOU window between the integrity check and exec (SOC2-CC6, NIST-SI-3).
-	cniBin, err := openAndVerifyCNIBinary()
-	if err != nil {
-		return "", err
-	}
-	// Exec via /proc/self/fd/{n} so the kernel resolves the binary from the
-	// already-verified fd, not from the string path. This closes the TOCTOU
-	// window between fstat and execve: even if /opt/cni/bin/bridge is replaced
-	// after the integrity check, the exec still runs the inode that was verified.
-	// cniBin is NOT deferred — it must stay open through cmd.Run() and
-	// runtime.KeepAlive; we close it explicitly after both complete so the
-	// sequence is unambiguous (SOC2-CC6, NIST-SI-3, ISO27001-A.8).
+
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
-		cniBin.Close()
 		return "", err
 	}
 	warnSubnetCollision(c.logger, appID, subnet)
@@ -406,60 +349,75 @@ func (c *Client) CNIAdd(ctx context.Context, appID, containerID, netnsPath strin
 	// prevents a kernel-level env truncation if a NUL ever reaches here via a
 	// future bypass (SOC2-CC6, NIST-SC-7, ISO27001-A.8).
 	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
-		cniBin.Close()
 		return "", fmt.Errorf("CNI ADD: NUL byte in containerID or netnsPath rejected")
 	}
 
-	cmd := exec.CommandContext(ctx, cniBridgeBin)
-	// cmd.Path is the exec path (fd-resolved inode). cmd.Args[0] is set
-	// explicitly to the human-readable binary name for process listings;
-	// exec.CommandContext already sets Args[0] = cniBridgeBin, but the
-	// explicit assignment documents the intent and guards against future
-	// refactors that might remove the exec.CommandContext call (SOC2-CC6,
-	// NIST-SI-3).
-	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
-	cmd.Args = []string{cniBridgeBin}
-	cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
-	cmd.Stdin = strings.NewReader(cfgJSON)
-	cmd.Env = []string{
-		// Explicit minimal environment — never inherit the agent's environment,
-		// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
-		// PATH restricted to /opt/cni/bin only: the bridge plugin and its IPAM
-		// subprocess (host-local) both live there; including system paths would
-		// allow a compromised /usr/bin to intercept IPAM exec calls (SOC2-CC6,
-		// NIST-SC-7, ISO27001-A.8).
-		"PATH=/opt/cni/bin",
-		"CNI_COMMAND=ADD",
-		"CNI_CONTAINERID=" + containerID,
-		"CNI_NETNS=" + netnsPath,
-		"CNI_IFNAME=eth0",
-		"CNI_PATH=" + cniPluginDir,
+	// runAddOnce execs the vendored bridge plugin (via self-exec) for one ADD
+	// attempt and returns its stdout, stderr, and run error.
+	runAddOnce := func() (stdoutStr, stderrStr string, runErr error) {
+		cmd := exec.CommandContext(ctx, selfExePath)
+		// argv0 "bridge" is what cniPluginName (cmd/wendy-agent) matches on to
+		// dispatch this re-exec of the agent into the vendored bridge plugin
+		// logic instead of starting the daemon.
+		cmd.Args = []string{"bridge"}
+		cmd.Dir = "/" // prevent relative-path resolution from an attacker-controlled cwd
+		cmd.Stdin = strings.NewReader(cfgJSON)
+		cmd.Env = []string{
+			// Explicit minimal environment — never inherit the agent's environment,
+			// which may contain credentials or Wendy-internal tokens (SOC2-CC6, NIST-SC-7).
+			// CNI_PATH is restricted to CNIBinDir, which contains only symlinks
+			// back to this agent binary, so bridge/host-local delegation can
+			// never resolve to a third-party binary. PATH additionally includes
+			// the standard system sbin/bin directories (root-owned, not writable
+			// by unrelated processes, so this doesn't reopen the PATH-hijack risk
+			// CNIBinDir-only was guarding against) because the vendored bridge
+			// plugin shells out to the real "iptables" for NAT/masquerade rules.
+			"PATH=" + CNIBinDir + cniSystemPathDirs,
+			"CNI_COMMAND=ADD",
+			"CNI_CONTAINERID=" + containerID,
+			"CNI_NETNS=" + netnsPath,
+			"CNI_IFNAME=eth0",
+			"CNI_PATH=" + CNIBinDir,
+		}
+		// Bound stdout to cniStdoutLimit to guard against unbounded output
+		// exhausting agent memory.
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &limitedWriter{w: &stdoutBuf, remaining: cniStdoutLimit, cap: cniStdoutLimit}
+		cmd.Stderr = &stderrBuf
+		runErr = cmd.Run()
+		return stdoutBuf.String(), stderrBuf.String(), runErr
 	}
-	// Bound stdout to cniStdoutLimit to guard against a rogue or replaced
-	// binary emitting unbounded data that would exhaust agent memory.
-	var stdoutBuf, stderr bytes.Buffer
-	cmd.Stdout = &limitedWriter{w: &stdoutBuf, remaining: cniStdoutLimit, cap: cniStdoutLimit}
-	cmd.Stderr = &stderr
 
-	runErr := cmd.Run()
-	// KeepAlive must be called immediately after cmd.Run() to guarantee cniBin
-	// is not GC-collected before execve completes (SOC2-CC6, NIST-SI-3).
-	// Close follows KeepAlive — never reorder these three lines.
-	runtime.KeepAlive(cniBin)
-	cniBin.Close()
+	stdoutStr, stderrStr, runErr := runAddOnce()
+	// host-local refuses to re-allocate an IP a container already holds
+	// ("duplicate allocation is not allowed"). This happens when a prior ADD
+	// allocated an IP but the container later crashed/restarted and the
+	// monitor re-runs ADD without an intervening DEL. Release the stale lease
+	// with a DEL and retry once so container restarts are idempotent.
+	if runErr != nil && cniDuplicateAllocation(stdoutStr) {
+		c.logger.Warn("CNI ADD hit a stale IPAM lease; releasing and retrying",
+			zap.String("app_id", appID), zap.String("container_id", containerID))
+		_ = c.CNIDel(ctx, appID, containerID, netnsPath)
+		stdoutStr, stderrStr, runErr = runAddOnce()
+	}
+
 	if runErr != nil {
-		// Sanitize stderr before logging to prevent log injection from a rogue
-		// CNI binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
+		// Sanitize before logging to prevent log injection from a rogue CNI
+		// binary (newlines, ANSI codes, JSON-alike content) (SOC2-CC6, NIST-SI-10).
+		// CNI plugins report errors as a JSON body on stdout (not stderr), so
+		// surface both — otherwise a plugin failure looks like a bare
+		// "exit status 1" with empty stderr and no cause.
 		c.logger.Warn("CNI ADD failed",
 			zap.String("app_id", appID),
 			zap.String("container_id", containerID),
-			zap.String("stderr", sanitizeForLog(stderr.String(), 512)),
+			zap.String("stdout", sanitizeForLog(stdoutStr, 1024)),
+			zap.String("stderr", sanitizeForLog(stderrStr, 512)),
 			zap.Error(runErr))
 		return "", fmt.Errorf("CNI ADD failed for %s/%s; see agent logs for details", appID, containerID)
 	}
 
 	var result cniResult
-	if err := json.Unmarshal(stdoutBuf.Bytes(), &result); err != nil {
+	if err := json.Unmarshal([]byte(stdoutStr), &result); err != nil {
 		return "", fmt.Errorf("parsing CNI ADD result for %s/%s: %w", appID, containerID, err)
 	}
 	if len(result.IPs) == 0 {
@@ -560,55 +518,45 @@ func writeHostsFile(path string, serviceIPs map[string]string) error {
 	return os.Rename(tmpName, path)
 }
 
-// CNIDel calls the CNI bridge plugin DEL to release a container's IP.
-// Errors are logged as warnings but not returned — DEL is best-effort.
+// CNIDel calls the vendored CNI bridge plugin DEL to release a container's
+// IP. Errors are logged as warnings but not returned — DEL is best-effort.
+// See CNIAdd for the self-exec rationale (no third-party binary, no digest
+// pin needed).
 func (c *Client) CNIDel(ctx context.Context, appID, containerID, netnsPath string) error {
 	if err := validateCNIInputs(appID, containerID, netnsPath); err != nil {
 		c.logger.Warn("CNI DEL skipped: invalid inputs", zap.Error(err))
 		return nil
 	}
-	cniBin, err := openAndVerifyCNIBinary()
-	if err != nil {
-		c.logger.Warn("CNI DEL skipped: binary check failed", zap.Error(err))
-		return nil
-	}
-	// See CNIAdd for exec-via-fd rationale. cniBin is NOT deferred — explicit
-	// close follows runtime.KeepAlive after cmd.Run() (SOC2-CC6, NIST-SI-3).
 	// NUL guard: defence-in-depth at the exec boundary (SOC2-CC6, NIST-SC-7).
 	if strings.ContainsRune(containerID, '\x00') || strings.ContainsRune(netnsPath, '\x00') {
 		c.logger.Warn("CNI DEL skipped: NUL byte in input", zap.String("container_id", containerID))
-		cniBin.Close()
 		return nil
 	}
 	subnet, err := allocateSubnet(appID)
 	if err != nil {
 		c.logger.Warn("CNI DEL skipped: subnet allocation failed", zap.Error(err))
-		cniBin.Close()
 		return nil
 	}
 	cfgJSON := buildBridgeCNIConfig(appID, subnet)
 
-	cmd := exec.CommandContext(ctx, cniBridgeBin)
-	cmd.Path = fmt.Sprintf("/proc/self/fd/%d", cniBin.Fd())
-	cmd.Args = []string{cniBridgeBin} // human-readable name; cmd.Path is the exec path
-	cmd.Dir = "/"                     // prevent relative-path resolution from an attacker-controlled cwd
+	cmd := exec.CommandContext(ctx, selfExePath)
+	cmd.Args = []string{"bridge"} // argv0 the multiplexer dispatches on; see CNIAdd
+	cmd.Dir = "/"                 // prevent relative-path resolution from an attacker-controlled cwd
 	cmd.Stdin = strings.NewReader(cfgJSON)
 	cmd.Env = []string{
 		// Explicit minimal environment — never inherit the agent's environment
-		// (SOC2-CC6, NIST-SC-7). PATH restricted to /opt/cni/bin only so the
-		// bridge plugin cannot resolve IPAM helpers from attacker-controlled paths.
-		"PATH=/opt/cni/bin",
+		// (SOC2-CC6, NIST-SC-7). CNI_PATH restricted to CNIBinDir (symlinks back
+		// to this agent binary only). PATH additionally includes the standard
+		// system sbin/bin directories — see the matching comment in CNIAdd for
+		// why (the vendored bridge plugin shells out to "iptables").
+		"PATH=" + CNIBinDir + cniSystemPathDirs,
 		"CNI_COMMAND=DEL",
 		"CNI_CONTAINERID=" + containerID,
 		"CNI_NETNS=" + netnsPath,
 		"CNI_IFNAME=eth0",
-		"CNI_PATH=" + cniPluginDir,
+		"CNI_PATH=" + CNIBinDir,
 	}
-	runErr := cmd.Run()
-	// KeepAlive then Close — never reorder (SOC2-CC6, NIST-SI-3).
-	runtime.KeepAlive(cniBin)
-	cniBin.Close()
-	if runErr != nil {
+	if runErr := cmd.Run(); runErr != nil {
 		c.logger.Warn("CNI DEL failed (non-fatal)",
 			zap.String("app_id", appID),
 			zap.String("container_id", containerID),

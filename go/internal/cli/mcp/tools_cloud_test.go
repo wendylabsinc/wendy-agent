@@ -90,6 +90,63 @@ func TestCloudDiscover_ReturnsConfiguredCloudDevices(t *testing.T) {
 	}
 }
 
+func TestCloudDiscover_HasStructuredContent(t *testing.T) {
+	fake := &fakeCloudAssetServer{
+		assets: []*cloudpb.Asset{
+			{
+				Id:              42,
+				OrganizationId:  7,
+				Name:            "edge-one",
+				AssetType:       "device",
+				IsComputeDevice: true,
+			},
+		},
+	}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("cloud_discover should return structuredContent")
+	}
+}
+
+func TestCloud_MultipleSessions_Code(t *testing.T) {
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{
+			{CloudGRPC: "one:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+			{CloudGRPC: "two:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+		},
+	}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result")
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map structured content, got %T", result.StructuredContent)
+	}
+	if sc["error_code"] != string(errCodeMultipleSessions) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeMultipleSessions)
+	}
+}
+
 func TestCloudDiscover_RequiresAuth(t *testing.T) {
 	srv := New(&config.Config{}, nil)
 	result, err := srv.callTool(context.Background(), "cloud_discover", nil)

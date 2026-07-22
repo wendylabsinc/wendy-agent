@@ -350,16 +350,14 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 }
 
 // runPostStartHostHook mirrors the normal detached deploy path's host-side
-// postStart handling: wait for readiness, then fire the host hook
-// fire-and-forget on a background context so it outlives the CLI process. The
-// agent-side (in-container) hook is attached separately to the StartContainer
-// RPC's context, so it only runs when the fast path actually (re)starts the
-// container.
+// postStart handling: wait for readiness, then announce the reachable URL and
+// fire the host hook fire-and-forget on a background context so it outlives
+// the CLI process. A failed readiness probe skips both (see
+// runPostStartIfReady). The agent-side (in-container) hook is attached
+// separately to the StartContainer RPC's context, so it only runs when the
+// fast path actually (re)starts the container.
 func runPostStartHostHook(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
-	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
-		warnReadiness(ctx, conn, appCfg.AppID, err)
-	}
-	startPostStartHook(context.Background(), appCfg, conn.Host)
+	runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 }
 
 // containerExitDetail returns a short human summary of why appID's container

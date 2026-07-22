@@ -406,6 +406,70 @@ func TestFormatError_UnimplementedKeepsUpdateHintForGeneratedStub(t *testing.T) 
 	}
 }
 
+// A genuine mTLS rejection by the device (clock skew, stale/mismatched cert)
+// surfaces as a server-sent TLS alert ("remote error: tls: bad certificate").
+// That case must keep the clock-skew / timedatectl remedy — it is accurate.
+func TestFormatError_GenuineCertRejectionKeepsClockSkewAdvice(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: remote error: tls: bad certificate"`))
+
+	got := formatError(err).Error()
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+		t.Fatalf("genuine cert rejection should keep clock-skew advice, got %q", got)
+	}
+}
+
+// A client-side verification failure caused by clock skew (the device's server
+// cert reads as expired/not-yet-valid) is wrapped as "authentication handshake
+// failed: tls: failed to verify certificate: x509: ...". It carries a tls:/x509
+// marker, so it is still a genuine cert/clock problem and keeps the advice.
+func TestFormatError_X509VerifyFailureKeepsClockSkewAdvice(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid"`))
+
+	got := formatError(err).Error()
+	if !strings.Contains(got, "clock skew") || !strings.Contains(got, "timedatectl") {
+		t.Fatalf("x509 verify failure should keep clock-skew advice, got %q", got)
+	}
+}
+
+// When a cloud-tunnel byte pipe is dead (broker offline, or the device is not
+// connected to the broker), the first RPC fails the TLS handshake against a
+// closed pipe: "authentication handshake failed: io: read/write on closed pipe".
+// There is no TLS alert — the device never rejected anything — so this must NOT
+// tell the user to check the device clock over ssh (the device is unreachable).
+func TestFormatError_DeadCloudTunnelIsNotDeviceClockSkew(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: io: read/write on closed pipe"`))
+
+	got := formatError(err).Error()
+	if strings.Contains(got, "clock skew") || strings.Contains(got, "timedatectl") {
+		t.Fatalf("dead tunnel must not blame the device clock, got %q", got)
+	}
+	if strings.Contains(got, "rpc error") {
+		t.Fatalf("should not leak raw gRPC transport text, got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "connection") {
+		t.Fatalf("should describe a dropped connection, got %q", got)
+	}
+	if !strings.Contains(strings.ToLower(got), "tunnel") {
+		t.Fatalf("should point at the cloud tunnel as a likely cause, got %q", got)
+	}
+}
+
+// The same transport death also appears as a bare EOF during the handshake when
+// the far end closes cleanly (e.g. a LAN device drops mid-handshake). It is a
+// connectivity failure, not a cert rejection.
+func TestFormatError_HandshakeEOFIsNotDeviceClockSkew(t *testing.T) {
+	err := fmt.Errorf("querying device version: %w", status.Error(codes.Unavailable,
+		`connection error: desc = "transport: authentication handshake failed: EOF"`))
+
+	got := formatError(err).Error()
+	if strings.Contains(got, "clock skew") || strings.Contains(got, "timedatectl") {
+		t.Fatalf("handshake EOF must not blame the device clock, got %q", got)
+	}
+}
+
 func TestEnv_IsCITripsKillSwitch(t *testing.T) {
 	// Sanity check that env.IsCI() recognizes the CI variable. The deeper
 	// contract — that analytics.Init refuses to enable in CI — is covered
@@ -418,5 +482,59 @@ func TestEnv_IsCITripsKillSwitch(t *testing.T) {
 	t.Setenv("CI", "1")
 	if !env.IsCI() {
 		t.Error("env.IsCI() should be true when CI=1")
+	}
+}
+
+func TestEventNameFor(t *testing.T) {
+	cases := []struct {
+		path     string
+		homebrew bool
+		want     string
+	}{
+		{"wendy completion install", true, "install_completed"},
+		{"wendy completion install", false, "command_executed"},
+		{"wendy run", true, "command_executed"},
+		{"wendy device info", false, "command_executed"},
+	}
+	for _, c := range cases {
+		if got := eventNameFor(c.path, c.homebrew); got != c.want {
+			t.Errorf("eventNameFor(%q, %v) = %q, want %q", c.path, c.homebrew, got, c.want)
+		}
+	}
+}
+
+func TestMilestoneFor(t *testing.T) {
+	cases := []struct {
+		path    string
+		success bool
+		want    string
+	}{
+		{"wendy discover", true, "discover_success"},
+		{"wendy init", true, "init_success"},
+		{"wendy run", true, "first_deploy_success"},
+		{"wendy cloud login", true, "auth_success"},
+		{"wendy auth login", true, "auth_success"},
+		{"wendy run", false, ""},
+		{"wendy device info", true, ""},
+	}
+	for _, c := range cases {
+		if got := milestoneFor(c.path, c.success); got != c.want {
+			t.Errorf("milestoneFor(%q, %v) = %q, want %q", c.path, c.success, got, c.want)
+		}
+	}
+}
+
+func TestIsSetupCommand(t *testing.T) {
+	setup := []string{"wendy completion install", "wendy __complete", "wendy help", "wendy analytics disable"}
+	real := []string{"wendy run", "wendy discover", "wendy device info"}
+	for _, p := range setup {
+		if !isSetupCommand(p) {
+			t.Errorf("isSetupCommand(%q) = false, want true", p)
+		}
+	}
+	for _, p := range real {
+		if isSetupCommand(p) {
+			t.Errorf("isSetupCommand(%q) = true, want false", p)
+		}
 	}
 }

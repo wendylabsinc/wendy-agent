@@ -25,6 +25,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
@@ -250,11 +251,12 @@ func detectProjectType(dir string) (string, error) {
 var validDockerfileNameRe = regexp.MustCompile(`^(Dockerfile|Containerfile)([.\-][a-zA-Z0-9][a-zA-Z0-9._-]*)?$`)
 var validBuildArgNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// Build-arg values are passed to exec.Command as a single KEY=VALUE argument,
-// but keep a narrow allowlist so shell-like metacharacters, whitespace,
-// digests, embedded key separators, and flag-looking values cannot cross into
-// builder CLIs.
-var validBuildArgValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
+// Device-reported build-arg hints (see applyDeviceBuildArgHints) are meant to be
+// clean identifier/version tokens, never free text, so they keep a narrow
+// allowlist. It lets an unmappable agent fallback like "L4T 38.2.0" (note the
+// space) be dropped with a warning instead of injected as a bogus version.
+// User-authored build args are NOT held to this — see validateBuildArgPair.
+var validBuildArgHintValueRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*$`)
 
 func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
@@ -288,6 +290,19 @@ func validateDockerfileName(name string) error {
 	return nil
 }
 
+// validateBuildArgPair gates a KEY=VALUE build arg headed for a builder CLI.
+// Values are user-authored (docker-compose args, wendy.json) and legitimately
+// hold spaces, slashes, and other punctuation — a Minecraft MOTD or a log path,
+// say. Their content is not dangerous: each pair is handed to exec.Command as a
+// single "KEY=VALUE" argv element (no shell is involved), and because KEY is
+// validated to [A-Za-z_][A-Za-z0-9_]* the token always starts with a letter, so
+// a builder CLI can never mistake the value for a flag. So the rejections are
+// only:
+//   - a leading '-', kept as defense-in-depth so a value can never look like a
+//     flag even if a future call site passed it as a standalone argv token; and
+//   - control characters, which are genuinely unsafe regardless: NUL truncates
+//     C strings (Go's exec rejects it outright) and CR/LF/escape sequences can
+//     inject lines or terminal escapes into the streamed build log.
 func validateBuildArgPair(key, value string) error {
 	if !validBuildArgNameRe.MatchString(key) {
 		return fmt.Errorf("invalid build arg name %q: must match [A-Za-z_][A-Za-z0-9_]*", key)
@@ -295,8 +310,8 @@ func validateBuildArgPair(key, value string) error {
 	if strings.HasPrefix(value, "-") {
 		return fmt.Errorf("invalid build arg %q: value must not start with '-'", key)
 	}
-	if !validBuildArgValueRe.MatchString(value) {
-		return fmt.Errorf("invalid build arg %q: value must contain only safe ASCII characters", key)
+	if strings.IndexFunc(value, unicode.IsControl) >= 0 {
+		return fmt.Errorf("invalid build arg %q: value must not contain control characters", key)
 	}
 	return nil
 }
@@ -305,15 +320,23 @@ func validateBuildArgPair(key, value string) error {
 // agent reports (WENDY_DEVICE_TYPE, WENDY_HAS_GPU, WENDY_GPU_VENDOR,
 // WENDY_JETPACK_VERSION, WENDY_JETPACK_MAJOR, WENDY_CUDA_VERSION) into
 // buildArgs. Each hint is only set when the agent reports it, so Dockerfiles
-// keep their own ARG defaults on older agents. These values are device-reported
-// and feed straight into a builder CLI, so any hint that fails build-arg
-// validation is skipped with a warning rather than failing the whole deploy —
-// e.g. a Jetson running an L4T release the agent's JetPack table doesn't map
-// reports a fallback like "L4T 38.2.0", whose space is rejected by
-// validBuildArgValueRe.
+// keep their own ARG defaults on older agents. These are meant to be clean
+// identifier/version tokens, so a hint that isn't one (validBuildArgHintValueRe)
+// is skipped with a warning rather than injected — e.g. a Jetson running an L4T
+// release the agent's JetPack table doesn't map reports a fallback like
+// "L4T 38.2.0", whose space fails the token check, so it is dropped and the
+// Dockerfile keeps its ARG default instead of receiving a bogus version.
 func applyDeviceBuildArgHints(buildArgs map[string]string, versionResp *agentpb.GetAgentVersionResponse) {
 	setHint := func(key, value string) {
 		if value == "" {
+			return
+		}
+		// A hint must be a clean identifier/version token AND clear the build-arg
+		// safety gate. Anything else — an unmappable "L4T 38.2.0" fallback, say —
+		// is skipped with a warning rather than injected as a bogus hint or left to
+		// abort the deploy at the final build-arg check.
+		if !validBuildArgHintValueRe.MatchString(value) {
+			cliLogln("Warning: ignoring device-reported build arg %s=%q: not a clean identifier/version token", key, value)
 			return
 		}
 		if err := validateBuildArgPair(key, value); err != nil {
@@ -2061,13 +2084,112 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		return addr, false, addrCleanup, addrErr
 	}
 
-	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
+	// Cloud tunnel. On a provisioned device the registry itself speaks TLS,
+	// but registry tooling (containertool, Apple Container) treats a
+	// 127.0.0.1 registry as plain HTTP — and the device's Wendy-CA cert
+	// could never verify for the loopback address anyway. So terminate TLS
+	// in the proxy: upgrade each tunneled connection with the CLI's client
+	// certificate and hand the plugin a plain-HTTP loopback address
+	// (swiftUseMTLS=false), mirroring the provisioned-LAN branch above.
+	// Previously the raw TCP forward returned swiftUseMTLS=true, so the
+	// plugin sent plain HTTP straight into the TLS listener and every
+	// tunnel deploy to an enrolled device hung on GET /v2/ (WDY-1868).
+	dial := func(ctx context.Context) (net.Conn, error) {
 		return conn.RegistryDialer(ctx, port)
-	})
+	}
+	if conn.IsMTLS {
+		certInfo := loadCLICert()
+		if certInfo == nil {
+			return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+		}
+		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain, dial)
+		if tlsErr != nil {
+			return "", false, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
+		}
+		dial = tlsDial
+	}
+
+	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", dial)
 	if proxyErr != nil {
 		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), conn.IsMTLS, proxy.Close, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+}
+
+// wendyRegistryServerVerifier returns a VerifyConnection callback that
+// chain-validates the registry server's certificate against the Wendy CA.
+//
+// Wendy issues a single mutual-auth identity cert per principal, used for
+// mTLS in both directions; when a device serves its registry it presents
+// that identity cert, which carries clientAuth (mirrored by the agent-side
+// verifier in agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
+// rejects a legitimately trusted device cert, so we accept either
+// authentication EKU — but still require an authentication cert (rejecting
+// e.g. codeSigning/emailProtection leaves) and full chain validation against
+// the Wendy CA. The residual exposure (a clientAuth identity-cert holder
+// impersonating the registry) requires MITM of the loopback-only proxy's
+// connection to the device and is identical to the gRPC channel's trust
+// model; the long-term fix is issuing device registry certs with a
+// serverAuth EKU at the PKI layer.
+func wendyRegistryServerVerifier(caPool *x509.CertPool) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return fmt.Errorf("server presented no certificates")
+		}
+		intermediates := x509.NewCertPool()
+		for _, c := range cs.PeerCertificates[1:] {
+			intermediates.AddCert(c)
+		}
+		opts := x509.VerifyOptions{
+			Roots:         caPool,
+			Intermediates: intermediates,
+			KeyUsages: []x509.ExtKeyUsage{
+				x509.ExtKeyUsageServerAuth,
+				x509.ExtKeyUsageClientAuth,
+			},
+		}
+		_, err := cs.PeerCertificates[0].Verify(opts)
+		return err
+	}
+}
+
+// tlsClientDialer wraps dial so every connection is upgraded to TLS with the
+// given CLI client certificate before use. Hostname verification is skipped —
+// device registry certs never carry the dialed (loopback/tunnel) address as a
+// SAN — but the server chain is fully validated against the Wendy CA via
+// wendyRegistryServerVerifier, matching startMTLSRegistryHTTPProxy.
+func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (net.Conn, error)) (func(context.Context) (net.Conn, error), error) {
+	leafPEM, err := certs.LeafCertificatePEM(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("loading client certificate: %w", err)
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
+		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
+	}
+	tlsCfg := &tls.Config{
+		// Hostname check only; full chain validation happens in VerifyConnection.
+		InsecureSkipVerify: true, //nolint:gosec
+		MinVersion:         tls.VersionTLS12,
+		Certificates:       []tls.Certificate{tlsCert},
+		VerifyConnection:   wendyRegistryServerVerifier(caPool),
+	}
+	return func(ctx context.Context) (net.Conn, error) {
+		raw, dialErr := dial(ctx)
+		if dialErr != nil {
+			return nil, dialErr
+		}
+		tlsConn := tls.Client(raw, tlsCfg)
+		if hsErr := tlsConn.HandshakeContext(ctx); hsErr != nil {
+			raw.Close()
+			return nil, fmt.Errorf("TLS handshake with device registry: %w", hsErr)
+		}
+		return tlsConn, nil
+	}, nil
 }
 
 func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
@@ -2145,39 +2267,7 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 				// CA instead.
 				InsecureSkipVerify: true, //nolint:gosec
 				MinVersion:         tls.VersionTLS12,
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("server presented no certificates")
-					}
-					intermediates := x509.NewCertPool()
-					for _, c := range cs.PeerCertificates[1:] {
-						intermediates.AddCert(c)
-					}
-					// Wendy issues a single mutual-auth identity cert per principal,
-					// used for mTLS in both directions; when a device serves its
-					// registry it presents that identity cert, which carries
-					// clientAuth (mirrored by the agent-side verifier in
-					// agent/mtls) and NOT serverAuth. Requiring serverAuth therefore
-					// rejects a legitimately trusted device cert, so we accept either
-					// authentication EKU — but still require an authentication cert
-					// (rejecting e.g. codeSigning/emailProtection leaves) and full
-					// chain validation against the Wendy CA. The residual exposure
-					// (a clientAuth identity-cert holder impersonating the registry)
-					// requires MITM of the loopback-only proxy's connection to the
-					// device and is identical to the gRPC channel's trust model; the
-					// long-term fix is issuing device registry certs with a
-					// serverAuth EKU at the PKI layer.
-					opts := x509.VerifyOptions{
-						Roots:         caPool,
-						Intermediates: intermediates,
-						KeyUsages: []x509.ExtKeyUsage{
-							x509.ExtKeyUsageServerAuth,
-							x509.ExtKeyUsageClientAuth,
-						},
-					}
-					_, err := cs.PeerCertificates[0].Verify(opts)
-					return err
-				},
+				VerifyConnection:   wendyRegistryServerVerifier(caPool),
 			},
 		},
 	}

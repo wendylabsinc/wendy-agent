@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -54,6 +55,31 @@ func bestReachableIP(ifaces []*agentpb.NetworkInterface) string {
 	return firstAny
 }
 
+// isIPv6Literal reports whether host parses as a bare (unbracketed) IPv6
+// literal, zone ID included. Hostnames and IPv4 are false.
+func isIPv6Literal(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Is6()
+}
+
+// urlSafeHost returns host formatted for the authority part of a URL: IPv6
+// literals are bracketed, with any zone ID percent-escaped per RFC 6874. IPv4
+// and hostnames pass through unchanged. IPv4-mapped IPv6 literals are unmapped
+// to plain IPv4 so the result remains URL-safe.
+func urlSafeHost(host string) string {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	if addr.Is4In6() {
+		return addr.Unmap().String()
+	}
+	if !addr.Is6() {
+		return host
+	}
+	return "[" + strings.ReplaceAll(host, "%", "%25") + "]"
+}
+
 // reachableAppURL builds a browser-openable URL for a freshly started app,
 // using a routable device IP instead of the (often unresolvable) .local
 // hostname that `wendy run` otherwise reports.
@@ -63,12 +89,12 @@ func bestReachableIP(ifaces []*agentpb.NetworkInterface) string {
 // IP swapped in, so the printed URL matches what the browser hook opens.
 // Otherwise, if readiness defines a TCP port, an http URL on that port is
 // assumed. Returns "" when no reachable URL can be derived.
-func reachableAppURL(hookURL, appID, deviceIP string, readiness *appconfig.ReadinessConfig) string {
+func reachableAppURL(hookURL, appID, serviceName, deviceIP string, readiness *appconfig.ReadinessConfig) string {
 	if deviceIP == "" {
 		return ""
 	}
 	if hookURL != "" && strings.Contains(hookURL, "WENDY_HOSTNAME") {
-		return expandHookEnv(hookURL, deviceIP, appID)
+		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID, serviceName)
 	}
 	if readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0 {
 		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(readiness.TCPSocket.Port))

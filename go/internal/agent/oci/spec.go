@@ -359,6 +359,19 @@ func InjectHostsMount(spec *Spec, hostsPath string) {
 	})
 }
 
+// InjectResolvMount adds a read-only bind-mount that overlays
+// /etc/resolv.conf with the file at resolvPath. Use this for meshed
+// containers so hostnames resolve via the mesh DNS server on their bridge
+// gateway.
+func InjectResolvMount(spec *Spec, resolvPath string) {
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      resolvPath,
+		Options:     []string{"rbind", "ro"},
+	})
+}
+
 func defaultMounts() []Mount {
 	return []Mount{
 		{

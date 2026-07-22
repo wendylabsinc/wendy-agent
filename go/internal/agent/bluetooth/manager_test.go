@@ -37,7 +37,7 @@ func TestStubManager_ConnectReturnsUnsupported(t *testing.T) {
 	logger := zap.NewNop()
 	m := NewManager(logger)
 
-	err := m.Connect(context.Background(), "AA:BB:CC:DD:EE:FF", false, false)
+	_, err := m.Connect(context.Background(), "AA:BB:CC:DD:EE:FF", false, false)
 	if err == nil {
 		t.Fatal("expected error from stub Connect")
 	}

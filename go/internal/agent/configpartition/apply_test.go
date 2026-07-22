@@ -322,7 +322,7 @@ func TestApplyPreProvisioning_Success(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := t.TempDir()
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestApplyPreProvisioning_IncompleteState(t *testing.T) {
 	configPath := t.TempDir()
 	srcPath := filepath.Join(cfgDir, "provisioning.json")
 	// Missing keyPem — should be rejected.
-	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.sh","certPem":"cert"}`), 0o600); err != nil {
+	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.dev","certPem":"cert"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logger, _ := zap.NewDevelopment()
@@ -423,7 +423,7 @@ func TestApplyPreProvisioning_CreatesConfigDir(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ const avahiServiceTemplate = `<?xml version="1.0" standalone='no'?>
 `
 
 func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
-	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0)
 
 	if !strings.Contains(out, "<port>50052</port>") {
 		t.Errorf("expected wendyos port updated to 50052:\n%s", out)
@@ -466,8 +466,8 @@ func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
 
 func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
 	// Start from a provisioned advertisement and revert it.
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true)
-	out := updateWendyOSServicePort(provisioned, 50051, false)
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0)
+	out := updateWendyOSServicePort(provisioned, 50051, false, 0)
 
 	if !strings.Contains(out, "<port>50051</port>") {
 		t.Errorf("expected wendyos port reverted to 50051:\n%s", out)
@@ -477,5 +477,131 @@ func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
 	}
 	if strings.Contains(out, "tls=true") {
 		t.Errorf("tls=true should have been replaced:\n%s", out)
+	}
+}
+
+func TestUpdateWendyOSServicePort_ProvisionedWithAssetID(t *testing.T) {
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+
+	if !strings.Contains(out, "<txt-record>assetid=215</txt-record>") {
+		t.Errorf("expected assetid=215 TXT record:\n%s", out)
+	}
+}
+
+func TestUpdateWendyOSServicePort_UnprovisioningRemovesAssetID(t *testing.T) {
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	if !strings.Contains(provisioned, "assetid=215") {
+		t.Fatalf("test setup: expected assetid=215 to be present:\n%s", provisioned)
+	}
+
+	out := updateWendyOSServicePort(provisioned, 50051, false, 0)
+
+	if strings.Contains(out, "assetid=") {
+		t.Errorf("expected assetid TXT record to be removed on unprovisioning:\n%s", out)
+	}
+	// SSH block still untouched.
+	if !strings.Contains(out, "<port>22</port>") {
+		t.Errorf("ssh port should be untouched:\n%s", out)
+	}
+}
+
+func TestUpdateWendyOSServicePort_UpdatesExistingAssetID(t *testing.T) {
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	out := updateWendyOSServicePort(provisioned, 50052, true, 999)
+
+	if !strings.Contains(out, "<txt-record>assetid=999</txt-record>") {
+		t.Errorf("expected assetid updated to 999:\n%s", out)
+	}
+	if strings.Contains(out, "assetid=215") {
+		t.Errorf("old assetid=215 should have been replaced:\n%s", out)
+	}
+}
+
+func TestUpdateAvahiService_ProvisioningWritesAssetIDTXTRecord(t *testing.T) {
+	dir := t.TempDir()
+	serviceFile := filepath.Join(dir, "wendyos-mdns.service")
+	if err := os.WriteFile(serviceFile, []byte(avahiServiceTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	updateAvahiService(logger, dir, 50052, true, 215)
+
+	got, err := os.ReadFile(serviceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "<txt-record>assetid=215</txt-record>") {
+		t.Errorf("expected assetid=215 TXT record written to service file:\n%s", got)
+	}
+	if !strings.Contains(string(got), "<port>50052</port>") {
+		t.Errorf("expected port updated to 50052:\n%s", got)
+	}
+}
+
+func TestUpdateAvahiService_UnprovisioningRemovesAssetID(t *testing.T) {
+	dir := t.TempDir()
+	serviceFile := filepath.Join(dir, "wendyos-mdns.service")
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	if err := os.WriteFile(serviceFile, []byte(provisioned), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	updateAvahiService(logger, dir, 50051, false, 0)
+
+	got, err := os.ReadFile(serviceFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "assetid=") {
+		t.Errorf("expected assetid TXT record removed from service file:\n%s", got)
+	}
+}
+
+func TestApplyClockFloor_CreatesConfigDir(t *testing.T) {
+	cfgDir := t.TempDir()
+	// Reproduces WDY-1868: on a fresh (or not-yet-provisioned) image the agent
+	// config dir does not exist, and the floor copy must create it rather than
+	// fail — without the floor a no-RTC device boots with a months-old clock.
+	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
+
+	// 8-byte big-endian Unix-seconds payload (FloorBytes format); the value is
+	// arbitrary — the test only asserts a byte-for-byte copy.
+	payload := []byte{0, 0, 0, 0, 0x68, 0x6e, 0xda, 0x80}
+	if err := os.WriteFile(filepath.Join(cfgDir, "clock_floor"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, _ := zap.NewDevelopment()
+	applyClockFloor(logger, cfgDir, configPath)
+
+	got, err := os.ReadFile(filepath.Join(configPath, "clock_floor"))
+	if err != nil {
+		t.Fatalf("clock_floor not written to configPath: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("clock_floor content = %v, want %v", got, payload)
+	}
+
+	if info, err := os.Stat(filepath.Join(configPath, "clock_floor")); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("clock_floor mode = %o, want 0600", perm)
+	}
+	if info, err := os.Stat(configPath); err != nil {
+		t.Fatal(err)
+	} else if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("config dir mode = %o, want 0700", perm)
+	}
+}
+
+func TestApplyClockFloor_NoFile(t *testing.T) {
+	logger, _ := zap.NewDevelopment()
+	// Should return without side effects when the partition has no floor file.
+	configPath := filepath.Join(t.TempDir(), "wendy-agent")
+	applyClockFloor(logger, t.TempDir(), configPath)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Error("configPath should not be created when there is no clock_floor to copy")
 	}
 }

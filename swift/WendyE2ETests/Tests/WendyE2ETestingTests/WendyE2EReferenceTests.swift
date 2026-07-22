@@ -270,7 +270,7 @@ struct `reference documentation extraction` {
             /**
              Prints top-level help.
              */
-            @Test(.disabled("SPEC STUB"))
+            @Test(.disabled("Fixture disabled test"))
             func `prints help`() async throws {
                 // TODO: implement.
             }
@@ -294,7 +294,7 @@ struct `reference documentation extraction` {
 
              Use this form when the target device is already known.
              */
-            @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+            @Test(.disabled("Fixture disabled test"))
             func `'--device' selects an explicit device`() async throws {
                 // TODO: implement.
             }
@@ -302,7 +302,7 @@ struct `reference documentation extraction` {
             /**
              Uses the configured default device.
              */
-            @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+            @Test(.disabled("Fixture disabled test"))
             func `uses the configured default device`() async throws {
                 // TODO: implement.
             }
@@ -328,7 +328,7 @@ struct `reference documentation extraction` {
             /**
              Preserves compatibility for existing scripts.
              */
-            @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+            @Test(.disabled("Fixture disabled test"))
             func `aliases device info`() async throws {
                 // TODO: implement.
             }

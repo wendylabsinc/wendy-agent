@@ -63,6 +63,7 @@ type MultiSpinnerModel struct {
 	byName  map[string]int
 	spinner spinner.Model
 	hints   hintRotator
+	width   int
 	done    bool
 	err     error
 }
@@ -96,6 +97,10 @@ func (m MultiSpinnerModel) Init() tea.Cmd {
 // Update implements tea.Model.
 func (m MultiSpinnerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			m.done = true
@@ -207,7 +212,7 @@ func (m MultiSpinnerModel) View() string {
 		}
 	}
 
-	if hint := m.hints.view(); hint != "" {
+	if hint := m.hints.view(m.width); hint != "" {
 		sb.WriteString(hint)
 		sb.WriteString("\n")
 	}

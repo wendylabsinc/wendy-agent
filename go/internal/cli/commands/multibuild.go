@@ -272,7 +272,9 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 	platform := resolveAgentPlatform(appCfg.Platform, agentOS, architecture)
 	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
-		return rejectUnsupportedMacRunProject("multi-service", platform)
+		if err := rejectUnsupportedMacRunProject("multi-service", platform); err != nil {
+			return err
+		}
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {
@@ -360,12 +362,30 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	if err != nil {
 		return err
 	}
+
+	// Build every per-service config once and reuse the same objects for both
+	// the create payload (createService) and lifecycle-hook firing
+	// (startAndStreamServices), so a service's readiness/hooks are carried in a
+	// single place (WDY-1271).
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	for name, svc := range services {
+		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
+	}
+
+	// The app-level fallback fires the group's top-level readiness/hooks once,
+	// after ALL services have started — a guarantee that cannot hold on a subset
+	// run (--service), so disable it there.
+	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+	if opts.service != "" {
+		appLevelCfg = nil
+	}
+
 	createService := func(name string) error {
 		svc := services[name]
 		deviceImage := fmt.Sprintf("localhost:%d/%s-%s:latest", regPort,
 			strings.ToLower(appCfg.AppID), strings.ToLower(name))
 
-		serviceCfg := multiServiceCreateConfig(appCfg, name, svc)
+		serviceCfg := svcCfgs[name]
 		appConfigData, err := json.Marshal(serviceCfg)
 		if err != nil {
 			return fmt.Errorf("marshaling config for service %s: %w", name, err)
@@ -377,6 +397,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
+			Env:           expandServiceEnv(svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)
@@ -392,6 +413,8 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		// cannot join here — the join happens at create time against the
 		// primary's running task. Such groups should be deployed without
 		// --deploy (or started service-by-service in dependency order).
+		// postStart hooks and readiness gating are start-time concerns, so they
+		// are deliberately never fired on this path.
 		for _, name := range ordered {
 			if err := createService(name); err != nil {
 				return err
@@ -407,7 +430,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
-	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService); err != nil {
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, appLevelCfg); err != nil {
 		return err
 	}
 	// In --keep-going mode, exit non-zero after deploying the healthy subset so
@@ -689,6 +712,13 @@ func newServiceProgressEmitter(prog *tea.Program, name string) (func(tui.BuildSt
 // runtime context (isolation, frameworks, shared entitlements) must travel
 // with every service: the agent keys namespace sharing, ROS 2 env injection,
 // and container naming on these fields (WDY-878, WDY-884).
+//
+// Only the service's OWN readiness/hooks are copied. The group's top-level
+// appCfg.Readiness/.Hooks are deliberately NOT copied here: those are the
+// app-level fallback that fires once after every service has started (see
+// appLevelLifecycleConfig / startAndStreamServices), so copying them onto each
+// per-service config would run hooks.postStart.agent in every container
+// (WDY-1271).
 func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
 	cfg := &appconfig.AppConfig{
 		AppID:       appCfg.AppID,
@@ -697,6 +727,8 @@ func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *app
 		Platform:    appCfg.Platform,
 		Isolation:   appCfg.Isolation,
 		Frameworks:  appCfg.Frameworks,
+		Readiness:   svc.Readiness,
+		Hooks:       svc.Hooks,
 	}
 	cfg.Entitlements = append(append([]appconfig.Entitlement{}, appCfg.Entitlements...), svc.Entitlements...)
 	cfg.Entitlements = deduplicateEntitlements(cfg.Entitlements)
@@ -722,9 +754,19 @@ func multiServiceContainerName(appID, serviceName string) string {
 // running. This ordering is required for shared-ipc/shared-network groups:
 // the agent resolves a secondary's namespace join at container create time
 // against the primary's running task.
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error) error {
+//
+// svcCfgs supplies the per-service AppConfig for each name in ordered: it both
+// carries the agent-side postStart hook onto the StartContainer RPC (via
+// contextWithPostStartAgentHook) and drives the per-service readiness→announce
+// →postStart sequence. appLevelCfg, when non-nil, is the group-level fallback
+// fired once after every service has started. Hook firing is strictly
+// non-blocking with respect to the sequential create→start→Started-ack loop,
+// which is load-bearing for shared-namespace joins (WDY-1271).
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+
+	runner := &serviceHookRunner{conn: conn}
 
 	// Ctrl+C stops all services.
 	sigCh := make(chan os.Signal, 1)
@@ -755,7 +797,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 				return err
 			}
 			containerName := multiServiceContainerName(appID, name)
-			stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+			stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, svcCfgs[name]), &agentpb.StartContainerRequest{
 				AppName: containerName,
 			})
 			if err != nil {
@@ -766,6 +808,15 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			}
 		}
 		cliLogln("App group %s running in detached mode.", appID)
+		// Every container is up: fire each service's readiness→announce→postStart
+		// sequentially in dependency order, then the app-level fallback. hookCtx
+		// is context.Background() so cli hooks outlive the detaching CLI; readiness
+		// failures only warn (non-fatal), so we still return nil. No reap: there is
+		// nothing left to wait on once we detach.
+		for _, name := range ordered {
+			runner.runOne(runCtx, context.Background(), svcCfgs[name])
+		}
+		runner.runOne(runCtx, context.Background(), appLevelCfg)
 		return nil
 	}
 
@@ -779,27 +830,40 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 	// Create and start sequentially in dependency order; the first Recv
 	// blocks until the agent's Started ack, guaranteeing each service's task
 	// is running before the next service's container is created.
+	// Every early-error return mirrors the happy-path teardown: cancel first
+	// (aborts in-flight hook waits, kills tracked cli-hook children), then wait
+	// out the log goroutines and reap hooks already startAsync'd for earlier
+	// services, so nothing outlives this call.
 	var wg sync.WaitGroup
 	for _, name := range ordered {
 		if err := createService(name); err != nil {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return err
 		}
 		containerName := multiServiceContainerName(appID, name)
-		stream, err := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, svcCfgs[name]), &agentpb.StartContainerRequest{
 			AppName: containerName,
 		})
 		if err != nil {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return fmt.Errorf("starting service %s: %w", name, err)
 		}
 		if _, err := stream.Recv(); err != nil && err != io.EOF {
 			runCancel()
 			wg.Wait()
+			runner.reap()
 			return fmt.Errorf("waiting for service %s to start: %w", name, err)
 		}
+		// This service's task is running (Started ack received). Fire its
+		// readiness→announce→postStart sequence on a goroutine so a slow or
+		// failing probe never delays creating/starting the next service — the
+		// sequential Started-ack ordering above is load-bearing for
+		// shared-ipc/shared-network joins and must not be disturbed (WDY-1271).
+		runner.startAsync(runCtx, svcCfgs[name])
 		wg.Add(1)
 		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()
@@ -832,6 +896,10 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		}(name, stream)
 	}
 
+	// Every service has started: fire the app-level fallback (nil on subset
+	// runs). Async, for the same non-blocking reason as the per-service hooks.
+	runner.startAsync(runCtx, appLevelCfg)
+
 	go func() {
 		wg.Wait()
 		close(lines)
@@ -848,10 +916,13 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		}
 	}
 
-	if runCtx.Err() != nil {
-		cliLogln("\nApp group %s stopped.", appID)
-		return nil
-	}
+	// The run has ended (streams closed, or Ctrl+C already canceled runCtx).
+	// Cancel to abort any in-flight readiness wait and kill tracked cli hooks,
+	// then reap so no hook goroutine or child outlives this call — mirroring
+	// run.go's `runCancel(); postStartCmd.Wait()`.
+	runCancel()
+	runner.reap()
+
 	cliLogln("\nApp group %s stopped.", appID)
 	return nil
 }

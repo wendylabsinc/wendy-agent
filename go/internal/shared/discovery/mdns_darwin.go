@@ -106,8 +106,8 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 	}
 
 	ipAddr := ""
-	if addrs, lookupErr := net.LookupHost(hostname); lookupErr == nil && len(addrs) > 0 {
-		ipAddr = addrs[0]
+	if addrs, lookupErr := net.LookupHost(hostname); lookupErr == nil {
+		ipAddr = preferIPv4Addr(addrs)
 	}
 
 	return MDNSService{

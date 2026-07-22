@@ -141,8 +141,20 @@ func parseAvahiResolveLine(line string) (models.LANDevice, bool) {
 		InterfaceType: string(models.InterfaceLAN),
 		IsWendyDevice: true,
 	}
+	setAssetID(&dev, txtRecords)
 	setLANNetworkInterface(&dev, ifaceName, "", linuxInterfaceLinkSpeed(ifaceName))
 	return dev, true
+}
+
+// setAssetID parses the assetid TXT record into dev.AssetID. Only positive
+// values are accepted; 0 (or an absent/unparseable record) leaves AssetID at
+// its zero value, meaning unknown or unprovisioned.
+func setAssetID(dev *models.LANDevice, txtRecords map[string]string) {
+	if v, ok := txtRecords["assetid"]; ok {
+		if id, err := strconv.ParseInt(v, 10, 32); err == nil && id > 0 {
+			dev.AssetID = int32(id)
+		}
+	}
 }
 
 // avahiUnescape replaces avahi's \NNN decimal escape sequences with the
@@ -270,6 +282,7 @@ func lanDeviceFromMDNSEntry(entry *mdns.ServiceEntry, iface *net.Interface) (mod
 		InterfaceType: string(models.InterfaceLAN),
 		IsWendyDevice: true,
 	}
+	setAssetID(&dev, txtRecords)
 	if iface != nil {
 		setLANNetworkInterface(&dev, iface.Name, "", linuxInterfaceLinkSpeed(iface.Name))
 	}

@@ -446,6 +446,13 @@ func applyAdmin(spec *Spec) {
 }
 
 // applyNetwork configures the network namespace.
+//
+// DEPRECATION (specs/2026-07-05-network-bridge-default-design.md): an omitted
+// mode maps to "host" below, which is the implicit default that design
+// deprecates in favor of an eventual "bridge" default. That mapping is
+// intentionally unchanged here — only a WARN log at container create (in the
+// containerd package, see hasImplicitHostNetworkMode) flags it. This function
+// only gains the new "bridge" mode itself.
 func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 	mode := ent.Mode
 	if mode == "" {
@@ -521,10 +528,17 @@ func applyNetwork(spec *Spec, ent appconfig.Entitlement) {
 				})
 			}
 		}
-	} else if mode == "none" {
+	} else if mode == "none" || mode == "bridge" {
 		// Ensure the network namespace is present (container gets its own isolated network).
 		// The default spec already has a network namespace, so this is a no-op in most cases,
 		// but we add it explicitly in case it was removed previously.
+		//
+		// "bridge" mirrors "none" here deliberately: this function adds no host
+		// mounts (no /sys bind, no host resolv.conf) and no CAP_NET_ADMIN for
+		// bridge mode. What makes "bridge" different from "none" — a private IP,
+		// NAT egress, and working DNS — is wired up by the containerd layer
+		// attaching the container to the per-app CNI bridge (see
+		// needsCNIBridgeWiring in the containerd package), not here.
 		hasNetworkNS := false
 		for _, ns := range spec.Linux.Namespaces {
 			if ns.Type == "network" {

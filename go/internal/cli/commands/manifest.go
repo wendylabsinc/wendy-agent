@@ -33,6 +33,7 @@ type deviceManifest struct {
 
 // deviceVersion describes one OS image version.
 type deviceVersion struct {
+	InstallMode            string `json:"install_mode"`
 	Path                   string `json:"path"`
 	SizeBytes              int64  `json:"size_bytes"`
 	Checksum               string `json:"checksum"`
@@ -68,11 +69,35 @@ type deviceVersion struct {
 	SDZstChecksum  string `json:"sd_zst_checksum"`
 	SDZstSizeBytes int64  `json:"sd_zst_size_bytes"`
 
+	// Explicit raw-media artifacts retained for --rootfs-only on recovery-first
+	// T234 releases. They deliberately do not fall back to legacy image fields.
+	NVMERootfsOnlyPath         string `json:"nvme_rootfs_only_path"`
+	NVMERootfsOnlyChecksum     string `json:"nvme_rootfs_only_checksum"`
+	NVMERootfsOnlySizeBytes    int64  `json:"nvme_rootfs_only_size_bytes"`
+	NVMERootfsOnlyBmapPath     string `json:"nvme_rootfs_only_bmap_path"`
+	NVMERootfsOnlyZstPath      string `json:"nvme_rootfs_only_zst_path"`
+	NVMERootfsOnlyZstChecksum  string `json:"nvme_rootfs_only_zst_checksum"`
+	NVMERootfsOnlyZstSizeBytes int64  `json:"nvme_rootfs_only_zst_size_bytes"`
+	SDRootfsOnlyPath           string `json:"sd_rootfs_only_path"`
+	SDRootfsOnlyChecksum       string `json:"sd_rootfs_only_checksum"`
+	SDRootfsOnlySizeBytes      int64  `json:"sd_rootfs_only_size_bytes"`
+	SDRootfsOnlyBmapPath       string `json:"sd_rootfs_only_bmap_path"`
+	SDRootfsOnlyZstPath        string `json:"sd_rootfs_only_zst_path"`
+	SDRootfsOnlyZstChecksum    string `json:"sd_rootfs_only_zst_checksum"`
+	SDRootfsOnlyZstSizeBytes   int64  `json:"sd_rootfs_only_zst_size_bytes"`
+
 	// Thor flashpack: the USB-recovery flash artifact (a .tar.zst) wendy downloads,
 	// extracts and flashes. Only present for jetson-agx-thor.
 	FlashpackPath      string `json:"flashpack_path"`
 	FlashpackChecksum  string `json:"flashpack_checksum"`
 	FlashpackSizeBytes int64  `json:"flashpack_size_bytes"`
+
+	NVMEFlashpackPath      string `json:"nvme_flashpack_path"`
+	NVMEFlashpackChecksum  string `json:"nvme_flashpack_checksum"`
+	NVMEFlashpackSizeBytes int64  `json:"nvme_flashpack_size_bytes"`
+	EMMCFlashpackPath      string `json:"emmc_flashpack_path"`
+	EMMCFlashpackChecksum  string `json:"emmc_flashpack_checksum"`
+	EMMCFlashpackSizeBytes int64  `json:"emmc_flashpack_size_bytes"`
 }
 
 // deviceInfo is the aggregated info shown in the picker for one device.
@@ -281,12 +306,48 @@ func getImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
 		return nil, fmt.Errorf("version %s not found in device manifest", ver)
 	}
 	t := resolveTriple(v, storage)
+	if t.imagePath == "" && t.zstPath == "" {
+		return nil, fmt.Errorf("version %s has no %s image artifact", ver, storage)
+	}
 
 	info := &imageInfo{
 		DownloadURL: gcsBaseURL + "/" + t.imagePath,
 		ImageSize:   t.imageSize,
 		Version:     ver,
 		Storage:     storage,
+	}
+	if t.bmapPath != "" {
+		info.BmapURL = gcsBaseURL + "/" + t.bmapPath
+	}
+	if t.zstPath != "" {
+		info.ZstURL = gcsBaseURL + "/" + t.zstPath
+	}
+	return info, nil
+}
+
+// getRootfsOnlyImageInfo resolves only the explicitly-named raw artifact on a
+// recovery-first release. It never consults Path/NVMEPath/SDPath, preventing a
+// new CLI from silently mixing a recovery-era rootfs with stale boot firmware.
+func getRootfsOnlyImageInfo(dm *deviceManifest, ver, storage string) (*imageInfo, error) {
+	v, ok := dm.Versions[ver]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found in device manifest", ver)
+	}
+	var t imageTriple
+	switch storage {
+	case "nvme":
+		t = imageTriple{v.NVMERootfsOnlyPath, v.NVMERootfsOnlySizeBytes, v.NVMERootfsOnlyBmapPath, v.NVMERootfsOnlyZstPath}
+	case "sd":
+		t = imageTriple{v.SDRootfsOnlyPath, v.SDRootfsOnlySizeBytes, v.SDRootfsOnlyBmapPath, v.SDRootfsOnlyZstPath}
+	default:
+		return nil, fmt.Errorf("rootfs-only imaging does not support storage %q", storage)
+	}
+	if t.imagePath == "" && t.zstPath == "" {
+		return nil, fmt.Errorf("version %s has no %s rootfs-only artifact", ver, storage)
+	}
+	info := &imageInfo{Version: ver, ImageSize: t.imageSize, Storage: storage}
+	if t.imagePath != "" {
+		info.DownloadURL = gcsBaseURL + "/" + t.imagePath
 	}
 	if t.bmapPath != "" {
 		info.BmapURL = gcsBaseURL + "/" + t.bmapPath
@@ -395,6 +456,46 @@ func getPROTAInfoForDeviceType(pr int, deviceType, storageMedium string) (artifa
 // thorDeviceType is the manifest key / --device-type for the AGX Thor.
 const thorDeviceType = "jetson-agx-thor"
 
+// orinDeviceType is the manifest key / --device-type for the AGX Orin. Unlike
+// Thor it supports two install modes: the NVMe disk image (regular drive
+// flow) and the onboard-eMMC USB-recovery flash (--storage emmc).
+const orinDeviceType = "jetson-agx-orin"
+
+const orinNanoDeviceType = "jetson-orin-nano"
+
+func isT234RecoveryDevice(deviceType string) bool {
+	return deviceType == orinDeviceType || deviceType == orinNanoDeviceType
+}
+
+type recoveryFlashpackInfo struct {
+	URL, Checksum string
+	SizeBytes     int64
+	Version       string
+	Device        string
+	Storage       string
+}
+
+func getRecoveryFlashpackInfo(dm *deviceManifest, device, version, storage string) (*recoveryFlashpackInfo, error) {
+	v, ok := dm.Versions[version]
+	if !ok {
+		return nil, fmt.Errorf("version %s not found for %s", version, device)
+	}
+	var path, checksum string
+	var size int64
+	switch storage {
+	case "nvme":
+		path, checksum, size = v.NVMEFlashpackPath, v.NVMEFlashpackChecksum, v.NVMEFlashpackSizeBytes
+	case "emmc":
+		path, checksum, size = v.EMMCFlashpackPath, v.EMMCFlashpackChecksum, v.EMMCFlashpackSizeBytes
+	default:
+		return nil, fmt.Errorf("recovery flashpacks do not support storage %q", storage)
+	}
+	if path == "" || checksum == "" || size <= 0 {
+		return nil, fmt.Errorf("version %s has no complete %s recovery flashpack", version, storage)
+	}
+	return &recoveryFlashpackInfo{URL: gcsBaseURL + "/" + path, Checksum: checksum, SizeBytes: size, Version: version, Device: device, Storage: storage}, nil
+}
+
 // thorFlashpackInfo is the resolved flashpack download for a Thor version.
 type thorFlashpackInfo struct {
 	URL       string
@@ -404,14 +505,26 @@ type thorFlashpackInfo struct {
 }
 
 // getThorFlashpackInfo fetches the jetson-agx-thor manifest and returns the flashpack
-// artifact for version (or the latest stable / nightly when version is "").
-func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, error) {
-	main, err := fetchMainManifest()
+// artifact for version (or the latest stable / nightly when version is ""). When
+// pr > 0 it resolves against the per-PR manifest (pr/<N>/) written by the
+// wendyos-builder publish-pr job instead of the released master manifest; the
+// flashpack path there is already pr-prefixed, so the download URL is correct.
+func getThorFlashpackInfo(version string, nightly bool, pr int) (*thorFlashpackInfo, error) {
+	var main *mainManifest
+	var err error
+	if pr > 0 {
+		main, err = fetchPRMainManifest(pr)
+	} else {
+		main, err = fetchMainManifest()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetching manifest: %w", err)
 	}
 	dev, ok := main.Devices[thorDeviceType]
 	if !ok || dev.ManifestPath == "" {
+		if pr > 0 {
+			return nil, fmt.Errorf("%s not built by PR %d", thorDeviceType, pr)
+		}
 		return nil, fmt.Errorf("%s not found in manifest", thorDeviceType)
 	}
 	dm, err := fetchDeviceManifest(dev.ManifestPath)
@@ -419,9 +532,13 @@ func getThorFlashpackInfo(version string, nightly bool) (*thorFlashpackInfo, err
 		return nil, fmt.Errorf("fetching device manifest: %w", err)
 	}
 	if version == "" {
-		version = dev.Latest
-		if nightly && dev.LatestNightly != "" {
-			version = dev.LatestNightly
+		if pr > 0 {
+			version = prDeviceVersion(dev)
+		} else {
+			version = dev.Latest
+			if nightly && dev.LatestNightly != "" {
+				version = dev.LatestNightly
+			}
 		}
 	}
 	if version == "" {

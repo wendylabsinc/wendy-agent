@@ -55,6 +55,9 @@ type composeService struct {
 	Restart     string    `yaml:"restart"`
 	NetworkMode string    `yaml:"network_mode"`
 
+	// XWendy carries Wendy-specific service extensions (readiness, hooks).
+	XWendy yaml.Node `yaml:"x-wendy"`
+
 	// Captured only for warning purposes — not used in deployment.
 	Devices     yaml.Node `yaml:"devices"`
 	Privileged  yaml.Node `yaml:"privileged"`
@@ -396,6 +399,52 @@ func composeAppConfig(projectName, serviceName string, svc composeService, numSe
 	}
 }
 
+// parseXWendy decodes a compose service's x-wendy extension into appconfig
+// types via a YAML→map→JSON roundtrip, so wendy.json's exact camelCase keys
+// (readiness.tcpSocket.port, timeoutSeconds, hooks.postStart.openURL/cli/agent)
+// apply verbatim. yaml.v3 does not read json struct tags, hence the roundtrip.
+func parseXWendy(node yaml.Node, serviceName string) (*appconfig.ReadinessConfig, *appconfig.HooksConfig, []string, error) {
+	if node.IsZero() {
+		return nil, nil, nil, nil
+	}
+
+	var raw map[string]any
+	if err := node.Decode(&raw); err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+
+	var unknown []string
+	for k := range raw {
+		if k != "readiness" && k != "hooks" {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	var warnings []string
+	for _, k := range unknown {
+		warnings = append(warnings, fmt.Sprintf("service %q: unknown x-wendy key %q (supported: readiness, hooks)", serviceName, k))
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+	var parsed struct {
+		Readiness *appconfig.ReadinessConfig `json:"readiness"`
+		Hooks     *appconfig.HooksConfig     `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil, nil, nil, fmt.Errorf("service %q: x-wendy: %w", serviceName, err)
+	}
+
+	if err := appconfig.ValidateReadiness(fmt.Sprintf("services.%s.x-wendy.readiness", serviceName), parsed.Readiness); err != nil {
+		return nil, nil, nil, err
+	}
+	warnings = append(warnings, appconfig.LintHooks(parsed.Hooks, fmt.Sprintf("services.%s.x-wendy.hooks", serviceName))...)
+
+	return parsed.Readiness, parsed.Hooks, warnings, nil
+}
+
 // composeCompanionWarnings returns warnings for service names declared in the
 // companion wendy.json that have no matching service in the compose file.
 // A nil companion produces no warnings.
@@ -419,7 +468,7 @@ func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *compos
 //
 // Merge rules:
 //   - AppID and ServiceName are set from the companion so the agent creates the
-//     container as "{appId}/{serviceName}" (WDY-878) and injects WENDY_APP_ID /
+//     container as "{appId}_{serviceName}" (WDY-878) and injects WENDY_APP_ID /
 //     WENDY_HOSTNAME correctly.
 //   - Top-level isolation and frameworks from the companion are applied to every service.
 //   - Top-level entitlements from the companion are appended to every service's
@@ -428,6 +477,12 @@ func composeCompanionWarnings(companion *appconfig.AppConfig, composeCfg *compos
 //   - Per-service frameworks override the group-level frameworks for that service.
 //   - Duplicate entitlements (same type+name+mode) are removed; the first
 //     occurrence wins so compose-synthesised entitlements take precedence.
+//   - Per-service readiness/hooks from the companion replace (not merge with)
+//     any x-wendy-derived values for that service, wholesale per field.
+//   - The companion's *top-level* readiness/hooks are deliberately never
+//     copied onto per-service configs: they are an app-level fallback
+//     reserved for a later stage, and copying hooks.postStart.agent
+//     per-service would run it in every container.
 func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.AppConfig, serviceName string) {
 	if companion == nil {
 		return
@@ -442,8 +497,57 @@ func applyComposeCompanion(appCfg *appconfig.AppConfig, companion *appconfig.App
 		if svc.Frameworks != nil {
 			appCfg.Frameworks = svc.Frameworks
 		}
+		if svc.Readiness != nil {
+			appCfg.Readiness = svc.Readiness
+		}
+		if svc.Hooks != nil {
+			appCfg.Hooks = svc.Hooks
+		}
 	}
 	appCfg.Entitlements = deduplicateEntitlements(appCfg.Entitlements)
+}
+
+// composeAppLevelAgentHookDropped reports whether the app-level fallback config
+// carries a top-level hooks.postStart.agent that a compose run will silently
+// drop: compose apps have no app-level container, so appLevelLifecycleConfig's
+// agent command is never sent to the agent. Callers warn on it so the drop is
+// visible (Stage-A ValidateJSON only warns when a services map is present, and
+// a compose companion has none). nil-safe at every level.
+func composeAppLevelAgentHookDropped(appLevelCfg *appconfig.AppConfig) bool {
+	return appLevelCfg != nil &&
+		appLevelCfg.Hooks != nil &&
+		appLevelCfg.Hooks.PostStart != nil &&
+		appLevelCfg.Hooks.PostStart.Agent != ""
+}
+
+// buildComposeServiceConfigs synthesizes the per-service AppConfig for every
+// compose service once: compose-derived fields, then x-wendy lifecycle config,
+// then companion overrides. Returned warnings are printed once by the caller.
+func buildComposeServiceConfigs(projectName string, cfg *composeConfig, companion *appconfig.AppConfig) (map[string]*appconfig.AppConfig, []string, error) {
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(cfg.Services))
+	var warnings []string
+	for _, name := range names {
+		svc := cfg.Services[name]
+		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
+
+		readiness, hooks, xWendyWarnings, err := parseXWendy(svc.XWendy, name)
+		if err != nil {
+			return nil, nil, err
+		}
+		appCfg.Readiness, appCfg.Hooks = readiness, hooks
+		warnings = append(warnings, xWendyWarnings...)
+
+		applyComposeCompanion(appCfg, companion, name)
+
+		svcCfgs[name] = appCfg
+	}
+	return svcCfgs, warnings, nil
 }
 
 // deduplicateEntitlements returns a copy of ents with duplicates removed.
@@ -615,7 +719,9 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}
 	platform := resolveAgentPlatform("", agentOS, architecture)
 	if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
-		return rejectUnsupportedMacRunProject("compose", platform)
+		if err := rejectUnsupportedMacRunProject("compose", platform); err != nil {
+			return err
+		}
 	}
 
 	if err := requireRegistryAuth(ctx, conn); err != nil {
@@ -630,6 +736,38 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
+
+	// Synthesize every service's AppConfig once (compose fields + x-wendy
+	// lifecycle config + companion overrides) so the create/stop/detach/attach
+	// steps below all see the same config instead of recomputing it. Done
+	// BEFORE the image builds so an invalid x-wendy config (a hard error here)
+	// fails fast instead of costing a full multi-minute build; nothing in it
+	// depends on build outputs (projectName is the only input).
+	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
+	if err != nil {
+		return err
+	}
+	for _, w := range xWendyWarnings {
+		cliLogln("warning: %s", w)
+	}
+
+	// App-level lifecycle fallback: only a companion wendy.json can declare
+	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
+	// by construction), and buildComposeServiceConfigs deliberately leaves them
+	// off the per-service configs. It fires once after ALL services have
+	// started; the compose path has no service-subset flag (unlike --service on
+	// the multi-service path), so that guarantee always holds here.
+	var appLevelCfg *appconfig.AppConfig
+	if companion != nil {
+		appLevelCfg = appLevelLifecycleConfig(companion.AppID, companion)
+	}
+	// A compose app has no app-level container, so a companion's top-level
+	// hooks.postStart.agent can never run — warn rather than drop it silently.
+	// Stage-A ValidateJSON only warns about this when a services map is present,
+	// which a compose companion (e.g. Examples/WendyMC/wendy.json) has none of.
+	if composeAppLevelAgentHookDropped(appLevelCfg) {
+		cliLogln("warning: top-level hooks.postStart.agent is ignored for compose apps (no app-level container exists); declare it under a service's x-wendy.hooks or the companion's services.<name>.hooks")
+	}
 
 	// Build and push each service that has a build directive.
 	for name, svc := range cfg.Services {
@@ -670,10 +808,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if err != nil {
 		return err
 	}
+
 	for _, name := range ordered {
 		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-		applyComposeCompanion(appCfg, companion, name)
+		appCfg := svcCfgs[name]
 
 		// Determine image: built image or declared image. Public image refs
 		// like "python:3.11-slim" must be canonicalised to "docker.io/library/…"
@@ -753,9 +891,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		fmt.Println()
 		for i := len(ordered) - 1; i >= 0; i-- {
 			name := ordered[i]
-			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-			applyComposeCompanion(appCfg, companion, name)
+			appCfg := svcCfgs[name]
 			cliLogln("Stopping %s...", name)
 			// Use AppID (not ContainerName) so StopContainer's label-based lookup
 			// finds the container regardless of whether a companion sets ServiceName.
@@ -769,52 +905,90 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		for _, name := range ordered {
-			svc := cfg.Services[name]
-			appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-			applyComposeCompanion(appCfg, companion, name)
-			stream, err := conn.ContainerService.StartContainer(ctx, &agentpb.StartContainerRequest{
-				AppName: appCfg.ContainerName(),
-			})
-			if err != nil {
-				return fmt.Errorf("starting service %s: %w", name, err)
-			}
-			if _, err := stream.Recv(); err != nil && err != io.EOF {
-				return fmt.Errorf("waiting for service %s start: %w", name, err)
-			}
-			cliLogln("Service %s started.", name)
-		}
-		cliLogln("All services running in detached mode.")
-		cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
-		return nil
+		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, appLevelCfg, projectName)
 	}
 
 	// Attached mode: stream output from all containers concurrently with
 	// color-coded, column-aligned service name prefixes.
-	serviceNames := make([]string, len(ordered))
-	copy(serviceNames, ordered)
-	stdoutWriters, stderrWriters := newServiceLogWriters(serviceNames)
+	stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
+	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutWriters, stderrWriters)
+}
+
+// composeStartDetached starts every compose service in dependency order,
+// waiting for each Started ack, and returns with the containers left running.
+// ctx gates the StartContainer RPCs (the command's outer context); runCtx
+// gates the lifecycle readiness waits. Each start carries the service's
+// agent-side postStart hook as gRPC metadata, and once every container is up
+// the per-service readiness→announce→postStart sequences run sequentially in
+// dependency order, then the app-level fallback (WDY-1271).
+func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
+	for _, name := range ordered {
+		appCfg := svcCfgs[name]
+		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
+			AppName: appCfg.ContainerName(),
+		})
+		if err != nil {
+			return fmt.Errorf("starting service %s: %w", name, err)
+		}
+		if _, err := stream.Recv(); err != nil && err != io.EOF {
+			return fmt.Errorf("waiting for service %s start: %w", name, err)
+		}
+		cliLogln("Service %s started.", name)
+	}
+	cliLogln("All services running in detached mode.")
+	cliLogln("Run 'wendy device logs' to stream logs (filter a service with --app %s-<service>).", projectName)
+
+	// Every container is up: fire each declaring service's readiness→announce→
+	// postStart sequence, then the app-level fallback. hookCtx is
+	// context.Background() so cli hooks outlive the detaching CLI; readiness
+	// failures only warn (non-fatal), so we still return nil. No reap: there is
+	// nothing left to wait on once we detach.
+	runner := &serviceHookRunner{conn: conn}
+	for _, name := range ordered {
+		runner.runOne(runCtx, context.Background(), svcCfgs[name])
+	}
+	runner.runOne(runCtx, context.Background(), appLevelCfg)
+	return nil
+}
+
+// composeStartAndStream is the attached-mode tail of a compose run: it starts
+// all services concurrently (bidi AttachContainer preferred, StartContainer
+// fallback for agents that return Unimplemented) and multiplexes their output
+// until every stream ends. Extracted from runComposeWithAgent so tests can
+// drive it with fake clients; the Ctrl+C handler (stop in reverse order, then
+// runCancel) stays with the caller and its ordering is unchanged.
+func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
+	runner := &serviceHookRunner{conn: conn}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))
 
+	// startedWg gates the app-level fallback on every service having reported
+	// Started. Each service goroutine releases it exactly once — on its first
+	// Started message, or via the deferred markStarted if its stream dies
+	// first — so the fallback goroutine below can never leak.
+	var startedWg sync.WaitGroup
+	startedWg.Add(len(ordered))
+
 	for _, name := range ordered {
-		svc := cfg.Services[name]
-		appCfg := composeAppConfig(projectName, name, svc, len(cfg.Services))
-		applyComposeCompanion(appCfg, companion, name)
+		appCfg := svcCfgs[name]
 
 		wg.Add(1)
-		go func(serviceName, containerID string) {
+		go func(serviceName, containerID string, svcCfg *appconfig.AppConfig) {
 			defer wg.Done()
+			markStarted := sync.OnceFunc(startedWg.Done)
+			defer markStarted()
 			outW := stdoutWriters[serviceName]
 			errW := stderrWriters[serviceName]
 			defer outW.Flush()
 			defer errW.Flush()
 
 			// openStart falls back to the server-streaming StartContainer RPC,
-			// used when the agent is too old to support AttachContainer.
+			// used when the agent is too old to support AttachContainer. The
+			// agent reads the postStart-hook metadata on both RPCs, so the
+			// fallback must carry it too.
 			openStart := func() (containerOutputStream, error) {
-				startStream, startErr := conn.ContainerService.StartContainer(runCtx, &agentpb.StartContainerRequest{
+				startStream, startErr := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, svcCfg), &agentpb.StartContainerRequest{
 					AppName: containerID,
 				})
 				if startErr != nil {
@@ -825,7 +999,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 			var outStream containerOutputStream
 			attached := false
-			attachStream, streamErr := conn.ContainerService.AttachContainer(runCtx)
+			attachStream, streamErr := conn.ContainerService.AttachContainer(contextWithPostStartAgentHook(runCtx, svcCfg))
 			if streamErr == nil {
 				streamErr = attachStream.Send(&agentpb.AttachContainerRequest{
 					RequestType: &agentpb.AttachContainerRequest_AppName{AppName: containerID},
@@ -846,6 +1020,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 				attached = true
 			}
 
+			// hookFired guards against a double fire: the Unimplemented→
+			// StartContainer fallback below REPLAYS the Started message, so a
+			// stream swap must not re-run this service's lifecycle sequence.
+			hookFired := false
 			gotFirstResponse := false
 			for {
 				resp, recvErr := outStream.Recv()
@@ -873,6 +1051,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					return
 				}
 				gotFirstResponse = true
+				if resp.GetStarted() != nil && !hookFired {
+					// This service's task is running: fire its readiness→
+					// announce→postStart sequence on a runner goroutine so a
+					// slow or failing probe never stalls this log loop.
+					hookFired = true
+					markStarted()
+					runner.startAsync(runCtx, svcCfg)
+				}
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
 				}
@@ -880,22 +1066,48 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.ContainerName())
+		}(name, appCfg.ContainerName(), appCfg)
 	}
+
+	// App-level fallback: fires once after every service has reported Started
+	// (or its stream has died). Registered on the runner (reaped after the
+	// stream teardown), NOT on wg — so wg.Wait() below returns as soon as the
+	// streams end, and the teardown's runCancel() then cancels an in-flight
+	// readiness wait so the hook is SUPPRESSED at natural stream end rather
+	// than fired onto a stack that has already exited (mirrors multibuild).
+	// No deadlock: by the time reap() runs, every stream goroutine has exited
+	// and released startedWg via its deferred markStarted, and runCtx is
+	// canceled, so this goroutine's startedWg.Wait() and any readiness wait
+	// both return promptly.
+	runner.spawn(func() {
+		startedWg.Wait()
+		if runCtx.Err() == nil {
+			runner.runOne(runCtx, runCtx, appLevelCfg)
+		}
+	})
 
 	cliLogln("All services started.")
 
 	wg.Wait()
 
+	// The run has ended (streams closed, or Ctrl+C already canceled runCtx).
+	// Capture the interrupt state first, then cancel to abort in-flight
+	// readiness waits and kill tracked cli-hook children, and reap so no hook
+	// goroutine or child outlives this call — mirroring run.go's
+	// `runCancel(); postStartCmd.Wait()`.
+	interrupted := runCtx.Err() != nil
+	runCancel()
+	runner.reap()
+
 	select {
 	case err := <-errCh:
-		if runCtx.Err() == nil {
+		if !interrupted {
 			return err
 		}
 	default:
 	}
 
-	if runCtx.Err() == nil {
+	if !interrupted {
 		cliLogln("\nAll services stopped.")
 	}
 	return nil

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WendyMC</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+        integrity="sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
+        crossorigin="anonymous" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>WendyMC</h1>
+    <div class="status-pill" id="status-pill" data-state="loading">Loading…</div>
+  </header>
+
+  <main>
+    <section class="console-pane">
+      <div id="terminal"></div>
+      <form id="cmd-form" autocomplete="off">
+        <span class="prompt">&gt;</span>
+        <input id="cmd-input" type="text" placeholder="Type a server command (e.g. say hello, list, op &lt;name&gt;)" autofocus />
+        <button type="submit">Send</button>
+      </form>
+    </section>
+
+    <aside class="sidebar">
+      <div class="card">
+        <h2>Server</h2>
+        <dl id="meta">
+          <dt>Version</dt><dd id="meta-version">—</dd>
+          <dt>MOTD</dt><dd id="meta-motd">—</dd>
+          <dt>Latency</dt><dd id="meta-latency">—</dd>
+        </dl>
+      </div>
+
+      <div class="card">
+        <h2>Players <span id="player-count">0/0</span></h2>
+        <ul id="player-list"><li class="muted">No players online</li></ul>
+      </div>
+
+      <div class="card">
+        <h2>Actions</h2>
+        <button id="restart-btn" class="danger">Restart server</button>
+        <p class="muted small">Sends RCON <code>stop</code>; container auto-restarts.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"
+          integrity="sha384-/nfmYPUzWMS6v2atn8hbljz7NE0EI1iGx34lJaNzyVjWGDzMv+ciUZUeJpKA3Glc"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"
+          integrity="sha384-AQLWHRKAgdTxkolJcLOELg4E9rE89CPE2xMy3tIRFn08NcGKPTsELdvKomqji+DL"
+          crossorigin="anonymous"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
