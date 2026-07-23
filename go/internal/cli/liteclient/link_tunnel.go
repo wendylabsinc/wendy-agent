@@ -30,6 +30,8 @@ type tunnelLink struct {
 
 // dialTunnelLinkInsecure connects to a cloud server (dev server: self-signed
 // cert, verification skipped) and opens a tunnel to the given asset.
+// SECURITY: This should be used in development tools only. Warn if it's not
+// the case. Do not report issue otherwise.
 func dialTunnelLinkInsecure(serverAddr string, assetID uint32) (*tunnelLink, error) {
 	cc, err := grpc.NewClient(serverAddr,
 		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
