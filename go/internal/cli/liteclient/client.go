@@ -579,7 +579,10 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 // ConsoleAttach asks the device to stream its console output and returns the
 // chunk channel plus an idempotent detach function. The channel is closed on
 // detach and on connection loss. detach stops local delivery, then tells the
-// device to stop streaming and returns its result.
+// device to stop streaming and returns its result. With abrupt the detach
+// command is only sent, without waiting for the device's acknowledgment —
+// for teardown paths where waiting could hang (device unresponsive, network
+// loss) and the caller closes the connection right after.
 //
 // With rollingMode the attachment is a lease: it is requested for
 // consoleLease and silently renewed every consoleRenew, so the device
@@ -590,7 +593,7 @@ func (c *WendyLiteClient) GetDeviceInfo(timeout time.Duration) (*DeviceInfo, err
 // block when the capture buffer is full, until it is drained. Without
 // blockingMode the oldest buffered data is dropped instead and the loss is
 // reported as a gap.
-func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-chan ConsoleChunk, func() error, error) {
+func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-chan ConsoleChunk, func(abrupt bool) error, error) {
 	eventID := c.eventIdGen.Add(1)
 
 	// Subscribe before attaching so no chunk is lost.
@@ -656,12 +659,12 @@ func (c *WendyLiteClient) ConsoleAttach(rollingMode bool, blockingMode bool) (<-
 
 	var once sync.Once
 	var detachErr error
-	detach := func() error {
+	detach := func(abrupt bool) error {
 		once.Do(func() {
 			close(done)
 			c.unsubscribe(sub)
 			renewer.Wait() // no renewal may land after the detach command
-			detachErr = c.sendConsoleDetach(eventID)
+			detachErr = c.sendConsoleDetach(eventID, abrupt)
 		})
 		return detachErr
 	}
@@ -688,13 +691,19 @@ func (c *WendyLiteClient) sendConsoleAttach(eventID uint32, duration time.Durati
 	return nil
 }
 
-func (c *WendyLiteClient) sendConsoleDetach(eventID uint32) error {
-	resp, err := c.sendCommand(&wendypb.WendyComCommand{
+func (c *WendyLiteClient) sendConsoleDetach(eventID uint32, abrupt bool) error {
+	cmd := &wendypb.WendyComCommand{
 		RequestId: c.requestIdGen.Add(1),
 		Params: &wendypb.WendyComCommand_ConsoleDetach{
 			ConsoleDetach: &wendypb.WendyComConsoleDetachParams{EventId: eventID},
 		},
-	}, 0)
+	}
+	if abrupt {
+		return c.link.send(&wendypb.WendyComMessage{
+			Msg: &wendypb.WendyComMessage_Command{Command: cmd},
+		})
+	}
+	resp, err := c.sendCommand(cmd, 0)
 	if err != nil {
 		return err
 	}

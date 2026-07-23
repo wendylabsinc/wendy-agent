@@ -364,7 +364,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		}
 	}
 
-	var consoleDetach func() error
+	var consoleDetach func(abrupt bool) error
 	var forwardDone chan struct{}
 	if !detach {
 		consoleCh, cd, err := client.ConsoleAttach(true, true)
@@ -382,7 +382,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		// after the deferred detach, which is what closes consoleCh.
 		forwardDone = make(chan struct{})
 		defer func() { <-forwardDone }()
-		defer consoleDetach()
+		defer consoleDetach(false)
 		go func() {
 			defer close(forwardDone)
 			for chunk := range consoleCh {
@@ -408,10 +408,21 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	select {
 	case <-forwardDone:
 		// Device detached on its own or connection lost.
-		return consoleDetach()
+		return consoleDetach(false)
 	case <-ctx.Done():
-		if err := consoleDetach(); err != nil {
+		// The run was cancelled from our side: the user hit Ctrl-C or the
+		// caller gave up on the whole operation. Waiting for a detach ack
+		// could hang without deadline exactly when cancellation is most
+		// likely (device wedged, network gone), so send the detach without
+		// waiting for the ack — giving the device a chance to stop streaming
+		// right away — then close the connection so everything else fails
+		// fast. If the detach never arrives, the rolling attach lease makes
+		// the device stop streaming on its own.
+		if err := consoleDetach(true); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: console detach: %v\n", err)
+		}
+		if err := client.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
 		}
 		return nil
 	}
