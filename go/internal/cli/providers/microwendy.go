@@ -236,6 +236,9 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 
 	// check if the project has been configured for the right target
 	target := boardToTarget(di.DeviceType)
+	if strings.ContainsAny(target, " \t\r\n") {
+		return nil, fmt.Errorf("invalid device target %q", target)
+	}
 	configuredTarget := espidftoolchain.ProjectTarget(projectPath)
 	if target != "" && target != configuredTarget {
 		cmd := espidftoolchain.IdfCommandContext(ctx, "set-target", target)
