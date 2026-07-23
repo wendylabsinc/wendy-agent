@@ -92,12 +92,18 @@ type subscription struct {
 	ch     chan *wendypb.WendyComMessage
 }
 
+// WendyLiteClient drives one connection to one device: connect once, then
+// Close is terminal — create a new client to reconnect.
 type WendyLiteClient struct {
 	link                wcomLink
 	serialLock          *serialLock
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
+
+	closeOnce sync.Once
+	closeErr  error
+	readDone  sync.WaitGroup // tracks the readLoop goroutine
 
 	mu      sync.Mutex // guards subs and readErr
 	subs    []*subscription
@@ -120,7 +126,7 @@ func (c *WendyLiteClient) ConnectInsecure(address string) error {
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -164,7 +170,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -198,7 +204,7 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 		c.serialLock = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -217,7 +223,7 @@ func (c *WendyLiteClient) ConnectViaCloudInsecure(serverAddr string, assetID uin
 		c.link = nil
 		return fmt.Errorf("handshake: %w", err)
 	}
-	go c.readLoop()
+	c.startReadLoop()
 	return nil
 }
 
@@ -274,15 +280,21 @@ func serialHandshake(port serial.Port) error {
 	return fmt.Errorf("serial handshake: sentinel not received within 3 seconds")
 }
 
+// Close tears the connection down. Closing the link unblocks the read loop's
+// pending recv; waiting for the loop to exit guarantees nothing is reading
+// from the port anymore before the serial lock is released. Safe to call more
+// than once and concurrently with in-flight commands: c.link stays in place,
+// so a late send fails on the closed link instead of dereferencing nil.
 func (c *WendyLiteClient) Close() error {
 	if c.link == nil {
 		return nil
 	}
-	err := c.link.close()
-	c.link = nil
-	c.serialLock.release()
-	c.serialLock = nil
-	return err
+	c.closeOnce.Do(func() {
+		c.closeErr = c.link.close()
+		c.readDone.Wait()
+		c.serialLock.release()
+	})
+	return c.closeErr
 }
 
 func (c *WendyLiteClient) Ping() error {
@@ -750,12 +762,21 @@ func (c *WendyLiteClient) unsubscribe(s *subscription) {
 	}
 }
 
+// startReadLoop hands c.link to the read loop goroutine and registers it with
+// readDone so Close can wait for it to exit.
+func (c *WendyLiteClient) startReadLoop() {
+	c.readDone.Add(1)
+	go c.readLoop(c.link)
+}
+
 // readLoop receives every message from the device and hands it to the first
 // subscriber whose filter matches. It runs from the end of the handshake
-// until the connection dies.
-func (c *WendyLiteClient) readLoop() {
+// until the connection dies. The link is a parameter rather than read from
+// c.link so the loop cannot race with Close mutating the client.
+func (c *WendyLiteClient) readLoop(link wcomLink) {
+	defer c.readDone.Done()
 	for {
-		msg, err := c.link.recv(0)
+		msg, err := link.recv(0)
 		if err != nil {
 			c.failAll(err)
 			return
