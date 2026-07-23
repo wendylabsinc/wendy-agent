@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/hardwarediag"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -182,14 +183,14 @@ func (s *mcpServer) handleHardwareWatch(ctx context.Context, req mcpgo.CallToolR
 		return errNotConnected(), nil
 	}
 
-	current, err := conn.DeviceInfoService.GetHardwareWatchList(ctx, &agentpbv2.GetHardwareWatchListRequest{})
+	snapshot, err := fetchHardwareSnapshot(ctx, conn)
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {
 			return errResult("unsupported", "this agent does not support the hardware watch list — update the agent"), nil
 		}
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	watches := current.GetDevices()
+	watches := snapshot.GetWatchList()
 
 	adds := splitWatchSpecs(stringParam(req, "add"))
 	removes := splitWatchSpecs(stringParam(req, "remove"))
@@ -223,6 +224,27 @@ func (s *mcpServer) handleHardwareWatch(ctx context.Context, req mcpgo.CallToolR
 		out = append(out, entry)
 	}
 	return okResult(map[string]any{"watched_devices": out}), nil
+}
+
+// fetchHardwareSnapshot opens a WatchHardware stream, reads the leading
+// snapshot, and closes the stream — the snapshot-only read the RPC contract
+// supports. (Mirrors the CLI helper; the mcp package cannot import commands.)
+func fetchHardwareSnapshot(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpbv2.HardwareSnapshot, error) {
+	sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	stream, err := conn.DeviceInfoService.WatchHardware(sctx, &agentpbv2.WatchHardwareRequest{})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	snapshot := resp.GetSnapshot()
+	if snapshot == nil {
+		return nil, fmt.Errorf("agent sent no hardware snapshot")
+	}
+	return snapshot, nil
 }
 
 // splitWatchSpecs splits a comma-separated spec list, dropping empties.

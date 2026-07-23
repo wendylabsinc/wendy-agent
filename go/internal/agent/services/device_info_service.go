@@ -20,10 +20,11 @@ type DeviceInfoService struct {
 	logger             *zap.Logger
 	hardwareDiscoverer HardwareDiscoverer
 	watchStore         *HardwareWatchStore // nil when watch persistence is unavailable
+	hardwareHub        *HardwareEventHub   // nil when live hardware events are unavailable
 }
 
-func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer, watchStore *HardwareWatchStore) *DeviceInfoService {
-	return &DeviceInfoService{logger: logger, hardwareDiscoverer: hd, watchStore: watchStore}
+func NewDeviceInfoService(logger *zap.Logger, hd HardwareDiscoverer, watchStore *HardwareWatchStore, hub *HardwareEventHub) *DeviceInfoService {
+	return &DeviceInfoService{logger: logger, hardwareDiscoverer: hd, watchStore: watchStore, hardwareHub: hub}
 }
 
 func (s *DeviceInfoService) GetDeviceInfo(_ context.Context, _ *agentpbv2.GetDeviceInfoRequest) (*agentpbv2.GetDeviceInfoResponse, error) {
@@ -98,7 +99,15 @@ func hostMemAndCPUCount() (memTotal int64, cpuCount uint32) {
 }
 
 func (s *DeviceInfoService) ListHardwareCapabilities(ctx context.Context, req *agentpbv2.ListHardwareCapabilitiesRequest) (*agentpbv2.ListHardwareCapabilitiesResponse, error) {
-	caps, err := s.hardwareDiscoverer.Discover(ctx, req.GetCategoryFilter())
+	caps, err := s.discoverV2(ctx, req.GetCategoryFilter())
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.ListHardwareCapabilitiesResponse{Capabilities: caps}, nil
+}
+
+func (s *DeviceInfoService) discoverV2(ctx context.Context, categoryFilter string) ([]*agentpbv2.ListHardwareCapabilitiesResponse_HardwareCapability, error) {
+	caps, err := s.hardwareDiscoverer.Discover(ctx, categoryFilter)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "hardware discovery failed: %v", err)
 	}
@@ -111,22 +120,55 @@ func (s *DeviceInfoService) ListHardwareCapabilities(ctx context.Context, req *a
 			Properties:  c.Properties,
 		}
 	}
-	return &agentpbv2.ListHardwareCapabilitiesResponse{Capabilities: v2caps}, nil
+	return v2caps, nil
 }
 
-func (s *DeviceInfoService) GetHardwareWatchList(_ context.Context, _ *agentpbv2.GetHardwareWatchListRequest) (*agentpbv2.GetHardwareWatchListResponse, error) {
-	if s.watchStore == nil {
-		return nil, status.Error(codes.Unavailable, "hardware watch list is not available on this device")
-	}
-	devices, err := s.watchStore.Load()
+// WatchHardware sends a HardwareSnapshot (current USB devices + watch list)
+// and then pushes every hardware event in real time until the client goes
+// away. Snapshot-only clients read the first message and cancel.
+func (s *DeviceInfoService) WatchHardware(_ *agentpbv2.WatchHardwareRequest, stream agentpbv2.WendyDeviceInfoService_WatchHardwareServer) error {
+	ctx := stream.Context()
+
+	usbDevices, err := s.discoverV2(ctx, "usb")
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "loading hardware watch list: %v", err)
+		return err
 	}
-	resp := &agentpbv2.GetHardwareWatchListResponse{}
-	for _, d := range devices {
-		resp.Devices = append(resp.Devices, watchedDeviceToProto(d))
+	snapshot := &agentpbv2.HardwareSnapshot{UsbDevices: usbDevices}
+	if s.watchStore != nil {
+		watches, err := s.watchStore.Load()
+		if err != nil {
+			return status.Errorf(codes.Internal, "loading hardware watch list: %v", err)
+		}
+		for _, w := range watches {
+			snapshot.WatchList = append(snapshot.WatchList, watchedDeviceToProto(w))
+		}
 	}
-	return resp, nil
+	if err := stream.Send(&agentpbv2.WatchHardwareResponse{
+		Payload: &agentpbv2.WatchHardwareResponse_Snapshot{Snapshot: snapshot},
+	}); err != nil {
+		return err
+	}
+
+	if s.hardwareHub == nil {
+		// No live event source on this platform; hold the stream open so the
+		// contract (snapshot, then events) stays uniform for clients.
+		<-ctx.Done()
+		return nil
+	}
+	events, cancel := s.hardwareHub.Subscribe()
+	defer cancel()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case ev := <-events:
+			if err := stream.Send(&agentpbv2.WatchHardwareResponse{
+				Payload: &agentpbv2.WatchHardwareResponse_Event{Event: ev},
+			}); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (s *DeviceInfoService) SetHardwareWatchList(_ context.Context, req *agentpbv2.SetHardwareWatchListRequest) (*agentpbv2.SetHardwareWatchListResponse, error) {

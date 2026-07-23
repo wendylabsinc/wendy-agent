@@ -239,10 +239,12 @@ func main() {
 	telemetrySvc := services.NewTelemetryService(logger, broadcaster, telemetryBuf)
 
 	// hwTrigger nudges the hardware watch alert loop on hotplug events and
-	// watch-list edits so alerts don't wait for the periodic tick.
+	// watch-list edits so alerts don't wait for the periodic tick. hwHub fans
+	// events out to live WatchHardware subscribers.
 	hwTrigger := make(chan struct{}, 1)
+	hwHub := services.NewHardwareEventHub()
 	hwWatchStore := services.NewHardwareWatchStore("", hwTrigger)
-	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer, hwWatchStore)
+	deviceInfoSvc := services.NewDeviceInfoService(logger, hwDiscoverer, hwWatchStore, hwHub)
 	timeSyncSvc := services.NewTimeSyncService(logger, timesyncMgr)
 	wifiSvc := services.NewWiFiService(logger, networkMgr)
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
@@ -374,7 +376,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf, hwTrigger)
+			services.CollectUSBHotplugEvents(ctx, logger, telemetryBuf, hwTrigger, hwHub)
 		}()
 	} else {
 		logger.Info("usb hotplug event collection disabled via WENDY_HARDWARE_EVENTS")
@@ -386,7 +388,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		services.CollectWatchedDeviceAlerts(ctx, logger, telemetryBuf, hwWatchStore, hwTrigger)
+		services.CollectWatchedDeviceAlerts(ctx, logger, telemetryBuf, hwWatchStore, hwTrigger, hwHub)
 	}()
 
 	// Collect kernel messages from /dev/kmsg as OTel debug/trace logs.

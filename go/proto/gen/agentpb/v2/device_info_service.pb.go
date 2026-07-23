@@ -487,26 +487,26 @@ func (x *WatchedUSBDevice) GetLabel() string {
 	return ""
 }
 
-type GetHardwareWatchListRequest struct {
+type WatchHardwareRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GetHardwareWatchListRequest) Reset() {
-	*x = GetHardwareWatchListRequest{}
+func (x *WatchHardwareRequest) Reset() {
+	*x = WatchHardwareRequest{}
 	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GetHardwareWatchListRequest) String() string {
+func (x *WatchHardwareRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GetHardwareWatchListRequest) ProtoMessage() {}
+func (*WatchHardwareRequest) ProtoMessage() {}
 
-func (x *GetHardwareWatchListRequest) ProtoReflect() protoreflect.Message {
+func (x *WatchHardwareRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -518,32 +518,36 @@ func (x *GetHardwareWatchListRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetHardwareWatchListRequest.ProtoReflect.Descriptor instead.
-func (*GetHardwareWatchListRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use WatchHardwareRequest.ProtoReflect.Descriptor instead.
+func (*WatchHardwareRequest) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{6}
 }
 
-type GetHardwareWatchListResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Devices       []*WatchedUSBDevice    `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
+type WatchHardwareResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Payload:
+	//
+	//	*WatchHardwareResponse_Snapshot
+	//	*WatchHardwareResponse_Event
+	Payload       isWatchHardwareResponse_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *GetHardwareWatchListResponse) Reset() {
-	*x = GetHardwareWatchListResponse{}
+func (x *WatchHardwareResponse) Reset() {
+	*x = WatchHardwareResponse{}
 	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *GetHardwareWatchListResponse) String() string {
+func (x *WatchHardwareResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*GetHardwareWatchListResponse) ProtoMessage() {}
+func (*WatchHardwareResponse) ProtoMessage() {}
 
-func (x *GetHardwareWatchListResponse) ProtoReflect() protoreflect.Message {
+func (x *WatchHardwareResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -555,16 +559,217 @@ func (x *GetHardwareWatchListResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use GetHardwareWatchListResponse.ProtoReflect.Descriptor instead.
-func (*GetHardwareWatchListResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use WatchHardwareResponse.ProtoReflect.Descriptor instead.
+func (*WatchHardwareResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *GetHardwareWatchListResponse) GetDevices() []*WatchedUSBDevice {
+func (x *WatchHardwareResponse) GetPayload() isWatchHardwareResponse_Payload {
 	if x != nil {
-		return x.Devices
+		return x.Payload
 	}
 	return nil
+}
+
+func (x *WatchHardwareResponse) GetSnapshot() *HardwareSnapshot {
+	if x != nil {
+		if x, ok := x.Payload.(*WatchHardwareResponse_Snapshot); ok {
+			return x.Snapshot
+		}
+	}
+	return nil
+}
+
+func (x *WatchHardwareResponse) GetEvent() *HardwareEvent {
+	if x != nil {
+		if x, ok := x.Payload.(*WatchHardwareResponse_Event); ok {
+			return x.Event
+		}
+	}
+	return nil
+}
+
+type isWatchHardwareResponse_Payload interface {
+	isWatchHardwareResponse_Payload()
+}
+
+type WatchHardwareResponse_Snapshot struct {
+	Snapshot *HardwareSnapshot `protobuf:"bytes,1,opt,name=snapshot,proto3,oneof"`
+}
+
+type WatchHardwareResponse_Event struct {
+	Event *HardwareEvent `protobuf:"bytes,2,opt,name=event,proto3,oneof"`
+}
+
+func (*WatchHardwareResponse_Snapshot) isWatchHardwareResponse_Payload() {}
+
+func (*WatchHardwareResponse_Event) isWatchHardwareResponse_Payload() {}
+
+// HardwareSnapshot opens every WatchHardware stream: the USB devices currently
+// on the bus and the device's watch list.
+type HardwareSnapshot struct {
+	state         protoimpl.MessageState                                 `protogen:"open.v1"`
+	UsbDevices    []*ListHardwareCapabilitiesResponse_HardwareCapability `protobuf:"bytes,1,rep,name=usb_devices,json=usbDevices,proto3" json:"usb_devices,omitempty"`
+	WatchList     []*WatchedUSBDevice                                    `protobuf:"bytes,2,rep,name=watch_list,json=watchList,proto3" json:"watch_list,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HardwareSnapshot) Reset() {
+	*x = HardwareSnapshot{}
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HardwareSnapshot) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HardwareSnapshot) ProtoMessage() {}
+
+func (x *HardwareSnapshot) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HardwareSnapshot.ProtoReflect.Descriptor instead.
+func (*HardwareSnapshot) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *HardwareSnapshot) GetUsbDevices() []*ListHardwareCapabilitiesResponse_HardwareCapability {
+	if x != nil {
+		return x.UsbDevices
+	}
+	return nil
+}
+
+func (x *HardwareSnapshot) GetWatchList() []*WatchedUSBDevice {
+	if x != nil {
+		return x.WatchList
+	}
+	return nil
+}
+
+// HardwareEvent is one real-time hardware transition.
+type HardwareEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// connected | disconnected | storm | watched_missing | watched_restored
+	Action       string `protobuf:"bytes,1,opt,name=action,proto3" json:"action,omitempty"`
+	TimeUnixNano int64  `protobuf:"varint,2,opt,name=time_unix_nano,json=timeUnixNano,proto3" json:"time_unix_nano,omitempty"`
+	// Human-readable summary, e.g. "usb device disconnected: CANable2 (1d50:606f) at 1-2.4".
+	Message   string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	VendorId  string `protobuf:"bytes,4,opt,name=vendor_id,json=vendorId,proto3" json:"vendor_id,omitempty"`
+	ProductId string `protobuf:"bytes,5,opt,name=product_id,json=productId,proto3" json:"product_id,omitempty"`
+	// Set on watch alerts only; hotplug events deliberately omit serials.
+	Serial   string `protobuf:"bytes,6,opt,name=serial,proto3" json:"serial,omitempty"`
+	Product  string `protobuf:"bytes,7,opt,name=product,proto3" json:"product,omitempty"`
+	PortPath string `protobuf:"bytes,8,opt,name=port_path,json=portPath,proto3" json:"port_path,omitempty"`
+	// Events suppressed by the rate limiter; storm action only.
+	Suppressed    int32 `protobuf:"varint,9,opt,name=suppressed,proto3" json:"suppressed,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HardwareEvent) Reset() {
+	*x = HardwareEvent{}
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HardwareEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HardwareEvent) ProtoMessage() {}
+
+func (x *HardwareEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HardwareEvent.ProtoReflect.Descriptor instead.
+func (*HardwareEvent) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *HardwareEvent) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetTimeUnixNano() int64 {
+	if x != nil {
+		return x.TimeUnixNano
+	}
+	return 0
+}
+
+func (x *HardwareEvent) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetVendorId() string {
+	if x != nil {
+		return x.VendorId
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetProductId() string {
+	if x != nil {
+		return x.ProductId
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetProduct() string {
+	if x != nil {
+		return x.Product
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetPortPath() string {
+	if x != nil {
+		return x.PortPath
+	}
+	return ""
+}
+
+func (x *HardwareEvent) GetSuppressed() int32 {
+	if x != nil {
+		return x.Suppressed
+	}
+	return 0
 }
 
 type SetHardwareWatchListRequest struct {
@@ -577,7 +782,7 @@ type SetHardwareWatchListRequest struct {
 
 func (x *SetHardwareWatchListRequest) Reset() {
 	*x = SetHardwareWatchListRequest{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -589,7 +794,7 @@ func (x *SetHardwareWatchListRequest) String() string {
 func (*SetHardwareWatchListRequest) ProtoMessage() {}
 
 func (x *SetHardwareWatchListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -602,7 +807,7 @@ func (x *SetHardwareWatchListRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetHardwareWatchListRequest.ProtoReflect.Descriptor instead.
 func (*SetHardwareWatchListRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{8}
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SetHardwareWatchListRequest) GetDevices() []*WatchedUSBDevice {
@@ -620,7 +825,7 @@ type SetHardwareWatchListResponse struct {
 
 func (x *SetHardwareWatchListResponse) Reset() {
 	*x = SetHardwareWatchListResponse{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +837,7 @@ func (x *SetHardwareWatchListResponse) String() string {
 func (*SetHardwareWatchListResponse) ProtoMessage() {}
 
 func (x *SetHardwareWatchListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +850,7 @@ func (x *SetHardwareWatchListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetHardwareWatchListResponse.ProtoReflect.Descriptor instead.
 func (*SetHardwareWatchListResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{9}
+	return file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP(), []int{11}
 }
 
 type ListHardwareCapabilitiesResponse_HardwareCapability struct {
@@ -660,7 +865,7 @@ type ListHardwareCapabilitiesResponse_HardwareCapability struct {
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) Reset() {
 	*x = ListHardwareCapabilitiesResponse_HardwareCapability{}
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -672,7 +877,7 @@ func (x *ListHardwareCapabilitiesResponse_HardwareCapability) String() string {
 func (*ListHardwareCapabilitiesResponse_HardwareCapability) ProtoMessage() {}
 
 func (x *ListHardwareCapabilitiesResponse_HardwareCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v2_device_info_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -795,17 +1000,37 @@ const file_wendy_agent_services_v2_device_info_service_proto_rawDesc = "" +
 	"\x06serial\x18\x03 \x01(\tH\x00R\x06serial\x88\x01\x01\x12\x19\n" +
 	"\x05label\x18\x04 \x01(\tH\x01R\x05label\x88\x01\x01B\t\n" +
 	"\a_serialB\b\n" +
-	"\x06_label\"\x1d\n" +
-	"\x1bGetHardwareWatchListRequest\"c\n" +
-	"\x1cGetHardwareWatchListResponse\x12C\n" +
-	"\adevices\x18\x01 \x03(\v2).wendy.agent.services.v2.WatchedUSBDeviceR\adevices\"b\n" +
+	"\x06_label\"\x16\n" +
+	"\x14WatchHardwareRequest\"\xab\x01\n" +
+	"\x15WatchHardwareResponse\x12G\n" +
+	"\bsnapshot\x18\x01 \x01(\v2).wendy.agent.services.v2.HardwareSnapshotH\x00R\bsnapshot\x12>\n" +
+	"\x05event\x18\x02 \x01(\v2&.wendy.agent.services.v2.HardwareEventH\x00R\x05eventB\t\n" +
+	"\apayload\"\xcb\x01\n" +
+	"\x10HardwareSnapshot\x12m\n" +
+	"\vusb_devices\x18\x01 \x03(\v2L.wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapabilityR\n" +
+	"usbDevices\x12H\n" +
+	"\n" +
+	"watch_list\x18\x02 \x03(\v2).wendy.agent.services.v2.WatchedUSBDeviceR\twatchList\"\x92\x02\n" +
+	"\rHardwareEvent\x12\x16\n" +
+	"\x06action\x18\x01 \x01(\tR\x06action\x12$\n" +
+	"\x0etime_unix_nano\x18\x02 \x01(\x03R\ftimeUnixNano\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1b\n" +
+	"\tvendor_id\x18\x04 \x01(\tR\bvendorId\x12\x1d\n" +
+	"\n" +
+	"product_id\x18\x05 \x01(\tR\tproductId\x12\x16\n" +
+	"\x06serial\x18\x06 \x01(\tR\x06serial\x12\x18\n" +
+	"\aproduct\x18\a \x01(\tR\aproduct\x12\x1b\n" +
+	"\tport_path\x18\b \x01(\tR\bportPath\x12\x1e\n" +
+	"\n" +
+	"suppressed\x18\t \x01(\x05R\n" +
+	"suppressed\"b\n" +
 	"\x1bSetHardwareWatchListRequest\x12C\n" +
 	"\adevices\x18\x01 \x03(\v2).wendy.agent.services.v2.WatchedUSBDeviceR\adevices\"\x1e\n" +
-	"\x1cSetHardwareWatchListResponse2\xa6\x04\n" +
+	"\x1cSetHardwareWatchListResponse2\x92\x04\n" +
 	"\x16WendyDeviceInfoService\x12n\n" +
 	"\rGetDeviceInfo\x12-.wendy.agent.services.v2.GetDeviceInfoRequest\x1a..wendy.agent.services.v2.GetDeviceInfoResponse\x12\x8f\x01\n" +
-	"\x18ListHardwareCapabilities\x128.wendy.agent.services.v2.ListHardwareCapabilitiesRequest\x1a9.wendy.agent.services.v2.ListHardwareCapabilitiesResponse\x12\x83\x01\n" +
-	"\x14GetHardwareWatchList\x124.wendy.agent.services.v2.GetHardwareWatchListRequest\x1a5.wendy.agent.services.v2.GetHardwareWatchListResponse\x12\x83\x01\n" +
+	"\x18ListHardwareCapabilities\x128.wendy.agent.services.v2.ListHardwareCapabilitiesRequest\x1a9.wendy.agent.services.v2.ListHardwareCapabilitiesResponse\x12p\n" +
+	"\rWatchHardware\x12-.wendy.agent.services.v2.WatchHardwareRequest\x1a..wendy.agent.services.v2.WatchHardwareResponse0\x01\x12\x83\x01\n" +
 	"\x14SetHardwareWatchList\x124.wendy.agent.services.v2.SetHardwareWatchListRequest\x1a5.wendy.agent.services.v2.SetHardwareWatchListResponseB>Z<github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
 
 var (
@@ -820,7 +1045,7 @@ func file_wendy_agent_services_v2_device_info_service_proto_rawDescGZIP() []byte
 	return file_wendy_agent_services_v2_device_info_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v2_device_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_wendy_agent_services_v2_device_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_wendy_agent_services_v2_device_info_service_proto_goTypes = []any{
 	(*GetDeviceInfoRequest)(nil),                                // 0: wendy.agent.services.v2.GetDeviceInfoRequest
 	(*GetDeviceInfoResponse)(nil),                               // 1: wendy.agent.services.v2.GetDeviceInfoResponse
@@ -828,32 +1053,37 @@ var file_wendy_agent_services_v2_device_info_service_proto_goTypes = []any{
 	(*ListHardwareCapabilitiesRequest)(nil),                     // 3: wendy.agent.services.v2.ListHardwareCapabilitiesRequest
 	(*ListHardwareCapabilitiesResponse)(nil),                    // 4: wendy.agent.services.v2.ListHardwareCapabilitiesResponse
 	(*WatchedUSBDevice)(nil),                                    // 5: wendy.agent.services.v2.WatchedUSBDevice
-	(*GetHardwareWatchListRequest)(nil),                         // 6: wendy.agent.services.v2.GetHardwareWatchListRequest
-	(*GetHardwareWatchListResponse)(nil),                        // 7: wendy.agent.services.v2.GetHardwareWatchListResponse
-	(*SetHardwareWatchListRequest)(nil),                         // 8: wendy.agent.services.v2.SetHardwareWatchListRequest
-	(*SetHardwareWatchListResponse)(nil),                        // 9: wendy.agent.services.v2.SetHardwareWatchListResponse
-	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 10: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
-	nil, // 11: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	(*WatchHardwareRequest)(nil),                                // 6: wendy.agent.services.v2.WatchHardwareRequest
+	(*WatchHardwareResponse)(nil),                               // 7: wendy.agent.services.v2.WatchHardwareResponse
+	(*HardwareSnapshot)(nil),                                    // 8: wendy.agent.services.v2.HardwareSnapshot
+	(*HardwareEvent)(nil),                                       // 9: wendy.agent.services.v2.HardwareEvent
+	(*SetHardwareWatchListRequest)(nil),                         // 10: wendy.agent.services.v2.SetHardwareWatchListRequest
+	(*SetHardwareWatchListResponse)(nil),                        // 11: wendy.agent.services.v2.SetHardwareWatchListResponse
+	(*ListHardwareCapabilitiesResponse_HardwareCapability)(nil), // 12: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
+	nil, // 13: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
 }
 var file_wendy_agent_services_v2_device_info_service_proto_depIdxs = []int32{
 	2,  // 0: wendy.agent.services.v2.GetDeviceInfoResponse.partitions:type_name -> wendy.agent.services.v2.DiskPartition
-	10, // 1: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
-	5,  // 2: wendy.agent.services.v2.GetHardwareWatchListResponse.devices:type_name -> wendy.agent.services.v2.WatchedUSBDevice
-	5,  // 3: wendy.agent.services.v2.SetHardwareWatchListRequest.devices:type_name -> wendy.agent.services.v2.WatchedUSBDevice
-	11, // 4: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
-	0,  // 5: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:input_type -> wendy.agent.services.v2.GetDeviceInfoRequest
-	3,  // 6: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:input_type -> wendy.agent.services.v2.ListHardwareCapabilitiesRequest
-	6,  // 7: wendy.agent.services.v2.WendyDeviceInfoService.GetHardwareWatchList:input_type -> wendy.agent.services.v2.GetHardwareWatchListRequest
-	8,  // 8: wendy.agent.services.v2.WendyDeviceInfoService.SetHardwareWatchList:input_type -> wendy.agent.services.v2.SetHardwareWatchListRequest
-	1,  // 9: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:output_type -> wendy.agent.services.v2.GetDeviceInfoResponse
-	4,  // 10: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:output_type -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse
-	7,  // 11: wendy.agent.services.v2.WendyDeviceInfoService.GetHardwareWatchList:output_type -> wendy.agent.services.v2.GetHardwareWatchListResponse
-	9,  // 12: wendy.agent.services.v2.WendyDeviceInfoService.SetHardwareWatchList:output_type -> wendy.agent.services.v2.SetHardwareWatchListResponse
-	9,  // [9:13] is the sub-list for method output_type
-	5,  // [5:9] is the sub-list for method input_type
-	5,  // [5:5] is the sub-list for extension type_name
-	5,  // [5:5] is the sub-list for extension extendee
-	0,  // [0:5] is the sub-list for field type_name
+	12, // 1: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.capabilities:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
+	8,  // 2: wendy.agent.services.v2.WatchHardwareResponse.snapshot:type_name -> wendy.agent.services.v2.HardwareSnapshot
+	9,  // 3: wendy.agent.services.v2.WatchHardwareResponse.event:type_name -> wendy.agent.services.v2.HardwareEvent
+	12, // 4: wendy.agent.services.v2.HardwareSnapshot.usb_devices:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability
+	5,  // 5: wendy.agent.services.v2.HardwareSnapshot.watch_list:type_name -> wendy.agent.services.v2.WatchedUSBDevice
+	5,  // 6: wendy.agent.services.v2.SetHardwareWatchListRequest.devices:type_name -> wendy.agent.services.v2.WatchedUSBDevice
+	13, // 7: wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.properties:type_name -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse.HardwareCapability.PropertiesEntry
+	0,  // 8: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:input_type -> wendy.agent.services.v2.GetDeviceInfoRequest
+	3,  // 9: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:input_type -> wendy.agent.services.v2.ListHardwareCapabilitiesRequest
+	6,  // 10: wendy.agent.services.v2.WendyDeviceInfoService.WatchHardware:input_type -> wendy.agent.services.v2.WatchHardwareRequest
+	10, // 11: wendy.agent.services.v2.WendyDeviceInfoService.SetHardwareWatchList:input_type -> wendy.agent.services.v2.SetHardwareWatchListRequest
+	1,  // 12: wendy.agent.services.v2.WendyDeviceInfoService.GetDeviceInfo:output_type -> wendy.agent.services.v2.GetDeviceInfoResponse
+	4,  // 13: wendy.agent.services.v2.WendyDeviceInfoService.ListHardwareCapabilities:output_type -> wendy.agent.services.v2.ListHardwareCapabilitiesResponse
+	7,  // 14: wendy.agent.services.v2.WendyDeviceInfoService.WatchHardware:output_type -> wendy.agent.services.v2.WatchHardwareResponse
+	11, // 15: wendy.agent.services.v2.WendyDeviceInfoService.SetHardwareWatchList:output_type -> wendy.agent.services.v2.SetHardwareWatchListResponse
+	12, // [12:16] is the sub-list for method output_type
+	8,  // [8:12] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v2_device_info_service_proto_init() }
@@ -864,13 +1094,17 @@ func file_wendy_agent_services_v2_device_info_service_proto_init() {
 	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[1].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[3].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[5].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_device_info_service_proto_msgTypes[7].OneofWrappers = []any{
+		(*WatchHardwareResponse_Snapshot)(nil),
+		(*WatchHardwareResponse_Event)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_device_info_service_proto_rawDesc), len(file_wendy_agent_services_v2_device_info_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

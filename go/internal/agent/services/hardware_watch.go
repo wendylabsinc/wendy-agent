@@ -129,8 +129,10 @@ func (s *HardwareWatchStore) Save(devices []WatchedDevice) error {
 	if err != nil {
 		return err
 	}
+	// 0600: the list carries device serial numbers (identifying data); no
+	// other local user needs to read it.
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
@@ -167,13 +169,15 @@ type watchedChange struct {
 
 // CollectWatchedDeviceAlerts reconciles the watch list against the bus until
 // ctx is cancelled. trigger (may be nil) requests an immediate round; the
-// hotplug collector and the watch store both signal it.
+// hotplug collector and the watch store both signal it. hub (may be nil)
+// receives alert events for live WatchHardware subscribers.
 func CollectWatchedDeviceAlerts(
 	ctx context.Context,
 	logger *zap.Logger,
 	publisher TelemetryPublisher,
 	store *HardwareWatchStore,
 	trigger <-chan struct{},
+	hub *HardwareEventHub,
 ) {
 	resource := hardwareEventsResource()
 	state := make(map[string]*watchState)
@@ -191,6 +195,7 @@ func CollectWatchedDeviceAlerts(
 		}
 		for _, ch := range reconcileWatchedDevices(state, watches, present, now, watchedDeviceGracePeriod) {
 			publisher.PublishLogs(watchedDeviceLogRecord(resource, ch, now))
+			hub.Publish(watchedChangeProto(ch, now))
 			logger.Warn("watched usb device state change",
 				zap.String("device", ch.Watch.Key()),
 				zap.Bool("missing", ch.Missing),

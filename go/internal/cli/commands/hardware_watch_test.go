@@ -5,12 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
-func liveUSB(desc string, props map[string]string) *agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
-	return &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+func liveUSB(desc string, props map[string]string) *agentpbv2.ListHardwareCapabilitiesResponse_HardwareCapability {
+	return &agentpbv2.ListHardwareCapabilitiesResponse_HardwareCapability{
 		Category:    "usb",
 		Description: desc,
 		Properties:  props,
@@ -26,7 +25,7 @@ func watched(vendor, product, serial string) *agentpbv2.WatchedUSBDevice {
 }
 
 func TestBuildWatchChecklist(t *testing.T) {
-	live := []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+	live := []*agentpbv2.ListHardwareCapabilitiesResponse_HardwareCapability{
 		liveUSB("canable2 gs_usb (1d50:606f)", map[string]string{
 			"vendor_id": "1d50", "product_id": "606f", "serial": "A", "port_path": "1-2.2",
 		}),

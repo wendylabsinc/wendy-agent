@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/hardwarediag"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -128,14 +130,14 @@ With no flags and no TTY, prints the current watch list.`,
 			}
 			defer conn.Close()
 
-			current, err := conn.DeviceInfoService.GetHardwareWatchList(ctx, &agentpbv2.GetHardwareWatchListRequest{})
+			snapshot, err := fetchHardwareSnapshot(ctx, conn)
 			if err != nil {
 				if status.Code(err) == codes.Unimplemented {
 					return fmt.Errorf("this agent does not support the hardware watch list — update the agent (wendy device update)")
 				}
-				return fmt.Errorf("getting hardware watch list: %w", err)
+				return fmt.Errorf("getting hardware state: %w", err)
 			}
-			watches := current.GetDevices()
+			watches := snapshot.GetWatchList()
 
 			switch {
 			case clear:
@@ -159,16 +161,8 @@ With no flags and no TTY, prints the current watch list.`,
 				return printWatchList(watches)
 			}
 
-			// Interactive picker seeded from the live bus.
-			req := &agentpb.ListHardwareCapabilitiesRequest{}
-			category := "usb"
-			req.CategoryFilter = &category
-			live, err := conn.AgentService.ListHardwareCapabilities(ctx, req)
-			if err != nil {
-				return fmt.Errorf("listing usb devices: %w", err)
-			}
-
-			items := buildWatchChecklist(live.GetCapabilities(), watches)
+			// Interactive picker seeded from the snapshot's live bus view.
+			items := buildWatchChecklist(snapshot.GetUsbDevices(), watches)
 			if len(items) == 0 {
 				fmt.Println("No USB devices found to watch.")
 				return nil
@@ -203,11 +197,32 @@ With no flags and no TTY, prints the current watch list.`,
 	return cmd
 }
 
+// fetchHardwareSnapshot opens a WatchHardware stream, reads the leading
+// snapshot (current USB devices + watch list), and closes the stream — the
+// snapshot-only read pattern the RPC contract supports.
+func fetchHardwareSnapshot(ctx context.Context, conn *grpcclient.AgentConnection) (*agentpbv2.HardwareSnapshot, error) {
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := conn.DeviceInfoService.WatchHardware(sctx, &agentpbv2.WatchHardwareRequest{})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	snapshot := resp.GetSnapshot()
+	if snapshot == nil {
+		return nil, fmt.Errorf("agent sent no hardware snapshot")
+	}
+	return snapshot, nil
+}
+
 // buildWatchChecklist merges the live USB devices with watched-but-absent
 // entries into checklist items. Kernel root hubs (vendor 1d6b) are hidden:
 // they are the host controller itself and always present. Item values carry
 // the WatchedUSBDevice JSON so the selection round-trips losslessly.
-func buildWatchChecklist(live []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability, watches []*agentpbv2.WatchedUSBDevice) []tui.ChecklistItem {
+func buildWatchChecklist(live []*agentpbv2.ListHardwareCapabilitiesResponse_HardwareCapability, watches []*agentpbv2.WatchedUSBDevice) []tui.ChecklistItem {
 	matched := make([]bool, len(watches))
 	var items []tui.ChecklistItem
 
@@ -404,16 +419,6 @@ by default, disabled with WENDY_HARDWARE_EVENTS=false on the device).`,
 			}
 			defer conn.Close()
 
-			serviceName := "wendy.hardware"
-			req := &agentpb.StreamLogsRequest{ServiceName: &serviceName}
-			if tail > 0 {
-				req.LastN = &tail
-			}
-			stream, err := conn.TelemetryService.StreamLogs(ctx, req)
-			if err != nil {
-				return fmt.Errorf("starting hardware event stream: %w", err)
-			}
-
 			if !jsonOutput {
 				if tail > 0 {
 					cliLogln("Streaming hardware events — replaying up to %d recent, then live. Press Ctrl-C to stop.", tail)
@@ -422,47 +427,141 @@ by default, disabled with WENDY_HARDWARE_EVENTS=false on the device).`,
 				}
 			}
 
-			liveSeparatorPrinted := tail == 0
-			seenHistory := false
+			// Phase 1: replay buffered history from the telemetry stream. The
+			// stream turns live after the replay; the first live batch (or a
+			// short timeout when nothing is live) ends the phase — real-time
+			// delivery is WatchHardware's job.
+			if tail > 0 {
+				replayHardwareEventHistory(ctx, conn, tail)
+			}
+
+			// Phase 2: real-time events pushed by the agent.
+			stream, err := conn.DeviceInfoService.WatchHardware(ctx, &agentpbv2.WatchHardwareRequest{})
+			if err != nil {
+				return fmt.Errorf("starting hardware watch stream: %w", err)
+			}
+			first, err := stream.Recv()
+			if err != nil {
+				return fmt.Errorf("receiving hardware snapshot: %w", err)
+			}
+			if !jsonOutput {
+				fmt.Println(logMetaStyle.Render(fmt.Sprintf("── live (%d usb devices on the bus) ──", len(first.GetSnapshot().GetUsbDevices()))))
+			}
 			for {
 				resp, err := stream.Recv()
 				if err == io.EOF {
-					break
+					return nil
 				}
 				if err != nil {
 					return fmt.Errorf("receiving hardware events: %w", err)
 				}
-				logs := resp.GetLogs()
-				if logs == nil {
-					continue
-				}
-				if resp.IsHistory {
-					seenHistory = true
-				}
-				if !liveSeparatorPrinted && seenHistory && !resp.IsHistory {
-					liveSeparatorPrinted = true
-					if !jsonOutput {
-						fmt.Println(logMetaStyle.Render("── live ──────────────────────"))
-					}
-				}
-				for _, rl := range logs.GetResourceLogs() {
-					for _, sl := range rl.GetScopeLogs() {
-						for _, lr := range sl.GetLogRecords() {
-							if jsonOutput {
-								printLogRecordJSON("", lr)
-							} else {
-								printHardwareEvent(lr)
-							}
-						}
+				if ev := resp.GetEvent(); ev != nil {
+					if jsonOutput {
+						printHardwareEventProtoJSON(ev)
+					} else {
+						printHardwareEventProto(ev)
 					}
 				}
 			}
-			return nil
 		},
 	}
 
 	cmd.Flags().Int32Var(&tail, "tail", 50, "Replay up to the last N buffered event batches before streaming live (0 = live only)")
 	return cmd
+}
+
+// replayHardwareEventHistory prints buffered wendy.hardware records from the
+// telemetry stream. Best-effort: the phase ends at the first live batch or
+// after a short drain timeout; errors just mean no history is shown.
+func replayHardwareEventHistory(ctx context.Context, conn *grpcclient.AgentConnection, tail int32) {
+	hctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	serviceName := "wendy.hardware"
+	req := &agentpb.StreamLogsRequest{ServiceName: &serviceName, LastN: &tail}
+	stream, err := conn.TelemetryService.StreamLogs(hctx, req)
+	if err != nil {
+		return
+	}
+	for {
+		resp, err := stream.Recv()
+		if err != nil || !resp.GetIsHistory() {
+			return
+		}
+		for _, rl := range resp.GetLogs().GetResourceLogs() {
+			for _, sl := range rl.GetScopeLogs() {
+				for _, lr := range sl.GetLogRecords() {
+					if jsonOutput {
+						printLogRecordJSON("", lr)
+					} else {
+						printHardwareEvent(lr)
+					}
+				}
+			}
+		}
+	}
+}
+
+// hardwareActionSeverity maps a WatchHardware event action to the OTel
+// severity its telemetry twin carries, so both printers style consistently.
+func hardwareActionSeverity(action string) (otelpb.SeverityNumber, string) {
+	switch action {
+	case "disconnected", "storm":
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN"
+	case "watched_missing":
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR"
+	default:
+		return otelpb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO"
+	}
+}
+
+// printHardwareEventProto renders one live WatchHardware event in the same
+// timeline format as the history lines.
+func printHardwareEventProto(ev *agentpbv2.HardwareEvent) {
+	ts := time.Unix(0, ev.GetTimeUnixNano()).Local().Format("2006-01-02 15:04:05")
+	detail := ev.GetMessage()
+	if _, after, found := strings.Cut(detail, ": "); found {
+		detail = after
+	}
+	severity, _ := hardwareActionSeverity(ev.GetAction())
+	_, style := severityLabel(severity)
+
+	var b strings.Builder
+	b.WriteString(logTimeStyle.Render(ts))
+	b.WriteString("  ")
+	b.WriteString(style.Render(fmt.Sprintf("%-16s", ev.GetAction())))
+	b.WriteString("  ")
+	b.WriteString(detail)
+	fmt.Println(b.String())
+}
+
+func printHardwareEventProtoJSON(ev *agentpbv2.HardwareEvent) {
+	_, severityText := hardwareActionSeverity(ev.GetAction())
+	entry := map[string]any{
+		"timestamp": time.Unix(0, ev.GetTimeUnixNano()).UTC().Format(time.RFC3339Nano),
+		"severity":  severityText,
+		"action":    ev.GetAction(),
+		"body":      ev.GetMessage(),
+	}
+	attrs := map[string]string{}
+	setAttr := func(k, v string) {
+		if v != "" {
+			attrs[k] = v
+		}
+	}
+	setAttr("vendor_id", ev.GetVendorId())
+	setAttr("product_id", ev.GetProductId())
+	setAttr("serial", ev.GetSerial())
+	setAttr("product", ev.GetProduct())
+	setAttr("port_path", ev.GetPortPath())
+	if ev.GetSuppressed() > 0 {
+		attrs["suppressed"] = fmt.Sprintf("%d", ev.GetSuppressed())
+	}
+	if len(attrs) > 0 {
+		entry["attributes"] = attrs
+	}
+	data, _ := json.Marshal(entry)
+	fmt.Println(string(data))
 }
 
 // printHardwareEvent renders one hotplug event as a timeline line:

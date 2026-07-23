@@ -23,12 +23,13 @@ import (
 //
 // notify (may be nil) receives a non-blocking signal after every published
 // event so the hardware watch alert loop reconciles immediately instead of
-// waiting for its periodic tick.
+// waiting for its periodic tick. hub (may be nil) receives the same events as
+// typed protos for live WatchHardware subscribers.
 //
 // This is the event-history counterpart to the point-in-time
 // ListHardwareCapabilities RPC: it makes "the CAN adapter dropped off the bus
 // at 22:14" remotely visible instead of inferred from downstream app failures.
-func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher TelemetryPublisher, notify chan<- struct{}) {
+func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher TelemetryPublisher, notify chan<- struct{}, hub *HardwareEventHub) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_KOBJECT_UEVENT)
 	if err != nil {
 		logger.Warn("usb hotplug collection unavailable: netlink socket", zap.Error(err))
@@ -118,6 +119,7 @@ func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher 
 					zap.Int("forwarded", windowCount),
 				)
 				publisher.PublishLogs(usbStormLogRecord(resource, windowDrop, windowCount, now))
+				hub.Publish(usbStormProto(windowDrop, windowCount, now))
 			}
 			windowStart = now
 			windowCount = 0
@@ -130,6 +132,7 @@ func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher 
 		windowCount++
 
 		publisher.PublishLogs(usbEventLogRecord(resource, ev, now))
+		hub.Publish(usbEventProto(ev, now))
 		if notify != nil {
 			select {
 			case notify <- struct{}{}:
@@ -143,11 +146,19 @@ func CollectUSBHotplugEvents(ctx context.Context, logger *zap.Logger, publisher 
 // The kernel populates the descriptor attributes before emitting the add
 // uevent, so no retry is needed; an empty result just leaves the event
 // labelled by vendor:product id.
+//
+// DEVPATH comes from the kernel (netlink group 1, root-only source), but the
+// path is still normalised and verified to stay under /sys before use rather
+// than relying on a substring check.
 func readUSBSysfsProduct(devPath string) string {
-	if devPath == "" || strings.Contains(devPath, "..") {
+	if devPath == "" {
 		return ""
 	}
-	data, err := os.ReadFile(filepath.Join("/sys", devPath, "product"))
+	path := filepath.Clean(filepath.Join("/sys", devPath, "product"))
+	if !strings.HasPrefix(path, "/sys/") {
+		return ""
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}

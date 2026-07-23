@@ -5,7 +5,12 @@ option go_package = "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv
 service WendyDeviceInfoService {
     rpc GetDeviceInfo(GetDeviceInfoRequest) returns (GetDeviceInfoResponse);
     rpc ListHardwareCapabilities(ListHardwareCapabilitiesRequest) returns (ListHardwareCapabilitiesResponse);
-    rpc GetHardwareWatchList(GetHardwareWatchListRequest) returns (GetHardwareWatchListResponse);
+    // WatchHardware pushes hardware changes in real time. The first message is
+    // always a HardwareSnapshot (devices currently on the bus + the watch
+    // list); every subsequent message is a HardwareEvent as it happens — no
+    // polling. Clients that only need current state read the snapshot and
+    // close the stream.
+    rpc WatchHardware(WatchHardwareRequest) returns (stream WatchHardwareResponse);
     rpc SetHardwareWatchList(SetHardwareWatchListRequest) returns (SetHardwareWatchListResponse);
 }
 
@@ -87,10 +92,37 @@ message WatchedUSBDevice {
     optional string label = 4;
 }
 
-message GetHardwareWatchListRequest {}
+message WatchHardwareRequest {}
 
-message GetHardwareWatchListResponse {
-    repeated WatchedUSBDevice devices = 1;
+message WatchHardwareResponse {
+    oneof payload {
+        HardwareSnapshot snapshot = 1;
+        HardwareEvent event = 2;
+    }
+}
+
+// HardwareSnapshot opens every WatchHardware stream: the USB devices currently
+// on the bus and the device's watch list.
+message HardwareSnapshot {
+    repeated ListHardwareCapabilitiesResponse.HardwareCapability usb_devices = 1;
+    repeated WatchedUSBDevice watch_list = 2;
+}
+
+// HardwareEvent is one real-time hardware transition.
+message HardwareEvent {
+    // connected | disconnected | storm | watched_missing | watched_restored
+    string action = 1;
+    int64 time_unix_nano = 2;
+    // Human-readable summary, e.g. "usb device disconnected: CANable2 (1d50:606f) at 1-2.4".
+    string message = 3;
+    string vendor_id = 4;
+    string product_id = 5;
+    // Set on watch alerts only; hotplug events deliberately omit serials.
+    string serial = 6;
+    string product = 7;
+    string port_path = 8;
+    // Events suppressed by the rate limiter; storm action only.
+    int32 suppressed = 9;
 }
 
 message SetHardwareWatchListRequest {

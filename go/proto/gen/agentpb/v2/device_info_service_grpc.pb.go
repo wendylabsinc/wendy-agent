@@ -21,7 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WendyDeviceInfoService_GetDeviceInfo_FullMethodName            = "/wendy.agent.services.v2.WendyDeviceInfoService/GetDeviceInfo"
 	WendyDeviceInfoService_ListHardwareCapabilities_FullMethodName = "/wendy.agent.services.v2.WendyDeviceInfoService/ListHardwareCapabilities"
-	WendyDeviceInfoService_GetHardwareWatchList_FullMethodName     = "/wendy.agent.services.v2.WendyDeviceInfoService/GetHardwareWatchList"
+	WendyDeviceInfoService_WatchHardware_FullMethodName            = "/wendy.agent.services.v2.WendyDeviceInfoService/WatchHardware"
 	WendyDeviceInfoService_SetHardwareWatchList_FullMethodName     = "/wendy.agent.services.v2.WendyDeviceInfoService/SetHardwareWatchList"
 )
 
@@ -31,7 +31,12 @@ const (
 type WendyDeviceInfoServiceClient interface {
 	GetDeviceInfo(ctx context.Context, in *GetDeviceInfoRequest, opts ...grpc.CallOption) (*GetDeviceInfoResponse, error)
 	ListHardwareCapabilities(ctx context.Context, in *ListHardwareCapabilitiesRequest, opts ...grpc.CallOption) (*ListHardwareCapabilitiesResponse, error)
-	GetHardwareWatchList(ctx context.Context, in *GetHardwareWatchListRequest, opts ...grpc.CallOption) (*GetHardwareWatchListResponse, error)
+	// WatchHardware pushes hardware changes in real time. The first message is
+	// always a HardwareSnapshot (devices currently on the bus + the watch
+	// list); every subsequent message is a HardwareEvent as it happens — no
+	// polling. Clients that only need current state read the snapshot and
+	// close the stream.
+	WatchHardware(ctx context.Context, in *WatchHardwareRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchHardwareResponse], error)
 	SetHardwareWatchList(ctx context.Context, in *SetHardwareWatchListRequest, opts ...grpc.CallOption) (*SetHardwareWatchListResponse, error)
 }
 
@@ -63,15 +68,24 @@ func (c *wendyDeviceInfoServiceClient) ListHardwareCapabilities(ctx context.Cont
 	return out, nil
 }
 
-func (c *wendyDeviceInfoServiceClient) GetHardwareWatchList(ctx context.Context, in *GetHardwareWatchListRequest, opts ...grpc.CallOption) (*GetHardwareWatchListResponse, error) {
+func (c *wendyDeviceInfoServiceClient) WatchHardware(ctx context.Context, in *WatchHardwareRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchHardwareResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(GetHardwareWatchListResponse)
-	err := c.cc.Invoke(ctx, WendyDeviceInfoService_GetHardwareWatchList_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &WendyDeviceInfoService_ServiceDesc.Streams[0], WendyDeviceInfoService_WatchHardware_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[WatchHardwareRequest, WatchHardwareResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyDeviceInfoService_WatchHardwareClient = grpc.ServerStreamingClient[WatchHardwareResponse]
 
 func (c *wendyDeviceInfoServiceClient) SetHardwareWatchList(ctx context.Context, in *SetHardwareWatchListRequest, opts ...grpc.CallOption) (*SetHardwareWatchListResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -89,7 +103,12 @@ func (c *wendyDeviceInfoServiceClient) SetHardwareWatchList(ctx context.Context,
 type WendyDeviceInfoServiceServer interface {
 	GetDeviceInfo(context.Context, *GetDeviceInfoRequest) (*GetDeviceInfoResponse, error)
 	ListHardwareCapabilities(context.Context, *ListHardwareCapabilitiesRequest) (*ListHardwareCapabilitiesResponse, error)
-	GetHardwareWatchList(context.Context, *GetHardwareWatchListRequest) (*GetHardwareWatchListResponse, error)
+	// WatchHardware pushes hardware changes in real time. The first message is
+	// always a HardwareSnapshot (devices currently on the bus + the watch
+	// list); every subsequent message is a HardwareEvent as it happens — no
+	// polling. Clients that only need current state read the snapshot and
+	// close the stream.
+	WatchHardware(*WatchHardwareRequest, grpc.ServerStreamingServer[WatchHardwareResponse]) error
 	SetHardwareWatchList(context.Context, *SetHardwareWatchListRequest) (*SetHardwareWatchListResponse, error)
 	mustEmbedUnimplementedWendyDeviceInfoServiceServer()
 }
@@ -107,8 +126,8 @@ func (UnimplementedWendyDeviceInfoServiceServer) GetDeviceInfo(context.Context, 
 func (UnimplementedWendyDeviceInfoServiceServer) ListHardwareCapabilities(context.Context, *ListHardwareCapabilitiesRequest) (*ListHardwareCapabilitiesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListHardwareCapabilities not implemented")
 }
-func (UnimplementedWendyDeviceInfoServiceServer) GetHardwareWatchList(context.Context, *GetHardwareWatchListRequest) (*GetHardwareWatchListResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method GetHardwareWatchList not implemented")
+func (UnimplementedWendyDeviceInfoServiceServer) WatchHardware(*WatchHardwareRequest, grpc.ServerStreamingServer[WatchHardwareResponse]) error {
+	return status.Error(codes.Unimplemented, "method WatchHardware not implemented")
 }
 func (UnimplementedWendyDeviceInfoServiceServer) SetHardwareWatchList(context.Context, *SetHardwareWatchListRequest) (*SetHardwareWatchListResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetHardwareWatchList not implemented")
@@ -171,23 +190,16 @@ func _WendyDeviceInfoService_ListHardwareCapabilities_Handler(srv interface{}, c
 	return interceptor(ctx, in, info, handler)
 }
 
-func _WendyDeviceInfoService_GetHardwareWatchList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetHardwareWatchListRequest)
-	if err := dec(in); err != nil {
-		return nil, err
+func _WendyDeviceInfoService_WatchHardware_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchHardwareRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
 	}
-	if interceptor == nil {
-		return srv.(WendyDeviceInfoServiceServer).GetHardwareWatchList(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: WendyDeviceInfoService_GetHardwareWatchList_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(WendyDeviceInfoServiceServer).GetHardwareWatchList(ctx, req.(*GetHardwareWatchListRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+	return srv.(WendyDeviceInfoServiceServer).WatchHardware(m, &grpc.GenericServerStream[WatchHardwareRequest, WatchHardwareResponse]{ServerStream: stream})
 }
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyDeviceInfoService_WatchHardwareServer = grpc.ServerStreamingServer[WatchHardwareResponse]
 
 func _WendyDeviceInfoService_SetHardwareWatchList_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetHardwareWatchListRequest)
@@ -223,14 +235,16 @@ var WendyDeviceInfoService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _WendyDeviceInfoService_ListHardwareCapabilities_Handler,
 		},
 		{
-			MethodName: "GetHardwareWatchList",
-			Handler:    _WendyDeviceInfoService_GetHardwareWatchList_Handler,
-		},
-		{
 			MethodName: "SetHardwareWatchList",
 			Handler:    _WendyDeviceInfoService_SetHardwareWatchList_Handler,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "WatchHardware",
+			Handler:       _WendyDeviceInfoService_WatchHardware_Handler,
+			ServerStreams: true,
+		},
+	},
 	Metadata: "wendy/agent/services/v2/device_info_service.proto",
 }
