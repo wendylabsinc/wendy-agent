@@ -1,5 +1,5 @@
-Using Swift E2E tests.
+Swift end-to-end tests for the Wendy CLI and agent.
 
-This is a quick working tour: run one focused behavior, follow the evidence
-when something fails, and add coverage without needing to understand the whole
-harness first.
+In this screencast, we will look at what the Swift E2E system is for, how to
+run it, the conventions behind its 925 documented tests, the artifacts every
+run produces, and where its boundaries deliberately are today.

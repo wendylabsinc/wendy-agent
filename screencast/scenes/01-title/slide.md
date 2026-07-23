@@ -1,5 +1,7 @@
-# Using Swift E2E Tests
+# Swift E2E Tests
 
 ```text
-run a focused behavior → inspect evidence → add coverage
+executable specs → real wendy binary → recorded evidence
+
+925 documented tests · hosted macOS + Ubuntu · AI-reviewed runs
 ```
