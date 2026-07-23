@@ -16,24 +16,25 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 
 > **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
-## Events
+## Notifications
 
-Use `{ "type": "events" }` when a workload needs to alert an operator in Wendy
-Companion.
+Use `{ "type": "notifications" }` when an app needs to alert operators through
+Wendy Cloud and Companion. WendyKit exposes this as
+`WendyNotification.send(_:)`.
 
 | Boundary | Value |
 |---|---|
-| Read-only mount | `/run/wendy/events` (one socket per app/service) |
-| Injected environment | `WENDY_EVENT_SOCKET=/run/wendy/events/events.sock` |
+| Read-only mount | `/run/wendy/system` (one private System API socket per app) |
+| Injected environment | `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock` |
 | Supplementary group | GID `2000`, so non-root apps can connect without world access |
-| Host persistence | `/var/lib/wendy/app-events`, restored after Agent restart |
+| Stable host directory | `/var/lib/wendy/app-system`, recreated after agent/daemon restart |
 
-The workload publishes a stable source event ID, bounded title/body, severity,
-and semantic Live/camera target. WendyOS and Cloud authenticate and attribute
-the app/device/organization, so the workload never supplies those identities or
-an arbitrary URL. Tapping the resulting APNs notification opens Companion's
-**Live** view on the source device with that camera selected. See the
-[FireWatch example](../../../../../Examples/FireWatchEvents/README.md).
+The app supplies the audience, content, severity, deep link, idempotency key,
+and optional metadata. The agent/daemon binds the request to its trusted app
+identity, and Wendy Cloud derives device and organization identity from device
+mTLS. Apps without the entitlement receive no System API mount, environment
+variable, or socket group. The full administrative Agent socket remains
+separate and requires `admin`.
 
 ## Network
 

@@ -184,18 +184,25 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
-### Events Entitlement
+### Notifications Entitlement
 
-Publishes attributed operator alerts through the local Wendy Agent without granting device control.
+Sends operator-facing Wendy Notifications through the app's private Wendy
+System API socket.
 
 ```json
-{ "type": "events" }
+{ "type": "notifications" }
 ```
 
-Use the injected `WENDY_EVENT_SOCKET` to call `WendyEventService.PublishEvent`
-with a stable source event ID and a structured Live/camera target. The workload
-cannot supply app/device/organization identity or a URL. Reusing the same source
-ID safely deduplicates retries. See `Examples/FireWatchEvents`.
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by that app's entitled services and future Wendy System API
+capabilities. WendyKit's public Swift operation is
+`WendyNotification.send(_:)`; apps do not need to use gRPC.
+
+The app supplies audience, title/body, severity, deep link, `source_id`, and
+optional metadata. Trusted local state supplies app identity, while provisioned
+device mTLS supplies device and organization identity. This entitlement never
+exposes the administrative `WENDY_AGENT_SOCKET`.
 
 ### Admin Entitlement
 
@@ -293,6 +300,7 @@ wendy project entitlements add network --mode none
 wendy project entitlements add gpu
 wendy project entitlements add video
 wendy project entitlements add audio
+wendy project entitlements add notifications
 wendy project entitlements add bluetooth --mode kernel
 wendy project entitlements add bluetooth --mode bluez
 ```

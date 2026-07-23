@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package wendy.system.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/systempb";
+
+// NotificationService is available only through an app's private Wendy System
+// API socket. The agent/daemon binds calls to the app identity represented by
+// that socket; requests intentionally carry no app, device, or organization ID.
+service NotificationService {
+  rpc Send(SendRequest) returns (SendResponse);
+}
+
+enum NotificationSeverity {
+  NOTIFICATION_SEVERITY_UNSPECIFIED = 0;
+  NOTIFICATION_SEVERITY_INFO = 1;
+  NOTIFICATION_SEVERITY_WARNING = 2;
+  NOTIFICATION_SEVERITY_ERROR = 3;
+  NOTIFICATION_SEVERITY_CRITICAL = 4;
+}
+
+enum OrganizationRole {
+  ORGANIZATION_ROLE_UNSPECIFIED = 0;
+  ORGANIZATION_ROLE_OWNER = 1;
+  ORGANIZATION_ROLE_ADMIN = 2;
+  ORGANIZATION_ROLE_BILLING_MANAGER = 3;
+  ORGANIZATION_ROLE_MEMBER = 4;
+  ORGANIZATION_ROLE_VIEWER = 5;
+}
+
+message NotificationAudience {
+  oneof audience {
+    string user_id = 1;
+    int32 org_team_id = 2;
+    OrganizationRole organization_role = 3;
+  }
+}
+
+message SendRequest {
+  NotificationAudience audience = 1;
+  string title = 2;
+  string body = 3;
+  NotificationSeverity severity = 4;
+  string deep_link = 5;
+  // App-generated idempotency key within this source app and device.
+  string source_id = 6;
+  optional google.protobuf.Struct metadata = 7;
+}
+
+message SendResponse {
+  bool duplicate = 1;
+  int32 recipient_count = 2;
+}

@@ -29,9 +29,9 @@ const (
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
-	// appEventsGroupGID is reserved by WendyOS for app event sockets, allowing
-	// non-root workload users to connect without making host sockets world-readable.
-	appEventsGroupGID uint32 = 2000
+	// appSystemAPIGroupGID is reserved by WendyOS for private app System API
+	// sockets, allowing non-root workloads to connect without world access.
+	appSystemAPIGroupGID uint32 = 2000
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -49,9 +49,9 @@ type ApplyOptions struct {
 	// DBUS_SYSTEM_BUS_ADDRESS — mounting the raw host D-Bus socket directly
 	// would expose every system service, so it is never done.
 	DBusProxySocketDir string
-	// EventSocketDir is the app-specific host directory prepared by
-	// AppEventSocketManager. It contains only the narrow event publishing socket.
-	EventSocketDir string
+	// SystemAPISocketDir is the app-specific host directory prepared by
+	// AppSystemAPISocketManager. It contains only the narrow System API socket.
+	SystemAPISocketDir string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -110,8 +110,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 				didSetDeviceCapabilities = true
 				SetDeviceCapabilities(spec)
 			}
-		case appconfig.EntitlementEvents:
-			applyEvents(spec, opts.EventSocketDir)
+		case appconfig.EntitlementNotifications:
+			applySystemAPI(spec, opts.SystemAPISocketDir)
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
@@ -419,33 +419,16 @@ func applyDisplay(spec *Spec) {
 	}
 }
 
-// applyAdmin grants a container access to the wendy-agent's local control socket
-// (full gRPC, no mTLS). It is the entire trust boundary: only containers that
-// declare the admin entitlement get the socket, so anything with this can fully
-// control the device's apps. The mount is conditional on the host socket
-// existing so an app still starts if the agent socket is down (no-op-safe).
-//
-// The socket's parent *directory* is mounted, not the socket file. A file
-// bind-mount pins a single inode, but localsocket.Listen unlinks and recreates
-// the socket (a fresh inode) on every agent start. Mounting the file would
-// strand a long-lived container on the deleted inode after an agent restart
-// (every dial → connection refused). Mounting the directory lets the container
-// resolve the socket name live on each dial, so a restart is transparent.
-//
-// A directory mount only survives *socket-file* churn, though — it still pins
-// the directory's inode. That is why the host directory lives on disk
-// (AdminAgentSocketHostPath, under /var/lib/wendy) rather than on tmpfs /run: a
-// /run directory is wiped and re-created with a fresh inode on every boot, which
-// would strand the mount on the orphaned pre-reboot inode (in-container dial →
-// ENOENT). See AdminAgentSocketHostPath. The socket lives in its own dedicated
-// directory so this exposes nothing else. Read-only: connecting needs no write.
-func applyEvents(spec *Spec, hostDirectory string) {
+// applySystemAPI mounts the app's stable, private System API directory. The
+// directory is mounted rather than the socket inode so Agent socket recreation
+// is transparent to an already-running container.
+func applySystemAPI(spec *Spec, hostDirectory string) {
 	if hostDirectory == "" {
 		return
 	}
-	const containerDirectory = "/run/wendy/events"
-	const containerSocket = containerDirectory + "/events.sock"
-	socketPath := filepath.Join(hostDirectory, "events.sock")
+	const containerDirectory = "/run/wendy/system"
+	const containerSocket = containerDirectory + "/system.sock"
+	socketPath := filepath.Join(hostDirectory, "system.sock")
 	fi, err := os.Lstat(socketPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
 		return
@@ -458,11 +441,14 @@ func applyEvents(spec *Spec, hostDirectory string) {
 	})
 	spec.Process.User.AdditionalGids = appendUnique(
 		spec.Process.User.AdditionalGids,
-		appEventsGroupGID,
+		appSystemAPIGroupGID,
 	)
-	spec.Process.Env = append(spec.Process.Env, "WENDY_EVENT_SOCKET="+containerSocket)
+	spec.Process.Env = append(spec.Process.Env, "WENDY_SYSTEM_SOCKET="+containerSocket)
 }
 
+// applyAdmin grants a container access to the wendy-agent's full local control
+// socket. Its parent disk-backed directory is mounted so socket recreation and
+// host reboot do not strand a long-lived container on a stale inode.
 func applyAdmin(spec *Spec) {
 	fi, err := os.Lstat(AdminAgentSocketHostPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {

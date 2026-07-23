@@ -315,6 +315,15 @@ func parseDependsOn(v string) []string {
 	return out
 }
 
+func entitlementsContain(entitlements []appconfig.Entitlement, entitlementType string) bool {
+	for _, entitlement := range entitlements {
+		if entitlement.Type == entitlementType {
+			return true
+		}
+	}
+	return false
+}
+
 // parseEntitlementsFromAnnotations reconstructs an entitlement list from OCI
 // manifest annotations or containerd container labels. It is the inverse of
 // buildEntitlementAnnotations / wendyLabels.

@@ -253,6 +253,33 @@ On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CD
   **Security**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 </Callout>
 
+### Notifications Entitlement
+
+The notifications entitlement lets an app send operator-facing Wendy
+Notifications through its private Wendy System API socket.
+
+```json
+{
+  "type": "notifications"
+}
+```
+
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by the app's entitled service containers and future Wendy System
+API capabilities. WendyKit exposes the typed operation as
+`WendyNotification.send(_:)`.
+
+The app supplies audience, content, severity, deep link, an idempotency key, and
+optional metadata. Trusted container state supplies app identity; provisioned
+device mTLS supplies device and organization identity.
+
+<Callout type="warning">
+  **Security**: Apps without `notifications` receive no System API mount,
+  environment variable, or socket group. This entitlement never exposes the
+  separate administrative `WENDY_AGENT_SOCKET`.
+</Callout>
+
 ### Admin Entitlement
 
 The admin entitlement grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
@@ -393,6 +420,7 @@ wendy project entitlements add network --mode none
 wendy project entitlements add gpu
 wendy project entitlements add camera
 wendy project entitlements add audio
+wendy project entitlements add notifications
 wendy project entitlements add bluetooth --mode kernel
 wendy project entitlements add bluetooth --mode bluez
 wendy project entitlements add persist --name mydata --path /data

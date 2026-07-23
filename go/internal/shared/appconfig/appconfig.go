@@ -46,9 +46,9 @@ const (
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 	EntitlementDisplay   = "display"
-	// EntitlementEvents grants access only to an app-attributed event publishing
-	// socket. It does not expose the Agent's general control plane.
-	EntitlementEvents = "events"
+	// EntitlementNotifications grants access only to the app-attributed Wendy
+	// System Notification API. It does not expose the Agent control plane.
+	EntitlementNotifications = "notifications"
 	// EntitlementAdmin grants full, unauthenticated local control of the agent
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
@@ -78,7 +78,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementSerial,
 	EntitlementMCP,
 	EntitlementDisplay,
-	EntitlementEvents,
+	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
 }
@@ -89,24 +89,24 @@ var deprecatedEntitlementReplacements = map[string]string{
 
 // allowedKeys maps each entitlement type to the set of JSON keys that are valid for it.
 var allowedKeys = map[string][]string{
-	EntitlementNetwork:   {"type", "mode", "ports", "serviceCIDR"},
-	EntitlementBluetooth: {"type", "mode"},
-	EntitlementVideo:     {"type", "mode", "allowlist"},
-	EntitlementGPU:       {"type"},
-	EntitlementPersist:   {"type", "name", "path"},
-	EntitlementAudio:     {"type"},
-	EntitlementCamera:    {"type", "mode", "allowlist"},
-	EntitlementUSB:       {"type"},
-	EntitlementI2C:       {"type", "device"},
-	EntitlementGPIO:      {"type", "pins"},
-	EntitlementSPI:       {"type"},
-	EntitlementInput:     {"type"},
-	EntitlementSerial:    {"type", "device"},
-	EntitlementMCP:       {"type", "port"},
-	EntitlementDisplay:   {"type"},
-	EntitlementEvents:    {"type"},
-	EntitlementAdmin:     {"type"},
-	EntitlementBuild:     {"type"},
+	EntitlementNetwork:       {"type", "mode", "ports", "serviceCIDR"},
+	EntitlementBluetooth:     {"type", "mode"},
+	EntitlementVideo:         {"type", "mode", "allowlist"},
+	EntitlementGPU:           {"type"},
+	EntitlementPersist:       {"type", "name", "path"},
+	EntitlementAudio:         {"type"},
+	EntitlementCamera:        {"type", "mode", "allowlist"},
+	EntitlementUSB:           {"type"},
+	EntitlementI2C:           {"type", "device"},
+	EntitlementGPIO:          {"type", "pins"},
+	EntitlementSPI:           {"type"},
+	EntitlementInput:         {"type"},
+	EntitlementSerial:        {"type", "device"},
+	EntitlementMCP:           {"type", "port"},
+	EntitlementDisplay:       {"type"},
+	EntitlementNotifications: {"type"},
+	EntitlementAdmin:         {"type"},
+	EntitlementBuild:         {"type"},
 }
 
 // Platform constants identify the target hardware family.
@@ -449,6 +449,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if displayCount > 1 {
 		return fmt.Errorf("at most one display entitlement is allowed in %s, found %d", prefix, displayCount)
+	}
+
+	notificationsCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementNotifications {
+			notificationsCount++
+		}
+	}
+	if notificationsCount > 1 {
+		return fmt.Errorf("at most one notifications entitlement is allowed in %s, found %d", prefix, notificationsCount)
 	}
 
 	adminCount := 0

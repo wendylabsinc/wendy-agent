@@ -23,8 +23,6 @@ Tests:
   python-gpu                Python with GPU entitlement (CUDA verification)
   python-onnx-gpu           Python with GPU entitlement (ONNX Runtime CUDA inference)
   python-bluetooth          Python with bluetooth entitlement
-  python-events             Verify events socket is mounted with entitlement
-  python-no-events          Verify events access is withheld without entitlement
   python-no-network         Verify network is blocked WITHOUT entitlement
   python-no-bluetooth       Verify bluetooth is blocked WITHOUT entitlement
   python-no-ptrace          Verify ptrace is blocked by default seccomp profile (WDY-1099)
@@ -199,8 +197,6 @@ ALL_TESTS=(
     python-gpu
     python-onnx-gpu
     python-bluetooth
-    python-events
-    python-no-events
     python-no-network
     python-no-bluetooth
     python-no-ptrace

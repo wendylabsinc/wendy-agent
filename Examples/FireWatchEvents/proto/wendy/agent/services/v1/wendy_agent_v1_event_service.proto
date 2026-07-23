@@ -1,5 +1,0 @@
-syntax = "proto3";
-package wendy.agent.services.v1;
-import "cloud/events.proto";
-service WendyEventService { rpc PublishEvent(PublishAppEventRequest) returns (wendycloud.v1.PublishEventResponse); }
-message PublishAppEventRequest { string source_event_id = 1; string title = 2; string body = 3; wendycloud.v1.EventSeverity severity = 4; wendycloud.v1.EventTarget target = 5; }

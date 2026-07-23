@@ -4,10 +4,16 @@ package wendycloud.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "cloud/organizations.proto";
 
 service NotificationService {
+  // Legacy single-user creation API. Kept for existing dashboard and MCP clients.
   rpc CreateNotification(CreateNotificationRequest) returns (Notification);
-  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  // Creates per-user Notifications for one user, organization team, or organization role.
+  // User credentials and provisioned-device credentials are both supported.
+  rpc CreateNotificationV2(CreateNotificationV2Request) returns (CreateNotificationV2Response);
+  // Server-streamed pagination using offset/limit (matches OrganizationService)
+  rpc ListNotifications(ListNotificationsRequest) returns (stream ListNotificationsResponse);
   rpc GetNotification(GetNotificationRequest) returns (Notification);
   rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
   rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
@@ -22,7 +28,16 @@ enum NotificationSeverity {
   NOTIFICATION_SEVERITY_CRITICAL = 4;
 }
 
+message NotificationAudience {
+  oneof audience {
+    string user_id = 1;
+    int32 org_team_id = 2;
+    OrganizationRole organization_role = 3;
+  }
+}
+
 message Notification {
+  // Fields 1 through 8 are the legacy Companion contract and must remain stable.
   int32 id = 1;
   string user_id = 2;
   int32 organization_id = 3;
@@ -31,6 +46,15 @@ message Notification {
   google.protobuf.Struct related_entities = 6;
   google.protobuf.Timestamp created_at = 7;
   optional google.protobuf.Timestamp deleted_at = 8;
+
+  string title = 9;
+  string deep_link = 10;
+  optional string source_id = 11;
+  google.protobuf.Struct metadata = 12;
+  optional NotificationAudience audience = 13;
+  optional string source_user_id = 14;
+  optional int32 source_asset_id = 15;
+  optional string source_app_id = 16;
 }
 
 message CreateNotificationRequest {
@@ -41,19 +65,45 @@ message CreateNotificationRequest {
   google.protobuf.Struct related_entities = 5;
 }
 
+message CreateNotificationV2Request {
+  // Required for user-authenticated callers. Provisioned devices omit it because Cloud
+  // derives the organization from their certificate.
+  optional int32 organization_id = 1;
+  NotificationAudience audience = 2;
+  string title = 3;
+  string body = 4;
+  NotificationSeverity severity = 5;
+  // Absolute wendy:// URI understood by Wendy clients.
+  string deep_link = 6;
+  // App/client-generated idempotency key within the authenticated source namespace.
+  string source_id = 7;
+  optional google.protobuf.Struct metadata = 8;
+  // Required for provisioned-device callers and stamped by the Wendy agent/daemon.
+  // Cloud validates that this app belongs to the authenticated organization and device.
+  optional string source_app_id = 9;
+}
+
+message CreateNotificationV2Response {
+  // One canonical per-user Notification is returned for every resolved recipient.
+  repeated Notification notifications = 1;
+  // True when source_id had already been accepted and no new Notifications were delivered.
+  bool duplicate = 2;
+  int32 recipient_count = 3;
+}
+
 message ListNotificationsRequest {
   int32 organization_id = 1;
   string user_id = 2;
-  int32 page_size = 3;
-  string page_token = 4;
+  // Offset/limit based pagination
+  optional int32 offset = 3;
+  optional int32 limit = 4;
   optional NotificationSeverity severity_filter = 5;
   bool include_deleted = 6;
 }
 
 message ListNotificationsResponse {
-  repeated Notification notifications = 1;
-  string next_page_token = 2;
-  int32 total_count = 3;
+  Notification notification = 1;
+  int32 total = 2;
 }
 
 message GetNotificationRequest {

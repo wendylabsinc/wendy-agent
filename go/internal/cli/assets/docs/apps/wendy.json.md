@@ -381,44 +381,36 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
-### `events`
+### `notifications`
 
-Publishes operator-facing events through a narrow, app-specific Wendy Agent unix socket.
+Allows an app to send operator-facing Wendy Notifications through its private
+Wendy System API socket.
 
 ```json
-{ "type": "events" }
+{ "type": "notifications" }
 ```
 
-The Agent mounts an app-specific socket directory read-only at
-`/run/wendy/events`, injects
-`WENDY_EVENT_SOCKET=/run/wendy/events/events.sock`, and grants supplementary GID
-`2000` so non-root workloads can connect without making the socket
-world-readable. Socket directories remain under `/var/lib/wendy/app-events` and
-are safely restored after Agent restart.
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by that app's entitled service containers and by future Wendy
+System API capabilities; it is not one socket per capability. The public Swift
+API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
+gRPC directly.
 
-Call `WendyEventService.PublishEvent` with:
+The request supplies an audience (one user, organization team, or organization
+role), title, body, severity, deep link, app-generated `source_id`, and optional
+structured metadata. The socket handler binds `source_app_id` from trusted
+container metadata. Wendy Cloud derives device and organization identity from
+the provisioned device certificate; none of those identities can be supplied
+by the app.
 
-| Field | Constraint | Description |
-|---|---|---|
-| `source_event_id` | 1–128 safe ASCII bytes | Stable caller ID; reuse it for retries and deduplication. |
-| `title` | 1–120 printable UTF-8 bytes | Push notification title. |
-| `body` | 1–2000 printable UTF-8 bytes | Operator-facing alert text. |
-| `severity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL` | Required alert severity. |
-| `target.live.camera_id` | 1–256 printable UTF-8 bytes | Stable `libcamera_id` reported by Wendy Agent. |
+The host directory lives under `/var/lib/wendy/app-system`, so its inode remains
+stable while the agent/daemon restarts and recreates `system.sock`. Multi-service
+ownership is reference-counted and the directory is removed after the last
+entitled container is deleted.
 
-Cloud stores one notification per organization member. Tapping its APNs push
-opens Companion's **Live** view on the source device with this camera selected.
-See [`Examples/FireWatchEvents`](../../../../Examples/FireWatchEvents/README.md).
-
-The workload cannot choose its app, device, or organization identity: WendyOS
-attributes the source from the entitlement mount, and Cloud derives device and
-organization from the Agent certificate. Reusing a source event ID retries
-safely without duplicate notifications. The API does not accept URLs. The Agent
-bounds requests to 4 KiB and rate-limits each app socket; retry transient gRPC
-errors with the same source ID.
-
-> **Security:** `events` exposes only event publishing, never the full Agent
-> control plane. Use it instead of `admin` for alerts.
+> **Security:** `notifications` exposes only entitled Wendy System APIs. It does
+> not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
 
 ### `admin`
 

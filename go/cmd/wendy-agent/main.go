@@ -263,11 +263,11 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	eventPublisher := services.NewCloudEventPublisher(logger, provisioningSvc)
-	eventSocketManager := services.NewAppEventSocketManager(ctx, logger, eventPublisher)
-	eventSocketManager.Restore()
+	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
+	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
 	if ctrdClient != nil {
-		ctrdClient.SetAppEventSocketProvider(eventSocketManager)
+		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
+		ctrdClient.RestoreAppSystemAPISockets(ctx)
 	}
 
 	go timesyncMgr.RunDirect(ctx)
