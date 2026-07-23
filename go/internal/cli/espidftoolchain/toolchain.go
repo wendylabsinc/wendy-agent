@@ -113,9 +113,9 @@ func EnsureVersion(ctx context.Context) error {
 	}
 
 	listCmd := execCommandContext(ctx, "eim", "list")
-	out, err := listCmd.Output()
+	out, err := listCmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("running 'eim list': %w", err)
+		return fmt.Errorf("running 'eim list': %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	for _, v := range parseInstalledVersions(string(out)) {
 		if v == DefaultVersion {
