@@ -113,9 +113,22 @@ func EnsureVersion(ctx context.Context) error {
 	}
 
 	listCmd := execCommandContext(ctx, "eim", "list")
-	out, err := listCmd.CombinedOutput()
+	out, err := listCmd.Output()
 	if err != nil {
-		return fmt.Errorf("running 'eim list': %w: %s", err, strings.TrimSpace(string(out)))
+		details := strings.TrimSpace(string(out))
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+				if details != "" {
+					details += "\n"
+				}
+				details += stderr
+			}
+		}
+		if details != "" {
+			return fmt.Errorf("running 'eim list': %w: %s", err, details)
+		}
+		return fmt.Errorf("running 'eim list': %w", err)
 	}
 	for _, v := range parseInstalledVersions(string(out)) {
 		if v == DefaultVersion {
