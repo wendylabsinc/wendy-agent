@@ -142,7 +142,7 @@ To provision WiFi after first boot, use `wendy device setup` or the BLE provisio
 
 ## Linux (WendyOS) path
 
-For Raspberry Pi devices—and Orin only with explicit `--rootfs-only`—the install path writes a disk image to a selected SD card, NVMe drive, or USB-attached enclosure:
+For Raspberry Pi devices—and Orin with `--rootfs-only`, the interactive flash-mode choice "OS image only", or a version that predates recovery flashpacks—the install path writes a disk image to a selected SD card, NVMe drive, or USB-attached enclosure:
 
 1. **Resolve version** — `--version` if provided, otherwise latest (or nightly with `--nightly`).
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
@@ -164,9 +164,9 @@ New Orin releases default to full USB recovery on macOS, Linux, and Windows. Sup
 
 The CLI RCM-boots a signed recovery initrd, correlates its mass-storage LUNs to the selected physical USB port and session, and reads `device.json` before any persistent write. A module/carrier mismatch aborts before the flash-package handoff. It then writes/ejects the flash package, writes the exported `nvme0n1` or `mmcblk0` according to the signed partition layout, collects device logs, and reports success only when the final status is `SUCCESS`.
 
-Full recovery erases QSPI and every partition on the chosen storage, including `/data`. After the handoff, the first Ctrl+C warns that the device may be partially written; a second Ctrl+C confirms the abort. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device and raw disk writes require elevation — expect a single administrator (UAC) prompt as soon as a Jetson Orin target is selected; accepting it continues the command, including the remaining setup questions, in a new elevated console window. If Windows offers to format one of the Jetson's flashing disks mid-flash, always choose Cancel.
+Full recovery erases QSPI and every partition on the chosen storage, including `/data`. After the handoff, the first Ctrl+C warns that the device may be partially written; a second Ctrl+C confirms the abort. On Windows, the first flash installs a WinUSB driver for the Jetson recovery device and raw disk writes require elevation — expect a single administrator (UAC) prompt as soon as the flash mode is settled for a Jetson Orin target (answered at the interactive flash-mode question, or pinned by `--rootfs-only`/`--storage emmc`/a non-interactive run); accepting it continues the command, including the remaining setup questions, in a new elevated console window. If Windows offers to format one of the Jetson's flashing disks mid-flash, always choose Cancel.
 
-`--drive`, `--no-bmap`, and `--yes-overwrite-internal` apply only with `--rootfs-only`. eMMC has no rootfs-only mode. Rootfs-only emits a warning because it does not update QSPI; there is no automatic fallback from recovery to raw imaging.
+`--drive`, `--no-bmap`, and `--yes-overwrite-internal` apply only with rootfs-only imaging. eMMC has no rootfs-only mode. Rootfs-only emits a warning because it does not update QSPI. Versions that predate recovery flashpacks fall back to their legacy SD/NVMe image automatically (with a warning; `--rootfs-only=false` turns the fallback into an error); a recovery-capable flash never falls back to raw imaging on failure.
 
 ## Jetson AGX Thor recovery flash path
 

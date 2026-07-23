@@ -189,6 +189,7 @@ fi
 
 ALL_TESTS=(
     swift-hello
+    swift-start-detach
     swift-network
     swift-bluetooth
     swift-resources
@@ -361,6 +362,50 @@ for test_name in "${TESTS[@]}"; do
             return 0
         }
         run_test "python-device-top (snapshot reports host + container)" device_top_snapshot
+
+        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
+    # ── apps start reporting (detached start must confirm the start) ──────
+    # A detached `apps start` must return only after the agent confirms the
+    # container started (deploy first WITHOUT starting so no prior restart
+    # policy masks the result), and must fail — not falsely succeed — when the
+    # target app does not exist.
+    if [[ "$test_name" == "swift-start-detach" ]]; then
+        echo -e "${BOLD}── $test_name${RESET}"
+        app_id="sh.wendy.ci.swift-start-detach"
+
+        run_test "swift-start-detach (deploy, not started)" \
+            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy
+
+        detach_start_reaches_running() {
+            if ! "$WENDY" device apps start "$app_id" --device "$HOSTNAME" --detach; then
+                echo "apps start --detach returned non-zero"
+                return 1
+            fi
+            local out
+            for _ in 1 2 3 4 5; do
+                out=$("$WENDY" device apps list --device "$HOSTNAME" --json 2>&1)
+                if echo "$out" | jq -e --arg a "$app_id" \
+                    '(.[] | select(.name==$a) | .runningState) == "RUNNING"' >/dev/null 2>&1; then
+                    return 0
+                fi
+                sleep 1
+            done
+            echo "app '$app_id' never reached RUNNING after detached start: $out"
+            return 1
+        }
+        run_test "swift-start-detach (detached start reaches RUNNING)" detach_start_reaches_running
+
+        detach_start_missing_app_fails() {
+            if "$WENDY" device apps start sh.wendy.ci.does-not-exist --device "$HOSTNAME" --detach >/dev/null 2>&1; then
+                echo "apps start --detach of a nonexistent app unexpectedly reported success"
+                return 1
+            fi
+            return 0
+        }
+        run_test "swift-start-detach (missing app start fails)" detach_start_missing_app_fails
 
         "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue

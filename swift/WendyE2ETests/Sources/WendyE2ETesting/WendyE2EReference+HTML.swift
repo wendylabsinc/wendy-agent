@@ -113,61 +113,51 @@ private func renderHTMLDocument(title: String, body: String) -> String {
           <style>
             :root {
               color-scheme: light;
-              --emerald-50: #ecfdf5;
-              --emerald-100: #d1fae5;
-              --emerald-200: #a7f3d0;
-              --emerald-300: #6ee7b7;
-              --emerald-400: #34d399;
-              --emerald-500: #10b981;
-              --emerald-600: #059669;
-              --emerald-700: #047857;
-              --emerald-800: #065f46;
-              --emerald-900: #064e3b;
-              --emerald-950: #022c22;
-
-              --bg: #f8fafc;
-              --card: rgba(255, 255, 255, .92);
-              --panel: rgba(255, 255, 255, .78);
-              --text: #111827;
-              --muted: #64748b;
-              --line: #e5e7eb;
-              --soft: #f3f4f6;
-              --blue: var(--emerald-600);
-              --shadow: rgba(15, 23, 42, .08);
-              --shadow-strong: rgba(15, 23, 42, .14);
-              --focus-ring: rgba(16, 185, 129, .18);
-              --code-bg: rgba(243, 244, 246, .90);
+              --background: #F1EEE7;
+              --foreground: #171C23;
+              --card: #F1EEE7;
+              --panel: #E6E2D8;
+              --muted-foreground: #5B5A56;
+              --border: #DEDEDE;
+              --input: #CBCBCB;
+              --seafoam: #9FE2BF;
+              --seafoam-hover: #86D3A8;
+              --link: #2A7050;
+              --primary: #171C23;
+              --primary-foreground: #F1EEE7;
+              --code-background: #E6E2D8;
+              --shadow: rgba(23, 28, 35, .08);
             }
 
             :root[data-theme="dark"] {
               color-scheme: dark;
-              --bg: #020617;
-              --card: rgba(15, 23, 42, .88);
-              --panel: rgba(30, 41, 59, .58);
-              --text: #f8fafc;
-              --muted: #94a3b8;
-              --line: rgba(148, 163, 184, .22);
-              --soft: rgba(51, 65, 85, .48);
-              --blue: var(--emerald-400);
-              --shadow: rgba(0, 0, 0, .28);
-              --shadow-strong: rgba(0, 0, 0, .38);
-              --focus-ring: rgba(52, 211, 153, .22);
-              --code-bg: rgba(51, 65, 85, .62);
+              --background: #171C23;
+              --foreground: #F1EEE7;
+              --card: #1E242D;
+              --panel: #242B35;
+              --muted-foreground: #C7C2B7;
+              --border: rgba(241, 238, 231, .18);
+              --input: rgba(241, 238, 231, .32);
+              --link: #9FE2BF;
+              --primary: #F1EEE7;
+              --primary-foreground: #171C23;
+              --code-background: #242B35;
+              --shadow: rgba(10, 13, 17, .24);
             }
 
             * { box-sizing: border-box; }
 
             body {
               margin: 0;
-              background: var(--bg);
-              color: var(--text);
-              font: 16px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+              background: var(--background);
+              color: var(--foreground);
+              font: 16px/1.6 "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             }
 
             main {
-              max-width: 1080px;
+              max-width: 1120px;
               margin: 0 auto;
-              padding: 28px 24px 72px;
+              padding: 40px 24px 72px;
             }
 
             header {
@@ -180,43 +170,32 @@ private func renderHTMLDocument(title: String, body: String) -> String {
 
             .brand-row {
               display: inline-flex;
+              flex-wrap: wrap;
               align-items: center;
-              gap: 10px;
-              margin-bottom: 14px;
+              gap: 14px 18px;
+              margin-bottom: 22px;
             }
 
             .brand-mark {
-              display: inline-grid;
-              place-items: center;
-              width: 34px;
-              height: 34px;
-              color: var(--text);
+              display: inline-flex;
+              width: 124px;
+              color: var(--foreground);
             }
 
             .brand-mark svg {
               display: block;
-              width: 30px;
-              height: 30px;
+              width: 124px;
+              height: auto;
               fill: currentColor;
             }
 
             .brand-copy {
-              display: grid;
-              gap: 0;
-              line-height: 1.1;
-            }
-
-            .brand-copy strong {
-              font-size: 15px;
-              letter-spacing: -.02em;
-            }
-
-            .brand-copy span {
-              color: var(--muted);
-              font-size: 12px;
-              font-weight: 700;
+              padding-left: 18px;
+              border-left: 1px solid var(--input);
+              color: var(--foreground);
+              font: 400 12px/1.35 "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              letter-spacing: .1em;
               text-transform: uppercase;
-              letter-spacing: .08em;
             }
 
             .header-side {
@@ -230,67 +209,63 @@ private func renderHTMLDocument(title: String, body: String) -> String {
               display: inline-flex;
               align-items: center;
               gap: 8px;
-              border: 1px solid var(--line);
+              border: 1px solid var(--input);
               border-radius: 999px;
               background: var(--card);
-              color: var(--text);
+              color: var(--foreground);
               cursor: pointer;
-              font: inherit;
-              font-size: 13px;
-              font-weight: 900;
+              font: 500 12px/1.4 "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
               padding: 8px 12px;
-              box-shadow: 0 8px 22px var(--shadow);
             }
 
-            .theme-toggle:hover {
-              transform: translateY(-1px);
-              box-shadow: 0 10px 26px var(--shadow-strong);
-            }
+            .theme-toggle:hover { background: var(--panel); }
 
-            .theme-toggle:focus-visible {
-              outline: 3px solid var(--focus-ring);
-              outline-offset: 2px;
+            :where(a, button):focus-visible {
+              outline: 3px solid var(--link);
+              outline-offset: 3px;
             }
 
             .theme-toggle-icon {
-              color: var(--blue);
+              color: var(--link);
               font-size: 15px;
               line-height: 1;
             }
 
             .page-title {
-              margin: 0 0 8px;
-              font-size: clamp(28px, 4vw, 40px);
-              line-height: 1.04;
-              letter-spacing: -0.045em;
+              margin: 0 0 12px;
+              max-width: 820px;
+              font-size: clamp(36px, 6vw, 56px);
+              font-weight: 500;
+              line-height: 1.05;
+              letter-spacing: 0;
             }
 
             .lead {
               margin: 0;
               max-width: 720px;
-              color: var(--muted);
-              font-size: 15px;
-              line-height: 1.45;
+              color: var(--muted-foreground);
+              font-size: 16px;
+              line-height: 1.55;
             }
 
             .card {
-              margin-top: 30px;
-              padding: 22px;
+              margin-top: 40px;
+              padding: 28px;
               background: var(--card);
-              border: 1px solid var(--line);
-              border-radius: 18px;
+              border: 1px solid var(--border);
               box-shadow: 0 10px 28px var(--shadow);
             }
 
             h1, h2, h3, h4, h5 {
-              color: var(--text);
-              letter-spacing: -0.025em;
+              color: var(--foreground);
+              font-weight: 500;
+              letter-spacing: 0;
             }
 
             .card > h1:first-child {
               margin-top: 0;
               padding-bottom: 10px;
-              border-bottom: 1px solid var(--line);
+              border-bottom: 1px solid var(--border);
               font-size: 28px;
               line-height: 1.1;
             }
@@ -298,7 +273,7 @@ private func renderHTMLDocument(title: String, body: String) -> String {
             h2 {
               margin: 28px 0 10px;
               padding-top: 18px;
-              border-top: 1px solid var(--line);
+              border-top: 1px solid var(--border);
               font-size: 22px;
               line-height: 1.2;
             }
@@ -311,16 +286,15 @@ private func renderHTMLDocument(title: String, body: String) -> String {
 
             h4 {
               margin: 16px 0 8px;
-              color: var(--muted);
-              font-size: 12px;
-              font-weight: 900;
-              letter-spacing: .07em;
+              color: var(--muted-foreground);
+              font: 500 12px/1.4 "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              letter-spacing: .08em;
               text-transform: uppercase;
             }
 
             h5 {
               margin: 12px 0 4px;
-              color: var(--muted);
+              color: var(--muted-foreground);
               font-size: 13px;
             }
 
@@ -344,23 +318,22 @@ private func renderHTMLDocument(title: String, body: String) -> String {
               top: .85em;
               width: 6px;
               height: 6px;
-              border-radius: 999px;
-              background: var(--blue);
+              background: var(--foreground);
             }
 
             a {
-              color: var(--blue);
-              font-weight: 800;
+              color: var(--link);
+              font-weight: 500;
               text-decoration: none;
             }
 
             a:hover { text-decoration: underline; }
 
             code {
-              font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+              font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
               font-size: .88em;
-              background: var(--code-bg);
-              border: 1px solid var(--line);
+              background: var(--code-background);
+              border: 1px solid var(--border);
               border-radius: 5px;
               padding: .12em .34em;
             }
@@ -369,8 +342,8 @@ private func renderHTMLDocument(title: String, body: String) -> String {
               overflow-x: auto;
               margin: 0 0 16px;
               padding: 1rem;
-              background: var(--soft);
-              border: 1px solid var(--line);
+              background: var(--panel);
+              border: 1px solid var(--border);
               border-radius: 12px;
             }
 
@@ -382,19 +355,19 @@ private func renderHTMLDocument(title: String, body: String) -> String {
 
             .metadata {
               margin: 8px 0 14px;
-              color: var(--muted);
+              color: var(--muted-foreground);
               font-size: 13px;
             }
 
             hr {
               border: 0;
-              border-top: 1px solid var(--line);
+              border-top: 1px solid var(--border);
               margin: 2rem 0;
             }
 
             footer {
               margin-top: 22px;
-              color: var(--muted);
+              color: var(--muted-foreground);
               font-size: 13px;
               text-align: center;
             }
@@ -412,12 +385,12 @@ private func renderHTMLDocument(title: String, body: String) -> String {
           <main>
             <header>
               <div>
-                <div class="brand-row" aria-label="Wendy E2E Reference">
-                  <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 1024 1024" role="img"><rect x="407.04" y="299.64" width="424.72" height="424.72" transform="translate(-180.62 587.94) rotate(-45)"/><path d="M335.3,743.03l-231.03-231.03,231.03-231.02,231.02,231.02-231.02,231.03ZM179.04,512l156.27,156.27,156.27-156.27-156.27-156.27-156.27,156.27Z"/></svg></span>
-                  <span class="brand-copy"><strong>E2E Reference</strong><span>Swift Specs</span></span>
+                <div class="brand-row">
+                  <span class="brand-mark" role="img" aria-label="Wendy"><svg viewBox="0 0 749.97 181.81" role="img" aria-hidden="true"><rect x="91.64" y="26.62" width="128.56" height="128.56" transform="translate(-18.61 136.88) rotate(-45)"/><path d="M69.93,160.83L0,90.9,69.93,20.98l69.93,69.93-69.93,69.93ZM22.63,90.9l47.3,47.3,47.3-47.3-47.3-47.3-47.3,47.3Z"/><path d="M324.28,119.62l-22.55-68.37h21.56l12.51,44.87h.33l15.35-44.87h18l15.3,44.87h.33l12.51-44.87h21.56l-22.55,68.37h-21.18l-14.88-41.98h-.28l-14.83,41.98h-21.18Z"/><path d="M426.43,119.62V51.25h64.01v14.88h-43.26v12.27h40.27v13.41h-40.27v12.93h43.26v14.88h-64.01Z"/><path d="M500.38,119.62V51.25h17.81l48.42,50.22-17.96-9.57h8.53v-40.65h20.18v68.37h-17.77l-48.37-50.74,17.91,9.71h-8.62v41.03h-20.14Z"/><path d="M587.98,119.62V51.25h38.56c8.62,0,15.93,1.3,21.91,3.91,5.99,2.61,10.52,6.42,13.62,11.44,3.09,5.02,4.64,11.15,4.64,18.38v.09c0,7.42-1.56,13.7-4.67,18.83-3.11,5.13-7.66,9.03-13.64,11.7-5.99,2.67-13.27,4-21.87,4h-38.56ZM608.74,104.12h16.39c4.39,0,8.11-.68,11.16-2.04,3.05-1.36,5.37-3.41,6.96-6.16,1.59-2.75,2.39-6.25,2.39-10.52v-.09c0-4.04-.77-7.44-2.3-10.19-1.53-2.75-3.82-4.83-6.87-6.25-3.05-1.42-6.83-2.13-11.35-2.13h-16.39v37.38Z"/><path d="M697.66,119.62v-23.31l-31.55-45.06h22.79l19,28.52h.28l19-28.52h22.79l-31.55,45.06v23.31h-20.75Z"/></svg></span>
+                  <span class="brand-copy">Swift E2E · Behavioral reference</span>
                 </div>
                 <h1 class="page-title">\(escapeHTMLText(plainTitle))</h1>
-                <p class="lead">Behavioral reference generated from Swift E2E specs.</p>
+                <p class="lead">Expected CLI behavior generated from the Swift E2E specifications.</p>
               </div>
               <div class="header-side">
                 <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch color theme">
@@ -431,7 +404,7 @@ private func renderHTMLDocument(title: String, body: String) -> String {
         \(body)
             </section>
 
-            <footer>Generated by <code>swift-e2e-testing reference</code></footer>
+            <footer>Generated with <code>swift-e2e-testing reference</code>.</footer>
           </main>
           <script>
             (() => {

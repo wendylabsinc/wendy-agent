@@ -2148,6 +2148,10 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}()
 
 			var preUpdateVersion *agentpb.GetAgentVersionResponse
+			// Set on the auto-download path when the device already runs (at
+			// least) the version we would fetch, so we report that honestly and
+			// skip the no-op re-upload + agent restart.
+			agentAlreadyCurrent := false
 
 			var binaryData []byte
 			// Set on the auto-download path; used to verify an upload whose
@@ -2175,7 +2179,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 					}
 				}
 			} else {
-				// Auto-download: detect arch, fetch release, download binary.
+				// Auto-download: detect arch, resolve the release version, and
+				// download the binary only when the device isn't already on it.
 				if !jsonOutput {
 					fmt.Println(tui.InfoMessage("Detecting device architecture..."))
 				}
@@ -2193,88 +2198,123 @@ func newDeviceUpdateCmd() *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("Architecture:"), tui.Value(arch))
 				}
 
-				if !jsonOutput {
-					releaseType := "stable"
-					if nightly {
-						releaseType = "nightly"
-					}
-					fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
-				}
-
-				var source, resolvedVer string
-				binaryData, resolvedVer, source, err = resolveAgentBinary(arch, nightly)
+				// Resolve the version first — this reads only manifest/release
+				// metadata, so an already-current device never downloads the
+				// tarball. Record it so an upload whose confirmation was lost to
+				// a mid-stream agent restart can still be verified.
+				resolvedVer, source, err := resolveAgentVersion(nightly)
 				if err != nil {
-					return fmt.Errorf("resolving agent binary: %w", err)
+					return fmt.Errorf("resolving agent version: %w", err)
 				}
-				// Record the resolved version so an upload whose confirmation
-				// was lost to a mid-stream agent restart can still be verified.
 				expectedAgentVersion = resolvedVer
 				if !jsonOutput {
 					fmt.Printf("%s %s %s\n", tui.Dim("Release:"), tui.Value(resolvedVer), tui.Dim("(from "+source+")"))
 				}
+				// Reported >= resolved means the device is already at (or ahead
+				// of) the version we'd install; nothing to upload. A dev build
+				// compares as newest, but an explicit update must overwrite it
+				// with the release, so dev builds never count as current here.
+				agentAlreadyCurrent = !version.IsDev(preUpdateVersion.GetVersion()) &&
+					agentUpdateVerified(preUpdateVersion.GetVersion(), resolvedVer)
+
+				if !agentAlreadyCurrent {
+					if !jsonOutput {
+						releaseType := "stable"
+						if nightly {
+							releaseType = "nightly"
+						}
+						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
+					}
+					binaryData, _, _, err = resolveAgentBinary(arch, nightly)
+					if err != nil {
+						return fmt.Errorf("resolving agent binary: %w", err)
+					}
+				}
 			}
 
-			// Compute SHA256.
-			h := sha256.Sum256(binaryData)
-			sha256Hash := hex.EncodeToString(h[:])
+			// Hash the binary we're about to upload. Skipped when already
+			// current: no binary was downloaded and no upload happens.
+			var sha256Hash string
+			if !agentAlreadyCurrent {
+				h := sha256.Sum256(binaryData)
+				sha256Hash = hex.EncodeToString(h[:])
+			}
 
-			// An unconfirmed upload is not a failure: the agent restarts the
-			// moment the binary lands, which can drop the stream before its
-			// ack arrives. Reconnect below and verify what the device runs.
-			unconfirmed := false
-			if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
-				if !errors.Is(err, errAgentUpdateUnconfirmed) {
+			if agentAlreadyCurrent {
+				if jsonOutput {
+					resp := map[string]string{
+						"status":  "up-to-date",
+						"message": "Agent is already up to date.",
+						"version": preUpdateVersion.GetVersion(),
+					}
+					b, err := json.Marshal(resp)
+					if err != nil {
+						return fmt.Errorf("failed to marshal JSON response: %w", err)
+					}
+					fmt.Println(string(b))
+					// OS update check is skipped in JSON mode to keep output stable.
+					return nil
+				}
+				fmt.Println(tui.SuccessMessage(fmt.Sprintf("Agent is already up to date (%s).", preUpdateVersion.GetVersion())))
+			} else {
+				// An unconfirmed upload is not a failure: the agent restarts the
+				// moment the binary lands, which can drop the stream before its
+				// ack arrives. Reconnect below and verify what the device runs.
+				unconfirmed := false
+				if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
+					if !errors.Is(err, errAgentUpdateUnconfirmed) {
+						return err
+					}
+					unconfirmed = true
+					if !jsonOutput {
+						fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
+					}
+				}
+
+				// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
+				// needs a live conn (and its Host/Reconnect) both to drive the OS
+				// update and to re-dial the SAME device after the reboot; passing nil
+				// here would nil-deref once the OS-update gate lets a device through.
+				reconnect := updatedAgentReconnectFunc(ctx, conn)
+				if conn != nil {
+					_ = conn.Close()
+					conn = nil
+				}
+				conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
+				if err != nil {
 					return err
 				}
-				unconfirmed = true
-				if !jsonOutput {
-					fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
-				}
-			}
 
-			// Keep the connection to the just-restarted agent. maybeCheckOSUpdate
-			// needs a live conn (and its Host/Reconnect) both to drive the OS
-			// update and to re-dial the SAME device after the reboot; passing nil
-			// here would nil-deref once the OS-update gate lets a device through.
-			reconnect := updatedAgentReconnectFunc(ctx, conn)
-			if conn != nil {
-				_ = conn.Close()
-				conn = nil
-			}
-			conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
-			if err != nil {
-				return err
-			}
+				if unconfirmed {
+					verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+					if verifyErr != nil {
+						return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
+					}
+					if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
+						return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
+							"the upload did not apply — re-run 'wendy device update'",
+							verifyResp.GetVersion(), expectedAgentVersion)
+					}
+					if !jsonOutput {
+						fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
+					}
+				}
 
-			if unconfirmed {
-				verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-				if verifyErr != nil {
-					return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
+				if jsonOutput {
+					resp := map[string]string{
+						"status":  "success",
+						"message": "Agent updated successfully.",
+					}
+					b, err := json.Marshal(resp)
+					if err != nil {
+						return fmt.Errorf("failed to marshal JSON response: %w", err)
+					}
+					fmt.Println(string(b))
+					// OS update check is skipped in JSON mode to keep output stable.
+					return nil
 				}
-				if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
-					return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
-						"the upload did not apply — re-run 'wendy device update'",
-						verifyResp.GetVersion(), expectedAgentVersion)
-				}
-				if !jsonOutput {
-					fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
-				}
+				fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 			}
-
-			if jsonOutput {
-				resp := map[string]string{
-					"status":  "success",
-					"message": "Agent updated successfully.",
-				}
-				b, err := json.Marshal(resp)
-				if err != nil {
-					return fmt.Errorf("failed to marshal JSON response: %w", err)
-				}
-				fmt.Println(string(b))
-				// OS update check is skipped in JSON mode to keep output stable.
-				return nil
-			}
-			fmt.Println(tui.SuccessMessage("Agent updated successfully."))
 
 			var outcome osUpdateOutcome
 			if conn != nil {

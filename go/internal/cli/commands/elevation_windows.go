@@ -45,38 +45,20 @@ func isElevated() (bool, error) {
 // relaunchElevated re-launches the current executable with the original
 // arguments through the shell's "runas" verb, which triggers a UAC consent
 // prompt. The elevated child runs in a new console window. extraArgs are
-// appended when they are not already present in os.Args (used to inject
-// flags like --device that were resolved interactively before elevation).
-// extraArgs must contain an even number of elements, treated as flag/value
-// pairs. Returns nil when the child started, or an error when the user
-// declined the UAC prompt or the launch otherwise failed.
+// complete "--flag=value" tokens appended when their flag is not already
+// present in os.Args (used to inject answers like --device-type that were
+// resolved interactively before elevation). The attached =value form is
+// required: cobra parses a detached value after a boolean flag (e.g.
+// "--rootfs-only false") as a positional argument, not the flag's value.
+// Returns nil when the child started, or an error when the user declined
+// the UAC prompt or the launch otherwise failed.
 func relaunchElevated(extraArgs ...string) error {
-	if len(extraArgs)%2 != 0 {
-		return fmt.Errorf("relaunchElevated: extraArgs must be flag/value pairs, got %d elements", len(extraArgs))
-	}
-
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolving executable path: %w", err)
 	}
 
-	args := os.Args[1:]
-	// Inject extra args that are not already present in the original invocation.
-	// We check by flag name (e.g. "--device") so we don't duplicate flags that
-	// were already supplied on the command line.
-	for i := 0; i < len(extraArgs); i += 2 {
-		flag := extraArgs[i]
-		already := false
-		for _, a := range args {
-			if a == flag || strings.HasPrefix(a, flag+"=") {
-				already = true
-				break
-			}
-		}
-		if !already {
-			args = append(args, flag, extraArgs[i+1])
-		}
-	}
+	args := injectElevationArgs(os.Args[1:], extraArgs)
 
 	var quotedArgs []string
 	for _, a := range args {
@@ -116,6 +98,28 @@ func relaunchElevated(extraArgs ...string) error {
 	return nil
 }
 
+// injectElevationArgs appends each "--flag=value" token from extraArgs to args
+// unless the flag (the part before "=") already appears there, either as a
+// bare token or in attached =value form, so flags the user typed themselves
+// are never duplicated on the elevated command line.
+func injectElevationArgs(args, extraArgs []string) []string {
+	merged := append([]string(nil), args...)
+	for _, extra := range extraArgs {
+		name, _, _ := strings.Cut(extra, "=")
+		already := false
+		for _, a := range merged {
+			if a == name || strings.HasPrefix(a, name+"=") {
+				already = true
+				break
+			}
+		}
+		if !already {
+			merged = append(merged, extra)
+		}
+	}
+	return merged
+}
+
 // requireElevation is the shared implementation for all elevation gates. It
 // checks whether the process is already elevated and, if not, prints purpose,
 // triggers a UAC re-launch via relaunchElevated, and exits so only the
@@ -149,16 +153,23 @@ func requireElevation(purpose string, extraArgs ...string) error {
 	return nil
 }
 
-// elevateForT234Recovery elevates as soon as an interactive `wendy os install`
-// commits to a T234 full recovery — the driver install and raw disk writes
-// both need it eventually. Doing it before the remaining wizard questions
-// matters because the UAC relaunch starts a fresh process in a new console:
-// everything answered before it would have to be answered again there. The
-// device choice is the only answer made so far; it rides along as
-// --device-type so the elevated instance resumes at the next question. No-op
-// when the process is already elevated.
-func elevateForT234Recovery(deviceType string) error {
-	return requireElevation("to flash the Jetson over USB recovery", "--device-type", deviceType)
+// elevateForT234Flash elevates as soon as an interactive `wendy os install`
+// commits to a T234 flash mode — full recovery needs it for the driver
+// install and raw disk writes, rootfs-only for the raw disk write. Doing it
+// before the remaining wizard questions matters because the UAC relaunch
+// starts a fresh process in a new console: everything answered before it
+// would have to be answered again there. The answers made so far ride along
+// as --device-type and --rootfs-only so the elevated instance resumes at the
+// next question instead of re-asking. No-op when the process is already
+// elevated.
+func elevateForT234Flash(deviceType string, rootfsOnly bool) error {
+	purpose := "to flash the Jetson over USB recovery"
+	if rootfsOnly {
+		purpose = "to write the OS image to a raw disk"
+	}
+	return requireElevation(purpose,
+		"--device-type="+deviceType,
+		fmt.Sprintf("--rootfs-only=%t", rootfsOnly))
 }
 
 // processElevated reports whether this process already holds administrator

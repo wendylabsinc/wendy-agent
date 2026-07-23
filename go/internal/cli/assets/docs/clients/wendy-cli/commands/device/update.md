@@ -1,4 +1,6 @@
-Updates the wendy-agent installation on the remote device, then checks for a newer WendyOS image. By default downloads the latest release binary from GitHub matching the device's CPU architecture. Pass `--binary <path>` to upload a locally built binary instead (e.g. a cross-compiled development build). The command waits for the restarted agent to become reachable before reporting success.
+Updates the wendy-agent installation on the remote device, then checks for a newer WendyOS image. By default downloads the latest release binary from GitHub matching the device's CPU architecture. Pass `--binary <path>` to upload a locally built binary instead (e.g. a cross-compiled development build). When an upload is performed, the command waits for the restarted agent to become reachable before reporting success.
+
+On the auto-download path, if the device already runs the resolved release version, the upload and agent restart are skipped and the command reports that it is already up to date. The OS update step below still runs afterward — except in `--json` mode, where the command returns immediately and the OS update step is not run.
 
 GitHub release lookups use the `GITHUB_TOKEN` environment variable for authentication when it is present, and fall back to unauthenticated requests otherwise.
 

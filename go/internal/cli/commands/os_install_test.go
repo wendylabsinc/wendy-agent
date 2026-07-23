@@ -1332,3 +1332,29 @@ func TestResolveDeviceNamePromptStatesConstraints(t *testing.T) {
 		t.Fatalf("validator should accept empty (auto-generate), got %v", err)
 	}
 }
+
+func TestShouldPromptFlashMode(t *testing.T) {
+	tests := []struct {
+		name               string
+		deviceType         string
+		installMode        string
+		rootfsOnlyExplicit bool
+		storageOverride    string
+		interactive        bool
+		want               bool
+	}{
+		{"AGX Orin recovery interactive prompts", orinDeviceType, "recovery", false, "", true, true},
+		{"Orin Nano recovery interactive prompts", orinNanoDeviceType, "recovery", false, "", true, true},
+		{"non-interactive no prompt", orinDeviceType, "recovery", false, "", false, false},
+		{"explicit --rootfs-only no prompt", orinDeviceType, "recovery", true, "", true, false},
+		{"storage emmc no prompt", orinDeviceType, "recovery", false, "emmc", true, false},
+		{"legacy install mode no prompt", orinDeviceType, "image", false, "", true, false},
+		{"thor no prompt", thorDeviceType, "recovery", false, "", true, false},
+		{"raspberry pi no prompt", "raspberry-pi-5", "recovery", false, "", true, false},
+	}
+	for _, tc := range tests {
+		if got := shouldPromptFlashMode(tc.deviceType, tc.installMode, tc.rootfsOnlyExplicit, tc.storageOverride, tc.interactive); got != tc.want {
+			t.Errorf("%s: shouldPromptFlashMode = %v; want %v", tc.name, got, tc.want)
+		}
+	}
+}

@@ -551,7 +551,7 @@ func orinMacFullDiskAccessNote() string {
 // command in a new elevated console window. Mirrors thorWindowsDriverNote.
 // Empty string on other platforms.
 func orinWinSetupNote() string {
-	// After the early UAC handoff (elevateForT234Recovery) this process is
+	// After the early UAC handoff (elevateForT234Flash) this process is
 	// already elevated and the "expect a UAC prompt" guidance would be stale.
 	if runtime.GOOS != "windows" || processElevated() {
 		return ""

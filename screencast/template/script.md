@@ -1,4 +1,4 @@
-# AI-Generated Screencasts from One Script
+# AI-generated screencasts from one script
 
 Audience: Wendy contributors and engineering teammates.
 Goal: Show how AI agents can turn feature context and one script into a complete narrated screencast, while the render pipeline remains deterministic for humans and agents alike.
@@ -17,15 +17,15 @@ In this screencast, we will show how feature context and one source file can bec
 ### Show (slide)
 
 ```text
-AI-Generated Screencasts
-from One Script
+AI-generated screencasts
+from one script
 
 script.md → scenes → renders → final MP4
 ```
 
 ---
 
-## 02 Payoff First
+## 02 Payoff first
 
 ### Say
 
@@ -48,7 +48,7 @@ minutes, not hours or days
 
 ---
 
-## 03 Why This Exists
+## 03 Why this exists
 
 ### Say
 
@@ -75,7 +75,7 @@ final edit
 
 ---
 
-## 04 Source of Truth
+## 04 Source of truth
 
 ### Say
 
@@ -88,7 +88,7 @@ The script is not a build file. It is the creative plan. The agent uses it to ge
 ### Show (code)
 
 ```md
-## 03 Developer Flow
+## 03 Developer flow
 
 ### Say
 
@@ -101,7 +101,7 @@ wendy run --device example-device
 
 ---
 
-## 05 Agent First Pass
+## 05 Agent first pass
 
 ### Say
 
@@ -131,7 +131,7 @@ scenes/
 
 ---
 
-## 06 Render Pipeline
+## 06 Render pipeline
 
 ### Say
 
@@ -158,7 +158,7 @@ scripts/stitch scenes/* --output output/feature-name.mp4
 
 ---
 
-## 07 Scene Artifacts
+## 07 Scene artifacts
 
 ### Say
 
@@ -180,7 +180,7 @@ source file + output extension
 
 ---
 
-## 08 Stitching and Timing
+## 08 Stitching and timing
 
 ### Say
 
@@ -203,7 +203,7 @@ scene duration = max(voice duration, visual duration)
 
 ---
 
-## 09 Human Second Pass
+## 09 Human second pass
 
 ### Say
 
