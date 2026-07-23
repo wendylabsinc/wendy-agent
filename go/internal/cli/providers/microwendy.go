@@ -465,7 +465,7 @@ func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *li
 		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
 	}
 
-	fmt.Println("Configuring to the device...")
+	fmt.Println("Configuring the device...")
 	conf := &litepb.WendyConf{Wifi: wifi}
 	if err := client.PushConf(conf, liteclient.ConfPushModeUpdate, nil); err != nil {
 		return fmt.Errorf("push conf: %w", err)
