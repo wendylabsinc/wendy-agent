@@ -168,9 +168,26 @@ func parseInstalledVersions(output string) []string {
 // arguments inside the DefaultVersion ESP-IDF environment. 'eim run' performs
 // the activation (including the toolchain's Python venv) itself, runs the
 // command in the caller's working directory and propagates its exit code.
-// eim takes the command as a single string, so arguments must not contain
-// spaces.
+// eim takes the command as a single string and interprets it with a POSIX
+// shell, so each argument is quoted to survive spaces and other shell
+// metacharacters.
 func IdfCommandContext(ctx context.Context, args ...string) *exec.Cmd {
-	command := strings.Join(append([]string{"idf.py"}, args...), " ")
-	return execCommandContext(ctx, "eim", "run", command, DefaultVersion)
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, "idf.py")
+	for _, arg := range args {
+		parts = append(parts, shellQuote(arg))
+	}
+	return execCommandContext(ctx, "eim", "run", strings.Join(parts, " "), DefaultVersion)
+}
+
+// shellSafePattern matches arguments that need no quoting in a POSIX shell.
+var shellSafePattern = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
+
+// shellQuote returns arg quoted for a POSIX shell, leaving it untouched when
+// it contains only safe characters so typical commands stay readable in logs.
+func shellQuote(arg string) string {
+	if shellSafePattern.MatchString(arg) {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'"'"'`) + "'"
 }

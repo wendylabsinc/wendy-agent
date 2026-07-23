@@ -286,8 +286,12 @@ func TestIdfCommandContext(t *testing.T) {
 	})
 
 	IdfCommandContext(context.Background(), "build")
+	IdfCommandContext(context.Background(), "-DFOO=a b", "it's", "")
 
-	want := [][]string{{"eim", "run", "idf.py build", DefaultVersion}}
+	want := [][]string{
+		{"eim", "run", "idf.py build", DefaultVersion},
+		{"eim", "run", `idf.py '-DFOO=a b' 'it'"'"'s' ''`, DefaultVersion},
+	}
 	if !reflect.DeepEqual(*calls, want) {
 		t.Errorf("calls = %v, want %v", *calls, want)
 	}
