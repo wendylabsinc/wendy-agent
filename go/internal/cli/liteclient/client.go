@@ -317,7 +317,7 @@ func (c *WendyLiteClient) Ping() error {
 // stopped after the reboot; delay postpones the auto-start (an AppStart
 // command cuts the delay short). Both settings apply to the next boot only.
 func (c *WendyLiteClient) ResetTargetDevice(appAutoStart bool, delay time.Duration) error {
-	if delay/time.Millisecond > math.MaxUint32 {
+	if delay < 0 || delay/time.Millisecond > math.MaxUint32 {
 		return fmt.Errorf("delay %v out of range", delay)
 	}
 	// The device reboots on receipt, so no ack is expected.
