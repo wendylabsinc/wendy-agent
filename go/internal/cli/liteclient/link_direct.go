@@ -28,6 +28,9 @@ func (l *directLink) send(req *wendypb.WendyComMessage) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
+	if len(body) > 0xFFFF {
+		return fmt.Errorf("message too large: %d bytes exceeds 65535", len(body))
+	}
 	msg := make([]byte, headerSize+len(body))
 	msg[0] = headerMagic
 	msg[1] = headerVersion
