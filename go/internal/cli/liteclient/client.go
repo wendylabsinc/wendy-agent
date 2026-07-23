@@ -885,10 +885,13 @@ func (c *WendyLiteClient) handshake() error {
 		return fmt.Errorf("unexpected reply message type")
 	case hs.GetHandshakeId() != id:
 		return fmt.Errorf("handshake ID mismatch")
+	case hs.GetVersion() == nil:
+		return fmt.Errorf("handshake missing version")
 	case hs.GetVersion().GetMajor() != versionMajor:
 		return fmt.Errorf("unsupported device protocol version %d.%d",
 			hs.GetVersion().GetMajor(), hs.GetVersion().GetMinor())
 	}
-	c.peerProtocolVersion = protocolVersion{Major: hs.GetVersion().GetMajor(), Minor: hs.GetVersion().GetMinor()}
+	ver := hs.GetVersion()
+	c.peerProtocolVersion = protocolVersion{Major: ver.GetMajor(), Minor: ver.GetMinor()}
 	return nil
 }
