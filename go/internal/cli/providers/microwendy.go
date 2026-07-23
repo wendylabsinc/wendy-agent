@@ -198,6 +198,22 @@ func boardToTarget(board string) string {
 	return board
 }
 
+// espIdfBinaryPath returns the path of the firmware binary an ESP-IDF build
+// produces in projectPath's build folder. The binary is named after the CMake
+// project() name, falling back to product when no project() declaration is
+// found. It returns an error if the binary does not exist.
+func espIdfBinaryPath(projectPath, product string) (string, error) {
+	binName := espidftoolchain.ProjectName(projectPath)
+	if binName == "" {
+		binName = product
+	}
+	binPath := filepath.Join(projectPath, "build", binName+".bin")
+	if _, err := os.Stat(binPath); err != nil {
+		return "", fmt.Errorf("expected ESP-IDF app binary at %s: %w", binPath, err)
+	}
+	return binPath, nil
+}
+
 // buildEspIdf builds an ESP-IDF project with idf.py (via eim) and picks up
 // the firmware binary from the project's build folder. The binary is named
 // after the CMake project() name, which may differ from the app ID.
@@ -241,13 +257,9 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 	}
 
 	// verify the presence of the output bin file
-	binName := espidftoolchain.ProjectName(projectPath)
-	if binName == "" {
-		binName = product
-	}
-	binPath := filepath.Join(projectPath, "build", binName+".bin")
-	if _, err := os.Stat(binPath); err != nil {
-		return nil, fmt.Errorf("expected ESP-IDF app binary at %s: %w", binPath, err)
+	binPath, err := espIdfBinaryPath(projectPath, product)
+	if err != nil {
+		return nil, err
 	}
 
 	return &BuiltApp{
