@@ -92,7 +92,7 @@ func (l *directLink) readRawMessage(timeout time.Duration) ([]byte, error) {
 	}
 	bodyLen := binary.BigEndian.Uint16(header[6:8])
 	if bodyLen == 0 {
-		return nil, nil
+		return nil, fmt.Errorf("invalid frame: zero-length body")
 	}
 	body := make([]byte, bodyLen)
 	if err := l.readFull(body, timeout); err != nil {
