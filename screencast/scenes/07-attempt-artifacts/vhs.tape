@@ -14,10 +14,8 @@ Sleep 400ms
 
 Type "find Build/e2e-screencast/swift-e2e-tests.screencast.local.0001 -type f | sed 's|Build/e2e-screencast/swift-e2e-tests.screencast.local.0001/||' | sort | head -18"
 Enter
-Wait
-Sleep 2s
+Sleep 3s
 
 Type "grep -E '^- Command:|^- Termination status:|^### stdout|^Wendy CLI|^  (Version|OS|Arch|Go Version):' Build/e2e-screencast/swift-e2e-tests.screencast.local.0001/observations/wendy-info/prints-cli-and-system-information/recording.md"
 Enter
-Wait
-Sleep 3s
+Sleep 4s
