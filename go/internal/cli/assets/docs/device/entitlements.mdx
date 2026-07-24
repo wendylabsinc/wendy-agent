@@ -256,7 +256,7 @@ On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CD
 ### Notifications Entitlement
 
 The notifications entitlement lets an app send operator-facing Wendy
-Notifications through its private Wendy System API socket.
+Notifications through its private app connection.
 
 ```json
 {
@@ -283,9 +283,9 @@ can reconnect when started again. The directory remains until the last entitled
 service container is deleted.
 
 <Callout type="warning">
-  **Security**: Apps without `notifications` receive no System API mount,
-  environment variable, or socket group. This entitlement never exposes the
-  separate administrative `WENDY_AGENT_SOCKET`.
+  **Security**: Apps without `notifications` receive no private app connection
+  mount, environment variable, or socket group. This entitlement never exposes
+  the separate administrative `WENDY_AGENT_SOCKET`.
 </Callout>
 
 ### Admin Entitlement

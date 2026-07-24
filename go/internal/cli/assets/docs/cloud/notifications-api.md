@@ -7,7 +7,7 @@ operator-facing Wendy Notifications in a Wendy Cloud organization.
 
 `wendycloud.v1` — defined in `Proto/cloud/notifications.proto`.
 
-## App System API (`wendy.system.v1`)
+## App-facing API (`wendy.system.v1`)
 
 Apps with the `notifications` entitlement call
 `wendy.system.v1.NotificationService` over the Unix socket at

@@ -384,7 +384,7 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 ### `notifications`
 
 Allows an app to send operator-facing Wendy Notifications through its private
-Wendy System API socket.
+app connection.
 
 ```json
 { "type": "notifications" }
@@ -392,8 +392,8 @@ Wendy System API socket.
 
 The agent/daemon mounts `/run/wendy/system` read-only and injects
 `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
-app, shared by that app's entitled service containers and by future Wendy
-System API capabilities; it is not one socket per capability. The public Swift
+app, shared by that app's entitled service containers and by future app-facing
+API capabilities; it is not one socket per capability. The public Swift
 API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
 gRPC directly.
 
@@ -411,7 +411,7 @@ containers reconnect on their next call without a redeploy. Multi-service
 ownership is reference-counted and the directory is removed after the last
 entitled container is deleted.
 
-> **Security:** `notifications` exposes only entitled Wendy System APIs. It does
+> **Security:** `notifications` exposes only entitled app-facing APIs. It does
 > not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
 
 ### `admin`

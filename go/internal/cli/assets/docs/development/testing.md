@@ -16,9 +16,9 @@ Each integration test is a self-contained directory:
 
 The naming convention is `<language>-<feature>`, for example `python-camera` or
 `swift-filesystem`. Entitlement boundaries use paired positive and negative
-fixtures where useful: `python-notifications` verifies the private System API is
-present, while `python-no-notifications` verifies it is absent without the
-entitlement.
+fixtures where useful: `python-notifications` verifies the private app
+connection is present, while `python-no-notifications` verifies it is absent
+without the entitlement.
 
 Depending on the language, a test directory contains:
 

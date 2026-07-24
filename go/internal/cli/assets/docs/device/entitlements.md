@@ -24,7 +24,7 @@ Wendy Cloud and Companion. WendyKit exposes this as
 
 | Boundary | Value |
 |---|---|
-| Read-only mount | `/run/wendy/system` (one private System API socket per app) |
+| Read-only mount | `/run/wendy/system` (one private app-facing socket per app) |
 | Injected environment | `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock` |
 | Supplementary group | GID `2000`, so non-root apps can connect without world access |
 | Stable host directory | Per-app subdirectory under `/var/lib/wendy/app-system` |
@@ -34,9 +34,9 @@ Wendy Cloud and Companion. WendyKit exposes this as
 The app supplies the audience, content, severity, deep link, idempotency key,
 and optional metadata. The agent/daemon binds the request to its trusted app
 identity, and Wendy Cloud derives device and organization identity from device
-mTLS. Apps without the entitlement receive no System API mount, environment
-variable, or socket group. The full administrative Agent socket remains
-separate and requires `admin`.
+mTLS. Apps without the entitlement receive no private app connection mount,
+environment variable, or socket group. The full administrative Agent socket
+remains separate and requires `admin`.
 
 All entitled services in a multi-service app share the app's stable socket
 directory and app identity. Running containers reconnect on their next call
