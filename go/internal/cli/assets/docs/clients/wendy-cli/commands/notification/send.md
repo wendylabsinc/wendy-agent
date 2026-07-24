@@ -13,13 +13,18 @@ Sign in first with `wendy cloud login`. The command uses the selected Cloud
 session and its organization unless `--cloud-grpc` or `--organization` selects
 another one.
 
-Exactly one audience flag is required:
+At least one audience flag is required. Every audience flag is repeatable, and
+all supplied users, teams, and roles are combined as a union:
 
 | Flag | Description |
 |---|---|
-| `--user <id>` | Send to one user. |
-| `--team <id>` | Send to an organization team by numeric ID. |
-| `--role <role>` | Send to `owner`, `admin`, `billing_manager`, `member`, or `viewer`. |
+| `--user <id>` | Include a user ID. Repeat for additional users. |
+| `--team <id>` | Include an organization team by numeric ID. Repeat for additional teams. |
+| `--role <role>` | Include `owner`, `admin`, `billing_manager`, `member`, or `viewer`. Repeat for additional roles. |
+
+Selectors are normalized and deduplicated before sending. At most 100 unique
+selectors may be supplied across all three flags. Cloud deduplicates users who
+match more than one selector and resolves at most 10,000 recipients.
 
 ## Content flags
 
@@ -48,9 +53,12 @@ wendy notification send \
   --body "v1.2 is live" \
   --deep-link "wendy://devices/current"
 
-# Notify all organization admins with structured metadata
+# Notify two users plus all admins and viewers as one union
 wendy notification send \
+  --user alice \
+  --user bob \
   --role admin \
+  --role viewer \
   --title "Disk alert" \
   --body "Disk usage reached 90%" \
   --severity warning \

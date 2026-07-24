@@ -12,11 +12,11 @@ if path != "/run/wendy/system/system.sock":
 try:
     mode = os.stat(path).st_mode
 except OSError as error:
-    sys.exit(f"FAIL: cannot stat System API socket: {error}")
+    sys.exit(f"FAIL: cannot stat private app socket: {error}")
 if not stat.S_ISSOCK(mode):
-    sys.exit(f"FAIL: System API path is not a socket: {mode:#o}")
+    sys.exit(f"FAIL: private app path is not a socket: {mode:#o}")
 if 2000 not in os.getgroups():
-    sys.exit(f"FAIL: System API GID missing: {os.getgroups()}")
+    sys.exit(f"FAIL: private app connection GID missing: {os.getgroups()}")
 if "WENDY_AGENT_SOCKET" in os.environ:
     sys.exit("FAIL: notifications entitlement exposed admin Agent socket")
 try:
@@ -24,5 +24,5 @@ try:
         client.settimeout(5)
         client.connect(path)
 except OSError as error:
-    sys.exit(f"FAIL: cannot connect to System API socket: {error}")
-print("PASS: app-private System API socket is mounted and connectable")
+    sys.exit(f"FAIL: cannot connect to private app socket: {error}")
+print("PASS: private app socket is mounted and connectable")

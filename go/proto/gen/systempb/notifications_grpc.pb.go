@@ -26,9 +26,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// NotificationService is available only through an app's private Wendy System
-// API socket. The agent/daemon binds calls to the app identity represented by
-// that socket; requests intentionally carry no app, device, or organization ID.
+// NotificationService is available only through an app's private app-facing
+// socket. The agent/daemon binds calls to the app identity represented by that
+// socket; requests intentionally carry no app, device, or organization ID.
 type NotificationServiceClient interface {
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
 }
@@ -55,9 +55,9 @@ func (c *notificationServiceClient) Send(ctx context.Context, in *SendRequest, o
 // All implementations must embed UnimplementedNotificationServiceServer
 // for forward compatibility.
 //
-// NotificationService is available only through an app's private Wendy System
-// API socket. The agent/daemon binds calls to the app identity represented by
-// that socket; requests intentionally carry no app, device, or organization ID.
+// NotificationService is available only through an app's private app-facing
+// socket. The agent/daemon binds calls to the app identity represented by that
+// socket; requests intentionally carry no app, device, or organization ID.
 type NotificationServiceServer interface {
 	Send(context.Context, *SendRequest) (*SendResponse, error)
 	mustEmbedUnimplementedNotificationServiceServer()

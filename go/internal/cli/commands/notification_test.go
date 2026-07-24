@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,7 +12,7 @@ import (
 func validNotificationSendOptions() notificationSendOptions {
 	return notificationSendOptions{
 		organization: 42,
-		user:         "user-1",
+		users:        []string{"user-1"},
 		title:        "Temperature warning",
 		body:         "Device temperature is high.",
 		severity:     "warning",
@@ -25,7 +27,7 @@ func TestBuildNotificationSendRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if request.GetOrganizationId() != 42 || request.GetAudience().GetUserId() != "user-1" {
+	if request.GetOrganizationId() != 42 || !slices.Equal(request.GetAudience().GetUserIds(), []string{"user-1"}) {
 		t.Fatalf("unexpected organization/audience: %+v", request)
 	}
 	if request.GetSeverity() != cloudpb.NotificationSeverity_NOTIFICATION_SEVERITY_WARNING {
@@ -39,43 +41,70 @@ func TestBuildNotificationSendRequest(t *testing.T) {
 	}
 }
 
-func TestBuildNotificationSendRequestRequiresOneAudience(t *testing.T) {
+func TestBuildNotificationSendRequestNormalizesAndUnionsAudience(t *testing.T) {
 	options := validNotificationSendOptions()
-	options.team = 9
-	_, err := buildNotificationSendRequest(options)
-	if err == nil || !strings.Contains(err.Error(), "exactly one") {
-		t.Fatalf("error = %v", err)
-	}
+	options.users = []string{" user-1 ", "user-1", "user-2"}
+	options.teams = []int32{9, 9, 10}
+	options.roles = []string{"billing-manager", "billing_manager", "viewer"}
 
-	options = validNotificationSendOptions()
-	options.user = ""
-	_, err = buildNotificationSendRequest(options)
-	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+	request, err := buildNotificationSendRequest(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	audience := request.GetAudience()
+	if !slices.Equal(audience.GetUserIds(), []string{"user-1", "user-2"}) {
+		t.Fatalf("user_ids = %v", audience.GetUserIds())
+	}
+	if !slices.Equal(audience.GetTeamIds(), []int32{9, 10}) {
+		t.Fatalf("team_ids = %v", audience.GetTeamIds())
+	}
+	wantRoles := []cloudpb.OrganizationRole{
+		cloudpb.OrganizationRole_ORGANIZATION_ROLE_BILLING_MANAGER,
+		cloudpb.OrganizationRole_ORGANIZATION_ROLE_VIEWER,
+	}
+	if !slices.Equal(audience.GetRoles(), wantRoles) {
+		t.Fatalf("roles = %v", audience.GetRoles())
+	}
+}
+
+func TestBuildNotificationSendRequestRequiresAudience(t *testing.T) {
+	options := validNotificationSendOptions()
+	options.users = nil
+	_, err := buildNotificationSendRequest(options)
+	if err == nil || !strings.Contains(err.Error(), "at least one") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestBuildNotificationSendRequestSupportsTeamAndRole(t *testing.T) {
-	team := validNotificationSendOptions()
-	team.user = ""
-	team.team = 9
-	request, err := buildNotificationSendRequest(team)
-	if err != nil {
-		t.Fatal(err)
+func TestBuildNotificationSendRequestBoundsUniqueAudienceSelectors(t *testing.T) {
+	options := validNotificationSendOptions()
+	options.users = make([]string, maxNotificationAudienceSelectors-5)
+	for index := range options.users {
+		options.users[index] = fmt.Sprintf("user-%d", index)
 	}
-	if request.GetAudience().GetOrgTeamId() != 9 {
-		t.Fatalf("team = %d", request.GetAudience().GetOrgTeamId())
+	options.teams = []int32{7, 8}
+	options.roles = []string{"owner", "admin", "viewer"}
+	if _, err := buildNotificationSendRequest(options); err != nil {
+		t.Fatalf("100 selectors across categories rejected: %v", err)
 	}
 
-	role := validNotificationSendOptions()
-	role.user = ""
-	role.role = "billing-manager"
-	request, err = buildNotificationSendRequest(role)
-	if err != nil {
-		t.Fatal(err)
+	options.teams = append(options.teams, 9)
+	if _, err := buildNotificationSendRequest(options); err == nil || !strings.Contains(err.Error(), "at most 100") {
+		t.Fatalf("101-selector error = %v", err)
 	}
-	if request.GetAudience().GetOrganizationRole() != cloudpb.OrganizationRole_ORGANIZATION_ROLE_BILLING_MANAGER {
-		t.Fatalf("role = %v", request.GetAudience().GetOrganizationRole())
+
+	options.users = make([]string, maxNotificationAudienceSelectors+1)
+	for index := range options.users {
+		options.users[index] = "same-user"
+	}
+	options.teams = nil
+	options.roles = nil
+	request, err := buildNotificationSendRequest(options)
+	if err != nil {
+		t.Fatalf("duplicates should be normalized before the bound: %v", err)
+	}
+	if got := request.GetAudience().GetUserIds(); !slices.Equal(got, []string{"same-user"}) {
+		t.Fatalf("deduplicated user_ids = %v", got)
 	}
 }
 
@@ -102,6 +131,9 @@ func TestBuildNotificationSendRequestRejectsInvalidInput(t *testing.T) {
 		{"body", func(o *notificationSendOptions) { o.body = "" }, "body"},
 		{"deep link", func(o *notificationSendOptions) { o.deepLink = "https://example.com" }, "wendy://"},
 		{"severity", func(o *notificationSendOptions) { o.severity = "debug" }, "severity"},
+		{"empty user", func(o *notificationSendOptions) { o.users = []string{" "} }, "--user"},
+		{"invalid team", func(o *notificationSendOptions) { o.teams = []int32{0} }, "--team"},
+		{"invalid role", func(o *notificationSendOptions) { o.roles = []string{"operator"} }, "role"},
 		{"metadata array", func(o *notificationSendOptions) { o.metadataJSON = "[]" }, "JSON object"},
 		{"metadata null", func(o *notificationSendOptions) { o.metadataJSON = "null" }, "JSON object"},
 	}
@@ -114,6 +146,28 @@ func TestBuildNotificationSendRequestRejectsInvalidInput(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestNotificationAudienceFlagsAreRepeatable(t *testing.T) {
+	cmd := newNotificationSendCmd()
+	if err := cmd.Flags().Parse([]string{
+		"--user", "user-1",
+		"--user", "user-2",
+		"--team", "7",
+		"--team", "8",
+		"--role", "admin",
+		"--role", "viewer",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	users, _ := cmd.Flags().GetStringArray("user")
+	teams, _ := cmd.Flags().GetInt32Slice("team")
+	roles, _ := cmd.Flags().GetStringArray("role")
+	if !slices.Equal(users, []string{"user-1", "user-2"}) ||
+		!slices.Equal(teams, []int32{7, 8}) ||
+		!slices.Equal(roles, []string{"admin", "viewer"}) {
+		t.Fatalf("repeatable flags: users=%v teams=%v roles=%v", users, teams, roles)
 	}
 }
 

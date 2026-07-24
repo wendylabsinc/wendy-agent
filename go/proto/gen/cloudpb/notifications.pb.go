@@ -80,12 +80,11 @@ func (NotificationSeverity) EnumDescriptor() ([]byte, []int) {
 
 type NotificationAudience struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Types that are valid to be assigned to Audience:
-	//
-	//	*NotificationAudience_UserId
-	//	*NotificationAudience_OrgTeamId
-	//	*NotificationAudience_OrganizationRole
-	Audience      isNotificationAudience_Audience `protobuf_oneof:"audience"`
+	// Selectors have union semantics. Cloud normalizes and deduplicates them,
+	// accepts at most 100 selectors total, and resolves at most 10,000 recipients.
+	UserIds       []string           `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
+	TeamIds       []int32            `protobuf:"varint,2,rep,packed,name=team_ids,json=teamIds,proto3" json:"team_ids,omitempty"`
+	Roles         []OrganizationRole `protobuf:"varint,3,rep,packed,name=roles,proto3,enum=wendycloud.v1.OrganizationRole" json:"roles,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -120,61 +119,26 @@ func (*NotificationAudience) Descriptor() ([]byte, []int) {
 	return file_cloud_notifications_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *NotificationAudience) GetAudience() isNotificationAudience_Audience {
+func (x *NotificationAudience) GetUserIds() []string {
 	if x != nil {
-		return x.Audience
+		return x.UserIds
 	}
 	return nil
 }
 
-func (x *NotificationAudience) GetUserId() string {
+func (x *NotificationAudience) GetTeamIds() []int32 {
 	if x != nil {
-		if x, ok := x.Audience.(*NotificationAudience_UserId); ok {
-			return x.UserId
-		}
+		return x.TeamIds
 	}
-	return ""
+	return nil
 }
 
-func (x *NotificationAudience) GetOrgTeamId() int32 {
+func (x *NotificationAudience) GetRoles() []OrganizationRole {
 	if x != nil {
-		if x, ok := x.Audience.(*NotificationAudience_OrgTeamId); ok {
-			return x.OrgTeamId
-		}
+		return x.Roles
 	}
-	return 0
+	return nil
 }
-
-func (x *NotificationAudience) GetOrganizationRole() OrganizationRole {
-	if x != nil {
-		if x, ok := x.Audience.(*NotificationAudience_OrganizationRole); ok {
-			return x.OrganizationRole
-		}
-	}
-	return OrganizationRole_ORGANIZATION_ROLE_UNSPECIFIED
-}
-
-type isNotificationAudience_Audience interface {
-	isNotificationAudience_Audience()
-}
-
-type NotificationAudience_UserId struct {
-	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3,oneof"`
-}
-
-type NotificationAudience_OrgTeamId struct {
-	OrgTeamId int32 `protobuf:"varint,2,opt,name=org_team_id,json=orgTeamId,proto3,oneof"`
-}
-
-type NotificationAudience_OrganizationRole struct {
-	OrganizationRole OrganizationRole `protobuf:"varint,3,opt,name=organization_role,json=organizationRole,proto3,enum=wendycloud.v1.OrganizationRole,oneof"`
-}
-
-func (*NotificationAudience_UserId) isNotificationAudience_Audience() {}
-
-func (*NotificationAudience_OrgTeamId) isNotificationAudience_Audience() {}
-
-func (*NotificationAudience_OrganizationRole) isNotificationAudience_Audience() {}
 
 type Notification struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -536,7 +500,8 @@ type CreateNotificationV2Response struct {
 	// One canonical per-user Notification is returned for every resolved recipient.
 	Notifications []*Notification `protobuf:"bytes,1,rep,name=notifications,proto3" json:"notifications,omitempty"`
 	// True when source_id had already been accepted and no new Notifications were delivered.
-	Duplicate      bool  `protobuf:"varint,2,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
+	Duplicate bool `protobuf:"varint,2,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
+	// Number of resolved recipients, capped at 10,000 by Cloud.
 	RecipientCount int32 `protobuf:"varint,3,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1058,13 +1023,11 @@ var File_cloud_notifications_proto protoreflect.FileDescriptor
 
 const file_cloud_notifications_proto_rawDesc = "" +
 	"\n" +
-	"\x19cloud/notifications.proto\x12\rwendycloud.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x19cloud/organizations.proto\"\xaf\x01\n" +
+	"\x19cloud/notifications.proto\x12\rwendycloud.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x19cloud/organizations.proto\"\x83\x01\n" +
 	"\x14NotificationAudience\x12\x19\n" +
-	"\auser_id\x18\x01 \x01(\tH\x00R\x06userId\x12 \n" +
-	"\vorg_team_id\x18\x02 \x01(\x05H\x00R\torgTeamId\x12N\n" +
-	"\x11organization_role\x18\x03 \x01(\x0e2\x1f.wendycloud.v1.OrganizationRoleH\x00R\x10organizationRoleB\n" +
-	"\n" +
-	"\baudience\"\xa8\x06\n" +
+	"\buser_ids\x18\x01 \x03(\tR\auserIds\x12\x19\n" +
+	"\bteam_ids\x18\x02 \x03(\x05R\ateamIds\x125\n" +
+	"\x05roles\x18\x03 \x03(\x0e2\x1f.wendycloud.v1.OrganizationRoleR\x05roles\"\xa8\x06\n" +
 	"\fNotification\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12'\n" +
@@ -1195,7 +1158,7 @@ var file_cloud_notifications_proto_goTypes = []any{
 	(*timestamppb.Timestamp)(nil),        // 17: google.protobuf.Timestamp
 }
 var file_cloud_notifications_proto_depIdxs = []int32{
-	15, // 0: wendycloud.v1.NotificationAudience.organization_role:type_name -> wendycloud.v1.OrganizationRole
+	15, // 0: wendycloud.v1.NotificationAudience.roles:type_name -> wendycloud.v1.OrganizationRole
 	0,  // 1: wendycloud.v1.Notification.severity:type_name -> wendycloud.v1.NotificationSeverity
 	16, // 2: wendycloud.v1.Notification.related_entities:type_name -> google.protobuf.Struct
 	17, // 3: wendycloud.v1.Notification.created_at:type_name -> google.protobuf.Timestamp
@@ -1237,11 +1200,6 @@ func file_cloud_notifications_proto_init() {
 		return
 	}
 	file_cloud_organizations_proto_init()
-	file_cloud_notifications_proto_msgTypes[0].OneofWrappers = []any{
-		(*NotificationAudience_UserId)(nil),
-		(*NotificationAudience_OrgTeamId)(nil),
-		(*NotificationAudience_OrganizationRole)(nil),
-	}
 	file_cloud_notifications_proto_msgTypes[1].OneofWrappers = []any{}
 	file_cloud_notifications_proto_msgTypes[3].OneofWrappers = []any{}
 	file_cloud_notifications_proto_msgTypes[5].OneofWrappers = []any{}

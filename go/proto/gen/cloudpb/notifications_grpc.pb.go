@@ -34,7 +34,7 @@ const (
 type NotificationServiceClient interface {
 	// Legacy single-user creation API. Kept for existing dashboard and MCP clients.
 	CreateNotification(ctx context.Context, in *CreateNotificationRequest, opts ...grpc.CallOption) (*Notification, error)
-	// Creates per-user Notifications for one user, organization team, or organization role.
+	// Creates per-user Notifications for the union of users, organization teams, and roles.
 	// User credentials and provisioned-device credentials are both supported.
 	CreateNotificationV2(ctx context.Context, in *CreateNotificationV2Request, opts ...grpc.CallOption) (*CreateNotificationV2Response, error)
 	// Server-streamed pagination using offset/limit (matches OrganizationService)
@@ -138,7 +138,7 @@ func (c *notificationServiceClient) GetUnreadCount(ctx context.Context, in *GetU
 type NotificationServiceServer interface {
 	// Legacy single-user creation API. Kept for existing dashboard and MCP clients.
 	CreateNotification(context.Context, *CreateNotificationRequest) (*Notification, error)
-	// Creates per-user Notifications for one user, organization team, or organization role.
+	// Creates per-user Notifications for the union of users, organization teams, and roles.
 	// User credentials and provisioned-device credentials are both supported.
 	CreateNotificationV2(context.Context, *CreateNotificationV2Request) (*CreateNotificationV2Response, error)
 	// Server-streamed pagination using offset/limit (matches OrganizationService)

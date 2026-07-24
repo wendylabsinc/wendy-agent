@@ -199,10 +199,13 @@ app, shared by that app's entitled services and future app-facing API
 capabilities. WendyKit's public Swift operation is
 `WendyNotification.send(_:)`; apps do not need to use gRPC.
 
-The app supplies audience, title/body, severity, deep link, `source_id`, and
-optional metadata. Trusted local state supplies app identity, while provisioned
-device mTLS supplies device and organization identity. This entitlement never
-exposes the administrative `WENDY_AGENT_SOCKET`.
+The app supplies one or more user, organization team, or role selectors, plus
+title/body, severity, deep link, `source_id`, and optional metadata. Selectors
+have union semantics, are normalized and deduplicated, and are limited to 100
+unique values; Cloud resolves at most 10,000 recipients. Trusted local state
+supplies app identity, while provisioned device mTLS supplies device and
+organization identity. This entitlement never exposes the administrative
+`WENDY_AGENT_SOCKET`.
 
 ### Admin Entitlement
 

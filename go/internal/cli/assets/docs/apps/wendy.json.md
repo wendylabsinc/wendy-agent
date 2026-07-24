@@ -397,9 +397,12 @@ API capabilities; it is not one socket per capability. The public Swift
 API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
 gRPC directly.
 
-The request supplies an audience (one user, organization team, or organization
-role), title, body, severity, deep link, app-generated `source_id`, and optional
-structured metadata. The socket handler binds `source_app_id` from trusted
+The request supplies one or more user, organization team, or organization role
+selectors, plus title, body, severity, deep link, app-generated `source_id`, and
+optional structured metadata. Selector categories have union semantics. The
+agent normalizes and deduplicates them and permits at most 100 unique selectors;
+Cloud resolves at most 10,000 recipients. The socket handler binds
+`source_app_id` from trusted
 container metadata. Wendy Cloud derives device and organization identity from
 the provisioned device certificate; none of those identities can be supplied
 by the app.

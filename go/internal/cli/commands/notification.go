@@ -16,14 +16,17 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 )
 
-const notificationSendTimeout = 15 * time.Second
+const (
+	notificationSendTimeout          = 15 * time.Second
+	maxNotificationAudienceSelectors = 100
+)
 
 type notificationSendOptions struct {
 	cloudGRPC    string
 	organization int32
-	user         string
-	team         int32
-	role         string
+	users        []string
+	teams        []int32
+	roles        []string
 	title        string
 	body         string
 	severity     string
@@ -46,7 +49,7 @@ func newNotificationSendCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "send",
 		Aliases: []string{"create"},
-		Short:   "Send a Notification to a user, organization team, or role",
+		Short:   "Send a Notification to the union of users, organization teams, and roles",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			auth, err := pickAuthEntry(options.cloudGRPC)
@@ -99,9 +102,9 @@ func newNotificationSendCmd() *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&options.cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is selected)")
 	flags.Int32VarP(&options.organization, "organization", "o", 0, "Organization ID (defaults to the selected session's organization)")
-	flags.StringVar(&options.user, "user", "", "Recipient user ID")
-	flags.Int32Var(&options.team, "team", 0, "Recipient organization team ID")
-	flags.StringVar(&options.role, "role", "", "Recipient organization role: owner, admin, billing_manager, member, or viewer")
+	flags.StringArrayVar(&options.users, "user", nil, "Recipient user ID (repeatable; combined with all audience flags)")
+	flags.Int32SliceVar(&options.teams, "team", nil, "Recipient organization team ID (repeatable; combined with all audience flags)")
+	flags.StringArrayVar(&options.roles, "role", nil, "Recipient organization role (repeatable; owner, admin, billing_manager, member, or viewer)")
 	flags.StringVar(&options.title, "title", "", "Notification title")
 	flags.StringVar(&options.body, "body", "", "Notification body")
 	flags.StringVar(&options.severity, "severity", "info", "Severity: info, warning, error, or critical")
@@ -167,33 +170,54 @@ func buildNotificationSendRequest(options notificationSendOptions) (*cloudpb.Cre
 }
 
 func notificationAudience(options notificationSendOptions) (*cloudpb.NotificationAudience, error) {
-	user := strings.TrimSpace(options.user)
-	roleName := strings.TrimSpace(options.role)
-	count := 0
-	if user != "" {
-		count++
+	audience := &cloudpb.NotificationAudience{}
+
+	seenUsers := make(map[string]struct{}, len(options.users))
+	for _, rawUserID := range options.users {
+		userID := strings.TrimSpace(rawUserID)
+		if userID == "" {
+			return nil, fmt.Errorf("--user must not be empty")
+		}
+		if _, exists := seenUsers[userID]; exists {
+			continue
+		}
+		seenUsers[userID] = struct{}{}
+		audience.UserIds = append(audience.UserIds, userID)
 	}
-	if options.team > 0 {
-		count++
+
+	seenTeams := make(map[int32]struct{}, len(options.teams))
+	for _, teamID := range options.teams {
+		if teamID <= 0 {
+			return nil, fmt.Errorf("--team must be greater than zero")
+		}
+		if _, exists := seenTeams[teamID]; exists {
+			continue
+		}
+		seenTeams[teamID] = struct{}{}
+		audience.TeamIds = append(audience.TeamIds, teamID)
 	}
-	if roleName != "" {
-		count++
-	}
-	if count != 1 {
-		return nil, fmt.Errorf("exactly one of --user, --team, or --role is required")
-	}
-	switch {
-	case user != "":
-		return &cloudpb.NotificationAudience{Audience: &cloudpb.NotificationAudience_UserId{UserId: user}}, nil
-	case options.team > 0:
-		return &cloudpb.NotificationAudience{Audience: &cloudpb.NotificationAudience_OrgTeamId{OrgTeamId: options.team}}, nil
-	default:
+
+	seenRoles := make(map[cloudpb.OrganizationRole]struct{}, len(options.roles))
+	for _, roleName := range options.roles {
 		role, err := notificationRole(roleName)
 		if err != nil {
 			return nil, err
 		}
-		return &cloudpb.NotificationAudience{Audience: &cloudpb.NotificationAudience_OrganizationRole{OrganizationRole: role}}, nil
+		if _, exists := seenRoles[role]; exists {
+			continue
+		}
+		seenRoles[role] = struct{}{}
+		audience.Roles = append(audience.Roles, role)
 	}
+
+	selectorCount := len(audience.UserIds) + len(audience.TeamIds) + len(audience.Roles)
+	if selectorCount == 0 {
+		return nil, fmt.Errorf("at least one --user, --team, or --role is required")
+	}
+	if selectorCount > maxNotificationAudienceSelectors {
+		return nil, fmt.Errorf("at most %d unique audience selectors are allowed", maxNotificationAudienceSelectors)
+	}
+	return audience, nil
 }
 
 func notificationRole(value string) (cloudpb.OrganizationRole, error) {

@@ -11,8 +11,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -62,9 +64,7 @@ func (s *deadlineNotificationSender) CreateNotificationV2(
 func validSystemNotificationRequest() *systempb.SendRequest {
 	return &systempb.SendRequest{
 		Audience: &systempb.NotificationAudience{
-			Audience: &systempb.NotificationAudience_OrganizationRole{
-				OrganizationRole: systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
-			},
+			Roles: []systempb.OrganizationRole{systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER},
 		},
 		Title:    "Fire detected",
 		Body:     "Camera 2 detected smoke",
@@ -77,8 +77,18 @@ func validSystemNotificationRequest() *systempb.SendRequest {
 func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *testing.T) {
 	sender := &recordingNotificationSender{}
 	service := NewSystemNotificationService("com.example.firewatch", sender)
+	input := validSystemNotificationRequest()
+	input.Audience = &systempb.NotificationAudience{
+		UserIds: []string{" user-1 ", "user-1", "user-2"},
+		TeamIds: []int32{7, 7, 8},
+		Roles: []systempb.OrganizationRole{
+			systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
+			systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
+			systempb.OrganizationRole_ORGANIZATION_ROLE_ADMIN,
+		},
+	}
 
-	response, err := service.Send(context.Background(), validSystemNotificationRequest())
+	response, err := service.Send(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
@@ -97,8 +107,18 @@ func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *tes
 	if request.GetOrganizationId() != 0 || request.OrganizationId != nil {
 		t.Fatal("System request must not supply organization identity")
 	}
-	if request.GetAudience().GetOrganizationRole() != cloudpb.OrganizationRole_ORGANIZATION_ROLE_MEMBER {
-		t.Fatalf("audience role = %v", request.GetAudience().GetOrganizationRole())
+	if !slices.Equal(request.GetAudience().GetUserIds(), []string{"user-1", "user-2"}) {
+		t.Fatalf("audience user_ids = %v", request.GetAudience().GetUserIds())
+	}
+	if !slices.Equal(request.GetAudience().GetTeamIds(), []int32{7, 8}) {
+		t.Fatalf("audience team_ids = %v", request.GetAudience().GetTeamIds())
+	}
+	wantRoles := []cloudpb.OrganizationRole{
+		cloudpb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
+		cloudpb.OrganizationRole_ORGANIZATION_ROLE_ADMIN,
+	}
+	if !slices.Equal(request.GetAudience().GetRoles(), wantRoles) {
+		t.Fatalf("audience roles = %v", request.GetAudience().GetRoles())
 	}
 	if request.GetSeverity() != cloudpb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL {
 		t.Fatalf("severity = %v", request.GetSeverity())
@@ -109,7 +129,9 @@ func proofCloudNotificationRequest() *cloudpb.CreateNotificationV2Request {
 	sourceAppID := "com.example.firewatch"
 	return &cloudpb.CreateNotificationV2Request{
 		Audience: &cloudpb.NotificationAudience{
-			Audience: &cloudpb.NotificationAudience_UserId{UserId: "user-1"},
+			UserIds: []string{"user-1", "user-2"},
+			TeamIds: []int32{9},
+			Roles:   []cloudpb.OrganizationRole{cloudpb.OrganizationRole_ORGANIZATION_ROLE_ADMIN},
 		},
 		Title:       "Fire",
 		Body:        "Smoke detected",
@@ -156,7 +178,7 @@ func TestCanonicalNotificationDeviceProofIsDeterministic(t *testing.T) {
 		t.Fatal("canonical proof does not match the versioned NUL-framed contract")
 	}
 	digest := sha256.Sum256(first)
-	if got, want := hex.EncodeToString(digest[:]), "411f1803e97b25a4a27e715ccdaae840633ea789a24bcafac383444815ed6548"; got != want {
+	if got, want := hex.EncodeToString(digest[:]), "73b8b821e8754fd44585204c88bea3345eb56a4963e212bead125dfaa2adfee4"; got != want {
 		t.Fatalf("canonical proof SHA-256 = %s, want fixture %s", got, want)
 	}
 }
@@ -272,8 +294,17 @@ func TestSystemNotificationServiceValidation(t *testing.T) {
 		mutate func(*systempb.SendRequest)
 	}{
 		{name: "missing audience", mutate: func(r *systempb.SendRequest) { r.Audience = nil }},
+		{name: "empty audience", mutate: func(r *systempb.SendRequest) {
+			r.Audience = &systempb.NotificationAudience{}
+		}},
+		{name: "invalid user", mutate: func(r *systempb.SendRequest) {
+			r.Audience = &systempb.NotificationAudience{UserIds: []string{"unsafe user"}}
+		}},
 		{name: "invalid team", mutate: func(r *systempb.SendRequest) {
-			r.Audience = &systempb.NotificationAudience{Audience: &systempb.NotificationAudience_OrgTeamId{OrgTeamId: 0}}
+			r.Audience = &systempb.NotificationAudience{TeamIds: []int32{0}}
+		}},
+		{name: "invalid role", mutate: func(r *systempb.SendRequest) {
+			r.Audience = &systempb.NotificationAudience{Roles: []systempb.OrganizationRole{systempb.OrganizationRole_ORGANIZATION_ROLE_UNSPECIFIED}}
 		}},
 		{name: "blank title", mutate: func(r *systempb.SendRequest) { r.Title = "" }},
 		{name: "control body", mutate: func(r *systempb.SendRequest) { r.Body = "bad\nbody" }},
@@ -299,6 +330,44 @@ func TestSystemNotificationServiceValidation(t *testing.T) {
 				t.Fatalf("Send() code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
 			}
 		})
+	}
+}
+
+func TestSystemNotificationServiceBoundsUniqueAudienceSelectors(t *testing.T) {
+	request := validSystemNotificationRequest()
+	request.Audience = &systempb.NotificationAudience{
+		UserIds: make([]string, maxNotificationAudienceSelectors-5),
+		TeamIds: []int32{7, 8},
+		Roles: []systempb.OrganizationRole{
+			systempb.OrganizationRole_ORGANIZATION_ROLE_OWNER,
+			systempb.OrganizationRole_ORGANIZATION_ROLE_ADMIN,
+			systempb.OrganizationRole_ORGANIZATION_ROLE_VIEWER,
+		},
+	}
+	for index := range request.Audience.UserIds {
+		request.Audience.UserIds[index] = fmt.Sprintf("user-%d", index)
+	}
+	if _, err := NewSystemNotificationService("com.example.app", &recordingNotificationSender{}).Send(context.Background(), request); err != nil {
+		t.Fatalf("100 selectors across categories rejected: %v", err)
+	}
+
+	request.Audience.TeamIds = append(request.Audience.TeamIds, 9)
+	if _, err := NewSystemNotificationService("com.example.app", &recordingNotificationSender{}).Send(context.Background(), request); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("101-selector code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
+	}
+
+	request.Audience.UserIds = make([]string, maxNotificationAudienceSelectors+1)
+	for index := range request.Audience.UserIds {
+		request.Audience.UserIds[index] = "same-user"
+	}
+	request.Audience.TeamIds = nil
+	request.Audience.Roles = nil
+	sender := &recordingNotificationSender{}
+	if _, err := NewSystemNotificationService("com.example.app", sender).Send(context.Background(), request); err != nil {
+		t.Fatalf("duplicates should be normalized before the bound: %v", err)
+	}
+	if got := sender.requests[0].GetAudience().GetUserIds(); !slices.Equal(got, []string{"same-user"}) {
+		t.Fatalf("deduplicated user_ids = %v", got)
 	}
 }
 

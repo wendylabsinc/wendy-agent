@@ -270,10 +270,13 @@ app, shared by the app's entitled service containers and future Wendy System
 API capabilities. WendyKit exposes the typed operation as
 `WendyNotification.send(_:)`.
 
-The app supplies audience, content, severity, deep link, an idempotency key, and
-optional metadata. Trusted container state supplies app identity; provisioned
-device mTLS supplies device and organization identity. Each send has a
-15-second Cloud deadline.
+The app supplies one or more user, organization team, or role selectors plus
+content, severity, deep link, an idempotency key, and optional metadata. All
+selector categories are unioned, normalized, and deduplicated. The app-facing
+API accepts at most 100 unique selectors; Cloud resolves at most 10,000
+recipients. Trusted container state supplies app identity; provisioned device
+mTLS supplies device and organization identity. Each send has a 15-second Cloud
+deadline.
 
 All entitled services in a multi-service app share the app's stable directory
 under `/var/lib/wendy/app-system`. After an agent/daemon restart, the socket is

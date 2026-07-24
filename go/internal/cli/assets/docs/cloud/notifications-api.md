@@ -30,13 +30,29 @@ The agent forwards the request to Cloud with a 15-second deadline.
 
 | Field | Type | Description |
 |---|---|---|
-| `audience` | `NotificationAudience` | Exactly one user ID, organization team ID, or organization role. |
+| `audience` | `NotificationAudience` | Union of the user, organization team, and organization role selectors below. |
 | `title` | `string` | Notification title. |
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
 | `source_id` | `string` | App-generated idempotency key scoped to this app and device. |
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
+
+#### `NotificationAudience`
+
+The app-facing and Cloud messages use the same plural selector shape. All three
+fields have union semantics. Selectors are normalized and deduplicated before
+delivery, with at most 100 unique selectors total. Cloud is authoritative and
+resolves at most 10,000 recipients.
+
+| Field | Type | Description |
+|---|---|---|
+| `user_ids` | `repeated string` | User IDs to include. |
+| `team_ids` | `repeated int32` | Organization team IDs to include. |
+| `roles` | `repeated OrganizationRole` | Organization roles to include. |
+
+At least one selector is required. A user selected through more than one field
+receives one Notification.
 
 #### `SendResponse`
 
@@ -74,7 +90,7 @@ agent supplies `source_app_id` from trusted container state.
 | Field | Type | Description |
 |---|---|---|
 | `organization_id` | `optional int32` | Required for user-authenticated callers; omitted by provisioned devices. |
-| `audience` | `NotificationAudience` | Exactly one user ID, organization team ID, or organization role. |
+| `audience` | `NotificationAudience` | Union of repeated `user_ids`, `team_ids`, and `roles`; see above. |
 | `title` | `string` | Notification title. |
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
@@ -89,7 +105,7 @@ agent supplies `source_app_id` from trusted container state.
 |---|---|---|
 | `notifications` | `repeated Notification` | One canonical Notification per resolved recipient. |
 | `duplicate` | `bool` | Whether the `source_id` was already accepted without another delivery. |
-| `recipient_count` | `int32` | Number of resolved recipients. |
+| `recipient_count` | `int32` | Number of resolved recipients, capped by Cloud at 10,000. |
 
 ---
 

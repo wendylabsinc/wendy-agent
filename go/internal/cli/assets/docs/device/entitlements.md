@@ -31,9 +31,12 @@ Wendy Cloud and Companion. WendyKit exposes this as
 | Cloud deadline | 15 seconds per `Send` call |
 | Socket restoration | Recreated from persisted container labels after agent/daemon restart |
 
-The app supplies the audience, content, severity, deep link, idempotency key,
-and optional metadata. The agent/daemon binds the request to its trusted app
-identity, and Wendy Cloud derives device and organization identity from device
+The app supplies one or more user, organization team, or role selectors plus
+content, severity, deep link, an idempotency key, and optional metadata. All
+selector categories are unioned, normalized, and deduplicated. The app-facing
+API accepts at most 100 unique selectors; Cloud resolves at most 10,000
+recipients. The agent/daemon binds the request to its trusted app identity, and
+Wendy Cloud derives device and organization identity from device
 mTLS. Apps without the entitlement receive no private app connection mount,
 environment variable, or socket group. The full administrative Agent socket
 remains separate and requires `admin`.

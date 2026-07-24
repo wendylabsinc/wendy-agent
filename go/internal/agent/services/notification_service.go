@@ -32,8 +32,9 @@ import (
 )
 
 const (
-	maxNotificationMetadataBytes = 8 * 1024
-	notificationForwardTimeout   = 15 * time.Second
+	maxNotificationMetadataBytes     = 8 * 1024
+	maxNotificationAudienceSelectors = 100
+	notificationForwardTimeout       = 15 * time.Second
 
 	deviceProofURIHeader       = "x-wendy-device-uri"
 	deviceProofTimestampHeader = "x-wendy-device-timestamp"
@@ -72,7 +73,8 @@ func (s *SystemNotificationService) Send(
 	if s.sender == nil {
 		return nil, status.Error(codes.Unavailable, "notification delivery is unavailable")
 	}
-	if err := validateNotificationSendRequest(req); err != nil {
+	cloudAudience, err := validateNotificationSendRequest(req)
+	if err != nil {
 		return nil, err
 	}
 	if !s.limiter.allow(time.Now()) {
@@ -81,7 +83,7 @@ func (s *SystemNotificationService) Send(
 
 	sourceAppID := s.sourceAppID
 	cloudRequest := &cloudpb.CreateNotificationV2Request{
-		Audience:    cloudNotificationAudience(req.GetAudience()),
+		Audience:    cloudAudience,
 		Title:       req.GetTitle(),
 		Body:        req.GetBody(),
 		Severity:    cloudNotificationSeverity(req.GetSeverity()),
@@ -144,18 +146,18 @@ func (l *notificationRateLimiter) allow(now time.Time) bool {
 	return true
 }
 
-func validateNotificationSendRequest(request *systempb.SendRequest) error {
+func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.NotificationAudience, error) {
 	if request == nil {
-		return status.Error(codes.InvalidArgument, "request is required")
+		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 	if !validNotificationIdentifier(request.GetSourceId(), 128) {
-		return status.Error(codes.InvalidArgument, "source_id must contain 1...128 safe ASCII bytes")
+		return nil, status.Error(codes.InvalidArgument, "source_id must contain 1...128 safe ASCII bytes")
 	}
 	if !validNotificationText(request.GetTitle(), 120) {
-		return status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
+		return nil, status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
 	}
 	if !validNotificationText(request.GetBody(), 2000) {
-		return status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
+		return nil, status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
 	}
 	switch request.GetSeverity() {
 	case systempb.NotificationSeverity_NOTIFICATION_SEVERITY_INFO,
@@ -163,65 +165,78 @@ func validateNotificationSendRequest(request *systempb.SendRequest) error {
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_ERROR,
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL:
 	default:
-		return status.Error(codes.InvalidArgument, "severity is required")
+		return nil, status.Error(codes.InvalidArgument, "severity is required")
 	}
-	if err := validateNotificationAudience(request.GetAudience()); err != nil {
-		return err
+	cloudAudience, err := normalizeNotificationAudience(request.GetAudience())
+	if err != nil {
+		return nil, err
 	}
 	if !validNotificationDeepLink(request.GetDeepLink()) {
-		return status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
+		return nil, status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
 	}
 	if metadata := request.GetMetadata(); metadata != nil && proto.Size(metadata) > maxNotificationMetadataBytes {
-		return status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
+		return nil, status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
 	}
-	return nil
+	return cloudAudience, nil
 }
 
-func validateNotificationAudience(audience *systempb.NotificationAudience) error {
+func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cloudpb.NotificationAudience, error) {
 	if audience == nil {
-		return status.Error(codes.InvalidArgument, "audience is required")
+		return nil, status.Error(codes.InvalidArgument, "audience is required")
 	}
-	switch value := audience.GetAudience().(type) {
-	case *systempb.NotificationAudience_UserId:
-		if !validNotificationIdentifier(value.UserId, 128) {
-			return status.Error(codes.InvalidArgument, "audience user_id must contain 1...128 safe ASCII bytes")
+
+	mapped := &cloudpb.NotificationAudience{}
+	seenUsers := make(map[string]struct{}, len(audience.GetUserIds()))
+	for _, rawUserID := range audience.GetUserIds() {
+		userID := strings.TrimSpace(rawUserID)
+		if !validNotificationIdentifier(userID, 128) {
+			return nil, status.Error(codes.InvalidArgument, "audience user_ids must contain 1...128 safe ASCII bytes")
 		}
-	case *systempb.NotificationAudience_OrgTeamId:
-		if value.OrgTeamId <= 0 {
-			return status.Error(codes.InvalidArgument, "audience org_team_id must be positive")
+		if _, exists := seenUsers[userID]; exists {
+			continue
 		}
-	case *systempb.NotificationAudience_OrganizationRole:
-		switch value.OrganizationRole {
+		seenUsers[userID] = struct{}{}
+		mapped.UserIds = append(mapped.UserIds, userID)
+	}
+
+	seenTeams := make(map[int32]struct{}, len(audience.GetTeamIds()))
+	for _, teamID := range audience.GetTeamIds() {
+		if teamID <= 0 {
+			return nil, status.Error(codes.InvalidArgument, "audience team_ids must be positive")
+		}
+		if _, exists := seenTeams[teamID]; exists {
+			continue
+		}
+		seenTeams[teamID] = struct{}{}
+		mapped.TeamIds = append(mapped.TeamIds, teamID)
+	}
+
+	seenRoles := make(map[systempb.OrganizationRole]struct{}, len(audience.GetRoles()))
+	for _, role := range audience.GetRoles() {
+		switch role {
 		case systempb.OrganizationRole_ORGANIZATION_ROLE_OWNER,
 			systempb.OrganizationRole_ORGANIZATION_ROLE_ADMIN,
 			systempb.OrganizationRole_ORGANIZATION_ROLE_BILLING_MANAGER,
 			systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER,
 			systempb.OrganizationRole_ORGANIZATION_ROLE_VIEWER:
 		default:
-			return status.Error(codes.InvalidArgument, "audience organization_role is required")
+			return nil, status.Error(codes.InvalidArgument, "audience roles must be specified")
 		}
-	default:
-		return status.Error(codes.InvalidArgument, "audience is required")
+		if _, exists := seenRoles[role]; exists {
+			continue
+		}
+		seenRoles[role] = struct{}{}
+		mapped.Roles = append(mapped.Roles, cloudOrganizationRole(role))
 	}
-	return nil
-}
 
-func cloudNotificationAudience(audience *systempb.NotificationAudience) *cloudpb.NotificationAudience {
-	if audience == nil {
-		return nil
+	selectorCount := len(mapped.UserIds) + len(mapped.TeamIds) + len(mapped.Roles)
+	if selectorCount == 0 {
+		return nil, status.Error(codes.InvalidArgument, "audience must contain at least one selector")
 	}
-	mapped := &cloudpb.NotificationAudience{}
-	switch value := audience.GetAudience().(type) {
-	case *systempb.NotificationAudience_UserId:
-		mapped.Audience = &cloudpb.NotificationAudience_UserId{UserId: value.UserId}
-	case *systempb.NotificationAudience_OrgTeamId:
-		mapped.Audience = &cloudpb.NotificationAudience_OrgTeamId{OrgTeamId: value.OrgTeamId}
-	case *systempb.NotificationAudience_OrganizationRole:
-		mapped.Audience = &cloudpb.NotificationAudience_OrganizationRole{
-			OrganizationRole: cloudOrganizationRole(value.OrganizationRole),
-		}
+	if selectorCount > maxNotificationAudienceSelectors {
+		return nil, status.Errorf(codes.InvalidArgument, "audience must contain at most %d selectors", maxNotificationAudienceSelectors)
 	}
-	return mapped
+	return mapped, nil
 }
 
 func cloudOrganizationRole(role systempb.OrganizationRole) cloudpb.OrganizationRole {
