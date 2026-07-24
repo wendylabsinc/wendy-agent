@@ -7,7 +7,45 @@ operator-facing Wendy Notifications in a Wendy Cloud organization.
 
 `wendycloud.v1` — defined in `Proto/cloud/notifications.proto`.
 
-## Methods
+## App System API (`wendy.system.v1`)
+
+Apps with the `notifications` entitlement call
+`wendy.system.v1.NotificationService` over the Unix socket at
+`$WENDY_SYSTEM_SOCKET` (`/run/wendy/system/system.sock`). WendyKit exposes this
+as `WendyNotification.send(_:)`, so apps normally do not call gRPC directly.
+
+The private socket binds every call to trusted app identity. The request cannot
+supply an app ID, device ID, or organization ID; the agent adds app identity and
+Cloud derives device and organization identity from device mTLS.
+
+### `Send`
+
+```
+Send(SendRequest) → SendResponse
+```
+
+The agent forwards the request to Cloud with a 15-second deadline.
+
+#### `SendRequest`
+
+| Field | Type | Description |
+|---|---|---|
+| `audience` | `NotificationAudience` | Exactly one user ID, organization team ID, or organization role. |
+| `title` | `string` | Notification title. |
+| `body` | `string` | Notification body. |
+| `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
+| `deep_link` | `string` | Absolute `wendy://` URI. |
+| `source_id` | `string` | App-generated idempotency key scoped to this app and device. |
+| `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
+
+#### `SendResponse`
+
+| Field | Type | Description |
+|---|---|---|
+| `duplicate` | `bool` | Whether the `source_id` was already accepted without another delivery. |
+| `recipient_count` | `int32` | Number of resolved recipients. |
+
+## Cloud API methods
 
 ### `CreateNotification` *(legacy)*
 

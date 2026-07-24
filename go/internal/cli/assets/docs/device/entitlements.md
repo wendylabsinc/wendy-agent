@@ -40,8 +40,9 @@ separate and requires `admin`.
 
 All entitled services in a multi-service app share the app's stable socket
 directory and app identity. Running containers reconnect on their next call
-after socket restoration; no redeploy is required. The directory remains until
-the last entitled service is deleted.
+after socket restoration; no redeploy is required. Stopped containers retain
+their mount and can reconnect when started again. The directory remains until
+the last entitled service container is deleted.
 
 ## Network
 

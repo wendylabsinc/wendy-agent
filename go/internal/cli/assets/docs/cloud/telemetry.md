@@ -17,6 +17,12 @@ on top of the image's own env. Two are always present (all network modes):
 | `WENDY_APP_ID` | The `appId` from `wendy.json` (omitted when empty). |
 | `WENDY_APP_GROUP` | The `appId` of the owning app. **Multi-service only** — injected when `serviceName` is non-empty so a service can discover its siblings. Absent for single-container apps. |
 
+The System API socket variable is conditional on an entitlement:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `WENDY_SYSTEM_SOCKET` | `/run/wendy/system/system.sock` | Injected only with the `notifications` entitlement. Points to the app's private Wendy System API socket. |
+
 The OpenTelemetry variables are injected **only when the app has the host
 `network` entitlement**, because the agent's local OTLP receiver listens on the
 device loopback and is reachable only from a host-networked container. Each is

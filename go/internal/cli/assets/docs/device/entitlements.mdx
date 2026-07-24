@@ -278,8 +278,9 @@ device mTLS supplies device and organization identity. Each send has a
 All entitled services in a multi-service app share the app's stable directory
 under `/var/lib/wendy/app-system`. After an agent/daemon restart, the socket is
 recreated from persisted container labels and running containers reconnect on
-their next call without a redeploy. The directory remains until the last
-entitled service is deleted.
+their next call without a redeploy. Stopped containers retain their mount and
+can reconnect when started again. The directory remains until the last entitled
+service container is deleted.
 
 <Callout type="warning">
   **Security**: Apps without `notifications` receive no System API mount,
