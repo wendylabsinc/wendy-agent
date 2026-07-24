@@ -1,4 +1,4 @@
-# Swift E2E Tests
+# Swift E2E tests
 
 ```text
 Executable specifications

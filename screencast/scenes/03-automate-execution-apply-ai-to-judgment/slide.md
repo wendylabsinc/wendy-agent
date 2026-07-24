@@ -1,4 +1,4 @@
-# Automate Execution, Apply AI to Judgment
+# Automate execution, apply AI to judgment
 
 ```text
 Humans

@@ -1,4 +1,4 @@
-# Swift E2E Tests: Executable Specifications for AI-Driven Development
+# Swift E2E tests: executable specifications for AI-driven development
 
 Audience: Wendy engineers exploring AI-driven development practices.
 Goal: Introduce the hypothesis behind executable E2E specifications before
@@ -33,7 +33,7 @@ AI implements how.
 
 ---
 
-## 02 Executable Specifications
+## 02 Executable specifications
 
 ### Say
 
@@ -68,7 +68,7 @@ specification = executable E2E tests
 
 ---
 
-## 03 Automate Execution, Apply AI to Judgment
+## 03 Automate execution, apply AI to judgment
 
 ### Say
 
@@ -106,7 +106,7 @@ AI implements, analyzes, and iterates
 
 ---
 
-## 04 To Be Continued
+## 04 To be continued
 
 ### Say
 

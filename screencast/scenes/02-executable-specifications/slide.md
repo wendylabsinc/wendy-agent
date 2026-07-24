@@ -1,4 +1,4 @@
-# Executable Specifications
+# Executable specifications
 
 ```text
 Shared source of truth
