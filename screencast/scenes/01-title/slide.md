@@ -1,5 +1,9 @@
 # Swift E2E Tests
 
 ```text
-run → inspect → add coverage
+Executable specifications
+for AI-driven development
+
+Humans decide what.
+AI implements how.
 ```

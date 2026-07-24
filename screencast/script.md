@@ -1,8 +1,9 @@
-# Swift E2E Tests
+# Swift E2E Tests: Executable Specifications for AI-Driven Development
 
-Audience: Wendy engineers who need to run or add CLI tests.
-Goal: Explain the everyday workflow in about two minutes.
-Tone: Direct, practical, concise.
+Audience: Wendy engineers exploring AI-driven development practices.
+Goal: Introduce the hypothesis behind executable E2E specifications before
+showing the Wendy implementation and workflow.
+Tone: Calm, thoughtful, direct.
 
 ---
 
@@ -10,172 +11,118 @@ Tone: Direct, practical, concise.
 
 ### Say
 
-Swift E2E tests for the Wendy CLI and agent.
+Swift E2E tests: executable specifications for AI-driven development.
 
-Here is the everyday workflow: run a focused suite, inspect the evidence, and
-add the next behavior.
+AI is increasingly doing the implementation work—the how. Human engineers
+still decide what the product should do and which outcomes are correct.
+
+That means humans and AI need a shared source of truth focused on those
+outcomes.
 
 ### Show (slide)
 
 ```text
 Swift E2E Tests
 
-run → inspect → add coverage
+Executable specifications
+for AI-driven development
+
+Humans decide what.
+AI implements how.
 ```
 
 ---
 
-## 02 The Workflow
+## 02 Executable Specifications
 
 ### Say
 
-Work from the swift directory.
+As AI capabilities improve, implementation becomes more of a derived artifact:
+mostly a function of the specification, closer to compilation than the primary
+place where humans collaborate.
 
-Use the test runner with a filter while developing. It builds the current
-Wendy CLI, isolates test state, and records every command. When the focused
-suite is green, analyze the run for the HTML report and AI review. Generate
-the reference when you want to browse the behavior documented by the suite.
+The question is what form that specification should take. There is no settled
+answer.
 
-### Show (slide)
+One promising idea is to express it as E2E tests. Unlike prose alone, an
+executable specification can deterministically validate the intended outcome
+against the real product, across different devices and contexts.
 
-```sh
-cd swift
-
-# Run only the command area you are changing
-bash Scripts/E2ETest.sh \
-  --output-dir ../Build/e2e \
-  --filter "wendy info"
-
-make e2e-analyze      # aggregate, review, report
-make e2e-reference    # browse documented behavior
-```
-
----
-
-## 03 A Focused Run
-
-### Say
-
-This runs the five `wendy info` behaviors. They are local and unauthenticated,
-so they need no cloud account or device.
-
-The same filter works for any command area. Keep the loop small while you work;
-run broader coverage before merging.
-
-### Show (terminal)
-
-```sh
-cd swift
-
-bash Scripts/E2ETest.sh \
-  --output-dir ../Build/e2e-screencast \
-  --filter "wendy info"
-```
-
----
-
-## 04 Add a Behavior
-
-### Say
-
-To add coverage, open the test file for the command area and follow the nearest
-working example.
-
-Use a sentence-style name, describe the user-visible behavior above the test,
-run the real command through the scenario, and assert the outcomes that matter:
-status, output, and side effects.
-
-### Show (code)
-
-```swift
-@Suite
-struct `'wendy info'` {
-    let scenario = CLIAndAgentScenario()
-
-    /** Reports CLI and system details without requiring auth or a device. */
-    @Test
-    func `prints CLI and system information`() async throws {
-        try await scenario.run(authenticated: false) { cli, _ in
-            try await cli.sh("wendy --json=false info") { result in
-                #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Wendy CLI"))
-                #expect(result.stderr.isEmpty)
-            }
-        }
-    }
-}
-```
-
----
-
-## 05 What You Get
-
-### Say
-
-Each test leaves a readable command recording, a replay script, and a structured
-result. Start with the recording when a test fails; it contains the exact
-command, status, stdout, and stderr.
-
-The analysis workflow combines attempts into an HTML report and AI review. The
-reference command creates static documentation from the test names and prose.
+The same artifact becomes behavioral documentation, acceptance criteria, and
+validation.
 
 ### Show (slide)
 
 ```text
-Each behavior
-  recording.md       exact command and output
-  recording.sh.txt   replay the captured shell calls
-  test.json          structured result
+Shared source of truth
 
-Each analyzed run
-  index.html          report
-  review.md           review summary
+Human-readable outcome
+          +
+Deterministic execution
+          +
+Validation against the real product
 
-Behavioral reference
-  Build/Reference/index.html
+One promising approach:
+specification = executable E2E tests
 ```
 
 ---
 
-## 06 Keep the Boundary Honest
+## 03 Automate Execution, Apply AI to Judgment
 
 ### Say
 
-Hosted CI runs local coverage on macOS and Ubuntu.
+AI-driven development does not mean asking AI to perform every validation step
+ad hoc.
 
-Authenticated tests use a dedicated E2E fixture, never personal Wendy config.
-Cloud state, interactive prompts, remote targets, and physical hardware need
-explicit fixtures or targets. Physical-device CI routes remain disabled until
-the hardware is reliable enough to be a useful gate.
+That would be less reproducible and unnecessarily expensive in token usage.
+Repeatable mechanical work should be scripted once and executed cheaply as
+often as needed.
+
+The test runner handles deterministic execution and records structured
+evidence. AI works at the higher-value layer: implementing the specification,
+analyzing failures, and iterating on the result.
+
+Humans define the outcomes. Automation executes them. AI implements and
+interprets the feedback.
+
+That is the strategy behind Wendy’s Swift E2E system.
 
 ### Show (slide)
 
 ```text
-Hosted by default
-  local macOS + Ubuntu
-
-Explicit when needed
-  auth fixture · cloud fixture · PTY · remote target · hardware
-
-Never depend on personal auth or machine state.
-Physical CI stays dormant until the hardware is reliable.
+Humans
+  define outcomes
+        ↓
+Executable E2E specifications
+        ↓
+Deterministic automation
+  runs across devices and contexts
+        ↓
+Structured evidence
+        ↓
+AI implements, analyzes, and iterates
 ```
 
 ---
 
-## 07 Closing
+## 04 To Be Continued
 
 ### Say
 
-That is it: filter to the command you are changing, use the recording when it
-fails, and add the next behavior beside the existing ones.
+That is the premise.
 
-The full guide lives in the WendyE2ETests README.
+Next, we will look at how Wendy’s Swift E2E system turns it into a practical
+development loop—from a human-readable specification, through deterministic
+execution, to the evidence that drives the next AI iteration.
+
+To be continued.
 
 ### Show (slide)
 
 ```text
-run focused → inspect evidence → add coverage
+To be continued…
 
-swift/WendyE2ETests/README.md
+Next:
+specification → execution → evidence → iteration
 ```
