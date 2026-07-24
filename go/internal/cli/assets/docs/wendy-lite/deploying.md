@@ -26,8 +26,8 @@ Pick your language and build to `.wasm`:
 
 **Swift:**
 ```bash
-swiftly run +6.3.1 swift build \
-    --swift-sdk swift-6.3.1-RELEASE_wasm-embedded \
+swiftly run +6.3.2 swift build \
+    --swift-sdk swift-6.3.2-RELEASE_wasm-embedded \
     --triple wasm32-unknown-wasip1 \
     -c release
 # Output: .build/wasm32-unknown-wasip1/release/MyApp.wasm
