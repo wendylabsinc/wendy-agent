@@ -272,7 +272,14 @@ API capabilities. WendyKit exposes the typed operation as
 
 The app supplies audience, content, severity, deep link, an idempotency key, and
 optional metadata. Trusted container state supplies app identity; provisioned
-device mTLS supplies device and organization identity.
+device mTLS supplies device and organization identity. Each send has a
+15-second Cloud deadline.
+
+All entitled services in a multi-service app share the app's stable directory
+under `/var/lib/wendy/app-system`. After an agent/daemon restart, the socket is
+recreated from persisted container labels and running containers reconnect on
+their next call without a redeploy. The directory remains until the last
+entitled service is deleted.
 
 <Callout type="warning">
   **Security**: Apps without `notifications` receive no System API mount,

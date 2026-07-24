@@ -404,8 +404,10 @@ container metadata. Wendy Cloud derives device and organization identity from
 the provisioned device certificate; none of those identities can be supplied
 by the app.
 
-The host directory lives under `/var/lib/wendy/app-system`, so its inode remains
-stable while the agent/daemon restarts and recreates `system.sock`. Multi-service
+Each send has a 15-second Cloud deadline. The per-app host directory lives under
+`/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon
+restarts and recreates `system.sock` from persisted container labels. Running
+containers reconnect on their next call without a redeploy. Multi-service
 ownership is reference-counted and the directory is removed after the last
 entitled container is deleted.
 
