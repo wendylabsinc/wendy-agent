@@ -486,6 +486,9 @@ func (s *CloudNotificationSender) connectionFor(
 	if err != nil {
 		return nil, fmt.Errorf("load system roots for Wendy Cloud: %w", err)
 	}
+	// SECURITY: The enrollment chain is controlled by Wendy Cloud and is also
+	// used by the existing telemetry flusher. Adding it supports direct local
+	// broker deployments whose server certificate uses the Wendy development CA.
 	if chainPEM != "" && !roots.AppendCertsFromPEM([]byte(chainPEM)) {
 		return nil, fmt.Errorf("parse Wendy enrollment CA chain")
 	}

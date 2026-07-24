@@ -1755,6 +1755,9 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
 		t.Error("expected WENDY_AGENT_SOCKET to point at the in-container socket path")
 	}
+	if hasGID(spec, appSystemAPIGroupGID) {
+		t.Error("admin entitlement must not grant the private System API socket group")
+	}
 }
 
 // TestAdminAgentSocketPath_IsDiskBacked guards the fix for the reboot

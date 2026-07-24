@@ -45,7 +45,9 @@ type appSystemAPISocket struct {
 // AppSystemAPISocketManager owns one private System API gRPC server per app.
 // All System API capabilities for that app share this socket. owners tracks
 // entitled containers so a multi-service app retains its listener until its
-// final entitled service is deleted.
+// final entitled service is deleted. SECURITY: the private mount is the caller
+// credential; requests carry no app identity, and OCI grants GID 2000 only with
+// the System API mount (covered by positive, negative, admin, and cross-app tests).
 type AppSystemAPISocketManager struct {
 	ctx                context.Context
 	logger             *zap.Logger
