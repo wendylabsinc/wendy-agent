@@ -399,8 +399,12 @@ func (s *ContainerService) startGroup(
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
+	// See streamContainerOutput: a group start must survive the requesting
+	// client disconnecting, so detach it from the request's cancellation.
+	startCtx := context.WithoutCancel(ctx)
+
 	for _, id := range containerIDs {
-		outputCh, startErr := s.containerd.StartContainer(ctx, id, "", restartPolicy)
+		outputCh, startErr := s.containerd.StartContainer(startCtx, id, "", restartPolicy)
 		if startErr != nil {
 			return status.Errorf(codes.Internal, "failed to start service %q: %v", id, startErr)
 		}
@@ -414,11 +418,11 @@ func (s *ContainerService) startGroup(
 		if s.monitor != nil {
 			s.monitor.ClearExplicitStop(id)
 		}
-		if err := s.containerd.SetStoppedByUser(ctx, id, false); err != nil {
+		if err := s.containerd.SetStoppedByUser(startCtx, id, false); err != nil {
 			s.logger.Warn("failed to clear stopped-by-user mark",
 				zap.String("container_id", id), zap.Error(err))
 		}
-		s.registerContainerWithMonitor(ctx, id, restartPolicy)
+		s.registerContainerWithMonitor(startCtx, id, restartPolicy)
 	}
 
 	return stream.Send(&agentpb.RunContainerLayersResponse{
@@ -570,7 +574,16 @@ func (s *ContainerService) streamContainerOutput(
 	restartPolicy *agentpb.RestartPolicy,
 	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
 ) error {
-	outputCh, err := s.containerd.StartContainer(ctx, appName, postStartAgentCommand, restartPolicy)
+	// Starting a container must not be abortable by the client that requested
+	// it. A detached `apps start` returns the instant the stream is opened and
+	// closes the connection, which cancels this RPC's context; if the start
+	// were bound to it, the agent aborts mid-load ("loading container: context
+	// canceled") and the container never runs. Detach the start (and the
+	// post-start bookkeeping that records it succeeded) from the request's
+	// cancellation while keeping its values; the output stream below still
+	// honors the request ctx and ends on disconnect.
+	startCtx := context.WithoutCancel(ctx)
+	outputCh, err := s.containerd.StartContainer(startCtx, appName, postStartAgentCommand, restartPolicy)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
@@ -591,12 +604,12 @@ func (s *ContainerService) streamContainerOutput(
 	// Clear the persisted stop mark too, so a user-initiated start re-enables
 	// boot reconcile for this app. Best-effort. (Only user starts reach this
 	// path; the boot reconcile starts via the monitor and never clears it.)
-	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
 		s.logger.Warn("failed to clear stopped-by-user mark",
 			zap.String("app_name", appName), zap.Error(err))
 	}
 
-	s.registerContainerWithMonitor(ctx, appName, restartPolicy)
+	s.registerContainerWithMonitor(startCtx, appName, restartPolicy)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -656,6 +669,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 	ctx := stream.Context()
 	postStartAgentCommand := postStartAgentHookFromContext(ctx)
+	// See streamContainerOutput: detach the start (and its post-start
+	// bookkeeping) from the request's cancellation so a client disconnect
+	// during startup cannot abort it. The stdin pump and output stream below
+	// still honor the request ctx.
+	startCtx := context.WithoutCancel(ctx)
 
 	stdinR, stdinW := io.Pipe()
 	defer stdinR.Close()
@@ -675,7 +693,7 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		}
 	}()
 
-	outputCh, err := s.containerd.StartContainerWithStdin(ctx, appName, stdinR, postStartAgentCommand, nil)
+	outputCh, err := s.containerd.StartContainerWithStdin(startCtx, appName, stdinR, postStartAgentCommand, nil)
 	if err != nil {
 		stdinR.Close()
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
@@ -691,11 +709,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
-	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
 		s.logger.Warn("failed to clear stopped-by-user mark",
 			zap.String("app_name", appName), zap.Error(err))
 	}
-	s.registerContainerWithMonitor(ctx, appName, nil)
+	s.registerContainerWithMonitor(startCtx, appName, nil)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{

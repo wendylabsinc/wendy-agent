@@ -330,7 +330,7 @@ jobs:
               exit 0
             fi
           else
-            for t in swift-hello swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
+            for t in swift-hello swift-start-detach swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
               TEST_ARGS+=(-t "$t")
             done
           fi

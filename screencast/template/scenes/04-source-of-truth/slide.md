@@ -3,7 +3,7 @@
 `screencast/script.md`
 
 ```md
-## 03 Developer Flow
+## 03 Developer flow
 
 ### Say
 Explain what changed.

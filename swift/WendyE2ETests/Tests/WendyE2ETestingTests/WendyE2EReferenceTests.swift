@@ -185,6 +185,25 @@ struct `reference documentation extraction` {
     }
 
     @Test
+    func `renders branded self contained html chrome`() throws {
+        let document = try #require(WendyE2EReference.parseSource(Self.fixtureSource).first)
+        let html = WendyE2EReference.renderHTML(document, options: .reference)
+
+        #expect(html.contains("--background: #F1EEE7"))
+        #expect(html.contains("--foreground: #171C23"))
+        #expect(html.contains("--seafoam: #9FE2BF"))
+        #expect(html.contains(":root[data-theme=\"dark\"]"))
+        #expect(html.contains("font: 16px/1.6 \"Geist\""))
+        #expect(html.contains("font-family: \"Geist Mono\""))
+        #expect(html.contains("viewBox=\"0 0 749.97 181.81\""))
+        #expect(html.contains("class=\"brand-mark\" role=\"img\" aria-label=\"Wendy\""))
+        #expect(html.contains("Swift E2E · Behavioral reference"))
+        #expect(html.contains(":where(a, button):focus-visible"))
+        #expect(!html.contains("fonts.googleapis.com"))
+        #expect(!html.contains("<script src="))
+    }
+
+    @Test
     func `renders html index entries`() {
         let html = WendyE2EReference.renderHTMLIndex(
             Self.indexEntries(fileExtension: "html"),

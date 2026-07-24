@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-
 	"fmt"
 	"io"
 	"log"
@@ -138,7 +137,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 					mode = preEnrollSkip
 				}
 			}
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, rootfsOnly, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
+			rootfsOnlyExplicit := cmd.Flags().Changed("rootfs-only")
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, rootfsOnly, rootfsOnlyExplicit, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
 		},
 	}
 
@@ -271,7 +271,7 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
 	}
@@ -474,7 +474,43 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return fmt.Errorf("version %s does not publish an eMMC recovery flashpack", selectedVersion)
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode != "recovery" && !rootfsOnly {
-		return fmt.Errorf("version %s predates full recovery artifacts; there is no automatic raw-image fallback—rerun with --rootfs-only to use its legacy SD/NVMe image", selectedVersion)
+		// The version has no recovery flashpack, so its legacy SD/NVMe image is
+		// the only way to install it. Fall back to rootfs-only imaging instead
+		// of making the user rediscover the flag — unless they explicitly
+		// pinned --rootfs-only=false, which asks for a flash this version
+		// cannot deliver.
+		if rootfsOnlyExplicit {
+			return fmt.Errorf("version %s predates full recovery flashpacks and cannot flash boot firmware; drop --rootfs-only=false or pick a newer version", selectedVersion)
+		}
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(fmt.Sprintf("Version %s predates full recovery flashpacks; falling back to its SD/NVMe OS image. QSPI boot firmware will not be updated.", selectedVersion)))
+		rootfsOnly = true
+		// Windows: the raw disk write needs elevation, and the UAC relaunch
+		// starts a fresh process — pin the device and fallback mode on the
+		// child's command line so the elevated instance resumes at the
+		// storage question. No-op on Unix.
+		if err := elevateForT234Flash(selected, true); err != nil {
+			return err
+		}
+	}
+	// Interactively choose the flash mode for Jetson Orin recovery targets so users
+	// don't have to know the --rootfs-only flag. shouldPromptFlashMode skips it
+	// whenever a flag already pins the mode or we're non-interactive, keeping
+	// today's behavior unchanged.
+	if shouldPromptFlashMode(selected, ver.InstallMode, rootfsOnlyExplicit, storageOverride, isInteractiveTerminal()) {
+		rootfsOnly, err = chooseT234FlashMode()
+		if err != nil {
+			return err // ErrUserCancelled -> clean exit
+		}
+		if rootfsOnly {
+			// Windows: the raw disk write needs elevation, and the UAC relaunch
+			// starts a fresh process — elevate now with the device and mode
+			// pinned on the child's command line so the elevated instance
+			// resumes at the storage question instead of re-asking these. The
+			// full-recovery choice elevates below, after its flag validation.
+			if err := elevateForT234Flash(selected, true); err != nil {
+				return err
+			}
+		}
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode == "recovery" && !rootfsOnly {
 		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
@@ -482,9 +518,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 		// Windows: elevate now, before the remaining wizard questions. The UAC
 		// relaunch starts a fresh process in a new console, so any answers
-		// already given would have to be re-entered there; at this point the
-		// device choice is the only one, and it carries over as --device-type.
-		if err := elevateForT234Recovery(selected); err != nil {
+		// already given would have to be re-entered there; the device choice
+		// and flash mode carry over as --device-type/--rootfs-only. Pinning
+		// the mode also keeps the elevated child (whose fresh console IS
+		// interactive) from raising the flash-mode prompt a non-interactive
+		// parent never showed.
+		if err := elevateForT234Flash(selected, false); err != nil {
 			return err
 		}
 		storage, err := chooseT234RecoveryStorage(selected, storageOverride)
@@ -502,7 +541,12 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		})
 	}
 	if isT234RecoveryDevice(selected) && rootfsOnly {
-		fmt.Fprintln(os.Stderr, tui.WarningMessage("Rootfs-only imaging does not update Jetson QSPI boot firmware; use full recovery to guarantee matching boot firmware and rootfs."))
+		// The legacy-version fallback above prints its own QSPI notice, and
+		// recommending full recovery would be wrong there — the version has
+		// no flashpack to recover with.
+		if ver.InstallMode == "recovery" {
+			fmt.Fprintln(os.Stderr, tui.WarningMessage("Rootfs-only imaging does not update Jetson QSPI boot firmware; use full recovery to guarantee matching boot firmware and rootfs."))
+		}
 		storageOverride, err = chooseT234RootfsOnlyStorage(selected, storageOverride)
 		if err != nil {
 			return err
@@ -526,6 +570,36 @@ func rejectRecoveryDriveFlags(drive string, noBmap, overwriteInternal bool) erro
 		return fmt.Errorf("%s require --rootfs-only; full recovery selects storage on the Jetson over USB", strings.Join(flags, ", "))
 	}
 	return nil
+}
+
+// shouldPromptFlashMode reports whether to interactively ask the user to choose
+// between full USB recovery (firmware + OS) and rootfs-only imaging. It fires
+// only for Jetson Orin recovery targets when full recovery is actually available
+// (InstallMode == "recovery"), the user did not pin the mode via --rootfs-only,
+// the mode is not already forced by --storage emmc (full recovery only), and we
+// have an interactive terminal. Non-interactive runs and any explicit flag keep
+// today's behavior untouched.
+func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bool, storageOverride string, interactive bool) bool {
+	return isT234RecoveryDevice(deviceType) &&
+		installMode == "recovery" &&
+		!rootfsOnlyExplicit &&
+		storageOverride != "emmc" &&
+		interactive
+}
+
+// chooseT234FlashMode prompts the user to pick between full USB recovery
+// (firmware + OS) and OS-image-only imaging, returning rootfsOnly=true for the
+// image-only choice. A cancelled picker surfaces ErrUserCancelled, which the
+// top-level command maps to a clean exit.
+func chooseT234FlashMode() (rootfsOnly bool, err error) {
+	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
+		{Name: "Full flash over USB", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
+		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+	})
+	if err != nil {
+		return false, err // ErrUserCancelled propagates unchanged
+	}
+	return choice == "rootfs", nil
 }
 
 func chooseT234RecoveryStorage(device, override string) (string, error) {

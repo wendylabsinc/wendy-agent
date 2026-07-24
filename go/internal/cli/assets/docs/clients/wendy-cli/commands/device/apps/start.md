@@ -10,7 +10,7 @@ If the container keeps exiting and the agent has already performed at least one 
 
 | Flag | Description |
 |------|-------------|
-| `-d`, `--detach` | Start the app and return immediately without streaming output. |
+| `-d`, `--detach` | Start the app and return once the agent confirms it has started, without streaming output. |
 
 ## Examples
 
@@ -27,4 +27,8 @@ wendy device apps start --detach my-app
 wendy device apps start -d my-app
 ```
 
-When `--detach` is used, the CLI sends the start request to the agent and exits as soon as the container start is initiated, without waiting for or streaming any output.
+When `--detach` is used, the CLI waits for the agent to confirm the container has started, then returns without streaming any output. If the agent reports an error or closes the stream before confirming the start, the command exits with a non-zero status instead of reporting success.
+
+## Reported outcome
+
+When an attached start returns, the CLI reports the app's state at that point: `started` if it is still running (for example a multi-service app), `stopped` — or a short reason such as `crashed (exit 1)` — if it has exited, or `crash-looping` if it keeps restarting.

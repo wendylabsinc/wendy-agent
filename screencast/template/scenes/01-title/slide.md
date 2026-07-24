@@ -1,8 +1,8 @@
 # AI-generated screencasts
 
 ```text
-AI-Generated Screencasts
-from One Script
+AI-generated screencasts
+from one script
 
 script.md → scenes → renders → final MP4
 ```

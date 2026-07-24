@@ -74,19 +74,9 @@ struct `report command` {
             encoding: .utf8
         )
 
-        try """
-        <!doctype html>
-        <html>
-          <body>
-            {{TARGET_OVERVIEW}}
-            <!-- Repeat this .card section once per test file. -->
-            <footer></footer>
-          </body>
-        </html>
-        """.write(
-            to: supportURL.appendingPathComponent("e2e-report.template.html"),
-            atomically: true,
-            encoding: .utf8
+        try FileManager.default.copyItem(
+            at: productionReportTemplateURL(),
+            to: supportURL.appendingPathComponent("e2e-report.template.html")
         )
 
         var command = try ReportCommand.parse([
@@ -104,6 +94,27 @@ struct `report command` {
         #expect(html.contains("macos-to-&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"))
         #expect(html.contains("title=\"macos-to-&lt;img src=x onerror=&quot;alert(1)&quot;&gt;\""))
         #expect(html.contains("macos-to-no-observations"))
+        #expect(html.contains("--background: #F1EEE7"))
+        #expect(html.contains("--foreground: #171C23"))
+        #expect(html.contains("--seafoam: #9FE2BF"))
+        #expect(html.contains("font: 16px/1.6 \"Geist\""))
+        #expect(html.contains("font-family: \"Geist Mono\""))
+        #expect(html.contains("viewBox=\"0 0 749.97 181.81\""))
+        #expect(html.contains("class=\"brand-mark\" role=\"img\" aria-label=\"Wendy\""))
+        #expect(html.contains("Swift E2E · Run report"))
+        #expect(html.contains(":where(a, button, input, summary):focus-visible"))
+        #expect(!html.contains("fonts.googleapis.com"))
+        #expect(!html.contains("<script src="))
+        #expect(!html.contains("#000"))
+
+        let reviewHTML = try String(
+            contentsOf: runURL.appendingPathComponent("review.html"),
+            encoding: .utf8
+        )
+        #expect(reviewHTML.contains("--background: #F1EEE7"))
+        #expect(reviewHTML.contains("--foreground: #171C23"))
+        #expect(reviewHTML.contains("font: 15px/1.55 \"Geist\""))
+        #expect(reviewHTML.contains("font-family: \"Geist Mono\""))
     }
 
     @Test
@@ -175,6 +186,14 @@ struct `report command` {
             )
         )
     }
+}
+
+private func productionReportTemplateURL() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Support/e2e-report.template.html")
 }
 
 private func writeReportTestMetadata(to observationURL: URL) throws {

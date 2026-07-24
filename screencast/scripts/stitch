@@ -133,7 +133,7 @@ async function sceneVisual(sceneDir) {
 function renderMediaVideo(media, seconds, output) {
   run('ffmpeg', [
     '-nostdin', '-y', '-i', media,
-    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=${fps},setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=${seconds},trim=duration=${seconds},setpts=PTS-STARTPTS`,
+    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=0x171C23,fps=${fps},setsar=1,format=yuv420p,tpad=stop_mode=clone:stop_duration=${seconds},trim=duration=${seconds},setpts=PTS-STARTPTS`,
     '-an', '-c:v', 'libx264', '-preset', 'medium', '-crf', crf,
     '-pix_fmt', 'yuv420p', '-movflags', '+faststart', output,
   ]);
