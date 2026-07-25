@@ -247,7 +247,7 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	for _, a := range assets {
 		out = append(out, cloudAssetToMap(a))
 	}
-	return okResult(out), nil
+	return okList("devices", out), nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

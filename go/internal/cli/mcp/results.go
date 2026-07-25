@@ -15,7 +15,37 @@ func okResult(v any) *mcpgo.CallToolResult {
 	if err != nil {
 		return errResultf(errCodeInternal, "marshaling result: %s", err.Error())
 	}
+	// MCP requires structuredContent to be a JSON object. Wrap anything that is
+	// not one (array, scalar, null) rather than emitting a result conformant
+	// clients reject outright. Recurses at most once: a map[string]any always
+	// marshals to an object. Prefer okList at call sites — it gives the payload
+	// a meaningful key instead of the generic one used here.
+	if len(b) == 0 || b[0] != '{' {
+		return okResult(map[string]any{"result": v})
+	}
 	return mcpgo.NewToolResultStructured(v, string(b))
+}
+
+// okList wraps a list payload under key in an object envelope. MCP requires
+// structuredContent to be a JSON object, so returning a bare array makes
+// conformant clients reject the whole result. A nil slice is normalized to []
+// so the key is always present.
+func okList[T any](key string, items []T) *mcpgo.CallToolResult {
+	return okResult(map[string]any{key: listOrEmpty(items)})
+}
+
+// okListBounded is okList with okResultBounded's byte ceiling on the payload.
+func okListBounded[T any](key string, items []T, maxBytes int) *mcpgo.CallToolResult {
+	return okResultBounded(map[string]any{key: listOrEmpty(items)}, maxBytes)
+}
+
+// listOrEmpty returns items, substituting an empty slice for nil so it
+// marshals as [] rather than null.
+func listOrEmpty[T any](items []T) []T {
+	if items == nil {
+		return []T{}
+	}
+	return items
 }
 
 // okText returns a plain-text success result (for simple confirmations).
@@ -42,7 +72,8 @@ func okResultBounded(v any, maxBytes int) *mcpgo.CallToolResult {
 		eb, _ := json.MarshalIndent(env, "", "  ")
 		return mcpgo.NewToolResultStructured(env, string(eb))
 	}
-	return mcpgo.NewToolResultStructured(v, string(b))
+	// Delegate so the under-budget path gets okResult's object guard too.
+	return okResult(v)
 }
 
 // okTextBounded returns a plain-text success result like okText, but clamps s

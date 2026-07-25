@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -26,6 +27,37 @@ func toolResultText(t *testing.T, result *mcpgo.CallToolResult) string {
 		t.Fatalf("expected TextContent, got %T", result.Content[0])
 	}
 	return tc.Text
+}
+
+// structuredMap asserts the result carries an object structuredContent, which
+// MCP requires — a bare array makes conformant clients reject the whole result.
+func structuredMap(t *testing.T, result *mcpgo.CallToolResult) map[string]any {
+	t.Helper()
+	if result.StructuredContent == nil {
+		t.Fatal("result should carry structuredContent")
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent must be a JSON object, got %T", result.StructuredContent)
+	}
+	return sc
+}
+
+// listPayload decodes the JSON text fallback and returns the rows stored under
+// key, asserting the payload is an object envelope rather than a bare array.
+func listPayload(t *testing.T, result *mcpgo.CallToolResult, key string) []map[string]any {
+	t.Helper()
+	structuredMap(t, result)
+	var env map[string][]map[string]any
+	text := toolResultText(t, result)
+	if err := json.Unmarshal([]byte(text), &env); err != nil {
+		t.Fatalf("text fallback is not a JSON object: %v (got %s)", err, text)
+	}
+	rows, ok := env[key]
+	if !ok {
+		t.Fatalf("envelope is missing key %q (got %s)", key, text)
+	}
+	return rows
 }
 
 // callTool invokes a registered tool handler by name. Used in tests only.
