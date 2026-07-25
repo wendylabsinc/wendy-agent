@@ -101,10 +101,7 @@ func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolR
 	for _, d := range seen {
 		devices = append(devices, d)
 	}
-	if devices == nil {
-		devices = []map[string]any{}
-	}
-	return okResult(devices), nil
+	return okList("devices", devices), nil
 }
 
 func (s *mcpServer) handleBluetoothConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

@@ -66,7 +66,10 @@ stopped containers.
 ## Result shape & error codes
 
 Tools that return data include a machine-readable structuredContent object
-alongside human-readable text. Errors include an error_code you can branch
+alongside human-readable text. List-shaped tools nest their rows under a
+single key — devices (device_list, cloud_discover, bluetooth_scan),
+containers, stats, capabilities, networks (wifi_list, wifi_known_networks),
+batches (telemetry_*) — never as a bare array. Errors include an error_code you can branch
 on — e.g. NOT_CONNECTED, DEVICE_UNREACHABLE, ENTITLEMENT_DENIED,
 INVALID_ARGUMENT, NOT_FOUND, MULTIPLE_SESSIONS, UNSUPPORTED, TIMEOUT,
 INTERNAL. Tool annotations mark read-only vs destructive vs mutating

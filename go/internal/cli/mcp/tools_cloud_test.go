@@ -2,12 +2,10 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"strings"
 	"testing"
 
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
@@ -71,11 +69,7 @@ func TestCloudDiscover_ReturnsConfiguredCloudDevices(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("len(devices) = %d, want 1", len(devices))
 	}
@@ -119,8 +113,8 @@ func TestCloudDiscover_HasStructuredContent(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	if result.StructuredContent == nil {
-		t.Fatal("cloud_discover should return structuredContent")
+	if _, ok := structuredMap(t, result)["devices"]; !ok {
+		t.Error("cloud_discover envelope is missing the devices key")
 	}
 }
 

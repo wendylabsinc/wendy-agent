@@ -149,7 +149,7 @@ func (s *mcpServer) handleTelemetryLogs(ctx context.Context, req mcpgo.CallToolR
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
+	return okListBounded("batches", result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -183,7 +183,7 @@ func (s *mcpServer) handleTelemetryMetrics(ctx context.Context, req mcpgo.CallTo
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
+	return okListBounded("batches", result, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -217,5 +217,5 @@ func (s *mcpServer) handleTelemetryTraces(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return errResult(codeFromGRPC(err), grpcErrString(err)), nil
 	}
-	return okResultBounded(result, intParam(req, "max_bytes", 100000)), nil
+	return okListBounded("batches", result, intParam(req, "max_bytes", 100000)), nil
 }

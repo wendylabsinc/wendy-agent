@@ -5,7 +5,6 @@ import (
 	"net"
 	"testing"
 
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -98,13 +97,8 @@ func TestTelemetryLogs_ReturnsJSON(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if len(text) == 0 {
-		t.Fatal("expected non-empty result")
-	}
-	// Should be a JSON array
-	if text[0] != '[' {
-		t.Errorf("expected JSON array, got: %s", text)
+	if batches := listPayload(t, result, "batches"); len(batches) != 1 {
+		t.Errorf("expected 1 batch, got %d", len(batches))
 	}
 }
 
@@ -125,12 +119,12 @@ func TestTelemetryLogs_HasStructuredContent(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	if result.StructuredContent == nil {
-		t.Fatal("telemetry_logs should return structuredContent")
+	if _, ok := structuredMap(t, result)["batches"]; !ok {
+		t.Error("telemetry_logs envelope is missing the batches key")
 	}
 }
 
-func TestTelemetryLogs_EmptyReturnsEmptyArray(t *testing.T) {
+func TestTelemetryLogs_EmptyReturnsEmptyList(t *testing.T) {
 	fake := &fakeTelemetryServer{}
 	conn := startFakeTelemetryServer(t, fake)
 	srv := New(&config.Config{}, nil)
@@ -143,9 +137,10 @@ func TestTelemetryLogs_EmptyReturnsEmptyArray(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if text != "[]" {
-		t.Errorf("text = %q, want []", text)
+	// An empty stream must still be an object envelope with the key present,
+	// not a bare [] — conformant clients reject a non-object structuredContent.
+	if batches := listPayload(t, result, "batches"); len(batches) != 0 {
+		t.Errorf("expected no batches, got %v", batches)
 	}
 }
 
@@ -166,9 +161,8 @@ func TestTelemetryMetrics_ReturnsJSON(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if text[0] != '[' {
-		t.Errorf("expected JSON array, got: %s", text)
+	if batches := listPayload(t, result, "batches"); len(batches) != 1 {
+		t.Errorf("expected 1 batch, got %d", len(batches))
 	}
 }
 
@@ -189,8 +183,7 @@ func TestTelemetryTraces_ReturnsJSON(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if text[0] != '[' {
-		t.Errorf("expected JSON array, got: %s", text)
+	if batches := listPayload(t, result, "batches"); len(batches) != 1 {
+		t.Errorf("expected 1 batch, got %d", len(batches))
 	}
 }
