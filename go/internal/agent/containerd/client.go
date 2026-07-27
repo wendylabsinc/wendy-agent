@@ -962,10 +962,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 
-	// Read the image's OCI config (CMD, ENTRYPOINT, ENV, WorkingDir).
-	imageSpec, specErr := image.Spec(ctx)
-	if specErr != nil {
-		c.logger.Warn("Failed to read image spec, using defaults", zap.Error(specErr))
+	// Read the image's OCI config (CMD, ENTRYPOINT, ENV, WorkingDir). An image
+	// whose config cannot be read is unusable: falling back to defaults would
+	// discard Cmd/Entrypoint/Env/WorkingDir and silently run /bin/sh in place of
+	// the application, which exits 0 immediately and presents as a crash loop
+	// with no explanation (WDY-2009).
+	imageSpec, err := image.Spec(ctx)
+	if err != nil {
+		return fmt.Errorf("reading image config for %q (image is incomplete or corrupt): %w", imageName, err)
 	}
 
 	// Build the container command: explicit request > image config > /bin/sh.
@@ -977,7 +981,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	if len(req.GetUserArgs()) > 0 {
 		args = append(args, req.GetUserArgs()...)
 	}
-	if len(args) == 0 && specErr == nil {
+	if len(args) == 0 {
 		args = append(imageSpec.Config.Entrypoint, imageSpec.Config.Cmd...)
 	}
 	if len(args) == 0 {
@@ -991,7 +995,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Build the working directory: explicit request > image config > /.
 	workingDir := req.GetWorkingDir()
-	if workingDir == "" && specErr == nil && imageSpec.Config.WorkingDir != "" {
+	if workingDir == "" && imageSpec.Config.WorkingDir != "" {
 		workingDir = imageSpec.Config.WorkingDir
 	}
 	if workingDir == "" {
@@ -1012,9 +1016,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("invalid env var in request (SOC2-CC6, NIST-SI-10): %w", err)
 	}
 	var env []string
-	if specErr == nil {
-		env = append(env, imageSpec.Config.Env...)
-	}
+	env = append(env, imageSpec.Config.Env...)
 	env = append(env, req.GetEnv()...)
 	env = appendFallbackEnv(env)
 	env = append(env, wendyEnv...)
