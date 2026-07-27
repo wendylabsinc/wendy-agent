@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -45,7 +46,10 @@ func (s *recordingNotificationSender) CreateNotificationV2(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, request)
-	return &cloudpb.CreateNotificationV2Response{RecipientCount: 1}, nil
+	return &cloudpb.CreateNotificationV2Response{
+		NotificationId: request.GetNotificationId(),
+		RecipientCount: 1,
+	}, nil
 }
 
 type deadlineNotificationSender struct {
@@ -53,12 +57,24 @@ type deadlineNotificationSender struct {
 	has      bool
 }
 
+type mismatchedNotificationSender struct{}
+
+func (mismatchedNotificationSender) CreateNotificationV2(
+	context.Context,
+	*cloudpb.CreateNotificationV2Request,
+) (*cloudpb.CreateNotificationV2Response, error) {
+	return &cloudpb.CreateNotificationV2Response{
+		NotificationId: "c8a78877-4048-4829-8986-43528248a86e",
+		RecipientCount: 1,
+	}, nil
+}
+
 func (s *deadlineNotificationSender) CreateNotificationV2(
 	ctx context.Context,
-	_ *cloudpb.CreateNotificationV2Request,
+	request *cloudpb.CreateNotificationV2Request,
 ) (*cloudpb.CreateNotificationV2Response, error) {
 	s.deadline, s.has = ctx.Deadline()
-	return &cloudpb.CreateNotificationV2Response{}, nil
+	return &cloudpb.CreateNotificationV2Response{NotificationId: request.GetNotificationId()}, nil
 }
 
 func validSystemNotificationRequest() *systempb.SendRequest {
@@ -66,11 +82,68 @@ func validSystemNotificationRequest() *systempb.SendRequest {
 		Audience: &systempb.NotificationAudience{
 			Roles: []systempb.OrganizationRole{systempb.OrganizationRole_ORGANIZATION_ROLE_MEMBER},
 		},
-		Title:    "Fire detected",
-		Body:     "Camera 2 detected smoke",
-		Severity: systempb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL,
-		DeepLink: "wendy://live?camera=camera-2",
-		SourceId: "firewatch:incident-42",
+		Title:          "Fire detected",
+		Body:           "Camera 2 detected smoke",
+		Severity:       systempb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL,
+		DeepLink:       "wendy://live?camera=camera-2",
+		NotificationId: "123e4567-e89b-42d3-a456-426614174000",
+	}
+}
+
+func TestNotificationProtoContract(t *testing.T) {
+	legacyNotificationFields := []protoreflect.Name{
+		"id", "user_id", "organization_id", "body", "severity", "related_entities", "created_at", "deleted_at",
+	}
+	cloudNotification := (&cloudpb.Notification{}).ProtoReflect().Descriptor()
+	for index, wantName := range legacyNotificationFields {
+		fieldNumber := protoreflect.FieldNumber(index + 1)
+		field := cloudNotification.Fields().ByNumber(fieldNumber)
+		if field == nil || field.Name() != wantName {
+			t.Fatalf("Notification field %d = %v, want %q", fieldNumber, field, wantName)
+		}
+	}
+	for fieldNumber, wantName := range map[protoreflect.FieldNumber]protoreflect.Name{
+		11: "notification_id",
+		14: "created_by_user_id",
+		15: "created_by_asset_id",
+		16: "created_by_app_id",
+	} {
+		if got := cloudNotification.Fields().ByNumber(fieldNumber); got == nil || got.Name() != wantName {
+			t.Fatalf("Notification field %d = %v, want %q", fieldNumber, got, wantName)
+		}
+	}
+
+	cloudRequest := (&cloudpb.CreateNotificationV2Request{}).ProtoReflect().Descriptor()
+	cloudRequestFields := []protoreflect.Name{
+		"organization_id", "audience", "title", "body", "severity", "deep_link", "notification_id", "metadata",
+	}
+	for index, wantName := range cloudRequestFields {
+		fieldNumber := protoreflect.FieldNumber(index + 1)
+		field := cloudRequest.Fields().ByNumber(fieldNumber)
+		if field == nil || field.Name() != wantName {
+			t.Fatalf("CreateNotificationV2Request field %d = %v, want %q", fieldNumber, field, wantName)
+		}
+	}
+	if got := cloudRequest.Fields().ByNumber(9); got == nil || got.Name() != "app_id" || got.Kind() != protoreflect.StringKind {
+		t.Fatalf("CreateNotificationV2Request field 9 = %v, want string app_id", got)
+	}
+
+	systemRequest := (&systempb.SendRequest{}).ProtoReflect().Descriptor()
+	if got := systemRequest.Fields().ByNumber(6); got == nil || got.Name() != "notification_id" || got.Kind() != protoreflect.StringKind {
+		t.Fatalf("SendRequest field 6 = %v, want string notification_id", got)
+	}
+	if got := systemRequest.Fields().ByName("app_id"); got != nil {
+		t.Fatalf("app-facing SendRequest exposes trusted app identity: %v", got)
+	}
+	for name, descriptor := range map[string]protoreflect.MessageDescriptor{
+		"CreateNotificationV2Response": (&cloudpb.CreateNotificationV2Response{}).ProtoReflect().Descriptor(),
+		"SendResponse":                 (&systempb.SendResponse{}).ProtoReflect().Descriptor(),
+	} {
+		field1 := descriptor.Fields().ByNumber(1)
+		field2 := descriptor.Fields().ByNumber(2)
+		if descriptor.Fields().Len() != 2 || field1 == nil || field1.Name() != "notification_id" || field2 == nil || field2.Name() != "recipient_count" {
+			t.Fatalf("%s fields = %v, want {notification_id, recipient_count}", name, descriptor.Fields())
+		}
 	}
 }
 
@@ -92,8 +165,8 @@ func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *tes
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	if response.GetRecipientCount() != 1 {
-		t.Fatalf("recipient count = %d, want 1", response.GetRecipientCount())
+	if response.GetNotificationId() != input.GetNotificationId() || response.GetRecipientCount() != 1 {
+		t.Fatalf("response = %+v, want notification ID %q and recipient count 1", response, input.GetNotificationId())
 	}
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
@@ -101,8 +174,11 @@ func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *tes
 		t.Fatalf("Cloud requests = %d, want 1", len(sender.requests))
 	}
 	request := sender.requests[0]
-	if request.GetSourceAppId() != "com.example.firewatch" {
-		t.Fatalf("source_app_id = %q, want trusted app identity", request.GetSourceAppId())
+	if request.GetAppId() != "com.example.firewatch" {
+		t.Fatalf("app_id = %q, want trusted app identity", request.GetAppId())
+	}
+	if request.GetNotificationId() != input.GetNotificationId() {
+		t.Fatalf("notification_id = %q, want %q", request.GetNotificationId(), input.GetNotificationId())
 	}
 	if request.GetOrganizationId() != 0 || request.OrganizationId != nil {
 		t.Fatal("System request must not supply organization identity")
@@ -125,20 +201,44 @@ func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *tes
 	}
 }
 
+func TestSystemNotificationServiceCanonicalizesUppercaseNotificationID(t *testing.T) {
+	sender := &recordingNotificationSender{}
+	request := validSystemNotificationRequest()
+	request.NotificationId = strings.ToUpper(request.NotificationId)
+
+	response, err := NewSystemNotificationService("com.example.firewatch", sender).Send(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	const canonical = "123e4567-e89b-42d3-a456-426614174000"
+	if got := sender.requests[0].GetNotificationId(); got != canonical {
+		t.Fatalf("forwarded notification_id = %q, want %q", got, canonical)
+	}
+	if got := response.GetNotificationId(); got != canonical {
+		t.Fatalf("response notification_id = %q, want %q", got, canonical)
+	}
+}
+
+func TestSystemNotificationServiceRejectsMismatchedCloudNotificationID(t *testing.T) {
+	_, err := NewSystemNotificationService("com.example.firewatch", mismatchedNotificationSender{}).Send(
+		context.Background(),
+		validSystemNotificationRequest(),
+	)
+	if status.Code(err) != codes.DataLoss {
+		t.Fatalf("Send() code = %v, want DataLoss (err=%v)", status.Code(err), err)
+	}
+}
+
 func proofCloudNotificationRequest() *cloudpb.CreateNotificationV2Request {
-	sourceAppID := "com.example.firewatch"
+	appID := "com.example.firewatch"
 	return &cloudpb.CreateNotificationV2Request{
-		Audience: &cloudpb.NotificationAudience{
-			UserIds: []string{"user-1", "user-2"},
-			TeamIds: []int32{9},
-			Roles:   []cloudpb.OrganizationRole{cloudpb.OrganizationRole_ORGANIZATION_ROLE_ADMIN},
-		},
-		Title:       "Fire",
-		Body:        "Smoke detected",
-		Severity:    cloudpb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL,
-		DeepLink:    "wendy://live?camera=camera-2",
-		SourceId:    "incident-42",
-		SourceAppId: &sourceAppID,
+		Audience:       &cloudpb.NotificationAudience{UserIds: []string{"user-1"}},
+		Title:          "Fire",
+		Body:           "Smoke detected",
+		Severity:       cloudpb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL,
+		DeepLink:       "wendy://live?camera=camera-2",
+		NotificationId: "123e4567-e89b-42d3-a456-426614174000",
+		AppId:          &appID,
 	}
 }
 
@@ -178,7 +278,7 @@ func TestCanonicalNotificationDeviceProofIsDeterministic(t *testing.T) {
 		t.Fatal("canonical proof does not match the versioned NUL-framed contract")
 	}
 	digest := sha256.Sum256(first)
-	if got, want := hex.EncodeToString(digest[:]), "73b8b821e8754fd44585204c88bea3345eb56a4963e212bead125dfaa2adfee4"; got != want {
+	if got, want := hex.EncodeToString(digest[:]), "64f25ad5b4204fb743661c5d11d80692c4ae4bb2afc6f7d7a4a36ff0762efc91"; got != want {
 		t.Fatalf("canonical proof SHA-256 = %s, want fixture %s", got, want)
 	}
 }
@@ -315,7 +415,9 @@ func TestSystemNotificationServiceValidation(t *testing.T) {
 		{name: "wrong deep link scheme", mutate: func(r *systempb.SendRequest) { r.DeepLink = "https://example.com/live" }},
 		{name: "deep link userinfo", mutate: func(r *systempb.SendRequest) { r.DeepLink = "wendy://user@live" }},
 		{name: "deep link without host", mutate: func(r *systempb.SendRequest) { r.DeepLink = "wendy:///live" }},
-		{name: "unsafe source id", mutate: func(r *systempb.SendRequest) { r.SourceId = "has spaces" }},
+		{name: "malformed notification ID", mutate: func(r *systempb.SendRequest) { r.NotificationId = "not-a-uuid" }},
+		{name: "non-v4 notification ID", mutate: func(r *systempb.SendRequest) { r.NotificationId = "6ba7b810-9dad-11d1-80b4-00c04fd430c8" }},
+		{name: "zero notification ID", mutate: func(r *systempb.SendRequest) { r.NotificationId = "00000000-0000-0000-0000-000000000000" }},
 		{name: "oversized metadata", mutate: func(r *systempb.SendRequest) {
 			r.Metadata, _ = structpb.NewStruct(map[string]any{"value": strings.Repeat("x", maxNotificationMetadataBytes+1)})
 		}},
@@ -362,12 +464,8 @@ func TestSystemNotificationServiceBoundsUniqueAudienceSelectors(t *testing.T) {
 	}
 	request.Audience.TeamIds = nil
 	request.Audience.Roles = nil
-	sender := &recordingNotificationSender{}
-	if _, err := NewSystemNotificationService("com.example.app", sender).Send(context.Background(), request); err != nil {
-		t.Fatalf("duplicates should be normalized before the bound: %v", err)
-	}
-	if got := sender.requests[0].GetAudience().GetUserIds(); !slices.Equal(got, []string{"same-user"}) {
-		t.Fatalf("deduplicated user_ids = %v", got)
+	if _, err := NewSystemNotificationService("com.example.app", &recordingNotificationSender{}).Send(context.Background(), request); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("101 duplicate selectors code = %v, want InvalidArgument (err=%v)", status.Code(err), err)
 	}
 }
 
@@ -444,7 +542,7 @@ func TestAppSystemAPISocketManagerSharesPerAppAndIsolatesIdentity(t *testing.T) 
 	}
 
 	sender.mu.Lock()
-	if len(sender.requests) != 2 || sender.requests[0].GetSourceAppId() != "com.example.a" || sender.requests[1].GetSourceAppId() != "com.example.b" {
+	if len(sender.requests) != 2 || sender.requests[0].GetAppId() != "com.example.a" || sender.requests[1].GetAppId() != "com.example.b" {
 		t.Fatalf("trusted app identities = %+v", sender.requests)
 	}
 	sender.mu.Unlock()

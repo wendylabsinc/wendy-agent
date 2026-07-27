@@ -204,11 +204,11 @@ type SendRequest struct {
 	Body     string                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
 	Severity NotificationSeverity   `protobuf:"varint,4,opt,name=severity,proto3,enum=wendy.system.v1.NotificationSeverity" json:"severity,omitempty"`
 	DeepLink string                 `protobuf:"bytes,5,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	// App-generated idempotency key within this source app and device.
-	SourceId      string           `protobuf:"bytes,6,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
-	Metadata      *structpb.Struct `protobuf:"bytes,7,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
+	NotificationId string           `protobuf:"bytes,6,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	Metadata       *structpb.Struct `protobuf:"bytes,7,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SendRequest) Reset() {
@@ -276,9 +276,9 @@ func (x *SendRequest) GetDeepLink() string {
 	return ""
 }
 
-func (x *SendRequest) GetSourceId() string {
+func (x *SendRequest) GetNotificationId() string {
 	if x != nil {
-		return x.SourceId
+		return x.NotificationId
 	}
 	return ""
 }
@@ -291,10 +291,9 @@ func (x *SendRequest) GetMetadata() *structpb.Struct {
 }
 
 type SendResponse struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Duplicate bool                   `protobuf:"varint,1,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
-	// Number of resolved recipients, capped at 10,000 by Cloud.
-	RecipientCount int32 `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	NotificationId string                 `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	RecipientCount int32                  `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -329,11 +328,11 @@ func (*SendResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_system_v1_notifications_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *SendResponse) GetDuplicate() bool {
+func (x *SendResponse) GetNotificationId() string {
 	if x != nil {
-		return x.Duplicate
+		return x.NotificationId
 	}
-	return false
+	return ""
 }
 
 func (x *SendResponse) GetRecipientCount() int32 {
@@ -351,18 +350,18 @@ const file_wendy_system_v1_notifications_proto_rawDesc = "" +
 	"\x14NotificationAudience\x12\x19\n" +
 	"\buser_ids\x18\x01 \x03(\tR\auserIds\x12\x19\n" +
 	"\bteam_ids\x18\x02 \x03(\x05R\ateamIds\x127\n" +
-	"\x05roles\x18\x03 \x03(\x0e2!.wendy.system.v1.OrganizationRoleR\x05roles\"\xbe\x02\n" +
+	"\x05roles\x18\x03 \x03(\x0e2!.wendy.system.v1.OrganizationRoleR\x05roles\"\xca\x02\n" +
 	"\vSendRequest\x12A\n" +
 	"\baudience\x18\x01 \x01(\v2%.wendy.system.v1.NotificationAudienceR\baudience\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12A\n" +
 	"\bseverity\x18\x04 \x01(\x0e2%.wendy.system.v1.NotificationSeverityR\bseverity\x12\x1b\n" +
-	"\tdeep_link\x18\x05 \x01(\tR\bdeepLink\x12\x1b\n" +
-	"\tsource_id\x18\x06 \x01(\tR\bsourceId\x128\n" +
+	"\tdeep_link\x18\x05 \x01(\tR\bdeepLink\x12'\n" +
+	"\x0fnotification_id\x18\x06 \x01(\tR\x0enotificationId\x128\n" +
 	"\bmetadata\x18\a \x01(\v2\x17.google.protobuf.StructH\x00R\bmetadata\x88\x01\x01B\v\n" +
-	"\t_metadata\"U\n" +
-	"\fSendResponse\x12\x1c\n" +
-	"\tduplicate\x18\x01 \x01(\bR\tduplicate\x12'\n" +
+	"\t_metadata\"`\n" +
+	"\fSendResponse\x12'\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\x12'\n" +
 	"\x0frecipient_count\x18\x02 \x01(\x05R\x0erecipientCount*\xc5\x01\n" +
 	"\x14NotificationSeverity\x12%\n" +
 	"!NOTIFICATION_SEVERITY_UNSPECIFIED\x10\x00\x12\x1e\n" +

@@ -44,13 +44,12 @@ message SendRequest {
   string body = 3;
   NotificationSeverity severity = 4;
   string deep_link = 5;
-  // App-generated idempotency key within this source app and device.
-  string source_id = 6;
+  // Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
+  string notification_id = 6;
   optional google.protobuf.Struct metadata = 7;
 }
 
 message SendResponse {
-  bool duplicate = 1;
-  // Number of resolved recipients, capped at 10,000 by Cloud.
+  string notification_id = 1;
   int32 recipient_count = 2;
 }

@@ -266,15 +266,16 @@ Notifications through its private app connection.
 
 The agent/daemon mounts `/run/wendy/system` read-only and injects
 `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
-app, shared by the app's entitled service containers and future Wendy System
+app, shared by the app's entitled service containers and future app-facing
 API capabilities. WendyKit exposes the typed operation as
 `WendyNotification.send(_:)`.
 
 The app supplies one or more user, organization team, or role selectors plus
-content, severity, deep link, an idempotency key, and optional metadata. All
-selector categories are unioned, normalized, and deduplicated. The app-facing
-API accepts at most 100 unique selectors; Cloud resolves at most 10,000
-recipients. Trusted container state supplies app identity; provisioned device
+content, severity, deep link, a caller-generated Notification UUID v4, and
+optional metadata. Reusing the UUID is idempotent. All selector categories are
+unioned, normalized, and deduplicated. The app-facing API accepts at most 100
+selector entries before deduplication; Cloud resolves at most 10,000 recipients. Trusted container
+state supplies Cloud `app_id`, stored as `created_by_app_id`; provisioned device
 mTLS supplies device and organization identity. Each send has a 15-second Cloud
 deadline.
 

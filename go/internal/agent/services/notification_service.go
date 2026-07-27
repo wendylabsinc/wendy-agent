@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -48,21 +49,21 @@ type NotificationSender interface {
 	CreateNotificationV2(context.Context, *cloudpb.CreateNotificationV2Request) (*cloudpb.CreateNotificationV2Response, error)
 }
 
-// SystemNotificationService serves one app-specific System API socket. The
-// source app ID comes from the Agent's container metadata and socket mount; it
+// SystemNotificationService serves one app-specific app-facing socket. The
+// trusted app ID comes from the Agent's container metadata and socket mount; it
 // is never accepted from workload-controlled input.
 type SystemNotificationService struct {
 	systempb.UnimplementedNotificationServiceServer
-	sourceAppID string
-	sender      NotificationSender
-	limiter     notificationRateLimiter
+	appID   string
+	sender  NotificationSender
+	limiter notificationRateLimiter
 }
 
-func NewSystemNotificationService(sourceAppID string, sender NotificationSender) *SystemNotificationService {
+func NewSystemNotificationService(appID string, sender NotificationSender) *SystemNotificationService {
 	return &SystemNotificationService{
-		sourceAppID: sourceAppID,
-		sender:      sender,
-		limiter:     newNotificationRateLimiter(10, time.Second),
+		appID:   appID,
+		sender:  sender,
+		limiter: newNotificationRateLimiter(10, time.Second),
 	}
 }
 
@@ -73,24 +74,24 @@ func (s *SystemNotificationService) Send(
 	if s.sender == nil {
 		return nil, status.Error(codes.Unavailable, "notification delivery is unavailable")
 	}
-	cloudAudience, err := validateNotificationSendRequest(req)
+	cloudAudience, notificationID, err := validateNotificationSendRequest(req)
 	if err != nil {
 		return nil, err
 	}
 	if !s.limiter.allow(time.Now()) {
-		return nil, status.Error(codes.ResourceExhausted, "notification rate exceeded; retry later with the same source_id")
+		return nil, status.Error(codes.ResourceExhausted, "notification rate exceeded; retry later with the same notification_id")
 	}
 
-	sourceAppID := s.sourceAppID
+	appID := s.appID
 	cloudRequest := &cloudpb.CreateNotificationV2Request{
-		Audience:    cloudAudience,
-		Title:       req.GetTitle(),
-		Body:        req.GetBody(),
-		Severity:    cloudNotificationSeverity(req.GetSeverity()),
-		DeepLink:    req.GetDeepLink(),
-		SourceId:    req.GetSourceId(),
-		Metadata:    req.GetMetadata(),
-		SourceAppId: &sourceAppID,
+		Audience:       cloudAudience,
+		Title:          req.GetTitle(),
+		Body:           req.GetBody(),
+		Severity:       cloudNotificationSeverity(req.GetSeverity()),
+		DeepLink:       req.GetDeepLink(),
+		NotificationId: notificationID,
+		Metadata:       req.GetMetadata(),
+		AppId:          &appID,
 	}
 	forwardCtx, cancel := notificationForwardContext(ctx)
 	defer cancel()
@@ -101,8 +102,11 @@ func (s *SystemNotificationService) Send(
 		}
 		return nil, status.Errorf(codes.Unavailable, "send notification: %v", err)
 	}
+	if response.GetNotificationId() != notificationID {
+		return nil, status.Error(codes.DataLoss, "Cloud returned a mismatched notification_id")
+	}
 	return &systempb.SendResponse{
-		Duplicate:      response.GetDuplicate(),
+		NotificationId: response.GetNotificationId(),
 		RecipientCount: response.GetRecipientCount(),
 	}, nil
 }
@@ -146,18 +150,19 @@ func (l *notificationRateLimiter) allow(now time.Time) bool {
 	return true
 }
 
-func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.NotificationAudience, error) {
+func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.NotificationAudience, string, error) {
 	if request == nil {
-		return nil, status.Error(codes.InvalidArgument, "request is required")
+		return nil, "", status.Error(codes.InvalidArgument, "request is required")
 	}
-	if !validNotificationIdentifier(request.GetSourceId(), 128) {
-		return nil, status.Error(codes.InvalidArgument, "source_id must contain 1...128 safe ASCII bytes")
+	notificationID, valid := canonicalNotificationUUIDv4(request.GetNotificationId())
+	if !valid {
+		return nil, "", status.Error(codes.InvalidArgument, "notification_id must be a UUID v4")
 	}
 	if !validNotificationText(request.GetTitle(), 120) {
-		return nil, status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "title must contain 1...120 printable UTF-8 bytes")
 	}
 	if !validNotificationText(request.GetBody(), 2000) {
-		return nil, status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "body must contain 1...2000 printable UTF-8 bytes")
 	}
 	switch request.GetSeverity() {
 	case systempb.NotificationSeverity_NOTIFICATION_SEVERITY_INFO,
@@ -165,24 +170,31 @@ func validateNotificationSendRequest(request *systempb.SendRequest) (*cloudpb.No
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_ERROR,
 		systempb.NotificationSeverity_NOTIFICATION_SEVERITY_CRITICAL:
 	default:
-		return nil, status.Error(codes.InvalidArgument, "severity is required")
+		return nil, "", status.Error(codes.InvalidArgument, "severity is required")
 	}
 	cloudAudience, err := normalizeNotificationAudience(request.GetAudience())
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if !validNotificationDeepLink(request.GetDeepLink()) {
-		return nil, status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
+		return nil, "", status.Error(codes.InvalidArgument, "deep_link must be an absolute wendy:// URI with a host, no userinfo, and at most 2048 bytes")
 	}
 	if metadata := request.GetMetadata(); metadata != nil && proto.Size(metadata) > maxNotificationMetadataBytes {
-		return nil, status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
+		return nil, "", status.Errorf(codes.InvalidArgument, "metadata must be at most %d encoded bytes", maxNotificationMetadataBytes)
 	}
-	return cloudAudience, nil
+	return cloudAudience, notificationID, nil
 }
 
 func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cloudpb.NotificationAudience, error) {
 	if audience == nil {
 		return nil, status.Error(codes.InvalidArgument, "audience is required")
+	}
+	rawSelectorCount := len(audience.GetUserIds()) + len(audience.GetTeamIds()) + len(audience.GetRoles())
+	if rawSelectorCount == 0 {
+		return nil, status.Error(codes.InvalidArgument, "audience must contain at least one selector")
+	}
+	if rawSelectorCount > maxNotificationAudienceSelectors {
+		return nil, status.Errorf(codes.InvalidArgument, "audience must contain at most %d selectors", maxNotificationAudienceSelectors)
 	}
 
 	mapped := &cloudpb.NotificationAudience{}
@@ -229,13 +241,6 @@ func normalizeNotificationAudience(audience *systempb.NotificationAudience) (*cl
 		mapped.Roles = append(mapped.Roles, cloudOrganizationRole(role))
 	}
 
-	selectorCount := len(mapped.UserIds) + len(mapped.TeamIds) + len(mapped.Roles)
-	if selectorCount == 0 {
-		return nil, status.Error(codes.InvalidArgument, "audience must contain at least one selector")
-	}
-	if selectorCount > maxNotificationAudienceSelectors {
-		return nil, status.Errorf(codes.InvalidArgument, "audience must contain at most %d selectors", maxNotificationAudienceSelectors)
-	}
 	return mapped, nil
 }
 
@@ -269,6 +274,21 @@ func cloudNotificationSeverity(severity systempb.NotificationSeverity) cloudpb.N
 	default:
 		return cloudpb.NotificationSeverity_NOTIFICATION_SEVERITY_UNSPECIFIED
 	}
+}
+
+func canonicalNotificationUUIDv4(value string) (string, bool) {
+	if len(value) != 36 {
+		return "", false
+	}
+	identifier, err := uuid.Parse(value)
+	if err != nil || identifier.Version() != 4 || identifier.Variant() != uuid.RFC4122 {
+		return "", false
+	}
+	canonical := identifier.String()
+	if !strings.EqualFold(value, canonical) {
+		return "", false
+	}
+	return canonical, true
 }
 
 func validNotificationIdentifier(value string, maximumBytes int) bool {
@@ -472,8 +492,8 @@ func (s *CloudNotificationSender) CreateNotificationV2(
 	response, err := cloudpb.NewNotificationServiceClient(connection).CreateNotificationV2(proofCtx, request)
 	if err != nil {
 		s.logger.Warn("app-originated notification delivery failed",
-			zap.String("app_id", request.GetSourceAppId()),
-			zap.String("source_id", request.GetSourceId()),
+			zap.String("app_id", request.GetAppId()),
+			zap.String("notification_id", request.GetNotificationId()),
 			zap.Error(err))
 		return nil, err
 	}

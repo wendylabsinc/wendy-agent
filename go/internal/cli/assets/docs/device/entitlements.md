@@ -32,12 +32,12 @@ Wendy Cloud and Companion. WendyKit exposes this as
 | Socket restoration | Recreated from persisted container labels after agent/daemon restart |
 
 The app supplies one or more user, organization team, or role selectors plus
-content, severity, deep link, an idempotency key, and optional metadata. All
-selector categories are unioned, normalized, and deduplicated. The app-facing
-API accepts at most 100 unique selectors; Cloud resolves at most 10,000
-recipients. The agent/daemon binds the request to its trusted app identity, and
-Wendy Cloud derives device and organization identity from device
-mTLS. Apps without the entitlement receive no private app connection mount,
+content, severity, deep link, a caller-generated Notification UUID v4, and
+optional metadata. Reusing the UUID is idempotent. All selector categories are
+unioned, normalized, and deduplicated. The app-facing API accepts at most 100
+selector entries before deduplication; Cloud resolves at most 10,000 recipients. The agent/daemon
+stamps trusted `app_id`; Wendy Cloud stores it as `created_by_app_id` and derives
+device and organization identity from device mTLS. Apps without the entitlement receive no private app connection mount,
 environment variable, or socket group. The full administrative Agent socket
 remains separate and requires `admin`.
 

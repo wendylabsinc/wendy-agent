@@ -35,15 +35,15 @@ The agent forwards the request to Cloud with a 15-second deadline.
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
-| `source_id` | `string` | App-generated idempotency key scoped to this app and device. |
+| `notification_id` | `string` | Caller-generated UUID v4. Cloud returns its canonical lowercase form; reuse is idempotent. |
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
 
 #### `NotificationAudience`
 
 The app-facing and Cloud messages use the same plural selector shape. All three
-fields have union semantics. Selectors are normalized and deduplicated before
-delivery, with at most 100 unique selectors total. Cloud is authoritative and
-resolves at most 10,000 recipients.
+fields have union semantics. At most 100 selector entries may be supplied across
+the three lists. Cloud normalizes and deduplicates them, remains authoritative
+for recipient resolution, and resolves at most 10,000 recipients.
 
 | Field | Type | Description |
 |---|---|---|
@@ -58,8 +58,33 @@ receives one Notification.
 
 | Field | Type | Description |
 |---|---|---|
-| `duplicate` | `bool` | Whether the `source_id` was already accepted without another delivery. |
+| `notification_id` | `string` | Canonical lowercase UUID accepted by Cloud. |
 | `recipient_count` | `int32` | Number of resolved recipients. |
+
+## `Notification` message
+
+Fields 1–8 are the stable legacy Companion wire contract. V2 adds canonical
+identity, content, audience, and `created_by` attribution without changing those
+legacy fields.
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `int32` | Legacy numeric ID. |
+| `user_id` | `string` | Recipient user ID in legacy and per-user read views. |
+| `organization_id` | `int32` | Organization ID. |
+| `body` | `string` | Notification body. |
+| `severity` | `NotificationSeverity` | Severity level. |
+| `related_entities` | `Struct` | Legacy structured context. |
+| `created_at` | `Timestamp` | Creation time. |
+| `deleted_at` | `optional Timestamp` | Soft-deletion time. |
+| `title` | `string` | Notification title. |
+| `deep_link` | `string` | Absolute `wendy://` URI. |
+| `notification_id` | `optional string` | Canonical caller-generated UUID v4; absent on legacy records. |
+| `metadata` | `Struct` | Structured JSON-compatible metadata. |
+| `audience` | `optional NotificationAudience` | Original normalized selector union. |
+| `created_by_user_id` | `optional string` | Authenticated user that created the Notification. |
+| `created_by_asset_id` | `optional int32` | Authenticated device asset that created the Notification. |
+| `created_by_app_id` | `optional string` | Trusted app identity stamped by the Wendy agent. |
 
 ## Cloud API methods
 
@@ -80,10 +105,10 @@ Dashboard and MCP clients.
 CreateNotificationV2(CreateNotificationV2Request) → CreateNotificationV2Response
 ```
 
-Creates one canonical Notification per resolved recipient. User-authenticated
-callers provide `organization_id`. Provisioned-device callers omit it because
-Cloud derives the organization and device from their certificate; the Wendy
-agent supplies `source_app_id` from trusted container state.
+Creates a canonical Notification for the resolved recipient union.
+User-authenticated callers provide `organization_id`. Provisioned-device callers
+omit it because Cloud derives the organization and device from their certificate;
+the Wendy agent stamps `app_id` from trusted container state.
 
 #### `CreateNotificationV2Request`
 
@@ -95,16 +120,15 @@ agent supplies `source_app_id` from trusted container state.
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
-| `source_id` | `string` | Caller-generated idempotency key within the authenticated source namespace. |
+| `notification_id` | `string` | Caller-generated UUID v4; Cloud stores and returns canonical lowercase form. |
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
-| `source_app_id` | `optional string` | Required for provisioned-device calls and stamped by the Wendy agent. |
+| `app_id` | `optional string` | Required for provisioned-device calls and stamped from trusted app identity by the Wendy agent. |
 
 #### `CreateNotificationV2Response`
 
 | Field | Type | Description |
 |---|---|---|
-| `notifications` | `repeated Notification` | One canonical Notification per resolved recipient. |
-| `duplicate` | `bool` | Whether the `source_id` was already accepted without another delivery. |
+| `notification_id` | `string` | Canonical lowercase UUID accepted by Cloud. |
 | `recipient_count` | `int32` | Number of resolved recipients, capped by Cloud at 10,000. |
 
 ---

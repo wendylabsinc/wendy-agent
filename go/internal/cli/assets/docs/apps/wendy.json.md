@@ -398,14 +398,14 @@ API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
 gRPC directly.
 
 The request supplies one or more user, organization team, or organization role
-selectors, plus title, body, severity, deep link, app-generated `source_id`, and
-optional structured metadata. Selector categories have union semantics. The
-agent normalizes and deduplicates them and permits at most 100 unique selectors;
-Cloud resolves at most 10,000 recipients. The socket handler binds
-`source_app_id` from trusted
-container metadata. Wendy Cloud derives device and organization identity from
-the provisioned device certificate; none of those identities can be supplied
-by the app.
+selectors, plus title, body, severity, deep link, a caller-generated
+`notification_id` UUID v4, and optional structured metadata. Selector categories
+have union semantics. The agent accepts at most 100 selector entries, then
+normalizes and deduplicates them; Cloud resolves at most 10,000 recipients. The socket
+handler stamps Cloud `app_id` from trusted container metadata. Wendy Cloud stores
+that identity as `created_by_app_id` and derives `created_by_asset_id` and
+organization identity from the provisioned device certificate; none of those
+identities can be supplied by the app.
 
 Each send has a 15-second Cloud deadline. The per-app host directory lives under
 `/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon

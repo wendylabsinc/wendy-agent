@@ -80,8 +80,8 @@ func (NotificationSeverity) EnumDescriptor() ([]byte, []int) {
 
 type NotificationAudience struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Selectors have union semantics. Cloud normalizes and deduplicates them,
-	// accepts at most 100 selectors total, and resolves at most 10,000 recipients.
+	// Cloud deduplicates these selectors, permits at most 100 entries across all
+	// three lists, and caps the resolved recipient union at 10,000 users.
 	UserIds       []string           `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
 	TeamIds       []int32            `protobuf:"varint,2,rep,packed,name=team_ids,json=teamIds,proto3" json:"team_ids,omitempty"`
 	Roles         []OrganizationRole `protobuf:"varint,3,rep,packed,name=roles,proto3,enum=wendycloud.v1.OrganizationRole" json:"roles,omitempty"`
@@ -143,24 +143,24 @@ func (x *NotificationAudience) GetRoles() []OrganizationRole {
 type Notification struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Fields 1 through 8 are the legacy Companion contract and must remain stable.
-	Id              int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	UserId          string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrganizationId  int32                  `protobuf:"varint,3,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	Body            string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Severity        NotificationSeverity   `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
-	RelatedEntities *structpb.Struct       `protobuf:"bytes,6,opt,name=related_entities,json=relatedEntities,proto3" json:"related_entities,omitempty"`
-	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	DeletedAt       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=deleted_at,json=deletedAt,proto3,oneof" json:"deleted_at,omitempty"`
-	Title           string                 `protobuf:"bytes,9,opt,name=title,proto3" json:"title,omitempty"`
-	DeepLink        string                 `protobuf:"bytes,10,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	SourceId        *string                `protobuf:"bytes,11,opt,name=source_id,json=sourceId,proto3,oneof" json:"source_id,omitempty"`
-	Metadata        *structpb.Struct       `protobuf:"bytes,12,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Audience        *NotificationAudience  `protobuf:"bytes,13,opt,name=audience,proto3,oneof" json:"audience,omitempty"`
-	SourceUserId    *string                `protobuf:"bytes,14,opt,name=source_user_id,json=sourceUserId,proto3,oneof" json:"source_user_id,omitempty"`
-	SourceAssetId   *int32                 `protobuf:"varint,15,opt,name=source_asset_id,json=sourceAssetId,proto3,oneof" json:"source_asset_id,omitempty"`
-	SourceAppId     *string                `protobuf:"bytes,16,opt,name=source_app_id,json=sourceAppId,proto3,oneof" json:"source_app_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Id               int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	UserId           string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrganizationId   int32                  `protobuf:"varint,3,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	Body             string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Severity         NotificationSeverity   `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
+	RelatedEntities  *structpb.Struct       `protobuf:"bytes,6,opt,name=related_entities,json=relatedEntities,proto3" json:"related_entities,omitempty"`
+	CreatedAt        *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	DeletedAt        *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=deleted_at,json=deletedAt,proto3,oneof" json:"deleted_at,omitempty"`
+	Title            string                 `protobuf:"bytes,9,opt,name=title,proto3" json:"title,omitempty"`
+	DeepLink         string                 `protobuf:"bytes,10,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
+	NotificationId   *string                `protobuf:"bytes,11,opt,name=notification_id,json=notificationId,proto3,oneof" json:"notification_id,omitempty"`
+	Metadata         *structpb.Struct       `protobuf:"bytes,12,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Audience         *NotificationAudience  `protobuf:"bytes,13,opt,name=audience,proto3,oneof" json:"audience,omitempty"`
+	CreatedByUserId  *string                `protobuf:"bytes,14,opt,name=created_by_user_id,json=createdByUserId,proto3,oneof" json:"created_by_user_id,omitempty"`
+	CreatedByAssetId *int32                 `protobuf:"varint,15,opt,name=created_by_asset_id,json=createdByAssetId,proto3,oneof" json:"created_by_asset_id,omitempty"`
+	CreatedByAppId   *string                `protobuf:"bytes,16,opt,name=created_by_app_id,json=createdByAppId,proto3,oneof" json:"created_by_app_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Notification) Reset() {
@@ -263,9 +263,9 @@ func (x *Notification) GetDeepLink() string {
 	return ""
 }
 
-func (x *Notification) GetSourceId() string {
-	if x != nil && x.SourceId != nil {
-		return *x.SourceId
+func (x *Notification) GetNotificationId() string {
+	if x != nil && x.NotificationId != nil {
+		return *x.NotificationId
 	}
 	return ""
 }
@@ -284,23 +284,23 @@ func (x *Notification) GetAudience() *NotificationAudience {
 	return nil
 }
 
-func (x *Notification) GetSourceUserId() string {
-	if x != nil && x.SourceUserId != nil {
-		return *x.SourceUserId
+func (x *Notification) GetCreatedByUserId() string {
+	if x != nil && x.CreatedByUserId != nil {
+		return *x.CreatedByUserId
 	}
 	return ""
 }
 
-func (x *Notification) GetSourceAssetId() int32 {
-	if x != nil && x.SourceAssetId != nil {
-		return *x.SourceAssetId
+func (x *Notification) GetCreatedByAssetId() int32 {
+	if x != nil && x.CreatedByAssetId != nil {
+		return *x.CreatedByAssetId
 	}
 	return 0
 }
 
-func (x *Notification) GetSourceAppId() string {
-	if x != nil && x.SourceAppId != nil {
-		return *x.SourceAppId
+func (x *Notification) GetCreatedByAppId() string {
+	if x != nil && x.CreatedByAppId != nil {
+		return *x.CreatedByAppId
 	}
 	return ""
 }
@@ -387,17 +387,20 @@ type CreateNotificationV2Request struct {
 	// derives the organization from their certificate.
 	OrganizationId *int32                `protobuf:"varint,1,opt,name=organization_id,json=organizationId,proto3,oneof" json:"organization_id,omitempty"`
 	Audience       *NotificationAudience `protobuf:"bytes,2,opt,name=audience,proto3" json:"audience,omitempty"`
-	Title          string                `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
-	Body           string                `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Severity       NotificationSeverity  `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
+	// REFACTOR: Request content intentionally duplicates Notification content because
+	// Notification must retain legacy flat fields 1-8 for Companion wire compatibility.
+	// A shared content message can be introduced only in a future version that migrates them.
+	Title    string               `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	Body     string               `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Severity NotificationSeverity `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
 	// Absolute wendy:// URI understood by Wendy clients.
 	DeepLink string `protobuf:"bytes,6,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	// App/client-generated idempotency key within the authenticated source namespace.
-	SourceId string           `protobuf:"bytes,7,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
-	Metadata *structpb.Struct `protobuf:"bytes,8,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
+	// Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
+	NotificationId string           `protobuf:"bytes,7,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	Metadata       *structpb.Struct `protobuf:"bytes,8,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
 	// Required for provisioned-device callers and stamped by the Wendy agent/daemon.
 	// Cloud validates that this app belongs to the authenticated organization and device.
-	SourceAppId   *string `protobuf:"bytes,9,opt,name=source_app_id,json=sourceAppId,proto3,oneof" json:"source_app_id,omitempty"`
+	AppId         *string `protobuf:"bytes,9,opt,name=app_id,json=appId,proto3,oneof" json:"app_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -474,9 +477,9 @@ func (x *CreateNotificationV2Request) GetDeepLink() string {
 	return ""
 }
 
-func (x *CreateNotificationV2Request) GetSourceId() string {
+func (x *CreateNotificationV2Request) GetNotificationId() string {
 	if x != nil {
-		return x.SourceId
+		return x.NotificationId
 	}
 	return ""
 }
@@ -488,21 +491,17 @@ func (x *CreateNotificationV2Request) GetMetadata() *structpb.Struct {
 	return nil
 }
 
-func (x *CreateNotificationV2Request) GetSourceAppId() string {
-	if x != nil && x.SourceAppId != nil {
-		return *x.SourceAppId
+func (x *CreateNotificationV2Request) GetAppId() string {
+	if x != nil && x.AppId != nil {
+		return *x.AppId
 	}
 	return ""
 }
 
 type CreateNotificationV2Response struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// One canonical per-user Notification is returned for every resolved recipient.
-	Notifications []*Notification `protobuf:"bytes,1,rep,name=notifications,proto3" json:"notifications,omitempty"`
-	// True when source_id had already been accepted and no new Notifications were delivered.
-	Duplicate bool `protobuf:"varint,2,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
-	// Number of resolved recipients, capped at 10,000 by Cloud.
-	RecipientCount int32 `protobuf:"varint,3,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	NotificationId string                 `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	RecipientCount int32                  `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -537,18 +536,11 @@ func (*CreateNotificationV2Response) Descriptor() ([]byte, []int) {
 	return file_cloud_notifications_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *CreateNotificationV2Response) GetNotifications() []*Notification {
+func (x *CreateNotificationV2Response) GetNotificationId() string {
 	if x != nil {
-		return x.Notifications
+		return x.NotificationId
 	}
-	return nil
-}
-
-func (x *CreateNotificationV2Response) GetDuplicate() bool {
-	if x != nil {
-		return x.Duplicate
-	}
-	return false
+	return ""
 }
 
 func (x *CreateNotificationV2Response) GetRecipientCount() int32 {
@@ -1027,7 +1019,7 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x14NotificationAudience\x12\x19\n" +
 	"\buser_ids\x18\x01 \x03(\tR\auserIds\x12\x19\n" +
 	"\bteam_ids\x18\x02 \x03(\x05R\ateamIds\x125\n" +
-	"\x05roles\x18\x03 \x03(\x0e2\x1f.wendycloud.v1.OrganizationRoleR\x05roles\"\xa8\x06\n" +
+	"\x05roles\x18\x03 \x03(\x0e2\x1f.wendycloud.v1.OrganizationRoleR\x05roles\"\xdb\x06\n" +
 	"\fNotification\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x05R\x02id\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12'\n" +
@@ -1041,43 +1033,41 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"deleted_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampH\x00R\tdeletedAt\x88\x01\x01\x12\x14\n" +
 	"\x05title\x18\t \x01(\tR\x05title\x12\x1b\n" +
 	"\tdeep_link\x18\n" +
-	" \x01(\tR\bdeepLink\x12 \n" +
-	"\tsource_id\x18\v \x01(\tH\x01R\bsourceId\x88\x01\x01\x123\n" +
+	" \x01(\tR\bdeepLink\x12,\n" +
+	"\x0fnotification_id\x18\v \x01(\tH\x01R\x0enotificationId\x88\x01\x01\x123\n" +
 	"\bmetadata\x18\f \x01(\v2\x17.google.protobuf.StructR\bmetadata\x12D\n" +
-	"\baudience\x18\r \x01(\v2#.wendycloud.v1.NotificationAudienceH\x02R\baudience\x88\x01\x01\x12)\n" +
-	"\x0esource_user_id\x18\x0e \x01(\tH\x03R\fsourceUserId\x88\x01\x01\x12+\n" +
-	"\x0fsource_asset_id\x18\x0f \x01(\x05H\x04R\rsourceAssetId\x88\x01\x01\x12'\n" +
-	"\rsource_app_id\x18\x10 \x01(\tH\x05R\vsourceAppId\x88\x01\x01B\r\n" +
-	"\v_deleted_atB\f\n" +
-	"\n" +
-	"_source_idB\v\n" +
-	"\t_audienceB\x11\n" +
-	"\x0f_source_user_idB\x12\n" +
-	"\x10_source_asset_idB\x10\n" +
-	"\x0e_source_app_id\"\xf6\x01\n" +
+	"\baudience\x18\r \x01(\v2#.wendycloud.v1.NotificationAudienceH\x02R\baudience\x88\x01\x01\x120\n" +
+	"\x12created_by_user_id\x18\x0e \x01(\tH\x03R\x0fcreatedByUserId\x88\x01\x01\x122\n" +
+	"\x13created_by_asset_id\x18\x0f \x01(\x05H\x04R\x10createdByAssetId\x88\x01\x01\x12.\n" +
+	"\x11created_by_app_id\x18\x10 \x01(\tH\x05R\x0ecreatedByAppId\x88\x01\x01B\r\n" +
+	"\v_deleted_atB\x12\n" +
+	"\x10_notification_idB\v\n" +
+	"\t_audienceB\x15\n" +
+	"\x13_created_by_user_idB\x16\n" +
+	"\x14_created_by_asset_idB\x14\n" +
+	"\x12_created_by_app_id\"\xf6\x01\n" +
 	"\x19CreateNotificationRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\x05R\x0eorganizationId\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12?\n" +
 	"\bseverity\x18\x04 \x01(\x0e2#.wendycloud.v1.NotificationSeverityR\bseverity\x12B\n" +
-	"\x10related_entities\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x0frelatedEntities\"\xc7\x03\n" +
+	"\x10related_entities\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x0frelatedEntities\"\xbf\x03\n" +
 	"\x1bCreateNotificationV2Request\x12,\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05H\x00R\x0eorganizationId\x88\x01\x01\x12?\n" +
 	"\baudience\x18\x02 \x01(\v2#.wendycloud.v1.NotificationAudienceR\baudience\x12\x14\n" +
 	"\x05title\x18\x03 \x01(\tR\x05title\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12?\n" +
 	"\bseverity\x18\x05 \x01(\x0e2#.wendycloud.v1.NotificationSeverityR\bseverity\x12\x1b\n" +
-	"\tdeep_link\x18\x06 \x01(\tR\bdeepLink\x12\x1b\n" +
-	"\tsource_id\x18\a \x01(\tR\bsourceId\x128\n" +
-	"\bmetadata\x18\b \x01(\v2\x17.google.protobuf.StructH\x01R\bmetadata\x88\x01\x01\x12'\n" +
-	"\rsource_app_id\x18\t \x01(\tH\x02R\vsourceAppId\x88\x01\x01B\x12\n" +
+	"\tdeep_link\x18\x06 \x01(\tR\bdeepLink\x12'\n" +
+	"\x0fnotification_id\x18\a \x01(\tR\x0enotificationId\x128\n" +
+	"\bmetadata\x18\b \x01(\v2\x17.google.protobuf.StructH\x01R\bmetadata\x88\x01\x01\x12\x1a\n" +
+	"\x06app_id\x18\t \x01(\tH\x02R\x05appId\x88\x01\x01B\x12\n" +
 	"\x10_organization_idB\v\n" +
-	"\t_metadataB\x10\n" +
-	"\x0e_source_app_id\"\xa8\x01\n" +
-	"\x1cCreateNotificationV2Response\x12A\n" +
-	"\rnotifications\x18\x01 \x03(\v2\x1b.wendycloud.v1.NotificationR\rnotifications\x12\x1c\n" +
-	"\tduplicate\x18\x02 \x01(\bR\tduplicate\x12'\n" +
-	"\x0frecipient_count\x18\x03 \x01(\x05R\x0erecipientCount\"\xb9\x02\n" +
+	"\t_metadataB\t\n" +
+	"\a_app_id\"p\n" +
+	"\x1cCreateNotificationV2Response\x12'\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\x12'\n" +
+	"\x0frecipient_count\x18\x02 \x01(\x05R\x0erecipientCount\"\xb9\x02\n" +
 	"\x18ListNotificationsRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
@@ -1170,28 +1160,27 @@ var file_cloud_notifications_proto_depIdxs = []int32{
 	1,  // 9: wendycloud.v1.CreateNotificationV2Request.audience:type_name -> wendycloud.v1.NotificationAudience
 	0,  // 10: wendycloud.v1.CreateNotificationV2Request.severity:type_name -> wendycloud.v1.NotificationSeverity
 	16, // 11: wendycloud.v1.CreateNotificationV2Request.metadata:type_name -> google.protobuf.Struct
-	2,  // 12: wendycloud.v1.CreateNotificationV2Response.notifications:type_name -> wendycloud.v1.Notification
-	0,  // 13: wendycloud.v1.ListNotificationsRequest.severity_filter:type_name -> wendycloud.v1.NotificationSeverity
-	2,  // 14: wendycloud.v1.ListNotificationsResponse.notification:type_name -> wendycloud.v1.Notification
-	3,  // 15: wendycloud.v1.NotificationService.CreateNotification:input_type -> wendycloud.v1.CreateNotificationRequest
-	4,  // 16: wendycloud.v1.NotificationService.CreateNotificationV2:input_type -> wendycloud.v1.CreateNotificationV2Request
-	6,  // 17: wendycloud.v1.NotificationService.ListNotifications:input_type -> wendycloud.v1.ListNotificationsRequest
-	8,  // 18: wendycloud.v1.NotificationService.GetNotification:input_type -> wendycloud.v1.GetNotificationRequest
-	9,  // 19: wendycloud.v1.NotificationService.DeleteNotification:input_type -> wendycloud.v1.DeleteNotificationRequest
-	11, // 20: wendycloud.v1.NotificationService.MarkAsRead:input_type -> wendycloud.v1.MarkAsReadRequest
-	13, // 21: wendycloud.v1.NotificationService.GetUnreadCount:input_type -> wendycloud.v1.GetUnreadCountRequest
-	2,  // 22: wendycloud.v1.NotificationService.CreateNotification:output_type -> wendycloud.v1.Notification
-	5,  // 23: wendycloud.v1.NotificationService.CreateNotificationV2:output_type -> wendycloud.v1.CreateNotificationV2Response
-	7,  // 24: wendycloud.v1.NotificationService.ListNotifications:output_type -> wendycloud.v1.ListNotificationsResponse
-	2,  // 25: wendycloud.v1.NotificationService.GetNotification:output_type -> wendycloud.v1.Notification
-	10, // 26: wendycloud.v1.NotificationService.DeleteNotification:output_type -> wendycloud.v1.DeleteNotificationResponse
-	12, // 27: wendycloud.v1.NotificationService.MarkAsRead:output_type -> wendycloud.v1.MarkAsReadResponse
-	14, // 28: wendycloud.v1.NotificationService.GetUnreadCount:output_type -> wendycloud.v1.GetUnreadCountResponse
-	22, // [22:29] is the sub-list for method output_type
-	15, // [15:22] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	0,  // 12: wendycloud.v1.ListNotificationsRequest.severity_filter:type_name -> wendycloud.v1.NotificationSeverity
+	2,  // 13: wendycloud.v1.ListNotificationsResponse.notification:type_name -> wendycloud.v1.Notification
+	3,  // 14: wendycloud.v1.NotificationService.CreateNotification:input_type -> wendycloud.v1.CreateNotificationRequest
+	4,  // 15: wendycloud.v1.NotificationService.CreateNotificationV2:input_type -> wendycloud.v1.CreateNotificationV2Request
+	6,  // 16: wendycloud.v1.NotificationService.ListNotifications:input_type -> wendycloud.v1.ListNotificationsRequest
+	8,  // 17: wendycloud.v1.NotificationService.GetNotification:input_type -> wendycloud.v1.GetNotificationRequest
+	9,  // 18: wendycloud.v1.NotificationService.DeleteNotification:input_type -> wendycloud.v1.DeleteNotificationRequest
+	11, // 19: wendycloud.v1.NotificationService.MarkAsRead:input_type -> wendycloud.v1.MarkAsReadRequest
+	13, // 20: wendycloud.v1.NotificationService.GetUnreadCount:input_type -> wendycloud.v1.GetUnreadCountRequest
+	2,  // 21: wendycloud.v1.NotificationService.CreateNotification:output_type -> wendycloud.v1.Notification
+	5,  // 22: wendycloud.v1.NotificationService.CreateNotificationV2:output_type -> wendycloud.v1.CreateNotificationV2Response
+	7,  // 23: wendycloud.v1.NotificationService.ListNotifications:output_type -> wendycloud.v1.ListNotificationsResponse
+	2,  // 24: wendycloud.v1.NotificationService.GetNotification:output_type -> wendycloud.v1.Notification
+	10, // 25: wendycloud.v1.NotificationService.DeleteNotification:output_type -> wendycloud.v1.DeleteNotificationResponse
+	12, // 26: wendycloud.v1.NotificationService.MarkAsRead:output_type -> wendycloud.v1.MarkAsReadResponse
+	14, // 27: wendycloud.v1.NotificationService.GetUnreadCount:output_type -> wendycloud.v1.GetUnreadCountResponse
+	21, // [21:28] is the sub-list for method output_type
+	14, // [14:21] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_cloud_notifications_proto_init() }
