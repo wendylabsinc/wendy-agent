@@ -165,6 +165,24 @@ guide — `wendy` can introspect the live ROS 2 graph on the robot with no SSH.
 
 ## Next Steps
 
+### Drive the G1 from your browser
+
+The fastest way to see the robot do something: the `g1-rc` template deploys
+a ready-made remote control — live camera view, touch joystick, posture and
+arm-gesture buttons, and a latching E-STOP — as one app:
+
+```bash
+wendy init --app-id my-g1-rc --template g1-rc --language python
+cd my-g1-rc
+wendy run --device 192.168.123.164
+```
+
+Then open `http://192.168.123.164:3500`, press **stand** → **ready-to-walk**,
+and drive. The scaffolded project's README covers the UI, the safety model,
+and how to customize it. First sessions: keep the robot on its gantry.
+
+### Build your own apps
+
 - [Hello World in Python](/docs/guides/tutorials/python/hello-world)
 - [ROS 2 on Wendy devices](/docs/integrations/ros2)
 - [App entitlements](/docs/device/entitlements)
