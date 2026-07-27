@@ -29,6 +29,7 @@ import (
 	"github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -577,10 +578,32 @@ func layerMediaType(compression agentpb.RunContainerLayerHeader_CompressionType,
 // 1 MiB is generous headroom while still rejecting an abusive payload.
 const maxImageConfigBytes = 1 << 20
 
+// assembleLeaseExpiration bounds how long the assemble lease keeps the config
+// and manifest blobs alive before the image record roots them. Only a backstop
+// for an agent that dies mid-assemble; the happy path releases immediately.
+const assembleLeaseExpiration = 30 * time.Minute
+
 func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error {
 	ctx = c.withNamespace(ctx)
+	cleanupCtx := c.withNamespace(context.Background())
 	cs := c.client.ContentStore()
 	is := c.client.ImageService()
+
+	// Config and manifest are unreferenced between their writes and is.Create,
+	// and containerd's GC scheduler collects on any lease release. Hold a lease
+	// across the whole assemble so nothing can be reaped inside that window.
+	ctx, doneLease, err := c.client.WithLease(ctx, leases.WithExpiration(assembleLeaseExpiration))
+	if err != nil {
+		return fmt.Errorf("creating assemble lease: %w", err)
+	}
+	defer func() {
+		if err := doneLease(cleanupCtx); err != nil {
+			c.logger.Warn("Failed to release assemble lease; relying on expiration backstop",
+				zap.Duration("expiration", assembleLeaseExpiration),
+				zap.Error(err),
+			)
+		}
+	}()
 
 	// Store the image under the SAME normalized name that
 	// CreateContainerWithProgress uses for its GetImage lookup. Without this,
@@ -679,15 +702,38 @@ func (c *Client) AssembleImage(ctx context.Context, imageName string, layers []*
 	}
 	manifestDigest := digest.FromBytes(manifestData)
 
-	// Write manifest to content store.
+	// Write manifest to content store. The gc.ref.content.* labels are what make
+	// the config and layers reachable from the manifest — without them the image
+	// record roots only the manifest itself and the config blob is collected on
+	// the next GC sweep, leaving a container with no Cmd/Env/WorkingDir.
 	manifestDesc := ocispec.Descriptor{
 		MediaType: ocispec.MediaTypeImageManifest,
 		Digest:    manifestDigest,
 		Size:      int64(len(manifestData)),
 	}
-	if err := content.WriteBlob(ctx, cs, manifestDigest.String(), bytes.NewReader(manifestData), manifestDesc); err != nil {
+	manifestLabels := map[string]string{
+		"containerd.io/gc.ref.content.config": configDigest.String(),
+	}
+	for i, l := range layerDescs {
+		manifestLabels["containerd.io/gc.ref.content.l."+strconv.Itoa(i)] = l.Digest.String()
+	}
+	if err := content.WriteBlob(ctx, cs, manifestDigest.String(), bytes.NewReader(manifestData), manifestDesc,
+		content.WithLabels(manifestLabels)); err != nil {
 		if !errdefs.IsAlreadyExists(err) {
 			return fmt.Errorf("writing manifest blob: %w", err)
+		}
+		// An identical manifest written by an older agent carries no gc.ref
+		// labels, so its config stays unreachable. Apply them to the existing
+		// blob rather than leaving the device permanently poisoned.
+		fieldpaths := make([]string, 0, len(manifestLabels))
+		for k := range manifestLabels {
+			fieldpaths = append(fieldpaths, "labels."+k)
+		}
+		if _, uerr := cs.Update(ctx, content.Info{
+			Digest: manifestDigest,
+			Labels: manifestLabels,
+		}, fieldpaths...); uerr != nil {
+			return fmt.Errorf("labelling existing manifest blob: %w", uerr)
 		}
 	}
 
