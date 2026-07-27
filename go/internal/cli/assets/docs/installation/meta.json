@@ -6,6 +6,7 @@
     "wendyos-raspberry-pi-5",
     "linux",
     "wendy-agent-macos",
+    "wendy-agent-unitree-g1",
     "wendy-lite-esp32"
   ]
 }

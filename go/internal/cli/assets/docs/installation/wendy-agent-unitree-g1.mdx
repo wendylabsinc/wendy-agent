@@ -1,0 +1,170 @@
+---
+title: Unitree G1
+description: Install wendy-agent on the Unitree G1's onboard computer to deploy and manage apps with Wendy
+---
+
+## Overview
+
+The Unitree G1 EDU ships with an onboard development computer — an ARM64 NVIDIA
+Jetson running Ubuntu — wired into the robot's internal network. Installing
+`wendy-agent` on it turns the G1 into a managed Wendy device: you can deploy
+containerized apps to it with `wendy run`, stream logs and telemetry, and talk
+to the robot's control stack (DDS / `unitree_sdk2`) from your apps.
+
+This guide installs **only the agent** on the G1's existing system. It does not
+reflash anything — the robot's own control software, balance controller, and
+Unitree services are untouched, and apps you deploy run in containers alongside
+them.
+
+## Requirements
+
+- A Unitree G1 EDU (the model with the onboard development computer)
+- The Wendy CLI on your developer machine ([setup guide](/docs/installation/developer-machine-setup))
+- An Ethernet cable (and a USB-C-to-Ethernet adapter if your machine has no port)
+- The SSH credentials for your robot's development computer (see your Unitree
+  documentation; the factory default user is `unitree`)
+
+## Step 1: Connect to the robot
+
+Connect an Ethernet cable from your developer machine to the RJ45 port on the
+G1. The robot's internal network uses the fixed subnet `192.168.123.0/24`, and
+the development computer is at **`192.168.123.164`**.
+
+Give your machine a static address on that subnet.
+
+On macOS (replace `en5` with your adapter's interface):
+
+```bash
+sudo ifconfig en5 inet 192.168.123.99 netmask 255.255.255.0
+```
+
+On Linux:
+
+```bash
+sudo ip addr add 192.168.123.99/24 dev eth0
+```
+
+Verify you can reach the robot:
+
+```bash
+ping 192.168.123.164
+```
+
+## Step 2: Share internet with the robot
+
+Fresh from the factory, the G1's development computer has **no internet
+access** — its default gateway (`192.168.123.1`) is a placeholder that doesn't
+exist. The installer downloads `wendy-agent` from the internet, so share your
+machine's connection first.
+
+On macOS, enable IP forwarding and NAT from your Wi-Fi to the robot link:
+
+```bash
+sudo sysctl -w net.inet.ip.forwarding=1
+echo "nat on en0 from 192.168.123.0/24 to any -> (en0)" | sudo pfctl -f - -e
+```
+
+Then, over SSH on the robot (next step), route through your machine:
+
+```bash
+sudo ip route add default via 192.168.123.99 dev eth0 metric 100
+sudo resolvectl dns eth0 1.1.1.1
+```
+
+## Step 3: SSH into the development computer
+
+```bash
+ssh unitree@192.168.123.164
+```
+
+Check that `containerd` (which `wendy-agent` uses to run apps) is present and
+running:
+
+```bash
+sudo apt-get install -y containerd
+sudo systemctl enable --now containerd
+```
+
+## Step 4: Install wendy-agent
+
+On the robot, run:
+
+```bash
+curl -fsSL https://install.wendy.dev/agent.sh | bash
+```
+
+This installs the `wendy-agent` service and registers the robot on the network
+via mDNS.
+
+### Pre-enrolling into your org (optional)
+
+Running `wendy install` on your developer machine and choosing **Linux
+Desktop** while logged in prints a one-liner carrying a short-lived enrollment
+token:
+
+```bash
+curl -fsSL https://install.wendy.dev/agent.sh | \
+  WENDY_ENROLLMENT_TOKEN=<token> WENDY_CLOUD_HOST=<cloud-host> bash
+```
+
+The agent enrolls into your organization on first startup, so you can manage
+the G1 through [Wendy Cloud](/docs/cloud) even when you're not on its network.
+
+### Verify the installation
+
+```bash
+sudo systemctl status wendy-agent
+```
+
+You should see the service active and running.
+
+## Step 5: Discover the robot
+
+Back on your developer machine:
+
+```bash
+wendy discover
+```
+
+The G1 appears in the device list. You can now deploy to it like any Wendy
+device — or target it directly by address:
+
+```bash
+wendy run --device 192.168.123.164
+```
+
+## Working with the robot from your apps
+
+Apps that talk to the G1's control stack communicate over DDS on the robot's
+internal network. Two things matter in your `wendy.json`:
+
+- Use a **host network entitlement** (`{ "type": "network", "mode": "host" }`)
+  so your container can reach the DDS traffic on `eth0`.
+- The G1 uses the `unitree_hg` message package (`/lowstate`, `/lowcmd`) — not
+  `unitree_go`, which is for the Go2/B2. A wrong import connects but silently
+  receives nothing.
+
+If you're using ROS 2, see the [Robotics integration](/docs/integrations/ros2)
+guide — `wendy` can introspect the live ROS 2 graph on the robot with no SSH.
+
+<Callout type="warn">
+  Installing the agent does not move the robot, but apps that publish motion
+  commands will. When developing motion apps, keep the G1 suspended on its
+  gantry or in damping mode, and gate actuation behind an explicit switch in
+  your app.
+</Callout>
+
+## Troubleshooting
+
+- **`wendy discover` shows nothing on macOS** — check System Settings →
+  Privacy & Security → Local Network and make sure your terminal has access.
+  You can verify the robot is advertising with `dns-sd -B _wendyos._udp`.
+- **Agent unreachable** — check the port directly:
+  `nc -zv 192.168.123.164 50051`.
+- **Installer fails to download** — the robot has no internet; revisit Step 2.
+
+## Next Steps
+
+- [Hello World in Python](/docs/guides/tutorials/python/hello-world)
+- [ROS 2 on Wendy devices](/docs/integrations/ros2)
+- [App entitlements](/docs/device/entitlements)
