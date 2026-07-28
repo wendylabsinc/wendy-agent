@@ -54,6 +54,11 @@ func runWifiInteractive(cmd *cobra.Command) error {
 
 	client, err := newWifiClient(target)
 	if err != nil {
+		if target.Provider != nil && target.External != nil {
+			if _, ok := target.Provider.(providers.WifiManager); ok {
+				return fmt.Errorf("The selected device does not support full Wi-Fi management. Use commands 'wendy device wifi connect' and 'wendy device wifi disconnect' instead.")
+			}
+		}
 		return err
 	}
 	defer client.Close()
