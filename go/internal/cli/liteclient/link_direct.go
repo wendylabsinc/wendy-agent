@@ -77,7 +77,7 @@ func serialHandshake(port serial.Port) error {
 				window[31] = oneByte[0]
 			}
 			if sentinel != "" && len(window) == 32 && string(window) == sentinel {
-				if err := port.SetReadTimeout(0); err != nil {
+				if err := port.SetReadTimeout(serial.NoTimeout); err != nil {
 					return fmt.Errorf("serial handshake: clear timeout: %w", err)
 				}
 				if _, err := port.Write([]byte{escapeChar, 'm'}); err != nil {
