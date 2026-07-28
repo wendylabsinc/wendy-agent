@@ -94,6 +94,11 @@ func (l *tunnelLink) recvLoop() {
 	}
 }
 
+// linkHandshake is a no-op: the broker owns the transport, nothing to set up.
+func (l *tunnelLink) linkHandshake() error {
+	return nil
+}
+
 func (l *tunnelLink) send(req *wendypb.WendyComMessage) error {
 	body, err := proto.Marshal(req)
 	if err != nil {

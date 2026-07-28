@@ -11,6 +11,9 @@ import (
 // exchanges bare message bodies through a cloud gRPC tunnel, where the
 // broker owns framing and channels.
 type wcomLink interface {
+	// linkHandshake performs any transport-level handshake needed before
+	// WendyCom messages can flow. Called once, before the protocol handshake.
+	linkHandshake() error
 	// send marshals and transmits one message; safe for concurrent use.
 	send(*wendypb.WendyComMessage) error
 	// recv blocks for the next message; timeout <= 0 means no deadline.

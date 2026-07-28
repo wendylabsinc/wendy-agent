@@ -30,7 +30,7 @@ The device listens on TCP port 5054 and advertises itself via mDNS as `_wendy-li
 
 ## WendyCom over USB Serial JTAG
 
-WendyCom runs over the ESP32 USB Serial JTAG peripheral. This link supports several modes, WendyCom being one of them; the host switches between them by sending ESC sequences.
+WendyCom runs over the ESP32 USB Serial JTAG peripheral. This link supports several modes, WendyCom being one of them; the host switches between them by sending escape sequences.
 
 ### Modes
 
@@ -44,24 +44,24 @@ WendyCom runs over the ESP32 USB Serial JTAG peripheral. This link supports seve
 
 ### Escape sequences
 
-`ESC` (0x1B) characters in the data stream are interpreted as commands. Each `ESC` is followed by a command byte:
+`DLE` (0x10) characters in the data stream are interpreted as commands. Each `DLE` is followed by a command byte:
 
 ```text
-ESC c  →  switch to console mode
-ESC e  →  switch to echo mode
-ESC m  →  switch to com mode
-ESC o  →  switch to off mode
+DLE c  →  switch to console mode
+DLE e  →  switch to echo mode
+DLE m  →  switch to com mode
+DLE o  →  switch to off mode
 ```
 
-In `USJ_MODE_COM`, the `wendy_com_uart` layer intercepts escapes before data reaches the `wendy_com` stack:
+In `USJ_MODE_COM`, the `wendy_com_uart` layer intercepts escape sequences before data reaches the `wendy_com` stack:
 
 ```text
-ESC _    →  pass a literal ESC byte through to the `wendy_com` stack
-ESC k    →  keep-alive (reserved, not yet implemented)
-ESC <x>  →  disconnect the `wendy_com` link, then switch to mode <x>
+DLE _    →  pass a literal DLE byte through to the `wendy_com` stack
+DLE k    →  keep-alive (reserved, not yet implemented)
+DLE <x>  →  disconnect the `wendy_com` link, then switch to mode <x>
 ```
 
-Two consecutive `ESC` characters are considered like one. Therefore, you can put as many `ESC` as you want in front of a command byte.
+Two consecutive `DLE` characters are considered like one. Therefore, you can put as many `DLE` as you want in front of a command byte.
 
 ### Establishing a WendyCom connection
 
@@ -69,12 +69,12 @@ Before entering `USJ_MODE_COM`, the host must flush any stale data buffered in t
 USB layer on both sides.  The handshake uses echo mode for this:
 
 1. Open the USB channel.
-2. Send `ESC e` to switch to echo mode.
+2. Send `DLE e` to switch to echo mode.
 3. Verify the link: send a few bytes and confirm that data flows back.
 4. Drain the channel: read until no data arrives within a timeout.
 5. Send a unique sentinel byte sequence and wait until it is echoed back —
    this confirms the channel is fully flushed and both sides are in sync.
-6. Send `ESC m` to switch to `USJ_MODE_COM`.
+6. Send `DLE m` to switch to `USJ_MODE_COM`.
 
 The channel is now in `USJ_MODE_COM` with no stale data in either buffer.
 
