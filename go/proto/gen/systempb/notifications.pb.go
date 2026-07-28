@@ -204,7 +204,9 @@ type SendRequest struct {
 	Body     string                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
 	Severity NotificationSeverity   `protobuf:"varint,4,opt,name=severity,proto3,enum=wendy.system.v1.NotificationSeverity" json:"severity,omitempty"`
 	DeepLink string                 `protobuf:"bytes,5,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	// Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
+	// Caller-chosen Notification resource UUID v4. Cloud stores and returns its
+	// canonical lowercase form. After successful creation, any canonical reuse fails
+	// with ALREADY_EXISTS rather than replaying the earlier success.
 	NotificationId string           `protobuf:"bytes,6,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
 	Metadata       *structpb.Struct `protobuf:"bytes,7,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -291,9 +293,11 @@ func (x *SendRequest) GetMetadata() *structpb.Struct {
 }
 
 type SendResponse struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	NotificationId string                 `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
-	RecipientCount int32                  `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Canonical lowercase UUID v4 of the newly created Notification resource.
+	NotificationId string `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	// Number of distinct recipient projections persisted, not successful push deliveries.
+	RecipientCount int32 `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }

@@ -95,10 +95,12 @@ func (s *SystemNotificationService) Send(
 	}
 	forwardCtx, cancel := notificationForwardContext(ctx)
 	defer cancel()
+	// One app-facing Send makes exactly one Cloud creation attempt. In particular,
+	// ALREADY_EXISTS is terminal: retrying it here could duplicate downstream push work.
 	response, err := s.sender.CreateNotificationV2(forwardCtx, cloudRequest)
 	if err != nil {
-		if _, ok := status.FromError(err); ok {
-			return nil, err
+		if cloudStatus, ok := status.FromError(err); ok {
+			return nil, cloudStatus.Err()
 		}
 		return nil, status.Errorf(codes.Unavailable, "send notification: %v", err)
 	}

@@ -30,6 +30,11 @@ const (
 // socket. The agent/daemon binds calls to the app identity represented by that
 // socket; requests intentionally carry no app, device, or organization ID.
 type NotificationServiceClient interface {
+	// Creates one Notification resource in Cloud. notification_id is the caller-chosen
+	// resource UUID; any reuse of its canonical UUID after successful creation,
+	// including an otherwise identical request, fails with ALREADY_EXISTS.
+	// Local validation and rate-limit failures occur before forwarding and do not claim
+	// the UUID, so the caller may retry it after correcting the request or waiting.
 	Send(ctx context.Context, in *SendRequest, opts ...grpc.CallOption) (*SendResponse, error)
 }
 
@@ -59,6 +64,11 @@ func (c *notificationServiceClient) Send(ctx context.Context, in *SendRequest, o
 // socket. The agent/daemon binds calls to the app identity represented by that
 // socket; requests intentionally carry no app, device, or organization ID.
 type NotificationServiceServer interface {
+	// Creates one Notification resource in Cloud. notification_id is the caller-chosen
+	// resource UUID; any reuse of its canonical UUID after successful creation,
+	// including an otherwise identical request, fails with ALREADY_EXISTS.
+	// Local validation and rate-limit failures occur before forwarding and do not claim
+	// the UUID, so the caller may retry it after correcting the request or waiting.
 	Send(context.Context, *SendRequest) (*SendResponse, error)
 	mustEmbedUnimplementedNotificationServiceServer()
 }

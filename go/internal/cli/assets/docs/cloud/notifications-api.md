@@ -24,7 +24,15 @@ Cloud derives device and organization identity from device mTLS.
 Send(SendRequest) → SendResponse
 ```
 
-The agent forwards the request to Cloud with a 15-second deadline.
+The agent forwards the request to Cloud with a 15-second deadline and makes one
+Cloud creation attempt per call. `notification_id` is the caller-chosen resource
+identity, not a retry token. After successful creation, every reuse of its
+canonical UUID—including an otherwise identical request or a differently cased
+spelling—returns `ALREADY_EXISTS`; the prior success is never replayed.
+
+Local validation and rate-limit failures happen before forwarding and do not
+claim the UUID. After correcting the request or waiting for the local rate limit,
+the caller may retry with the same `notification_id`.
 
 #### `SendRequest`
 
@@ -35,7 +43,7 @@ The agent forwards the request to Cloud with a 15-second deadline.
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
-| `notification_id` | `string` | Caller-generated UUID v4. Cloud returns its canonical lowercase form; reuse is idempotent. |
+| `notification_id` | `string` | Caller-chosen Notification resource UUID v4. Cloud returns canonical lowercase; any canonical reuse after creation returns `ALREADY_EXISTS`. |
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
 
 #### `NotificationAudience`
@@ -58,8 +66,8 @@ receives one Notification.
 
 | Field | Type | Description |
 |---|---|---|
-| `notification_id` | `string` | Canonical lowercase UUID accepted by Cloud. |
-| `recipient_count` | `int32` | Number of resolved recipients. |
+| `notification_id` | `string` | Canonical lowercase UUID of the newly created Notification resource. |
+| `recipient_count` | `int32` | Number of distinct recipient projections persisted, not successful push deliveries. |
 
 ## `Notification` message
 
@@ -79,7 +87,7 @@ legacy fields.
 | `deleted_at` | `optional Timestamp` | Soft-deletion time. |
 | `title` | `string` | Notification title. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
-| `notification_id` | `optional string` | Canonical caller-generated UUID v4; absent on legacy records. |
+| `notification_id` | `optional string` | Canonical caller-chosen resource UUID v4; absent on legacy records. |
 | `metadata` | `Struct` | Structured JSON-compatible metadata. |
 | `audience` | `optional NotificationAudience` | Original normalized selector union. |
 | `created_by_user_id` | `optional string` | Authenticated user that created the Notification. |
@@ -94,8 +102,10 @@ legacy fields.
 CreateNotification(CreateNotificationRequest) → Notification
 ```
 
-Creates a Notification for one user. This method remains available for existing
-Dashboard and MCP clients.
+Creates a Notification for one user. This RPC and `CreateNotificationRequest`
+are deprecated in their protobuf descriptors and remain intact in
+`wendycloud.v1` only for existing Dashboard and legacy clients. The migration
+marker removes them from a future side-by-side `wendycloud.v2`, not from v1.
 
 ---
 
@@ -105,7 +115,12 @@ Dashboard and MCP clients.
 CreateNotificationV2(CreateNotificationV2Request) → CreateNotificationV2Response
 ```
 
-Creates a canonical Notification for the resolved recipient union.
+Claims the caller-chosen canonical UUID and creates one Notification resource for
+the resolved recipient union. The first canonical UUID use may succeed; every
+later use returns `ALREADY_EXISTS`, regardless of whether request content is
+identical or changed. Cloud does not replay the original response or send pushes
+a second time.
+
 User-authenticated callers provide `organization_id`. Provisioned-device callers
 omit it because Cloud derives the organization and device from their certificate;
 the Wendy agent stamps `app_id` from trusted container state.
@@ -120,7 +135,7 @@ the Wendy agent stamps `app_id` from trusted container state.
 | `body` | `string` | Notification body. |
 | `severity` | `NotificationSeverity` | `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. |
 | `deep_link` | `string` | Absolute `wendy://` URI. |
-| `notification_id` | `string` | Caller-generated UUID v4; Cloud stores and returns canonical lowercase form. |
+| `notification_id` | `string` | Caller-chosen Notification resource UUID v4; Cloud stores and returns canonical lowercase form and rejects every canonical reuse with `ALREADY_EXISTS`. |
 | `metadata` | `optional Struct` | Structured JSON-compatible metadata. |
 | `app_id` | `optional string` | Required for provisioned-device calls and stamped from trusted app identity by the Wendy agent. |
 
@@ -128,8 +143,8 @@ the Wendy agent stamps `app_id` from trusted container state.
 
 | Field | Type | Description |
 |---|---|---|
-| `notification_id` | `string` | Canonical lowercase UUID accepted by Cloud. |
-| `recipient_count` | `int32` | Number of resolved recipients, capped by Cloud at 10,000. |
+| `notification_id` | `string` | Canonical lowercase UUID of the newly created Notification resource. |
+| `recipient_count` | `int32` | Number of distinct recipient projections persisted, capped by Cloud at 10,000; not successful push deliveries. |
 
 ---
 

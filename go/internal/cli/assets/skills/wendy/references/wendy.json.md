@@ -200,9 +200,12 @@ capabilities. WendyKit's public Swift operation is
 `WendyNotification.send(_:)`; apps do not need to use gRPC.
 
 The app supplies one or more user, organization team, or role selectors, plus
-title/body, severity, deep link, a caller-generated `notification_id` UUID v4,
-and optional metadata. Selectors have union semantics and are limited to 100
-entries before normalization and deduplication; Cloud resolves at most 10,000
+title/body, severity, deep link, a caller-chosen `notification_id` UUID v4
+resource identity, and optional metadata. After successful creation, every
+canonical UUID reuse returns `ALREADY_EXISTS` rather than replaying success; a
+local validation or rate-limit rejection leaves the UUID valid for retry.
+Selectors have union semantics and are limited to 100 entries before
+normalization and deduplication; Cloud resolves at most 10,000
 recipients. Trusted local state supplies Cloud `app_id`, stored as
 `created_by_app_id`, while provisioned device mTLS supplies device and
 organization identity. This entitlement never exposes the administrative

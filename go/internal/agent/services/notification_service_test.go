@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/known/structpb"
 
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -46,6 +47,29 @@ func (s *recordingNotificationSender) CreateNotificationV2(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.requests = append(s.requests, request)
+	return &cloudpb.CreateNotificationV2Response{
+		NotificationId: request.GetNotificationId(),
+		RecipientCount: 1,
+	}, nil
+}
+
+type strictDuplicateNotificationSender struct {
+	requests []*cloudpb.CreateNotificationV2Request
+	seen     map[string]struct{}
+}
+
+func (s *strictDuplicateNotificationSender) CreateNotificationV2(
+	_ context.Context,
+	request *cloudpb.CreateNotificationV2Request,
+) (*cloudpb.CreateNotificationV2Response, error) {
+	s.requests = append(s.requests, proto.Clone(request).(*cloudpb.CreateNotificationV2Request))
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	if _, exists := s.seen[request.GetNotificationId()]; exists {
+		return nil, status.Error(codes.AlreadyExists, "notification_id already exists")
+	}
+	s.seen[request.GetNotificationId()] = struct{}{}
 	return &cloudpb.CreateNotificationV2Response{
 		NotificationId: request.GetNotificationId(),
 		RecipientCount: 1,
@@ -114,6 +138,17 @@ func TestNotificationProtoContract(t *testing.T) {
 	}
 
 	cloudRequest := (&cloudpb.CreateNotificationV2Request{}).ProtoReflect().Descriptor()
+	legacyRequest := (&cloudpb.CreateNotificationRequest{}).ProtoReflect().Descriptor()
+	legacyRequestOptions, ok := legacyRequest.Options().(*descriptorpb.MessageOptions)
+	if !ok || !legacyRequestOptions.GetDeprecated() {
+		t.Fatalf("CreateNotificationRequest deprecated option = %v, want true", legacyRequest.Options())
+	}
+	cloudService := cloudRequest.ParentFile().Services().ByName("NotificationService")
+	legacyMethod := cloudService.Methods().ByName("CreateNotification")
+	legacyMethodOptions, ok := legacyMethod.Options().(*descriptorpb.MethodOptions)
+	if !ok || !legacyMethodOptions.GetDeprecated() {
+		t.Fatalf("CreateNotification deprecated option = %v, want true", legacyMethod.Options())
+	}
 	cloudRequestFields := []protoreflect.Name{
 		"organization_id", "audience", "title", "body", "severity", "deep_link", "notification_id", "metadata",
 	}
@@ -226,6 +261,69 @@ func TestSystemNotificationServiceRejectsMismatchedCloudNotificationID(t *testin
 	)
 	if status.Code(err) != codes.DataLoss {
 		t.Fatalf("Send() code = %v, want DataLoss (err=%v)", status.Code(err), err)
+	}
+}
+
+func TestSystemNotificationServicePassesThroughStrictDuplicateConflicts(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*systempb.SendRequest)
+	}{
+		{name: "same exact request", mutate: func(*systempb.SendRequest) {}},
+		{name: "changed request", mutate: func(request *systempb.SendRequest) { request.Body = "Changed body" }},
+		{name: "uppercase UUID", mutate: func(request *systempb.SendRequest) {
+			request.NotificationId = strings.ToUpper(request.NotificationId)
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			sender := &strictDuplicateNotificationSender{}
+			service := NewSystemNotificationService("com.example.firewatch", sender)
+			first := validSystemNotificationRequest()
+			if _, err := service.Send(context.Background(), first); err != nil {
+				t.Fatalf("first Send() error = %v", err)
+			}
+
+			second := proto.Clone(first).(*systempb.SendRequest)
+			test.mutate(second)
+			_, err := service.Send(context.Background(), second)
+			if status.Code(err) != codes.AlreadyExists {
+				t.Fatalf("duplicate Send() code = %v, want AlreadyExists (err=%v)", status.Code(err), err)
+			}
+			if len(sender.requests) != 2 {
+				t.Fatalf("Cloud creation attempts = %d, want exactly one per Send call", len(sender.requests))
+			}
+			for index, request := range sender.requests {
+				if request.GetNotificationId() != first.GetNotificationId() {
+					t.Fatalf("Cloud request %d notification_id = %q, want canonical %q", index, request.GetNotificationId(), first.GetNotificationId())
+				}
+			}
+		})
+	}
+}
+
+func TestSystemNotificationServiceRateLimitedUUIDCanBeRetried(t *testing.T) {
+	sender := &recordingNotificationSender{}
+	service := NewSystemNotificationService("com.example.firewatch", sender)
+	service.limiter = newNotificationRateLimiter(1, time.Hour)
+	service.limiter.tokens = 0
+	service.limiter.lastRefill = time.Now()
+	request := validSystemNotificationRequest()
+
+	if _, err := service.Send(context.Background(), request); status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("rate-limited Send() code = %v, want ResourceExhausted (err=%v)", status.Code(err), err)
+	}
+	if len(sender.requests) != 0 {
+		t.Fatalf("Cloud creation attempts after local rejection = %d, want 0", len(sender.requests))
+	}
+
+	service.limiter.tokens = 1
+	if _, err := service.Send(context.Background(), request); err != nil {
+		t.Fatalf("retry with same notification_id error = %v", err)
+	}
+	if len(sender.requests) != 1 {
+		t.Fatalf("Cloud creation attempts after accepted retry = %d, want 1", len(sender.requests))
 	}
 }
 
@@ -435,7 +533,7 @@ func TestSystemNotificationServiceValidation(t *testing.T) {
 	}
 }
 
-func TestSystemNotificationServiceBoundsUniqueAudienceSelectors(t *testing.T) {
+func TestSystemNotificationServiceBoundsRawAudienceSelectors(t *testing.T) {
 	request := validSystemNotificationRequest()
 	request.Audience = &systempb.NotificationAudience{
 		UserIds: make([]string, maxNotificationAudienceSelectors-5),

@@ -398,11 +398,15 @@ API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
 gRPC directly.
 
 The request supplies one or more user, organization team, or organization role
-selectors, plus title, body, severity, deep link, a caller-generated
-`notification_id` UUID v4, and optional structured metadata. Selector categories
-have union semantics. The agent accepts at most 100 selector entries, then
-normalizes and deduplicates them; Cloud resolves at most 10,000 recipients. The socket
-handler stamps Cloud `app_id` from trusted container metadata. Wendy Cloud stores
+selectors, plus title, body, severity, deep link, a caller-chosen
+`notification_id` UUID v4 resource identity, and optional structured metadata.
+After successful creation, every reuse of its canonical UUID—including identical,
+changed, or differently cased requests—returns `ALREADY_EXISTS`; it does not
+replay success. A local validation or rate-limit rejection occurs before Cloud
+and leaves that UUID valid for retry. Selector categories have union semantics.
+The agent accepts at most 100 selector entries, then normalizes and deduplicates
+them; Cloud resolves at most 10,000 recipients. The socket handler stamps Cloud
+`app_id` from trusted container metadata. Wendy Cloud stores
 that identity as `created_by_app_id` and derives `created_by_asset_id` and
 organization identity from the provisioned device certificate; none of those
 identities can be supplied by the app.

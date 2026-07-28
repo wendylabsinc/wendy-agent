@@ -80,8 +80,9 @@ func (NotificationSeverity) EnumDescriptor() ([]byte, []int) {
 
 type NotificationAudience struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Cloud deduplicates these selectors, permits at most 100 entries across all
-	// three lists, and caps the resolved recipient union at 10,000 users.
+	// At least one selector is required and must resolve to at least one recipient.
+	// Cloud resolves the selectors as a deduplicated union, with at most 100 raw
+	// selectors across all three lists and at most 10,000 resolved users.
 	UserIds       []string           `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
 	TeamIds       []int32            `protobuf:"varint,2,rep,packed,name=team_ids,json=teamIds,proto3" json:"team_ids,omitempty"`
 	Roles         []OrganizationRole `protobuf:"varint,3,rep,packed,name=roles,proto3,enum=wendycloud.v1.OrganizationRole" json:"roles,omitempty"`
@@ -143,22 +144,24 @@ func (x *NotificationAudience) GetRoles() []OrganizationRole {
 type Notification struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Fields 1 through 8 are the legacy Companion contract and must remain stable.
-	Id               int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	UserId           string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrganizationId   int32                  `protobuf:"varint,3,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	Body             string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-	Severity         NotificationSeverity   `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
-	RelatedEntities  *structpb.Struct       `protobuf:"bytes,6,opt,name=related_entities,json=relatedEntities,proto3" json:"related_entities,omitempty"`
-	CreatedAt        *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	DeletedAt        *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=deleted_at,json=deletedAt,proto3,oneof" json:"deleted_at,omitempty"`
-	Title            string                 `protobuf:"bytes,9,opt,name=title,proto3" json:"title,omitempty"`
-	DeepLink         string                 `protobuf:"bytes,10,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	NotificationId   *string                `protobuf:"bytes,11,opt,name=notification_id,json=notificationId,proto3,oneof" json:"notification_id,omitempty"`
-	Metadata         *structpb.Struct       `protobuf:"bytes,12,opt,name=metadata,proto3" json:"metadata,omitempty"`
-	Audience         *NotificationAudience  `protobuf:"bytes,13,opt,name=audience,proto3,oneof" json:"audience,omitempty"`
-	CreatedByUserId  *string                `protobuf:"bytes,14,opt,name=created_by_user_id,json=createdByUserId,proto3,oneof" json:"created_by_user_id,omitempty"`
-	CreatedByAssetId *int32                 `protobuf:"varint,15,opt,name=created_by_asset_id,json=createdByAssetId,proto3,oneof" json:"created_by_asset_id,omitempty"`
-	CreatedByAppId   *string                `protobuf:"bytes,16,opt,name=created_by_app_id,json=createdByAppId,proto3,oneof" json:"created_by_app_id,omitempty"`
+	// MIGRATION(wendycloud.v2): Migrate the read model to canonical UUID APIs; see API_V2_MIGRATION.md.
+	Id              int32                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	UserId          string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrganizationId  int32                  `protobuf:"varint,3,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	Body            string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	Severity        NotificationSeverity   `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
+	RelatedEntities *structpb.Struct       `protobuf:"bytes,6,opt,name=related_entities,json=relatedEntities,proto3" json:"related_entities,omitempty"`
+	CreatedAt       *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	DeletedAt       *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=deleted_at,json=deletedAt,proto3,oneof" json:"deleted_at,omitempty"`
+	Title           string                 `protobuf:"bytes,9,opt,name=title,proto3" json:"title,omitempty"`
+	DeepLink        string                 `protobuf:"bytes,10,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
+	// Canonical UUID v4; absent for legacy Notifications.
+	NotificationId   *string               `protobuf:"bytes,11,opt,name=notification_id,json=notificationId,proto3,oneof" json:"notification_id,omitempty"`
+	Metadata         *structpb.Struct      `protobuf:"bytes,12,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	Audience         *NotificationAudience `protobuf:"bytes,13,opt,name=audience,proto3,oneof" json:"audience,omitempty"`
+	CreatedByUserId  *string               `protobuf:"bytes,14,opt,name=created_by_user_id,json=createdByUserId,proto3,oneof" json:"created_by_user_id,omitempty"`
+	CreatedByAssetId *int32                `protobuf:"varint,15,opt,name=created_by_asset_id,json=createdByAssetId,proto3,oneof" json:"created_by_asset_id,omitempty"`
+	CreatedByAppId   *string               `protobuf:"bytes,16,opt,name=created_by_app_id,json=createdByAppId,proto3,oneof" json:"created_by_app_id,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -305,6 +308,7 @@ func (x *Notification) GetCreatedByAppId() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in cloud/notifications.proto.
 type CreateNotificationRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	UserId          string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -389,15 +393,20 @@ type CreateNotificationV2Request struct {
 	Audience       *NotificationAudience `protobuf:"bytes,2,opt,name=audience,proto3" json:"audience,omitempty"`
 	// REFACTOR: Request content intentionally duplicates Notification content because
 	// Notification must retain legacy flat fields 1-8 for Companion wire compatibility.
-	// A shared content message can be introduced only in a future version that migrates them.
-	Title    string               `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
-	Body     string               `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	// MIGRATION(wendycloud.v2): Extract NotificationContent; see API_V2_MIGRATION.md.
+	// Required; 1-120 UTF-8 bytes, with no surrounding whitespace or control characters.
+	Title string `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
+	// Required; 1-2,000 UTF-8 bytes, with no surrounding whitespace or control characters.
+	Body string `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	// NOTIFICATION_SEVERITY_UNSPECIFIED is invalid.
 	Severity NotificationSeverity `protobuf:"varint,5,opt,name=severity,proto3,enum=wendycloud.v1.NotificationSeverity" json:"severity,omitempty"`
-	// Absolute wendy:// URI understood by Wendy clients.
+	// Required absolute wendy:// URI understood by Wendy clients; 1-2,048 UTF-8 bytes,
+	// with a host and no userinfo or credentials.
 	DeepLink string `protobuf:"bytes,6,opt,name=deep_link,json=deepLink,proto3" json:"deep_link,omitempty"`
-	// Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
-	NotificationId string           `protobuf:"bytes,7,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
-	Metadata       *structpb.Struct `protobuf:"bytes,8,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
+	// Caller-generated UUID v4, stored and returned as canonical lowercase text.
+	NotificationId string `protobuf:"bytes,7,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	// Optional structured metadata; serialized JSON is limited to 16 KiB.
+	Metadata *structpb.Struct `protobuf:"bytes,8,opt,name=metadata,proto3,oneof" json:"metadata,omitempty"`
 	// Required for provisioned-device callers and stamped by the Wendy agent/daemon.
 	// Cloud validates that this app belongs to the authenticated organization and device.
 	AppId         *string `protobuf:"bytes,9,opt,name=app_id,json=appId,proto3,oneof" json:"app_id,omitempty"`
@@ -499,9 +508,11 @@ func (x *CreateNotificationV2Request) GetAppId() string {
 }
 
 type CreateNotificationV2Response struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	NotificationId string                 `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
-	RecipientCount int32                  `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Canonical lowercase UUID v4.
+	NotificationId string `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
+	// Number of distinct recipient projections persisted, not successful push deliveries.
+	RecipientCount int32 `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -1045,13 +1056,13 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\t_audienceB\x15\n" +
 	"\x13_created_by_user_idB\x16\n" +
 	"\x14_created_by_asset_idB\x14\n" +
-	"\x12_created_by_app_id\"\xf6\x01\n" +
+	"\x12_created_by_app_id\"\xfa\x01\n" +
 	"\x19CreateNotificationRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12'\n" +
 	"\x0forganization_id\x18\x02 \x01(\x05R\x0eorganizationId\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12?\n" +
 	"\bseverity\x18\x04 \x01(\x0e2#.wendycloud.v1.NotificationSeverityR\bseverity\x12B\n" +
-	"\x10related_entities\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x0frelatedEntities\"\xbf\x03\n" +
+	"\x10related_entities\x18\x05 \x01(\v2\x17.google.protobuf.StructR\x0frelatedEntities:\x02\x18\x01\"\xbf\x03\n" +
 	"\x1bCreateNotificationV2Request\x12,\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05H\x00R\x0eorganizationId\x88\x01\x01\x12?\n" +
 	"\baudience\x18\x02 \x01(\v2#.wendycloud.v1.NotificationAudienceR\baudience\x12\x14\n" +
@@ -1102,9 +1113,9 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x1aNOTIFICATION_SEVERITY_INFO\x10\x01\x12!\n" +
 	"\x1dNOTIFICATION_SEVERITY_WARNING\x10\x02\x12\x1f\n" +
 	"\x1bNOTIFICATION_SEVERITY_ERROR\x10\x03\x12\"\n" +
-	"\x1eNOTIFICATION_SEVERITY_CRITICAL\x10\x042\xc1\x05\n" +
-	"\x13NotificationService\x12[\n" +
-	"\x12CreateNotification\x12(.wendycloud.v1.CreateNotificationRequest\x1a\x1b.wendycloud.v1.Notification\x12o\n" +
+	"\x1eNOTIFICATION_SEVERITY_CRITICAL\x10\x042\xc6\x05\n" +
+	"\x13NotificationService\x12`\n" +
+	"\x12CreateNotification\x12(.wendycloud.v1.CreateNotificationRequest\x1a\x1b.wendycloud.v1.Notification\"\x03\x88\x02\x01\x12o\n" +
 	"\x14CreateNotificationV2\x12*.wendycloud.v1.CreateNotificationV2Request\x1a+.wendycloud.v1.CreateNotificationV2Response\x12h\n" +
 	"\x11ListNotifications\x12'.wendycloud.v1.ListNotificationsRequest\x1a(.wendycloud.v1.ListNotificationsResponse0\x01\x12U\n" +
 	"\x0fGetNotification\x12%.wendycloud.v1.GetNotificationRequest\x1a\x1b.wendycloud.v1.Notification\x12i\n" +

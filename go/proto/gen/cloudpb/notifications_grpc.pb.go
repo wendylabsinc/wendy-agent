@@ -32,10 +32,14 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type NotificationServiceClient interface {
-	// Legacy single-user creation API. Kept for existing dashboard and MCP clients.
+	// Deprecated: Do not use.
+	// Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+	// MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
 	CreateNotification(ctx context.Context, in *CreateNotificationRequest, opts ...grpc.CallOption) (*Notification, error)
 	// Creates per-user Notifications for the union of users, organization teams, and roles.
 	// User credentials and provisioned-device credentials are both supported.
+	// notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+	// including an otherwise identical request, fails with ALREADY_EXISTS.
 	CreateNotificationV2(ctx context.Context, in *CreateNotificationV2Request, opts ...grpc.CallOption) (*CreateNotificationV2Response, error)
 	// Server-streamed pagination using offset/limit (matches OrganizationService)
 	ListNotifications(ctx context.Context, in *ListNotificationsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ListNotificationsResponse], error)
@@ -53,6 +57,7 @@ func NewNotificationServiceClient(cc grpc.ClientConnInterface) NotificationServi
 	return &notificationServiceClient{cc}
 }
 
+// Deprecated: Do not use.
 func (c *notificationServiceClient) CreateNotification(ctx context.Context, in *CreateNotificationRequest, opts ...grpc.CallOption) (*Notification, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Notification)
@@ -136,10 +141,14 @@ func (c *notificationServiceClient) GetUnreadCount(ctx context.Context, in *GetU
 // All implementations must embed UnimplementedNotificationServiceServer
 // for forward compatibility.
 type NotificationServiceServer interface {
-	// Legacy single-user creation API. Kept for existing dashboard and MCP clients.
+	// Deprecated: Do not use.
+	// Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+	// MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
 	CreateNotification(context.Context, *CreateNotificationRequest) (*Notification, error)
 	// Creates per-user Notifications for the union of users, organization teams, and roles.
 	// User credentials and provisioned-device credentials are both supported.
+	// notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+	// including an otherwise identical request, fails with ALREADY_EXISTS.
 	CreateNotificationV2(context.Context, *CreateNotificationV2Request) (*CreateNotificationV2Response, error)
 	// Server-streamed pagination using offset/limit (matches OrganizationService)
 	ListNotifications(*ListNotificationsRequest, grpc.ServerStreamingServer[ListNotificationsResponse]) error

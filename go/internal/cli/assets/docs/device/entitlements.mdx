@@ -271,12 +271,15 @@ API capabilities. WendyKit exposes the typed operation as
 `WendyNotification.send(_:)`.
 
 The app supplies one or more user, organization team, or role selectors plus
-content, severity, deep link, a caller-generated Notification UUID v4, and
-optional metadata. Reusing the UUID is idempotent. All selector categories are
-unioned, normalized, and deduplicated. The app-facing API accepts at most 100
-selector entries before deduplication; Cloud resolves at most 10,000 recipients. Trusted container
-state supplies Cloud `app_id`, stored as `created_by_app_id`; provisioned device
-mTLS supplies device and organization identity. Each send has a 15-second Cloud
+content, severity, deep link, a caller-chosen Notification UUID v4 resource
+identity, and optional metadata. After successful creation, any canonical UUID
+reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
+or rate-limit rejection does not claim the UUID, so that UUID remains valid for
+retry. All selector categories are unioned, normalized, and deduplicated. The
+app-facing API accepts at most 100 selector entries before deduplication; Cloud
+resolves at most 10,000 recipients. Trusted container state supplies Cloud
+`app_id`, stored as `created_by_app_id`; provisioned device mTLS supplies device
+and organization identity. Each send has a 15-second Cloud
 deadline.
 
 All entitled services in a multi-service app share the app's stable directory

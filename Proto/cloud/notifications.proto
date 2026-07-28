@@ -7,10 +7,15 @@ import "google/protobuf/struct.proto";
 import "cloud/organizations.proto";
 
 service NotificationService {
-  // Legacy single-user creation API. Kept for existing dashboard and MCP clients.
-  rpc CreateNotification(CreateNotificationRequest) returns (Notification);
+  // Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+  // MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+  rpc CreateNotification(CreateNotificationRequest) returns (Notification) {
+    option deprecated = true;
+  }
   // Creates per-user Notifications for the union of users, organization teams, and roles.
   // User credentials and provisioned-device credentials are both supported.
+  // notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+  // including an otherwise identical request, fails with ALREADY_EXISTS.
   rpc CreateNotificationV2(CreateNotificationV2Request) returns (CreateNotificationV2Response);
   // Server-streamed pagination using offset/limit (matches OrganizationService)
   rpc ListNotifications(ListNotificationsRequest) returns (stream ListNotificationsResponse);
@@ -29,8 +34,9 @@ enum NotificationSeverity {
 }
 
 message NotificationAudience {
-  // Cloud deduplicates these selectors, permits at most 100 entries across all
-  // three lists, and caps the resolved recipient union at 10,000 users.
+  // At least one selector is required and must resolve to at least one recipient.
+  // Cloud resolves the selectors as a deduplicated union, with at most 100 raw
+  // selectors across all three lists and at most 10,000 resolved users.
   repeated string user_ids = 1;
   repeated int32 team_ids = 2;
   repeated OrganizationRole roles = 3;
@@ -38,6 +44,7 @@ message NotificationAudience {
 
 message Notification {
   // Fields 1 through 8 are the legacy Companion contract and must remain stable.
+  // MIGRATION(wendycloud.v2): Migrate the read model to canonical UUID APIs; see API_V2_MIGRATION.md.
   int32 id = 1;
   string user_id = 2;
   int32 organization_id = 3;
@@ -49,6 +56,7 @@ message Notification {
 
   string title = 9;
   string deep_link = 10;
+  // Canonical UUID v4; absent for legacy Notifications.
   optional string notification_id = 11;
   google.protobuf.Struct metadata = 12;
   optional NotificationAudience audience = 13;
@@ -58,6 +66,8 @@ message Notification {
 }
 
 message CreateNotificationRequest {
+  option deprecated = true;
+
   string user_id = 1;
   int32 organization_id = 2;
   string body = 3;
@@ -72,14 +82,19 @@ message CreateNotificationV2Request {
   NotificationAudience audience = 2;
   // REFACTOR: Request content intentionally duplicates Notification content because
   // Notification must retain legacy flat fields 1-8 for Companion wire compatibility.
-  // A shared content message can be introduced only in a future version that migrates them.
+  // MIGRATION(wendycloud.v2): Extract NotificationContent; see API_V2_MIGRATION.md.
+  // Required; 1-120 UTF-8 bytes, with no surrounding whitespace or control characters.
   string title = 3;
+  // Required; 1-2,000 UTF-8 bytes, with no surrounding whitespace or control characters.
   string body = 4;
+  // NOTIFICATION_SEVERITY_UNSPECIFIED is invalid.
   NotificationSeverity severity = 5;
-  // Absolute wendy:// URI understood by Wendy clients.
+  // Required absolute wendy:// URI understood by Wendy clients; 1-2,048 UTF-8 bytes,
+  // with a host and no userinfo or credentials.
   string deep_link = 6;
-  // Caller-generated UUID v4. Cloud stores and returns its canonical lowercase form.
+  // Caller-generated UUID v4, stored and returned as canonical lowercase text.
   string notification_id = 7;
+  // Optional structured metadata; serialized JSON is limited to 16 KiB.
   optional google.protobuf.Struct metadata = 8;
   // Required for provisioned-device callers and stamped by the Wendy agent/daemon.
   // Cloud validates that this app belongs to the authenticated organization and device.
@@ -87,7 +102,9 @@ message CreateNotificationV2Request {
 }
 
 message CreateNotificationV2Response {
+  // Canonical lowercase UUID v4.
   string notification_id = 1;
+  // Number of distinct recipient projections persisted, not successful push deliveries.
   int32 recipient_count = 2;
 }
 
