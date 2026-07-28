@@ -44,7 +44,7 @@ WendyCom runs over the ESP32 USB Serial JTAG peripheral. This link supports seve
 
 ### Escape sequences
 
-`DLE` (0x1B) characters in the data stream are interpreted as commands. Each `DLE` is followed by a command byte:
+`DLE` (0x10) characters in the data stream are interpreted as commands. Each `DLE` is followed by a command byte:
 
 ```text
 DLE c  →  switch to console mode
