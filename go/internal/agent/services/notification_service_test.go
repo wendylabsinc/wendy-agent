@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"slices"
@@ -340,6 +341,8 @@ func proofCloudNotificationRequest() *cloudpb.CreateNotificationV2Request {
 	}
 }
 
+const deviceProofTestCertificateSerial = "01a2b3c4d5e6f708"
+
 func deviceProofTestKeyPEM(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -353,14 +356,86 @@ func deviceProofTestKeyPEM(t *testing.T) (*ecdsa.PrivateKey, []byte) {
 	return key, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 }
 
+func deviceProofTestCertificatePEM(t *testing.T, key *ecdsa.PrivateKey, serialHex string) string {
+	t.Helper()
+	serial, ok := new(big.Int).SetString(serialHex, 16)
+	if !ok {
+		t.Fatalf("invalid test certificate serial %q", serialHex)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		NotBefore:    time.Unix(1_700_000_000, 0),
+		NotAfter:     time.Unix(1_900_000_000, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create test certificate: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func TestProvisionedLeafCertificateSerialIsCanonicalLowercaseHex(t *testing.T) {
+	key, _ := deviceProofTestKeyPEM(t)
+	certificatePEM := deviceProofTestCertificatePEM(t, key, "0ABC")
+	serial, err := provisionedLeafCertificateSerial(certificatePEM)
+	if err != nil {
+		t.Fatalf("provisionedLeafCertificateSerial() error = %v", err)
+	}
+	if serial != "0abc" {
+		t.Fatalf("certificate serial = %q, want 0abc", serial)
+	}
+}
+
+func TestNotificationDeviceProofRejectsMalformedProvisionedLeafCertificate(t *testing.T) {
+	_, keyPEM := deviceProofTestKeyPEM(t)
+	tests := []struct {
+		name    string
+		certPEM string
+	}{
+		{name: "empty", certPEM: ""},
+		{name: "not PEM", certPEM: "not a certificate"},
+		{name: "wrong PEM type", certPEM: string(keyPEM)},
+		{name: "invalid certificate DER", certPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("invalid")}))},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, err := notificationDeviceProofContext(
+				context.Background(),
+				proofCloudNotificationRequest(),
+				17,
+				42,
+				1_753_267_200,
+				test.certPEM,
+				keyPEM,
+				rand.Reader,
+			)
+			if err == nil || ctx != nil {
+				t.Fatalf("notificationDeviceProofContext() = (%v, %v), want nil context and error", ctx, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalNotificationDeviceProofRejectsNoncanonicalCertificateSerial(t *testing.T) {
+	for _, serial := range []string{"", "0", "00", "0001", "abc", "0ABC", "12-34", strings.Repeat("aa", 21)} {
+		t.Run(serial, func(t *testing.T) {
+			if _, _, _, err := canonicalNotificationDeviceProof(proofCloudNotificationRequest(), 17, 42, serial, 1_753_267_200); err == nil {
+				t.Fatalf("certificate serial %q accepted", serial)
+			}
+		})
+	}
+}
+
 func TestCanonicalNotificationDeviceProofIsDeterministic(t *testing.T) {
 	const timestamp = int64(1_753_267_200)
 	request := proofCloudNotificationRequest()
-	first, uri, timestampText, err := canonicalNotificationDeviceProof(request, 17, 42, timestamp)
+	first, uri, timestampText, err := canonicalNotificationDeviceProof(request, 17, 42, deviceProofTestCertificateSerial, timestamp)
 	if err != nil {
 		t.Fatalf("canonicalNotificationDeviceProof() error = %v", err)
 	}
-	second, _, _, err := canonicalNotificationDeviceProof(proto.Clone(request).(*cloudpb.CreateNotificationV2Request), 17, 42, timestamp)
+	second, _, _, err := canonicalNotificationDeviceProof(proto.Clone(request).(*cloudpb.CreateNotificationV2Request), 17, 42, deviceProofTestCertificateSerial, timestamp)
 	if err != nil {
 		t.Fatalf("second canonicalNotificationDeviceProof() error = %v", err)
 	}
@@ -371,12 +446,12 @@ func TestCanonicalNotificationDeviceProofIsDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := deviceProofDomain + "\x00" + deviceProofFullMethod + "\x00" + uri + "\x00" + timestampText + "\x00"
+	prefix := deviceProofDomain + "\x00" + deviceProofFullMethod + "\x00" + uri + "\x00" + deviceProofTestCertificateSerial + "\x00" + timestampText + "\x00"
 	if !bytes.Equal(first, append([]byte(prefix), requestBytes...)) {
 		t.Fatal("canonical proof does not match the versioned NUL-framed contract")
 	}
 	digest := sha256.Sum256(first)
-	if got, want := hex.EncodeToString(digest[:]), "64f25ad5b4204fb743661c5d11d80692c4ae4bb2afc6f7d7a4a36ff0762efc91"; got != want {
+	if got, want := hex.EncodeToString(digest[:]), "438186e9443c54083a91beb6815bad1a7376c1c1f3e3ca9ec9c1cbe4fd85ec94"; got != want {
 		t.Fatalf("canonical proof SHA-256 = %s, want fixture %s", got, want)
 	}
 }
@@ -384,14 +459,17 @@ func TestCanonicalNotificationDeviceProofIsDeterministic(t *testing.T) {
 func TestNotificationDeviceProofSignatureAndTamperResistance(t *testing.T) {
 	const timestamp = int64(1_753_267_200)
 	key, keyPEM := deviceProofTestKeyPEM(t)
+	certificatePEM := deviceProofTestCertificatePEM(t, key, deviceProofTestCertificateSerial)
 	request := proofCloudNotificationRequest()
 	baseCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
 		deviceProofURIHeader, "forged",
+		deviceProofCertificateSerialHeader, "forged-one",
+		deviceProofCertificateSerialHeader, "forged-two",
 		deviceProofTimestampHeader, "0",
 		deviceProofSignatureHeader, "forged",
 		"x-unrelated", "preserved",
 	))
-	ctx, err := notificationDeviceProofContext(baseCtx, request, 17, 42, timestamp, keyPEM, rand.Reader)
+	ctx, err := notificationDeviceProofContext(baseCtx, request, 17, 42, timestamp, certificatePEM, keyPEM, rand.Reader)
 	if err != nil {
 		t.Fatalf("notificationDeviceProofContext() error = %v", err)
 	}
@@ -401,6 +479,9 @@ func TestNotificationDeviceProofSignatureAndTamperResistance(t *testing.T) {
 	}
 	if got := md.Get(deviceProofURIHeader); len(got) != 1 || got[0] != "urn:wendy:org:17:asset:42" {
 		t.Fatalf("device URI metadata = %v", got)
+	}
+	if got := md.Get(deviceProofCertificateSerialHeader); len(got) != 1 || got[0] != deviceProofTestCertificateSerial {
+		t.Fatalf("certificate serial metadata = %v", got)
 	}
 	if got := md.Get("x-unrelated"); len(got) != 1 || got[0] != "preserved" {
 		t.Fatalf("unrelated outgoing metadata = %v", got)
@@ -416,7 +497,7 @@ func TestNotificationDeviceProofSignatureAndTamperResistance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode signature: %v", err)
 	}
-	canonical, _, _, err := canonicalNotificationDeviceProof(request, 17, 42, timestamp)
+	canonical, _, _, err := canonicalNotificationDeviceProof(request, 17, 42, deviceProofTestCertificateSerial, timestamp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -428,9 +509,10 @@ func TestNotificationDeviceProofSignatureAndTamperResistance(t *testing.T) {
 	tamperedRequest := proto.Clone(request).(*cloudpb.CreateNotificationV2Request)
 	tamperedRequest.Body = "different body"
 	for name, tamperedCanonical := range map[string][]byte{
-		"request":   mustCanonicalNotificationProof(t, tamperedRequest, 17, 42, timestamp),
-		"identity":  mustCanonicalNotificationProof(t, request, 17, 43, timestamp),
-		"timestamp": mustCanonicalNotificationProof(t, request, 17, 42, timestamp+1),
+		"request":            mustCanonicalNotificationProof(t, tamperedRequest, 17, 42, deviceProofTestCertificateSerial, timestamp),
+		"identity":           mustCanonicalNotificationProof(t, request, 17, 43, deviceProofTestCertificateSerial, timestamp),
+		"certificate serial": mustCanonicalNotificationProof(t, request, 17, 42, "b1b2c3d4e5f60718", timestamp),
+		"timestamp":          mustCanonicalNotificationProof(t, request, 17, 42, deviceProofTestCertificateSerial, timestamp+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			tamperedDigest := sha256.Sum256(tamperedCanonical)
@@ -445,10 +527,11 @@ func mustCanonicalNotificationProof(
 	t *testing.T,
 	request *cloudpb.CreateNotificationV2Request,
 	orgID, assetID int32,
+	certificateSerial string,
 	timestamp int64,
 ) []byte {
 	t.Helper()
-	canonical, _, _, err := canonicalNotificationDeviceProof(request, orgID, assetID, timestamp)
+	canonical, _, _, err := canonicalNotificationDeviceProof(request, orgID, assetID, certificateSerial, timestamp)
 	if err != nil {
 		t.Fatal(err)
 	}

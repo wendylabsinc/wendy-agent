@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -37,11 +38,12 @@ const (
 	maxNotificationAudienceSelectors = 100
 	notificationForwardTimeout       = 15 * time.Second
 
-	deviceProofURIHeader       = "x-wendy-device-uri"
-	deviceProofTimestampHeader = "x-wendy-device-timestamp"
-	deviceProofSignatureHeader = "x-wendy-device-signature"
-	deviceProofDomain          = "wendy-device-request-proof/v1"
-	deviceProofFullMethod      = "wendycloud.v1.NotificationService/CreateNotificationV2"
+	deviceProofURIHeader               = "x-wendy-device-uri"
+	deviceProofCertificateSerialHeader = "x-wendy-device-certificate-serial"
+	deviceProofTimestampHeader         = "x-wendy-device-timestamp"
+	deviceProofSignatureHeader         = "x-wendy-device-signature"
+	deviceProofDomain                  = "wendy-device-request-proof/v2"
+	deviceProofFullMethod              = "wendycloud.v1.NotificationService/CreateNotificationV2"
 )
 
 // NotificationSender forwards a trusted, app-attributed Notification to Wendy Cloud.
@@ -328,14 +330,16 @@ func validNotificationDeepLink(value string) bool {
 }
 
 type notificationDeviceProof struct {
-	uri       string
-	timestamp string
-	signature string
+	uri               string
+	certificateSerial string
+	timestamp         string
+	signature         string
 }
 
 func canonicalNotificationDeviceProof(
 	request *cloudpb.CreateNotificationV2Request,
 	orgID, assetID int32,
+	certificateSerial string,
 	timestamp int64,
 ) ([]byte, string, string, error) {
 	if request == nil {
@@ -343,6 +347,9 @@ func canonicalNotificationDeviceProof(
 	}
 	if orgID <= 0 || assetID <= 0 {
 		return nil, "", "", fmt.Errorf("device proof requires positive organization and asset IDs")
+	}
+	if !validCanonicalCertificateSerial(certificateSerial) {
+		return nil, "", "", fmt.Errorf("device proof certificate serial must be canonical lowercase octet hexadecimal")
 	}
 	if timestamp < 0 {
 		return nil, "", "", fmt.Errorf("device proof timestamp must be non-negative")
@@ -353,17 +360,52 @@ func canonicalNotificationDeviceProof(
 	}
 	uri := fmt.Sprintf("urn:wendy:org:%d:asset:%d", orgID, assetID)
 	timestampText := strconv.FormatInt(timestamp, 10)
-	canonical := make([]byte, 0, len(deviceProofDomain)+len(deviceProofFullMethod)+len(uri)+len(timestampText)+len(requestBytes)+4)
+	canonical := make([]byte, 0, len(deviceProofDomain)+len(deviceProofFullMethod)+len(uri)+len(certificateSerial)+len(timestampText)+len(requestBytes)+5)
 	canonical = append(canonical, deviceProofDomain...)
 	canonical = append(canonical, 0)
 	canonical = append(canonical, deviceProofFullMethod...)
 	canonical = append(canonical, 0)
 	canonical = append(canonical, uri...)
 	canonical = append(canonical, 0)
+	canonical = append(canonical, certificateSerial...)
+	canonical = append(canonical, 0)
 	canonical = append(canonical, timestampText...)
 	canonical = append(canonical, 0)
 	canonical = append(canonical, requestBytes...)
 	return canonical, uri, timestampText, nil
+}
+
+func validCanonicalCertificateSerial(value string) bool {
+	// Match Cloud's Swift X509 representation: two lowercase hexadecimal
+	// characters per unsigned, big-endian serial byte, with no redundant 00 byte.
+	if value == "" || len(value) > 40 || len(value)%2 != 0 || value == "00" || strings.HasPrefix(value, "00") {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func provisionedLeafCertificateSerial(certPEM string) (string, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("decode provisioned device leaf certificate PEM")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse provisioned device leaf certificate: %w", err)
+	}
+	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 {
+		return "", fmt.Errorf("provisioned device leaf certificate serial must be positive")
+	}
+	serial := hex.EncodeToString(certificate.SerialNumber.Bytes())
+	if !validCanonicalCertificateSerial(serial) {
+		return "", fmt.Errorf("provisioned device leaf certificate serial is not canonical")
+	}
+	return serial, nil
 }
 
 func parseDeviceProofPrivateKey(keyData []byte) (*ecdsa.PrivateKey, error) {
@@ -401,11 +443,12 @@ func parseDeviceProofPrivateKey(keyData []byte) (*ecdsa.PrivateKey, error) {
 func signNotificationDeviceProof(
 	request *cloudpb.CreateNotificationV2Request,
 	orgID, assetID int32,
+	certificateSerial string,
 	timestamp int64,
 	keyData []byte,
 	random io.Reader,
 ) (notificationDeviceProof, error) {
-	canonical, uri, timestampText, err := canonicalNotificationDeviceProof(request, orgID, assetID, timestamp)
+	canonical, uri, timestampText, err := canonicalNotificationDeviceProof(request, orgID, assetID, certificateSerial, timestamp)
 	if err != nil {
 		return notificationDeviceProof{}, err
 	}
@@ -419,9 +462,10 @@ func signNotificationDeviceProof(
 		return notificationDeviceProof{}, fmt.Errorf("sign device request proof: %w", err)
 	}
 	return notificationDeviceProof{
-		uri:       uri,
-		timestamp: timestampText,
-		signature: base64.RawURLEncoding.EncodeToString(signature),
+		uri:               uri,
+		certificateSerial: certificateSerial,
+		timestamp:         timestampText,
+		signature:         base64.RawURLEncoding.EncodeToString(signature),
 	}, nil
 }
 
@@ -430,16 +474,22 @@ func notificationDeviceProofContext(
 	request *cloudpb.CreateNotificationV2Request,
 	orgID, assetID int32,
 	timestamp int64,
+	certPEM string,
 	keyData []byte,
 	random io.Reader,
 ) (context.Context, error) {
-	proof, err := signNotificationDeviceProof(request, orgID, assetID, timestamp, keyData, random)
+	certificateSerial, err := provisionedLeafCertificateSerial(certPEM)
+	if err != nil {
+		return nil, err
+	}
+	proof, err := signNotificationDeviceProof(request, orgID, assetID, certificateSerial, timestamp, keyData, random)
 	if err != nil {
 		return nil, err
 	}
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
 	md.Set(deviceProofURIHeader, proof.uri)
+	md.Set(deviceProofCertificateSerialHeader, proof.certificateSerial)
 	md.Set(deviceProofTimestampHeader, proof.timestamp)
 	md.Set(deviceProofSignatureHeader, proof.signature)
 	return metadata.NewOutgoingContext(ctx, md), nil
@@ -481,6 +531,7 @@ func (s *CloudNotificationSender) CreateNotificationV2(
 		orgID,
 		assetID,
 		time.Now().Unix(),
+		certPEM,
 		keyData,
 		rand.Reader,
 	)
