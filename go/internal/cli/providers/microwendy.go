@@ -475,9 +475,7 @@ func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *li
 	}
 	defer client.Close()
 
-	if err := client.StopApp(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
-	}
+	client.StopApp() // silently ignore errors, the app may not be running
 
 	fmt.Println("Configuring the device...")
 	conf := &litepb.WendyConf{Wifi: wifi}
