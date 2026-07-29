@@ -1074,6 +1074,26 @@ func findGStreamerEncoder(inspectPath string) (gstEncoderResult, error) {
 	return findGStreamerEncoderFromSet(available)
 }
 
+// Encoders whose element registers even when the hardware is absent: Thor has no NVENC and
+// ships /dev/v4l2-nvenc as a /dev/null stub, so it loads and then fails to open.
+var encoderDeviceNodes = map[string]string{
+	"nvv4l2h264enc": "/dev/v4l2-nvenc",
+}
+
+// A stub such as /dev/null opens fine but rejects VIDIOC_QUERYCAP with ENOTTY. O_RDWR matches
+// how the encoder element opens it; no O_NOFOLLOW, since a platform may symlink the node and
+// the paths above are hardcoded. Indirected for tests.
+var v4l2NodeUsable = func(path string) bool {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd) //nolint:errcheck
+	var caps v4l2Capability
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCap, uintptr(unsafe.Pointer(&caps)))
+	return errno == 0
+}
+
 // findGStreamerEncoderFromSet performs encoder selection against a precomputed
 // element availability map. When available is nil (e.g. gst-inspect listing
 // failed), it falls back to attempting x264enc.
@@ -1082,7 +1102,25 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 	}
 
-	hasElem := func(name string) bool { return available[name] }
+	// An element needing a V4L2 node counts as available only if that node really works.
+	// Probed at most once per element: hasElem is consulted from several fallback paths, and
+	// reopening a real encoder node each time is wasteful.
+	probed := make(map[string]bool)
+	hasElem := func(name string) bool {
+		if !available[name] {
+			return false
+		}
+		node, gated := encoderDeviceNodes[name]
+		if !gated {
+			return true
+		}
+		if usable, seen := probed[name]; seen {
+			return usable
+		}
+		usable := v4l2NodeUsable(node)
+		probed[name] = usable
+		return usable
+	}
 	h264Parse := hasElem("h264parse")
 
 	h264Encoders := []string{
@@ -1108,7 +1146,7 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 		}
 		for name := range available {
 			lower := strings.ToLower(name)
-			if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
+			if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") && hasElem(name) {
 				return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, hasH264Parse: true}, nil
 			}
 		}
@@ -1131,7 +1169,7 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 	}
 	for name := range available {
 		lower := strings.ToLower(name)
-		if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
+		if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") && hasElem(name) {
 			return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 		}
 	}
@@ -1454,9 +1492,8 @@ func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 	var enc string
 	switch encoder {
 	case "nvv4l2h264enc":
-		// Jetson L4T hardware encoder: NV12 only in NVMM memory, which is why the CSI path
-		// feeds it NVMM caps. videoconvert emits system memory, so nvvidconv has to move the
-		// frames across or the pipeline never links.
+		// Jetson L4T hardware encoder: NV12 only in NVMM memory. videoconvert emits system
+		// memory, so nvvidconv must move the frames across or the pipeline never links.
 		enc = "videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! " +
 			"video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc" + kf
 	case "v4l2h264enc":
