@@ -211,13 +211,18 @@ jobs:
               echo "- Allowlisted devices selected: $COUNT"
               if [[ "$DISCOVERED_COUNT" -gt 0 && "$COUNT" -eq 0 ]]; then
                 echo
-                echo "No discovered LAN devices matched the integration allowlist, so downstream integration jobs will be skipped."
+                echo "No discovered LAN devices matched the integration allowlist."
               fi
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$DISCOVERED_COUNT" -eq 0 ]]; then
-            echo "ERROR: No LAN devices found via wendy discover" >&2
+          # Counts allowlisted selections, not raw discoveries: non-CI devices are
+          # always present on this LAN, so a nonzero discovery count is no evidence
+          # that any test can run. An empty matrix skips the integration jobs, and
+          # skipped jobs report success.
+          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
+            echo "ERROR: no allowlisted CI device found via wendy discover" >&2
+            echo "Expected one of: ${EXPECTED[*]}" >&2
             exit 1
           fi
 
