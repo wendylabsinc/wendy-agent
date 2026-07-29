@@ -36,6 +36,7 @@ Tests:
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
   python-env                Verify top-level wendy.json env reaches the container, incl. \${VAR} expansion (WDY-2040)
   python-env-flag           Verify 'wendy run --env' overrides wendy.json env per key (WDY-2040)
+  python-multiservice-env   Verify app-level env is the per-service default and a service overrides it per key (WDY-2040)
   python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
   compose-images            docker-compose multi-service deployment using public images
@@ -213,6 +214,7 @@ ALL_TESTS=(
     python-servicename
     python-env
     python-env-flag
+    python-multiservice-env
     compose-hello
     compose-images
     compose-companion
@@ -331,6 +333,33 @@ for test_name in "${TESTS[@]}"; do
             return 1
         }
         run_test "python-multiservice-resources (per-service limits)" per_service_limits_enforced
+
+        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
+    # ── Multi-service env (WDY-2040) ─────────────────────────────────────
+    # 'alpha' declares no env and must inherit both app-level keys; 'beta'
+    # overrides one and adds its own, and must still inherit the other. Each
+    # service prints "<svc>: PASS" / "<svc>: FAIL" and exits.
+    #
+    # Deliberately an attached run, not --deploy: --deploy creates the
+    # containers without starting them, so neither service would ever run.
+    # Attached mode streams both services' stdout, and the per-service exit
+    # codes do not reach the CLI, so assert on the verdict lines.
+    if [[ "$test_name" == "python-multiservice-env" ]]; then
+        app_id="sh.wendy.ci.python-multiservice-env"
+
+        per_service_env_applied() {
+            local out
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" 2>&1)
+            echo "$out"
+            if grep -q "alpha: FAIL" <<<"$out" || grep -q "beta: FAIL" <<<"$out"; then
+                return 1
+            fi
+            grep -q "alpha: PASS" <<<"$out" && grep -q "beta: PASS" <<<"$out"
+        }
+        run_test "$test_name" per_service_env_applied
 
         "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
         continue
