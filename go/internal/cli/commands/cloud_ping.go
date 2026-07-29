@@ -123,22 +123,27 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 	defer ticker.Stop()
 
 	seq := uint32(0)
+	// sendOne returns false once the requested count has been dispatched (or
+	// on a transport error), which the caller uses to stop the send phase.
+	// stats.Sent and pending are only updated after sendEcho actually
+	// succeeds, so a transport failure doesn't get counted as a lost reply.
 	sendOne := func() bool {
 		if count > 0 && int(seq) >= count {
 			return false
 		}
 		seq++
 		now := time.Now()
-		pending[seq] = sentEcho{originate: now}
-		stats.Sent++
-		if err := session.sendEcho(&cloudpb.IcmpEchoRequest{
+		req := &cloudpb.IcmpEchoRequest{
 			Identifier:      identifier,
 			Sequence:        seq,
 			Payload:         []byte("wendy-ping"),
 			OriginateUnixNs: uint64(now.UnixNano()),
-		}); err != nil {
+		}
+		if err := session.sendEcho(req); err != nil {
 			return false
 		}
+		pending[seq] = sentEcho{originate: now}
+		stats.Sent++
 		return true
 	}
 	if !sendOne() {
@@ -146,9 +151,23 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 	}
 
 	// Grace window after the last send so the final reply(ies) can still
-	// arrive; started once all echoes have been dispatched.
+	// arrive; armed exactly once, when the send phase ends (all echoes
+	// dispatched, or a transport error stopped it early).
 	graceTimer := time.NewTimer(24 * time.Hour)
 	defer graceTimer.Stop()
+	sendingDone := false
+	armGrace := func() {
+		if sendingDone {
+			return // already armed — a re-fired ticker.C must not push the deadline out again
+		}
+		sendingDone = true
+		ticker.Stop()
+		grace := interval
+		if grace < 500*time.Millisecond {
+			grace = 500 * time.Millisecond
+		}
+		graceTimer.Reset(grace)
+	}
 
 	finish := func() pingStats {
 		stats.Avg = pingAvg(total, stats.Received)
@@ -176,13 +195,7 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 			}
 		case <-ticker.C:
 			if !sendOne() {
-				// All echoes sent (or the session died); give stragglers one
-				// interval to answer, with a 500ms floor for short intervals.
-				grace := interval
-				if grace < 500*time.Millisecond {
-					grace = 500 * time.Millisecond
-				}
-				graceTimer.Reset(grace)
+				armGrace()
 			}
 		case <-graceTimer.C:
 			return finish()

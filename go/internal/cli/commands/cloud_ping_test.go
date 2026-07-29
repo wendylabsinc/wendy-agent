@@ -75,14 +75,28 @@ func TestRunPingLoopCountsReplies(t *testing.T) {
 	}
 }
 
+// TestRunPingLoopCountsLoss exercises the real "no replies" exit path: a
+// finite count against a session that swallows every echo must return on its
+// own once the grace window after the last send elapses — no ctx cancel
+// backstop involved. runPingLoop is given context.Background() (never
+// cancelled); only the safety net around the test itself has a deadline, and
+// it fails the test (rather than silently making it pass) if the loop hangs.
 func TestRunPingLoopCountsLoss(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	session := newFakePingSession(ctx)
+	session := newFakePingSession(t.Context())
 	session.drop = true
 	var out bytes.Buffer
-	stats := runPingLoop(ctx, session, "device-1", 2, 10*time.Millisecond, &out)
-	if stats.Sent != 2 || stats.Received != 0 {
-		t.Fatalf("stats = %+v, want 2 sent / 0 received", stats)
+
+	statsCh := make(chan pingStats, 1)
+	go func() {
+		statsCh <- runPingLoop(context.Background(), session, "device-1", 2, 10*time.Millisecond, &out)
+	}()
+
+	select {
+	case stats := <-statsCh:
+		if stats.Sent != 2 || stats.Received != 0 {
+			t.Fatalf("stats = %+v, want 2 sent / 0 received", stats)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runPingLoop did not return within 3s of the last send + grace window; the grace timer likely hung")
 	}
 }
