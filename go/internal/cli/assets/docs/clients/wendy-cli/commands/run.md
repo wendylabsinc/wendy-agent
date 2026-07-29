@@ -155,6 +155,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure (multi-service projects only). |
 | `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
+| `--env <KEY=VALUE>` | Set an environment variable in the container. Repeatable. Overrides a `wendy.json` `env` entry of the same key. See [Environment variables](#environment-variables). |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
@@ -193,6 +194,34 @@ period.
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
 
 Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
+
+Agents that do not advertise the `chunk-deploy-env` featureset ignore environment variables sent on the chunk-diff path. When the app sets any, `wendy run` uses the registry push instead and says so; with `--chunking force` it reports an error rather than starting the container without them. Updating the agent (`wendy device update`) restores the fast path.
+
+## Environment variables
+
+Environment variables reach the container from two places:
+
+```sh
+wendy run --env LOG_LEVEL=debug --env OTEL_LOGS_EXPORTER=console
+```
+
+and the `env` map in `wendy.json`, which is where they belong when they are part of the app rather than one run of it:
+
+```json
+{
+  "appId": "my-app",
+  "env": {
+    "LOG_LEVEL": "info",
+    "API_TOKEN": "${MY_API_TOKEN}"
+  }
+}
+```
+
+`${VAR}` (or `$VAR`) is expanded from the deploying machine's environment, so secrets stay out of the file. An entry whose value expands to empty is dropped, leaving whatever the image itself sets.
+
+For a multi-service app, the top-level `env` is the default for every service and a service's own `env` overrides it key by key. `--env` overrides both.
+
+Keys must be POSIX-portable environment variable names (letters, digits and `_`, not starting with a digit); the agent additionally reserves the `WENDY_`, `LD_` and `DYLD_` prefixes.
 
 ## Push-skip content verification
 
