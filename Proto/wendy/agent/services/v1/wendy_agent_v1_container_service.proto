@@ -126,6 +126,13 @@ message RunContainerLayersRequest {
     bytes image_config = 9;
 
     bytes image_signature = 10;  // Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
+
+    // Additional environment variables to inject. Format: "KEY=VALUE".
+    // Same semantics as CreateContainerRequest.env, which this path forwards to.
+    // Only honoured by agents advertising the "chunk-deploy-env" featureset;
+    // others ignore it, so a caller with env to deliver must check for that
+    // entry and fall back to the registry-push create path.
+    repeated string env = 11;
 }
 
 message CreateContainerRequest {

@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+	"github.com/wendylabsinc/wendy/go/internal/shared/agentfeature"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -319,7 +320,8 @@ func detectNvidiaGPUArch() string {
 }
 
 func detectFeatureset() []string {
-	var features []string
+	// Capabilities of the agent build itself; the rest are hardware probes.
+	features := []string{agentfeature.ChunkDeployEnv}
 
 	if _, err := os.Stat("/dev/nvidia0"); err == nil {
 		features = append(features, "gpu")
