@@ -434,3 +434,14 @@ func TestEnvNeedsRegistryDeploy(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEnvFlag(t *testing.T) {
+	if err := validateEnvFlag([]string{"OK=1", "EMPTY=", "WITH_EQUALS=a=b"}); err != nil {
+		t.Fatalf("validateEnvFlag rejected valid entries: %v", err)
+	}
+	for _, entry := range []string{"NO_EQUALS", "BAD-KEY=1", "1LEADING=1", "=1"} {
+		if err := validateEnvFlag([]string{entry}); err == nil {
+			t.Errorf("validateEnvFlag(%q) = nil, want an error", entry)
+		}
+	}
+}

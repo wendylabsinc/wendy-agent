@@ -524,9 +524,17 @@ func ValidateEnv(prefix string, env map[string]string) error {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if !envVarNamePattern.MatchString(k) {
-			return fmt.Errorf("%s: %q is not a valid environment variable name (letters, digits and '_' only, not starting with a digit)", prefix, k)
+		if err := ValidateEnvKey(prefix, k); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// ValidateEnvKey checks one environment variable name. See ValidateEnv.
+func ValidateEnvKey(prefix, key string) error {
+	if !envVarNamePattern.MatchString(key) {
+		return fmt.Errorf("%s: %q is not a valid environment variable name (letters, digits and '_' only, not starting with a digit)", prefix, key)
 	}
 	return nil
 }

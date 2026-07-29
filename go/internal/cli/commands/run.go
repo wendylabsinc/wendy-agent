@@ -490,8 +490,9 @@ type runOptions struct {
 	maxConcurrency       int
 	userArgs             []string
 	// env are extra KEY=VALUE environment variables injected into the container
-	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
-	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	// at create time (CreateContainerRequest.Env). Set by --env, and by fleet
+	// deploys to wire cross-component discovery (e.g. WENDY_FLEET_PEERS) into a
+	// component. They override wendy.json env of the same key.
 	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
@@ -546,6 +547,9 @@ func newRunCmd() *cobra.Command {
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateEnvFlag(opts.env); err != nil {
+				return err
+			}
 			if watch {
 				// In watch mode, hide build output unless a build fails (unless
 				// --verbose); detached + non-interactive are enforced by
@@ -573,6 +577,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable in the container as KEY=VALUE; repeatable, and overrides wendy.json env of the same key")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
@@ -1584,12 +1589,26 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
-		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
-		// env (discovery peers). Fleet env is appended last so it wins on key clash.
-		Env: append(resolveServiceEnv(appCfg), opts.env...),
+		Env:           deployEnv,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+}
+
+// validateEnvFlag checks --env entries are KEY=VALUE with a POSIX-portable
+// key, so a typo is reported before a build runs rather than by the agent at
+// container create.
+func validateEnvFlag(entries []string) error {
+	for _, kv := range entries {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--env %q must be KEY=VALUE", kv)
+		}
+		if err := appconfig.ValidateEnvKey("--env", key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // envNeedsRegistryDeploy reports whether env has to travel on the
