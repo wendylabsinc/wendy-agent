@@ -3,6 +3,7 @@ package appconfig
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -165,4 +166,60 @@ func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 			t.Errorf("ROS 2 example uses top-level key %q not declared in schema properties (additionalProperties:false would reject it)", k)
 		}
 	}
+}
+
+// TestSchemaJSON_MatchesStructFields is a sync guard: the schema declares
+// additionalProperties:false, so any field the Go structs decode but the schema
+// omits is reported as invalid by editors, and any schema-only property is
+// accepted in an editor and then silently dropped at load.
+func TestSchemaJSON_MatchesStructFields(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		props map[string]any
+		want  map[string]bool
+	}{
+		{"top level", schemaProps(t, schema), jsonFieldNames(reflect.TypeOf(AppConfig{}))},
+		{"$defs.service", schemaProps(t, defOf(t, schema, "service")), jsonFieldNames(reflect.TypeOf(ServiceConfig{}))},
+	}
+
+	for _, tc := range cases {
+		for key := range tc.want {
+			if _, ok := tc.props[key]; !ok {
+				t.Errorf("%s: schema is missing %q, which the struct decodes", tc.name, key)
+			}
+		}
+		for key := range tc.props {
+			// $schema is an editor pointer, not a config field.
+			if key == "$schema" {
+				continue
+			}
+			if !tc.want[key] {
+				t.Errorf("%s: schema declares %q, which no struct field decodes", tc.name, key)
+			}
+		}
+	}
+}
+
+func schemaProps(t *testing.T, node map[string]any) map[string]any {
+	t.Helper()
+	props, ok := node["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("node has no properties object")
+	}
+	return props
+}
+
+func defOf(t *testing.T, schema map[string]any, name string) map[string]any {
+	t.Helper()
+	defs, _ := schema["$defs"].(map[string]any)
+	def, ok := defs[name].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing $defs.%s", name)
+	}
+	return def
 }
