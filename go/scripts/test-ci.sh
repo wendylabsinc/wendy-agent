@@ -269,6 +269,18 @@ if [[ -n "$VERSION_JSON" ]]; then
     fi
 fi
 echo -e "${BOLD}==> GPU: ${DEVICE_HAS_GPU}${RESET}"
+
+# The Swift tests build their image with swift-container-plugin, so this host
+# needs a Swift toolchain — which the CLI provisions through swiftly, and
+# refuses to proceed without. Checking swiftly rather than swift matters on
+# macOS, where /usr/bin/swift is an Xcode shim that exists even with no usable
+# toolchain behind it. Skipping here rather than listing tests per-runner in
+# the workflow keeps one source of truth for what exists.
+HOST_HAS_SWIFT=false
+if command -v swiftly &>/dev/null; then
+    HOST_HAS_SWIFT=true
+fi
+echo -e "${BOLD}==> Swift toolchain (swiftly): ${HOST_HAS_SWIFT}${RESET}"
 echo ""
 
 # ── Validate tests directory ─────────────────────────────────────────
@@ -332,6 +344,7 @@ else
     TESTS=("${ALL_TESTS[@]}")
 fi
 
+
 echo -e "${BOLD}==> Running ${#TESTS[@]} test(s)${RESET}"
 echo ""
 
@@ -341,6 +354,11 @@ for test_name in "${TESTS[@]}"; do
     test_dir="$TESTS_DIR/$test_name"
 
     # Skip GPU tests on devices that don't have a GPU.
+    if [[ "$test_name" == swift-* ]] && [[ "$HOST_HAS_SWIFT" != "true" ]]; then
+        skip_test "$test_name" "no Swift toolchain (swiftly) on this host"
+        continue
+    fi
+
     if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_GPU" != "true" ]]; then
         skip_test "$test_name" "no GPU"
         continue
