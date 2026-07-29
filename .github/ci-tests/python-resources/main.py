@@ -25,6 +25,31 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 failures = []
 
 
+def cgroup_v2_path(name):
+    """Resolve a cgroup v2 control file for this container.
+
+    With a private cgroup namespace the container's own cgroup is the root of
+    the mount, so the file sits directly under /sys/fs/cgroup. Wendy's OCI spec
+    does not unshare the cgroup namespace, so /sys/fs/cgroup is the host root
+    and this container's cgroup lives at the path named in /proc/self/cgroup.
+    Try both, so this test works either way.
+    """
+    direct = os.path.join(CGROUP_ROOT, name)
+    if os.path.exists(direct):
+        return direct
+    try:
+        with open("/proc/self/cgroup", "r") as f:
+            for line in f:
+                fields = line.strip().split(":", 2)
+                if len(fields) == 3 and fields[0] == "0":
+                    candidate = os.path.join(CGROUP_ROOT, fields[2].lstrip("/"), name)
+                    if os.path.exists(candidate):
+                        return candidate
+    except OSError:
+        pass
+    return direct  # let the caller's open() raise with a useful path
+
+
 def read(path):
     with open(path, "r") as f:
         return f.read().strip()
@@ -42,10 +67,10 @@ print(f"cgroup version: {'v2' if cgroup_v2 else 'v1'}")
 
 try:
     if cgroup_v2:
-        check("memory.max", int(read(f"{CGROUP_ROOT}/memory.max")), EXPECTED_MEM_BYTES)
-        check("pids.max", int(read(f"{CGROUP_ROOT}/pids.max")), EXPECTED_PIDS)
+        check("memory.max", int(read(cgroup_v2_path("memory.max"))), EXPECTED_MEM_BYTES)
+        check("pids.max", int(read(cgroup_v2_path("pids.max"))), EXPECTED_PIDS)
         # cpu.max is "<quota> <period>" (quota may be "max" when unset).
-        quota_s, period_s = read(f"{CGROUP_ROOT}/cpu.max").split()
+        quota_s, period_s = read(cgroup_v2_path("cpu.max")).split()
         check("cpu.max quota", int(quota_s), EXPECTED_CPU_QUOTA)
         check("cpu.max period", int(period_s), EXPECTED_CPU_PERIOD)
     else:
