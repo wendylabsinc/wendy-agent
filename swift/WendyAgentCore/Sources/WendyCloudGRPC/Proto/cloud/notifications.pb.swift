@@ -329,9 +329,6 @@ public nonisolated struct Wendycloud_V1_CreateNotificationV2Response: Sendable {
   /// Canonical lowercase UUID v4.
   public var notificationID: String = String()
 
-  /// Number of distinct recipient projections persisted, not successful push deliveries.
-  public var recipientCount: Int32 = 0
-
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -849,7 +846,7 @@ nonisolated extension Wendycloud_V1_CreateNotificationV2Request: SwiftProtobuf.M
 
 nonisolated extension Wendycloud_V1_CreateNotificationV2Response: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateNotificationV2Response"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}notification_id\0\u{3}recipient_count\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}notification_id\0\u{b}recipient_count\0\u{c}\u{2}\u{1}")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -858,7 +855,6 @@ nonisolated extension Wendycloud_V1_CreateNotificationV2Response: SwiftProtobuf.
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.notificationID) }()
-      case 2: try { try decoder.decodeSingularInt32Field(value: &self.recipientCount) }()
       default: break
       }
     }
@@ -868,15 +864,11 @@ nonisolated extension Wendycloud_V1_CreateNotificationV2Response: SwiftProtobuf.
     if !self.notificationID.isEmpty {
       try visitor.visitSingularStringField(value: self.notificationID, fieldNumber: 1)
     }
-    if self.recipientCount != 0 {
-      try visitor.visitSingularInt32Field(value: self.recipientCount, fieldNumber: 2)
-    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_CreateNotificationV2Response, rhs: Wendycloud_V1_CreateNotificationV2Response) -> Bool {
     if lhs.notificationID != rhs.notificationID {return false}
-    if lhs.recipientCount != rhs.recipientCount {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

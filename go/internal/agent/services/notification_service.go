@@ -109,10 +109,7 @@ func (s *SystemNotificationService) Send(
 	if response.GetNotificationId() != notificationID {
 		return nil, status.Error(codes.DataLoss, "Cloud returned a mismatched notification_id")
 	}
-	return &systempb.SendResponse{
-		NotificationId: response.GetNotificationId(),
-		RecipientCount: response.GetRecipientCount(),
-	}, nil
+	return &systempb.SendResponse{NotificationId: response.GetNotificationId()}, nil
 }
 
 func notificationForwardContext(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -296,8 +296,6 @@ type SendResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Canonical lowercase UUID v4 of the newly created Notification resource.
 	NotificationId string `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
-	// Number of distinct recipient projections persisted, not successful push deliveries.
-	RecipientCount int32 `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -339,13 +337,6 @@ func (x *SendResponse) GetNotificationId() string {
 	return ""
 }
 
-func (x *SendResponse) GetRecipientCount() int32 {
-	if x != nil {
-		return x.RecipientCount
-	}
-	return 0
-}
-
 var File_wendy_system_v1_notifications_proto protoreflect.FileDescriptor
 
 const file_wendy_system_v1_notifications_proto_rawDesc = "" +
@@ -363,10 +354,9 @@ const file_wendy_system_v1_notifications_proto_rawDesc = "" +
 	"\tdeep_link\x18\x05 \x01(\tR\bdeepLink\x12'\n" +
 	"\x0fnotification_id\x18\x06 \x01(\tR\x0enotificationId\x128\n" +
 	"\bmetadata\x18\a \x01(\v2\x17.google.protobuf.StructH\x00R\bmetadata\x88\x01\x01B\v\n" +
-	"\t_metadata\"`\n" +
+	"\t_metadata\"N\n" +
 	"\fSendResponse\x12'\n" +
-	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\x12'\n" +
-	"\x0frecipient_count\x18\x02 \x01(\x05R\x0erecipientCount*\xc5\x01\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationIdJ\x04\b\x02\x10\x03R\x0frecipient_count*\xc5\x01\n" +
 	"\x14NotificationSeverity\x12%\n" +
 	"!NOTIFICATION_SEVERITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aNOTIFICATION_SEVERITY_INFO\x10\x01\x12!\n" +

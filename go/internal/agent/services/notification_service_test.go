@@ -50,7 +50,6 @@ func (s *recordingNotificationSender) CreateNotificationV2(
 	s.requests = append(s.requests, request)
 	return &cloudpb.CreateNotificationV2Response{
 		NotificationId: request.GetNotificationId(),
-		RecipientCount: 1,
 	}, nil
 }
 
@@ -73,7 +72,6 @@ func (s *strictDuplicateNotificationSender) CreateNotificationV2(
 	s.seen[request.GetNotificationId()] = struct{}{}
 	return &cloudpb.CreateNotificationV2Response{
 		NotificationId: request.GetNotificationId(),
-		RecipientCount: 1,
 	}, nil
 }
 
@@ -90,7 +88,6 @@ func (mismatchedNotificationSender) CreateNotificationV2(
 ) (*cloudpb.CreateNotificationV2Response, error) {
 	return &cloudpb.CreateNotificationV2Response{
 		NotificationId: "c8a78877-4048-4829-8986-43528248a86e",
-		RecipientCount: 1,
 	}, nil
 }
 
@@ -176,9 +173,11 @@ func TestNotificationProtoContract(t *testing.T) {
 		"SendResponse":                 (&systempb.SendResponse{}).ProtoReflect().Descriptor(),
 	} {
 		field1 := descriptor.Fields().ByNumber(1)
-		field2 := descriptor.Fields().ByNumber(2)
-		if descriptor.Fields().Len() != 2 || field1 == nil || field1.Name() != "notification_id" || field2 == nil || field2.Name() != "recipient_count" {
-			t.Fatalf("%s fields = %v, want {notification_id, recipient_count}", name, descriptor.Fields())
+		if descriptor.Fields().Len() != 1 || field1 == nil || field1.Name() != "notification_id" {
+			t.Fatalf("%s fields = %v, want {notification_id}", name, descriptor.Fields())
+		}
+		if field2 := descriptor.Fields().ByNumber(2); field2 != nil {
+			t.Fatalf("%s field 2 = %v, want reserved recipient count", name, field2)
 		}
 	}
 }
@@ -201,8 +200,8 @@ func TestSystemNotificationServiceBindsTrustedAppIdentityAndMapsTransport(t *tes
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	if response.GetNotificationId() != input.GetNotificationId() || response.GetRecipientCount() != 1 {
-		t.Fatalf("response = %+v, want notification ID %q and recipient count 1", response, input.GetNotificationId())
+	if response.GetNotificationId() != input.GetNotificationId() {
+		t.Fatalf("response = %+v, want notification ID %q", response, input.GetNotificationId())
 	}
 	sender.mu.Lock()
 	defer sender.mu.Unlock()

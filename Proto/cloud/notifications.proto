@@ -104,8 +104,10 @@ message CreateNotificationV2Request {
 message CreateNotificationV2Response {
   // Canonical lowercase UUID v4.
   string notification_id = 1;
-  // Number of distinct recipient projections persisted, not successful push deliveries.
-  int32 recipient_count = 2;
+
+  // Recipient totals can disclose organization membership through team or role audiences.
+  reserved 2;
+  reserved "recipient_count";
 }
 
 message ListNotificationsRequest {

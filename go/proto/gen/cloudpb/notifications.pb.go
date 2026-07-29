@@ -511,8 +511,6 @@ type CreateNotificationV2Response struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Canonical lowercase UUID v4.
 	NotificationId string `protobuf:"bytes,1,opt,name=notification_id,json=notificationId,proto3" json:"notification_id,omitempty"`
-	// Number of distinct recipient projections persisted, not successful push deliveries.
-	RecipientCount int32 `protobuf:"varint,2,opt,name=recipient_count,json=recipientCount,proto3" json:"recipient_count,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -552,13 +550,6 @@ func (x *CreateNotificationV2Response) GetNotificationId() string {
 		return x.NotificationId
 	}
 	return ""
-}
-
-func (x *CreateNotificationV2Response) GetRecipientCount() int32 {
-	if x != nil {
-		return x.RecipientCount
-	}
-	return 0
 }
 
 type ListNotificationsRequest struct {
@@ -1075,10 +1066,9 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x06app_id\x18\t \x01(\tH\x02R\x05appId\x88\x01\x01B\x12\n" +
 	"\x10_organization_idB\v\n" +
 	"\t_metadataB\t\n" +
-	"\a_app_id\"p\n" +
+	"\a_app_id\"^\n" +
 	"\x1cCreateNotificationV2Response\x12'\n" +
-	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\x12'\n" +
-	"\x0frecipient_count\x18\x02 \x01(\x05R\x0erecipientCount\"\xb9\x02\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationIdJ\x04\b\x02\x10\x03R\x0frecipient_count\"\xb9\x02\n" +
 	"\x18ListNotificationsRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +

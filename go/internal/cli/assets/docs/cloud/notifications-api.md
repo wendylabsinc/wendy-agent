@@ -67,7 +67,9 @@ receives one Notification.
 | Field | Type | Description |
 |---|---|---|
 | `notification_id` | `string` | Canonical lowercase UUID of the newly created Notification resource. |
-| `recipient_count` | `int32` | Number of distinct recipient projections persisted, not successful push deliveries. |
+
+Recipient totals are intentionally omitted because team and role counts can disclose
+organization membership.
 
 ## `Notification` message
 
@@ -144,7 +146,9 @@ the Wendy agent stamps `app_id` from trusted container state.
 | Field | Type | Description |
 |---|---|---|
 | `notification_id` | `string` | Canonical lowercase UUID of the newly created Notification resource. |
-| `recipient_count` | `int32` | Number of distinct recipient projections persisted, capped by Cloud at 10,000; not successful push deliveries. |
+
+Recipient totals are intentionally omitted because team and role counts can disclose
+organization membership.
 
 ---
 
