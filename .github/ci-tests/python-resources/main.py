@@ -46,7 +46,7 @@ def cgroup_v2_path(name):
                     if os.path.exists(candidate):
                         return candidate
     except OSError:
-        pass
+        pass  # /proc/self/cgroup may be unreadable on some runtimes; fall through to the direct path
     return direct  # let the caller's open() raise with a useful path
 
 
