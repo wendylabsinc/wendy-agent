@@ -1,0 +1,173 @@
+package commands
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+)
+
+// udpFlowIdleTimeout is the client-edge flow lifetime: a local UDP peer that
+// stays silent this long is forgotten (the agent side keeps a 2min safety net).
+const udpFlowIdleTimeout = 60 * time.Second
+
+// datagramSession is one multiplexed DATAGRAM tunnel to a device, carrying
+// all UDP flows and ICMP echoes for that (client, device) pair.
+type datagramSession struct {
+	stream cloudpb.TunnelBrokerService_ClientTunnelClient
+	sendMu sync.Mutex
+}
+
+// datagramSender is the subset used by serveUDPForward, split out for tests.
+type datagramSender interface {
+	sendDatagram(flowID, port uint32, payload []byte) error
+	recv() (*cloudpb.TunnelData, error)
+}
+
+func openDatagramSession(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32) (*datagramSession, error) {
+	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
+	stream, err := client.ClientTunnel(cloudContext(ctx, auth))
+	if err != nil {
+		return nil, fmt.Errorf("opening datagram session: %w", err)
+	}
+	if err := stream.Send(&cloudpb.ClientTunnelMessage{
+		Content: &cloudpb.ClientTunnelMessage_Open{
+			Open: &cloudpb.ClientTunnelOpen{
+				AssetId:  assetID,
+				Host:     "localhost",
+				Protocol: cloudpb.TunnelProtocol_TUNNEL_PROTOCOL_DATAGRAM,
+			},
+		},
+	}); err != nil {
+		return nil, fmt.Errorf("sending datagram open: %w", err)
+	}
+	return &datagramSession{stream: stream}, nil
+}
+
+func (s *datagramSession) send(d *cloudpb.TunnelData) error {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	return s.stream.Send(&cloudpb.ClientTunnelMessage{
+		Content: &cloudpb.ClientTunnelMessage_Data{Data: d},
+	})
+}
+
+func (s *datagramSession) sendDatagram(flowID, port uint32, payload []byte) error {
+	return s.send(&cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
+		FlowId: flowID, Port: port, Payload: payload,
+	}})
+}
+
+func (s *datagramSession) sendEcho(req *cloudpb.IcmpEchoRequest) error {
+	return s.send(&cloudpb.TunnelData{IcmpRequest: req})
+}
+
+func (s *datagramSession) recv() (*cloudpb.TunnelData, error) { return s.stream.Recv() }
+
+func (s *datagramSession) close() { _ = s.stream.CloseSend() }
+
+// datagramOpenError maps the classic old-agent failure (the agent ignores the
+// protocol field, dials TCP, and never claims the session) to a helpful hint.
+func datagramOpenError(err error, device string) error {
+	if s, ok := status.FromError(err); ok &&
+		(s.Code() == codes.DeadlineExceeded || s.Code() == codes.Unavailable) {
+		return fmt.Errorf("%s did not answer the datagram session (%v); the device may be offline or need a WendyOS update for UDP/ping tunnel support", device, err)
+	}
+	return err
+}
+
+// serveUDPForward pumps datagrams between a local UDP listener and a datagram
+// session. Flows are keyed by local source address; the first packet from a
+// new source allocates a flow_id, replies route back by source, and entries
+// expire after `idle` without traffic.
+func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSender, remotePort uint32, idle time.Duration) {
+	type flowEntry struct {
+		addr       *net.UDPAddr
+		lastActive time.Time
+	}
+	var (
+		mu     sync.Mutex
+		nextID uint32 = 1
+		byAddr        = map[string]uint32{}
+		byID          = map[uint32]*flowEntry{}
+	)
+
+	// Session → local peers.
+	go func() {
+		for {
+			msg, err := session.recv()
+			if err != nil {
+				pc.Close() // unblocks the read loop below
+				return
+			}
+			d := msg.GetDatagram()
+			if d == nil {
+				continue
+			}
+			mu.Lock()
+			entry := byID[d.GetFlowId()]
+			if entry != nil {
+				entry.lastActive = time.Now()
+			}
+			mu.Unlock()
+			if entry != nil {
+				_, _ = pc.WriteToUDP(d.GetPayload(), entry.addr)
+			}
+		}
+	}()
+
+	// Idle sweep.
+	go func() {
+		t := time.NewTicker(idle / 4)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				mu.Lock()
+				for id, e := range byID {
+					if time.Since(e.lastActive) > idle {
+						delete(byAddr, e.addr.String())
+						delete(byID, id)
+					}
+				}
+				mu.Unlock()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Local peers → session.
+	buf := make([]byte, 65535)
+	for {
+		n, addr, err := pc.ReadFromUDP(buf)
+		if err != nil {
+			return // listener closed (ctx cancel or session death)
+		}
+		key := addr.String()
+		mu.Lock()
+		id, ok := byAddr[key]
+		if !ok {
+			id = nextID
+			nextID++
+			byAddr[key] = id
+			byID[id] = &flowEntry{addr: addr, lastActive: time.Now()}
+		} else {
+			byID[id].lastActive = time.Now()
+		}
+		mu.Unlock()
+		payload := make([]byte, n)
+		copy(payload, buf[:n])
+		if err := session.sendDatagram(id, remotePort, payload); err != nil {
+			return
+		}
+	}
+}
