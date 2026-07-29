@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,6 +22,14 @@ type pingSession interface {
 type pingStats struct {
 	Sent, Received int
 	Min, Avg, Max  time.Duration
+	// Err is the transport error (if any) that ended the recv loop — e.g.
+	// PermissionDenied, Unauthenticated, or a mesh-disabled rejection. Nil
+	// means the recv loop never errored (a silent device, or the ping ended
+	// normally). Callers should only fall back to the generic "may need a
+	// WendyOS update" hint when this is nil; otherwise surface it (through
+	// datagramOpenError, which still special-cases DeadlineExceeded/
+	// Unavailable into the same hint).
+	Err error
 }
 
 func newCloudPingCmd() *cobra.Command {
@@ -80,6 +89,13 @@ func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL stri
 			stats.Avg.Round(time.Microsecond), stats.Max.Round(time.Microsecond))
 	}
 	if stats.Received == 0 && stats.Sent > 0 {
+		if stats.Err != nil {
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. datagramOpenError still folds
+			// DeadlineExceeded/Unavailable into that same hint.
+			return datagramOpenError(stats.Err, asset.GetName())
+		}
 		return fmt.Errorf("no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName())
 	}
 	return nil
@@ -95,18 +111,28 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 	identifier := uint32(os.Getpid() & 0xFFFF)
 	type sentEcho struct{ originate time.Time }
 	var (
-		stats   pingStats
-		pending = map[uint32]sentEcho{} // keyed by sequence
-		total   time.Duration
-		done    = make(chan struct{})
-		replies = make(chan *cloudpb.IcmpEchoReply, 16)
+		stats     pingStats
+		pending   = map[uint32]sentEcho{} // keyed by sequence
+		total     time.Duration
+		done      = make(chan struct{})
+		replies   = make(chan *cloudpb.IcmpEchoReply, 16)
+		lifeErrMu sync.Mutex
+		lifeErr   error // first transport error out of the recv loop, guarded by lifeErrMu
 	)
+	setLifeErr := func(err error) {
+		lifeErrMu.Lock()
+		if lifeErr == nil {
+			lifeErr = err
+		}
+		lifeErrMu.Unlock()
+	}
 
 	go func() {
 		defer close(done)
 		for {
 			msg, err := session.recv()
 			if err != nil {
+				setLifeErr(err)
 				return
 			}
 			if r := msg.GetIcmpReply(); r != nil && r.GetIdentifier() == identifier {
@@ -171,6 +197,9 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 
 	finish := func() pingStats {
 		stats.Avg = pingAvg(total, stats.Received)
+		lifeErrMu.Lock()
+		stats.Err = lifeErr
+		lifeErrMu.Unlock()
 		return stats
 	}
 

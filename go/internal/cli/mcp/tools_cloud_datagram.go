@@ -236,6 +236,10 @@ type mcpPingSession interface {
 type mcpPingStats struct {
 	Sent, Received int
 	Min, Avg, Max  time.Duration
+	// Err is the transport error (if any) that ended the recv loop. Nil means
+	// the recv loop never errored (silence, or a normal finish). Mirrors
+	// commands.pingStats.Err.
+	Err error
 }
 
 // mcpRunPingLoop sends one echo per interval (count of 0 = unbounded), writes
@@ -245,18 +249,28 @@ func mcpRunPingLoop(ctx context.Context, session mcpPingSession, target string, 
 	identifier := uint32(os.Getpid() & 0xFFFF)
 	type sentEcho struct{ originate time.Time }
 	var (
-		stats   mcpPingStats
-		pending = map[uint32]sentEcho{} // keyed by sequence
-		total   time.Duration
-		done    = make(chan struct{})
-		replies = make(chan *cloudpb.IcmpEchoReply, 16)
+		stats     mcpPingStats
+		pending   = map[uint32]sentEcho{} // keyed by sequence
+		total     time.Duration
+		done      = make(chan struct{})
+		replies   = make(chan *cloudpb.IcmpEchoReply, 16)
+		lifeErrMu sync.Mutex
+		lifeErr   error // first transport error out of the recv loop, guarded by lifeErrMu
 	)
+	setLifeErr := func(err error) {
+		lifeErrMu.Lock()
+		if lifeErr == nil {
+			lifeErr = err
+		}
+		lifeErrMu.Unlock()
+	}
 
 	go func() {
 		defer close(done)
 		for {
 			msg, err := session.recv()
 			if err != nil {
+				setLifeErr(err)
 				return
 			}
 			if r := msg.GetIcmpReply(); r != nil && r.GetIdentifier() == identifier {
@@ -318,6 +332,9 @@ func mcpRunPingLoop(ctx context.Context, session mcpPingSession, target string, 
 
 	finish := func() mcpPingStats {
 		stats.Avg = mcpPingAvg(total, stats.Received)
+		lifeErrMu.Lock()
+		stats.Err = lifeErr
+		lifeErrMu.Unlock()
 		return stats
 	}
 

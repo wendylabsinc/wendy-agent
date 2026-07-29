@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"testing"
@@ -146,6 +147,42 @@ func TestDatagramRelayIdleExpiry(t *testing.T) {
 			t.Fatalf("flow not expired; activeFlows=%d", relay.activeFlows())
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestDatagramRelayFlowCap verifies flow_id — entirely client-controlled —
+// cannot open unbounded sockets/goroutines on the agent: the
+// maxFlowsPerSession+1th distinct flow_id is rejected with
+// errFlowCapReached (no socket dialed), while re-using an already-open
+// flow_id past the cap still succeeds (it's a write, not a new fd).
+func TestDatagramRelayFlowCap(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newFakeAgentStream(ctx)
+	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
+
+	// UDP connect() doesn't require a listener on the far end, so distinct
+	// loopback ports below are fine to dial without an echo server.
+	for i := uint32(0); i < maxFlowsPerSession; i++ {
+		if _, err := relay.flow(ctx, i+1, 9); err != nil {
+			t.Fatalf("flow %d: unexpected error opening flow within cap: %v", i+1, err)
+		}
+	}
+	if got := relay.activeFlows(); got != maxFlowsPerSession {
+		t.Fatalf("activeFlows = %d, want %d", got, maxFlowsPerSession)
+	}
+
+	if _, err := relay.flow(ctx, maxFlowsPerSession+100, 9); !errors.Is(err, errFlowCapReached) {
+		t.Fatalf("flow beyond cap: err = %v, want errFlowCapReached", err)
+	}
+	if got := relay.activeFlows(); got != maxFlowsPerSession {
+		t.Fatalf("activeFlows after rejected flow = %d, want unchanged %d", got, maxFlowsPerSession)
+	}
+
+	// An already-open flow_id is a write to an existing socket, not a new
+	// fd, so it must succeed even though the session is at the cap.
+	if _, err := relay.flow(ctx, 1, 9); err != nil {
+		t.Fatalf("re-using an already-open flow_id at cap: unexpected error: %v", err)
 	}
 }
 

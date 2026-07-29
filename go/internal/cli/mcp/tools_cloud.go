@@ -467,6 +467,13 @@ func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolReque
 
 	stats := mcpRunPingLoop(ctx, session, asset.GetName(), count, time.Second, io.Discard)
 	if stats.Received == 0 {
+		if stats.Err != nil {
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. mcpDatagramOpenError still folds
+			// DeadlineExceeded/Unavailable into that same hint.
+			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, asset.GetName()).Error()), nil
+		}
 		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName()), nil
 	}
 

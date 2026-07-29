@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -16,7 +17,27 @@ const (
 	// sockets; the client edge owns the primary (60s) flow lifetime.
 	datagramFlowIdleTimeout = 2 * time.Minute
 	maxUDPPayload           = 65507
+
+	// maxFlowsPerSession bounds how many concurrent UDP sockets (each backed
+	// by its own goroutine) one datagram session will open. flow_id is
+	// entirely client-assigned and unauthenticated beyond session membership,
+	// so without a cap a buggy or hostile same-org client could walk flow_id
+	// and exhaust the device's file descriptors / goroutines. 256 comfortably
+	// covers the multi-flow use cases this design targets (a handful of UDP
+	// streams plus ICMP per session) while bounding worst-case resource use
+	// per session to a few hundred sockets.
+	maxFlowsPerSession = 256
+
+	// rateLimitLogInterval bounds how often a single client can force a log
+	// line for the same recurring condition (oversize datagram, flow-table
+	// cap, dial failure) — mirrors the pre-existing lastOversizeLog pattern.
+	rateLimitLogInterval = 10 * time.Second
 )
+
+// errFlowCapReached is returned by flow() when a brand-new flow_id would push
+// the session over maxFlowsPerSession. It never applies to an already-open
+// flow_id (that path is just a write to an existing socket, not a new fd).
+var errFlowCapReached = errors.New("datagram flow-table cap reached")
 
 // datagramRelay serves one DATAGRAM tunnel session: a flow table of connected
 // loopback UDP sockets keyed by client-assigned flow_id, plus inline ICMP echo
@@ -32,6 +53,8 @@ type datagramRelay struct {
 	flows map[uint32]*datagramFlow
 
 	lastOversizeLog time.Time
+	lastFlowCapLog  time.Time
+	lastDialFailLog time.Time
 }
 
 type datagramFlow struct {
@@ -119,7 +142,7 @@ func (r *datagramRelay) handleEcho(req *cloudpb.IcmpEchoRequest) {
 func (r *datagramRelay) handleDatagram(ctx context.Context, d *cloudpb.TunnelDatagram) {
 	if len(d.GetPayload()) > maxUDPPayload {
 		r.mu.Lock()
-		if time.Since(r.lastOversizeLog) > 10*time.Second {
+		if time.Since(r.lastOversizeLog) > rateLimitLogInterval {
 			r.lastOversizeLog = time.Now()
 			r.logger.Warn("dropping oversized tunnel datagram",
 				zap.Uint32("flow_id", d.GetFlowId()), zap.Int("size", len(d.GetPayload())))
@@ -130,8 +153,23 @@ func (r *datagramRelay) handleDatagram(ctx context.Context, d *cloudpb.TunnelDat
 
 	flow, err := r.flow(ctx, d.GetFlowId(), d.GetPort())
 	if err != nil {
-		r.logger.Warn("failed to open UDP flow",
-			zap.Uint32("flow_id", d.GetFlowId()), zap.Uint32("port", d.GetPort()), zap.Error(err))
+		if errors.Is(err, errFlowCapReached) {
+			r.mu.Lock()
+			if time.Since(r.lastFlowCapLog) > rateLimitLogInterval {
+				r.lastFlowCapLog = time.Now()
+				r.logger.Warn("dropping datagram: session flow-table cap reached",
+					zap.Uint32("flow_id", d.GetFlowId()), zap.Int("max_flows", maxFlowsPerSession))
+			}
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Lock()
+		if time.Since(r.lastDialFailLog) > rateLimitLogInterval {
+			r.lastDialFailLog = time.Now()
+			r.logger.Warn("failed to open UDP flow",
+				zap.Uint32("flow_id", d.GetFlowId()), zap.Uint32("port", d.GetPort()), zap.Error(err))
+		}
+		r.mu.Unlock()
 		return
 	}
 	if _, err := flow.conn.Write(d.GetPayload()); err != nil {
@@ -145,6 +183,9 @@ func (r *datagramRelay) flow(ctx context.Context, flowID, port uint32) (*datagra
 	if f, ok := r.flows[flowID]; ok {
 		f.lastActive = time.Now()
 		return f, nil
+	}
+	if len(r.flows) >= maxFlowsPerSession {
+		return nil, errFlowCapReached
 	}
 	conn, err := net.DialUDP("udp",
 		nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)})
