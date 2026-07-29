@@ -72,6 +72,21 @@ bash go/scripts/test-ci.sh <name>
 
 Refer to the `usage()` block in that script for a full list of available test names and options.
 
+### Identifying the device under test
+
+Before running anything, the harness logs the agent version, OS, device type and architecture it found via `wendy device info`:
+
+```
+==> Agent version: 2026.07.27-003050
+==> Device OS: wendyos WendyOS-0.17.0
+==> Device type: jetson-agx-thor (arm64)
+```
+
+Read this first when triaging a failure. A result is only meaningful against a known agent, and an out-of-date agent produces failures indistinguishable from product bugs. Two values are worth recognising:
+
+- `Agent version: dev` — an unstamped binary, so a hand-built agent rather than a release. Push a current one with `wendy device update --device <host>`.
+- `Device type: none reported` — no `/etc/wendyos/device-type`, so the target is a generic Linux agent install and not a WendyOS image. Such a host is skipped by the nightly OS update and has no auto-updater, so its agent only changes when someone deploys one.
+
 ### CI execution
 
 Integration tests run in `.github/workflows/integration-tests.yml` on both macOS and Linux runners. Neither job names the tests it runs — the harness runs `ALL_TESTS` and decides what is applicable, so a newly registered test needs no workflow change.

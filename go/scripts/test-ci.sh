@@ -258,19 +258,44 @@ fi
 echo -e "${BOLD}==> Target device: ${HOSTNAME}${RESET}"
 echo ""
 
+# ── Device under test ────────────────────────────────────────────────
+# Recorded before anything runs, because a failure caused by an out-of-date
+# agent is otherwise indistinguishable in the log from a product bug. The whole
+# suite's verdict is only meaningful against a known agent, so identify it.
+
+VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
+
+# device_field prints a field of VERSION_JSON, or its fallback when the field is
+# absent, null, or the empty string — a device reporting no deviceType at all is
+# exactly the case worth seeing, so an empty value must not read as blank.
+device_field() {
+    local value=""
+    if [[ -n "$VERSION_JSON" ]]; then
+        value=$(echo "$VERSION_JSON" | jq -r --arg f "$1" '.[$f] // ""' 2>/dev/null || true)
+    fi
+    if [[ -n "$value" ]]; then
+        echo "$value"
+    else
+        echo "$2"
+    fi
+}
+
+if [[ -z "$VERSION_JSON" ]]; then
+    echo -e "${YELLOW}==> WARNING: 'wendy device info' returned nothing — the agent under test cannot be identified${RESET}"
+fi
+echo -e "${BOLD}==> Agent version: $(device_field version 'unknown')${RESET}"
+echo -e "${BOLD}==> Device OS: $(device_field os 'unknown') $(device_field osVersion 'unknown')${RESET}"
+echo -e "${BOLD}==> Device type: $(device_field deviceType 'none reported') ($(device_field cpuArchitecture 'unknown'))${RESET}"
+
 # ── Device capability detection ──────────────────────────────────────
 
 # Both *-gpu tests are CUDA tests, so they need an NVIDIA GPU specifically —
 # hasGpu is also true for any device with a /dev/dri node, which selected them
 # on an amd64 host with an AMD iGPU where a CUDA test cannot pass.
+DEVICE_GPU_VENDOR=$(device_field gpuVendor '')
 DEVICE_HAS_CUDA=false
-DEVICE_GPU_VENDOR=""
-VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
-if [[ -n "$VERSION_JSON" ]]; then
-    DEVICE_GPU_VENDOR=$(echo "$VERSION_JSON" | jq -r '.gpuVendor // ""' 2>/dev/null || true)
-    if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
-        DEVICE_HAS_CUDA=true
-    fi
+if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
+    DEVICE_HAS_CUDA=true
 fi
 echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none})${RESET}"
 
