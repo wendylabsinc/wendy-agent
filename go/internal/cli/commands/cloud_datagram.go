@@ -88,23 +88,44 @@ func datagramOpenError(err error, device string) error {
 // session. Flows are keyed by local source address; the first packet from a
 // new source allocates a flow_id, replies route back by source, and entries
 // expire after `idle` without traffic.
-func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSender, remotePort uint32, idle time.Duration) {
+//
+// It returns nil when `ctx` is what ended the loop (normal shutdown, e.g.
+// Ctrl+C), or the error that killed the session/listener otherwise — callers
+// use this to tell "user stopped it" from "the tunnel died underneath us"
+// (see cloudTunnelCommand, which folds a non-nil result through
+// datagramOpenError for the WendyOS-update hint).
+func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSender, remotePort uint32, idle time.Duration) error {
 	type flowEntry struct {
 		addr       *net.UDPAddr
 		lastActive time.Time
 	}
 	var (
-		mu     sync.Mutex
-		nextID uint32 = 1
-		byAddr        = map[string]uint32{}
-		byID          = map[uint32]*flowEntry{}
+		mu      sync.Mutex
+		nextID  uint32 = 1
+		byAddr         = map[string]uint32{}
+		byID           = map[uint32]*flowEntry{}
+		lifeErr error  // first error that ended the session, guarded by mu
 	)
+	setLifeErr := func(err error) {
+		mu.Lock()
+		if lifeErr == nil {
+			lifeErr = err
+		}
+		mu.Unlock()
+	}
+
+	// done ties the idle-sweep goroutine's lifetime to this call, not just to
+	// ctx: without it, a session death (not a ctx cancellation) would leave
+	// the sweep goroutine parked on ctx.Done() until process exit.
+	done := make(chan struct{})
+	defer close(done)
 
 	// Session → local peers.
 	go func() {
 		for {
 			msg, err := session.recv()
 			if err != nil {
+				setLifeErr(err)
 				pc.Close() // unblocks the read loop below
 				return
 			}
@@ -141,6 +162,8 @@ func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSende
 				mu.Unlock()
 			case <-ctx.Done():
 				return
+			case <-done:
+				return
 			}
 		}
 	}()
@@ -150,7 +173,7 @@ func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSende
 	for {
 		n, addr, err := pc.ReadFromUDP(buf)
 		if err != nil {
-			return // listener closed (ctx cancel or session death)
+			break // listener closed (ctx cancel or session death)
 		}
 		key := addr.String()
 		mu.Lock()
@@ -167,7 +190,19 @@ func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSende
 		payload := make([]byte, n)
 		copy(payload, buf[:n])
 		if err := session.sendDatagram(id, remotePort, payload); err != nil {
-			return
+			setLifeErr(err)
+			break
 		}
 	}
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	mu.Lock()
+	err := lifeErr
+	mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("datagram session closed unexpectedly: %w", err)
+	}
+	return nil
 }

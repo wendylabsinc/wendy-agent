@@ -106,8 +106,11 @@ func cloudTunnelCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL st
 		cliSuccess("Forwarding udp 127.0.0.1:%d → %s:%d (via cloud)", localPort, asset.GetName(), remotePort)
 		cliLogln("Press Ctrl+C to stop.")
 		go func() { <-ctx.Done(); pc.Close() }()
-		serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout)
-		return ctx.Err()
+		udpErr := serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return datagramOpenError(udpErr, asset.GetName())
 	}
 
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", localPort)

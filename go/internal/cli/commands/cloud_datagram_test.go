@@ -85,7 +85,8 @@ func TestServeUDPForwardRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	session := newFakeDatagramSession(ctx)
-	go serveUDPForward(ctx, pc, session, 7000, time.Minute)
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveUDPForward(ctx, pc, session, 7000, time.Minute) }()
 
 	client, err := net.DialUDP("udp", nil, pc.LocalAddr().(*net.UDPAddr))
 	if err != nil {
@@ -104,5 +105,17 @@ func TestServeUDPForwardRoundTrip(t *testing.T) {
 	}
 	if string(buf[:n]) != "probe" {
 		t.Fatalf("payload = %q, want probe", buf[:n])
+	}
+
+	// Shutdown (Ctrl+C-style ctx cancel) must report nil, not the session's
+	// benign context.Canceled recv() error.
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("serveUDPForward returned %v on ctx shutdown, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for serveUDPForward to return after cancel")
 	}
 }
