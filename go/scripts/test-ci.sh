@@ -260,15 +260,19 @@ echo ""
 
 # ── Device capability detection ──────────────────────────────────────
 
-DEVICE_HAS_GPU=false
+# Both *-gpu tests are CUDA tests, so they need an NVIDIA GPU specifically —
+# hasGpu is also true for any device with a /dev/dri node, which selected them
+# on an amd64 host with an AMD iGPU where a CUDA test cannot pass.
+DEVICE_HAS_CUDA=false
+DEVICE_GPU_VENDOR=""
 VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
 if [[ -n "$VERSION_JSON" ]]; then
-    GPU_VAL=$(echo "$VERSION_JSON" | jq -r '.hasGpu // false' 2>/dev/null || true)
-    if [[ "$GPU_VAL" == "true" ]]; then
-        DEVICE_HAS_GPU=true
+    DEVICE_GPU_VENDOR=$(echo "$VERSION_JSON" | jq -r '.gpuVendor // ""' 2>/dev/null || true)
+    if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
+        DEVICE_HAS_CUDA=true
     fi
 fi
-echo -e "${BOLD}==> GPU: ${DEVICE_HAS_GPU}${RESET}"
+echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none})${RESET}"
 
 # The Swift tests build their image with swift-container-plugin, so this host
 # needs a Swift toolchain — which the CLI provisions through swiftly, and
@@ -353,14 +357,13 @@ echo ""
 for test_name in "${TESTS[@]}"; do
     test_dir="$TESTS_DIR/$test_name"
 
-    # Skip GPU tests on devices that don't have a GPU.
     if [[ "$test_name" == swift-* ]] && [[ "$HOST_HAS_SWIFT" != "true" ]]; then
         skip_test "$test_name" "no Swift toolchain (swiftly) on this host"
         continue
     fi
 
-    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_GPU" != "true" ]]; then
-        skip_test "$test_name" "no GPU"
+    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
+        skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
         continue
     fi
 
