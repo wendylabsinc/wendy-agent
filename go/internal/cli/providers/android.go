@@ -94,7 +94,7 @@ func (p *AndroidProvider) CanBuild(projectPath string) bool {
 	return err == nil
 }
 
-func (p *AndroidProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *AndroidProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	// Use swiftly to invoke the Swift Android SDK bundle-apk command.
 	args := []string{"run", "+main-snapshot", "swift", "package", "--disable-sandbox", "--allow-writing-to-package-directory", "bundle-apk", "--product", product}
 	cmd := exec.CommandContext(ctx, "swiftly", args...)
@@ -250,4 +250,8 @@ func (p *AndroidProvider) Stop(ctx context.Context, app *BuiltApp) error {
 	stopArgs := append(serialArgs, "shell", "am", "force-stop", bc.PackageID)
 	cmd := exec.CommandContext(ctx, "adb", stopArgs...)
 	return cmd.Run()
+}
+
+func (p *AndroidProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
 }

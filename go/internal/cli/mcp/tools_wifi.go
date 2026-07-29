@@ -76,10 +76,7 @@ func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest)
 			"priority":     n.GetPriority(),
 		})
 	}
-	if networks == nil {
-		networks = []map[string]any{}
-	}
-	return okResult(networks), nil
+	return okList("networks", networks), nil
 }
 
 func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -156,8 +153,5 @@ func (s *mcpServer) handleWiFiKnownNetworks(ctx context.Context, _ mcpgo.CallToo
 			"security": n.GetSecurity().String(),
 		})
 	}
-	if networks == nil {
-		networks = []map[string]any{}
-	}
-	return okResult(networks), nil
+	return okList("networks", networks), nil
 }

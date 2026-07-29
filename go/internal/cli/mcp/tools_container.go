@@ -131,10 +131,7 @@ func (s *mcpServer) handleContainerList(ctx context.Context, _ mcpgo.CallToolReq
 		}
 		containers = append(containers, entry)
 	}
-	if containers == nil {
-		containers = []map[string]any{}
-	}
-	return okResult(containers), nil
+	return okList("containers", containers), nil
 }
 
 func (s *mcpServer) handleContainerStart(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -237,10 +234,7 @@ func (s *mcpServer) handleContainerStats(ctx context.Context, _ mcpgo.CallToolRe
 			"storage_bytes": cs.GetStorageBytes(),
 		})
 	}
-	if stats == nil {
-		stats = []map[string]any{}
-	}
-	return okResult(stats), nil
+	return okList("stats", stats), nil
 }
 
 func (s *mcpServer) handleContainerAttach(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

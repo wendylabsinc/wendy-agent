@@ -116,11 +116,7 @@ func TestDeviceList_ReturnsConfiguredDevices(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) == 0 {
 		t.Fatal("expected at least one device")
 	}
@@ -140,10 +136,7 @@ func TestDeviceList_SourceFieldOnConfigEntries(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(toolResultText(t, result)), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	for _, d := range devices {
 		if d["source"] != "config" {
 			t.Errorf("expected source=config, got %v (device: %v)", d["source"], d)
@@ -167,10 +160,7 @@ func TestDeviceList_ScanTrue_IncludesScanResults(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(toolResultText(t, result)), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(devices))
 	}

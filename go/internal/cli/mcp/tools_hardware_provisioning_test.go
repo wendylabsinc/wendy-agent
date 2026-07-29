@@ -105,11 +105,7 @@ func TestHardwareCapabilities_ReturnsList(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var caps []map[string]any
-	if err := json.Unmarshal([]byte(text), &caps); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	caps := listPayload(t, result, "capabilities")
 	if len(caps) != 1 {
 		t.Fatalf("expected 1 capability, got %d", len(caps))
 	}
@@ -138,8 +134,8 @@ func TestHardwareCapabilities_HasStructuredContent(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	if result.StructuredContent == nil {
-		t.Fatal("hardware_capabilities should return structuredContent")
+	if _, ok := structuredMap(t, result)["capabilities"]; !ok {
+		t.Error("hardware_capabilities envelope is missing the capabilities key")
 	}
 }
 
@@ -156,9 +152,10 @@ func TestHardwareCapabilities_EmptyList(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	if text != "[]" {
-		t.Errorf("expected empty JSON array, got %q", text)
+	// An empty result must still be an object envelope with the key present,
+	// not a bare [] — conformant clients reject a non-object structuredContent.
+	if caps := listPayload(t, result, "capabilities"); len(caps) != 0 {
+		t.Errorf("expected no capabilities, got %v", caps)
 	}
 }
 

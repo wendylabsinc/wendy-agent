@@ -98,10 +98,7 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 		}
 	}
 
-	if len(devices) == 0 {
-		devices = []map[string]any{}
-	}
-	return okResult(devices), nil
+	return okList("devices", devices), nil
 }
 
 func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

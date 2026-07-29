@@ -45,8 +45,5 @@ func (s *mcpServer) handleHardwareCapabilities(ctx context.Context, req mcpgo.Ca
 		}
 		caps = append(caps, entry)
 	}
-	if caps == nil {
-		caps = []map[string]any{}
-	}
-	return okResult(caps), nil
+	return okList("capabilities", caps), nil
 }

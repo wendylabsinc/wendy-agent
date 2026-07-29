@@ -21,6 +21,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -199,6 +200,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var partitions []*agentpb.DiskPartition
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
+			var providerInfo *providers.ProviderDeviceInfo
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
@@ -237,6 +239,20 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
+			} else if target.External != nil && target.Provider != nil {
+				info, infoErr := target.Provider.GetDeviceInfo(ctx, *target.External)
+				if infoErr != nil {
+					return fmt.Errorf("getting device info: %w", infoErr)
+				}
+				if info == nil {
+					return fmt.Errorf("selected device does not support this command")
+				}
+				agentVersion = info.AgentVersion
+				osName = info.OS
+				osVersion = info.OSVersion
+				cpuArch = info.CPUArchitecture
+				deviceType = info.DeviceType
+				providerInfo = info
 			} else {
 				return fmt.Errorf("selected device does not support this command")
 			}
@@ -254,6 +270,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 
 			var latestVersion string
 			if checkUpdates {
+				if providerInfo != nil {
+					return fmt.Errorf("update check is not supported for this device")
+				}
 				v, _, err := resolveAgentVersion(prerelease)
 				if err != nil {
 					return fmt.Errorf("checking for updates: %w", err)
@@ -322,6 +341,10 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
+				if providerInfo != nil {
+					out["wasmAppSupport"] = providerInfo.WasmAppSupport
+					out["nativeAppSupport"] = providerInfo.NativeAppSupport
+				}
 				if checkUpdates {
 					out["latestVersion"] = latestVersion
 					out["updateAvailable"] = version.CompareVersions(latestVersion, agentVersion) > 0
@@ -373,17 +396,23 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					fmt.Printf("%s %s\n", tui.Dim("GPU Arch:"), tui.Value(gpuArch))
 				}
 			}
+			if providerInfo != nil {
+				fmt.Printf("%s %s\n", tui.Dim("WASM Apps:"), tui.Value(yesNo(providerInfo.WasmAppSupport)))
+				fmt.Printf("%s %s\n", tui.Dim("Native Apps:"), tui.Value(yesNo(providerInfo.NativeAppSupport)))
+			}
 			if block := formatOSUpdateInfo(osUpdateStatus); block != "" {
 				fmt.Print(block)
 			}
 			fmt.Printf("%s %s\n", tui.Dim("CLI Version:"), tui.Value(version.Version))
 
-			if agentBehindCLI(version.Version, agentVersion) {
-				fmt.Println()
-				fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
-			} else if cliBehindAgent(version.Version, agentVersion) {
-				fmt.Println()
-				fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
+			if providerInfo == nil {
+				if agentBehindCLI(version.Version, agentVersion) {
+					fmt.Println()
+					fmt.Println(tui.WarningMessage("Agent is behind the CLI — run 'wendy device update' to update."))
+				} else if cliBehindAgent(version.Version, agentVersion) {
+					fmt.Println()
+					fmt.Println(tui.WarningMessage("CLI is behind the agent — consider updating the CLI."))
+				}
 			}
 
 			if checkUpdates {
@@ -409,6 +438,13 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 	cmd.Flags().BoolVar(&prerelease, "prerelease", false, "Include prerelease (nightly) builds when checking for updates")
 
 	return cmd
+}
+
+func yesNo(v bool) string {
+	if v {
+		return "yes"
+	}
+	return "no"
 }
 
 func newDeviceSetDefaultCmd() *cobra.Command {

@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"strings"
 	"testing"
@@ -177,11 +176,7 @@ func TestContainerList_ReturnsJSON(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var containers []map[string]any
-	if err := json.Unmarshal([]byte(text), &containers); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	containers := listPayload(t, result, "containers")
 	if len(containers) != 1 {
 		t.Fatalf("expected 1 container, got %d", len(containers))
 	}
@@ -256,11 +251,7 @@ func TestContainerStats_ReturnsJSON(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var stats []map[string]any
-	if err := json.Unmarshal([]byte(text), &stats); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	stats := listPayload(t, result, "stats")
 	if len(stats) != 1 {
 		t.Fatalf("expected 1 stat, got %d", len(stats))
 	}

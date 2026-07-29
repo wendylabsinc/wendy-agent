@@ -120,11 +120,7 @@ func TestWiFiList_ReturnsNetworks(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var networks []map[string]any
-	if err := json.Unmarshal([]byte(text), &networks); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	networks := listPayload(t, result, "networks")
 	if len(networks) != 1 {
 		t.Fatalf("expected 1 network, got %d", len(networks))
 	}
@@ -150,8 +146,8 @@ func TestWiFiList_HasStructuredContent(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	if result.StructuredContent == nil {
-		t.Fatal("wifi_list should return structuredContent")
+	if _, ok := structuredMap(t, result)["networks"]; !ok {
+		t.Error("wifi_list envelope is missing the networks key")
 	}
 }
 
@@ -247,11 +243,7 @@ func TestWiFiKnownNetworks_ReturnsNetworks(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var networks []map[string]any
-	if err := json.Unmarshal([]byte(text), &networks); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	networks := listPayload(t, result, "networks")
 	if len(networks) != 1 || networks[0]["ssid"] != "HomeNet" {
 		t.Errorf("unexpected networks: %v", networks)
 	}
@@ -285,11 +277,7 @@ func TestBluetoothScan_ReturnsPeripherals(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(devices))
 	}
@@ -315,8 +303,8 @@ func TestBluetoothScan_HasStructuredContent(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	if result.StructuredContent == nil {
-		t.Fatal("bluetooth_scan should return structuredContent")
+	if _, ok := structuredMap(t, result)["devices"]; !ok {
+		t.Error("bluetooth_scan envelope is missing the devices key")
 	}
 }
 
