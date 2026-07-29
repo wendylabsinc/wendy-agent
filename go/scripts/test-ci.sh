@@ -34,6 +34,8 @@ Tests:
   python-multiservice-resources  Verify per-service resource override + app-level inheritance (WDY-1729)
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
+  python-env                Verify top-level wendy.json env reaches the container, incl. \${VAR} expansion (WDY-2040)
+  python-env-flag           Verify 'wendy run --env' overrides wendy.json env per key (WDY-2040)
   python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
   compose-images            docker-compose multi-service deployment using public images
@@ -209,6 +211,8 @@ ALL_TESTS=(
     python-multiservice
     python-multiservice-resources
     python-servicename
+    python-env
+    python-env-flag
     compose-hello
     compose-images
     compose-companion
@@ -408,6 +412,27 @@ for test_name in "${TESTS[@]}"; do
         run_test "swift-start-detach (missing app start fails)" detach_start_missing_app_fails
 
         "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
+    # ── env tests ────────────────────────────────────────────────────────
+    # An attached `wendy run` exits 0 even when the container exits non-zero,
+    # so assert on the app's own verdict line instead of the exit code.
+    if [[ "$test_name" == python-env* ]]; then
+        env_test_passes() {
+            local out
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" "$@" 2>&1)
+            echo "$out"
+            grep -q '^PASS:' <<<"$out"
+        }
+        if [[ "$test_name" == "python-env-flag" ]]; then
+            # The overrides are the thing under test, so the runner supplies
+            # them: wendy.json sets CI_ENV_LEVEL=info and the flag must win,
+            # CI_ENV_REGION must survive, CI_ENV_ONLY_FLAG is flag-only.
+            run_test "$test_name" env_test_passes --env CI_ENV_LEVEL=debug --env CI_ENV_ONLY_FLAG=1
+        else
+            run_test "$test_name" env_test_passes
+        fi
         continue
     fi
 
