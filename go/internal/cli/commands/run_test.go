@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/agentfeature"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // containerDisplayName must print the real container identity in deploy
@@ -309,7 +311,7 @@ func TestExpandServiceEnv(t *testing.T) {
 		"LITERAL":    "5",
 	}}
 
-	got := expandServiceEnv(svc)
+	got := expandServiceEnv(nil, svc)
 	want := []string{"LITERAL=5", "MESH_PEERS=265,266,267"}
 	if len(got) != len(want) {
 		t.Fatalf("expandServiceEnv() = %v, want %v", got, want)
@@ -320,10 +322,115 @@ func TestExpandServiceEnv(t *testing.T) {
 		}
 	}
 
-	if expandServiceEnv(nil) != nil {
+	if expandServiceEnv(nil, nil) != nil {
 		t.Fatal("expandServiceEnv(nil) should be nil")
 	}
-	if expandServiceEnv(&appconfig.ServiceConfig{}) != nil {
+	if expandServiceEnv(nil, &appconfig.ServiceConfig{}) != nil {
 		t.Fatal("expandServiceEnv(no env) should be nil")
+	}
+}
+
+// TestExpandServiceEnv_AppLevelDefault covers WDY-2040: app-level env is the
+// default for each service, and the service's own env wins key by key.
+func TestExpandServiceEnv_AppLevelDefault(t *testing.T) {
+	appCfg := &appconfig.AppConfig{Env: map[string]string{
+		"SHARED":   "app",
+		"OVERRIDE": "app",
+	}}
+	svc := &appconfig.ServiceConfig{Env: map[string]string{
+		"OVERRIDE": "service",
+		"OWN":      "service",
+	}}
+
+	got := expandServiceEnv(appCfg, svc)
+	want := []string{"OVERRIDE=service", "OWN=service", "SHARED=app"}
+	if len(got) != len(want) {
+		t.Fatalf("expandServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expandServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestResolveServiceEnv_AppLevel covers WDY-2040: a single-container app has no
+// services map, so its env comes from the app level alone.
+func TestResolveServiceEnv_AppLevel(t *testing.T) {
+	t.Setenv("HOST_TOKEN", "abc123")
+
+	cfg := &appconfig.AppConfig{Env: map[string]string{
+		"OTEL_LOGS_EXPORTER": "console",
+		"TOKEN":              "${HOST_TOKEN}",
+		"UNSET":              "${NOT_SET_IN_HOST_ENV}",
+	}}
+
+	got := resolveServiceEnv(cfg)
+	want := []string{"OTEL_LOGS_EXPORTER=console", "TOKEN=abc123"}
+	if len(got) != len(want) {
+		t.Fatalf("resolveServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolveServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// A service env entry overrides the app-level default of the same key when the
+// whole app is deployed as one container request.
+func TestResolveServiceEnv_ServiceOverridesAppLevel(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Env: map[string]string{"SHARED": "app", "ONLY_APP": "app"},
+		Services: map[string]*appconfig.ServiceConfig{
+			"api": {Env: map[string]string{"SHARED": "service"}},
+		},
+	}
+
+	got := resolveServiceEnv(cfg)
+	want := []string{"ONLY_APP=app", "SHARED=service"}
+	if len(got) != len(want) {
+		t.Fatalf("resolveServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolveServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestEnvKeyList_OmitsValues(t *testing.T) {
+	got := envKeyList([]string{"TOKEN=s3cret", "OTEL_LOGS_EXPORTER=console"})
+	if want := "TOKEN, OTEL_LOGS_EXPORTER"; got != want {
+		t.Fatalf("envKeyList() = %q, want %q", got, want)
+	}
+}
+
+// TestEnvNeedsRegistryDeploy covers WDY-2040: an agent that does not advertise
+// chunk-deploy-env ignores env on the chunk path, so such a deploy is routed to
+// the registry-push create path rather than losing its env.
+func TestEnvNeedsRegistryDeploy(t *testing.T) {
+	supported := &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu", agentfeature.ChunkDeployEnv}}
+	unsupported := &agentpb.GetAgentVersionResponse{Featureset: []string{"gpu"}}
+	env := []string{"OTEL_LOGS_EXPORTER=console"}
+
+	cases := []struct {
+		name string
+		resp *agentpb.GetAgentVersionResponse
+		env  []string
+		want bool
+	}{
+		{"no env, old agent", unsupported, nil, false},
+		{"no env, new agent", supported, nil, false},
+		{"env, new agent", supported, env, false},
+		{"env, old agent", unsupported, env, true},
+		{"env, agent reports no featureset", &agentpb.GetAgentVersionResponse{}, env, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envNeedsRegistryDeploy(tc.resp, tc.env); got != tc.want {
+				t.Fatalf("envNeedsRegistryDeploy() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

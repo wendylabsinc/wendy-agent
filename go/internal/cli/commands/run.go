@@ -29,6 +29,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/agentfeature"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -1479,7 +1480,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
+	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
@@ -1501,7 +1503,18 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
-	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
+	//
+	// An agent that does not advertise chunk-deploy-env ignores the env on this
+	// path, so a deploy carrying env takes the registry path instead.
+	chunkEligible := !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff
+	envNeedsRegistryPath := chunkEligible && envNeedsRegistryDeploy(versionResp, deployEnv)
+	if envNeedsRegistryPath {
+		if opts.chunking == chunkingForce {
+			return fmt.Errorf("this app sets environment variables (%s), which this agent cannot apply on the chunk-diff path, and --chunking=force disables the registry-push fallback: update the agent with `wendy device update`, or re-run without --chunking=force", envKeyList(deployEnv))
+		}
+		cliLogln("Agent predates env support on the fast deploy path; using registry push so %s is applied.", tui.Value(envKeyList(deployEnv)))
+	}
+	if chunkEligible && !envNeedsRegistryPath {
 		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
@@ -1579,62 +1592,92 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 }
 
-// expandServiceEnv resolves one service's `env` map from wendy.json into the
-// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
-// host environment variables via ${VAR} (or $VAR); they are expanded here, on
-// the deploy host, since the agent has no access to this shell's environment.
-// An entry whose value expands to empty is dropped so the container falls
-// back to its own built-in default rather than receiving an empty override.
-// Output is sorted for deterministic requests; the agent re-validates every
-// entry (POSIX key, blocked prefixes) before applying it.
-func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
-	if svc == nil || len(svc.Env) == 0 {
-		return nil
+// envNeedsRegistryDeploy reports whether env has to travel on the
+// registry-push create path: agents that do not advertise chunk-deploy-env
+// ignore RunContainerLayersRequest.env, so using the chunk path there would
+// start the container without the env it asked for.
+func envNeedsRegistryDeploy(versionResp *agentpb.GetAgentVersionResponse, env []string) bool {
+	return len(env) > 0 && !agentVersionHasFeature(versionResp, agentfeature.ChunkDeployEnv)
+}
+
+// envKeyList renders the keys of "KEY=VALUE" entries for display, without the
+// values, which may be secrets.
+func envKeyList(entries []string) string {
+	keys := make([]string, 0, len(entries))
+	for _, kv := range entries {
+		k, _, _ := strings.Cut(kv, "=")
+		keys = append(keys, k)
 	}
-	out := make([]string, 0, len(svc.Env))
-	for k, v := range svc.Env {
+	return strings.Join(keys, ", ")
+}
+
+// expandEnvMap resolves one `env` map from wendy.json into expanded key/value
+// pairs. Values may reference host environment variables via ${VAR} (or $VAR);
+// they are expanded here, on the deploy host, since the agent has no access to
+// this shell's environment. An entry whose value expands to empty is dropped so
+// the container falls back to its own built-in default rather than receiving an
+// empty override.
+func expandEnvMap(env map[string]string, into map[string]string) {
+	for k, v := range env {
 		if expanded := os.Expand(v, os.Getenv); expanded != "" {
-			out = append(out, k+"="+expanded)
+			into[k] = expanded
 		}
 	}
-	if len(out) == 0 {
+}
+
+// sortedEnvEntries renders expanded env as the sorted "KEY=VALUE" list carried
+// by CreateContainerRequest.Env. Sorting keeps requests deterministic; the
+// agent re-validates every entry (POSIX key, blocked prefixes) before applying
+// it.
+func sortedEnvEntries(env map[string]string) []string {
+	if len(env) == 0 {
 		return nil
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
-// for single-service deploy paths that build one CreateContainerRequest for
-// the whole app rather than one per service (see multibuild.go for the
-// per-service path, which calls expandServiceEnv directly).
+// expandServiceEnv resolves the env for one service of a multi-service app:
+// the app-level env is the default and the service's own env overrides it key
+// by key, matching how a service's resources override the app's.
+func expandServiceEnv(appCfg *appconfig.AppConfig, svc *appconfig.ServiceConfig) []string {
+	merged := map[string]string{}
+	if appCfg != nil {
+		expandEnvMap(appCfg.Env, merged)
+	}
+	if svc != nil {
+		expandEnvMap(svc.Env, merged)
+	}
+	return sortedEnvEntries(merged)
+}
+
+// resolveServiceEnv is the whole-app env for deploy paths that build one
+// CreateContainerRequest rather than one per service: the app-level env plus
+// every service's env merged over it (see multibuild.go for the per-service
+// path, which calls expandServiceEnv directly).
 func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 	if appCfg == nil {
 		return nil
 	}
+	merged := map[string]string{}
+	expandEnvMap(appCfg.Env, merged)
+
 	// Sort service names so cross-service key collisions resolve deterministically.
 	svcNames := make([]string, 0, len(appCfg.Services))
 	for name := range appCfg.Services {
 		svcNames = append(svcNames, name)
 	}
 	sort.Strings(svcNames)
-
-	merged := map[string]string{}
 	for _, name := range svcNames {
-		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
-			k, v, _ := strings.Cut(kv, "=")
-			merged[k] = v
+		if svc := appCfg.Services[name]; svc != nil {
+			expandEnvMap(svc.Env, merged)
 		}
 	}
-	if len(merged) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(merged))
-	for k, v := range merged {
-		out = append(out, k+"="+v)
-	}
-	sort.Strings(out)
-	return out
+	return sortedEnvEntries(merged)
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
@@ -2162,6 +2205,10 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy:  resolveRestartPolicy(opts),
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
+		// Env from wendy.json plus any fleet-injected env, as on the registry
+		// path. Only agents advertising chunk-deploy-env apply it; the caller
+		// routes around this path otherwise.
+		Env: append(resolveServiceEnv(appCfg), opts.env...),
 	})
 	if err != nil {
 		return nil, err
