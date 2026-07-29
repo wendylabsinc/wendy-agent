@@ -1454,8 +1454,11 @@ func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 	var enc string
 	switch encoder {
 	case "nvv4l2h264enc":
-		// Jetson L4T hardware encoder; NV12 is its preferred input format.
-		enc = "videoconvert ! video/x-raw,format=NV12 ! nvv4l2h264enc" + kf
+		// Jetson L4T hardware encoder: NV12 only in NVMM memory, which is why the CSI path
+		// feeds it NVMM caps. videoconvert emits system memory, so nvvidconv has to move the
+		// frames across or the pipeline never links.
+		enc = "videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! " +
+			"video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc" + kf
 	case "v4l2h264enc":
 		// The Raspberry Pi bcm2835-codec rejects frames ("Failed to process
 		// frame") unless the output H.264 level is pinned — a bare or

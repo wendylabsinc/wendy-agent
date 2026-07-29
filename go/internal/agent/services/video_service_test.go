@@ -368,6 +368,11 @@ func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	if !strings.Contains(joined, "video/x-raw,format=NV12") {
 		t.Errorf("expected NV12 capsfilter for nvv4l2h264enc: %v", args)
 	}
+	// Without nvvidconv the encoder rejects system-memory NV12 and a USB camera on a
+	// Jetson never streams.
+	if !strings.Contains(joined, "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc") {
+		t.Errorf("nvv4l2h264enc must be fed NVMM NV12 via nvvidconv: %v", args)
+	}
 }
 
 func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
