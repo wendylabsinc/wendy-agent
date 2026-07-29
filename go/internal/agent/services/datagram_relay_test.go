@@ -13,23 +13,36 @@ import (
 )
 
 type fakeAgentStream struct {
+	ctx context.Context
 	in  chan *cloudpb.TunnelData
 	out chan *cloudpb.TunnelData
 }
 
-func newFakeAgentStream() *fakeAgentStream {
+func newFakeAgentStream(ctx context.Context) *fakeAgentStream {
 	return &fakeAgentStream{
+		ctx: ctx,
 		in:  make(chan *cloudpb.TunnelData, 16),
 		out: make(chan *cloudpb.TunnelData, 16),
 	}
 }
-func (f *fakeAgentStream) Send(d *cloudpb.TunnelData) error { f.out <- d; return nil }
-func (f *fakeAgentStream) Recv() (*cloudpb.TunnelData, error) {
-	d, ok := <-f.in
-	if !ok {
-		return nil, io.EOF
+func (f *fakeAgentStream) Send(d *cloudpb.TunnelData) error {
+	select {
+	case f.out <- d:
+		return nil
+	case <-f.ctx.Done():
+		return f.ctx.Err()
 	}
-	return d, nil
+}
+func (f *fakeAgentStream) Recv() (*cloudpb.TunnelData, error) {
+	select {
+	case d, ok := <-f.in:
+		if !ok {
+			return nil, io.EOF
+		}
+		return d, nil
+	case <-f.ctx.Done():
+		return nil, f.ctx.Err()
+	}
 }
 func (f *fakeAgentStream) CloseSend() error { return nil }
 
@@ -67,10 +80,10 @@ func awaitFrame(t *testing.T, f *fakeAgentStream) *cloudpb.TunnelData {
 
 func TestDatagramRelayUDPRoundTrip(t *testing.T) {
 	port := startUDPEcho(t)
-	stream := newFakeAgentStream()
-	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stream := newFakeAgentStream(ctx)
+	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
 	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
@@ -90,10 +103,10 @@ func TestDatagramRelayUDPRoundTrip(t *testing.T) {
 }
 
 func TestDatagramRelayEcho(t *testing.T) {
-	stream := newFakeAgentStream()
-	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stream := newFakeAgentStream(ctx)
+	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
 	stream.in <- &cloudpb.TunnelData{IcmpRequest: &cloudpb.IcmpEchoRequest{
@@ -116,10 +129,10 @@ func TestDatagramRelayEcho(t *testing.T) {
 
 func TestDatagramRelayIdleExpiry(t *testing.T) {
 	port := startUDPEcho(t)
-	stream := newFakeAgentStream()
-	relay := newDatagramRelay(zap.NewNop(), stream, 50*time.Millisecond)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stream := newFakeAgentStream(ctx)
+	relay := newDatagramRelay(zap.NewNop(), stream, 50*time.Millisecond)
 	go relay.run(ctx)
 
 	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
@@ -137,10 +150,10 @@ func TestDatagramRelayIdleExpiry(t *testing.T) {
 }
 
 func TestDatagramRelayDropsOversized(t *testing.T) {
-	stream := newFakeAgentStream()
-	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	stream := newFakeAgentStream(ctx)
+	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
 	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
