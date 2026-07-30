@@ -880,6 +880,55 @@ func TestFinishCommittedUpdateRestartsEvenWhenAckFails(t *testing.T) {
 	})
 }
 
+// ---------- jetPackVersionFromTegraRelease ----------
+
+func TestJetPackVersionFromTegraRelease(t *testing.T) {
+	tests := []struct {
+		name    string
+		release string
+		want    string
+	}{
+		{
+			name:    "JetPack 6.2.1",
+			release: "# R36 (release), REVISION: 4.4, GCID: 41834240, BOARD: generic, EABI: aarch64",
+			want:    "6.2.1",
+		},
+		{
+			name:    "JetPack 6.2",
+			release: "# R36 (release), REVISION: 4.3, GCID: 38968081, BOARD: generic, EABI: aarch64",
+			want:    "6.2",
+		},
+		{
+			name:    "JetPack 6.1 family fallback",
+			release: "# R36 (release), REVISION: 4.0, GCID: 37537400, BOARD: generic, EABI: aarch64",
+			want:    "6.1",
+		},
+		{
+			name:    "JetPack 7.2 family fallback",
+			release: "# R39 (release), REVISION: 2.0, GCID: 50000000, BOARD: generic, EABI: aarch64",
+			want:    "7.2",
+		},
+		{
+			name:    "unknown L4T version",
+			release: "# R37 (release), REVISION: 1.2, GCID: 40000000, BOARD: generic, EABI: aarch64",
+			want:    "L4T-37.1.2",
+		},
+		{
+			name:    "malformed release",
+			release: "not an L4T release",
+			want:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := jetPackVersionFromTegraRelease([]byte(tt.release)); got != tt.want {
+				t.Errorf("jetPackVersionFromTegraRelease() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // ---------- detectCUDAVersionIn ----------
 
 const nvccVersionOutput = `nvcc: NVIDIA (R) Cuda compiler driver
