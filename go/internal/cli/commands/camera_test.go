@@ -186,11 +186,46 @@ func firmwareMismatchError(t *testing.T) error {
 }
 
 func TestCameraFirmwareDiagnostic(t *testing.T) {
-	err := cameraFirmwareDiagnostic(firmwareMismatchError(t))
+	err := cameraDiagnostic(firmwareMismatchError(t))
 	for _, want := range []string{"R38.2.0", "R36.4.3", "wendy os install", "do not use --rootfs-only"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("diagnostic %q missing %q", err, want)
 		}
+	}
+}
+
+func TestCameraDiagnosticCameraInUse(t *testing.T) {
+	st := status.New(codes.FailedPrecondition, "camera is already in use by another application on this device")
+	with, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason:   "CAMERA_IN_USE",
+		Metadata: map[string]string{"device": "video0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := cameraDiagnostic(with.Err())
+	for _, want := range []string{"video0", "one camera consumer at a time", "wendy apps stop"} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("diagnostic %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got.Error(), "rpc error") {
+		t.Errorf("diagnostic should replace the raw status, got %q", got)
+	}
+}
+
+// An unrecognised reason must pass through untouched rather than be explained away.
+func TestCameraDiagnosticPassesThroughUnknownReason(t *testing.T) {
+	st := status.New(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
+	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: "SOMETHING_ELSE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := with.Err()
+	if got := cameraDiagnostic(in); got != in {
+		t.Errorf("cameraDiagnostic rewrote an unknown reason: %v", got)
 	}
 }
 

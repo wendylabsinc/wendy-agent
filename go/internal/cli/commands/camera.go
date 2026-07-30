@@ -133,7 +133,7 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				Framerate: fps,
 			})
 			if err != nil {
-				return fmt.Errorf("starting video stream: %w", cameraFirmwareDiagnostic(err))
+				return fmt.Errorf("starting video stream: %w", cameraDiagnostic(err))
 			}
 			diagnosticStream := &cameraDiagnosticStream{videoStream: stream}
 
@@ -165,23 +165,30 @@ type cameraDiagnosticStream struct{ videoStream }
 func (s *cameraDiagnosticStream) Recv() (*agentpb.VideoFrame, error) {
 	frame, err := s.videoStream.Recv()
 	if err != nil {
-		return nil, cameraFirmwareDiagnostic(err)
+		return nil, cameraDiagnostic(err)
 	}
 	return frame, nil
 }
 
-func cameraFirmwareDiagnostic(err error) error {
+// cameraDiagnostic replaces a raw gRPC status with actionable remediation when the agent
+// tagged the failure with a reason it knows how to explain.
+func cameraDiagnostic(err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
 		return err
 	}
 	for _, detail := range st.Details() {
 		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok || info.GetReason() != "TEGRA_FIRMWARE_MISMATCH" {
+		if !ok {
 			continue
 		}
-		rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
-		return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+		switch info.GetReason() {
+		case "TEGRA_FIRMWARE_MISMATCH":
+			rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
+			return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+		case "CAMERA_IN_USE":
+			return fmt.Errorf("camera %s is already in use. A device allows only one camera consumer at a time, so stop whatever holds it (`wendy apps list`, then `wendy apps stop <app-name>`) and retry", info.GetMetadata()["device"])
+		}
 	}
 	return err
 }

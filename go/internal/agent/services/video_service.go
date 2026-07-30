@@ -672,9 +672,21 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 // false the loop exits cleanly (no subscribers remain).
 // Returns nativeH264NotSupported if the device rejects the H.264 pixel format.
 func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
-	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
-	if err != nil {
-		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
+	var fd int
+	openErrno := retryWhileBusy(ctx, func() unix.Errno {
+		opened, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if err != nil {
+			errno, _ := err.(unix.Errno)
+			return errno
+		}
+		fd = opened
+		return 0
+	})
+	if openErrno != 0 {
+		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(openErrno))
+		if isBusyErrno(openErrno) {
+			return errCameraInUse(path)
+		}
 		return status.Errorf(codes.Internal, "failed to open video device")
 	}
 	defer unix.Close(fd) //nolint:errcheck
@@ -691,11 +703,18 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	vfmt.PixelFormat = v4l2PixFmtH264
 	vfmt.Field = v4l2FieldNone
 
-	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocSFmt, uintptr(unsafe.Pointer(&vfmt))); errno != 0 {
+	setFormat := func() unix.Errno {
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocSFmt, uintptr(unsafe.Pointer(&vfmt)))
+		return errno
+	}
+	if errno := retryWhileBusy(ctx, setFormat); errno != 0 {
 		if errno == unix.EINVAL {
 			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
 		}
 		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
+		if isBusyErrno(errno) {
+			return errCameraInUse(path)
+		}
 		return status.Errorf(codes.Internal, "failed to configure video device")
 	}
 	if vfmt.PixelFormat != v4l2PixFmtH264 {
@@ -1001,7 +1020,11 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 			msg := strings.TrimSpace(stderrBuf.buf.String())
 			if msg != "" {
 				s.logger.Error("GStreamer pipeline failed", zap.String("device", path), zap.String("stderr", msg))
-				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
+				if isBusyStderr(msg) {
+					runErr = errCameraInUse(path)
+				} else {
+					runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
+				}
 			} else if waitErr != nil {
 				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			}
