@@ -288,6 +288,14 @@
         },
         {
           "properties": {
+            "type": { "const": "notifications" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Send app-attributed Wendy Notifications through the app's private Wendy System API socket. The agent/daemon derives app, device, and organization identity; the entitlement never exposes the full Agent control plane."
+        },
+        {
+          "properties": {
             "type": { "const": "admin" }
           },
           "required": ["type"],

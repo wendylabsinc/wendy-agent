@@ -381,6 +381,46 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
+### `notifications`
+
+Allows an app to send operator-facing Wendy Notifications through its private
+app connection.
+
+```json
+{ "type": "notifications" }
+```
+
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by that app's entitled service containers and by future app-facing
+API capabilities; it is not one socket per capability. The public Swift
+API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
+gRPC directly.
+
+The request supplies one or more user, organization team, or organization role
+selectors, plus title, body, severity, deep link, a caller-chosen
+`notification_id` UUID v4 resource identity, and optional structured metadata.
+After successful creation, every reuse of its canonical UUID—including identical,
+changed, or differently cased requests—returns `ALREADY_EXISTS`; it does not
+replay success. A local validation or rate-limit rejection occurs before Cloud
+and leaves that UUID valid for retry. Selector categories have union semantics.
+The agent accepts at most 100 selector entries, then normalizes and deduplicates
+them; Cloud resolves at most 10,000 recipients. The socket handler stamps Cloud
+`app_id` from trusted container metadata. Wendy Cloud stores
+that identity as `created_by_app_id` and derives `created_by_asset_id` and
+organization identity from the provisioned device certificate; none of those
+identities can be supplied by the app.
+
+Each send has a 15-second Cloud deadline. The per-app host directory lives under
+`/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon
+restarts and recreates `system.sock` from persisted container labels. Running
+containers reconnect on their next call without a redeploy. Multi-service
+ownership is reference-counted and the directory is removed after the last
+entitled container is deleted.
+
+> **Security:** `notifications` exposes only entitled app-facing APIs. It does
+> not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
+
 ### `admin`
 
 Grants the container the wendy-agent's **full gRPC over a local unix socket** (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with **no authentication**.
