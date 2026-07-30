@@ -220,6 +220,7 @@ func jetPackVersionFromTegraRelease(data []byte) string {
 	jetpackExact := map[string]string{
 		"36.4.4": "6.2.1",
 		"36.4.3": "6.2",
+		"36.4.0": "6.1",
 	}
 	if jp, ok := jetpackExact[l4tVersion]; ok {
 		return jp
@@ -233,7 +234,6 @@ func jetPackVersionFromTegraRelease(data []byte) string {
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
 		"39.2": "7.2",
-		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
 		"35.5": "5.1.3",

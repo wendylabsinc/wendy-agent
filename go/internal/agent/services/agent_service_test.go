@@ -899,9 +899,14 @@ func TestJetPackVersionFromTegraRelease(t *testing.T) {
 			want:    "6.2",
 		},
 		{
-			name:    "JetPack 6.1 family fallback",
+			name:    "JetPack 6.1",
 			release: "# R36 (release), REVISION: 4.0, GCID: 37537400, BOARD: generic, EABI: aarch64",
 			want:    "6.1",
+		},
+		{
+			name:    "unknown patch in version-sensitive family",
+			release: "# R36 (release), REVISION: 4.5, GCID: 50000000, BOARD: generic, EABI: aarch64",
+			want:    "L4T-36.4.5",
 		},
 		{
 			name:    "JetPack 7.2 family fallback",
