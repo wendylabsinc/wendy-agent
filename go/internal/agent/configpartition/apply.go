@@ -2,15 +2,19 @@ package configpartition
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -587,6 +591,7 @@ func Apply(logger *zap.Logger, configPath string) {
 	applyWendyConf(logger, configDir)
 	applyPreProvisioning(logger, configDir, configPath)
 	applyClockFloor(logger, configDir, configPath)
+	applyExtensions(logger, configDir)
 }
 
 // applyClockFloor copies clock_floor from cfgDir (the FAT32 config partition,
@@ -614,4 +619,112 @@ func applyClockFloor(logger *zap.Logger, cfgDir, configPath string) {
 			logger.Error("configpartition: failed to write clock_floor", zap.Error(err))
 		}
 	}
+}
+
+// seededExtension is one driver add-on declared in the config partition's
+// extensions.json (written by `wendy os install --drivers`). It mirrors the
+// registry's resolution shape: the agent fetches and verifies the .raw itself.
+type seededExtension struct {
+	Name          string   `json:"name"`
+	KernelVersion string   `json:"kernel_version,omitempty"`
+	SHA256        string   `json:"sha256,omitempty"`
+	Signature     string   `json:"signature,omitempty"` // base64 detached signature
+	ArtifactURL   string   `json:"artifact_url"`
+	ModulesLoad   []string `json:"modules_load,omitempty"`
+}
+
+// applyExtensions checks cfgDir for an extensions.json written by the CLI at
+// imaging time and installs each declared driver add-on via the driver service
+// (fetch -> verify sha256 + signature -> place on /data -> apply), then deletes
+// the source (consume-and-erase). Absent file is the normal case and a no-op.
+func applyExtensions(logger *zap.Logger, cfgDir string) {
+	srcPath := filepath.Join(cfgDir, "extensions.json")
+	data, err := os.ReadFile(srcPath)
+	if os.IsNotExist(err) {
+		return
+	}
+	// Consume-and-erase FIRST: whatever happens below, the seed is gone, so a bad
+	// or unreachable entry can never re-wedge subsequent boots (e.g. if the device
+	// is power-cycled while a fetch is in flight).
+	if rmErr := os.Remove(srcPath); rmErr != nil {
+		logger.Warn("Failed to remove seeded extensions from config partition",
+			zap.String("path", srcPath), zap.Error(rmErr))
+	}
+	if err != nil {
+		logger.Error("Failed to read seeded extensions from config partition",
+			zap.String("path", srcPath), zap.Error(err))
+		return
+	}
+
+	var exts []seededExtension
+	if err := json.Unmarshal(data, &exts); err != nil {
+		logger.Error("Failed to parse seeded extensions", zap.Error(err))
+		return
+	}
+	if len(exts) == 0 {
+		return
+	}
+
+	// This runs on the boot path before the network is reliably up, so bound the
+	// whole batch: a slow or unreachable artifact URL must not stall startup. A
+	// dropped seed is recoverable later via `wendy device drivers install`.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	svc := services.NewSeedDriverService(logger)
+	linkDeadline := time.Now().Add(seedLinkWait)
+	for _, e := range exts {
+		sig, decErr := base64.StdEncoding.DecodeString(e.Signature)
+		if decErr != nil {
+			logger.Error("Skipping seeded driver with invalid signature encoding",
+				zap.String("name", e.Name), zap.Error(decErr))
+			continue
+		}
+		spec := services.DriverInstallSpec{
+			Name:          e.Name,
+			KernelVersion: e.KernelVersion,
+			SHA256:        e.SHA256,
+			Signature:     sig,
+			ArtifactURL:   e.ArtifactURL,
+			ModulesLoad:   e.ModulesLoad,
+		}
+		// WiFi was registered moments ago in this same Apply(), so the first fetch
+		// can fail before the link is up. The seed is already erased, so retry
+		// briefly rather than lose it - but this runs before the agent serves, so
+		// keep it short.
+		var err error
+		for delay := time.Second; ; delay *= 2 {
+			if err = svc.InstallFromURL(ctx, spec); err == nil || !linkNotReady(err) {
+				break
+			}
+			if time.Now().Add(delay).After(linkDeadline) {
+				break
+			}
+			time.Sleep(delay)
+		}
+		if err != nil {
+			logger.Error("Failed to apply seeded driver",
+				zap.String("name", e.Name), zap.Error(err))
+			continue
+		}
+		logger.Info("Applied seeded driver add-on", zap.String("name", e.Name))
+	}
+}
+
+// seedLinkWait bounds how long a seeded install waits for a still-associating
+// link. Kept short deliberately: applyExtensions runs synchronously before the
+// agent starts serving, so an unreachable artifact URL delays every RPC by this
+// much. Long enough for DHCP after association, far short of the batch budget.
+const seedLinkWait = 15 * time.Second
+
+// linkNotReady reports whether err is the link still coming up (DNS or connect),
+// as opposed to a validation, verification or apply failure.
+func linkNotReady(err error) bool {
+	// The SSRF guard rejects from inside the dialer, which wraps it in
+	// *net.OpError too; retrying that just re-probes the blocked address.
+	if strings.Contains(err.Error(), "refusing to fetch") {
+		return false
+	}
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	return errors.As(err, &dnsErr) || errors.As(err, &opErr)
 }
