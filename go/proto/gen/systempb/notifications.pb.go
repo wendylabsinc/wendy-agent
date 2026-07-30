@@ -354,9 +354,9 @@ const file_wendy_system_v1_notifications_proto_rawDesc = "" +
 	"\tdeep_link\x18\x05 \x01(\tR\bdeepLink\x12'\n" +
 	"\x0fnotification_id\x18\x06 \x01(\tR\x0enotificationId\x128\n" +
 	"\bmetadata\x18\a \x01(\v2\x17.google.protobuf.StructH\x00R\bmetadata\x88\x01\x01B\v\n" +
-	"\t_metadata\"N\n" +
+	"\t_metadata\"7\n" +
 	"\fSendResponse\x12'\n" +
-	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationIdJ\x04\b\x02\x10\x03R\x0frecipient_count*\xc5\x01\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId*\xc5\x01\n" +
 	"\x14NotificationSeverity\x12%\n" +
 	"!NOTIFICATION_SEVERITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aNOTIFICATION_SEVERITY_INFO\x10\x01\x12!\n" +

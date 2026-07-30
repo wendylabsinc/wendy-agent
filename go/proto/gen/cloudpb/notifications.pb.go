@@ -1066,9 +1066,9 @@ const file_cloud_notifications_proto_rawDesc = "" +
 	"\x06app_id\x18\t \x01(\tH\x02R\x05appId\x88\x01\x01B\x12\n" +
 	"\x10_organization_idB\v\n" +
 	"\t_metadataB\t\n" +
-	"\a_app_id\"^\n" +
+	"\a_app_id\"G\n" +
 	"\x1cCreateNotificationV2Response\x12'\n" +
-	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationIdJ\x04\b\x02\x10\x03R\x0frecipient_count\"\xb9\x02\n" +
+	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\"\xb9\x02\n" +
 	"\x18ListNotificationsRequest\x12'\n" +
 	"\x0forganization_id\x18\x01 \x01(\x05R\x0eorganizationId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1b\n" +
