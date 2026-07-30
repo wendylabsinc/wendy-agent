@@ -60,6 +60,7 @@ func newDeviceCmd() *cobra.Command {
 	// the top in rough order of usefulness.
 	addToGroup("common",
 		newAppsCmd(),
+		newDriversCmd(),
 		newDeviceLogsCmd(),
 		newDeviceOSLogsCmd(),
 		newROS2Cmd(),
