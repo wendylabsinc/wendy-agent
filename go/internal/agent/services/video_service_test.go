@@ -822,6 +822,62 @@ func TestDeviceHub_GetOrCreateHub_RejectsParamMismatch(t *testing.T) {
 	if !ok || st.Code() != codes.InvalidArgument {
 		t.Errorf("expected InvalidArgument, got %v", err)
 	}
+	// The running parameters belong in the message: without them the caller
+	// cannot tell what to ask for instead.
+	if !strings.Contains(st.Message(), "1280x720") {
+		t.Errorf("error must name the running parameters, got %q", st.Message())
+	}
+}
+
+func TestStreamParamConflict(t *testing.T) {
+	tests := []struct {
+		name               string
+		running, requested uint32
+		want               bool
+	}{
+		{"same value", 30, 30, false},
+		{"different values", 30, 60, true},
+		// Zero is "device default", so neither side asking pins anything down.
+		{"caller did not ask", 30, 0, false},
+		{"nothing running yet", 0, 30, false},
+		{"neither asked", 0, 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := streamParamConflict(tt.running, tt.requested); got != tt.want {
+				t.Errorf("streamParamConflict(%d, %d) = %v, want %v", tt.running, tt.requested, got, tt.want)
+			}
+		})
+	}
+}
+
+// The CLI viewer sends all-default parameters and the dashboard broker sends
+// 30fps. Refusing that pair is what made "watch from the CLI" and "watch from
+// the dashboard" mutually exclusive on the same camera.
+func TestDeviceHub_GetOrCreateHub_DefaultsJoinRunningStream(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cli := &agentpb.StreamVideoRequest{}
+	dashboard := &agentpb.StreamVideoRequest{Framerate: 30}
+
+	h1, id1, _, err := svc.getOrCreateHub(ctx, "/dev/video0", cli)
+	if err != nil {
+		t.Fatalf("CLI viewer failed to start: %v", err)
+	}
+	defer h1.unsubscribe(id1)
+
+	h2, id2, _, err := svc.getOrCreateHub(ctx, "/dev/video0", dashboard)
+	if err != nil {
+		t.Fatalf("dashboard viewer was refused alongside the CLI: %v", err)
+	}
+	defer h2.unsubscribe(id2)
+
+	if h1 != h2 {
+		t.Error("both viewers must share one producer, not open the device twice")
+	}
 }
 
 // --- CSI / ribbon-camera tests ---

@@ -402,7 +402,8 @@ const (
 
 // getOrCreateHub returns the existing hub for path, or starts a new producer and hub.
 // The caller receives a hub with at least one subscriber already registered (the returned id/ch).
-// Returns an error if a hub already exists with different stream parameters.
+// Returns an error only if a hub already exists whose parameters the caller
+// explicitly contradicts — see streamParamConflict.
 func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *agentpb.StreamVideoRequest) (h *deviceHub, id int, ch chan *videoFrame, err error) {
 	for retries := 0; ; retries++ {
 		if retries >= maxHubRetries {
@@ -415,12 +416,13 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 			break
 		}
 		if h.ctx.Err() == nil {
-			if h.width != req.GetWidth() || h.height != req.GetHeight() || h.framerate != req.GetFramerate() {
+			if streamParamConflict(h.width, req.GetWidth()) ||
+				streamParamConflict(h.height, req.GetHeight()) ||
+				streamParamConflict(h.framerate, req.GetFramerate()) {
 				s.mu.Unlock()
-				s.logger.Debug("stream parameter mismatch", zap.String("device", path),
-					zap.Uint32("existing_w", h.width), zap.Uint32("existing_h", h.height),
-					zap.Uint32("existing_fps", h.framerate))
-				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
+				return nil, 0, nil, status.Errorf(codes.InvalidArgument,
+					"camera already streaming at %s; omit width, height and framerate to join it",
+					describeStreamParams(h.width, h.height, h.framerate))
 			}
 			id, ch, err = h.subscribe()
 			s.mu.Unlock()
@@ -576,6 +578,28 @@ const maxVideoDeviceID = 255
 // v4l2MajorDevice is the Linux character device major number for V4L2 devices
 // (documented in Documentation/admin-guide/devices.txt as major 81).
 const v4l2MajorDevice = 81
+
+// streamParamConflict reports whether a requested stream parameter clashes with
+// the one already running. Zero means "device default" throughout this file, so
+// a side that did not ask for a specific value joins whatever is playing — which
+// is what lets `wendy device camera view` (all defaults) and the dashboard
+// (30fps) watch the same camera instead of refusing each other.
+func streamParamConflict(running, requested uint32) bool {
+	return running != 0 && requested != 0 && running != requested
+}
+
+// describeStreamParams renders a hub's parameters for an error message.
+func describeStreamParams(width, height, framerate uint32) string {
+	size := "the device default size"
+	if width != 0 && height != 0 {
+		size = fmt.Sprintf("%dx%d", width, height)
+	}
+	rate := "the device default rate"
+	if framerate != 0 {
+		rate = fmt.Sprintf("%dfps", framerate)
+	}
+	return size + " at " + rate
+}
 
 // validateStreamParams checks width, height, and framerate against known-safe values
 // before constructing GStreamer pipeline arguments. Zero means "device default" and is
