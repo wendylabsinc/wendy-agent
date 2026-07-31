@@ -1528,9 +1528,9 @@ func installFakeDriGlobs(t *testing.T, files map[string]int64) {
 func TestApplyDisplay_AllowsDrmMajor(t *testing.T) {
 	installFakeDriGlobs(t, map[string]int64{"card0": 226, "renderD128": 226})
 	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
-	origRender := lookupRenderGID
-	t.Cleanup(func() { lookupRenderGID = origRender })
-	lookupRenderGID = func() (uint32, bool) { return 0, false }
+	origLookup := lookupGroupGID
+	t.Cleanup(func() { lookupGroupGID = origLookup })
+	lookupGroupGID = func(string) (uint32, bool) { return 0, false }
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}
@@ -1548,9 +1548,11 @@ func TestApplyDisplay_AllowsDrmMajor(t *testing.T) {
 func TestApplyDisplay_AddsVideoAndRenderGIDs(t *testing.T) {
 	installFakeDriGlobs(t, map[string]int64{"renderD128": 226})
 	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
-	origRender := lookupRenderGID
-	t.Cleanup(func() { lookupRenderGID = origRender })
-	lookupRenderGID = func() (uint32, bool) { return 107, true }
+	origLookup := lookupGroupGID
+	t.Cleanup(func() { lookupGroupGID = origLookup })
+	lookupGroupGID = func(name string) (uint32, bool) {
+		return 107, name == "render"
+	}
 
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementDisplay}}}

@@ -32,6 +32,11 @@ const (
 	pipewireSystemSocket = "/run/pipewire/pipewire-0"
 	// pipewireRuntimeDir is the directory holding pipewireSystemSocket.
 	pipewireRuntimeDir = "/run/pipewire"
+	// pulseSystemSocket is where the system-wide pipewire-pulse listens. Note it
+	// is NOT under pipewireRuntimeDir — see pulseSocketHostPath.
+	pulseSystemSocket = "/run/pulse/native"
+	// ctrPulseSocket is where the compat socket is mounted inside the container.
+	ctrPulseSocket = "/run/pipewire/pulse-native"
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
@@ -376,7 +381,9 @@ func applyVCIO(spec *Spec) {
 func applyDisplay(spec *Spec) {
 	// /dev/dri/card* is group "video"; renderD* is group "render".
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, videoGroupGID)
-	if gid, ok := lookupRenderGID(); ok {
+	// The "render" group owns /dev/dri/renderD*; absent on hosts without one,
+	// where only the video GID is added.
+	if gid, ok := lookupGroupGID("render"); ok {
 		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
 	}
 
@@ -603,27 +610,47 @@ func applyAudio(spec *Spec) {
 
 	pipewireSocketSource := mountPipeWireSocket(spec)
 	if pipewireSocketSource != "" {
-		// Check for PulseAudio compat socket in the same source directory.
-		// PipeWire provides a PulseAudio emulation socket that GStreamer's
+		// PipeWire also serves a PulseAudio emulation socket, which GStreamer's
 		// autoaudiosink needs (pulsesink has the highest rank).
-		pulseNative := filepath.Join(filepath.Dir(pipewireSocketSource), "pulse", "native")
-		if isSocket(pulseNative) {
-			spec.Mounts = append(spec.Mounts, Mount{
-				Destination: "/run/pipewire/pulse-native",
+		if pulseNative := pulseSocketHostPath(pipewireSocketSource); pulseNative != "" {
+			addMountOnce(spec, Mount{
+				Destination: ctrPulseSocket,
 				Source:      pulseNative,
 				Type:        "bind",
 				Options:     []string{"rbind", "nosuid", "noexec"},
 			})
-			spec.Process.Env = append(spec.Process.Env,
-				"PULSE_SERVER=unix:/run/pipewire/pulse-native",
-			)
+			addEnvOnce(spec, "PULSE_SERVER=unix:"+ctrPulseSocket)
 		}
 	}
 }
 
+// pulseSocketHostPath finds the PulseAudio compat socket that goes with the
+// PipeWire socket at pipewireSocket.
+//
+// The two are NOT siblings under the system-wide daemon: pipewire.socket listens
+// on %t/pipewire/pipewire-0 but pipewire-pulse.socket listens on %t/pulse/native,
+// so /run/pipewire/pipewire-0 pairs with /run/pulse/native. They *are* siblings
+// in a user session (/run/user/1000/{pipewire-0,pulse/native}), which is why
+// deriving one from the other used to work.
+func pulseSocketHostPath(pipewireSocket string) string {
+	candidates := []string{
+		filepath.Join(filepath.Dir(pipewireSocket), "pulse", "native"),
+	}
+	if pipewireSocket == pipewireSystemSocket {
+		candidates = []string{pulseSystemSocket}
+	}
+	for _, c := range candidates {
+		if isSocket(c) {
+			return c
+		}
+	}
+	return ""
+}
+
 // isSocket reports whether path is a Unix domain socket. Uses Lstat so symlinks
 // are not followed — runc can't resolve symlink targets through bind mounts.
-func isSocket(path string) bool {
+// Behind a var so tests can describe a host without creating real sockets.
+var isSocket = func(path string) bool {
 	fi, err := os.Lstat(path)
 	return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
 }
@@ -651,18 +678,21 @@ var pipewireSocketHostPath = func() string {
 // This is what lets several containers, and the agent's own viewer, read one
 // camera at the same time: the kernel allows a single consumer per V4L2 node,
 // PipeWire holds that slot and fans the frames out.
+// An app declaring audio and camera together calls this twice, so it is
+// idempotent: runc would otherwise stack redundant binds on the same mountpoint
+// and the workload would see PIPEWIRE_RUNTIME_DIR twice.
 func mountPipeWireSocket(spec *Spec) string {
 	source := pipewireSocketHostPath()
 	if source == "" {
 		return ""
 	}
-	spec.Mounts = append(spec.Mounts, Mount{
+	addMountOnce(spec, Mount{
 		Destination: pipewireSystemSocket,
 		Source:      source,
 		Type:        "bind",
 		Options:     []string{"rbind", "nosuid", "noexec"},
 	})
-	spec.Process.Env = append(spec.Process.Env, "PIPEWIRE_RUNTIME_DIR="+pipewireRuntimeDir)
+	addEnvOnce(spec, "PIPEWIRE_RUNTIME_DIR="+pipewireRuntimeDir)
 
 	// The socket is pipewire:pipewire 0660. A root container gets in on
 	// CAP_DAC_OVERRIDE, but one that drops to an unprivileged user needs the
@@ -672,6 +702,27 @@ func mountPipeWireSocket(spec *Spec) string {
 		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
 	}
 	return source
+}
+
+// addMountOnce appends m unless the spec already mounts that destination.
+func addMountOnce(spec *Spec, m Mount) {
+	for _, existing := range spec.Mounts {
+		if existing.Destination == m.Destination {
+			return
+		}
+	}
+	spec.Mounts = append(spec.Mounts, m)
+}
+
+// addEnvOnce appends entry unless the spec already carries that exact variable.
+func addEnvOnce(spec *Spec, entry string) {
+	name, _, _ := strings.Cut(entry, "=")
+	for _, existing := range spec.Process.Env {
+		if existingName, _, _ := strings.Cut(existing, "="); existingName == name {
+			return
+		}
+	}
+	spec.Process.Env = append(spec.Process.Env, entry)
 }
 
 // lookupGroupGID resolves a host group name to its GID. Behind a var so tests
@@ -714,21 +765,6 @@ var udevRuntimeDir = "/run/udev"
 // to discover the render major(s) (typically 226). Behind a var so tests can
 // redirect into a tempdir.
 var driGlobs = []string{"/dev/dri/*"}
-
-// lookupRenderGID resolves the host "render" group GID, which owns
-// /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
-// the host has no render group (then only the video GID is added).
-var lookupRenderGID = func() (uint32, bool) {
-	g, err := user.LookupGroup("render")
-	if err != nil {
-		return 0, false
-	}
-	gid, err := strconv.ParseUint(g.Gid, 10, 32)
-	if err != nil {
-		return 0, false
-	}
-	return uint32(gid), true
-}
 
 // AdminAgentSocketHostPath is the host wendy-agent local control socket exposed
 // to containers granted the admin entitlement. It is the single source of truth
@@ -1191,10 +1227,8 @@ func applySerial(spec *Spec, ent appconfig.Entitlement) error {
 	// applies process-tree-wide, but the major:minor cgroup rule above is the real
 	// access gate — membership alone reaches no device the cgroup rule denies.
 	dialoutGID := dialoutGroupGID
-	if grp, gerr := user.LookupGroup("dialout"); gerr == nil {
-		if gid, perr := strconv.ParseUint(grp.Gid, 10, 32); perr == nil {
-			dialoutGID = uint32(gid)
-		}
+	if gid, ok := lookupGroupGID("dialout"); ok {
+		dialoutGID = gid
 	}
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, dialoutGID)
 	return nil
@@ -1248,10 +1282,8 @@ func applySPI(spec *Spec) {
 	}
 
 	// Add SPI group GID for device permissions (group name varies by distro).
-	if grp, err := user.LookupGroup("spi"); err == nil {
-		if gid, err := strconv.ParseUint(grp.Gid, 10, 32); err == nil {
-			spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, uint32(gid))
-		}
+	if gid, ok := lookupGroupGID("spi"); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
 	}
 
 	// Allow SPI devices (major 153). Whole-major is kept: a host can expose up to

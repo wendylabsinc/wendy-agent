@@ -1,6 +1,21 @@
 package oci
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// withHostSockets makes only the listed paths look like live sockets.
+func withHostSockets(t *testing.T, paths ...string) {
+	t.Helper()
+	present := map[string]bool{}
+	for _, p := range paths {
+		present[p] = true
+	}
+	prev := isSocket
+	isSocket = func(path string) bool { return present[path] }
+	t.Cleanup(func() { isSocket = prev })
+}
 
 // withPipeWire points the socket probe at a fake running daemon for one test.
 func withPipeWire(t *testing.T, socket string) {
@@ -19,8 +34,8 @@ func withPipeWireGroup(t *testing.T, gid uint32, ok bool) {
 }
 
 // The camera entitlement has to offer the graph, not just the device nodes:
-// /dev/videoN alone gives the container the kernel's single capture slot, which
-// is the contention WDY-1994 is about.
+// /dev/videoN alone gives the container the kernel's single capture slot, so no
+// other app or viewer can read the camera while it runs.
 func TestApplyCamera_MountsPipeWireSocket(t *testing.T) {
 	withPipeWire(t, "/run/pipewire/pipewire-0")
 	withPipeWireGroup(t, 997, true)
@@ -108,5 +123,80 @@ func TestApplyAudio_MountsPipeWireSocket(t *testing.T) {
 	}
 	if !hasEnv(spec, "PIPEWIRE_RUNTIME_DIR") {
 		t.Error("audio entitlement did not set PIPEWIRE_RUNTIME_DIR")
+	}
+}
+
+// The system-wide daemon does NOT put the two sockets side by side: PipeWire
+// listens on /run/pipewire/pipewire-0 while pipewire-pulse listens on
+// /run/pulse/native. Deriving one from the other finds nothing and drops audio.
+func TestPulseSocketHostPath_SystemLayout(t *testing.T) {
+	withHostSockets(t, "/run/pipewire/pipewire-0", "/run/pulse/native")
+
+	if got := pulseSocketHostPath("/run/pipewire/pipewire-0"); got != "/run/pulse/native" {
+		t.Errorf("pulseSocketHostPath = %q, want /run/pulse/native", got)
+	}
+}
+
+// In a user session the two really are siblings.
+func TestPulseSocketHostPath_UserSessionLayout(t *testing.T) {
+	withHostSockets(t, "/run/user/1000/pipewire-0", "/run/user/1000/pulse/native")
+
+	if got := pulseSocketHostPath("/run/user/1000/pipewire-0"); got != "/run/user/1000/pulse/native" {
+		t.Errorf("pulseSocketHostPath = %q, want the sibling socket", got)
+	}
+}
+
+func TestPulseSocketHostPath_AbsentPulse(t *testing.T) {
+	withHostSockets(t, "/run/pipewire/pipewire-0")
+
+	if got := pulseSocketHostPath("/run/pipewire/pipewire-0"); got != "" {
+		t.Errorf("pulseSocketHostPath = %q, want empty when pulse is not running", got)
+	}
+}
+
+func TestApplyAudio_MountsPulseCompatSocket(t *testing.T) {
+	withPipeWire(t, "/run/pipewire/pipewire-0")
+	withPipeWireGroup(t, 997, true)
+	withHostSockets(t, "/run/pipewire/pipewire-0", "/run/pulse/native")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	applyAudio(spec)
+
+	if !hasMountDest(spec, ctrPulseSocket) {
+		t.Error("audio entitlement did not mount the PulseAudio compat socket")
+	}
+	if !hasEnv(spec, "PULSE_SERVER") {
+		t.Error("audio entitlement did not set PULSE_SERVER")
+	}
+}
+
+// An app declaring audio and camera applies both, and each wants the socket.
+func TestMountPipeWireSocket_IsIdempotent(t *testing.T) {
+	withPipeWire(t, "/run/pipewire/pipewire-0")
+	withPipeWireGroup(t, 997, true)
+	withHostSockets(t, "/run/pipewire/pipewire-0", "/run/pulse/native")
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	applyAudio(spec)
+	applyCamera(spec)
+
+	mounts := 0
+	for _, m := range spec.Mounts {
+		if m.Destination == "/run/pipewire/pipewire-0" {
+			mounts++
+		}
+	}
+	if mounts != 1 {
+		t.Errorf("PipeWire socket mounted %d times, want 1 — runc stacks every one", mounts)
+	}
+
+	envs := 0
+	for _, e := range spec.Process.Env {
+		if strings.HasPrefix(e, "PIPEWIRE_RUNTIME_DIR=") {
+			envs++
+		}
+	}
+	if envs != 1 {
+		t.Errorf("PIPEWIRE_RUNTIME_DIR set %d times, want 1", envs)
 	}
 }
