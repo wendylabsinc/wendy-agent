@@ -1668,6 +1668,52 @@ func hasMount(spec *Spec, dest string) bool {
 	return false
 }
 
+func TestApplyNotifications_MountsOnlyPrivateSystemSocket(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "wendy-system-oci-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	listener, err := net.Listen("unix", filepath.Join(dir, "system.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementNotifications}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SystemAPISocketDir: dir}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	mount, ok := mountForDest(spec, "/run/wendy/system")
+	if !ok || mount.Source != dir || !slices.Contains(mount.Options, "ro") {
+		t.Fatalf("System API mount = %+v, found=%v", mount, ok)
+	}
+	if !hasEnv(spec, "WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock") {
+		t.Fatal("notifications entitlement did not inject WENDY_SYSTEM_SOCKET")
+	}
+	if !hasGID(spec, appSystemAPIGroupGID) {
+		t.Fatal("notifications entitlement did not grant the System API socket group")
+	}
+	if hasMount(spec, "/run/wendy/agent") || hasEnv(spec, "WENDY_AGENT_SOCKET=") {
+		t.Fatal("notifications entitlement exposed the admin control socket")
+	}
+}
+
+func TestApplyNotifications_AbsentWithoutEntitlement(t *testing.T) {
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test"}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SystemAPISocketDir: t.TempDir()}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if hasMount(spec, "/run/wendy/system") || hasEnv(spec, "WENDY_SYSTEM_SOCKET=") || hasGID(spec, appSystemAPIGroupGID) {
+		t.Fatal("app without notifications entitlement received System API access")
+	}
+}
+
 func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "s")
@@ -1708,6 +1754,9 @@ func TestApplyAdmin_MountsSocketWhenPresent(t *testing.T) {
 	}
 	if !hasEnv(spec, "WENDY_AGENT_SOCKET=/run/wendy/agent/agent.sock") {
 		t.Error("expected WENDY_AGENT_SOCKET to point at the in-container socket path")
+	}
+	if hasGID(spec, appSystemAPIGroupGID) {
+		t.Error("admin entitlement must not grant the private System API socket group")
 	}
 }
 

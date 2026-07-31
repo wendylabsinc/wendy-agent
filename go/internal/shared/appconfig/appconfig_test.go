@@ -2140,6 +2140,25 @@ func TestValidate_ROS2_PerServiceUnknownRMW(t *testing.T) {
 	}
 }
 
+func TestNotificationsEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{{Type: EntitlementNotifications}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"notifications"}]}`)); len(warnings) != 0 {
+		t.Fatalf("got warnings for notifications entitlement: %v", warnings)
+	}
+}
+
+func TestNotificationsEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{
+		{Type: EntitlementNotifications}, {Type: EntitlementNotifications},
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for duplicate notifications entitlement")
+	}
+}
+
 func TestAdminEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{{Type: EntitlementAdmin}}}
 	if err := cfg.Validate(); err != nil {

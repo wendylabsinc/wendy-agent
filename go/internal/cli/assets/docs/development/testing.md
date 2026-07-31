@@ -14,7 +14,11 @@ Each integration test is a self-contained directory:
 .github/ci-tests/<name>/
 ```
 
-The naming convention is `<language>-<feature>`, for example `python-camera` or `swift-filesystem`.
+The naming convention is `<language>-<feature>`, for example `python-camera` or
+`swift-filesystem`. Entitlement boundaries use paired positive and negative
+fixtures where useful: `python-notifications` verifies the private app
+connection is present, while `python-no-notifications` verifies it is absent
+without the entitlement.
 
 Depending on the language, a test directory contains:
 

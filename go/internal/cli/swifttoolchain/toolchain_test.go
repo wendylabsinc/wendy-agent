@@ -35,6 +35,33 @@ func brewExists(paths ...string) func(string) (os.FileInfo, error) {
 	}
 }
 
+func TestToolchainReleaseMetadata(t *testing.T) {
+	const expectedVersion = "6.3.2"
+	if DefaultVersion != expectedVersion {
+		t.Fatalf("DefaultVersion = %q, want %q", DefaultVersion, expectedVersion)
+	}
+	if WendySDKRelease != expectedVersion+"-RELEASE" {
+		t.Errorf("WendySDKRelease = %q, want %q", WendySDKRelease, expectedVersion+"-RELEASE")
+	}
+
+	expectedChecksums := map[string]string{
+		"wasm":    "a61f0584c93283589f8b2f42db05c1f9a182b506c2957271402992655591dd7c",
+		"x86_64":  "22a82805ead2c9cf1a955e47745ce38bfa849c6de6d8b920197082eea34e9810",
+		"aarch64": "c8f53bb769ea72cd78b25ba152a96b9218a8512f752e9b2b99cab09ad95611cf",
+	}
+	if wasmSDKChecksum != expectedChecksums["wasm"] {
+		t.Errorf("wasmSDKChecksum = %q, want %q", wasmSDKChecksum, expectedChecksums["wasm"])
+	}
+	for architecture, expected := range expectedChecksums {
+		if architecture == "wasm" {
+			continue
+		}
+		if actual := wendySDKChecksums[architecture]; actual != expected {
+			t.Errorf("wendySDKChecksums[%q] = %q, want %q", architecture, actual, expected)
+		}
+	}
+}
+
 func TestEnsureSwiftVersion_AlreadyInstalled(t *testing.T) {
 	original := execCommandContext
 	t.Cleanup(func() { execCommandContext = original })
