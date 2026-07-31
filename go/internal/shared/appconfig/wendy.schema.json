@@ -441,6 +441,11 @@
             "distro": {
               "type": "string",
               "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
+            },
+            "discoveryScope": {
+              "type": "string",
+              "enum": ["app", "host"],
+              "description": "DDS discovery scope. 'app' (default) restricts discovery to the app group; 'host' permits discovery over the device host network."
             }
           }
         }

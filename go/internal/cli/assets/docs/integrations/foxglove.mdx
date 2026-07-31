@@ -29,9 +29,9 @@ Discovered topics appear as channels you can add to any panel.
 1. **Generates a bridge app.** The CLI writes a temporary app: a Dockerfile based
    on `ros:<distro>` with the distro's `foxglove_bridge` package installed, and a
    `wendy.json` with a `frameworks.ros2` block (your `--domain`, `--rmw`, and
-   `--distro`) plus a host-network entitlement. Host networking means the bridge
-   joins the device's whole ROS 2 graph, including a robot's native host ROS 2
-   (for example a Unitree Go2's onboard stack).
+   `--distro`), host-scoped DDS discovery, and a host-network entitlement. This
+   lets the bridge join the device's whole ROS 2 graph, including a robot's native
+   host ROS 2 (for example a Unitree Go2's onboard stack).
 2. **Deploys it.** The app ships through the normal `wendy run` pipeline: built
    locally, pushed to the device, and started detached under the app ID
    `sh.wendy.foxglovebridge`. Re-running the command first removes any previous

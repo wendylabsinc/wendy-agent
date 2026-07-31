@@ -1058,6 +1058,25 @@ func TestBuildROS2Env_NoConfig(t *testing.T) {
 	}
 }
 
+func TestBuildROS2Env_HostDiscovery(t *testing.T) {
+	domainID := 30
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{
+				DomainID:       &domainID,
+				DiscoveryScope: appconfig.ROS2DiscoveryScopeHost,
+			},
+		},
+	}
+	got := buildROS2Env(cfg, "sh.wendy.foxglovebridge", "")
+	if !envContains(got, "ROS_LOCALHOST_ONLY=0") {
+		t.Errorf("expected host discovery to disable localhost-only mode, got %v", got)
+	}
+	if envContains(got, "ROS_LOCALHOST_ONLY=1") {
+		t.Errorf("host discovery must not enable localhost-only mode, got %v", got)
+	}
+}
+
 func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 	cfg := &appconfig.AppConfig{
 		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
