@@ -2298,10 +2298,16 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
+		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
+	}
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		// Hostname check only; full chain validation happens in VerifyConnection.
+		InsecureSkipVerify: true, //nolint:gosec
 		MinVersion:         tls.VersionTLS12,
 		Certificates:       []tls.Certificate{tlsCert},
+		VerifyConnection:   wendyRegistryServerVerifier(caPool),
 	}
 	dialer := &tls.Dialer{Config: tlsCfg}
 	return startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
