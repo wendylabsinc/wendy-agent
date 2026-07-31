@@ -837,10 +837,12 @@ func TestStreamParamConflict(t *testing.T) {
 	}{
 		{"same value", 30, 30, false},
 		{"different values", 30, 60, true},
-		// Zero is "device default", so neither side asking pins anything down.
+		// A caller that named nothing takes whatever is playing.
 		{"caller did not ask", 30, 0, false},
-		{"nothing running yet", 0, 30, false},
 		{"neither asked", 0, 0, false},
+		// A running zero is the device default, an unknown value — so it cannot
+		// be claimed to satisfy a caller that asked for a specific one.
+		{"explicit request against a defaults stream", 0, 30, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -851,32 +853,54 @@ func TestStreamParamConflict(t *testing.T) {
 	}
 }
 
-// The CLI viewer sends all-default parameters and the dashboard broker sends
-// 30fps. Refusing that pair is what made "watch from the CLI" and "watch from
-// the dashboard" mutually exclusive on the same camera.
+// Both the CLI viewer and the broker ask for device defaults, so either order
+// shares one producer. Refusing that pair is what made "watch from the CLI" and
+// "watch from the dashboard" mutually exclusive on the same camera.
 func TestDeviceHub_GetOrCreateHub_DefaultsJoinRunningStream(t *testing.T) {
 	svc := newTestVideoService(nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cli := &agentpb.StreamVideoRequest{}
-	dashboard := &agentpb.StreamVideoRequest{Framerate: 30}
-
-	h1, id1, _, err := svc.getOrCreateHub(ctx, "/dev/video0", cli)
+	h1, id1, _, err := svc.getOrCreateHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{})
 	if err != nil {
 		t.Fatalf("CLI viewer failed to start: %v", err)
 	}
 	defer h1.unsubscribe(id1)
 
-	h2, id2, _, err := svc.getOrCreateHub(ctx, "/dev/video0", dashboard)
+	h2, id2, _, err := svc.getOrCreateHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{})
 	if err != nil {
-		t.Fatalf("dashboard viewer was refused alongside the CLI: %v", err)
+		t.Fatalf("second viewer was refused alongside the first: %v", err)
 	}
 	defer h2.unsubscribe(id2)
 
 	if h1 != h2 {
 		t.Error("both viewers must share one producer, not open the device twice")
+	}
+}
+
+// A viewer that names a resolution must get it or be told it cannot have it.
+// The hub stores what was requested, not what the device negotiated, so joining
+// a defaults stream would hand it an unknown resolution and call it success.
+func TestDeviceHub_GetOrCreateHub_ExplicitRequestNotSilentlyDowngraded(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h, id, _, err := svc.getOrCreateHub(ctx, "/dev/video0", &agentpb.StreamVideoRequest{})
+	if err != nil {
+		t.Fatalf("first viewer failed to start: %v", err)
+	}
+	defer h.unsubscribe(id)
+
+	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0",
+		&agentpb.StreamVideoRequest{Width: 1920, Height: 1080})
+	if err == nil {
+		t.Fatal("a 1080p request silently joined a device-default stream")
+	}
+	if st, ok := status.FromError(err); !ok || st.Code() != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument, got %v", err)
 	}
 }
 
@@ -892,6 +916,7 @@ func defaultElements() map[string]bool {
 		"webmmux":      true,
 		"vp8enc":       true,
 		"libcamerasrc": true,
+		"pipewiresrc":  true,
 	}
 }
 

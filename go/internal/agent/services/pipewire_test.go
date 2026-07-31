@@ -24,7 +24,7 @@ const pwDump = `[
                       "node.name": "alsa_input.platform-sound.analog-stereo"}}}
 ]`
 
-func TestFindPipeWireCameraNode(t *testing.T) {
+func TestFindPipeWireCamera(t *testing.T) {
 	tests := []struct {
 		name       string
 		devicePath string
@@ -39,16 +39,16 @@ func TestFindPipeWireCameraNode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := findPipeWireCameraNode([]byte(pwDump), tt.devicePath); got != tt.want {
-				t.Errorf("findPipeWireCameraNode(%q) = %q, want %q", tt.devicePath, got, tt.want)
+			if got := findPipeWireCamera([]byte(pwDump), tt.devicePath); got.node != tt.want {
+				t.Errorf("findPipeWireCamera(%q).node = %q, want %q", tt.devicePath, got.node, tt.want)
 			}
 		})
 	}
 }
 
-func TestFindPipeWireCameraNode_MalformedDumpYieldsNoNode(t *testing.T) {
+func TestFindPipeWireCamera_MalformedDumpYieldsNoNode(t *testing.T) {
 	for _, dump := range []string{"", "not json", "{}", "[]"} {
-		if got := findPipeWireCameraNode([]byte(dump), "/dev/video0"); got != "" {
+		if got := findPipeWireCamera([]byte(dump), "/dev/video0").node; got != "" {
 			t.Errorf("dump %q: got %q, want empty so the caller stays on direct V4L2", dump, got)
 		}
 	}
@@ -57,10 +57,10 @@ func TestFindPipeWireCameraNode_MalformedDumpYieldsNoNode(t *testing.T) {
 // A node.name is daemon-supplied, but it is interpolated into a pipeline string
 // that is later split on whitespace — so a name carrying pipeline tokens must be
 // dropped rather than passed through.
-func TestFindPipeWireCameraNode_RejectsInjectableNodeName(t *testing.T) {
+func TestFindPipeWireCamera_RejectsInjectableNodeName(t *testing.T) {
 	hostile := `[{"info": {"props": {"media.class": "Video/Source", "api.v4l2.path": "/dev/video0",
 	                                 "node.name": "cam ! filesink location=/etc/passwd"}}}]`
-	if got := findPipeWireCameraNode([]byte(hostile), "/dev/video0"); got != "" {
+	if got := findPipeWireCamera([]byte(hostile), "/dev/video0").node; got != "" {
 		t.Errorf("hostile node name must be rejected, got %q", got)
 	}
 }
@@ -137,4 +137,46 @@ func contains(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// The node's state is what says whether anything else is reading the camera, and
+// so whether the graph is worth the software re-encode it costs.
+func TestFindPipeWireCamera_InUseFromNodeState(t *testing.T) {
+	dump := func(state string) string {
+		return `[{"info": {"state": "` + state + `",
+		           "props": {"media.class": "Video/Source", "api.v4l2.path": "/dev/video0",
+		                     "node.name": "v4l2_input.usb"}}}]`
+	}
+	tests := []struct {
+		state string
+		want  bool
+	}{
+		{"running", true},
+		{"idle", false},
+		{"suspended", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.state, func(t *testing.T) {
+			if got := findPipeWireCamera([]byte(dump(tt.state)), "/dev/video0"); got.inUse != tt.want {
+				t.Errorf("state %q: inUse = %v, want %v", tt.state, got.inUse, tt.want)
+			}
+		})
+	}
+}
+
+// pipewiresrc lives in a separate package from the daemon, so a host can have a
+// node and no element. Building a pipeline around it would fail outright.
+func TestBuildSourceElement_NoPipeWirePluginFallsBackToV4L2(t *testing.T) {
+	elements := defaultElements()
+	delete(elements, "pipewiresrc")
+
+	src := buildSourceElement(captureSource{
+		devicePath:   "/dev/video0",
+		transport:    camera.TransportUSB,
+		pipewireNode: "v4l2_input.usb-046d_085e",
+	}, elements)
+	if src != "v4l2src device=/dev/video0" {
+		t.Errorf("missing pipewiresrc must degrade to v4l2src, got %q", src)
+	}
 }

@@ -518,21 +518,30 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	// Only USB/unknown cameras are looked up in PipeWire: on CSI the working
 	// source is already libcamerasrc or nvarguscamerasrc, and a Bayer VI node is
 	// not something pipewiresrc can drive.
+	var pwCam pipewireCamera
 	if transport != camera.TransportCSI {
-		src.pipewireNode = s.pipewireCameraNode(ctx, path)
+		pwCam = s.pipewireCameraFor(ctx, path)
+		src.pipewireNode = pwCam.node
 	}
 
 	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
 	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-	// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first,
-	// unless PipeWire owns the camera: opening the device would then take the one
-	// slot the kernel has and lock out every app.
+	// nvarguscamerasrc on Jetson).
+	//
+	// USB/unknown cameras keep native-H.264-first while nothing else is reading
+	// the camera: a webcam that encodes in hardware costs nothing to forward,
+	// where going through the graph means raw frames plus a software re-encode
+	// that a Pi cannot sustain at 1080p. Once another client is pulling frames we
+	// have to join it — opening the device would take the one slot the kernel has
+	// and lock that client out. If native H.264 turns out to be unsupported the
+	// GStreamer fallback still routes through PipeWire, so sharing survives.
 	var err error
-	if transport == camera.TransportCSI || src.pipewireNode != "" {
+	if transport == camera.TransportCSI || pwCam.inUse {
 		s.logger.Info("capturing via GStreamer",
 			zap.String("device", path),
 			zap.String("transport", transport.String()),
-			zap.String("pipewire_node", src.pipewireNode))
+			zap.String("pipewire_node", src.pipewireNode),
+			zap.Bool("camera_in_use", pwCam.inUse))
 		err = s.streamGStreamer(ctx, broadcast, src, req)
 	} else {
 		err = s.streamV4L2Native(ctx, broadcast, path, req)
@@ -580,12 +589,15 @@ const maxVideoDeviceID = 255
 const v4l2MajorDevice = 81
 
 // streamParamConflict reports whether a requested stream parameter clashes with
-// the one already running. Zero means "device default" throughout this file, so
-// a side that did not ask for a specific value joins whatever is playing — which
-// is what lets `wendy device camera view` (all defaults) and the dashboard
-// (30fps) watch the same camera instead of refusing each other.
+// the one already running.
+//
+// Zero means "device default" throughout this file, so a caller that asked for
+// nothing joins whatever is playing. A caller that named a value must get it or
+// be told it cannot: the hub records what was requested, not what the device
+// negotiated, so a running zero is an unknown — silently handing 640x480 to a
+// viewer that asked for 1080p would be worse than refusing it.
 func streamParamConflict(running, requested uint32) bool {
-	return running != 0 && requested != 0 && running != requested
+	return requested != 0 && running != requested
 }
 
 // describeStreamParams renders a hub's parameters for an error message.
@@ -1003,6 +1015,11 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		available = nil
 	}
 
+	if src.pipewireNode != "" && (available == nil || !available["pipewiresrc"]) {
+		s.logger.Warn("gstreamer1.0-pipewire is missing, capturing the device directly — apps cannot share this camera",
+			zap.String("device", src.devicePath))
+	}
+
 	enc, err := findGStreamerEncoderFromSet(available)
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -1413,6 +1430,8 @@ type captureSource struct {
 // auto-selects instead. (devicePath is always "/dev/video%d" formatted from a
 // uint32 device id, so it cannot contain whitespace or pipeline separators.)
 //   - USB / Unknown with a PipeWire node → "pipewiresrc target-object=<node>"
+//     (only when the GStreamer PipeWire plugin is installed; it ships in a
+//     separate package, and without it the pipeline would fail to build)
 //
 // pipewireNode is empty unless PipeWire published this camera; see pipewire.go
 // for why that source is preferred when it is available.
@@ -1423,7 +1442,7 @@ func buildSourceElement(src captureSource, available map[string]bool) string {
 		}
 		return "libcamerasrc"
 	}
-	if isValidPipeWireNodeName(src.pipewireNode) {
+	if available != nil && available["pipewiresrc"] && isValidPipeWireNodeName(src.pipewireNode) {
 		return fmt.Sprintf("pipewiresrc target-object=%s", src.pipewireNode)
 	}
 	return fmt.Sprintf("v4l2src device=%s", src.devicePath)

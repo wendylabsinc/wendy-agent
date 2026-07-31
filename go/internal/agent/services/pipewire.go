@@ -38,6 +38,7 @@ func pipewireEnv() []string {
 // pipewireDumpEntry is the slice of `pw-dump` output this file reads.
 type pipewireDumpEntry struct {
 	Info struct {
+		State string `json:"state"`
 		Props struct {
 			MediaClass string `json:"media.class"`
 			V4L2Path   string `json:"api.v4l2.path"`
@@ -46,30 +47,40 @@ type pipewireDumpEntry struct {
 	} `json:"info"`
 }
 
-// findPipeWireCameraNode returns the node.name of the PipeWire source publishing
-// devicePath, or "" if the graph has none. node.name is derived from the device's
-// bus path, so unlike an object id it survives a WirePlumber restart.
-func findPipeWireCameraNode(dump []byte, devicePath string) string {
+// pipewireCamera is what the graph knows about one camera.
+type pipewireCamera struct {
+	// node is the node.name to hand pipewiresrc, or "" when PipeWire has no node
+	// for the device. node.name comes from the device's bus path, so unlike an
+	// object id it survives a WirePlumber restart.
+	node string
+	// inUse reports that another client is already pulling frames. Only then is
+	// routing through the graph worth giving up a camera's own H.264 stream for.
+	inUse bool
+}
+
+// findPipeWireCamera locates the source publishing devicePath in a pw-dump.
+func findPipeWireCamera(dump []byte, devicePath string) pipewireCamera {
 	var entries []pipewireDumpEntry
 	if err := json.Unmarshal(dump, &entries); err != nil {
-		return ""
+		return pipewireCamera{}
 	}
 	for _, e := range entries {
 		p := e.Info.Props
 		if p.MediaClass == "Video/Source" && p.V4L2Path == devicePath && isValidPipeWireNodeName(p.NodeName) {
-			return p.NodeName
+			// A node with no consumer reads "idle" or "suspended".
+			return pipewireCamera{node: p.NodeName, inUse: e.Info.State == "running"}
 		}
 	}
-	return ""
+	return pipewireCamera{}
 }
 
-// pipewireCameraNode asks the running PipeWire daemon which node publishes
-// devicePath. Every failure returns "" — no daemon, no pw-dump, no node — which
-// leaves the caller on the direct V4L2 path it used before.
-func (s *VideoService) pipewireCameraNode(ctx context.Context, devicePath string) string {
+// pipewireCameraFor asks the running PipeWire daemon about devicePath. Every
+// failure returns the zero value — no daemon, no pw-dump, no node — which leaves
+// the caller on the direct V4L2 path it used before.
+func (s *VideoService) pipewireCameraFor(ctx context.Context, devicePath string) pipewireCamera {
 	dumpPath, err := exec.LookPath("pw-dump")
 	if err != nil {
-		return ""
+		return pipewireCamera{}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, pipewireLookupTimeout)
@@ -80,9 +91,9 @@ func (s *VideoService) pipewireCameraNode(ctx context.Context, devicePath string
 	out, err := cmd.Output()
 	if err != nil {
 		s.logger.Debug("pw-dump failed, capturing directly from the device", zap.Error(err))
-		return ""
+		return pipewireCamera{}
 	}
-	return findPipeWireCameraNode(out, devicePath)
+	return findPipeWireCamera(out, devicePath)
 }
 
 // isValidPipeWireNodeName guards the one externally sourced string interpolated
