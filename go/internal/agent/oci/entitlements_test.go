@@ -438,49 +438,8 @@ func TestApplyEntitlements_Audio(t *testing.T) {
 		t.Error("audio entitlement did not add /dev/snd mount")
 	}
 
-	// PipeWire mount is conditional — only added when a real socket exists
-	// on the host at either /run/pipewire/pipewire-0 (system) or
-	// /run/user/*/pipewire-0 (user session).
-	isSocket := func(path string) bool {
-		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
-	}
-	// Mirror applyAudio's socket detection: system path first, then user session.
-	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
-		}
-	}
-	if pipewireSocketSource != "" {
-		if !hasMountDest(spec, "/run/pipewire/pipewire-0") {
-			t.Error("audio entitlement did not add /run/pipewire/pipewire-0 mount")
-		}
-		if !hasEnv(spec, "PIPEWIRE_RUNTIME_DIR") {
-			t.Error("audio entitlement did not set PIPEWIRE_RUNTIME_DIR")
-		}
-		// Derive pulse path from the same source directory as applyAudio does.
-		sourceDir := filepath.Dir(pipewireSocketSource)
-		pulseNative := filepath.Join(sourceDir, "pulse", "native")
-		if isSocket(pulseNative) {
-			if !hasMountDest(spec, "/run/pipewire/pulse-native") {
-				t.Error("audio entitlement did not add /run/pipewire/pulse-native mount")
-			}
-			if !hasEnv(spec, "PULSE_SERVER") {
-				t.Error("audio entitlement did not set PULSE_SERVER when pulse socket exists")
-			}
-		}
-	} else {
-		if hasMountDest(spec, "/run/pipewire/pipewire-0") || hasMountDest(spec, "/run/pipewire/pulse-native") {
-			t.Error("audio entitlement should not mount /run/pipewire when socket is absent")
-		}
-	}
+	// The PipeWire socket mount depends on the host and is covered
+	// deterministically in pipewire_test.go, which stubs the socket probe.
 
 	// Audio should remain constrained to explicit sound-device rules even
 	// though it calls SetDeviceCapabilities().

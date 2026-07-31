@@ -26,6 +26,12 @@ const (
 	videoGroupGID uint32 = 44
 	// inputGroupGID is the standard input group GID (for /dev/input devices).
 	inputGroupGID uint32 = 105
+	// pipewireSystemSocket is where the system-wide PipeWire daemon listens, and
+	// also where it is mounted inside the container so PIPEWIRE_RUNTIME_DIR is
+	// the same path on both sides.
+	pipewireSystemSocket = "/run/pipewire/pipewire-0"
+	// pipewireRuntimeDir is the directory holding pipewireSystemSocket.
+	pipewireRuntimeDir = "/run/pipewire"
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
@@ -595,47 +601,12 @@ func applyAudio(spec *Spec) {
 		Access: "rw",
 	})
 
-	// isSocket reports whether path is a Unix domain socket. Uses Lstat
-	// so symlinks are not followed — runc can't resolve symlink targets
-	// through bind mounts.
-	isSocket := func(path string) bool {
-		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
-	}
-
-	// Find the PipeWire socket. Check the system path first, then probe
-	// for a user session socket (e.g. /run/user/1000/pipewire-0 on RPi OS
-	// where PipeWire runs as a user service).
-	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
-		}
-	}
-
+	pipewireSocketSource := mountPipeWireSocket(spec)
 	if pipewireSocketSource != "" {
-		// Mount the individual socket file into the container.
-		spec.Mounts = append(spec.Mounts, Mount{
-			Destination: "/run/pipewire/pipewire-0",
-			Source:      pipewireSocketSource,
-			Type:        "bind",
-			Options:     []string{"rbind", "nosuid", "noexec"},
-		})
-		spec.Process.Env = append(spec.Process.Env,
-			"PIPEWIRE_RUNTIME_DIR=/run/pipewire",
-		)
-
 		// Check for PulseAudio compat socket in the same source directory.
 		// PipeWire provides a PulseAudio emulation socket that GStreamer's
 		// autoaudiosink needs (pulsesink has the highest rank).
-		sourceDir := filepath.Dir(pipewireSocketSource)
-		pulseNative := filepath.Join(sourceDir, "pulse", "native")
+		pulseNative := filepath.Join(filepath.Dir(pipewireSocketSource), "pulse", "native")
 		if isSocket(pulseNative) {
 			spec.Mounts = append(spec.Mounts, Mount{
 				Destination: "/run/pipewire/pulse-native",
@@ -648,6 +619,73 @@ func applyAudio(spec *Spec) {
 			)
 		}
 	}
+}
+
+// isSocket reports whether path is a Unix domain socket. Uses Lstat so symlinks
+// are not followed — runc can't resolve symlink targets through bind mounts.
+func isSocket(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
+}
+
+// pipewireSocketHostPath finds the host PipeWire socket: the system-wide daemon
+// first, then a user session (e.g. /run/user/1000/pipewire-0 on RPi OS, where
+// PipeWire runs as a user service). Returns "" when PipeWire is not running.
+// Behind a var so tests can simulate a host with and without it.
+var pipewireSocketHostPath = func() string {
+	if isSocket(pipewireSystemSocket) {
+		return pipewireSystemSocket
+	}
+	userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
+	for _, s := range userSockets {
+		if isSocket(s) {
+			return s
+		}
+	}
+	return ""
+}
+
+// mountPipeWireSocket binds the host PipeWire socket into the container and
+// points clients at it, returning the host path it used (or "").
+//
+// This is what lets several containers, and the agent's own viewer, read one
+// camera at the same time: the kernel allows a single consumer per V4L2 node,
+// PipeWire holds that slot and fans the frames out.
+func mountPipeWireSocket(spec *Spec) string {
+	source := pipewireSocketHostPath()
+	if source == "" {
+		return ""
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: pipewireSystemSocket,
+		Source:      source,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec"},
+	})
+	spec.Process.Env = append(spec.Process.Env, "PIPEWIRE_RUNTIME_DIR="+pipewireRuntimeDir)
+
+	// The socket is pipewire:pipewire 0660. A root container gets in on
+	// CAP_DAC_OVERRIDE, but one that drops to an unprivileged user needs the
+	// group — and the GID is allocated at image build time, so it has to be
+	// resolved rather than assumed like the audio/video GIDs above.
+	if gid, ok := lookupGroupGID("pipewire"); ok {
+		spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+	}
+	return source
+}
+
+// lookupGroupGID resolves a host group name to its GID. Behind a var so tests
+// can simulate hosts with and without the group.
+var lookupGroupGID = func(name string) (uint32, bool) {
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
 }
 
 // statMajor extracts the device major number from the host node at path.
@@ -798,6 +836,12 @@ func applyCamera(spec *Spec) {
 			Options:     []string{"rbind", "ro", "nosuid", "noexec", "nodev"},
 		})
 	}
+
+	// Offer the PipeWire graph alongside the raw device nodes. An app that opens
+	// /dev/videoN still works, but it then holds the kernel's only capture slot;
+	// going through PipeWire (natively, or via the pw-v4l2 shim) lets it run at
+	// the same time as another app and as the dashboard's video stream.
+	mountPipeWireSocket(spec)
 }
 
 // cameraExtraGlobs is the list of device-node patterns the camera entitlement
