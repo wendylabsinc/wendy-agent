@@ -23,7 +23,7 @@ import (
 // directly with a CSI transport.
 func mustBuildGStreamerArgs(t *testing.T, gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool) []string {
 	t.Helper()
-	args, err := buildGStreamerArgs(gstPath, devicePath, req, encoder, hasH264Parse, camera.TransportUSB, "", nil)
+	args, err := buildGStreamerArgs(gstPath, captureSource{devicePath: devicePath, transport: camera.TransportUSB}, req, encoder, hasH264Parse, nil)
 	if err != nil {
 		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
 	}
@@ -675,7 +675,7 @@ func TestStreamGStreamer_MissingGStreamer(t *testing.T) {
 	gstFallbackDirs = nil
 	t.Cleanup(func() { gstFallbackDirs = prev })
 	svc := NewVideoService(context.Background(), zap.NewNop())
-	err := svc.streamGStreamer(context.Background(), nil, "/dev/video0", &agentpb.StreamVideoRequest{}, camera.TransportUSB, "")
+	err := svc.streamGStreamer(context.Background(), nil, captureSource{devicePath: "/dev/video0", transport: camera.TransportUSB}, &agentpb.StreamVideoRequest{})
 	if err == nil {
 		t.Fatal("expected error when gst-launch-1.0 not found")
 	}
@@ -844,7 +844,7 @@ func defaultElements() map[string]bool {
 // for injection-token / invalid-parameter inputs).
 func mustCSIArgs(t *testing.T, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) []string {
 	t.Helper()
-	args, err := buildGStreamerArgs("gst", devicePath, req, encoder, hasH264Parse, transport, libcameraID, available)
+	args, err := buildGStreamerArgs("gst", captureSource{devicePath: devicePath, transport: transport, libcameraID: libcameraID}, req, encoder, hasH264Parse, available)
 	if err != nil {
 		t.Fatalf("unexpected error from buildGStreamerArgs: %v", err)
 	}
@@ -1030,7 +1030,7 @@ func TestBuildGStreamerArgs_USB_DoesNotForceNV12SourceFormat(t *testing.T) {
 }
 
 func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testing.T) {
-	src := buildSourceElement("/dev/video0", camera.TransportCSI, "/cam", nil)
+	src := buildSourceElement(captureSource{devicePath: "/dev/video0", transport: camera.TransportCSI, libcameraID: "/cam"}, nil)
 	if src != "v4l2src device=/dev/video0" {
 		t.Errorf("nil availability must degrade CSI to v4l2src, got %q", src)
 	}
@@ -1041,7 +1041,7 @@ func TestBuildSourceElement_NilAvailableMapTreatedAsLibcamerasrcAbsent(t *testin
 // libcamerasrc auto-select instead of interpolating camera-name=<hostile>.
 func TestBuildSourceElement_RejectsInjectableLibcameraID(t *testing.T) {
 	hostile := "/cam ! filesink location=/etc/passwd"
-	src := buildSourceElement("/dev/video0", camera.TransportCSI, hostile, defaultElements())
+	src := buildSourceElement(captureSource{devicePath: "/dev/video0", transport: camera.TransportCSI, libcameraID: hostile}, defaultElements())
 	if src != "libcamerasrc" {
 		t.Errorf("hostile libcamera id must degrade to plain libcamerasrc, got %q", src)
 	}
