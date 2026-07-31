@@ -2303,7 +2303,7 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
 	}
 	tlsCfg := &tls.Config{
-		// Hostname check only; full chain validation happens in VerifyConnection.
+		// Skip hostname verification; full chain validation happens in VerifyConnection.
 		InsecureSkipVerify: true, //nolint:gosec
 		MinVersion:         tls.VersionTLS12,
 		Certificates:       []tls.Certificate{tlsCert},
