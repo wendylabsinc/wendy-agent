@@ -41,8 +41,9 @@ Username: unitree
 Password: 123
 ```
 
-Change the shared factory password or install an SSH key before connecting PC2
-to Wi-Fi or another shared network.
+Use the shared factory password only over the isolated Ethernet link. Step 2
+requires changing it before PC2 is connected to Wi-Fi or another shared
+network.
 
 ## Step 1: Connect the developer machine
 
@@ -112,6 +113,16 @@ before continuing.
 ```bash
 ssh unitree@192.168.123.164
 ```
+
+Before continuing, replace the shared factory password:
+
+```bash
+passwd
+```
+
+Disconnect and confirm that the new credential works over the isolated link.
+Do not proceed to internet access or enrollment until this check succeeds. Use
+your organization's SSH-key and password-login policy for longer-term access.
 
 On PC2, record the image and network state. G1 images in the field do not all
 run the same Ubuntu or JetPack version.
@@ -220,6 +231,13 @@ curl -fsSLo /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
 less /tmp/wendy-agent.sh
 bash /tmp/wendy-agent.sh
 ```
+
+<Callout type="warning">
+  Manual inspection is not a cryptographic integrity check. Wendy will publish
+  and test a checksum or signature from a separate trusted channel before this
+  guide is released for production installation. Until that mechanism exists,
+  keep this workflow limited to the draft hardware-validation environment.
+</Callout>
 
 For a non-interactive SSH or provisioning session, pass the documented `-y`
 flag. The pipe-only form requires `/dev/tty` unless this flag is supplied.
