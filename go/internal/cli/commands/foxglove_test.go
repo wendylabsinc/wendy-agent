@@ -58,3 +58,23 @@ func TestWriteFoxgloveAppDistroTemplated(t *testing.T) {
 		t.Fatalf("distro not templated into Dockerfile:\n%s", df)
 	}
 }
+
+func TestWriteFoxgloveAppCycloneDDSInterface(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: "enP8p1s0"}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if !strings.Contains(string(df), `NetworkInterface name=\"enP8p1s0\"`) {
+		t.Fatalf("CycloneDDS interface not templated into Dockerfile:\n%s", df)
+	}
+}
+
+func TestWriteFoxgloveAppRejectsUnsafeInterface(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: `eth0'; touch /tmp/pwned`}
+	if err := writeFoxgloveApp(dir, opts); err == nil {
+		t.Fatal("expected unsafe interface name to be rejected")
+	}
+}
