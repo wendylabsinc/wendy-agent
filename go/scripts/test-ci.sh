@@ -58,7 +58,10 @@ Examples:
   $(basename "$0") -t swift-hello -t python-hello   # specific tests only
   $(basename "$0") -w /path/to/wendy                # custom binary
 EOF
-    exit 0
+    # Exit code is a parameter: --help is success, a bad invocation is not.
+    # A usage error exiting 0 let CI report a green run that never started
+    # a single test (WDY-2171).
+    exit "${1:-0}"
 }
 
 HOSTNAME=""
@@ -72,7 +75,7 @@ while [[ $# -gt 0 ]]; do
         -w|--wendy)         WENDY="$2"; shift 2 ;;
         -t|--test)          SELECTED_TESTS+=("$2"); shift 2 ;;
         --help)             usage ;;
-        *)                  echo "Unknown option: $1"; usage ;;
+        *)                  echo "Unknown option: $1" >&2; usage 2 ;;
     esac
 done
 
@@ -110,6 +113,97 @@ run_test() {
         ((FAIL_COUNT++))
     fi
     return $rc
+}
+
+# ── Container verdict ────────────────────────────────────────────────
+# An attached `wendy run` exits 0 whatever the container did, so its exit code
+# only tells us the deploy worked. Every standard test asserts inside the app
+# and signals failure by exiting non-zero, so read that verdict back from the
+# device instead (WDY-2171).
+
+# app_id_for_test prints the appId a test directory declares.
+app_id_for_test() {
+    jq -r '.appId // empty' "$1/wendy.json" 2>/dev/null
+}
+
+# container_exit_code prints the exit code the device recorded for an app, or
+# nothing when the app is absent or still running.
+container_exit_code() {
+    local app_id="$1"
+    "$WENDY" device apps list --device "$HOSTNAME" --json 2>/dev/null |
+        jq -r --arg app "$app_id" '
+            .[]? | select(.name == $app)
+                 | select(.runningState != "RUNNING")
+                 | .exitCode // empty'
+}
+
+# assert_container_verdict decides whether the app's own assertions passed.
+# Preferred signal is the exit code the device recorded, polled briefly because
+# the state can lag the attached stream. Apps deployed under a serviceName
+# report no exit code (their services[] entry carries only a runningState), so
+# those fall back to the app's printed verdict.
+assert_container_verdict() {
+    local app_id="$1" out="$2" code="" state=""
+    for _ in 1 2 3 4 5 6; do
+        code=$(container_exit_code "$app_id")
+        [[ -n "$code" ]] && break
+        sleep 1
+    done
+
+    state=$("$WENDY" device apps list --device "$HOSTNAME" --json 2>/dev/null |
+        jq -r --arg app "$app_id" '.[]? | select(.name == $app) | .runningState // empty')
+
+    if [[ -n "$code" ]]; then
+        if [[ "$code" != "0" ]]; then
+            echo "App $app_id exited $code (runningState=$state) - its assertions failed"
+            return 1
+        fi
+        return 0
+    fi
+
+    if [[ -z "$state" ]]; then
+        echo "Device does not report app $app_id at all; the deploy cannot be verified"
+        return 1
+    fi
+
+    # No exit code available: require a printed PASS verdict and nothing that
+    # looks like a failure.
+    if grep -qE "^(FAIL|Traceback)" <<<"$out"; then
+        echo "App $app_id printed a failure verdict (runningState=$state)"
+        return 1
+    fi
+    if ! grep -q "PASS" <<<"$out"; then
+        echo "App $app_id reports no exit code (runningState=$state) and printed no PASS verdict"
+        return 1
+    fi
+    return 0
+}
+
+# run_container_test deploys a single-container test and requires both that the
+# deploy succeeded and that the app exited 0.
+run_container_test() {
+    local test_name="$1" test_dir="$2"; shift 2
+    local app_id
+    app_id=$(app_id_for_test "$test_dir")
+
+    container_test_passes() {
+        local out
+        # --no-restart stops the agent restarting a test app that has done its
+        # job and exited, which otherwise churns the recorded state (a
+        # short-lived app reads back as CRASH_LOOPING).
+        out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
+        local rc=$?
+        echo "$out"
+        if [[ $rc -ne 0 ]]; then
+            return $rc
+        fi
+        if [[ -z "$app_id" ]]; then
+            echo "Could not read appId from $test_dir/wendy.json; cannot verify the app's verdict"
+            return 1
+        fi
+        assert_container_verdict "$app_id" "$out"
+    }
+    run_test "$test_name" container_test_passes "$@"
 }
 
 skip_test() {
@@ -166,17 +260,58 @@ fi
 echo -e "${BOLD}==> Target device: ${HOSTNAME}${RESET}"
 echo ""
 
+# ── Device under test ────────────────────────────────────────────────
+# Recorded before anything runs, because a failure caused by an out-of-date
+# agent is otherwise indistinguishable in the log from a product bug. The whole
+# suite's verdict is only meaningful against a known agent, so identify it.
+
+VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
+
+# device_field prints a field of VERSION_JSON, or its fallback when the field is
+# absent, null, or the empty string — a device reporting no deviceType at all is
+# exactly the case worth seeing, so an empty value must not read as blank.
+device_field() {
+    local value=""
+    if [[ -n "$VERSION_JSON" ]]; then
+        value=$(echo "$VERSION_JSON" | jq -r --arg f "$1" '.[$f] // ""' 2>/dev/null || true)
+    fi
+    if [[ -n "$value" ]]; then
+        echo "$value"
+    else
+        echo "$2"
+    fi
+}
+
+if [[ -z "$VERSION_JSON" ]]; then
+    echo -e "${YELLOW}==> WARNING: 'wendy device info' returned nothing — the agent under test cannot be identified${RESET}"
+fi
+echo -e "${BOLD}==> Agent version: $(device_field version 'unknown')${RESET}"
+echo -e "${BOLD}==> Device OS: $(device_field os 'unknown') $(device_field osVersion 'unknown')${RESET}"
+echo -e "${BOLD}==> Device type: $(device_field deviceType 'none reported') ($(device_field cpuArchitecture 'unknown'))${RESET}"
+
 # ── Device capability detection ──────────────────────────────────────
 
-DEVICE_HAS_GPU=false
-VERSION_JSON=$("$WENDY" device info --json --device "$HOSTNAME" 2>/dev/null || true)
-if [[ -n "$VERSION_JSON" ]]; then
-    GPU_VAL=$(echo "$VERSION_JSON" | jq -r '.hasGpu // false' 2>/dev/null || true)
-    if [[ "$GPU_VAL" == "true" ]]; then
-        DEVICE_HAS_GPU=true
-    fi
+# Both *-gpu tests are CUDA tests, so they need an NVIDIA GPU specifically —
+# hasGpu is also true for any device with a /dev/dri node, which selected them
+# on an amd64 host with an AMD iGPU where a CUDA test cannot pass.
+DEVICE_GPU_VENDOR=$(device_field gpuVendor '')
+DEVICE_HAS_CUDA=false
+if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
+    DEVICE_HAS_CUDA=true
 fi
-echo -e "${BOLD}==> GPU: ${DEVICE_HAS_GPU}${RESET}"
+echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none})${RESET}"
+
+# The Swift tests build their image with swift-container-plugin, so this host
+# needs a Swift toolchain — which the CLI provisions through swiftly, and
+# refuses to proceed without. Checking swiftly rather than swift matters on
+# macOS, where /usr/bin/swift is an Xcode shim that exists even with no usable
+# toolchain behind it. Skipping here rather than listing tests per-runner in
+# the workflow keeps one source of truth for what exists.
+HOST_HAS_SWIFT=false
+if command -v swiftly &>/dev/null; then
+    HOST_HAS_SWIFT=true
+fi
+echo -e "${BOLD}==> Swift toolchain (swiftly): ${HOST_HAS_SWIFT}${RESET}"
 echo ""
 
 # ── Validate tests directory ─────────────────────────────────────────
@@ -242,6 +377,7 @@ else
     TESTS=("${ALL_TESTS[@]}")
 fi
 
+
 echo -e "${BOLD}==> Running ${#TESTS[@]} test(s)${RESET}"
 echo ""
 
@@ -250,9 +386,13 @@ echo ""
 for test_name in "${TESTS[@]}"; do
     test_dir="$TESTS_DIR/$test_name"
 
-    # Skip GPU tests on devices that don't have a GPU.
-    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_GPU" != "true" ]]; then
-        skip_test "$test_name" "no GPU"
+    if [[ "$test_name" == swift-* ]] && [[ "$HOST_HAS_SWIFT" != "true" ]]; then
+        skip_test "$test_name" "no Swift toolchain (swiftly) on this host"
+        continue
+    fi
+
+    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
+        skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
         continue
     fi
 
@@ -300,35 +440,21 @@ for test_name in "${TESTS[@]}"; do
     # back the logs (bounded by a background reader) and require both PASS lines
     # with no FAIL.
     if [[ "$test_name" == "python-multiservice-resources" ]]; then
-        echo -e "${BOLD}── $test_name${RESET}"
         app_id="sh.wendy.ci.python-multiservice-resources"
 
-        run_test "python-multiservice-resources (deploy)" \
-            "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --deploy
-
+        # Attached, not --deploy: --deploy creates the containers without
+        # starting them, so neither service would run and neither verdict
+        # would exist to read (WDY-2171). Attached mode streams both services'
+        # stdout, and per-service exit codes are not reported by the device, so
+        # assert on the verdict lines.
         per_service_limits_enforced() {
-            local logs logfile
-            logfile=$(mktemp -t wendy-mres-logs.XXXXXX)
-            # device logs streams; read it in the background and stop after a
-            # few seconds (portable: no `timeout` dependency).
-            "$WENDY" device logs --device "$HOSTNAME" --app "$app_id" --tail 50 \
-                >"$logfile" 2>&1 &
-            local logs_pid=$!
-            sleep 8
-            kill "$logs_pid" 2>/dev/null
-            wait "$logs_pid" 2>/dev/null
-            logs=$(cat "$logfile")
-            rm -f "$logfile"
-
-            if echo "$logs" | grep -qi "FAIL"; then
-                echo "Service reported FAIL:"; echo "$logs" | grep -i "fail"
+            local out
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart 2>&1)
+            echo "$out"
+            if grep -qE "(db|api): FAIL" <<<"$out"; then
                 return 1
             fi
-            if echo "$logs" | grep -q "db: PASS" && echo "$logs" | grep -q "api: PASS"; then
-                return 0
-            fi
-            echo "Did not observe both 'db: PASS' and 'api: PASS' in logs:"; echo "$logs"
-            return 1
+            grep -q "db: PASS" <<<"$out" && grep -q "api: PASS" <<<"$out"
         }
         run_test "python-multiservice-resources (per-service limits)" per_service_limits_enforced
 
@@ -423,8 +549,7 @@ for test_name in "${TESTS[@]}"; do
     fi
 
     # ── Standard single-container tests ─────────────────────────────────
-    run_test "$test_name" \
-        "$WENDY" run --device "$HOSTNAME" --prefix "$test_dir"
+    run_container_test "$test_name" "$test_dir"
 done
 
 # ── Summary ──────────────────────────────────────────────────────────

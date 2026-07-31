@@ -735,6 +735,11 @@ func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *app
 	if svc.Frameworks != nil {
 		cfg.Frameworks = svc.Frameworks
 	}
+	// The per-service config carries no services map, so the agent's
+	// ResolveResourcesForService has nothing to merge — resolve the app-level
+	// default against this service's override here instead. Without this the
+	// container is created with no limits at all (WDY-1729).
+	cfg.Resources = appCfg.ResolveResourcesForService(name)
 	return cfg
 }
 
