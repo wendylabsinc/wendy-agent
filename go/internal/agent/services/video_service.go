@@ -57,9 +57,19 @@ const (
 	// Upper bound when picking a default resolution. The hub re-encodes and fans
 	// out to every subscriber, so an unbounded "pick the biggest" would turn a
 	// 4K webcam into a CPU and bandwidth problem for viewers that never asked
-	// for it. 1080p is the largest size worth defaulting to.
-	defaultMaxDefaultWidth  = 1920
-	defaultMaxDefaultHeight = 1080
+	// for it.
+	//
+	// 720p, not 1080p: both codec halves of the default path can land on a CPU,
+	// and 1080p is over the line on real fleet hardware. Encode: a camera
+	// without onboard H.264 falls back to x264enc, measured at ~5 fps for
+	// 1080p on a Jetson AGX-class host vs full rate at 720p. Decode: the
+	// Orin Nano has no NVDEC, and software avdec_h264 measured ~5.7 fps at
+	// 1080p on it. Callers that want more than 720p can request it
+	// explicitly; this bound only decides what "no preference" means.
+	// Raising it conditionally when a hardware encoder was actually
+	// selected is a possible follow-up.
+	defaultMaxDefaultWidth  = 1280
+	defaultMaxDefaultHeight = 720
 
 	// Encoder control IDs and class. V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC
 	// (0x00990000) | 0x900; the keyframe controls are fixed offsets from it.
@@ -100,7 +110,7 @@ type v4l2FrmSizeEnum struct {
 }
 
 // bestDefaultFrameSize returns the largest discrete frame size the device
-// advertises for pixfmt, capped at 1080p, or (0,0) if enumeration yields
+// advertises for pixfmt, capped at 720p, or (0,0) if enumeration yields
 // nothing usable (stepwise-only devices, or drivers without the ioctl).
 //
 // Why this exists: VIDIOC_S_FMT with width=height=0 does NOT mean "device

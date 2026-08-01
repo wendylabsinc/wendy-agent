@@ -56,10 +56,13 @@ func TestEnumFramesizesRequestCode(t *testing.T) {
 }
 
 // The cap exists so a 4K webcam does not become the default for every
-// subscriber that asked for "no preference".
-func TestDefaultFrameSizeCapIs1080p(t *testing.T) {
-	if defaultMaxDefaultWidth != 1920 || defaultMaxDefaultHeight != 1080 {
-		t.Fatalf("default cap is %dx%d, want 1920x1080",
+// subscriber that asked for "no preference". It sits at 720p, not 1080p,
+// because both codec halves of the default path can land on a CPU: encode
+// (x264enc fallback for cameras without onboard H.264: ~5 fps at 1080p on an
+// AGX-class Jetson) and decode (Orin Nano has no NVDEC: ~5.7 fps at 1080p).
+func TestDefaultFrameSizeCapIs720p(t *testing.T) {
+	if defaultMaxDefaultWidth != 1280 || defaultMaxDefaultHeight != 720 {
+		t.Fatalf("default cap is %dx%d, want 1280x720",
 			defaultMaxDefaultWidth, defaultMaxDefaultHeight)
 	}
 }
