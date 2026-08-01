@@ -25,6 +25,13 @@ ifeq ($(UNAME_S),Darwin)
 # the duplicate even though it is harmless.
 CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
 export CGO_LDFLAGS
+# If Swiftly is installed, its clang shim (~/.swiftly/bin/clang) is often
+# ahead of /usr/bin on PATH and refuses to run whenever the repo's
+# .swift-version doesn't match an installed Swift toolchain — which breaks
+# cgo builds with an opaque "exit status 2" and no output. Force the real
+# Apple clang so Go's cgo toolchain never goes through the shim.
+CC ?= /usr/bin/clang
+export CC
 endif
 
 # Build both CLI and agent (native)
