@@ -91,9 +91,16 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 	for _, want := range []string{
 		"ARG UNITREE_ROS2_COMMIT=" + unitreeROS2Commit,
 		"ARG UNITREE_SDK2_COMMIT=" + unitreeSDK2Commit,
+		"ARG UNITREE_SDK2_PYTHON_COMMIT=" + unitreeSDK2PythonCommit,
 		"https://github.com/unitreerobotics/unitree_ros2.git",
 		"https://github.com/unitreerobotics/unitree_sdk2.git",
+		"https://github.com/unitreerobotics/unitree_sdk2_python.git",
 		"python3 /tmp/unitree_sdk2_to_ros.py",
+		"python3 /opt/wendy/go2_camera_bridge.py --interface enP8p1s0",
+		"CYCLONEDDS_HOME=/opt/cyclonedds",
+		"/opt/ros/humble/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)",
+		"pip3 install --no-cache-dir cyclonedds==0.10.2",
+		"pip3 install --no-cache-dir --no-deps .",
 		"ros-humble-grid-map-msgs",
 		"--base-paths /tmp/unitree_ros2/cyclonedds_ws/src/unitree",
 		"--packages-select unitree_api unitree_go unitree_hg",
@@ -113,6 +120,24 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 			t.Fatalf("Unitree converter missing %q", want)
 		}
 	}
+	cameraBridge, err := os.ReadFile(filepath.Join(dir, "go2_camera_bridge.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ChannelFactoryInitialize",
+		"VideoClient",
+		"GetImageSample",
+		"retry_delay = min(retry_delay * 2.0, 5.0)",
+		"time.sleep(retry_delay)",
+		"next_warning_at = now + 30.0",
+		"/front_camera/image/compressed",
+		`message.format = "jpeg"`,
+	} {
+		if !strings.Contains(string(cameraBridge), want) {
+			t.Fatalf("Go2 camera bridge missing %q", want)
+		}
+	}
 }
 
 func TestWriteFoxgloveAppDoesNotInstallUnitreeMessagesByDefault(t *testing.T) {
@@ -127,6 +152,9 @@ func TestWriteFoxgloveAppDoesNotInstallUnitreeMessagesByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "unitree_sdk2_to_ros.py")); !os.IsNotExist(err) {
 		t.Fatal("generic Foxglove app unexpectedly includes Unitree schema converter")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go2_camera_bridge.py")); !os.IsNotExist(err) {
+		t.Fatal("generic Foxglove app unexpectedly includes Go2 camera bridge")
 	}
 }
 

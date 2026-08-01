@@ -113,6 +113,12 @@ the SDK publishes their DDS definitions. Wendy generates the corresponding ROS
 messages during the image build and rejects unknown SDK field types rather than
 risk silently decoding an incompatible layout.
 
+On a Go2, Wendy also requests JPEG frames from the native VideoHub service and
+publishes them as `/front_camera/image/compressed`
+(`sensor_msgs/msg/CompressedImage`). Select that topic in Foxglove's Image
+panel. On Unitree models without the Go2 camera service, the adapter remains
+idle without affecting the main Foxglove bridge.
+
 Definitions absent from both public repositories (for example onboard-only
 `unitree_interfaces` messages, `SymState`, and newer vendor-only service
 definitions) remain unavailable unless their definitions are installed
