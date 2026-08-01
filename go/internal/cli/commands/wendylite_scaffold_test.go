@@ -2,11 +2,13 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"gopkg.in/yaml.v3"
 )
@@ -238,5 +240,42 @@ func TestMergeIdfComponentDependencies_NonMappingDependenciesErrors(t *testing.T
 
 	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err == nil {
 		t.Fatal("expected an error for non-mapping dependencies key, got nil")
+	}
+}
+
+func TestNewWendyLiteESPIDFAppConfig(t *testing.T) {
+	cfg := newWendyLiteESPIDFAppConfig("my-esp32-app")
+
+	if cfg.AppID != "my-esp32-app" {
+		t.Errorf("AppID = %q, want %q", cfg.AppID, "my-esp32-app")
+	}
+	if cfg.Platform != appconfig.PlatformWendyLite {
+		t.Errorf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformWendyLite)
+	}
+	if cfg.Version == "" {
+		t.Error("Version must not be empty")
+	}
+}
+
+func TestWriteWendyLiteESPIDFAppConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := writeWendyLiteESPIDFAppConfig(dir); err != nil {
+		t.Fatalf("writeWendyLiteESPIDFAppConfig: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "wendy.json"))
+	if err != nil {
+		t.Fatalf("reading wendy.json: %v", err)
+	}
+	var cfg appconfig.AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parsing wendy.json: %v", err)
+	}
+	if cfg.Platform != appconfig.PlatformWendyLite {
+		t.Errorf("Platform = %q, want %q", cfg.Platform, appconfig.PlatformWendyLite)
+	}
+	if cfg.AppID != filepath.Base(dir) {
+		t.Errorf("AppID = %q, want directory base name %q", cfg.AppID, filepath.Base(dir))
 	}
 }

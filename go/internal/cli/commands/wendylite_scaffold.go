@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -114,4 +116,33 @@ func setMappingKey(mapping *yaml.Node, key string, value *yaml.Node) {
 		}
 	}
 	mapping.Content = append(mapping.Content, scalarNode(key), value)
+}
+
+// newWendyLiteESPIDFAppConfig builds the minimal wendy.json contents for a
+// scaffolded native ESP-IDF wendy-lite project.
+func newWendyLiteESPIDFAppConfig(appID string) *appconfig.AppConfig {
+	return &appconfig.AppConfig{
+		AppID:    appID,
+		Version:  "0.1.0",
+		Platform: appconfig.PlatformWendyLite,
+		Language: "c",
+	}
+}
+
+// writeWendyLiteESPIDFAppConfig writes a scaffolded wendy.json into cwd,
+// deriving the app ID from the directory name (matching ensureAppConfig's
+// existing convention in helpers.go).
+func writeWendyLiteESPIDFAppConfig(cwd string) error {
+	cfgPath := filepath.Join(cwd, "wendy.json")
+	dirName := filepath.Base(cwd)
+
+	data, err := json.MarshalIndent(newWendyLiteESPIDFAppConfig(dirName), "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling config: %w", err)
+	}
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		return fmt.Errorf("writing wendy.json: %w", err)
+	}
+	fmt.Printf("Created wendy.json for %s\n", dirName)
+	return nil
 }
