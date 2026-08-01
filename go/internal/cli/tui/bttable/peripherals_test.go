@@ -32,7 +32,7 @@ func TestFromProtoPopulatesFields(t *testing.T) {
 	}
 }
 
-func TestSortConnectedThenPairedThenRSSIThenName(t *testing.T) {
+func TestSortConnectedThenPairedThenNamedAlphabetically(t *testing.T) {
 	ps := []Peripheral{
 		{Name: "Zeta", Address: "00:00:00:00:00:05", RSSI: -90},
 		{Name: "Paired Weak", Address: "00:00:00:00:00:02", Paired: true, RSSI: -80},
@@ -46,11 +46,35 @@ func TestSortConnectedThenPairedThenRSSIThenName(t *testing.T) {
 	for _, p := range ps {
 		got = append(got, p.Name)
 	}
-	// Connected first; then paired (strong RSSI before weak); then unpaired by
-	// RSSI tie (-90 == -90) broken by name ascending (Alpha before Zeta).
+	// Connected first; then paired (both named, so alphabetical: Strong before
+	// Weak); then unpaired (both named, alphabetical: Alpha before Zeta).
 	want := []string{"Connected", "Paired Strong", "Paired Weak", "Alpha", "Zeta"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Sort order = %v; want %v", got, want)
+	}
+}
+
+func TestSortNamedBeforeUnnamedRegardlessOfRSSI(t *testing.T) {
+	ps := []Peripheral{
+		{Name: "", Address: "00:00:00:00:00:01", RSSI: -20},
+		{Name: "Zeta", Address: "00:00:00:00:00:02", RSSI: -90},
+		{Name: "", Address: "00:00:00:00:00:03", RSSI: -10},
+		{Name: "Alpha", Address: "00:00:00:00:00:04", RSSI: -95},
+	}
+	Sort(ps)
+
+	var got []string
+	for _, p := range ps {
+		got = append(got, p.Name)
+	}
+	// Named devices come first (alphabetically) even though the unnamed ones
+	// have much stronger RSSI; unnamed devices follow, sorted by RSSI desc.
+	want := []string{"Alpha", "Zeta", "", ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Sort order = %v; want %v", got, want)
+	}
+	if ps[2].Address != "00:00:00:00:00:03" || ps[3].Address != "00:00:00:00:00:01" {
+		t.Fatalf("expected unnamed devices sorted by RSSI desc, got addresses %v, %v", ps[2].Address, ps[3].Address)
 	}
 }
 
@@ -58,6 +82,17 @@ func TestSortRSSITiebreakByAddress(t *testing.T) {
 	ps := []Peripheral{
 		{Name: "Dup", Address: "BB:BB:BB:BB:BB:BB", RSSI: -50},
 		{Name: "Dup", Address: "AA:AA:AA:AA:AA:AA", RSSI: -50},
+	}
+	Sort(ps)
+	if ps[0].Address != "AA:AA:AA:AA:AA:AA" {
+		t.Fatalf("expected lower address first on full tie, got %v", ps[0].Address)
+	}
+}
+
+func TestSortUnnamedRSSITiebreakByAddress(t *testing.T) {
+	ps := []Peripheral{
+		{Name: "", Address: "BB:BB:BB:BB:BB:BB", RSSI: -50},
+		{Name: "", Address: "AA:AA:AA:AA:AA:AA", RSSI: -50},
 	}
 	Sort(ps)
 	if ps[0].Address != "AA:AA:AA:AA:AA:AA" {

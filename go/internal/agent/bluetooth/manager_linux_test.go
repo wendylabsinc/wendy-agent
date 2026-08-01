@@ -389,3 +389,54 @@ func TestWrapBluetoothError(t *testing.T) {
 		}
 	})
 }
+
+func TestDeviceFromPropsIgnoresBlueZDefaultAlias(t *testing.T) {
+	// BlueZ sets Alias to the address (':' -> '-') when a device has never
+	// advertised a real name. That must not surface as a Name, or every
+	// anonymous device sorts as if it were named.
+	props := deviceProps("03:F8:5C:73:77:6B", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("03-F8-5C-73-77-6B"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "" {
+		t.Fatalf("Name = %q, want empty for BlueZ default alias", p.Name)
+	}
+}
+
+func TestDeviceFromPropsKeepsRealAlias(t *testing.T) {
+	props := deviceProps("40:C1:F6:E2:53:24", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("JBL Flip 5"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "JBL Flip 5" {
+		t.Fatalf("Name = %q, want %q", p.Name, "JBL Flip 5")
+	}
+}
+
+func TestDeviceFromPropsFallsBackToNameWhenAliasIsDefault(t *testing.T) {
+	props := deviceProps("AA:BB:CC:DD:EE:FF", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("AA-BB-CC-DD-EE-FF"),
+		"Name":  dbus.MakeVariant("Real Advertised Name"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "Real Advertised Name" {
+		t.Fatalf("Name = %q, want fallback to Name property", p.Name)
+	}
+}
+
+func TestIsDefaultAlias(t *testing.T) {
+	tests := []struct {
+		alias, address string
+		want           bool
+	}{
+		{"AA-BB-CC-DD-EE-FF", "AA:BB:CC:DD:EE:FF", true},
+		{"aa-bb-cc-dd-ee-ff", "AA:BB:CC:DD:EE:FF", true},
+		{"JBL Flip 5", "AA:BB:CC:DD:EE:FF", false},
+		{"AA-BB-CC-DD-EE-FF", "", false},
+	}
+	for _, tt := range tests {
+		if got := isDefaultAlias(tt.alias, tt.address); got != tt.want {
+			t.Errorf("isDefaultAlias(%q, %q) = %v, want %v", tt.alias, tt.address, got, tt.want)
+		}
+	}
+}

@@ -21,6 +21,11 @@ const (
 	deviceIface  = "org.bluez.Device1"
 	// scanDuration is how long discovery runs before results are collected.
 	scanDuration = 8 * time.Second
+	// quickScanDuration is how long to wait before sending an early, partial
+	// batch of results, so a caller has something to show almost immediately
+	// while discovery keeps running for the full scanDuration to find more
+	// devices before the final, more thorough batch.
+	quickScanDuration = 1 * time.Second
 	// resolveDiscoveryTimeout bounds the on-demand discovery Connect runs when
 	// the target device is not in BlueZ's cache (BlueZ evicts unpaired devices
 	// ~30s after a scan stops, so this is the common case when connecting a
@@ -260,7 +265,10 @@ func (m *BlueZManager) connectFailureError(address string, pairErr, connectErr e
 // discovered devices on the channel. It powers on the adapter, runs discovery
 // for scanDuration, then enumerates known devices through the BlueZ
 // ObjectManager so typed properties (RSSI, paired/connected/trusted, icon) are
-// read directly rather than parsed from bluetoothctl text output.
+// read directly rather than parsed from bluetoothctl text output. An early,
+// partial batch is sent after quickScanDuration so callers get data fast,
+// followed by a second, more thorough batch once the full scanDuration
+// elapses.
 func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error) {
 	ch := make(chan []*agentpb.DiscoveredBluetoothPeripheral, 10)
 
@@ -301,11 +309,25 @@ func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBl
 			return
 		}
 
-		// Let discovery run, then collect results while it is still active —
-		// some BlueZ versions clear volatile properties (RSSI) once discovery
-		// stops, which would defeat the includePeripheral presence filter.
+		// Send an early, partial batch after a short quick pass so a caller has
+		// something to show fast, while discovery keeps running underneath.
 		select {
-		case <-time.After(scanDuration):
+		case <-time.After(quickScanDuration):
+		case <-ctx.Done():
+		}
+		if quick := m.collectPeripherals(ctx, conn, adapterPath, preexisting); len(quick) > 0 {
+			select {
+			case ch <- quick:
+			case <-ctx.Done():
+			}
+		}
+
+		// Let discovery run the rest of the way, then collect results while it
+		// is still active — some BlueZ versions clear volatile properties
+		// (RSSI) once discovery stops, which would defeat the includePeripheral
+		// presence filter.
+		select {
+		case <-time.After(scanDuration - quickScanDuration):
 		case <-ctx.Done():
 		}
 		peripherals := m.collectPeripherals(ctx, conn, adapterPath, preexisting)
@@ -359,7 +381,10 @@ func deviceFromProps(props map[string]dbus.Variant) *agentpb.DiscoveredBluetooth
 		p.Address = s
 	}
 	// Alias is the user-facing name (falls back to Name when unset by BlueZ).
-	if s, ok := stringProp(props, "Alias"); ok && s != "" {
+	// BlueZ synthesizes a default Alias for devices advertising no real name —
+	// the address with ':' replaced by '-' — which must not count as a name,
+	// or every anonymous device would sort as if it were named.
+	if s, ok := stringProp(props, "Alias"); ok && s != "" && !isDefaultAlias(s, p.Address) {
 		p.Name = s
 	} else if s, ok := stringProp(props, "Name"); ok {
 		p.Name = s
@@ -378,6 +403,16 @@ func deviceFromProps(props map[string]dbus.Variant) *agentpb.DiscoveredBluetooth
 	p.Trusted = boolProp(props, "Trusted")
 
 	return p
+}
+
+// isDefaultAlias reports whether alias is BlueZ's synthesized default for a
+// device advertising no name: the address with ':' replaced by '-' (e.g.
+// "AA:BB:CC:DD:EE:FF" -> "AA-BB-CC-DD-EE-FF").
+func isDefaultAlias(alias, address string) bool {
+	if address == "" {
+		return false
+	}
+	return strings.EqualFold(alias, strings.ReplaceAll(address, ":", "-"))
 }
 
 func stringProp(props map[string]dbus.Variant, key string) (string, bool) {
