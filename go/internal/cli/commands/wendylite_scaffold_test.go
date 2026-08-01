@@ -19,14 +19,14 @@ import (
 // Key() is configurable; every other method is a no-op stub.
 type fakeDeviceProvider struct{ key string }
 
-func (f fakeDeviceProvider) Key() string         { return f.key }
-func (f fakeDeviceProvider) DisplayName() string { return "" }
-func (f fakeDeviceProvider) IsAvailable(ctx context.Context) bool         { return true }
-func (f fakeDeviceProvider) CheckRequirements(ctx context.Context) error  { return nil }
+func (f fakeDeviceProvider) Key() string                                 { return f.key }
+func (f fakeDeviceProvider) DisplayName() string                         { return "" }
+func (f fakeDeviceProvider) IsAvailable(ctx context.Context) bool        { return true }
+func (f fakeDeviceProvider) CheckRequirements(ctx context.Context) error { return nil }
 func (f fakeDeviceProvider) DiscoverDevices(ctx context.Context) ([]models.ExternalDevice, error) {
 	return nil, nil
 }
-func (f fakeDeviceProvider) SupportedBuildTypes() []string  { return nil }
+func (f fakeDeviceProvider) SupportedBuildTypes() []string    { return nil }
 func (f fakeDeviceProvider) CanBuild(projectPath string) bool { return false }
 func (f fakeDeviceProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*providers.BuiltApp, error) {
 	return nil, nil
@@ -235,13 +235,60 @@ func TestMergeIdfComponentDependencies_NonMappingDependenciesErrors(t *testing.T
 		t.Fatal(err)
 	}
 	manifestPath := filepath.Join(mainDir, "idf_component.yml")
-	// Create manifest with dependencies: key but no mapping value (empty scalar)
-	if err := os.WriteFile(manifestPath, []byte("dependencies:\n"), 0o644); err != nil {
+	// Create manifest with a dependencies: key whose value is a genuinely
+	// wrong shape (a string scalar, not null and not a mapping).
+	if err := os.WriteFile(manifestPath, []byte("dependencies: \"oops\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err == nil {
 		t.Fatal("expected an error for non-mapping dependencies key, got nil")
+	}
+}
+
+func TestMergeIdfComponentDependencies_NullDependenciesUpgraded(t *testing.T) {
+	dir := t.TempDir()
+	mainDir := filepath.Join(dir, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(mainDir, "idf_component.yml")
+	// "dependencies:" with nothing under it parses as a null scalar, not a
+	// mapping. This is a common, legitimate manifest shape (e.g. produced by
+	// IDF templates) and must be upgraded to an empty mapping, not rejected.
+	if err := os.WriteFile(manifestPath, []byte("dependencies:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal", "wendy_usb"}); err != nil {
+		t.Fatalf("mergeIdfComponentDependencies on null dependencies: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Dependencies map[string]struct {
+			Git  string `yaml:"git"`
+			Path string `yaml:"path"`
+		} `yaml:"dependencies"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parsing written manifest: %v", err)
+	}
+
+	for _, name := range []string{"wendy_hal", "wendy_usb"} {
+		dep, ok := parsed.Dependencies[name]
+		if !ok {
+			t.Fatalf("expected dependency %q, got %+v", name, parsed.Dependencies)
+		}
+		if dep.Git != "https://github.com/wendylabsinc/wendy-lite.git" {
+			t.Errorf("dep %q git = %q, want the wendy-lite repo URL", name, dep.Git)
+		}
+		if dep.Path != "components/"+name {
+			t.Errorf("dep %q path = %q, want %q", name, dep.Path, "components/"+name)
+		}
 	}
 }
 
@@ -374,8 +421,8 @@ func TestPromptAndScaffoldWendyLiteESPIDF_ChecklistCancelled(t *testing.T) {
 
 	dir := t.TempDir()
 	scaffolded, err := promptAndScaffoldWendyLiteESPIDF(dir)
-	if !errors.Is(err, tui.ErrCancelled) {
-		t.Fatalf("expected tui.ErrCancelled, got %v", err)
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("expected ErrUserCancelled, got %v", err)
 	}
 	if scaffolded {
 		t.Error("expected scaffolded=false on cancellation")

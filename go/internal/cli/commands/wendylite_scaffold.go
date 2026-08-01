@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -64,6 +65,13 @@ func mergeIdfComponentDependencies(manifestPath string, components []string) err
 	}
 
 	deps := findOrAppendMappingKey(root, "dependencies")
+	if deps.Kind == yaml.ScalarNode && deps.Tag == "!!null" {
+		// "dependencies:" with nothing under it is a normal, common manifest
+		// shape (produced by IDF templates and hand-written stubs) that
+		// parses as a null scalar rather than an empty mapping. Upgrade it
+		// in place instead of treating it as malformed.
+		*deps = yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	}
 	if deps.Kind != yaml.MappingNode {
 		return fmt.Errorf("%s: \"dependencies\" is not a mapping", manifestPath)
 	}
@@ -190,6 +198,9 @@ func promptAndScaffoldWendyLiteESPIDF(cwd string) (bool, error) {
 	}
 	selected, err := wendyLiteComponentChecklistFn(items)
 	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return false, ErrUserCancelled
+		}
 		return false, err
 	}
 
