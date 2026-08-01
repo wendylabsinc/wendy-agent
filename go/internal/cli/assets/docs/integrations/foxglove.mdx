@@ -107,10 +107,22 @@ explicitly:
 wendy device foxglove serve --domain 0 --interface enP8p1s0
 ```
 
-Unitree-specific packages that are not part of the public `unitree_ros2`
-repository (for example onboard-only `unitree_interfaces` messages and newer
-vendor-only service definitions) remain unavailable unless their definitions are
-installed separately.
+Unitree-specific messages that are not part of the public `unitree_ros2`
+repository are supplemented from a pinned official `unitree_sdk2` revision when
+the SDK publishes their DDS definitions. Wendy generates the corresponding ROS
+messages during the image build and rejects unknown SDK field types rather than
+risk silently decoding an incompatible layout.
+
+Definitions absent from both public repositories (for example onboard-only
+`unitree_interfaces` messages, `SymState`, and newer vendor-only service
+definitions) remain unavailable unless their definitions are installed
+separately.
+
+Some Unitree firmware also advertises a single topic name with multiple
+incompatible message types (for example `/lf/lowstate`). Foxglove cannot
+disambiguate those publishers by topic name. Wendy leaves the topic visible
+instead of silently choosing a type; the publishers must use distinct topic
+names before both streams can be decoded reliably.
 
 ## Stopping and cleanup
 
