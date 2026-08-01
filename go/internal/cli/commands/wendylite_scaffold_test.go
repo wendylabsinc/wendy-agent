@@ -3,11 +3,13 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"gopkg.in/yaml.v3"
@@ -277,5 +279,108 @@ func TestWriteWendyLiteESPIDFAppConfig(t *testing.T) {
 	}
 	if cfg.AppID != filepath.Base(dir) {
 		t.Errorf("AppID = %q, want directory base name %q", cfg.AppID, filepath.Base(dir))
+	}
+}
+
+func TestPromptAndScaffoldWendyLiteESPIDF_Declined(t *testing.T) {
+	origConfirm := confirmFn
+	defer func() { confirmFn = origConfirm }()
+	confirmFn = func(string) bool { return false }
+
+	origChecklist := wendyLiteComponentChecklistFn
+	defer func() { wendyLiteComponentChecklistFn = origChecklist }()
+	wendyLiteComponentChecklistFn = func([]tui.ChecklistItem) ([]tui.ChecklistItem, error) {
+		t.Fatal("must not prompt checklist when the initial confirm is declined")
+		return nil, nil
+	}
+
+	dir := t.TempDir()
+	scaffolded, err := promptAndScaffoldWendyLiteESPIDF(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if scaffolded {
+		t.Error("expected scaffolded=false when confirm is declined")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "wendy.json")); statErr == nil {
+		t.Error("wendy.json must not be written when confirm is declined")
+	}
+}
+
+func TestPromptAndScaffoldWendyLiteESPIDF_AllComponentsSelected(t *testing.T) {
+	origConfirm := confirmFn
+	defer func() { confirmFn = origConfirm }()
+	confirmFn = func(string) bool { return true }
+
+	origChecklist := wendyLiteComponentChecklistFn
+	defer func() { wendyLiteComponentChecklistFn = origChecklist }()
+	wendyLiteComponentChecklistFn = func(items []tui.ChecklistItem) ([]tui.ChecklistItem, error) {
+		return items, nil // simulate the user keeping every pre-selected item
+	}
+
+	dir := t.TempDir()
+	scaffolded, err := promptAndScaffoldWendyLiteESPIDF(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scaffolded {
+		t.Fatal("expected scaffolded=true")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "wendy.json")); statErr != nil {
+		t.Errorf("expected wendy.json to be written: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "main", "idf_component.yml")); statErr != nil {
+		t.Errorf("expected main/idf_component.yml to be written: %v", statErr)
+	}
+}
+
+func TestPromptAndScaffoldWendyLiteESPIDF_NoComponentsSelected(t *testing.T) {
+	origConfirm := confirmFn
+	defer func() { confirmFn = origConfirm }()
+	confirmFn = func(string) bool { return true }
+
+	origChecklist := wendyLiteComponentChecklistFn
+	defer func() { wendyLiteComponentChecklistFn = origChecklist }()
+	wendyLiteComponentChecklistFn = func([]tui.ChecklistItem) ([]tui.ChecklistItem, error) {
+		return nil, nil // simulate the user unchecking every item
+	}
+
+	dir := t.TempDir()
+	scaffolded, err := promptAndScaffoldWendyLiteESPIDF(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !scaffolded {
+		t.Fatal("expected scaffolded=true even with zero components selected")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "wendy.json")); statErr != nil {
+		t.Errorf("expected wendy.json to still be written: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "main", "idf_component.yml")); statErr == nil {
+		t.Error("idf_component.yml must not be written when zero components are selected")
+	}
+}
+
+func TestPromptAndScaffoldWendyLiteESPIDF_ChecklistCancelled(t *testing.T) {
+	origConfirm := confirmFn
+	defer func() { confirmFn = origConfirm }()
+	confirmFn = func(string) bool { return true }
+
+	origChecklist := wendyLiteComponentChecklistFn
+	defer func() { wendyLiteComponentChecklistFn = origChecklist }()
+	wendyLiteComponentChecklistFn = func([]tui.ChecklistItem) ([]tui.ChecklistItem, error) {
+		return nil, tui.ErrCancelled
+	}
+
+	dir := t.TempDir()
+	scaffolded, err := promptAndScaffoldWendyLiteESPIDF(dir)
+	if !errors.Is(err, tui.ErrCancelled) {
+		t.Fatalf("expected tui.ErrCancelled, got %v", err)
+	}
+	if scaffolded {
+		t.Error("expected scaffolded=false on cancellation")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "wendy.json")); statErr == nil {
+		t.Error("wendy.json must not be written when the checklist is cancelled")
 	}
 }

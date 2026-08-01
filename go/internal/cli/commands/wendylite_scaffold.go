@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -145,4 +146,70 @@ func writeWendyLiteESPIDFAppConfig(cwd string) error {
 	}
 	fmt.Printf("Created wendy.json for %s\n", dirName)
 	return nil
+}
+
+// wendyLiteESPIDFComponents lists the non-WASM Wendy Lite ESP-IDF components
+// offered by the scaffold checklist. WASM-only pieces (wendy_wasm,
+// wendy_hal_export, wendy_wasi_shim, wendy_safety, wendy_callback) are
+// intentionally excluded: this flow is for native ESP-IDF firmware, not WASM
+// apps.
+var wendyLiteESPIDFComponents = []string{
+	"wendy_hal",
+	"wendy_usb",
+	"wendy_wifi",
+	"wendy_ble_prov",
+	"wendy_cloud_prov",
+	"wendy_storage",
+	"wendy_uart",
+	"wendy_spi",
+	"wendy_sys",
+	"wendy_otel",
+	"wendy_ble",
+	"wendy_net",
+	"wendy_app_usb",
+}
+
+// wendyLiteComponentChecklistFn runs the component-selection checklist. It is
+// a package var so tests can stub it (mirrors confirmFn's testability
+// pattern in helpers.go).
+var wendyLiteComponentChecklistFn = func(items []tui.ChecklistItem) ([]tui.ChecklistItem, error) {
+	return tui.RunChecklist("Which Wendy Lite components do you want to add?", items)
+}
+
+// promptAndScaffoldWendyLiteESPIDF offers to add wendy-lite ESP-IDF
+// components to the project at cwd and, if accepted, writes a wendy.json.
+// Returns scaffolded=true iff wendy.json was written.
+func promptAndScaffoldWendyLiteESPIDF(cwd string) (bool, error) {
+	if !confirmFn("This looks like an ESP-IDF project without a wendy.json, and a USB-connected ESP32 was detected. Add Wendy Lite components and set up 'wendy run' for this project?") {
+		return false, nil
+	}
+
+	items := make([]tui.ChecklistItem, len(wendyLiteESPIDFComponents))
+	for i, name := range wendyLiteESPIDFComponents {
+		items[i] = tui.ChecklistItem{Label: name, Value: name, Selected: true}
+	}
+	selected, err := wendyLiteComponentChecklistFn(items)
+	if err != nil {
+		return false, err
+	}
+
+	names := make([]string, len(selected))
+	for i, item := range selected {
+		names[i] = item.Value
+	}
+
+	if len(names) > 0 {
+		manifestPath := filepath.Join(cwd, "main", "idf_component.yml")
+		if err := mergeIdfComponentDependencies(manifestPath, names); err != nil {
+			return false, fmt.Errorf("adding wendy-lite components: %w", err)
+		}
+		fmt.Printf("Added %d Wendy Lite component(s) to main/idf_component.yml\n", len(names))
+	} else {
+		fmt.Println("No Wendy Lite components were added. You can add idf_component.yml dependencies manually later.")
+	}
+
+	if err := writeWendyLiteESPIDFAppConfig(cwd); err != nil {
+		return false, err
+	}
+	return true, nil
 }
