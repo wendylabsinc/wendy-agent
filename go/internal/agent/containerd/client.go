@@ -3308,6 +3308,72 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 	return result, nil
 }
 
+// ReattachRunningOutput reconnects stdout/stderr capture for a task that
+// survived a wendy-agent process restart. containerd keeps the task and its
+// FIFO endpoints alive, but the cio copy goroutines that drained those FIFOs
+// belonged to the old agent process. Leaving them unattached eventually blocks
+// a verbose workload in pipe_write once the FIFO fills.
+func (c *Client) ReattachRunningOutput(ctx context.Context, containerID string) (<-chan services.ContainerOutput, bool, error) {
+	if _, _, err := ParseContainerName(containerID); err != nil {
+		return nil, false, fmt.Errorf("ReattachRunningOutput: invalid container name: %w", err)
+	}
+
+	taskCtx := c.withNamespace(context.Background())
+	container, err := c.client.LoadContainer(taskCtx, containerID)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("loading container %q: %w", containerID, err)
+	}
+
+	stdoutR, stdoutW := io.Pipe()
+	stderrR, stderrW := io.Pipe()
+	closePipes := func() {
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		_ = stderrR.Close()
+		_ = stderrW.Close()
+	}
+
+	task, err := container.Task(taskCtx, cio.NewAttach(cio.WithStreams(nil, stdoutW, stderrW)))
+	if err != nil {
+		closePipes()
+		if errdefs.IsNotFound(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("attaching output for %q: %w", containerID, err)
+	}
+	status, err := task.Status(taskCtx)
+	if err != nil || status.Status != containerd.Running {
+		task.IO().Cancel()
+		_ = task.IO().Close()
+		closePipes()
+		if err != nil && !errdefs.IsNotFound(err) {
+			return nil, false, fmt.Errorf("checking task status for %q: %w", containerID, err)
+		}
+		return nil, false, nil
+	}
+
+	exitStatusCh, err := task.Wait(taskCtx)
+	if err != nil {
+		task.IO().Cancel()
+		_ = task.IO().Close()
+		closePipes()
+		return nil, false, fmt.Errorf("waiting on attached task %q: %w", containerID, err)
+	}
+
+	outputCh := make(chan services.ContainerOutput, 64)
+	go func() {
+		c.streamOutput(taskCtx, task, exitStatusCh, outputCh, containerID, stdoutR, stderrR, stdoutW, stderrW)
+		task.IO().Cancel()
+		task.IO().Wait()
+		_ = task.IO().Close()
+	}()
+	c.logger.Info("Reattached running container output", zap.String("app_name", containerID))
+	return outputCh, true, nil
+}
+
 // SetStoppedByUser sets or clears the persisted stopped-by-user label on a
 // single container (keyed by container ID). Used by the stop/start RPCs so a
 // deliberate stop survives a reboot. A missing container is not an error — the

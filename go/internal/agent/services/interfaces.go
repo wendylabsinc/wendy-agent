@@ -149,6 +149,19 @@ type AppStateRebuilder interface {
 	RebuildAppStateCaches(ctx context.Context)
 }
 
+// RunningOutputReattacher is the optional capability to reconnect the agent's
+// stdout/stderr drain to tasks that survived an agent process restart. The
+// original task IO copy goroutines die with the old agent; without a new
+// reader, a verbose container eventually fills its FIFO and blocks in write(2).
+// ReconcileBootContainers invokes this for every restart-managed container and
+// drains a returned channel through the normal log manager path.
+type RunningOutputReattacher interface {
+	// ReattachRunningOutput returns attached=false when the container has no
+	// running task (the normal device-boot case). A successful attachment owns
+	// the task's existing stdout/stderr FIFOs until the task exits.
+	ReattachRunningOutput(ctx context.Context, containerID string) (output <-chan ContainerOutput, attached bool, err error)
+}
+
 // PortExposureProber is the optional capability to scan running host-network
 // apps for publicly-bound listening ports and log a warning for each new
 // exposure. The container monitor calls it once per health tick; the

@@ -202,6 +202,21 @@ func (m *ContainerMonitor) ReconcileBootContainers(ctx context.Context) {
 			policy = p
 		}
 		m.Register(bc.Name, policy, bc.MaxRetries)
+
+		// A device-agent restart does not stop containerd tasks. Their original
+		// stdout/stderr copy goroutines did live in the old agent process,
+		// however, so reconnect them before a verbose app fills its orphaned FIFO
+		// and freezes in pipe_write. A stopped task simply reports attached=false
+		// and is launched by the immediate health pass below.
+		if r, ok := m.containerd.(services.RunningOutputReattacher); ok {
+			outputCh, attached, attachErr := r.ReattachRunningOutput(ctx, bc.Name)
+			if attachErr != nil {
+				m.logger.Warn("Failed to reattach running container output",
+					zap.String("app_name", bc.Name), zap.Error(attachErr))
+			} else if attached {
+				go m.drainOutput(bc.Name, outputCh)
+			}
+		}
 	}
 	m.logger.Info("Reconciling apps on boot", zap.Int("count", len(bcs)))
 	// Immediate pass: start the ones that aren't running yet (the common

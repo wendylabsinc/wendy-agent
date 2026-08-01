@@ -28,6 +28,8 @@ type fakeContainerd struct {
 	migrateCalls  int
 	rebuildCalls  int
 	probeCalls    int
+	reattachCalls []string
+	reattachCh    chan services.ContainerOutput
 }
 
 func (f *fakeContainerd) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error) {
@@ -65,6 +67,17 @@ func (f *fakeContainerd) WarnPubliclyExposedPorts(ctx context.Context) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.probeCalls++
+}
+
+func (f *fakeContainerd) ReattachRunningOutput(_ context.Context, containerID string) (<-chan services.ContainerOutput, bool, error) {
+	f.mu.Lock()
+	f.reattachCalls = append(f.reattachCalls, containerID)
+	ch := f.reattachCh
+	f.mu.Unlock()
+	if ch == nil {
+		return nil, false, nil
+	}
+	return ch, true, nil
 }
 
 func (f *fakeContainerd) StartContainer(ctx context.Context, appName, _ string, _ *agentpb.RestartPolicy) (<-chan services.ContainerOutput, error) {
@@ -263,6 +276,39 @@ func TestReconcileBootContainers_RebuildsCaches(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.rebuildCalls != 1 {
 		t.Fatalf("RebuildAppStateCaches called %d times, want 1", f.rebuildCalls)
+	}
+}
+
+func TestReconcileBootContainers_ReattachesAndDrainsRunningOutput(t *testing.T) {
+	output := make(chan services.ContainerOutput)
+	f := &fakeContainerd{
+		bootContainers: []services.BootContainer{{Name: "running-app", RestartPolicy: "unless-stopped"}},
+		containers: []*agentpb.AppContainer{{
+			AppName:      "running-app",
+			RunningState: agentpb.AppRunningState_RUNNING,
+		}},
+		reattachCh: output,
+	}
+	m := newMonitorWithClient(f)
+	m.ReconcileBootContainers(context.Background())
+
+	f.mu.Lock()
+	calls := append([]string(nil), f.reattachCalls...)
+	f.mu.Unlock()
+	if len(calls) != 1 || calls[0] != "running-app" {
+		t.Fatalf("ReattachRunningOutput calls = %v, want [running-app]", calls)
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		output <- services.ContainerOutput{Stdout: []byte("verbose driver output")}
+		close(output)
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reattached output was not drained")
 	}
 }
 
