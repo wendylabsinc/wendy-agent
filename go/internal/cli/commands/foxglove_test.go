@@ -3,9 +3,49 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestFoxgloveDirectCommandsStayOnLANDevice(t *testing.T) {
+	opts := foxgloveServeOpts{device: "wendy-box.local", localPort: 9001}
+
+	wantRemove := []string{"device", "apps", "remove", foxgloveAppID, "--force", "--cleanup", "--device", "wendy-box.local"}
+	if got := foxgloveRemoveArgs(opts); !reflect.DeepEqual(got, wantRemove) {
+		t.Fatalf("remove args = %q, want %q", got, wantRemove)
+	}
+	wantRun := []string{"run", "--detach", "--device", "wendy-box.local", "--lan"}
+	if got := foxgloveRunArgs(opts); !reflect.DeepEqual(got, wantRun) {
+		t.Fatalf("run args = %q, want %q", got, wantRun)
+	}
+}
+
+func TestFoxgloveCloudCommandsPinSameAsset(t *testing.T) {
+	opts := foxgloveServeOpts{
+		device:    "323",
+		localPort: 9001,
+		cloud:     true,
+		cloudCfg: cloudDeviceConfig{
+			CloudGRPC: "cloud.example:443",
+			BrokerURL: "broker.example:443",
+		},
+	}
+	cloudFlags := []string{"--cloud-grpc", "cloud.example:443", "--broker-url", "broker.example:443"}
+
+	wantRemove := append([]string{"cloud", "device", "apps", "remove", foxgloveAppID, "--force", "--cleanup", "--device", "323"}, cloudFlags...)
+	if got := foxgloveRemoveArgs(opts); !reflect.DeepEqual(got, wantRemove) {
+		t.Fatalf("remove args = %q, want %q", got, wantRemove)
+	}
+	wantRun := append([]string{"cloud", "run", "--detach", "--device", "323"}, cloudFlags...)
+	if got := foxgloveRunArgs(opts); !reflect.DeepEqual(got, wantRun) {
+		t.Fatalf("run args = %q, want %q", got, wantRun)
+	}
+	wantTunnel := append([]string{"cloud", "tunnel", "9001:8765", "--device", "323"}, cloudFlags...)
+	if got := foxgloveTunnelArgs(opts); !reflect.DeepEqual(got, wantTunnel) {
+		t.Fatalf("tunnel args = %q, want %q", got, wantTunnel)
+	}
+}
 
 func TestWriteFoxgloveApp(t *testing.T) {
 	dir := t.TempDir()

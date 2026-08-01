@@ -7,6 +7,10 @@ Runs your app on a Wendy-enabled device:
 5. [Starts the app](./device/apps/start.md)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
+When a named or default LAN device cannot be reached, `wendy run` can normally
+retry that device through Wendy Cloud. Pass `--lan` to require a direct LAN
+connection and disable that fallback.
+
 ## Reachable app URLs
 
 After the app starts, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
@@ -145,6 +149,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
+| `--lan` | Require a direct LAN connection; do not fall back to Wendy Cloud. |
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects, builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
 | `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |

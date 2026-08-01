@@ -3,11 +3,13 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -59,6 +61,7 @@ ROS topics, in the selected domain.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			cloudCfg, cloud := cloudDeviceConfigFromContext(ctx)
 			return foxgloveServe(ctx, foxgloveServeOpts{
 				localPort: port,
 				domain:    domain,
@@ -66,6 +69,8 @@ ROS topics, in the selected domain.`,
 				distro:    distro,
 				device:    deviceFlag,
 				iface:     iface,
+				cloud:     cloud,
+				cloudCfg:  cloudCfg,
 			})
 		},
 	}
@@ -86,12 +91,21 @@ type foxgloveServeOpts struct {
 	distro    string
 	device    string // global --device; "" = default device
 	iface     string // optional CycloneDDS network interface
+	cloud     bool
+	cloudCfg  cloudDeviceConfig
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
-// device via `wendy run --detach`, then forwards the bridge's WebSocket port to
-// localhost via `wendy cloud tunnel`. The tunnel runs until ctx is cancelled.
+// device via `wendy run --detach`, then forwards the bridge's WebSocket port.
+// Direct device commands forward over the selected LAN connection; cloud device
+// commands deploy and forward through the same cloud asset.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
+	target, err := resolveFoxgloveTarget(ctx, opts)
+	if err != nil {
+		return err
+	}
+	opts.device = target
+
 	dir, err := os.MkdirTemp("", "wendy-foxglove-*")
 	if err != nil {
 		return fmt.Errorf("creating temp app dir: %w", err)
@@ -114,18 +128,12 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 	// is idempotent — a previously-deployed app (it stays running detached after
 	// the tunnel is Ctrl-C'd) otherwise collides on redeploy ("snapshot already
 	// exists"). Errors (e.g. nothing deployed yet) are ignored.
-	rmArgs := []string{"device", "apps", "remove", foxgloveAppID, "--force", "--cleanup"}
-	if opts.device != "" {
-		rmArgs = append(rmArgs, "--device", opts.device)
-	}
+	rmArgs := foxgloveRemoveArgs(opts)
 	rm := exec.CommandContext(ctx, self, rmArgs...)
 	_ = rm.Run() // best-effort; ignore "not found" etc.
 
 	cliLogln("Deploying foxglove_bridge to the device...")
-	runArgs := []string{"run", "--detach"}
-	if opts.device != "" {
-		runArgs = append(runArgs, "--device", opts.device)
-	}
+	runArgs := foxgloveRunArgs(opts)
 	run := exec.CommandContext(ctx, self, runArgs...)
 	run.Dir = dir
 	run.Stdout = os.Stdout
@@ -135,13 +143,14 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 		return fmt.Errorf("deploying foxglove_bridge (wendy run): %w", err)
 	}
 
-	// Forward the bridge's WebSocket port. `cloud tunnel` listens on the local
-	// port and blocks until ctx is cancelled (Ctrl-C).
 	cliSuccess("foxglove_bridge deployed. Connect Foxglove Studio to ws://localhost:%d", opts.localPort)
-	tunArgs := []string{"cloud", "tunnel", fmt.Sprintf("%d:%d", opts.localPort, foxgloveBridgePort)}
-	if opts.device != "" {
-		tunArgs = append(tunArgs, "--device", opts.device)
+	if !opts.cloud {
+		return forwardFoxgloveLAN(ctx, opts.device, opts.localPort)
 	}
+
+	// The cloud asset was resolved before deployment and is passed by numeric ID
+	// here, so the tunnel cannot drift to another online device.
+	tunArgs := foxgloveTunnelArgs(opts)
 	tun := exec.CommandContext(ctx, self, tunArgs...)
 	tun.Stdout = os.Stdout
 	tun.Stderr = os.Stderr
@@ -151,6 +160,82 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 		}
 		return fmt.Errorf("forwarding foxglove_bridge port (wendy cloud tunnel): %w", err)
 	}
+	return nil
+}
+
+// resolveFoxgloveTarget selects the device once and returns an address that can
+// safely pin all subsequent operations. Cloud devices use their stable numeric
+// asset ID; LAN devices use the host from the established agent connection.
+func resolveFoxgloveTarget(ctx context.Context, opts foxgloveServeOpts) (string, error) {
+	if opts.cloud {
+		auth, err := pickAuthEntry(opts.cloudCfg.CloudGRPC)
+		if err != nil {
+			return "", err
+		}
+		asset, err := pickCloudDevice(ctx, auth, opts.cloudCfg.DeviceName, opts.cloudCfg.BrokerURL)
+		if err != nil {
+			return "", err
+		}
+		return strconv.FormatInt(int64(asset.GetId()), 10), nil
+	}
+
+	target, err := resolveTarget(ctx, ExcludeBluetooth())
+	if err != nil {
+		return "", err
+	}
+	defer target.Close()
+	if target.Agent == nil || target.Agent.Host == "" {
+		return "", fmt.Errorf("foxglove serve requires a WendyOS device reachable on the LAN")
+	}
+	return target.Agent.Host, nil
+}
+
+func foxgloveRemoveArgs(opts foxgloveServeOpts) []string {
+	args := []string{"device", "apps", "remove", foxgloveAppID, "--force", "--cleanup", "--device", opts.device}
+	if opts.cloud {
+		args = append([]string{"cloud"}, args...)
+		args = appendCloudFoxgloveFlags(args, opts.cloudCfg)
+	}
+	return args
+}
+
+func foxgloveRunArgs(opts foxgloveServeOpts) []string {
+	args := []string{"run", "--detach", "--device", opts.device}
+	if opts.cloud {
+		args = append([]string{"cloud"}, args...)
+		args = appendCloudFoxgloveFlags(args, opts.cloudCfg)
+	} else {
+		args = append(args, "--lan")
+	}
+	return args
+}
+
+func foxgloveTunnelArgs(opts foxgloveServeOpts) []string {
+	args := []string{"cloud", "tunnel", fmt.Sprintf("%d:%d", opts.localPort, foxgloveBridgePort), "--device", opts.device}
+	return appendCloudFoxgloveFlags(args, opts.cloudCfg)
+}
+
+func appendCloudFoxgloveFlags(args []string, cfg cloudDeviceConfig) []string {
+	if cfg.CloudGRPC != "" {
+		args = append(args, "--cloud-grpc", cfg.CloudGRPC)
+	}
+	if cfg.BrokerURL != "" {
+		args = append(args, "--broker-url", cfg.BrokerURL)
+	}
+	return args
+}
+
+func forwardFoxgloveLAN(ctx context.Context, host string, localPort int) error {
+	target := net.JoinHostPort(host, strconv.Itoa(foxgloveBridgePort))
+	proxy, err := startRegistryProxy(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort)), target)
+	if err != nil {
+		return fmt.Errorf("forwarding foxglove_bridge port over LAN: %w", err)
+	}
+	defer proxy.Close()
+
+	cliSuccess("Forwarding 127.0.0.1:%d → %s (via LAN)", localPort, target)
+	cliLogln("Press Ctrl+C to stop.")
+	<-ctx.Done()
 	return nil
 }
 

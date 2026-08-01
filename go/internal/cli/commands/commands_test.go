@@ -151,6 +151,16 @@ func TestRunResolveOptions_YesIsNonInteractive(t *testing.T) {
 	}
 }
 
+func TestRunResolveOptions_LANDisablesCloudFallback(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{lanOnly: true}) {
+		o(&cfg)
+	}
+	if !cfg.directOnly {
+		t.Error("--lan should disable cloud fallback")
+	}
+}
+
 func TestResolveRunWorkingDir_Default(t *testing.T) {
 	prevWD, err := os.Getwd()
 	if err != nil {

@@ -1705,6 +1705,7 @@ type resolveConfig struct {
 	suppressProvisioningHint bool
 	suppressUpdateCheck      bool
 	nonInteractive           bool
+	directOnly               bool
 }
 
 // SuppressUpdateCheck prevents connectToAgent from running the automatic
@@ -1730,6 +1731,14 @@ func SuppressProvisioningHint() resolveOption {
 func NonInteractive() resolveOption {
 	return func(c *resolveConfig) {
 		c.nonInteractive = true
+	}
+}
+
+// DirectOnly prevents callers that normally retry through Wendy Cloud from
+// changing transports after a direct LAN connection fails.
+func DirectOnly() resolveOption {
+	return func(c *resolveConfig) {
+		c.directOnly = true
 	}
 }
 

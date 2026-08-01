@@ -14,6 +14,13 @@ in real time.
 wendy device foxglove serve
 ```
 
+This form deploys to the selected LAN device and forwards the port directly over
+the LAN. To deploy to a cloud-connected device instead, use:
+
+```bash
+wendy cloud device foxglove serve --device <id-or-name>
+```
+
 Then, in Foxglove Studio (desktop or [app.foxglove.dev](https://app.foxglove.dev)),
 choose **Open connection** and enter:
 
@@ -38,17 +45,19 @@ Discovered topics appear as channels you can add to any panel.
    `sh.wendy.foxglovebridge`. Re-running the command first removes any previous
    instance, so it is always safe to run again.
 3. **Forwards the port.** The bridge's WebSocket port (8765 inside the app) is
-   forwarded to your machine with `wendy cloud tunnel`, and the CLI prints the
-   `ws://localhost:<port>` URL to connect Foxglove Studio to.
+   forwarded directly over the LAN for `wendy device`, or through the Wendy
+   Cloud tunnel broker for `wendy cloud device`. The CLI prints the
+   `ws://localhost:<port>` URL to connect Foxglove Studio to. The cloud form pins
+   both deployment and forwarding to the same selected asset.
 
 ```
-Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DDS--> your ROS 2 apps
+Foxglove Studio --ws--> localhost:8765 --LAN/cloud--> foxglove_bridge (device) --DDS--> your ROS 2 apps
 ```
 
 ## Prerequisites
 
-- The device must be enrolled with Wendy Cloud and you must be signed in, because
-  the port forward runs through the Wendy Cloud tunnel broker. See
+- The LAN form requires the selected device to be reachable on the local network.
+  The cloud form requires cloud enrollment and a signed-in CLI session. See
   [Wendy Cloud](/docs/cloud).
 - Docker on your development machine, so the CLI can build the bridge image.
 - A ROS 2 stack producing topics on the device (your own apps, or a robot's

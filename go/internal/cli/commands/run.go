@@ -482,6 +482,7 @@ type runOptions struct {
 	restartUnlessStopped bool
 	restartOnFailure     bool
 	noRestart            bool
+	lanOnly              bool
 	prefix               string
 	product              string
 	service              string
@@ -510,6 +511,9 @@ func runResolveOptions(opts runOptions) []resolveOption {
 	var resolveOpts []resolveOption
 	if opts.yes {
 		resolveOpts = append(resolveOpts, NonInteractive())
+	}
+	if opts.lanOnly {
+		resolveOpts = append(resolveOpts, DirectOnly())
 	}
 	return resolveOpts
 }
@@ -566,6 +570,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
 	cmd.Flags().BoolVar(&opts.noRestart, "no-restart", false, "Do not restart on exit")
+	cmd.Flags().BoolVar(&opts.lanOnly, "lan", false, "Require a direct LAN connection; do not fall back to Wendy Cloud")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to run from instead of the current working directory")
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
@@ -590,6 +595,13 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 		return target, nil
 	}
 	if errors.Is(err, ErrUserCancelled) {
+		return nil, err
+	}
+	resolveCfg := resolveConfig{excludeProviderKeys: make(map[string]bool)}
+	for _, opt := range opts {
+		opt(&resolveCfg)
+	}
+	if resolveCfg.directOnly {
 		return nil, err
 	}
 
