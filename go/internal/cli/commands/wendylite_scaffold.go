@@ -52,6 +52,7 @@ func mergeIdfComponentDependencies(manifestPath string, components []string) err
 	}
 
 	if len(doc.Content) == 0 {
+		doc.Kind = yaml.DocumentNode
 		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}
 	}
 	root := doc.Content[0]
@@ -60,6 +61,9 @@ func mergeIdfComponentDependencies(manifestPath string, components []string) err
 	}
 
 	deps := findOrAppendMappingKey(root, "dependencies")
+	if deps.Kind != yaml.MappingNode {
+		return fmt.Errorf("%s: \"dependencies\" is not a mapping", manifestPath)
+	}
 
 	for _, name := range components {
 		dep := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

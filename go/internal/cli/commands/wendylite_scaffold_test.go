@@ -185,3 +185,58 @@ func TestMergeIdfComponentDependencies_MalformedYAMLErrors(t *testing.T) {
 		t.Fatal("expected an error for malformed existing YAML, got nil")
 	}
 }
+
+func TestMergeIdfComponentDependencies_EmptyExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	mainDir := filepath.Join(dir, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(mainDir, "idf_component.yml")
+	// Create a 0-byte file (empty manifest)
+	if err := os.WriteFile(manifestPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err != nil {
+		t.Fatalf("mergeIdfComponentDependencies on empty file: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed struct {
+		Dependencies map[string]struct {
+			Git  string `yaml:"git"`
+			Path string `yaml:"path"`
+		} `yaml:"dependencies"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parsing written manifest: %v", err)
+	}
+
+	if dep, ok := parsed.Dependencies["wendy_hal"]; !ok {
+		t.Fatalf("expected wendy_hal dependency, got %+v", parsed.Dependencies)
+	} else if dep.Git != "https://github.com/wendylabsinc/wendy-lite.git" {
+		t.Errorf("git URL = %q, want wendy-lite repo", dep.Git)
+	}
+}
+
+func TestMergeIdfComponentDependencies_NonMappingDependenciesErrors(t *testing.T) {
+	dir := t.TempDir()
+	mainDir := filepath.Join(dir, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(mainDir, "idf_component.yml")
+	// Create manifest with dependencies: key but no mapping value (empty scalar)
+	if err := os.WriteFile(manifestPath, []byte("dependencies:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err == nil {
+		t.Fatal("expected an error for non-mapping dependencies key, got nil")
+	}
+}
