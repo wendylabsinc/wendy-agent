@@ -90,7 +90,7 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 	for _, want := range []string{
 		"ARG UNITREE_ROS2_COMMIT=" + unitreeROS2Commit,
 		"https://github.com/unitreerobotics/unitree_ros2.git",
-		"--packages-select unitree_api unitree_go",
+		"--packages-select unitree_api unitree_go unitree_hg",
 		"--install-base /opt/unitree_msgs",
 		"source /opt/unitree_msgs/setup.bash",
 	} {

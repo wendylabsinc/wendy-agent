@@ -25,7 +25,7 @@ const foxgloveAppID = "sh.wendy.foxglovebridge"
 
 // unitreeROS2Commit is the peeled commit for unitree_ros2 v0.3.0. Pinning the
 // source keeps generated bridge images reproducible while providing the Go2's
-// public unitree_go and unitree_api message definitions to Foxglove.
+// public unitree_go, unitree_api, and unitree_hg message definitions to Foxglove.
 const unitreeROS2Commit = "66ae09858245ac3d2231c0cc209e36a88f8d7d03"
 
 // Linux interface names are limited to IFNAMSIZ-1 (15) bytes. Keeping the
@@ -274,7 +274,7 @@ RUN git clone https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_r
          --build-base /tmp/unitree-build \
          --install-base /opt/unitree_msgs \
          --merge-install \
-         --packages-select unitree_api unitree_go \
+         --packages-select unitree_api unitree_go unitree_hg \
          --cmake-args -DBUILD_TESTING=OFF \
     && rm -rf /tmp/unitree_ros2 /tmp/unitree-build /tmp/unitree-log
 `, unitreeROS2Commit, opts.distro)
