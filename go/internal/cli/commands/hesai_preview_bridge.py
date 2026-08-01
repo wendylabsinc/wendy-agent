@@ -3,6 +3,7 @@
 
 import time
 
+import numpy
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -38,26 +39,21 @@ class HesaiPreviewBridge(Node):
         if message.width == 0 or message.height == 0 or message.point_step == 0:
             return
 
-        source = memoryview(message.data)
         total_points = message.width * message.height
-        max_samples = (total_points + POINT_STRIDE - 1) // POINT_STRIDE
-        sampled = bytearray(max_samples * message.point_step)
-        sampled_points = 0
-
-        for flat_index in range(0, total_points, POINT_STRIDE):
-            row, column = divmod(flat_index, message.width)
-            source_start = row * message.row_step + column * message.point_step
-            source_end = source_start + message.point_step
-            if source_end > len(source):
-                break
-            output_start = sampled_points * message.point_step
-            sampled[output_start : output_start + message.point_step] = source[
-                source_start:source_end
-            ]
-            sampled_points += 1
-
-        if sampled_points == 0:
+        source = numpy.frombuffer(message.data, dtype=numpy.uint8)
+        required_size = message.height * message.row_step
+        if source.size < required_size:
             return
+
+        # PointCloud2 rows may contain padding after width * point_step. Strip
+        # it before flattening, then select whole point records in NumPy so a
+        # large Hesai scan never runs a Python loop for every point.
+        rows = source[:required_size].reshape(message.height, message.row_step)
+        points = rows[:, : message.width * message.point_step].reshape(
+            total_points, message.point_step
+        )
+        sampled = points[::POINT_STRIDE].tobytes()
+        sampled_points = len(sampled) // message.point_step
 
         preview = PointCloud2()
         preview.header = message.header
@@ -67,7 +63,7 @@ class HesaiPreviewBridge(Node):
         preview.is_bigendian = message.is_bigendian
         preview.point_step = message.point_step
         preview.row_step = sampled_points * message.point_step
-        preview.data = sampled[: preview.row_step]
+        preview.data = sampled
         preview.is_dense = message.is_dense
         self.publisher.publish(preview)
         self.last_published_at = now

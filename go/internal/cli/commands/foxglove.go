@@ -47,6 +47,7 @@ var foxgloveDefaultTopicWhitelist = []string{
 	`^/tf_static$`,
 	`^/front_camera/image/compressed$`,
 	`^/hesai/points/preview$`,
+	`^/collie/raw_scan$`,
 	`^/odom$`,
 	`^/joint_states$`,
 	`^/diagnostics$`,
@@ -54,6 +55,8 @@ var foxgloveDefaultTopicWhitelist = []string{
 	`^/uslam/frontend/odom$`,
 	`^/sportmodestate$`,
 	`^/lf/sportmodestate$`,
+	`^/lowstate$`,
+	`^/lf/lowstate$`,
 }
 
 // unitreeROS2Commit is the peeled commit for unitree_ros2 v0.3.0. Pinning the

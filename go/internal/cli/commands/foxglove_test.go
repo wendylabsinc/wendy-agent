@@ -70,6 +70,8 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"message_backlog_size:=32",
 		`^/front_camera/image/compressed$`,
 		`^/hesai/points/preview$`,
+		`^/collie/raw_scan$`,
+		`^/lowstate$`,
 		`^/uslam/frontend/odom$`,
 	} {
 		if !strings.Contains(dfs, want) {
@@ -263,6 +265,8 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		`OUTPUT_TOPIC = "/hesai/points/preview"`,
 		"MAX_FPS = 5.0",
 		"POINT_STRIDE = 4",
+		"numpy.frombuffer",
+		"points[::POINT_STRIDE].tobytes()",
 		"ReliabilityPolicy.BEST_EFFORT",
 	} {
 		if !strings.Contains(string(hesaiBridge), want) {
