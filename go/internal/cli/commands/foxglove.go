@@ -31,9 +31,12 @@ const foxgloveBridgeAddress = "127.0.0.1"
 // the generated wendy.json and to remove a prior instance before redeploy.
 const foxgloveAppID = "sh.wendy.foxglovebridge"
 
-// Keep only current data when the client cannot keep up. A large queue turns a
-// saturated robot link into seconds of stale visualization latency.
-const foxgloveDefaultMessageBacklog = 1
+// Keep the queue small enough to bound visualization latency, but large enough
+// for the bridge's initial control-plane burst (server info, channels,
+// parameters, and services). A backlog of 1 disconnects the client as soon as
+// two control messages are pending; data-plane messages are already dropped
+// oldest-first when this bounded queue fills.
+const foxgloveDefaultMessageBacklog = 32
 
 // The default view is intentionally useful but bandwidth-bounded. Point clouds,
 // voxel/range/height maps, and raw images require explicit --topic opt-in (or

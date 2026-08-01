@@ -67,7 +67,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"ros-humble-foxglove-bridge",
 		"export ROS_LOCALHOST_ONLY=0",
 		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
-		"message_backlog_size:=1",
+		"message_backlog_size:=32",
 		`^/front_camera/image/compressed$`,
 		`^/uslam/frontend/odom$`,
 	} {

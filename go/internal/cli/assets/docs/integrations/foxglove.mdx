@@ -73,7 +73,7 @@ Foxglove Studio --ws--> localhost:8765 --LAN/cloud--> foxglove_bridge (device) -
 | `--interface` | Override the CycloneDDS network interface selected for a multi-interface device. |
 | `--topic <regex>` | Replace the default topic set with a topic-name regular expression; repeat for multiple expressions. |
 | `--all-topics` | Expose every topic, restoring the previous high-bandwidth behavior. |
-| `--message-backlog <n>` | Maximum outgoing data messages queued per client (default `1`, so stale data is dropped instead of lagging). |
+| `--message-backlog <n>` | Maximum outgoing messages queued per client (default `32`; old data is dropped when the bounded queue fills). |
 
 The global `--device` flag selects a device, as with every other command.
 
