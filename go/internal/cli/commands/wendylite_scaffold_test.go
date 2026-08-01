@@ -2,10 +2,13 @@ package commands
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"gopkg.in/yaml.v3"
 )
 
 // fakeDeviceProvider is a minimal providers.DeviceProvider test double whose
@@ -68,5 +71,117 @@ func TestShouldOfferWendyLiteESPIDFScaffold(t *testing.T) {
 				t.Errorf("shouldOfferWendyLiteESPIDFScaffold(%v, %q, ...) = %v, want %v", tt.cfgMissing, tt.projectType, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMergeIdfComponentDependencies_CreatesNewFile(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "main", "idf_component.yml")
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal", "wendy_usb"}); err != nil {
+		t.Fatalf("mergeIdfComponentDependencies: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading manifest: %v", err)
+	}
+
+	var parsed struct {
+		Dependencies map[string]struct {
+			Git  string `yaml:"git"`
+			Path string `yaml:"path"`
+		} `yaml:"dependencies"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parsing written manifest: %v", err)
+	}
+
+	for _, name := range []string{"wendy_hal", "wendy_usb"} {
+		dep, ok := parsed.Dependencies[name]
+		if !ok {
+			t.Fatalf("expected dependency %q, got %+v", name, parsed.Dependencies)
+		}
+		if dep.Git != "https://github.com/wendylabsinc/wendy-lite.git" {
+			t.Errorf("dep %q git = %q, want the wendy-lite repo URL", name, dep.Git)
+		}
+		if dep.Path != "components/"+name {
+			t.Errorf("dep %q path = %q, want %q", name, dep.Path, "components/"+name)
+		}
+	}
+}
+
+func TestMergeIdfComponentDependencies_PreservesExistingContent(t *testing.T) {
+	dir := t.TempDir()
+	mainDir := filepath.Join(dir, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(mainDir, "idf_component.yml")
+	existing := "dependencies:\n  espressif/led_strip:\n    version: \"^2.0.0\"\n"
+	if err := os.WriteFile(manifestPath, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err != nil {
+		t.Fatalf("mergeIdfComponentDependencies: %v", err)
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		Dependencies map[string]map[string]string `yaml:"dependencies"`
+	}
+	if err := yaml.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parsing written manifest: %v", err)
+	}
+	if parsed.Dependencies["espressif/led_strip"]["version"] != "^2.0.0" {
+		t.Errorf("existing dependency was clobbered: %+v", parsed.Dependencies)
+	}
+	if parsed.Dependencies["wendy_hal"]["git"] != "https://github.com/wendylabsinc/wendy-lite.git" {
+		t.Errorf("wendy_hal dependency not added: %+v", parsed.Dependencies)
+	}
+}
+
+func TestMergeIdfComponentDependencies_IdempotentReRun(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "main", "idf_component.yml")
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err != nil {
+		t.Fatalf("first merge: %v", err)
+	}
+	first, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err != nil {
+		t.Fatalf("second merge: %v", err)
+	}
+	second, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(first) != string(second) {
+		t.Errorf("re-running with the same selection changed the file:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestMergeIdfComponentDependencies_MalformedYAMLErrors(t *testing.T) {
+	dir := t.TempDir()
+	mainDir := filepath.Join(dir, "main")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(mainDir, "idf_component.yml")
+	if err := os.WriteFile(manifestPath, []byte("not: valid: yaml: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mergeIdfComponentDependencies(manifestPath, []string{"wendy_hal"}); err == nil {
+		t.Fatal("expected an error for malformed existing YAML, got nil")
 	}
 }
