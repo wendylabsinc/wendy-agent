@@ -5,9 +5,10 @@ description: Stream a WendyOS device's live ROS 2 topics into Foxglove Studio fo
 
 Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*.
 One command deploys the standard `foxglove_bridge` node to the device, joins it to
-the device's ROS 2 graph, and forwards its WebSocket port to your machine, so you
-can drop a Raw Message panel, plot a signal, or watch a camera feed update in real
-time.
+the device's ROS 2 graph, and forwards its WebSocket port to your machine. Every
+topic in the selected domain, including hidden ROS topics, is exposed to Foxglove,
+so you can drop a Raw Message panel, plot a signal, or watch a camera feed update
+in real time.
 
 ```bash
 wendy device foxglove serve
@@ -64,6 +65,10 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 | `--interface` | CycloneDDS network interface to use on a multi-interface device. |
 
 The global `--device` flag selects a device, as with every other command.
+
+The bridge exposes every topic in the selected domain. ROS 2 domains are isolated
+graphs, so stop and restart `serve` with a different `--domain` when you want to
+inspect another graph.
 
 <Callout type="warning">
 **Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits

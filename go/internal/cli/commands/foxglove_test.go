@@ -23,7 +23,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
 		"export ROS_LOCALHOST_ONLY=0",
-		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0",
+		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0 include_hidden:=true",
 	} {
 		if !strings.Contains(dfs, want) {
 			t.Fatalf("Dockerfile missing %q:\n%s", want, dfs)
