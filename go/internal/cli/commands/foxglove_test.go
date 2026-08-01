@@ -69,6 +69,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
 		"message_backlog_size:=32",
 		`^/front_camera/image/compressed$`,
+		`^/hesai/points/preview$`,
 		`^/uslam/frontend/odom$`,
 	} {
 		if !strings.Contains(dfs, want) {
@@ -209,6 +210,7 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		"https://github.com/unitreerobotics/unitree_sdk2_python.git",
 		"python3 /tmp/unitree_sdk2_to_ros.py",
 		"python3 /opt/wendy/go2_camera_bridge.py --interface enP8p1s0",
+		"python3 /opt/wendy/hesai_preview_bridge.py",
 		"CYCLONEDDS_HOME=/opt/cyclonedds",
 		"/opt/ros/humble/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)",
 		"pip3 install --no-cache-dir cyclonedds==0.10.2",
@@ -218,6 +220,7 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		"--packages-select unitree_api unitree_go unitree_hg",
 		"--install-base /opt/unitree_msgs",
 		"source /opt/unitree_msgs/setup.bash",
+		"COPY hesai_preview_bridge.py /opt/wendy/hesai_preview_bridge.py",
 	} {
 		if !strings.Contains(dfs, want) {
 			t.Fatalf("Unitree Dockerfile missing %q:\n%s", want, dfs)
@@ -245,9 +248,25 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		"next_warning_at = now + 30.0",
 		"/front_camera/image/compressed",
 		`message.format = "jpeg"`,
+		"1.0 / 10.0",
 	} {
 		if !strings.Contains(string(cameraBridge), want) {
 			t.Fatalf("Go2 camera bridge missing %q", want)
+		}
+	}
+	hesaiBridge, err := os.ReadFile(filepath.Join(dir, "hesai_preview_bridge.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`INPUT_TOPIC = "/hesai/points"`,
+		`OUTPUT_TOPIC = "/hesai/points/preview"`,
+		"MAX_FPS = 5.0",
+		"POINT_STRIDE = 4",
+		"ReliabilityPolicy.BEST_EFFORT",
+	} {
+		if !strings.Contains(string(hesaiBridge), want) {
+			t.Fatalf("Hesai preview bridge missing %q", want)
 		}
 	}
 }
@@ -267,6 +286,9 @@ func TestWriteFoxgloveAppDoesNotInstallUnitreeMessagesByDefault(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "go2_camera_bridge.py")); !os.IsNotExist(err) {
 		t.Fatal("generic Foxglove app unexpectedly includes Go2 camera bridge")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hesai_preview_bridge.py")); !os.IsNotExist(err) {
+		t.Fatal("generic Foxglove app unexpectedly includes Hesai preview bridge")
 	}
 }
 

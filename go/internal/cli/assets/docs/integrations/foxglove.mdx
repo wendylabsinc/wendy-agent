@@ -83,6 +83,7 @@ The default topic whitelist is:
 /tf
 /tf_static
 /front_camera/image/compressed
+/hesai/points/preview
 /odom
 /joint_states
 /diagnostics and /diagnostics/*
@@ -90,10 +91,13 @@ The default topic whitelist is:
 /sportmodestate and /lf/sportmodestate
 ```
 
-Point clouds, raw images, and voxel, range, height, or cloud maps require explicit
-opt-in because an active Foxglove panel can saturate a 100 Mbit robot link with
-those streams. To choose a focused set, repeat `--topic`; custom expressions
-replace the defaults:
+On a detected Unitree network, Wendy publishes the compressed Go2 camera at up
+to 10 FPS and creates `/hesai/points/preview` at up to 5 Hz with every fourth
+point. This gives Foxglove's 3D panel a useful Hesai view without forwarding the
+full raw scan by default. Other point clouds, raw images, and voxel, range,
+height, or cloud maps require explicit opt-in because an active Foxglove panel
+can saturate a 100 Mbit robot link with those streams. To choose a focused set,
+repeat `--topic`; custom expressions replace the defaults:
 
 ```bash
 wendy device foxglove serve \

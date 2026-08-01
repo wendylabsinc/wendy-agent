@@ -38,14 +38,15 @@ const foxgloveAppID = "sh.wendy.foxglovebridge"
 // oldest-first when this bounded queue fills.
 const foxgloveDefaultMessageBacklog = 32
 
-// The default view is intentionally useful but bandwidth-bounded. Point clouds,
-// voxel/range/height maps, and raw images require explicit --topic opt-in (or
-// --all-topics) because a single active Foxglove panel can saturate a 100 Mbit
-// robot link with those streams.
+// The default view is intentionally useful but bandwidth-bounded. The Hesai
+// preview is downsampled on-device; other point clouds, voxel/range/height maps,
+// and raw images require explicit --topic opt-in (or --all-topics) because a
+// single active Foxglove panel can saturate a 100 Mbit robot link with them.
 var foxgloveDefaultTopicWhitelist = []string{
 	`^/tf$`,
 	`^/tf_static$`,
 	`^/front_camera/image/compressed$`,
+	`^/hesai/points/preview$`,
 	`^/odom$`,
 	`^/joint_states$`,
 	`^/diagnostics$`,
@@ -74,6 +75,9 @@ var unitreeSDK2ToROSScript string
 
 //go:embed go2_camera_bridge.py
 var go2CameraBridgeScript string
+
+//go:embed hesai_preview_bridge.py
+var hesaiPreviewBridgeScript string
 
 // Linux interface names are limited to IFNAMSIZ-1 (15) bytes. Keeping the
 // accepted character set narrow also makes it safe to embed the name in the
@@ -117,7 +121,8 @@ robot's native host ROS 2), then forwards its WebSocket port to your machine.
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. By default the bridge exposes a bandwidth-safe
-set of transforms, odometry, diagnostics, and compressed camera topics. Use
+set of transforms, odometry, diagnostics, compressed camera, and downsampled
+Hesai preview topics. Use
 repeatable --topic expressions to choose another set, or --all-topics to expose
 everything. When no --interface is supplied, Wendy uses
 the unique device interface on Unitree's 192.168.123.0/24 robot network when one
@@ -413,6 +418,7 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	}
 	if opts.unitree && opts.iface != "" {
 		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s &)", opts.iface)
+		launchCommand += " && (python3 /opt/wendy/hesai_preview_bridge.py &)"
 	}
 	topicWhitelist, err := foxgloveTopicWhitelistArg(opts)
 	if err != nil {
@@ -440,6 +446,9 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 		}
 		if err := os.WriteFile(filepath.Join(dir, "go2_camera_bridge.py"), []byte(go2CameraBridgeScript), 0o644); err != nil {
 			return fmt.Errorf("writing Go2 camera bridge: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "hesai_preview_bridge.py"), []byte(hesaiPreviewBridgeScript), 0o644); err != nil {
+			return fmt.Errorf("writing Hesai preview bridge: %w", err)
 		}
 		unitreeBuild = fmt.Sprintf(`
 ARG UNITREE_ROS2_COMMIT=%s
@@ -478,6 +487,7 @@ RUN mkdir -p /opt/cyclonedds \
     && git checkout --detach "${UNITREE_SDK2_PYTHON_COMMIT}" \
     && pip3 install --no-cache-dir --no-deps .
 COPY go2_camera_bridge.py /opt/wendy/go2_camera_bridge.py
+COPY hesai_preview_bridge.py /opt/wendy/hesai_preview_bridge.py
 `, unitreeROS2Commit, unitreeSDK2Commit, unitreeSDK2PythonCommit, opts.distro, opts.distro, opts.distro, opts.distro)
 	}
 

@@ -104,10 +104,9 @@ def publish(interface: str) -> None:
 
             jpeg = read_exact(read_fd, size)
             now = time.monotonic()
-            # A 720p JPEG is roughly 200 KB on this Go2. Cap the cloud-bound
-            # stream at 3 FPS so camera traffic cannot queue every Foxglove
-            # topic behind it on slower tunnels.
-            if now - last_published_at < 1.0 / 3.0:
+            # A 720p JPEG is roughly 200 KB on this Go2. Ten FPS keeps the
+            # preview responsive while bounding it to roughly 2 MB/s.
+            if now - last_published_at < 1.0 / 10.0:
                 continue
 
             message = CompressedImage()
