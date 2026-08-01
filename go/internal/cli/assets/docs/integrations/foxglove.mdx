@@ -79,6 +79,11 @@ The bridge exposes every topic in the selected domain. ROS 2 domains are isolate
 graphs, so stop and restart `serve` with a different `--domain` when you want to
 inspect another graph.
 
+The bridge uses the device's host network for ROS 2 discovery. In Cloud mode,
+its WebSocket listener binds only to `127.0.0.1` and is reached through Wendy's
+authenticated Cloud tunnel. With `wendy device`, the listener accepts connections
+from the selected LAN so the local forward does not use Cloud.
+
 <Callout type="warning">
 **Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits
 `domainId` gets a stable auto-derived domain (a hash of its `appId`), not domain 0.

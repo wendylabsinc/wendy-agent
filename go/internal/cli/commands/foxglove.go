@@ -22,6 +22,14 @@ import (
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
 const foxgloveBridgePort = 8765
 
+const (
+	// Cloud mode keeps the unauthenticated Foxglove WebSocket reachable only
+	// through Wendy's authenticated tunnel.
+	foxgloveCloudBridgeAddress = "127.0.0.1"
+	// Direct mode must be reachable from the CLI host over the selected LAN.
+	foxgloveLANBridgeAddress = "0.0.0.0"
+)
+
 // foxgloveAppID is the appId of the generated foxglove_bridge app; used both in
 // the generated wendy.json and to remove a prior instance before redeploy.
 const foxgloveAppID = "sh.wendy.foxglovebridge"
@@ -87,7 +95,8 @@ non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
 ROS topics, in the selected domain. When no --interface is supplied, Wendy uses
 the unique device interface on Unitree's 192.168.123.0/24 robot network when one
-is present.`,
+is present. Cloud mode binds the device-side WebSocket to loopback; direct mode
+binds it for access from the selected LAN.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -354,7 +363,11 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	if opts.unitree && opts.iface != "" {
 		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s &)", opts.iface)
 	}
-	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=0.0.0.0 include_hidden:=true", foxgloveBridgePort)
+	bridgeAddress := foxgloveLANBridgeAddress
+	if opts.cloud {
+		bridgeAddress = foxgloveCloudBridgeAddress
+	}
+	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true", foxgloveBridgePort, bridgeAddress)
 
 	aptPackages := fmt.Sprintf(`      ros-%s-foxglove-bridge \
       ros-%s-rmw-cyclonedds-cpp`, opts.distro, opts.distro)

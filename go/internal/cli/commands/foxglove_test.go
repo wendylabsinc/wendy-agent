@@ -91,6 +91,25 @@ func TestWriteFoxgloveApp(t *testing.T) {
 	}
 }
 
+func TestWriteCloudFoxgloveAppBindsLoopback(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", cloud: true}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dfs := string(df)
+	if !strings.Contains(dfs, "address:=127.0.0.1") {
+		t.Fatalf("cloud Foxglove WebSocket is not bound to loopback:\n%s", dfs)
+	}
+	if strings.Contains(dfs, "address:=0.0.0.0") {
+		t.Fatalf("cloud Foxglove WebSocket unexpectedly exposed on every device interface:\n%s", dfs)
+	}
+}
+
 func TestWriteFoxgloveAppDistroTemplated(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeFoxgloveApp(dir, foxgloveServeOpts{domain: 0, rmw: "rmw_fastrtps_cpp", distro: "jazzy"}); err != nil {
