@@ -144,6 +144,10 @@ type ROS2Config struct {
 	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
 	// Defaults to "humble".
 	Distro string `json:"distro,omitempty"`
+	// DiscoveryScope controls whether ROS 2 discovery is restricted to the
+	// app group's network namespace ("app", the default) or may use the
+	// device's host network ("host").
+	DiscoveryScope string `json:"discoveryScope,omitempty"`
 }
 
 // FrameworksConfig holds optional framework-level configuration (e.g. ROS 2).
@@ -958,7 +962,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
 		return nil
 	}
-	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true}
+	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true, "discoveryScope": true}
 	var unknown []string
 	for k := range ros2 {
 		if !allowed[k] {
@@ -969,7 +973,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		return nil
 	}
 	sort.Strings(unknown)
-	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
+	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
 }
 
 // validateEntitlementsJSON checks raw JSON entitlements for deprecated types

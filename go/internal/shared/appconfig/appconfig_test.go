@@ -1322,7 +1322,7 @@ func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
 }
 
 func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
-	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble"}}}`)
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","discoveryScope":"host"}}}`)
 	if got := ValidateJSON(data); len(got) != 0 {
 		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
 	}
@@ -2107,9 +2107,16 @@ func TestValidate_ROS2_RejectsUnknownRMW(t *testing.T) {
 	}
 }
 
+func TestValidate_ROS2_RejectsUnknownDiscoveryScope(t *testing.T) {
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DiscoveryScope: "global"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown discoveryScope, got nil")
+	}
+}
+
 func TestValidate_ROS2_AcceptsValid(t *testing.T) {
 	id := 42
-	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble"}}}
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble", DiscoveryScope: "host"}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid ros2 config rejected: %v", err)
 	}
