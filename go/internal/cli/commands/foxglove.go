@@ -3,14 +3,17 @@ package commands
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
@@ -24,6 +27,11 @@ const foxgloveAppID = "sh.wendy.foxglovebridge"
 // accepted character set narrow also makes it safe to embed the name in the
 // generated CycloneDDS XML and shell command.
 var foxgloveInterfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
+
+// Unitree documents 192.168.123.0/24 as the wired robot network used by its
+// ROS 2 setup. A Wendy device with exactly one interface on this subnet is
+// therefore probably Unitree-connected even when it has no stored robot type.
+var unitreeROSNetwork = netip.MustParsePrefix("192.168.123.0/24")
 
 // newFoxgloveCmd builds the `wendy device foxglove` command group.
 func newFoxgloveCmd() *cobra.Command {
@@ -54,7 +62,9 @@ robot's native host ROS 2), then forwards its WebSocket port to your machine.
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
-ROS topics, in the selected domain.`,
+ROS topics, in the selected domain. When no --interface is supplied, Wendy uses
+the unique device interface on Unitree's 192.168.123.0/24 robot network when one
+is present.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -74,7 +84,7 @@ ROS topics, in the selected domain.`,
 	cmd.Flags().IntVar(&domain, "domain", 0, "ROS_DOMAIN_ID the device's ROS 2 uses")
 	cmd.Flags().StringVar(&rmw, "rmw", "rmw_cyclonedds_cpp", "RMW implementation the device's ROS 2 uses")
 	cmd.Flags().StringVar(&distro, "distro", "humble", "ROS 2 distro to build foxglove_bridge from")
-	cmd.Flags().StringVar(&iface, "interface", "", "CycloneDDS network interface to use (for multi-interface devices)")
+	cmd.Flags().StringVar(&iface, "interface", "", "Override the CycloneDDS network interface (auto-detects a Unitree robot network)")
 
 	return cmd
 }
@@ -92,6 +102,19 @@ type foxgloveServeOpts struct {
 // device via `wendy run --detach`, then forwards the bridge's WebSocket port to
 // localhost via `wendy cloud tunnel`. The tunnel runs until ctx is cancelled.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
+	if opts.iface == "" && strings.Contains(strings.ToLower(opts.rmw), "cyclone") {
+		iface, err := detectProbableUnitreeInterface(ctx)
+		if err != nil {
+			// Interface inference is a convenience, not a prerequisite. Older
+			// agents may not report network metadata, and normal CycloneDDS
+			// automatic selection remains a useful fallback for other robots.
+			cliLogln("Warning: could not inspect device interfaces; using CycloneDDS automatic selection: %v", err)
+		} else if iface != "" {
+			opts.iface = iface
+			cliLogln("Detected probable Unitree ROS network on %s; using it for CycloneDDS", iface)
+		}
+	}
+
 	dir, err := os.MkdirTemp("", "wendy-foxglove-*")
 	if err != nil {
 		return fmt.Errorf("creating temp app dir: %w", err)
@@ -152,6 +175,51 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 		return fmt.Errorf("forwarding foxglove_bridge port (wendy cloud tunnel): %w", err)
 	}
 	return nil
+}
+
+// detectProbableUnitreeInterface asks the selected Wendy agent for the same
+// filtered interface inventory shown by `wendy device info`. Detection is
+// deliberately best-effort: callers fall back to CycloneDDS selection when an
+// older agent omits the inventory or the network is not unambiguous.
+func detectProbableUnitreeInterface(ctx context.Context) (string, error) {
+	target, err := resolveTarget(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer target.Close()
+
+	if target.Agent == nil {
+		return "", nil
+	}
+	resp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return "", fmt.Errorf("getting device network interfaces: %w", err)
+	}
+	return probableUnitreeInterface(resp.GetNetworkInterfaces()), nil
+}
+
+// probableUnitreeInterface returns the sole valid interface with an address on
+// Unitree's documented robot subnet. Multiple matching interfaces are treated
+// as ambiguous rather than choosing one based on enumeration order.
+func probableUnitreeInterface(ifaces []*agentpb.NetworkInterface) string {
+	var match string
+	for _, iface := range ifaces {
+		name := iface.GetName()
+		if !foxgloveInterfacePattern.MatchString(name) {
+			continue
+		}
+		for _, rawAddr := range iface.GetIpAddresses() {
+			addr, err := netip.ParseAddr(rawAddr)
+			if err != nil || !unitreeROSNetwork.Contains(addr) {
+				continue
+			}
+			if match != "" && match != name {
+				return ""
+			}
+			match = name
+		}
+	}
+	return match
 }
 
 // writeFoxgloveApp writes the Dockerfile + wendy.json for a foxglove_bridge app

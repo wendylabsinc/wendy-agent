@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 func TestWriteFoxgloveApp(t *testing.T) {
@@ -76,5 +78,55 @@ func TestWriteFoxgloveAppRejectsUnsafeInterface(t *testing.T) {
 	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: `eth0'; touch /tmp/pwned`}
 	if err := writeFoxgloveApp(dir, opts); err == nil {
 		t.Fatal("expected unsafe interface name to be rejected")
+	}
+}
+
+func TestProbableUnitreeInterface(t *testing.T) {
+	tests := []struct {
+		name   string
+		ifaces []*agentpb.NetworkInterface
+		want   string
+	}{
+		{
+			name: "unique Unitree network",
+			ifaces: []*agentpb.NetworkInterface{
+				{Name: "enP8p1s0", IpAddresses: []string{"192.168.123.18"}},
+				{Name: "wlan0", IpAddresses: []string{"192.168.0.107", "fd00::1"}},
+			},
+			want: "enP8p1s0",
+		},
+		{
+			name: "no Unitree network",
+			ifaces: []*agentpb.NetworkInterface{
+				{Name: "eth0", IpAddresses: []string{"10.0.0.2"}},
+			},
+		},
+		{
+			name: "ambiguous Unitree network",
+			ifaces: []*agentpb.NetworkInterface{
+				{Name: "eth0", IpAddresses: []string{"192.168.123.18"}},
+				{Name: "eth1", IpAddresses: []string{"192.168.123.19"}},
+			},
+		},
+		{
+			name: "invalid interface name",
+			ifaces: []*agentpb.NetworkInterface{
+				{Name: "bad interface", IpAddresses: []string{"192.168.123.18"}},
+			},
+		},
+		{
+			name: "invalid address ignored",
+			ifaces: []*agentpb.NetworkInterface{
+				{Name: "eth0", IpAddresses: []string{"not-an-ip"}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := probableUnitreeInterface(tt.ifaces); got != tt.want {
+				t.Fatalf("probableUnitreeInterface() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
