@@ -2,17 +2,21 @@ package commands
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
@@ -22,10 +26,35 @@ const foxgloveBridgePort = 8765
 // the generated wendy.json and to remove a prior instance before redeploy.
 const foxgloveAppID = "sh.wendy.foxglovebridge"
 
+// unitreeROS2Commit is the peeled commit for unitree_ros2 v0.3.0. Pinning the
+// source keeps generated bridge images reproducible while providing the Go2's
+// public unitree_go, unitree_api, and unitree_hg message definitions to Foxglove.
+const unitreeROS2Commit = "66ae09858245ac3d2231c0cc209e36a88f8d7d03"
+
+// unitreeSDK2Commit pins the official DDS definitions used to fill public ROS
+// package gaps. The converter rejects unknown field declarations, preventing a
+// future SDK layout from being silently mistranslated.
+const unitreeSDK2Commit = "21d0a3b2c46ee48c8fdf2783becb6be3beb0a59b"
+
+// unitreeSDK2PythonCommit pins the official Python camera client used to
+// request JPEG frames from a Go2's VideoHub service.
+const unitreeSDK2PythonCommit = "65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5"
+
+//go:embed unitree_sdk2_to_ros.py
+var unitreeSDK2ToROSScript string
+
+//go:embed go2_camera_bridge.py
+var go2CameraBridgeScript string
+
 // Linux interface names are limited to IFNAMSIZ-1 (15) bytes. Keeping the
 // accepted character set narrow also makes it safe to embed the name in the
 // generated CycloneDDS XML and shell command.
 var foxgloveInterfacePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
+
+// Unitree documents 192.168.123.0/24 as the wired robot network used by its
+// ROS 2 setup. A Wendy device with exactly one interface on this subnet is
+// therefore probably Unitree-connected even when it has no stored robot type.
+var unitreeROSNetwork = netip.MustParsePrefix("192.168.123.0/24")
 
 // newFoxgloveCmd builds the `wendy device foxglove` command group.
 func newFoxgloveCmd() *cobra.Command {
@@ -56,7 +85,9 @@ robot's native host ROS 2), then forwards its WebSocket port to your machine.
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
-ROS topics, in the selected domain.`,
+ROS topics, in the selected domain. When no --interface is supplied, Wendy uses
+the unique device interface on Unitree's 192.168.123.0/24 robot network when one
+is present.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -79,7 +110,7 @@ ROS topics, in the selected domain.`,
 	cmd.Flags().IntVar(&domain, "domain", 0, "ROS_DOMAIN_ID the device's ROS 2 uses")
 	cmd.Flags().StringVar(&rmw, "rmw", "rmw_cyclonedds_cpp", "RMW implementation the device's ROS 2 uses")
 	cmd.Flags().StringVar(&distro, "distro", "humble", "ROS 2 distro to build foxglove_bridge from")
-	cmd.Flags().StringVar(&iface, "interface", "", "CycloneDDS network interface to use (for multi-interface devices)")
+	cmd.Flags().StringVar(&iface, "interface", "", "Override the CycloneDDS network interface (auto-detects a Unitree robot network)")
 
 	return cmd
 }
@@ -93,6 +124,7 @@ type foxgloveServeOpts struct {
 	iface     string // optional CycloneDDS network interface
 	cloud     bool
 	cloudCfg  cloudDeviceConfig
+	unitree   bool // include public Unitree ROS 2 message definitions
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
@@ -100,11 +132,30 @@ type foxgloveServeOpts struct {
 // Direct device commands forward over the selected LAN connection; cloud device
 // commands deploy and forward through the same cloud asset.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
-	target, err := resolveFoxgloveTarget(ctx, opts)
+	targetName, target, err := resolveFoxgloveTarget(ctx, opts)
 	if err != nil {
 		return err
 	}
-	opts.device = target
+	opts.device = targetName
+
+	if strings.Contains(strings.ToLower(opts.rmw), "cyclone") {
+		iface, err := detectProbableUnitreeInterface(ctx, target)
+		if err != nil && opts.iface == "" {
+			// Interface inference is a convenience, not a prerequisite. Older
+			// agents may not report network metadata, and normal CycloneDDS
+			// automatic selection remains a useful fallback for other robots.
+			cliLogln("Warning: could not inspect device interfaces; using CycloneDDS automatic selection: %v", err)
+		} else if iface != "" {
+			opts.unitree = true
+			if opts.iface == "" {
+				opts.iface = iface
+				cliLogln("Detected probable Unitree ROS network on %s; using it for CycloneDDS and loading Unitree message definitions", iface)
+			} else {
+				cliLogln("Detected probable Unitree ROS network on %s; loading Unitree message definitions", iface)
+			}
+		}
+	}
+	target.Close()
 
 	dir, err := os.MkdirTemp("", "wendy-foxglove-*")
 	if err != nil {
@@ -166,28 +217,46 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 // resolveFoxgloveTarget selects the device once and returns an address that can
 // safely pin all subsequent operations. Cloud devices use their stable numeric
 // asset ID; LAN devices use the host from the established agent connection.
-func resolveFoxgloveTarget(ctx context.Context, opts foxgloveServeOpts) (string, error) {
+func resolveFoxgloveTarget(ctx context.Context, opts foxgloveServeOpts) (string, *SelectedDevice, error) {
 	if opts.cloud {
 		auth, err := pickAuthEntry(opts.cloudCfg.CloudGRPC)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		asset, err := pickCloudDevice(ctx, auth, opts.cloudCfg.DeviceName, opts.cloudCfg.BrokerURL)
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
-		return strconv.FormatInt(int64(asset.GetId()), 10), nil
+		conn, err := connectCloudAsset(ctx, auth, asset, opts.cloudCfg.BrokerURL)
+		if err != nil {
+			return "", nil, err
+		}
+		return strconv.FormatInt(int64(asset.GetId()), 10), &SelectedDevice{Agent: conn}, nil
 	}
 
 	target, err := resolveTarget(ctx, ExcludeBluetooth())
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	defer target.Close()
 	if target.Agent == nil || target.Agent.Host == "" {
-		return "", fmt.Errorf("foxglove serve requires a WendyOS device reachable on the LAN")
+		target.Close()
+		return "", nil, fmt.Errorf("foxglove serve requires a WendyOS device reachable on the LAN")
 	}
-	return target.Agent.Host, nil
+	return target.Agent.Host, target, nil
+}
+
+// detectProbableUnitreeInterface asks the already-selected Wendy agent for the
+// same filtered interface inventory shown by `wendy device info`. Reusing this
+// connection ensures cloud detection cannot drift away from the pinned asset.
+func detectProbableUnitreeInterface(ctx context.Context, target *SelectedDevice) (string, error) {
+	if target == nil || target.Agent == nil {
+		return "", nil
+	}
+	resp, err := target.Agent.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return "", fmt.Errorf("getting device network interfaces: %w", err)
+	}
+	return probableUnitreeInterface(resp.GetNetworkInterfaces()), nil
 }
 
 func foxgloveRemoveArgs(opts foxgloveServeOpts) []string {
@@ -239,6 +308,30 @@ func forwardFoxgloveLAN(ctx context.Context, host string, localPort int) error {
 	return nil
 }
 
+// probableUnitreeInterface returns the sole valid interface with an address on
+// Unitree's documented robot subnet. Multiple matching interfaces are treated
+// as ambiguous rather than choosing one based on enumeration order.
+func probableUnitreeInterface(ifaces []*agentpb.NetworkInterface) string {
+	var match string
+	for _, iface := range ifaces {
+		name := iface.GetName()
+		if !foxgloveInterfacePattern.MatchString(name) {
+			continue
+		}
+		for _, rawAddr := range iface.GetIpAddresses() {
+			addr, err := netip.ParseAddr(rawAddr)
+			if err != nil || !unitreeROSNetwork.Contains(addr) {
+				continue
+			}
+			if match != "" && match != name {
+				return ""
+			}
+			match = name
+		}
+	}
+	return match
+}
+
 // writeFoxgloveApp writes the Dockerfile + wendy.json for a foxglove_bridge app
 // into dir, templated for the requested distro/domain/rmw.
 func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
@@ -249,21 +342,85 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	// Keep the explicit ROS_LOCALHOST_ONLY override in the launch command as a
 	// compatibility path for devices whose installed agent predates
 	// frameworks.ros2.discoveryScope. New agents also honor the manifest field.
-	launchCommand := fmt.Sprintf("source /opt/ros/%s/setup.bash && export ROS_LOCALHOST_ONLY=0", opts.distro)
+	launchCommand := fmt.Sprintf("source /opt/ros/%s/setup.bash", opts.distro)
+	if opts.unitree {
+		launchCommand += " && source /opt/unitree_msgs/setup.bash"
+	}
+	launchCommand += " && export ROS_LOCALHOST_ONLY=0"
 	if opts.iface != "" {
 		cycloneURI := fmt.Sprintf(`<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="%s"/></Interfaces></General><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`, opts.iface)
 		launchCommand += " && export CYCLONEDDS_URI='" + cycloneURI + "'"
 	}
+	if opts.unitree && opts.iface != "" {
+		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s &)", opts.iface)
+	}
 	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=0.0.0.0 include_hidden:=true", foxgloveBridgePort)
+
+	aptPackages := fmt.Sprintf(`      ros-%s-foxglove-bridge \
+      ros-%s-rmw-cyclonedds-cpp`, opts.distro, opts.distro)
+	unitreeBuild := ""
+	if opts.unitree {
+		aptPackages += fmt.Sprintf(` \
+      git \
+      python3-pip \
+      python3-colcon-common-extensions \
+      ros-%s-grid-map-msgs \
+      ros-%s-rosidl-default-generators \
+      ros-%s-rosidl-generator-dds-idl`, opts.distro, opts.distro, opts.distro)
+		if err := os.WriteFile(filepath.Join(dir, "unitree_sdk2_to_ros.py"), []byte(unitreeSDK2ToROSScript), 0o644); err != nil {
+			return fmt.Errorf("writing Unitree SDK2 schema converter: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "go2_camera_bridge.py"), []byte(go2CameraBridgeScript), 0o644); err != nil {
+			return fmt.Errorf("writing Go2 camera bridge: %w", err)
+		}
+		unitreeBuild = fmt.Sprintf(`
+ARG UNITREE_ROS2_COMMIT=%s
+ARG UNITREE_SDK2_COMMIT=%s
+ARG UNITREE_SDK2_PYTHON_COMMIT=%s
+COPY unitree_sdk2_to_ros.py /tmp/unitree_sdk2_to_ros.py
+RUN git clone https://github.com/unitreerobotics/unitree_ros2.git /tmp/unitree_ros2 \
+    && cd /tmp/unitree_ros2 \
+    && git checkout --detach "${UNITREE_ROS2_COMMIT}" \
+    && git clone https://github.com/unitreerobotics/unitree_sdk2.git /tmp/unitree_sdk2 \
+    && cd /tmp/unitree_sdk2 \
+    && git checkout --detach "${UNITREE_SDK2_COMMIT}" \
+    && python3 /tmp/unitree_sdk2_to_ros.py \
+         --sdk-root /tmp/unitree_sdk2 \
+         --ros-root /tmp/unitree_ros2/cyclonedds_ws/src/unitree \
+         --source-commit "${UNITREE_SDK2_COMMIT}" \
+    && . /opt/ros/%s/setup.sh \
+    && colcon --log-base /tmp/unitree-log build \
+         --base-paths /tmp/unitree_ros2/cyclonedds_ws/src/unitree \
+         --build-base /tmp/unitree-build \
+         --install-base /opt/unitree_msgs \
+         --merge-install \
+         --packages-select unitree_api unitree_go unitree_hg \
+         --cmake-args -DBUILD_TESTING=OFF \
+    && install -D -m 0644 /tmp/unitree_sdk2/LICENSE /opt/unitree_msgs/share/unitree_sdk2/LICENSE \
+    && printf '%%s\n' "${UNITREE_SDK2_COMMIT}" > /opt/unitree_msgs/share/unitree_sdk2/SOURCE_COMMIT \
+    && rm -rf /tmp/unitree_ros2 /tmp/unitree_sdk2 /tmp/unitree-build /tmp/unitree-log /tmp/unitree_sdk2_to_ros.py
+RUN mkdir -p /opt/cyclonedds \
+    && ln -s /opt/ros/%s/include /opt/cyclonedds/include \
+    && ln -s /opt/ros/%s/bin /opt/cyclonedds/bin \
+    && ln -s /opt/ros/%s/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH) /opt/cyclonedds/lib \
+    && CYCLONEDDS_HOME=/opt/cyclonedds \
+      pip3 install --no-cache-dir cyclonedds==0.10.2 \
+    && git clone https://github.com/unitreerobotics/unitree_sdk2_python.git /opt/unitree_sdk2_python \
+    && cd /opt/unitree_sdk2_python \
+    && git checkout --detach "${UNITREE_SDK2_PYTHON_COMMIT}" \
+    && pip3 install --no-cache-dir --no-deps .
+COPY go2_camera_bridge.py /opt/wendy/go2_camera_bridge.py
+`, unitreeROS2Commit, unitreeSDK2Commit, unitreeSDK2PythonCommit, opts.distro, opts.distro, opts.distro, opts.distro)
+	}
 
 	dockerfile := fmt.Sprintf(`# Auto-generated by 'wendy device foxglove serve'.
 FROM ros:%s
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-%s-foxglove-bridge \
-      ros-%s-rmw-cyclonedds-cpp \
+%s \
     && rm -rf /var/lib/apt/lists/*
+%s
 CMD ["bash","-lc",%q]
-`, opts.distro, opts.distro, opts.distro, launchCommand)
+`, opts.distro, aptPackages, unitreeBuild, launchCommand)
 
 	wendyJSON := fmt.Sprintf(`{
   "appId": %[4]q,

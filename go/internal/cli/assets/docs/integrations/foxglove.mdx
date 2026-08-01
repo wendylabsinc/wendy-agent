@@ -71,7 +71,7 @@ Foxglove Studio --ws--> localhost:8765 --LAN/cloud--> foxglove_bridge (device) -
 | `--domain` | `ROS_DOMAIN_ID` the device's ROS 2 uses (default `0`). |
 | `--rmw` | RMW implementation the device's ROS 2 uses (default `rmw_cyclonedds_cpp`). |
 | `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
-| `--interface` | CycloneDDS network interface to use on a multi-interface device. |
+| `--interface` | Override the CycloneDDS network interface selected for a multi-interface device. |
 
 The global `--device` flag selects a device, as with every other command.
 
@@ -95,13 +95,49 @@ bridge to it:
 wendy device foxglove serve --domain 42 --rmw rmw_cyclonedds_cpp
 ```
 
-On a multi-interface robot, pin CycloneDDS to the interface connected to the
-robot's native ROS 2 network. For example, a Unitree Go2 commonly uses its
-`192.168.123.x` interface:
+When no interface override is supplied, Wendy inspects the device's network
+metadata. If exactly one interface has an address in Unitree's documented
+`192.168.123.0/24` robot network, the command selects it automatically and adds
+Unitree's public `unitree_go`, `unitree_api`, and `unitree_hg` message definitions
+to the bridge image. This lets Foxglove decode core Go2 and G1 custom topics such
+as `/lowstate`, `/sportmodestate`, `/lowcmd`, and `/armsdk`, and makes the normal
+Unitree invocation simply:
+
+```bash
+wendy device foxglove serve --device Woof
+```
+
+The command reports the inferred interface before deployment. The subnet is a
+strong signal that the device is Unitree-connected, but not proof of a specific
+robot model. If detection is ambiguous or you need another network, override it
+explicitly:
 
 ```bash
 wendy device foxglove serve --domain 0 --interface enP8p1s0
 ```
+
+Unitree-specific messages that are not part of the public `unitree_ros2`
+repository are supplemented from a pinned official `unitree_sdk2` revision when
+the SDK publishes their DDS definitions. Wendy generates the corresponding ROS
+messages during the image build and rejects unknown SDK field types rather than
+risk silently decoding an incompatible layout.
+
+On a Go2, Wendy also requests JPEG frames from the native VideoHub service and
+publishes them as `/front_camera/image/compressed`
+(`sensor_msgs/msg/CompressedImage`). Select that topic in Foxglove's Image
+panel. On Unitree models without the Go2 camera service, the adapter remains
+idle without affecting the main Foxglove bridge.
+
+Definitions absent from both public repositories (for example onboard-only
+`unitree_interfaces` messages, `SymState`, and newer vendor-only service
+definitions) remain unavailable unless their definitions are installed
+separately.
+
+Some Unitree firmware also advertises a single topic name with multiple
+incompatible message types (for example `/lf/lowstate`). Foxglove cannot
+disambiguate those publishers by topic name. Wendy leaves the topic visible
+instead of silently choosing a type; the publishers must use distinct topic
+names before both streams can be decoded reliably.
 
 ## Stopping and cleanup
 
