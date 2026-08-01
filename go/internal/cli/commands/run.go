@@ -696,6 +696,15 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
 			return err
 		}
+		if shouldOfferWendyLiteESPIDFScaffold(cfgMissing, projectType, target) {
+			scaffolded, err := promptAndScaffoldWendyLiteESPIDF(cwd)
+			if err != nil {
+				return err
+			}
+			if scaffolded {
+				cfgMissing = false
+			}
+		}
 	}
 
 	appCfg, err := ensureAppConfig(cfgPath, opts.yes)
