@@ -88,8 +88,10 @@ wendy device foxglove serve --domain 42 --rmw rmw_cyclonedds_cpp
 
 When no interface override is supplied, Wendy inspects the device's network
 metadata. If exactly one interface has an address in Unitree's documented
-`192.168.123.0/24` robot network, the command selects it automatically. This
-makes the normal Unitree invocation simply:
+`192.168.123.0/24` robot network, the command selects it automatically and adds
+Unitree's public `unitree_go` and `unitree_api` message definitions to the bridge
+image. This lets Foxglove decode core custom topics such as `/lowstate` and
+`/sportmodestate`, and makes the normal Unitree invocation simply:
 
 ```bash
 wendy device foxglove serve --device Woof
@@ -103,6 +105,10 @@ explicitly:
 ```bash
 wendy device foxglove serve --domain 0 --interface enP8p1s0
 ```
+
+Unitree-specific packages that are not part of the public `unitree_ros2`
+repository (for example onboard-only `unitree_interfaces` messages) remain
+unavailable unless their definitions are installed separately.
 
 ## Stopping and cleanup
 

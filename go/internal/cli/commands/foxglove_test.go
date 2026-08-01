@@ -73,6 +73,45 @@ func TestWriteFoxgloveAppCycloneDDSInterface(t *testing.T) {
 	}
 }
 
+func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{
+		domain:  0,
+		rmw:     "rmw_cyclonedds_cpp",
+		distro:  "humble",
+		iface:   "enP8p1s0",
+		unitree: true,
+	}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	dfs := string(df)
+	for _, want := range []string{
+		"ARG UNITREE_ROS2_COMMIT=" + unitreeROS2Commit,
+		"https://github.com/unitreerobotics/unitree_ros2.git",
+		"--packages-select unitree_api unitree_go",
+		"--install-base /opt/unitree_msgs",
+		"source /opt/unitree_msgs/setup.bash",
+	} {
+		if !strings.Contains(dfs, want) {
+			t.Fatalf("Unitree Dockerfile missing %q:\n%s", want, dfs)
+		}
+	}
+}
+
+func TestWriteFoxgloveAppDoesNotInstallUnitreeMessagesByDefault(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble"}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if strings.Contains(string(df), "unitree_ros2") || strings.Contains(string(df), "/opt/unitree_msgs") {
+		t.Fatalf("generic Foxglove image unexpectedly includes Unitree messages:\n%s", df)
+	}
+}
+
 func TestWriteFoxgloveAppRejectsUnsafeInterface(t *testing.T) {
 	dir := t.TempDir()
 	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: `eth0'; touch /tmp/pwned`}
