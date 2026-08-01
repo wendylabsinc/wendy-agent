@@ -23,11 +23,14 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
 		"export ROS_LOCALHOST_ONLY=0",
-		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0 include_hidden:=true",
+		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
 	} {
 		if !strings.Contains(dfs, want) {
 			t.Fatalf("Dockerfile missing %q:\n%s", want, dfs)
 		}
+	}
+	if strings.Contains(dfs, "address:=0.0.0.0") {
+		t.Fatalf("Foxglove WebSocket unexpectedly exposed on every device interface:\n%s", dfs)
 	}
 
 	wj, err := os.ReadFile(filepath.Join(dir, "wendy.json"))
