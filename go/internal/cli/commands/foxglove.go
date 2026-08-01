@@ -23,13 +23,10 @@ import (
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
 const foxgloveBridgePort = 8765
 
-const (
-	// Cloud mode keeps the unauthenticated Foxglove WebSocket reachable only
-	// through Wendy's authenticated tunnel.
-	foxgloveCloudBridgeAddress = "127.0.0.1"
-	// Direct mode must be reachable from the CLI host over the selected LAN.
-	foxgloveLANBridgeAddress = "0.0.0.0"
-)
+// Keep the unauthenticated Foxglove WebSocket private to the device. Cloud
+// mode reaches it through the broker; direct mode relays it through the
+// already-selected LAN agent connection and an exec stream into this app.
+const foxgloveBridgeAddress = "127.0.0.1"
 
 // foxgloveAppID is the appId of the generated foxglove_bridge app; used both in
 // the generated wendy.json and to remove a prior instance before redeploy.
@@ -122,8 +119,8 @@ set of transforms, odometry, diagnostics, and compressed camera topics. Use
 repeatable --topic expressions to choose another set, or --all-topics to expose
 everything. When no --interface is supplied, Wendy uses
 the unique device interface on Unitree's 192.168.123.0/24 robot network when one
-is present. Cloud mode binds the device-side WebSocket to loopback; direct mode
-binds it for access from the selected LAN.`,
+is present. The device-side WebSocket always binds to loopback and is reached
+through Wendy's agent rather than exposed on the device's LAN interfaces.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if cmd.Flags().Changed("message-backlog") && backlog < 1 {
@@ -206,7 +203,25 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 			}
 		}
 	}
-	target.Close()
+	// Direct mode keeps this exact selected agent connection open for the local
+	// Foxglove relay below. Cloud mode uses a separately pinned broker tunnel.
+	if opts.cloud {
+		target.Close()
+	} else {
+		defer target.Close()
+	}
+
+	// Reserve the direct-mode local endpoint before doing any expensive image
+	// work. Besides failing fast on a genuine conflict, this prevents another
+	// serve process from stealing the requested port while deployment runs.
+	var localListener net.Listener
+	if !opts.cloud {
+		localListener, err = net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(opts.localPort)))
+		if err != nil {
+			return fmt.Errorf("listening for Foxglove connections: %w", err)
+		}
+		defer localListener.Close()
+	}
 
 	dir, err := os.MkdirTemp("", "wendy-foxglove-*")
 	if err != nil {
@@ -247,7 +262,7 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 
 	cliSuccess("foxglove_bridge deployed. Connect Foxglove Studio to ws://localhost:%d", opts.localPort)
 	if !opts.cloud {
-		return forwardFoxgloveLAN(ctx, opts.device, opts.localPort)
+		return forwardFoxgloveAgent(ctx, target.Agent.ContainerService, localListener, opts.localPort)
 	}
 
 	// The cloud asset was resolved before deployment and is passed by numeric ID
@@ -345,18 +360,99 @@ func appendCloudFoxgloveFlags(args []string, cfg cloudDeviceConfig) []string {
 	return args
 }
 
-func forwardFoxgloveLAN(ctx context.Context, host string, localPort int) error {
-	target := net.JoinHostPort(host, strconv.Itoa(foxgloveBridgePort))
-	proxy, err := startRegistryProxy(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort)), target)
-	if err != nil {
-		return fmt.Errorf("forwarding foxglove_bridge port over LAN: %w", err)
-	}
-	defer proxy.Close()
+// forwardFoxgloveAgent listens only on the developer machine's loopback and
+// carries each connection over the already-selected Wendy agent gRPC channel.
+// The remote end is `nc` inside the Foxglove app, so the bridge itself can stay
+// bound to device loopback without publishing an unauthenticated WebSocket on
+// the device's LAN interfaces.
+func forwardFoxgloveAgent(ctx context.Context, client agentpb.WendyContainerServiceClient, listener net.Listener, localPort int) error {
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
 
-	cliSuccess("Forwarding 127.0.0.1:%d → %s (via LAN)", localPort, target)
+	cliSuccess("Forwarding 127.0.0.1:%d → %s:%d (via selected LAN agent)", localPort, foxgloveAppID, foxgloveBridgePort)
 	cliLogln("Press Ctrl+C to stop.")
-	<-ctx.Done()
-	return nil
+	for {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("accepting Foxglove connection: %w", acceptErr)
+		}
+		go relayFoxgloveAgentConn(ctx, client, conn)
+	}
+}
+
+func relayFoxgloveAgentConn(ctx context.Context, client agentpb.WendyContainerServiceClient, conn net.Conn) {
+	defer conn.Close()
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	stream, err := client.ExecContainer(streamCtx)
+	if err != nil {
+		return
+	}
+	if err := stream.Send(foxgloveExecStart()); err != nil {
+		return
+	}
+
+	done := make(chan struct{}, 2)
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := conn.Read(buf)
+			if n > 0 {
+				data := append([]byte(nil), buf[:n]...)
+				if sendErr := stream.Send(&agentpb.ExecContainerRequest{
+					RequestType: &agentpb.ExecContainerRequest_StdinData{StdinData: data},
+				}); sendErr != nil {
+					return
+				}
+			}
+			if readErr != nil {
+				_ = stream.CloseSend()
+				return
+			}
+		}
+	}()
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			resp, recvErr := stream.Recv()
+			if recvErr != nil {
+				return
+			}
+			if data := resp.GetStdoutData(); len(data) > 0 {
+				if _, writeErr := conn.Write(data); writeErr != nil {
+					return
+				}
+			}
+			if len(resp.GetStderrData()) > 0 {
+				return
+			}
+			if _, exited := resp.GetResponseType().(*agentpb.ExecContainerResponse_ExitCode); exited {
+				return
+			}
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-done:
+	}
+}
+
+func foxgloveExecStart() *agentpb.ExecContainerRequest {
+	return &agentpb.ExecContainerRequest{RequestType: &agentpb.ExecContainerRequest_Start{
+		Start: &agentpb.ExecContainerRequest_ExecStart{
+			AppName: foxgloveAppID,
+			Command: []string{"nc", "127.0.0.1", strconv.Itoa(foxgloveBridgePort)},
+			Tty:     false,
+		},
+	}}
 }
 
 // probableUnitreeInterface returns the sole valid interface with an address on
@@ -408,10 +504,6 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	if opts.unitree && opts.iface != "" {
 		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s &)", opts.iface)
 	}
-	bridgeAddress := foxgloveLANBridgeAddress
-	if opts.cloud {
-		bridgeAddress = foxgloveCloudBridgeAddress
-	}
 	topicWhitelist, err := foxgloveTopicWhitelistArg(opts)
 	if err != nil {
 		return err
@@ -420,10 +512,11 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	if backlog == 0 {
 		backlog = foxgloveDefaultMessageBacklog
 	}
-	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true topic_whitelist:=%s message_backlog_size:=%d", foxgloveBridgePort, bridgeAddress, shellQuote(topicWhitelist), backlog)
+	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true topic_whitelist:=%s message_backlog_size:=%d", foxgloveBridgePort, foxgloveBridgeAddress, shellQuote(topicWhitelist), backlog)
 
 	aptPackages := fmt.Sprintf(`      ros-%s-foxglove-bridge \
-      ros-%s-rmw-cyclonedds-cpp`, opts.distro, opts.distro)
+      ros-%s-rmw-cyclonedds-cpp \
+      netcat-openbsd`, opts.distro, opts.distro)
 	unitreeBuild := ""
 	if opts.unitree {
 		aptPackages += fmt.Sprintf(` \

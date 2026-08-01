@@ -65,8 +65,9 @@ func TestWriteFoxgloveApp(t *testing.T) {
 	for _, want := range []string{
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
+		"netcat-openbsd",
 		"export ROS_LOCALHOST_ONLY=0",
-		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0 include_hidden:=true",
+		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
 		"message_backlog_size:=1",
 		`^/front_camera/image/compressed$`,
 		`^/uslam/frontend/odom$`,
@@ -144,7 +145,7 @@ func TestWriteFoxgloveAppRejectsConflictingTopicFlags(t *testing.T) {
 	}
 }
 
-func TestWriteCloudFoxgloveAppBindsLoopback(t *testing.T) {
+func TestWriteFoxgloveAppAlwaysBindsLoopback(t *testing.T) {
 	dir := t.TempDir()
 	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", cloud: true}
 	if err := writeFoxgloveApp(dir, opts); err != nil {
@@ -156,10 +157,27 @@ func TestWriteCloudFoxgloveAppBindsLoopback(t *testing.T) {
 	}
 	dfs := string(df)
 	if !strings.Contains(dfs, "address:=127.0.0.1") {
-		t.Fatalf("cloud Foxglove WebSocket is not bound to loopback:\n%s", dfs)
+		t.Fatalf("Foxglove WebSocket is not bound to loopback:\n%s", dfs)
 	}
 	if strings.Contains(dfs, "address:=0.0.0.0") {
-		t.Fatalf("cloud Foxglove WebSocket unexpectedly exposed on every device interface:\n%s", dfs)
+		t.Fatalf("Foxglove WebSocket unexpectedly exposed on every device interface:\n%s", dfs)
+	}
+}
+
+func TestFoxgloveExecStartUsesRawAppRelay(t *testing.T) {
+	start := foxgloveExecStart().GetStart()
+	if start == nil {
+		t.Fatal("missing exec start frame")
+	}
+	if start.GetAppName() != foxgloveAppID {
+		t.Fatalf("app = %q, want %q", start.GetAppName(), foxgloveAppID)
+	}
+	wantCommand := []string{"nc", "127.0.0.1", "8765"}
+	if !reflect.DeepEqual(start.GetCommand(), wantCommand) {
+		t.Fatalf("command = %q, want %q", start.GetCommand(), wantCommand)
+	}
+	if start.GetTty() {
+		t.Fatal("Foxglove relay must not use a PTY because it would corrupt WebSocket bytes")
 	}
 }
 

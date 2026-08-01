@@ -107,10 +107,11 @@ Use `--all-topics` only when the network can carry every topic needed by the
 active Foxglove layout. ROS 2 domains are isolated graphs, so stop and restart
 `serve` with a different `--domain` when you want to inspect another graph.
 
-The bridge uses the device's host network for ROS 2 discovery. In Cloud mode,
-its WebSocket listener binds only to `127.0.0.1` and is reached through Wendy's
-authenticated Cloud tunnel. With `wendy device`, the listener accepts connections
-from the selected LAN so the local forward does not use Cloud.
+The bridge uses the device's host network for ROS 2 discovery, but its WebSocket
+listener binds only to `127.0.0.1`. In Cloud mode it is reached through Wendy's
+authenticated Cloud tunnel. With `wendy device`, traffic follows the already
+selected LAN agent connection into the Foxglove app; the WebSocket is never
+published on the device's LAN interfaces and the forward does not use Cloud.
 
 <Callout type="warning">
 **Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits
