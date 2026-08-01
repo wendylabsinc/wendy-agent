@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -33,6 +34,27 @@ const (
 // foxgloveAppID is the appId of the generated foxglove_bridge app; used both in
 // the generated wendy.json and to remove a prior instance before redeploy.
 const foxgloveAppID = "sh.wendy.foxglovebridge"
+
+// Keep only current data when the client cannot keep up. A large queue turns a
+// saturated robot link into seconds of stale visualization latency.
+const foxgloveDefaultMessageBacklog = 1
+
+// The default view is intentionally useful but bandwidth-bounded. Point clouds,
+// voxel/range/height maps, and raw images require explicit --topic opt-in (or
+// --all-topics) because a single active Foxglove panel can saturate a 100 Mbit
+// robot link with those streams.
+var foxgloveDefaultTopicWhitelist = []string{
+	`^/tf$`,
+	`^/tf_static$`,
+	`^/front_camera/image/compressed$`,
+	`^/odom$`,
+	`^/joint_states$`,
+	`^/diagnostics$`,
+	`^/diagnostics/.*$`,
+	`^/uslam/frontend/odom$`,
+	`^/sportmodestate$`,
+	`^/lf/sportmodestate$`,
+}
 
 // unitreeROS2Commit is the peeled commit for unitree_ros2 v0.3.0. Pinning the
 // source keeps generated bridge images reproducible while providing the Go2's
@@ -76,11 +98,14 @@ func newFoxgloveCmd() *cobra.Command {
 
 func newFoxgloveServeCmd() *cobra.Command {
 	var (
-		port   int
-		domain int
-		rmw    string
-		distro string
-		iface  string
+		port    int
+		domain  int
+		rmw     string
+		distro  string
+		iface   string
+		topics  []string
+		all     bool
+		backlog int
 	)
 
 	cmd := &cobra.Command{
@@ -92,13 +117,18 @@ robot's native host ROS 2), then forwards its WebSocket port to your machine.
 
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
---rmw so the bridge matches it. The bridge exposes every topic, including hidden
-ROS topics, in the selected domain. When no --interface is supplied, Wendy uses
+--rmw so the bridge matches it. By default the bridge exposes a bandwidth-safe
+set of transforms, odometry, diagnostics, and compressed camera topics. Use
+repeatable --topic expressions to choose another set, or --all-topics to expose
+everything. When no --interface is supplied, Wendy uses
 the unique device interface on Unitree's 192.168.123.0/24 robot network when one
 is present. Cloud mode binds the device-side WebSocket to loopback; direct mode
 binds it for access from the selected LAN.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if cmd.Flags().Changed("message-backlog") && backlog < 1 {
+				return fmt.Errorf("--message-backlog must be at least 1")
+			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			cloudCfg, cloud := cloudDeviceConfigFromContext(ctx)
@@ -111,6 +141,9 @@ binds it for access from the selected LAN.`,
 				iface:     iface,
 				cloud:     cloud,
 				cloudCfg:  cloudCfg,
+				topics:    topics,
+				allTopics: all,
+				backlog:   backlog,
 			})
 		},
 	}
@@ -120,6 +153,9 @@ binds it for access from the selected LAN.`,
 	cmd.Flags().StringVar(&rmw, "rmw", "rmw_cyclonedds_cpp", "RMW implementation the device's ROS 2 uses")
 	cmd.Flags().StringVar(&distro, "distro", "humble", "ROS 2 distro to build foxglove_bridge from")
 	cmd.Flags().StringVar(&iface, "interface", "", "Override the CycloneDDS network interface (auto-detects a Unitree robot network)")
+	cmd.Flags().StringArrayVar(&topics, "topic", nil, "Expose only topics matching this regular expression (repeatable; replaces the bandwidth-safe defaults)")
+	cmd.Flags().BoolVar(&all, "all-topics", false, "Expose every ROS topic (may use substantial bandwidth)")
+	cmd.Flags().IntVar(&backlog, "message-backlog", foxgloveDefaultMessageBacklog, "Maximum outgoing data messages queued per client")
 
 	return cmd
 }
@@ -134,6 +170,9 @@ type foxgloveServeOpts struct {
 	cloud     bool
 	cloudCfg  cloudDeviceConfig
 	unitree   bool // include public Unitree ROS 2 message definitions
+	topics    []string
+	allTopics bool
+	backlog   int
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
@@ -141,6 +180,9 @@ type foxgloveServeOpts struct {
 // Direct device commands forward over the selected LAN connection; cloud device
 // commands deploy and forward through the same cloud asset.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
+	if err := validateFoxgloveBandwidthOpts(opts); err != nil {
+		return err
+	}
 	targetName, target, err := resolveFoxgloveTarget(ctx, opts)
 	if err != nil {
 		return err
@@ -344,6 +386,9 @@ func probableUnitreeInterface(ifaces []*agentpb.NetworkInterface) string {
 // writeFoxgloveApp writes the Dockerfile + wendy.json for a foxglove_bridge app
 // into dir, templated for the requested distro/domain/rmw.
 func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
+	if err := validateFoxgloveBandwidthOpts(opts); err != nil {
+		return err
+	}
 	if opts.iface != "" && !foxgloveInterfacePattern.MatchString(opts.iface) {
 		return fmt.Errorf("invalid network interface %q: use 1-15 letters, digits, '.', '_', ':', or '-'", opts.iface)
 	}
@@ -367,7 +412,15 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	if opts.cloud {
 		bridgeAddress = foxgloveCloudBridgeAddress
 	}
-	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true", foxgloveBridgePort, bridgeAddress)
+	topicWhitelist, err := foxgloveTopicWhitelistArg(opts)
+	if err != nil {
+		return err
+	}
+	backlog := opts.backlog
+	if backlog == 0 {
+		backlog = foxgloveDefaultMessageBacklog
+	}
+	launchCommand += fmt.Sprintf(" && exec ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=%d address:=%s include_hidden:=true topic_whitelist:=%s message_backlog_size:=%d", foxgloveBridgePort, bridgeAddress, shellQuote(topicWhitelist), backlog)
 
 	aptPackages := fmt.Sprintf(`      ros-%s-foxglove-bridge \
       ros-%s-rmw-cyclonedds-cpp`, opts.distro, opts.distro)
@@ -458,4 +511,28 @@ CMD ["bash","-lc",%q]
 		return fmt.Errorf("writing wendy.json: %w", err)
 	}
 	return nil
+}
+
+func validateFoxgloveBandwidthOpts(opts foxgloveServeOpts) error {
+	if opts.allTopics && len(opts.topics) > 0 {
+		return fmt.Errorf("--all-topics cannot be combined with --topic")
+	}
+	if opts.backlog < 0 {
+		return fmt.Errorf("--message-backlog must be at least 1")
+	}
+	return nil
+}
+
+func foxgloveTopicWhitelistArg(opts foxgloveServeOpts) (string, error) {
+	topics := opts.topics
+	if opts.allTopics {
+		topics = []string{`.*`}
+	} else if len(topics) == 0 {
+		topics = foxgloveDefaultTopicWhitelist
+	}
+	encoded, err := json.Marshal(topics)
+	if err != nil {
+		return "", fmt.Errorf("encoding Foxglove topic whitelist: %w", err)
+	}
+	return string(encoded), nil
 }

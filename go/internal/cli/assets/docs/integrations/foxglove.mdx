@@ -5,10 +5,9 @@ description: Stream a WendyOS device's live ROS 2 topics into Foxglove Studio fo
 
 Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*.
 One command deploys the standard `foxglove_bridge` node to the device, joins it to
-the device's ROS 2 graph, and forwards its WebSocket port to your machine. Every
-topic in the selected domain, including hidden ROS topics, is exposed to Foxglove,
-so you can drop a Raw Message panel, plot a signal, or watch a camera feed update
-in real time.
+the device's ROS 2 graph, and forwards its WebSocket port to your machine. Wendy
+exposes a bandwidth-safe set of transforms, odometry, diagnostics, and compressed
+camera topics by default; opt in to other topics when you need them.
 
 ```bash
 wendy device foxglove serve
@@ -72,12 +71,41 @@ Foxglove Studio --ws--> localhost:8765 --LAN/cloud--> foxglove_bridge (device) -
 | `--rmw` | RMW implementation the device's ROS 2 uses (default `rmw_cyclonedds_cpp`). |
 | `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
 | `--interface` | Override the CycloneDDS network interface selected for a multi-interface device. |
+| `--topic <regex>` | Replace the default topic set with a topic-name regular expression; repeat for multiple expressions. |
+| `--all-topics` | Expose every topic, restoring the previous high-bandwidth behavior. |
+| `--message-backlog <n>` | Maximum outgoing data messages queued per client (default `1`, so stale data is dropped instead of lagging). |
 
 The global `--device` flag selects a device, as with every other command.
 
-The bridge exposes every topic in the selected domain. ROS 2 domains are isolated
-graphs, so stop and restart `serve` with a different `--domain` when you want to
-inspect another graph.
+The default topic whitelist is:
+
+```text
+/tf
+/tf_static
+/front_camera/image/compressed
+/odom
+/joint_states
+/diagnostics and /diagnostics/*
+/uslam/frontend/odom
+/sportmodestate and /lf/sportmodestate
+```
+
+Point clouds, raw images, and voxel, range, height, or cloud maps require explicit
+opt-in because an active Foxglove panel can saturate a 100 Mbit robot link with
+those streams. To choose a focused set, repeat `--topic`; custom expressions
+replace the defaults:
+
+```bash
+wendy device foxglove serve \
+  --topic '^/tf$' \
+  --topic '^/tf_static$' \
+  --topic '^/front_camera/image/compressed$' \
+  --topic '^/uslam/frontend/odom$'
+```
+
+Use `--all-topics` only when the network can carry every topic needed by the
+active Foxglove layout. ROS 2 domains are isolated graphs, so stop and restart
+`serve` with a different `--domain` when you want to inspect another graph.
 
 The bridge uses the device's host network for ROS 2 discovery. In Cloud mode,
 its WebSocket listener binds only to `127.0.0.1` and is reached through Wendy's

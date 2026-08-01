@@ -67,6 +67,9 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		"ros-humble-foxglove-bridge",
 		"export ROS_LOCALHOST_ONLY=0",
 		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0 include_hidden:=true",
+		"message_backlog_size:=1",
+		`^/front_camera/image/compressed$`,
+		`^/uslam/frontend/odom$`,
 	} {
 		if !strings.Contains(dfs, want) {
 			t.Fatalf("Dockerfile missing %q:\n%s", want, dfs)
@@ -88,6 +91,56 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		if !strings.Contains(wjs, want) {
 			t.Fatalf("wendy.json missing %q:\n%s", want, wjs)
 		}
+	}
+}
+
+func TestWriteFoxgloveAppCustomTopicWhitelist(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{
+		domain:  0,
+		rmw:     "rmw_cyclonedds_cpp",
+		distro:  "humble",
+		topics:  []string{`^/tf$`, `^/camera/.*$`, `^/quoted'path$`},
+		backlog: 3,
+	}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dfs := string(df)
+	for _, want := range []string{`^/tf$`, `^/camera/.*$`, `^/quoted`, `message_backlog_size:=3`} {
+		if !strings.Contains(dfs, want) {
+			t.Fatalf("custom Foxglove Dockerfile missing %q:\n%s", want, dfs)
+		}
+	}
+	if strings.Contains(dfs, `^/front_camera/image/compressed$`) {
+		t.Fatalf("custom topics should replace bandwidth-safe defaults:\n%s", dfs)
+	}
+}
+
+func TestWriteFoxgloveAppAllTopics(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", allTopics: true}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(df), `topic_whitelist:='[\".*\"]'`) {
+		t.Fatalf("--all-topics Dockerfile does not expose every topic:\n%s", df)
+	}
+}
+
+func TestWriteFoxgloveAppRejectsConflictingTopicFlags(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{topics: []string{`^/tf$`}, allTopics: true}
+	if err := writeFoxgloveApp(dir, opts); err == nil {
+		t.Fatal("expected --topic with --all-topics to fail")
 	}
 }
 
