@@ -233,6 +233,7 @@ func main() {
 		containerSvcOpts...,
 	)
 	shellSvc := services.NewShellService(logger, hostexec.New())
+	tunnelSvc := services.NewTunnelService(logger)
 	audioSvc := services.NewAudioService(logger)
 
 	provisioningSvc := services.NewProvisioningService(logger, configPath)
@@ -549,14 +550,16 @@ func main() {
 		// Register all services on the mTLS server.
 		registerAllServices(srv)
 
-		// WendyShellService opens an interactive *host* root shell. It is
-		// deliberately registered ONLY here, on the mTLS server, so it is
+		// WendyShellService opens an interactive *host* root shell, and
+		// WendyTunnelService can reach agent-loopback TCP ports. They are
+		// deliberately registered ONLY here, on the mTLS server, so they are
 		// reachable only on a provisioned device over an authenticated,
-		// org-checked connection. It is intentionally NOT part of
-		// registerAllServices: that would also expose it on the unauthenticated
+		// org-checked connection. They are intentionally NOT part of
+		// registerAllServices: that would also expose them on the unauthenticated
 		// plaintext pre-provisioning server (handing anyone on the LAN a host
-		// root shell) and on the local admin socket.
+		// root shell or loopback access) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
+		agentpbv2.RegisterWendyTunnelServiceServer(srv, tunnelSvc)
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)

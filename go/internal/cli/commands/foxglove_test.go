@@ -65,7 +65,6 @@ func TestWriteFoxgloveApp(t *testing.T) {
 	for _, want := range []string{
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
-		"netcat-openbsd",
 		"export ROS_LOCALHOST_ONLY=0",
 		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=127.0.0.1 include_hidden:=true",
 		"message_backlog_size:=1",
@@ -145,7 +144,7 @@ func TestWriteFoxgloveAppRejectsConflictingTopicFlags(t *testing.T) {
 	}
 }
 
-func TestWriteFoxgloveAppAlwaysBindsLoopback(t *testing.T) {
+func TestWriteFoxgloveAppBindsLoopback(t *testing.T) {
 	dir := t.TempDir()
 	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", cloud: true}
 	if err := writeFoxgloveApp(dir, opts); err != nil {
@@ -160,24 +159,7 @@ func TestWriteFoxgloveAppAlwaysBindsLoopback(t *testing.T) {
 		t.Fatalf("Foxglove WebSocket is not bound to loopback:\n%s", dfs)
 	}
 	if strings.Contains(dfs, "address:=0.0.0.0") {
-		t.Fatalf("Foxglove WebSocket unexpectedly exposed on every device interface:\n%s", dfs)
-	}
-}
-
-func TestFoxgloveExecStartUsesRawAppRelay(t *testing.T) {
-	start := foxgloveExecStart().GetStart()
-	if start == nil {
-		t.Fatal("missing exec start frame")
-	}
-	if start.GetAppName() != foxgloveAppID {
-		t.Fatalf("app = %q, want %q", start.GetAppName(), foxgloveAppID)
-	}
-	wantCommand := []string{"nc", "127.0.0.1", "8765"}
-	if !reflect.DeepEqual(start.GetCommand(), wantCommand) {
-		t.Fatalf("command = %q, want %q", start.GetCommand(), wantCommand)
-	}
-	if start.GetTty() {
-		t.Fatal("Foxglove relay must not use a PTY because it would corrupt WebSocket bytes")
+		t.Fatalf("Foxglove WebSocket unexpectedly exposed on every interface:\n%s", dfs)
 	}
 }
 

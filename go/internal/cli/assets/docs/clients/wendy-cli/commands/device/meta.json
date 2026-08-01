@@ -6,6 +6,7 @@
     "dashboard",
     "top",
     "info",
+    "tunnel",
     "set-default",
     "unset-default",
     "update",
