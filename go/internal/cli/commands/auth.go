@@ -755,7 +755,12 @@ func newAuthUseCmd() *cobra.Command {
 			if len(chosen.Certificates) == 0 {
 				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
 			}
+			// Persist the org alongside the endpoint: several orgs can share
+			// one endpoint (multiple orgs on the production cloud), and the
+			// endpoint alone resolved to whichever of them was logged into
+			// first — silently overriding the org the user just selected.
 			cfg.DefaultCloudGRPC = chosen.CloudGRPC
+			cfg.DefaultOrgID = int32(chosen.Certificates[0].OrganizationID)
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
@@ -777,20 +782,42 @@ func newAuthDefaultCmd() *cobra.Command {
 			}
 			if clear {
 				cfg.DefaultCloudGRPC = ""
+				cfg.DefaultOrgID = 0
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}
 				fmt.Println(tui.SuccessMessage("Default session cleared."))
 				return nil
 			}
-			if cfg.DefaultCloudGRPC == "" {
+			if cfg.DefaultCloudGRPC == "" && cfg.DefaultOrgID == 0 {
 				fmt.Println("No default session set.")
+				return nil
+			}
+			// The default org is what actually disambiguates sessions when
+			// several orgs share one endpoint, so show its session first.
+			if cfg.DefaultOrgID != 0 {
+				for i := range cfg.Auth {
+					a := &cfg.Auth[i]
+					if len(a.Certificates) > 0 && int32(a.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
+						fmt.Printf("Default session: %s\n", authSessionLabel(a))
+						return nil
+					}
+				}
+			}
+			if cfg.DefaultCloudGRPC == "" {
+				// Only a stale org default remains (its session is gone).
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session for org %d no longer exists; clearing it.", cfg.DefaultOrgID)))
+				cfg.DefaultOrgID = 0
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
 				return nil
 			}
 			def, ok := cfg.DefaultAuth()
 			if !ok {
 				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session %s no longer exists; clearing it.", cfg.DefaultCloudGRPC)))
 				cfg.DefaultCloudGRPC = ""
+				cfg.DefaultOrgID = 0
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}
