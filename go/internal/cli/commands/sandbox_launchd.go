@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,11 @@ import (
 )
 
 const sandboxLaunchAgentLabel = "sh.wendy.sandbox-control-plane"
+
+var (
+	// sandboxCommandContext is overridable for testing purposes.
+	sandboxCommandContext = exec.CommandContext
+)
 
 type sandboxPlistParams struct {
 	Label         string
@@ -100,7 +106,7 @@ func sandboxLaunchdTarget() string {
 }
 
 func loadSandboxLaunchAgent(ctx context.Context, plistPath string) error {
-	cmd := exec.CommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath)
+	cmd := sandboxCommandContext(ctx, "launchctl", "bootstrap", fmt.Sprintf("gui/%d", os.Getuid()), plistPath)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("launchctl bootstrap %s: %w", plistPath, err)
@@ -110,7 +116,7 @@ func loadSandboxLaunchAgent(ctx context.Context, plistPath string) error {
 
 func unloadSandboxLaunchAgent(ctx context.Context) error {
 	target := sandboxLaunchdTarget()
-	cmd := exec.CommandContext(ctx, "launchctl", "bootout", target)
+	cmd := sandboxCommandContext(ctx, "launchctl", "bootout", target)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("launchctl bootout %s: %w", target, err)
@@ -121,11 +127,19 @@ func unloadSandboxLaunchAgent(ctx context.Context) error {
 // sandboxLaunchAgentStatus reports whether the LaunchAgent is registered with
 // launchd. `launchctl print` exits non-zero when the service isn't loaded —
 // that's the normal "not installed" case, not an error to surface.
+// Returns (false, nil) if the service is not loaded, (true, nil) if it is loaded,
+// and (false, error) if launchctl itself cannot be executed.
 func sandboxLaunchAgentStatus(ctx context.Context) (bool, error) {
 	target := sandboxLaunchdTarget()
-	cmd := exec.CommandContext(ctx, "launchctl", "print", target)
+	cmd := sandboxCommandContext(ctx, "launchctl", "print", target)
 	if err := cmd.Run(); err != nil {
-		return false, nil
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			// launchctl ran but exited non-zero — service not loaded
+			return false, nil
+		}
+		// launchctl itself couldn't run — a real failure
+		return false, fmt.Errorf("launchctl print %s: %w", target, err)
 	}
 	return true, nil
 }
