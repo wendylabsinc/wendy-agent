@@ -57,12 +57,19 @@ var _ services.ContainerdClient = (*Client)(nil)
 // DefaultAddress is the default containerd socket path on Linux.
 const DefaultAddress = "/run/containerd/containerd.sock"
 
+type AppSystemAPISocketProvider interface {
+	Ensure(appID, serviceName string, capabilities []string) (string, error)
+	Release(appID, serviceName string)
+	ReleaseApp(appID string)
+}
+
 type Client struct {
-	client       *containerd.Client
-	logger       *zap.Logger
-	namespace    string
-	mu           sync.Mutex
-	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	client                  *containerd.Client
+	logger                  *zap.Logger
+	namespace               string
+	mu                      sync.Mutex
+	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	systemAPISocketProvider AppSystemAPISocketProvider
 
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
@@ -138,6 +145,60 @@ func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
 		return
 	}
 	c.meshDNS = d
+}
+
+// SetAppSystemAPISocketProvider injects the manager for private app System API sockets.
+func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvider) {
+	c.systemAPISocketProvider = provider
+}
+
+type appSystemAPIOwner struct {
+	appID       string
+	serviceName string
+}
+
+func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIOwner {
+	owners := make([]appSystemAPIOwner, 0, len(labelSets))
+	for _, labels := range labelSets {
+		appID := labels[labelKeyAppID]
+		serviceName := labels[labelKeyServiceName]
+		if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
+			continue
+		}
+		if entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications) {
+			owners = append(owners, appSystemAPIOwner{appID: appID, serviceName: serviceName})
+		}
+	}
+	return owners
+}
+
+// RestoreAppSystemAPISockets reconstructs listeners and ownership from trusted,
+// persisted container labels after an Agent restart. Stopped containers count
+// too because they retain the socket directory mount and may be started later.
+func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
+	if c.systemAPISocketProvider == nil {
+		return
+	}
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("restore app System API sockets: listing containers failed", zap.Error(err))
+		return
+	}
+	labelSets := make([]map[string]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("restore app System API socket: reading container failed", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		labelSets = append(labelSets, info.Labels)
+	}
+	for _, owner := range appSystemAPIOwnersFromLabels(labelSets) {
+		if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, []string{services.SystemAPICapabilityNotifications}); err != nil {
+			c.logger.Warn("restore app System API socket failed", zap.String(logfields.AppID, owner.appID), zap.Error(err))
+		}
+	}
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -909,6 +970,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		oldHadSystemAPI := false
+		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
+			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
+		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
 		// for it to exit. A surviving process keeps devices/ports the new
@@ -926,12 +991,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			c.forceDeleteTask(ctx, containerName)
 		}
 		if delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup); delErr != nil && !errdefs.IsNotFound(delErr) {
-			// Not fatal here — NewContainer below fails with AlreadyExists if
-			// the old record is truly stuck — but log the root cause so a
-			// failed replace is attributable (WDY-1818).
-			c.logger.Error("Failed to delete existing container during replace",
-				zap.String("container_name", containerName),
-				zap.Error(delErr))
+			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
+		}
+		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.Release(appID, serviceName)
 		}
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
@@ -1083,8 +1146,31 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		c.applyCDIGPU(spec)
 	}
 
+	var systemAPISocketDir string
+	systemAPIRefOwned := false
+	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
+		if c.systemAPISocketProvider == nil {
+			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
+		}
+		systemAPISocketDir, err = c.systemAPISocketProvider.Ensure(
+			appID,
+			serviceName,
+			[]string{services.SystemAPICapabilityNotifications},
+		)
+		if err != nil {
+			return fmt.Errorf("preparing app System API socket: %w", err)
+		}
+		systemAPIRefOwned = true
+		defer func() {
+			if systemAPIRefOwned {
+				c.systemAPISocketProvider.Release(appID, serviceName)
+			}
+		}()
+	}
+
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
+		SystemAPISocketDir: systemAPISocketDir,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
@@ -1296,8 +1382,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
 
-	// Container created successfully; keep the D-Bus proxy running.
+	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
+	systemAPIRefOwned = false
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
@@ -2105,12 +2192,11 @@ func validateUserEnv(entries []string) error {
 // DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
 // enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
 // until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
-// uses UDP over loopback, which works within the app group's shared network
-// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
-// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
-// interface on top makes it select "lo" twice ("the same interface may not be
-// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
-// iox-roudi system service on the device first (WDY-884).
+// uses UDP. ROS_LOCALHOST_ONLY selects loopback for app-scoped discovery; for
+// host-scoped discovery CycloneDDS selects a device interface automatically.
+// No <Interfaces> block is supplied so the same inline config works for both
+// scopes. Re-enabling zero-copy needs an iox-roudi system service on the device
+// first (WDY-884).
 const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
@@ -2127,6 +2213,10 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 	if domainID < 0 {
 		return nil // invalid explicit domain ID; caller should have validated at config parse time
 	}
+	discoveryScope := ros2.ResolvedDiscoveryScope()
+	if discoveryScope == "" {
+		return nil // invalid scope; caller should have validated at config parse time
+	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
 	// unknown values, so arbitrary wendy.json strings can never reach the
@@ -2137,9 +2227,13 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}
-	// Services in an app group share a network namespace, so localhost is
-	// sufficient and DDS must not discover nodes on the wider network.
-	env = append(env, "ROS_LOCALHOST_ONLY=1")
+	// Services are app-local by default. Host-scoped tools such as Foxglove
+	// explicitly opt in to discovering ROS 2 participants on the device network.
+	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
+		env = append(env, "ROS_LOCALHOST_ONLY=0")
+	} else {
+		env = append(env, "ROS_LOCALHOST_ONLY=1")
+	}
 	return env
 }
 
@@ -3121,6 +3215,9 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 		return err
 	}
 	if len(ctrs) == 0 {
+		if c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.ReleaseApp(appID)
+		}
 		return nil // Already gone.
 	}
 
@@ -3144,6 +3241,9 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 				c.logger.Info("Image deleted", zap.String("image", imgName))
 			}
 		}
+	}
+	if len(errs) == 0 && c.systemAPISocketProvider != nil {
+		c.systemAPISocketProvider.ReleaseApp(appID)
 	}
 	return errors.Join(errs...)
 }

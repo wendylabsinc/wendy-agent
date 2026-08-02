@@ -91,7 +91,7 @@ type topRow struct {
 	displayName   string
 	cpuPercent    float64
 	memBytes      int64
-	state         string // "running", "stopped", …
+	state         agentpb.AppRunningState
 	hasCPU        bool
 	isGroupHeader bool
 	isSubrow      bool
@@ -104,9 +104,26 @@ func topStateLabel(s agentpb.AppRunningState) string {
 		return "running"
 	case agentpb.AppRunningState_STOPPED:
 		return "stopped"
+	case agentpb.AppRunningState_CRASH_LOOPING:
+		return "crash-loop"
 	default:
 		return strings.ToLower(strings.TrimPrefix(s.String(), "APP_RUNNING_STATE_"))
 	}
+}
+
+func topStateIcon(s agentpb.AppRunningState) string {
+	switch s {
+	case agentpb.AppRunningState_RUNNING:
+		return "●"
+	case agentpb.AppRunningState_CRASH_LOOPING:
+		return "↻"
+	default:
+		return "○"
+	}
+}
+
+func topDisplayName(r topRow) string {
+	return topStateIcon(r.state) + " " + r.displayName
 }
 
 // buildTopRows groups containers by app (mirroring buildDashboardRows) with CPU%
@@ -147,24 +164,26 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 	for _, a := range aggs {
 		c := a.container
 		appName := c.GetAppName()
+		appState := c.GetRunningState()
 		if len(c.GetServices()) > 1 {
 			rows = append(rows, topRow{
 				name:          appName,
 				displayName:   appName + " [group]",
 				cpuPercent:    a.cpu,
 				memBytes:      a.mem,
-				state:         topStateLabel(c.GetRunningState()),
-				hasCPU:        true,
+				state:         appState,
+				hasCPU:        appState == agentpb.AppRunningState_RUNNING,
 				isGroupHeader: true,
 			})
 			for _, svc := range c.GetServices() {
 				key := appName + "_" + svc.GetName()
+				svcState := svc.GetRunningState()
 				rows = append(rows, topRow{
 					displayName: "  ↳ " + svc.GetName(),
 					cpuPercent:  cpuByID[key],
 					memBytes:    memByID[key],
-					state:       topStateLabel(svc.GetRunningState()),
-					hasCPU:      true,
+					state:       svcState,
+					hasCPU:      svcState == agentpb.AppRunningState_RUNNING,
 					isSubrow:    true,
 				})
 			}
@@ -174,8 +193,8 @@ func buildTopRows(containers []*agentpb.AppContainer, cpuByID map[string]float64
 				displayName: appName,
 				cpuPercent:  a.cpu,
 				memBytes:    a.mem,
-				state:       topStateLabel(c.GetRunningState()),
-				hasCPU:      true,
+				state:       appState,
+				hasCPU:      appState == agentpb.AppRunningState_RUNNING,
 			})
 		}
 	}
@@ -296,6 +315,7 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 		}
 		out.Containers = append(out.Containers, topJSONContainer{
 			Name:       r.displayName,
+			State:      topStateLabel(r.state),
 			CPUPercent: r.cpuPercent,
 			MemBytes:   r.memBytes,
 		})
@@ -338,33 +358,40 @@ func runTopSnapshot(ctx context.Context, conn *grpcclient.AgentConnection, asJSO
 		fmt.Println(string(data))
 		return nil
 	}
+	return writeTopPlainSnapshot(os.Stdout, prev, cur, containers)
+}
 
-	// Plain table.
+func writeTopPlainSnapshot(w io.Writer, prev, cur topSample, containers []*agentpb.AppContainer) error {
 	cpuCount := uint32(1)
 	if cur.host != nil && cur.host.GetCpuCount() > 0 {
 		cpuCount = cur.host.GetCpuCount()
 	}
 	if cur.host != nil {
-		fmt.Printf("CPU: %.1f%%  MEM: %s / %s\n",
+		fmt.Fprintf(w, "CPU: %.1f%%  MEM: %s / %s\n",
 			hostCPUPercent(prev, cur),
 			formatBytes(cur.host.GetMemTotalBytes()-cur.host.GetMemAvailableBytes()),
 			formatBytes(cur.host.GetMemTotalBytes()))
 		for _, g := range cur.host.GetGpus() {
-			fmt.Printf("GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
+			fmt.Fprintf(w, "GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
 				g.GetUtilPercent(), formatGPUMem(g))
 		}
 		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
-			fmt.Printf("TEMP: %s\n", formatThermalZones(zones))
+			fmt.Fprintf(w, "TEMP: %s\n", formatThermalZones(zones))
 		}
 	}
 	cpuByID := map[string]float64{}
 	for id := range cur.containers {
 		cpuByID[id] = containerCPUPercent(prev, cur, id, cpuCount)
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "APP\tCPU%\tMEM")
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "APP\tSTATE\tCPU%\tMEM")
 	for _, r := range buildTopRows(containers, cpuByID, cur.mem, false) {
-		fmt.Fprintf(tw, "%s\t%.1f\t%s\n", r.displayName, r.cpuPercent, formatBytes(r.memBytes))
+		cpu, mem := "—", "—"
+		if r.state == agentpb.AppRunningState_RUNNING {
+			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
+			mem = formatBytes(r.memBytes)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.displayName, topStateLabel(r.state), cpu, mem)
 	}
 	return tw.Flush()
 }
@@ -421,6 +448,12 @@ type topModel struct {
 	height    int
 	flash     string
 
+	// Lifecycle action state is separate from poll errors so a successful poll
+	// cannot erase stop progress or its result.
+	actionSeq    uint64
+	stoppingApp  string
+	actionStatus string
+
 	// Ports for the currently selected app (always-on side panel).
 	portsApp string
 	ports    []*agentpb.PortEntry
@@ -432,6 +465,14 @@ type topPortsMsg struct {
 	ports []*agentpb.PortEntry
 	err   error
 }
+
+type topStopResultMsg struct {
+	seq uint64
+	app string
+	err error
+}
+
+type topClearActionMsg struct{ seq uint64 }
 
 func newTopModel(ctx context.Context, conn *grpcclient.AgentConnection, interval time.Duration) topModel {
 	return topModel{
@@ -477,6 +518,33 @@ func (m topModel) selectedAppName() string {
 		}
 	}
 	return ""
+}
+
+func (m topModel) selectedAppState() (agentpb.AppRunningState, bool) {
+	for i := m.cursor; i >= 0 && i < len(m.rows); i-- {
+		if m.rows[i].name != "" {
+			return m.rows[i].state, true
+		}
+	}
+	return agentpb.AppRunningState_STOPPED, false
+}
+
+func (m topModel) stopAppCmd(app string, seq uint64) tea.Cmd {
+	conn, ctx := m.conn, m.ctx
+	return func() tea.Msg {
+		if conn == nil || conn.ContainerService == nil {
+			return topStopResultMsg{seq: seq, app: app, err: fmt.Errorf("container service unavailable")}
+		}
+		_, err := conn.ContainerService.StopContainer(ctx, &agentpb.StopContainerRequest{AppName: app})
+		return topStopResultMsg{seq: seq, app: app, err: err}
+	}
+}
+
+func clearTopActionStatus(seq uint64) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(3 * time.Second)
+		return topClearActionMsg{seq: seq}
+	}
 }
 
 // fetchPortsCmd fetches the listening ports for app. The result carries the app
@@ -564,6 +632,7 @@ func (m topModel) runContainersPoll() {
 // rebuildRows recomputes the displayed rows from the cached samples, keeping
 // the cursor within bounds.
 func (m *topModel) rebuildRows() {
+	selectedApp := m.selectedAppName()
 	cpuCount := uint32(1)
 	if m.cur.host != nil && m.cur.host.GetCpuCount() > 0 {
 		cpuCount = m.cur.host.GetCpuCount()
@@ -575,6 +644,14 @@ func (m *topModel) rebuildRows() {
 		}
 	}
 	m.rows = buildTopRows(m.cachedContainers, cpuByID, m.cur.mem, m.sortByCPU)
+	if selectedApp != "" {
+		for i, r := range m.rows {
+			if r.name == selectedApp {
+				m.cursor = i
+				break
+			}
+		}
+	}
 	if m.cursor >= len(m.rows) {
 		m.cursor = len(m.rows) - 1
 	}
@@ -625,6 +702,24 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case topStopResultMsg:
+		if msg.seq != m.actionSeq {
+			return m, nil
+		}
+		m.stoppingApp = ""
+		if msg.err != nil {
+			m.actionStatus = fmt.Sprintf("Error stopping %s: %s", msg.app, userFacingGRPCError(msg.err))
+		} else {
+			m.actionStatus = fmt.Sprintf("Stopped %s", msg.app)
+		}
+		return m, clearTopActionStatus(msg.seq)
+
+	case topClearActionMsg:
+		if msg.seq == m.actionSeq && m.stoppingApp == "" {
+			m.actionStatus = ""
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
@@ -647,6 +742,20 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sortByCPU = false
 			m.rebuildRows()
 			return m, m.maybeFetchPorts()
+		case "x":
+			app := m.selectedAppName()
+			state, ok := m.selectedAppState()
+			if app == "" || !ok || m.stoppingApp != "" {
+				return m, nil
+			}
+			m.actionSeq++
+			if state == agentpb.AppRunningState_STOPPED {
+				m.actionStatus = fmt.Sprintf("%s is already stopped", app)
+				return m, clearTopActionStatus(m.actionSeq)
+			}
+			m.stoppingApp = app
+			m.actionStatus = fmt.Sprintf("Stopping %s…", app)
+			return m, m.stopAppCmd(app, m.actionSeq)
 		}
 		return m, nil
 	}
@@ -661,9 +770,11 @@ var (
 	topValDim     = lipgloss.NewStyle().Foreground(tui.ColorDim)
 	topHeaderBar  = lipgloss.NewStyle().Bold(true).Background(tui.Emerald500).Foreground(lipgloss.Color("#02160f"))
 	// Bright mint selection bar for strong contrast with the black row text.
-	topSelRow   = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
-	topKeyCap   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
-	topKeyLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
+	topSelRow     = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
+	topRunningRow = lipgloss.NewStyle().Foreground(tui.Emerald400)
+	topCrashRow   = lipgloss.NewStyle().Foreground(tui.Red500)
+	topKeyCap     = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
+	topKeyLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
 )
 
 // topMeter renders an htop-style bracketed meter: LABEL[|||||      value].
@@ -703,11 +814,12 @@ func topMeter(label string, ratio float64, value string, width int) string {
 	return topMeterLabel.Render(label) + topBracket.Render("[") + bars + gap + topValDim.Render(value) + topBracket.Render("]")
 }
 
-// topColWidths returns the fixed column widths and the flexible name width for
-// a given total terminal width. Layout: " name  CPU%  MEM%  MEM  STATE".
+// topNameWidth returns the flexible name width after reserving the resource and
+// state columns. The state column is deliberately wide enough for "crash-loop".
 func topNameWidth(width int) int {
-	// 1 (lead) + name + 1 + 6 (cpu) + 1 + 6 (memp) + 1 + 10 (mem) + 1 + 8 (state)
-	nameW := width - 36
+	// 1 (lead) + name + 1 + 6 (cpu) + 1 + 6 (memp) + 1 + 10 (mem) +
+	// 1 + 10 (state) = name + 37. Keep one spare cell for terminal quirks.
+	nameW := width - 38
 	if nameW < 10 {
 		nameW = 10
 	}
@@ -719,7 +831,7 @@ func topFormatRow(name, cpu, memp, mem, state string, nameW int) string {
 	if len(r) > nameW {
 		name = string(r[:nameW])
 	}
-	return fmt.Sprintf(" %-*s %6s %6s %10s %-8s", nameW, name, cpu, memp, mem, state)
+	return fmt.Sprintf(" %-*s %6s %6s %10s %-10s", nameW, name, cpu, memp, mem, state)
 }
 
 func (m topModel) View() string {
@@ -734,7 +846,10 @@ func (m topModel) View() string {
 
 	// Reserve a right-hand ports panel when the terminal is wide enough.
 	panelW := 0
-	if width >= 70 {
+	// The app table needs 47 cells to retain its state column. Only split off
+	// the ports panel when both columns fit instead of cropping state at common
+	// terminal widths.
+	if width >= 84 {
 		panelW = 34
 	}
 	listW := width
@@ -788,13 +903,29 @@ func (m topModel) View() string {
 		top = append(top, topValDim.Render(" Connecting…"))
 	}
 
-	running := 0
+	running, stopped, crashLooping := 0, 0, 0
 	for _, c := range m.cachedContainers {
-		if c.GetRunningState() == agentpb.AppRunningState_RUNNING {
+		switch c.GetRunningState() {
+		case agentpb.AppRunningState_RUNNING:
 			running++
+		case agentpb.AppRunningState_CRASH_LOOPING:
+			crashLooping++
+		default:
+			stopped++
 		}
 	}
-	top = append(top, topValDim.Render(fmt.Sprintf(" Apps: %d, %d running", len(m.cachedContainers), running)))
+	summary := fmt.Sprintf(" Apps: %d  ● %d running  ○ %d stopped", len(m.cachedContainers), running, stopped)
+	if crashLooping > 0 {
+		summary += fmt.Sprintf("  ↻ %d crash-looping", crashLooping)
+	}
+	top = append(top, topValDim.Render(summary))
+	statusLine := m.actionStatus
+	if statusLine == "" {
+		statusLine = m.flash
+	}
+	if statusLine != "" {
+		top = append(top, topValDim.Render(" "+statusLine))
+	}
 	top = append(top, "")
 
 	// Build the left (container list) and right (ports) columns of the body.
@@ -858,17 +989,21 @@ func (m topModel) listLines(width int) []string {
 			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
 		}
 		memp := "-"
-		if memTotal > 0 {
+		mem := "—"
+		if r.state == agentpb.AppRunningState_RUNNING && memTotal > 0 {
 			memp = fmt.Sprintf("%.1f", float64(r.memBytes)/float64(memTotal)*100)
+			mem = formatBytes(r.memBytes)
 		}
-		row := padOrCrop(topFormatRow(r.displayName, cpu, memp, formatBytes(r.memBytes), r.state, nameW), width)
+		row := padOrCrop(topFormatRow(topDisplayName(r), cpu, memp, mem, topStateLabel(r.state), nameW), width)
 		switch {
 		case i == m.cursor:
 			lines = append(lines, topSelRow.Render(row))
-		case r.isSubrow:
+		case r.state == agentpb.AppRunningState_CRASH_LOOPING:
+			lines = append(lines, topCrashRow.Render(row))
+		case r.state == agentpb.AppRunningState_STOPPED:
 			lines = append(lines, topValDim.Render(row))
 		default:
-			lines = append(lines, row)
+			lines = append(lines, topRunningRow.Render(row))
 		}
 	}
 	return lines
@@ -877,6 +1012,7 @@ func (m topModel) listLines(width int) []string {
 // portsPanelLines renders the open-ports panel for the selected app.
 func (m topModel) portsPanelLines(width int) []string {
 	app := m.selectedAppName()
+	appState, hasState := m.selectedAppState()
 	title := "OPEN PORTS"
 	if app != "" {
 		title = "OPEN PORTS — " + app
@@ -886,6 +1022,10 @@ func (m topModel) portsPanelLines(width int) []string {
 	switch {
 	case app == "":
 		lines = append(lines, topValDim.Render(" (no app selected)"))
+	case hasState && appState == agentpb.AppRunningState_STOPPED:
+		lines = append(lines, topValDim.Render(" (app is stopped)"))
+	case hasState && appState == agentpb.AppRunningState_CRASH_LOOPING:
+		lines = append(lines, topValDim.Render(" (app is crash-looping)"))
 	case m.portsErr != nil:
 		if errors.Is(m.portsErr, errResourceStatsUnimplemented) || status.Code(m.portsErr) == codes.Unimplemented {
 			lines = append(lines, topValDim.Render(" (agent too old)"))
@@ -921,11 +1061,11 @@ func padOrCrop(s string, width int) string {
 }
 
 func (m topModel) topKeyBar(width int) string {
-	flash := m.flash
 	segs := []struct{ key, label string }{
 		{"↑↓", "Nav"},
 		{"m", "Mem"},
 		{"c", "CPU"},
+		{"x", "Stop"},
 		{"q", "Quit"},
 	}
 	var b strings.Builder
@@ -934,11 +1074,6 @@ func (m topModel) topKeyBar(width int) string {
 		b.WriteString(topKeyCap.Render(s.key))
 		b.WriteString(topKeyLabel.Render(s.label + " "))
 		plainLen += lipgloss.Width(s.key) + lipgloss.Width(s.label) + 1
-	}
-	if flash != "" && plainLen+2+len(flash) < width {
-		msg := "  " + flash
-		b.WriteString(topKeyLabel.Render(msg))
-		plainLen += lipgloss.Width(msg)
 	}
 	if plainLen < width {
 		b.WriteString(topKeyLabel.Render(strings.Repeat(" ", width-plainLen)))

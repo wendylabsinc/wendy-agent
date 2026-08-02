@@ -994,7 +994,7 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return err
 	}
 
-	registryAddr, swiftUseMTLS, proxyCleanup, err := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+	registryAddr, swiftUseMTLS, proxyCleanup, proxyDialErr, err := resolveRegistryForSwiftAgent(ctx, conn, regPort)
 	if err != nil {
 		return err
 	}
@@ -1002,6 +1002,24 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 
 	cliLogln("Building Swift container image for %s (%s)...", tui.App(product), tui.Value(architecture))
 	if err := buildSwiftContainerImage(ctx, cwd, product, registryAddr, architecture, swiftUseMTLS, opts.debug, &dimWriter{}, os.Stderr); err != nil {
+		// A Mac agent only runs a container registry when it found a Linux
+		// container backend (Docker, OrbStack, or Apple `container`) at startup;
+		// otherwise the registry proxy above never reaches anything and the push
+		// dies with a bare "connection refused" that reads like a CLI bug. A real
+		// WendyOS/Linux device always ships its container runtime as part of the
+		// OS, so a refused connection there is an actual fault, not a missing
+		// optional dependency — only reinterpret the error for darwin agents.
+		if strings.EqualFold(agentOS, appconfig.PlatformDarwin) {
+			if dialErr := proxyDialErr(); isDialRefused(dialErr) {
+				return fmt.Errorf(
+					"the Mac agent at %s isn't running a container registry (%v); "+
+						"install Docker, OrbStack, or Apple's `container` CLI on the agent to run "+
+						"Linux/WendyOS apps there, or set \"platform\": \"darwin\" in wendy.json to run "+
+						"this app natively on the Mac instead",
+					conn.Host, dialErr,
+				)
+			}
+		}
 		return fmt.Errorf("building Swift container image: %w", err)
 	}
 	cliLogln("Build and push completed.")

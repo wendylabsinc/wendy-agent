@@ -16,8 +16,8 @@ func TestBuildDashboardRows(t *testing.T) {
 	stopped := agentpb.AppRunningState_STOPPED
 
 	containers := []*agentpb.AppContainer{
-		{AppName: "my-app", AppVersion: "1.0", RunningState: running, FailureCount: 0},
 		{AppName: "idle-app", AppVersion: "2.0", RunningState: stopped, FailureCount: 3},
+		{AppName: "my-app", AppVersion: "1.0", RunningState: running, FailureCount: 0},
 	}
 
 	stats := []*agentpb.ContainerStats{

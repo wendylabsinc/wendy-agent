@@ -5,8 +5,8 @@
 and is observable. This app binds a TCP and a UDP port (so it also shows up in
 top's per-app ports panel) and then idles, doing only trivial periodic work so
 its CPU usage stays low. The test harness deploys it detached, runs
-`wendy device top --json`, asserts the host and container fields are present,
-then removes it.
+`wendy device top --json`, asserts the host and running container state fields
+are present, then removes it.
 """
 
 import socket

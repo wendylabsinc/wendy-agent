@@ -21,6 +21,13 @@ const ROS2DefaultDistro = "humble"
 // specify one.
 const ROS2DefaultRMW = "rmw_cyclonedds_cpp"
 
+// ROS2 discovery scopes control whether DDS can discover participants only
+// inside an app group or across the device's host network.
+const (
+	ROS2DiscoveryScopeApp  = "app"
+	ROS2DiscoveryScopeHost = "host"
+)
+
 // ROS2DomainIDMin and ROS2DomainIDMax bound valid ROS_DOMAIN_ID values to the
 // full ROS 2 range (0–232). RMW implementations map the domain ID to UDP ports;
 // 232 is the maximum the DDS port-mapping scheme supports
@@ -60,6 +67,9 @@ func validateROS2Config(prefix string, r *ROS2Config) error {
 	}
 	if r.RMW != "" && ros2RMWAliases[strings.ToLower(r.RMW)] == "" {
 		return fmt.Errorf("%s.rmw %q is not a supported RMW implementation", prefix, r.RMW)
+	}
+	if r.DiscoveryScope != "" && r.ResolvedDiscoveryScope() == "" {
+		return fmt.Errorf("%s.discoveryScope %q must be %q or %q", prefix, r.DiscoveryScope, ROS2DiscoveryScopeApp, ROS2DiscoveryScopeHost)
 	}
 	return nil
 }
@@ -119,6 +129,23 @@ func (r *ROS2Config) ResolvedDistro() string {
 		return ROS2DefaultDistro
 	}
 	return strings.ToLower(r.Distro)
+}
+
+// ResolvedDiscoveryScope returns the configured DDS discovery scope,
+// defaulting to app-local isolation. It returns "" for unknown values so
+// callers never accidentally widen discovery due to a typo.
+func (r *ROS2Config) ResolvedDiscoveryScope() string {
+	if r.DiscoveryScope == "" {
+		return ROS2DiscoveryScopeApp
+	}
+	switch strings.ToLower(r.DiscoveryScope) {
+	case ROS2DiscoveryScopeApp:
+		return ROS2DiscoveryScopeApp
+	case ROS2DiscoveryScopeHost:
+		return ROS2DiscoveryScopeHost
+	default:
+		return ""
+	}
 }
 
 // ResolveROS2ConfigForService returns the effective ROS 2 config for the

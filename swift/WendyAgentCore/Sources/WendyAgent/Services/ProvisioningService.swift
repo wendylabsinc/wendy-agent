@@ -111,11 +111,16 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             organizationID: request.organizationID,
             assetID: request.assetID
         )
+        let identityURN = DeviceIdentity.assetURN(
+            organizationID: request.organizationID,
+            assetID: request.assetID
+        )
         let csrPEM: String
         do {
             csrPEM = try DeviceIdentity.generateCSRPEM(
                 privateKeyPEM: keyPEM,
-                commonName: commonName
+                commonName: commonName,
+                identityURN: identityURN
             )
         } catch {
             throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")

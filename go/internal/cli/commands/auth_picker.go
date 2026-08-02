@@ -5,6 +5,7 @@ package commands
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -118,6 +119,29 @@ func authPickerItems(cfg *config.Config, orgNames map[int32]string) []tui.Picker
 	return items
 }
 
+// persistSessionDefault stores the picker's highlighted session ("endpoint" or
+// "endpoint::orgID" key) as the default. Both halves are persisted: the org ID
+// is what actually disambiguates sessions when several orgs share one endpoint
+// — persisting only the endpoint made the default resolve to whichever of them
+// was logged into first, not the one the user picked.
+func persistSessionDefault(key string) error {
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	endpoint := key
+	orgID := 0
+	if idx := strings.Index(key, "::"); idx >= 0 {
+		endpoint = key[:idx]
+		if n, convErr := strconv.Atoi(key[idx+2:]); convErr == nil {
+			orgID = n
+		}
+	}
+	c.DefaultCloudGRPC = endpoint
+	c.DefaultOrgID = int32(orgID)
+	return config.Save(c)
+}
+
 // pickAuthSession shows the interactive session picker. 'd' marks the
 // highlighted session as the persisted default (written immediately, mirroring
 // the device picker), 'x' clears it, and Enter selects a session for this
@@ -150,22 +174,15 @@ func pickAuthSession(cfg *config.Config) (*config.AuthConfig, error) {
 		if key == "" {
 			return ""
 		}
-		c, err := config.Load()
-		if err != nil {
+		if err := persistSessionDefault(key); err != nil {
 			return fmt.Sprintf("Could not save default: %v", err)
 		}
-		// Persist as DefaultCloudGRPC (the endpoint portion before "::").
-		endpoint := key
-		if idx := strings.Index(key, "::"); idx >= 0 {
-			endpoint = key[:idx]
-		}
-		c.DefaultCloudGRPC = endpoint
-		_ = config.Save(c)
 		return fmt.Sprintf("Default set to %s.", item.Name)
 	}
 	picker.OnUnsetDefault = func() string {
 		if c, err := config.Load(); err == nil {
 			c.DefaultCloudGRPC = ""
+			c.DefaultOrgID = 0
 			_ = config.Save(c)
 		}
 		return "Default cleared."

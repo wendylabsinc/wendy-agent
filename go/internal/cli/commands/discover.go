@@ -268,6 +268,12 @@ type discoverUpdateDoneMsg struct {
 	deviceName string
 	assetID    int32
 	err        error
+	// note carries a non-error outcome that is not a successful update, e.g.
+	// the device already running the release we would install.
+	note string
+	// version is the probe taken while deciding, set only alongside note so a
+	// caller can refresh a cached row it would otherwise leave stale.
+	version *agentpb.GetAgentVersionResponse
 }
 
 // bleRetentionPeriod is how long a BLE device stays visible after it was last
@@ -452,13 +458,10 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.flashIsError = true
 				return m, clearFlashAfter(3 * time.Second)
 			}
-			if !agentBehindCLI(version.Version, item.info.Version) {
-				m.flashMessage = "Device is already up to date."
-				m.flashIsError = false
-				return m, clearFlashAfter(3 * time.Second)
-			}
+			// Whether an update is needed is decided against the release
+			// channel in startDeviceUpdateCmd, not against this CLI's version.
 			m.updatingDeviceName = item.info.Name
-			m.flashMessage = "Updating " + item.info.Name + "..."
+			m.flashMessage = "Checking " + item.info.Name + "..."
 			m.flashIsError = false
 			return m, m.startDeviceUpdateCmd(addr, item.info.Name)
 		case "d":
@@ -626,13 +629,7 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flashIsError = false
 	case discoverUpdateDoneMsg:
 		m.updatingDeviceName = ""
-		if msg.err != nil {
-			m.flashMessage = fmt.Sprintf("Update failed for %s: %v", msg.deviceName, msg.err)
-			m.flashIsError = true
-		} else {
-			m.flashMessage = fmt.Sprintf("Updated %s successfully.", msg.deviceName)
-			m.flashIsError = false
-		}
+		m.flashMessage, m.flashIsError = discoverUpdateFlash(msg)
 		return m, clearFlashAfter(10 * time.Second)
 	}
 
@@ -663,7 +660,9 @@ func (m discoverModel) View() string {
 
 	sb.WriteString(m.viewLine(scanStyle.Render("⟳ Scanning for WendyOS devices...")) + "\n")
 	if m.updatingDeviceName != "" {
-		sb.WriteString(m.viewLine(dimStyle.Render("  updating "+m.updatingDeviceName+"... (q quit)")) + "\n")
+		// One keypress covers the channel check and the upload it may not reach,
+		// so the wording has to fit both.
+		sb.WriteString(m.viewLine(dimStyle.Render("  working on "+m.updatingDeviceName+"... (q quit)")) + "\n")
 	} else {
 		scrollHint := ""
 		if m.canScrollTable() {
@@ -684,7 +683,7 @@ func (m discoverModel) View() string {
 
 	if !m.collection.IsEmpty() {
 		sb.WriteString(tui.ColorizeProbeGlyphs(m.tableView()) + "\n")
-		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend)) + "\n")
+		sb.WriteString(m.viewLine(dimStyle.Render("  "+tui.DeviceTableLegend(discoverPickerItems(m.tableItems)))) + "\n")
 		if hint := m.selectedHint(); hint != "" {
 			sb.WriteString(m.viewLine(hintWarnStyle.Render("  ⚠  "+hint)) + "\n")
 		}
@@ -789,6 +788,10 @@ func lanDeviceAddr(collection *models.DevicesCollection, displayName string) str
 func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 	ctx := m.ctx
 	return func() tea.Msg {
+		latestVer, _, err := resolveAgentVersion(false)
+		if err != nil {
+			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("resolving agent version: %w", err)}
+		}
 		conn, err := connectWithAutoTLS(ctx, addr)
 		if err != nil {
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("connecting to device: %w", err)}
@@ -797,6 +800,10 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 		if err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("querying device: %w", err)}
+		}
+		if note := agentAlreadyAtReleaseNote(name, versionResp.GetVersion(), latestVer); note != "" {
+			conn.Close()
+			return discoverUpdateDoneMsg{deviceName: name, note: note}
 		}
 		arch := versionResp.GetCpuArchitecture()
 		if arch == "" {
@@ -844,7 +851,7 @@ func renderDeviceTable(collection *models.DevicesCollection) string {
 	t.SetWidth(tui.PickerTableWidth(t.Columns()))
 	t.SetHeight(max(len(rows)+1, 1))
 
-	return t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend) + "\n"
+	return t.View() + "\n" + dimStyle.Render("  "+tui.DeviceTableLegend(pickerItems)) + "\n"
 }
 
 func newDiscoverTable(interactive bool) tui.BubbleTable {
@@ -927,13 +934,29 @@ func cliBehindAgent(cliVer, agentVer string) bool {
 	return version.CompareVersions(cliVer, agentVer) < 0
 }
 
-// markOutdated prefixes the version string with "* " when the agent is behind
-// the CLI, serving as a visible indicator in discover-style tables.
-func markOutdated(agentVer string) string {
-	if agentBehindCLI(version.Version, agentVer) {
-		return "* " + agentVer
+// agentAlreadyAtReleaseNote returns a flash note when an explicit update would
+// be a no-op: the agent already reports releaseVer or newer. Whether an update
+// is needed is a question about the release channel, so it is never answered by
+// comparing against this CLI's own version. A dev agent is never current here —
+// an explicit update overwrites it with the release, as `wendy device update`
+// does. An unknown version on either side means "attempt the update".
+func agentAlreadyAtReleaseNote(deviceName, agentVer, releaseVer string) string {
+	if releaseVer == "" || version.IsDev(agentVer) || !agentUpdateVerified(agentVer, releaseVer) {
+		return ""
 	}
-	return agentVer
+	return fmt.Sprintf("%s is already at the latest release (%s).", deviceName, agentVer)
+}
+
+// discoverUpdateFlash renders the flash line for a finished update attempt.
+func discoverUpdateFlash(msg discoverUpdateDoneMsg) (message string, isError bool) {
+	switch {
+	case msg.err != nil:
+		return fmt.Sprintf("Update failed for %s: %v", msg.deviceName, msg.err), true
+	case msg.note != "":
+		return msg.note, false
+	default:
+		return fmt.Sprintf("Updated %s successfully.", msg.deviceName), false
+	}
 }
 
 func discoverTableColumns(rows []bubbleTable.Row) []bubbleTable.Column {
@@ -1057,13 +1080,14 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		}
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:         discovery.SanitiseDisplayName(d.DisplayName),
-				Type:         deviceType,
-				USB:          d.USBVersion,
-				Address:      d.Hostname,
-				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
-				DedupKey:     d.DisplayName,
-				SortKey:      deviceSortKey(d.DisplayName, d.USBVersion),
+				Name:          discovery.SanitiseDisplayName(d.DisplayName),
+				Type:          deviceType,
+				USB:           d.USBVersion,
+				Address:       d.Hostname,
+				AgentVersion:  discovery.SanitiseDisplayName(d.AgentVersion),
+				AgentOutdated: agentBehindCLI(version.Version, d.AgentVersion),
+				DedupKey:      d.DisplayName,
+				SortKey:       deviceSortKey(d.DisplayName, d.USBVersion),
 			},
 			info: discoverDeviceInfo{
 				Name:    d.DisplayName,
@@ -1092,17 +1116,18 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		provisioned := lanProvisionedDisplay(d.LAN)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:         discovery.SanitiseDisplayName(d.DisplayName),
-				Type:         deviceType,
-				USB:          usb,
-				Address:      address,
-				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
-				OS:           d.OS,
-				OSVersion:    d.OSVersion,
-				Provisioned:  provisioned,
-				Hint:         lanNoAccessHint(d.LAN, d.AgentVersion),
-				DedupKey:     d.DisplayName,
-				SortKey:      deviceSortKey(d.DisplayName, usb),
+				Name:          discovery.SanitiseDisplayName(d.DisplayName),
+				Type:          deviceType,
+				USB:           usb,
+				Address:       address,
+				AgentVersion:  discovery.SanitiseDisplayName(d.AgentVersion),
+				AgentOutdated: agentBehindCLI(version.Version, d.AgentVersion),
+				OS:            d.OS,
+				OSVersion:     d.OSVersion,
+				Provisioned:   provisioned,
+				Hint:          lanNoAccessHint(d.LAN, d.AgentVersion),
+				DedupKey:      d.DisplayName,
+				SortKey:       deviceSortKey(d.DisplayName, usb),
 			},
 			info: discoverDeviceInfo{
 				Name:        d.DisplayName,
@@ -1125,10 +1150,12 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		deviceType := externalProviderDisplayName(d.ProviderKey)
 		items = append(items, discoverTableItem{
 			picker: tui.PickerItem{
-				Name:         discovery.SanitiseDisplayName(d.DisplayName),
-				Type:         deviceType,
-				Address:      addr,
-				AgentVersion: discoverAgentVersionDisplay(d.AgentVersion),
+				Name:    discovery.SanitiseDisplayName(d.DisplayName),
+				Type:    deviceType,
+				Address: addr,
+				// Not AgentOutdated: a provider reports its own runtime version
+				// (e.g. Docker's), which is not comparable to the CLI's.
+				AgentVersion: discovery.SanitiseDisplayName(d.AgentVersion),
 				OS:           d.OS,
 				OSVersion:    d.OSVersion,
 				DedupKey:     d.DisplayName,
@@ -1161,17 +1188,6 @@ func discoverPickerItems(items []discoverTableItem) []tui.PickerItem {
 		pickerItems = append(pickerItems, pickerItem)
 	}
 	return pickerItems
-}
-
-func discoverAgentVersionDisplay(agentVer string) string {
-	displayVersion := discovery.SanitiseDisplayName(agentVer)
-	if displayVersion == "" {
-		return ""
-	}
-	if agentBehindCLI(version.Version, agentVer) {
-		displayVersion += " ⚠"
-	}
-	return displayVersion
 }
 
 func discoverSortKey(item tui.PickerItem) string {

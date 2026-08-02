@@ -4,15 +4,15 @@ The `WendyLite` SwiftPM library is an Embedded Swift target compiled to `wasm32-
 
 ## Requirements
 
-- Swift 6.3.1 via `swiftly`
-- Embedded Swift SDK: `swift-6.3.1-RELEASE_wasm-embedded`
+- Swift 6.3.2 via `swiftly`
+- Embedded Swift SDK: `swift-6.3.2-RELEASE_wasm-embedded`
 - Target triple: `wasm32-unknown-wasip1`
 
 Build command:
 
 ```bash
-swiftly run +6.3.1 swift build \
-    --swift-sdk swift-6.3.1-RELEASE_wasm-embedded \
+swiftly run +6.3.2 swift build \
+    --swift-sdk swift-6.3.2-RELEASE_wasm-embedded \
     --triple wasm32-unknown-wasip1 \
     -c release
 ```

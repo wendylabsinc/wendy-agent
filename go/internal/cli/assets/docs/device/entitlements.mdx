@@ -253,6 +253,48 @@ On NVIDIA Jetson, GL/EGL userspace is injected from the host through the same CD
   **Security**: Apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 </Callout>
 
+### Notifications Entitlement
+
+The notifications entitlement lets an app send operator-facing Wendy
+Notifications through its private app connection.
+
+```json
+{
+  "type": "notifications"
+}
+```
+
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by the app's entitled service containers and future app-facing
+API capabilities. WendyKit exposes the typed operation as
+`WendyNotification.send(_:)`.
+
+The app supplies one or more user, organization team, or role selectors plus
+content, severity, deep link, a caller-chosen Notification UUID v4 resource
+identity, and optional metadata. After successful creation, any canonical UUID
+reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
+or rate-limit rejection does not claim the UUID, so that UUID remains valid for
+retry. All selector categories are unioned, normalized, and deduplicated. The
+app-facing API accepts at most 100 selector entries before deduplication; Cloud
+resolves at most 10,000 recipients. Trusted container state supplies Cloud
+`app_id`, stored as `created_by_app_id`; provisioned device mTLS supplies device
+and organization identity. Each send has a 15-second Cloud
+deadline.
+
+All entitled services in a multi-service app share the app's stable directory
+under `/var/lib/wendy/app-system`. After an agent/daemon restart, the socket is
+recreated from persisted container labels and running containers reconnect on
+their next call without a redeploy. Stopped containers retain their mount and
+can reconnect when started again. The directory remains until the last entitled
+service container is deleted.
+
+<Callout type="warning">
+  **Security**: Apps without `notifications` receive no private app connection
+  mount, environment variable, or socket group. This entitlement never exposes
+  the separate administrative `WENDY_AGENT_SOCKET`.
+</Callout>
+
 ### Admin Entitlement
 
 The admin entitlement grants the container the wendy-agent's full gRPC over a local unix socket (`/run/wendy/agent.sock`, exposed as `WENDY_AGENT_SOCKET`) — with no authentication.
@@ -393,6 +435,7 @@ wendy project entitlements add network --mode none
 wendy project entitlements add gpu
 wendy project entitlements add camera
 wendy project entitlements add audio
+wendy project entitlements add notifications
 wendy project entitlements add bluetooth --mode kernel
 wendy project entitlements add bluetooth --mode bluez
 wendy project entitlements add persist --name mydata --path /data

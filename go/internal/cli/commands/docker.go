@@ -6,8 +6,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"net"
 	"net/http"
@@ -2042,7 +2044,7 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 // can resolve mDNS hostnames directly, we pass the original hostname through
 // rather than resolving it to an IP. Only link-local addresses (USB) still
 // need the TCP proxy.
-func resolveRegistryForSwift(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
+func resolveRegistryForSwift(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), dialErr func() error, err error) {
 	resolved := resolveRegistryIP(host)
 	if !isLinkLocalIP(resolved) {
 		// Use the original hostname (or bare IP) directly — mDNS-resolvable on the host.
@@ -2050,19 +2052,26 @@ func resolveRegistryForSwift(ctx context.Context, host string, port int) (regist
 		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
 			addr = "[" + addr + "]"
 		}
-		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, func() error { return nil }, nil
 	}
 
 	// Link-local: proxy via 127.0.0.1 — Swift runs on the host, not in a VM.
 	target := net.JoinHostPort(host, strconv.Itoa(port))
 	proxy, err := startRegistryProxy(ctx, "127.0.0.1:0", target)
 	if err != nil {
-		return "", nil, fmt.Errorf("starting registry proxy for link-local device: %w", err)
+		return "", nil, nil, fmt.Errorf("starting registry proxy for link-local device: %w", err)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, proxy.LastDialError, nil
 }
 
-func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, swiftUseMTLS bool, cleanup func(), err error) {
+// resolveRegistryForSwiftAgent resolves a registry address for the Swift
+// container plugin to push to, alongside a dialErr accessor: after a push
+// fails, callers can call dialErr() to check whether the underlying proxy
+// (if any) ever failed to reach its target — e.g. connection refused because
+// a Mac agent has no container runtime listening — and surface that instead
+// of a generic build failure. dialErr is always safely callable (never nil)
+// on a nil-error return.
+func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, swiftUseMTLS bool, cleanup func(), dialErr func() error, err error) {
 	if conn.RegistryDialer == nil {
 		if conn.IsMTLS {
 			// Provisioned LAN device: the registry speaks HTTPS with a cert signed
@@ -2071,17 +2080,17 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 			// the Swift container plugin can push via plain HTTP on 127.0.0.1.
 			certInfo := loadCLICert()
 			if certInfo == nil {
-				return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+				return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 			}
 			target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
 			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain)
 			if proxyErr != nil {
-				return "", false, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
+				return "", false, nil, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
 			}
-			return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+			return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, proxy.LastDialError, nil
 		}
-		addr, addrCleanup, addrErr := resolveRegistryForSwift(ctx, conn.Host, port)
-		return addr, false, addrCleanup, addrErr
+		addr, addrCleanup, addrDialErr, addrErr := resolveRegistryForSwift(ctx, conn.Host, port)
+		return addr, false, addrCleanup, addrDialErr, addrErr
 	}
 
 	// Cloud tunnel. On a provisioned device the registry itself speaks TLS,
@@ -2100,20 +2109,20 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 	if conn.IsMTLS {
 		certInfo := loadCLICert()
 		if certInfo == nil {
-			return "", false, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
+			return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 		}
 		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain, dial)
 		if tlsErr != nil {
-			return "", false, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
+			return "", false, nil, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
 		}
 		dial = tlsDial
 	}
 
 	proxy, proxyErr := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", dial)
 	if proxyErr != nil {
-		return "", false, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
+		return "", false, nil, nil, fmt.Errorf("starting cloud registry proxy for Swift: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), false, proxy.Close, proxy.LastDialError, nil
 }
 
 // wendyRegistryServerVerifier returns a VerifyConnection callback that
@@ -2194,7 +2203,7 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 
 func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
 	if conn.RegistryDialer != nil || conn.IsMTLS {
-		registryAddr, appleUseMTLS, cleanup, err := resolveRegistryForSwiftAgent(ctx, conn, port)
+		registryAddr, appleUseMTLS, cleanup, _, err := resolveRegistryForSwiftAgent(ctx, conn, port)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -2221,6 +2230,21 @@ func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.Agen
 	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, nil
 }
 
+// isDialRefused reports whether err looks like a TCP dial that was actively
+// refused — i.e. nothing was listening on the target port at all — as opposed
+// to a timeout, reset, or other network failure. Used to recognize "no
+// container runtime running on the Mac agent" specifically, so the CLI can
+// explain that instead of surfacing a raw dial/registry error.
+func isDialRefused(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	return strings.Contains(err.Error(), "connection refused")
+}
+
 // mtlsRegistryHTTPProxy is a plain-HTTP reverse proxy that forwards requests
 // to a provisioned device's HTTPS registry using mTLS. The Swift container
 // plugin connects to 127.0.0.1:PORT via plain HTTP (with --allow-insecure-http)
@@ -2228,6 +2252,9 @@ func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.Agen
 type mtlsRegistryHTTPProxy struct {
 	listener net.Listener
 	server   *http.Server
+
+	mu      sync.Mutex
+	dialErr error
 }
 
 func (p *mtlsRegistryHTTPProxy) Port() int {
@@ -2236,6 +2263,21 @@ func (p *mtlsRegistryHTTPProxy) Port() int {
 
 func (p *mtlsRegistryHTTPProxy) Close() {
 	_ = p.server.Close()
+}
+
+func (p *mtlsRegistryHTTPProxy) recordDialErr(err error) {
+	p.mu.Lock()
+	p.dialErr = err
+	p.mu.Unlock()
+}
+
+// LastDialError returns the most recent error encountered while reaching the
+// proxy's target (e.g. connection refused because the Mac agent has no
+// container runtime listening), or nil if every request so far has reached it.
+func (p *mtlsRegistryHTTPProxy) LastDialError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dialErr
 }
 
 func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsRegistryHTTPProxy, error) {
@@ -2251,6 +2293,8 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 	if !caPool.AppendCertsFromPEM([]byte(caPEM)) {
 		return nil, fmt.Errorf("no valid CA certificates found in caPEM")
 	}
+
+	p := &mtlsRegistryHTTPProxy{}
 
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -2270,15 +2314,29 @@ func startMTLSRegistryHTTPProxy(target, certPEM, keyPEM, caPEM string) (*mtlsReg
 				VerifyConnection:   wendyRegistryServerVerifier(caPool),
 			},
 		},
+		// The default ErrorHandler logs "http: proxy error: dial tcp ...: connect:
+		// connection refused" straight to stderr for every failed request, which
+		// reads like a CLI crash rather than "the agent has no container runtime
+		// running". Record the error instead so the caller can surface one clear,
+		// actionable message once the build actually fails, and silence the noisy
+		// default log line (still returns 502 to the pushing client, same as
+		// before — the caller establishes trust and gets attribution independent
+		// of the request that failed).
+		ErrorLog: log.New(io.Discard, "", 0),
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, handlerErr error) {
+			p.recordDialErr(handlerErr)
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: rp}
-	go func() { _ = srv.Serve(ln) }()
-	return &mtlsRegistryHTTPProxy{listener: ln, server: srv}, nil
+	p.listener = ln
+	p.server = &http.Server{Handler: rp}
+	go func() { _ = p.server.Serve(ln) }()
+	return p, nil
 }
 
 // startMTLSRegistryProxy starts a local plain-TCP listener that tunnels each
@@ -2298,10 +2356,16 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
+		return nil, fmt.Errorf("no valid CA certificates found in certInfo.PemCertificateChain")
+	}
 	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true, //nolint:gosec // device registries use self-signed certs; pinning is tracked separately
+		// Skip hostname verification; full chain validation happens in VerifyConnection.
+		InsecureSkipVerify: true, //nolint:gosec
 		MinVersion:         tls.VersionTLS12,
 		Certificates:       []tls.Certificate{tlsCert},
+		VerifyConnection:   wendyRegistryServerVerifier(caPool),
 	}
 	dialer := &tls.Dialer{Config: tlsCfg}
 	return startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(ctx context.Context) (net.Conn, error) {
@@ -2340,6 +2404,9 @@ type registryProxy struct {
 	dial     func(context.Context) (net.Conn, error)
 	cancel   context.CancelFunc
 	done     chan struct{}
+
+	mu      sync.Mutex
+	dialErr error
 }
 
 func startRegistryProxy(ctx context.Context, listenAddr string, target string) (*registryProxy, error) {
@@ -2380,6 +2447,20 @@ func (p *registryProxy) Close() {
 	<-p.done
 }
 
+func (p *registryProxy) recordDialErr(err error) {
+	p.mu.Lock()
+	p.dialErr = err
+	p.mu.Unlock()
+}
+
+// LastDialError returns the most recent error encountered while reaching the
+// proxy's target, or nil if every connection so far has reached it.
+func (p *registryProxy) LastDialError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dialErr
+}
+
 func (p *registryProxy) serve(ctx context.Context) {
 	defer close(p.done)
 	for {
@@ -2404,6 +2485,7 @@ func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 
 	remote, err := p.dial(ctx)
 	if err != nil {
+		p.recordDialErr(err)
 		return
 	}
 	defer remote.Close()

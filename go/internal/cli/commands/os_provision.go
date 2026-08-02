@@ -98,6 +98,7 @@ func preEnrollDevice(ctx context.Context, auth *config.AuthConfig, deviceName st
 	// Device identity acts as both a TLS client (to the cloud) and a TLS server
 	// (agent gRPC and tunnel endpoints), so request both EKUs.
 	csrPEM, err := certs.GenerateCSR([]byte(keyPEM), fmt.Sprintf("sh/wendy/%d/%d", resolvedOrgID, assetID),
+		certs.AssetURN(resolvedOrgID, assetID),
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, fmt.Errorf("generating CSR: %w", err)

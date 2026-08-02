@@ -198,12 +198,16 @@ func detectGPUInfo() gpuInfo {
 
 var tegraReleaseRe = regexp.MustCompile(`R(\d+)\s+\([^)]+\),\s+REVISION:\s+([\d.]+)`)
 
-// Falls back to "L4T {version}" when no mapping is found.
+// Falls back to "L4T-{version}" when no mapping is found.
 func detectJetPackVersion() string {
 	data, err := os.ReadFile("/etc/nv_tegra_release")
 	if err != nil {
 		return ""
 	}
+	return jetPackVersionFromTegraRelease(data)
+}
+
+func jetPackVersionFromTegraRelease(data []byte) string {
 	m := tegraReleaseRe.FindSubmatch(data)
 	if len(m) < 3 {
 		return ""
@@ -211,7 +215,19 @@ func detectJetPackVersion() string {
 	major := string(m[1])
 	revision := string(m[2]) // e.g. "4.4"
 
-	// Use major.minor for the table key (e.g. "36.4").
+	// Some JetPack releases share an L4T major.minor family, so prefer the
+	// complete L4T version before falling back to the family mapping.
+	l4tVersion := major + "." + revision
+	jetpackExact := map[string]string{
+		"36.4.4": "6.2.1",
+		"36.4.3": "6.2",
+		"36.4.0": "6.1",
+	}
+	if jp, ok := jetpackExact[l4tVersion]; ok {
+		return jp
+	}
+
+	// Use major.minor for releases where the patch version is not significant.
 	minor := strings.SplitN(revision, ".", 2)[0]
 	key := major + "." + minor
 
@@ -219,7 +235,6 @@ func detectJetPackVersion() string {
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
 		"39.2": "7.2",
-		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
 		"35.5": "5.1.3",
@@ -239,7 +254,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T-" + major + "." + revision
+	return "L4T-" + l4tVersion
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)

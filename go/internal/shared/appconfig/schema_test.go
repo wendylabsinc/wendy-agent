@@ -76,6 +76,16 @@ func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
 	for k := range want {
 		t.Errorf("ros2RMWAliases key %q is missing from schema rmw enum", k)
 	}
+
+	// Discovery scope must stay aligned with the values accepted by Go validation.
+	discoveryScope, _ := ros2Props["discoveryScope"].(map[string]any)
+	if discoveryScope == nil {
+		t.Fatal("$defs.frameworks.ros2 missing discoveryScope property")
+	}
+	discoveryEnum, _ := discoveryScope["enum"].([]any)
+	if len(discoveryEnum) != 2 || discoveryEnum[0] != ROS2DiscoveryScopeApp || discoveryEnum[1] != ROS2DiscoveryScopeHost {
+		t.Errorf("schema discoveryScope enum = %v, want [%q %q]", discoveryEnum, ROS2DiscoveryScopeApp, ROS2DiscoveryScopeHost)
+	}
 }
 
 func TestSchemaJSON_HasResources(t *testing.T) {
