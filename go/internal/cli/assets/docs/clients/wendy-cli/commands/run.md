@@ -195,8 +195,6 @@ period.
 
 Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
 
-Agents that do not advertise the `chunk-deploy-env` featureset ignore environment variables sent on the chunk-diff path. When the app sets any, `wendy run` uses the registry push instead and says so; with `--chunking force` it reports an error rather than starting the container without them. Updating the agent (`wendy device update`) restores the fast path.
-
 ## Environment variables
 
 Environment variables reach the container from two places:

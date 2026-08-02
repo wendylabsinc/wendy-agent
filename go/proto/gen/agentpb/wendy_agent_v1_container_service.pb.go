@@ -732,9 +732,7 @@ type RunContainerLayersRequest struct {
 	ImageSignature []byte `protobuf:"bytes,10,opt,name=image_signature,json=imageSignature,proto3" json:"image_signature,omitempty"` // Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
 	// Additional environment variables to inject. Format: "KEY=VALUE".
 	// Same semantics as CreateContainerRequest.env, which this path forwards to.
-	// Agents that predate this field ignore it, so a caller with env to deliver
-	// must confirm the agent advertises the "chunk-deploy-env" featureset and
-	// otherwise fall back to the registry-push create path.
+	// Agents predating this field ignore it and start the container without it.
 	Env           []string `protobuf:"bytes,11,rep,name=env,proto3" json:"env,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

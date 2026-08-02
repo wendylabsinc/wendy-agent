@@ -18,7 +18,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/wendylabsinc/wendy/go/internal/shared/agentfeature"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -1550,16 +1549,4 @@ func TestRunContainer_ForwardsEnv(t *testing.T) {
 			t.Fatalf("env[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
 	}
-}
-
-// TestDetectFeatureset_AdvertisesChunkDeployEnv: clients gate the chunk deploy
-// path on this entry, so it must be advertised regardless of hardware.
-func TestDetectFeatureset_AdvertisesChunkDeployEnv(t *testing.T) {
-	features := detectFeatureset()
-	for _, f := range features {
-		if f == agentfeature.ChunkDeployEnv {
-			return
-		}
-	}
-	t.Fatalf("featureset %v does not contain %q", features, agentfeature.ChunkDeployEnv)
 }

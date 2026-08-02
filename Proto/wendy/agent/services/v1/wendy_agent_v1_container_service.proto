@@ -129,9 +129,7 @@ message RunContainerLayersRequest {
 
     // Additional environment variables to inject. Format: "KEY=VALUE".
     // Same semantics as CreateContainerRequest.env, which this path forwards to.
-    // Only honoured by agents advertising the "chunk-deploy-env" featureset;
-    // others ignore it, so a caller with env to deliver must check for that
-    // entry and fall back to the registry-push create path.
+    // Agents predating this field ignore it and start the container without it.
     repeated string env = 11;
 }
 

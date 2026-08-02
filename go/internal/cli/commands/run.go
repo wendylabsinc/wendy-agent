@@ -29,7 +29,6 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
-	"github.com/wendylabsinc/wendy/go/internal/shared/agentfeature"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -1503,6 +1502,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
+	// wendy.json env plus --env and fleet-injected env, appended last so they
+	// win on key clash. Feeds both the fingerprint and whichever deploy path runs.
 	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
@@ -1526,19 +1527,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
-	//
-	// An agent that does not advertise chunk-deploy-env ignores the env on this
-	// path, so a deploy carrying env takes the registry path instead.
-	chunkEligible := !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff
-	envNeedsRegistryPath := chunkEligible && envNeedsRegistryDeploy(versionResp, deployEnv)
-	if envNeedsRegistryPath {
-		if opts.chunking == chunkingForce {
-			return fmt.Errorf("this app sets environment variables (%s), which this agent cannot apply on the chunk-diff path, and --chunking=force disables the registry-push fallback: update the agent with `wendy device update`, or re-run without --chunking=force", envKeyList(deployEnv))
-		}
-		cliLogln("Agent predates env support on the fast deploy path; using registry push so %s is applied.", tui.Value(envKeyList(deployEnv)))
-	}
-	if chunkEligible && !envNeedsRegistryPath {
-		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
+		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
@@ -1627,25 +1617,6 @@ func validateEnvFlag(entries []string) error {
 		}
 	}
 	return nil
-}
-
-// envNeedsRegistryDeploy reports whether env has to travel on the
-// registry-push create path: agents that do not advertise chunk-deploy-env
-// ignore RunContainerLayersRequest.env, so using the chunk path there would
-// start the container without the env it asked for.
-func envNeedsRegistryDeploy(versionResp *agentpb.GetAgentVersionResponse, env []string) bool {
-	return len(env) > 0 && !agentVersionHasFeature(versionResp, agentfeature.ChunkDeployEnv)
-}
-
-// envKeyList renders the keys of "KEY=VALUE" entries for display, without the
-// values, which may be secrets.
-func envKeyList(entries []string) string {
-	keys := make([]string, 0, len(entries))
-	for _, kv := range entries {
-		k, _, _ := strings.Cut(kv, "=")
-		keys = append(keys, k)
-	}
-	return strings.Join(keys, ", ")
 }
 
 // expandEnvMap resolves one `env` map from wendy.json into expanded key/value
@@ -2180,7 +2151,7 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // uncompressed layer diff IDs it deployed, so the caller can record them in the
 // deploy fingerprint and later verify the device still holds this content before
 // skipping a rebuild (WDY-1824).
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) ([]string, error) {
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
 	tmp, err := os.MkdirTemp("", "wendy-oci-*")
 	if err != nil {
@@ -2242,10 +2213,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy:  resolveRestartPolicy(opts),
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
-		// Env from wendy.json plus any fleet-injected env, as on the registry
-		// path. Only agents advertising chunk-deploy-env apply it; the caller
-		// routes around this path otherwise.
-		Env: append(resolveServiceEnv(appCfg), opts.env...),
+		Env:            deployEnv,
 	})
 	if err != nil {
 		return nil, err
