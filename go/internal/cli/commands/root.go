@@ -112,6 +112,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.AddGroup(
 		&cobra.Group{ID: "develop", Title: "Develop & Deploy:"},
+		&cobra.Group{ID: "sandbox", Title: "Sandbox:"},
 		&cobra.Group{ID: "manage", Title: "Manage:"},
 		&cobra.Group{ID: "cloud", Title: "Cloud:"},
 		&cobra.Group{ID: "settings", Title: "Settings:"},
@@ -129,6 +130,10 @@ func NewRootCmd() *cobra.Command {
 	// command can only be attached to one parent.
 	installCmd := newOSInstallCmd()
 	installCmd.GroupID = "develop"
+
+	// Sandbox
+	sandboxCmd := newSandboxCmd()
+	sandboxCmd.GroupID = "sandbox"
 
 	// Manage
 	projectCmd := newProjectCmd()
@@ -214,6 +219,8 @@ func NewRootCmd() *cobra.Command {
 		runCmd,
 		appCmd,
 		installCmd,
+		// Sandbox
+		sandboxCmd,
 		// Manage
 		projectCmd,
 		deviceCmd,
