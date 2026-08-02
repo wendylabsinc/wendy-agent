@@ -885,6 +885,39 @@ func humanReadableDeviceType(dt string) string {
 	return dt
 }
 
+// humanReadableOSType builds a Type label from an os/architecture pair for
+// machines with no board-specific device type (e.g. Mac agents, generic
+// Linux hosts), falling back to whatever information is present.
+func humanReadableOSType(os, arch string) string {
+	os = strings.ToLower(strings.TrimSpace(os))
+	arch = humanReadableArch(arch)
+
+	var label string
+	switch os {
+	case "":
+		return ""
+	case "darwin", "macos":
+		label = "macOS"
+	default:
+		label = "Linux"
+	}
+	if arch != "" {
+		return fmt.Sprintf("%s (%s)", label, arch)
+	}
+	return label
+}
+
+func humanReadableArch(arch string) string {
+	switch strings.ToLower(strings.TrimSpace(arch)) {
+	case "amd64", "x86_64":
+		return "x86_64"
+	case "arm64", "aarch64":
+		return "arm64"
+	default:
+		return ""
+	}
+}
+
 // discoverNoAccessHint explains a blank version column on a provisioned
 // device: the metadata probe failed because this CLI has no certificate the
 // device accepts (unprovisioned CLI, or logged into a different account).
