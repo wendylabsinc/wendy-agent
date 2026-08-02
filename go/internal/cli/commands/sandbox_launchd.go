@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
+	"time"
 )
 
 const sandboxLaunchAgentLabel = "sh.wendy.sandbox-control-plane"
@@ -20,7 +22,12 @@ var (
 )
 
 type sandboxPlistParams struct {
-	Label         string
+	Label string
+	// NodePath is the absolute path to the node binary, resolved by the installer
+	// via exec.LookPath. launchd runs with a minimal environment, so relying on a
+	// PATH search here would break every version-manager install (nvm/fnm/asdf/
+	// volta) that isn't under a Homebrew prefix.
+	NodePath      string
 	WorkDir       string
 	LogPath       string
 	Port          string
@@ -37,8 +44,7 @@ const sandboxPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 	<string>{{.Label}}</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/bin/env</string>
-		<string>node</string>
+		<string>{{.NodePath}}</string>
 		<string>dist/index.js</string>
 	</array>
 	<key>WorkingDirectory</key>
@@ -81,6 +87,7 @@ func renderSandboxPlist(p sandboxPlistParams) (string, error) {
 	}
 	p.Label, p.WorkDir, p.LogPath, p.Port = esc(p.Label), esc(p.WorkDir), esc(p.LogPath), esc(p.Port)
 	p.AdminUser, p.AdminPassword, p.DataDir = esc(p.AdminUser), esc(p.AdminPassword), esc(p.DataDir)
+	p.NodePath = esc(p.NodePath)
 
 	tmpl, err := template.New("sandbox-plist").Parse(sandboxPlistTemplate)
 	if err != nil {
@@ -142,4 +149,18 @@ func sandboxLaunchAgentStatus(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("launchctl print %s: %w", target, err)
 	}
 	return true, nil
+}
+
+// sandboxPortIsListening reports whether something accepts TCP connections on
+// the given local port. Being loaded in launchd is not the same as being alive:
+// with KeepAlive: true a crash-looping control-plane stays registered forever,
+// so this is the only signal that distinguishes "running" from "respawning".
+func sandboxPortIsListening(ctx context.Context, port string) bool {
+	d := net.Dialer{Timeout: 200 * time.Millisecond}
+	conn, err := d.DialContext(ctx, "tcp", "localhost:"+port)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }

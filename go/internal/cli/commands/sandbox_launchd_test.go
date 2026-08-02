@@ -9,7 +9,8 @@ import (
 
 func TestRenderSandboxPlist_SubstitutesAllFields(t *testing.T) {
 	xml, err := renderSandboxPlist(sandboxPlistParams{
-		Label: "sh.wendy.sandbox-control-plane", WorkDir: "/tmp/cp", LogPath: "/tmp/cp.log",
+		Label: "sh.wendy.sandbox-control-plane", NodePath: "/Users/me/.nvm/versions/node/v22.0.0/bin/node",
+		WorkDir: "/tmp/cp", LogPath: "/tmp/cp.log",
 		Port: "8787", AdminUser: "admin", AdminPassword: "s3cr3t", DataDir: "/tmp/cp-data",
 	})
 	if err != nil {
@@ -17,6 +18,8 @@ func TestRenderSandboxPlist_SubstitutesAllFields(t *testing.T) {
 	}
 	for _, want := range []string{
 		"<string>sh.wendy.sandbox-control-plane</string>",
+		"<string>/Users/me/.nvm/versions/node/v22.0.0/bin/node</string>",
+		"<string>dist/index.js</string>",
 		"<string>/tmp/cp</string>",
 		"<string>/tmp/cp.log</string>",
 		"<string>8787</string>",
@@ -30,11 +33,17 @@ func TestRenderSandboxPlist_SubstitutesAllFields(t *testing.T) {
 			t.Errorf("rendered plist missing %q\nfull output:\n%s", want, xml)
 		}
 	}
+	// launchd must invoke node by absolute path — a PATH search would miss
+	// nvm/fnm/asdf/volta installs entirely.
+	if strings.Contains(xml, "/usr/bin/env") {
+		t.Errorf("rendered plist still shells out via /usr/bin/env instead of the resolved node path\nfull output:\n%s", xml)
+	}
 }
 
 func TestRenderSandboxPlist_EscapesXMLSpecialCharacters(t *testing.T) {
 	xml, err := renderSandboxPlist(sandboxPlistParams{
-		Label: "sh.wendy.sandbox-control-plane", WorkDir: "/tmp/cp", LogPath: "/tmp/cp.log",
+		Label: "sh.wendy.sandbox-control-plane", NodePath: `/opt/no&de/bin/node`,
+		WorkDir: "/tmp/cp", LogPath: "/tmp/cp.log",
 		Port: "8787", AdminUser: "admin", AdminPassword: `a&b<c>d`, DataDir: "/tmp/cp-data",
 	})
 	if err != nil {
@@ -45,6 +54,9 @@ func TestRenderSandboxPlist_EscapesXMLSpecialCharacters(t *testing.T) {
 	}
 	if !strings.Contains(xml, "a&amp;b&lt;c&gt;d") {
 		t.Errorf("rendered plist missing escaped password\nfull output:\n%s", xml)
+	}
+	if !strings.Contains(xml, "/opt/no&amp;de/bin/node") {
+		t.Errorf("rendered plist missing escaped node path\nfull output:\n%s", xml)
 	}
 }
 
