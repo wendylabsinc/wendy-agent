@@ -1,0 +1,16 @@
+{
+    "appId": "sh.wendy.examples.helloaudio",
+    "version": "1.0.0",
+    "platform": "linux",
+    "language": "python",
+    "entitlements": [
+        {
+            "type": "audio"
+        }
+    ],
+    "python": {
+        "container": {
+            "sourceRoot": "/app"
+        }
+    }
+}
