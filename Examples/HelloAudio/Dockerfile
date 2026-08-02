@@ -3,6 +3,7 @@ FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     alsa-utils \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,7 +13,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir -r requirements.txt
 
 COPY app.py index.html ./
-COPY assets/ ./assets/
+
+# Fetched at build time instead of committed to the repo (public domain, CC0
+# via Wikimedia Commons — see README's "Sound attribution" section).
+RUN mkdir -p assets && \
+    curl -fsSL -o assets/sleigh-bells.wav \
+    https://upload.wikimedia.org/wikipedia/commons/c/ce/Sleigh_bells.wav
 
 ENV PYTHONUNBUFFERED=1
 

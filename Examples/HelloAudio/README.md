@@ -24,6 +24,8 @@ This builds the container, deploys it to your default device, and opens
 
 ```bash
 pip install -r requirements.txt
+mkdir -p assets && curl -fsSL -o assets/sleigh-bells.wav \
+  https://upload.wikimedia.org/wikipedia/commons/c/ce/Sleigh_bells.wav
 python app.py
 ```
 
@@ -31,6 +33,7 @@ Requires ALSA (`aplay`) and a working audio output device on the host.
 
 ## Sound attribution
 
-`assets/sleigh-bells.wav` is ["Sleigh bells.wav"](https://commons.wikimedia.org/wiki/File:Sleigh_bells.wav)
+`assets/sleigh-bells.wav` (fetched at build/run time, not committed to the
+repo) is ["Sleigh bells.wav"](https://commons.wikimedia.org/wiki/File:Sleigh_bells.wav)
 by The Midnite Wolf, via Wikimedia Commons, dedicated to the public domain
 under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
