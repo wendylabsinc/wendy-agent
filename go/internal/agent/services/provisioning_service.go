@@ -169,7 +169,8 @@ func (s *ProvisioningService) StartProvisioning(ctx context.Context, req *agentp
 	// as both a TLS client (to the cloud) and a TLS server (agent gRPC and tunnel
 	// endpoints), so request both EKUs.
 	commonName := fmt.Sprintf("sh/wendy/%d/%d", req.GetOrganizationId(), req.GetAssetId())
-	csrPEM, err := certs.GenerateCSR(keyPEM, commonName,
+	identityURN := certs.AssetURN(req.GetOrganizationId(), req.GetAssetId())
+	csrPEM, err := certs.GenerateCSR(keyPEM, commonName, identityURN,
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to generate CSR: %v", err)
