@@ -485,8 +485,8 @@ for test_name in "${TESTS[@]}"; do
                 return 1
             fi
             if ! echo "$out" | jq -e --arg a "$app_id" \
-                '(.containers // []) | map(.name) | index($a) != null' >/dev/null 2>&1; then
-                echo "deployed app '$app_id' not found in containers[]: $out"
+				'(.containers // []) | any(.name == $a and .state == "running")' >/dev/null 2>&1; then
+				echo "running app '$app_id' with populated state not found in containers[]: $out"
                 return 1
             fi
             return 0
