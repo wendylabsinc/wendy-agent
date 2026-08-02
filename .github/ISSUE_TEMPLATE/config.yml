@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Developer documentation
+    url: https://docs.wendy.dev/latest
+    about: Guides for installing WendyOS, the wendy CLI, and deploying apps.
