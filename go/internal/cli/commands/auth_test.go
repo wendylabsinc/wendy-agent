@@ -11,6 +11,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
 func testEnrollmentToken(t *testing.T, payload string) string {
@@ -36,8 +38,23 @@ func TestEnrollmentTokenIdentity_UserEnrollment(t *testing.T) {
 func TestEnrollmentTokenIdentity_UserEnrollmentMissingOrg(t *testing.T) {
 	token := testEnrollmentToken(t, `{"type":"user_enrollment","user_id":"user-123"}`)
 
+	cn, urn, err := enrollmentTokenIdentity(token)
+	if err != nil {
+		t.Fatalf("enrollmentTokenIdentity() error = %v, want nil (legacy org-less token should keep login working)", err)
+	}
+	if cn != "wendy/user/user-123" {
+		t.Fatalf("enrollmentTokenIdentity() cn = %q, want %q", cn, "wendy/user/user-123")
+	}
+	if urn != "" {
+		t.Fatalf("enrollmentTokenIdentity() urn = %q, want empty (CN-only for org-less token)", urn)
+	}
+}
+
+func TestEnrollmentTokenIdentity_UserEnrollmentUserIDContainsColon(t *testing.T) {
+	token := testEnrollmentToken(t, `{"type":"user_enrollment","org_id":1,"user_id":"user:123"}`)
+
 	if _, _, err := enrollmentTokenIdentity(token); err == nil {
-		t.Fatal("expected error for user token missing org_id")
+		t.Fatal("expected error for user_id containing ':'")
 	}
 }
 
@@ -59,6 +76,27 @@ func TestEnrollmentTokenIdentity_AssetEnrollment(t *testing.T) {
 func TestEnrollmentTokenIdentity_InvalidToken(t *testing.T) {
 	if _, _, err := enrollmentTokenIdentity("not-a-jwt"); err == nil {
 		t.Fatal("expected invalid token error")
+	}
+}
+
+func TestStoredCertIdentityURN_User(t *testing.T) {
+	cert := config.CertificateInfo{OrganizationID: 1, UserID: "user-123"}
+	if urn := storedCertIdentityURN(cert); urn != "urn:wendy:org:1:user:user-123" {
+		t.Fatalf("storedCertIdentityURN() = %q, want %q", urn, "urn:wendy:org:1:user:user-123")
+	}
+}
+
+func TestStoredCertIdentityURN_UserIDContainsColon(t *testing.T) {
+	cert := config.CertificateInfo{OrganizationID: 1, UserID: "user:123"}
+	if urn := storedCertIdentityURN(cert); urn != "" {
+		t.Fatalf("storedCertIdentityURN() = %q, want empty (CN-only refresh for unparseable user ID)", urn)
+	}
+}
+
+func TestStoredCertIdentityURN_Asset(t *testing.T) {
+	cert := config.CertificateInfo{OrganizationID: 7, AssetID: 42}
+	if urn := storedCertIdentityURN(cert); urn != "urn:wendy:org:7:asset:42" {
+		t.Fatalf("storedCertIdentityURN() = %q, want %q", urn, "urn:wendy:org:7:asset:42")
 	}
 }
 

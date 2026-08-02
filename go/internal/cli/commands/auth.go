@@ -309,6 +309,12 @@ func enrollmentTokenIdentity(token string) (commonName, identityURN string, err 
 		if claims.UserID == "" {
 			return "", "", fmt.Errorf("user enrollment token missing user_id")
 		}
+		if strings.Contains(claims.UserID, ":") {
+			// A ':' in the user ID would make the URN unreadable for every
+			// identity parser (they expect exactly 6 colon-separated parts),
+			// yielding a cert that cannot authenticate anywhere.
+			return "", "", fmt.Errorf("user_id %q contains ':', cannot build identity URN", claims.UserID)
+		}
 		cn := fmt.Sprintf("wendy/user/%s", claims.UserID)
 		if claims.OrganizationID == 0 {
 			// Legacy token without an org claim: keep login working, CN only.
@@ -505,6 +511,11 @@ func storedCertIdentityURN(cert config.CertificateInfo) string {
 		return ""
 	}
 	if cert.UserID != "" {
+		if strings.Contains(cert.UserID, ":") {
+			// A ':' would make the URN unreadable for every identity parser;
+			// refresh CN-only rather than minting a cert nothing can parse.
+			return ""
+		}
 		return certs.UserURN(int32(cert.OrganizationID), cert.UserID)
 	}
 	if cert.AssetID > 0 {
