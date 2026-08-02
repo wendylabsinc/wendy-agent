@@ -544,10 +544,14 @@ func (m *BlueZManager) retryConnect(ctx context.Context, delay time.Duration, at
 		}
 		m.logger.Info("Retrying transient Bluetooth connect failure",
 			zap.String("dbus_error", name), zap.Int("attempt", i+1))
+		timer := time.NewTimer(delay)
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 		case <-ctx.Done():
-			return err
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
 		}
 	}
 	return err
