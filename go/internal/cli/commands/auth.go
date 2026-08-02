@@ -309,11 +309,12 @@ func enrollmentTokenIdentity(token string) (commonName, identityURN string, err 
 		if claims.UserID == "" {
 			return "", "", fmt.Errorf("user enrollment token missing user_id")
 		}
+		cn := fmt.Sprintf("wendy/user/%s", claims.UserID)
 		if claims.OrganizationID == 0 {
-			return "", "", fmt.Errorf("user enrollment token missing org_id")
+			// Legacy token without an org claim: keep login working, CN only.
+			return cn, "", nil
 		}
-		return fmt.Sprintf("wendy/user/%s", claims.UserID),
-			certs.UserURN(claims.OrganizationID, claims.UserID), nil
+		return cn, certs.UserURN(claims.OrganizationID, claims.UserID), nil
 	case "asset_enrollment":
 		if claims.OrganizationID == 0 || claims.AssetID == 0 {
 			return "", "", fmt.Errorf("asset enrollment token missing org_id or asset_id")
