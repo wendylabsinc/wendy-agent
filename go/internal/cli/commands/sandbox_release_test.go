@@ -86,20 +86,44 @@ func TestExtractControlPlaneTarGz_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
-func TestFindControlPlaneAsset_ReturnsMatchingAssetURL(t *testing.T) {
+// The API asset URL — not browser_download_url — is what works for a private
+// repo, so findControlPlaneAsset must return the former.
+func TestFindControlPlaneAsset_ReturnsAPIAssetURLNotBrowserURL(t *testing.T) {
 	rel := &sandboxRelease{
 		TagName: "control-plane-latest",
 		Assets: []sandboxReleaseAsset{
-			{Name: "other-file.txt", BrowserDownloadURL: "https://example.com/other"},
-			{Name: "control-plane.tar.gz", BrowserDownloadURL: "https://example.com/control-plane.tar.gz"},
+			{
+				Name:               "other-file.txt",
+				URL:                "https://api.github.com/repos/wendylabsinc/wendy-sandbox/releases/assets/1",
+				BrowserDownloadURL: "https://example.com/other",
+			},
+			{
+				Name:               "control-plane.tar.gz",
+				URL:                "https://api.github.com/repos/wendylabsinc/wendy-sandbox/releases/assets/2",
+				BrowserDownloadURL: "https://example.com/control-plane.tar.gz",
+			},
 		},
 	}
 	url, err := findControlPlaneAsset(rel)
 	if err != nil {
 		t.Fatalf("findControlPlaneAsset: %v", err)
 	}
-	if url != "https://example.com/control-plane.tar.gz" {
-		t.Errorf("url = %q", url)
+	if url != "https://api.github.com/repos/wendylabsinc/wendy-sandbox/releases/assets/2" {
+		t.Errorf("url = %q; want the api.github.com asset URL, not browser_download_url", url)
+	}
+}
+
+// The asset API URL must be accepted by newGitHubAPIGetRequest's host check, or
+// downloadAndExtractControlPlaneRelease can never authenticate.
+func TestGitHubAPIAssetURLIsAcceptedByRequestBuilder(t *testing.T) {
+	const assetURL = "https://api.github.com/repos/wendylabsinc/wendy-sandbox/releases/assets/42"
+	req, err := newGitHubAPIGetRequest(assetURL)
+	if err != nil {
+		t.Fatalf("newGitHubAPIGetRequest(%q): %v", assetURL, err)
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	if got := req.Header.Get("Accept"); got != "application/octet-stream" {
+		t.Errorf("Accept = %q, want application/octet-stream", got)
 	}
 }
 

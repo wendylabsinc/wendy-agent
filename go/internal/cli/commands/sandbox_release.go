@@ -21,7 +21,14 @@ const (
 )
 
 type sandboxReleaseAsset struct {
-	Name               string `json:"name"`
+	Name string `json:"name"`
+	// URL is the api.github.com asset endpoint
+	// (https://api.github.com/repos/{owner}/{repo}/releases/assets/{id}). This is
+	// the only download URL that works for a private repo — see
+	// findControlPlaneAsset.
+	URL string `json:"url"`
+	// BrowserDownloadURL is the objects.githubusercontent.com URL. Kept for error
+	// messages/diagnostics only; it cannot be fetched for a private repo.
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
@@ -34,6 +41,12 @@ type sandboxRelease struct {
 // tags endpoint, not /releases/latest — that endpoint excludes prereleases,
 // and control-plane-latest is published as one (see control-plane-release.yml
 // in the wendylabsinc/wendy-sandbox repo).
+//
+// wendylabsinc/wendy-sandbox is a private repo, so every request here (metadata
+// and asset download alike) must carry the GITHUB_TOKEN that
+// newGitHubAPIGetRequest attaches. GitHub masks private-repo permission errors
+// as 404, so a missing token looks identical to a missing tag — hence the
+// combined error message below.
 func fetchControlPlaneRelease(ctx context.Context) (*sandboxRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", controlPlaneReleaseRepo, controlPlaneReleaseTag)
 	req, err := newGitHubAPIGetRequest(url)
@@ -48,7 +61,10 @@ func fetchControlPlaneRelease(ctx context.Context) (*sandboxRelease, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetching control-plane release: unexpected status %d (tag %s not published yet?)", resp.StatusCode, controlPlaneReleaseTag)
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return nil, fmt.Errorf("fetching control-plane release: status %d — either the %s tag isn't published yet, or GITHUB_TOKEN is missing/lacks access to the private %s repo", resp.StatusCode, controlPlaneReleaseTag, controlPlaneReleaseRepo)
+		}
+		return nil, fmt.Errorf("fetching control-plane release: unexpected status %d", resp.StatusCode)
 	}
 	var rel sandboxRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
@@ -57,23 +73,37 @@ func fetchControlPlaneRelease(ctx context.Context) (*sandboxRelease, error) {
 	return &rel, nil
 }
 
+// findControlPlaneAsset returns the asset's API URL
+// (https://api.github.com/repos/{owner}/{repo}/releases/assets/{id}), NOT its
+// browser_download_url. Do not "simplify" this back to browser_download_url:
+// wendylabsinc/wendy-sandbox is private, and its browser download URL requires a
+// signed short-lived redirect that an API token cannot mint, so an
+// unauthenticated fetch just 404s. The asset API URL, requested with
+// `Accept: application/octet-stream` and the GITHUB_TOKEN Authorization header,
+// is GitHub's documented path for downloading a private release asset.
 func findControlPlaneAsset(rel *sandboxRelease) (string, error) {
 	for _, a := range rel.Assets {
 		if a.Name == controlPlaneReleaseAsset {
-			return a.BrowserDownloadURL, nil
+			return a.URL, nil
 		}
 	}
 	return "", fmt.Errorf("control-plane release %s has no %s asset", rel.TagName, controlPlaneReleaseAsset)
 }
 
 // downloadAndExtractControlPlaneRelease streams the release tarball straight
-// into destDir without buffering the whole download in memory.
-func downloadAndExtractControlPlaneRelease(ctx context.Context, downloadURL, destDir string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+// into destDir without buffering the whole download in memory. assetAPIURL must
+// be the api.github.com asset endpoint (see findControlPlaneAsset) so the
+// request carries GITHUB_TOKEN — required for the private source repo.
+func downloadAndExtractControlPlaneRelease(ctx context.Context, assetAPIURL, destDir string) error {
+	req, err := newGitHubAPIGetRequest(assetAPIURL)
 	if err != nil {
 		return fmt.Errorf("building control-plane download request: %w", err)
 	}
-	client := &http.Client{Timeout: 5 * time.Minute}
+	// Overrides the JSON Accept newGitHubAPIGetRequest sets: this endpoint returns
+	// the asset bytes only when asked for octet-stream.
+	req.Header.Set("Accept", "application/octet-stream")
+	req = req.WithContext(ctx)
+	client := newGitHubAPIClient(5 * time.Minute)
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading control-plane release: %w", err)
