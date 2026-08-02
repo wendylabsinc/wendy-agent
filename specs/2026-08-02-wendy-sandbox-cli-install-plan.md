@@ -969,11 +969,13 @@ Expected: install succeeds, the `curl` returns a 200/401 (proving something real
 - [ ] **Step 2: status / stop / start**
 
 ```bash
-wendy sandbox status   # reports loaded
+wendy sandbox status   # "control-plane is installed and running" (loaded AND port 8787 answers)
 wendy sandbox stop
-wendy sandbox status   # still "loaded" (launchd keeps the registration even when the process is down) — confirm via `curl` above failing instead
+wendy sandbox status   # "control-plane is installed but stopped; run: wendy sandbox start" — the plist stays on disk, the job is booted out of launchd
+wendy sandbox stop     # idempotent: "control-plane already stopped."
 wendy sandbox start
 ```
+Note: `status` reports three states — not installed (no plist), installed but stopped (plist present, not loaded in launchd), and running (loaded *and* answering on port 8787). A loaded job that doesn't answer on 8787 is reported as possibly crash-looping, not as running.
 
 - [ ] **Step 3: Re-run install (idempotency)**
 
