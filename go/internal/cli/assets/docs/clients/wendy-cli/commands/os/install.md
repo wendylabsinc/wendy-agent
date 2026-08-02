@@ -94,6 +94,8 @@ Firmware versions are served from the same GCS manifest used for WendyOS images.
 
 With `--nightly`, `latest_nightly` is used instead of `latest`.
 
+If the detected chip ID is not present in the manifest (for example, `esp32s31` or other unsupported variants), the CLI returns an error: `fetching firmware: chip <chip> not found in manifest`. Wendy Lite currently supports only `esp32c5` and `esp32c6`; the interactive device picker does not offer other ESP32 chips.
+
 The downloaded `.bin` is a merged firmware image (same format as the CI artifact `wendy_mcu_<chip>.bin`) that covers the full flash from offset 0.
 
 ### 3. Serial flash protocol
@@ -191,6 +193,10 @@ A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI p
 
 Every failure prints the path of the full flash log (`thor-flash-<timestamp>.log`), which contains the complete tooling output.
 
+## Linux Desktop / Headless Mac path
+
+Choosing **Linux Desktop** or **Headless Mac** (or `--device-type linux-desktop` / `--device-type headless-mac`) does not write a drive. The command prints the `agent.sh` one-liner from the [Linux installation guide](/docs/installation/linux) (the script auto-detects the target platform). When `--pre-enroll` is supplied and a valid auth session exists, a 1-hour enrollment token is embedded in the command; the agent self-enrolls on first startup without a separate `wendy device enroll` step. Run `wendy discover` afterwards to find the device.
+
 ### Privileges
 
 Thor flashing talks to the board's USB recovery device directly (an in-process libusb handle), so — unlike the SD/NVMe disk-image path, which shells out to `sudo` only for the disk write — the **whole command must run as root**.
@@ -248,7 +254,8 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--wifi` | — | Pre-configure one WiFi network; repeatable |
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
-| `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
+| `--pre-enroll` | auto | Pre-enroll with Wendy Cloud. For WendyOS/Jetson targets, embeds a certificate during imaging. For Linux Desktop / Headless Mac, mints a short-lived token printed with the `agent.sh` one-liner. |
+| `--cloud-grpc` | auto | Cloud gRPC endpoint of the auth session to use for pre-enrollment (applies to both drive imaging and Linux Desktop / Headless Mac); defaults to the session set via `wendy auth use`. |
 | `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 

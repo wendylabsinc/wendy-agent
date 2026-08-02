@@ -388,6 +388,14 @@ jobs:
           with open(review_file, 'w', encoding='utf-8') as f:
               f.write('\n'.join(lines).rstrip() + '\n')
           print(f'Review written to {review_file}')
+
+          has_blocker = any(finding['severity'] == 'blocker' for finding in findings)
+          print(f'Open blocker findings: {has_blocker}')
+
+          github_env = os.environ.get('GITHUB_ENV', '')
+          if github_env and has_blocker:
+              with open(github_env, 'a', encoding='utf-8') as genv:
+                  genv.write('HAS_DOCS_BLOCKER=true\n')
           PYEOF
 
       - name: Prepare docs review comment
@@ -563,3 +571,9 @@ jobs:
               )
               print(f'Created docs review comment {created["id"]}')
           PYEOF
+
+      - name: Fail on open docs blockers
+        if: env.HAS_DOCS_BLOCKER == 'true'
+        run: |
+          echo "Docs review found docs that are directly wrong or missing for behaviour changed by this PR. Address them or push a follow-up commit before merging."
+          exit 1
