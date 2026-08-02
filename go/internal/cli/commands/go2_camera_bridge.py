@@ -2,6 +2,7 @@
 """Publish JPEGs from Unitree's official Go2 camera client into ROS 2."""
 
 import argparse
+import io
 import os
 import struct
 import subprocess
@@ -57,7 +58,25 @@ def capture(interface: str, output_fd: int) -> None:
             output.write(jpeg)
 
 
-def publish(interface: str) -> None:
+def transcode_jpeg(jpeg: bytes, quality: int, max_width: int) -> bytes:
+    from PIL import Image, ImageFile
+
+    # The Go2 occasionally returns a valid JPEG with a few trailing bytes
+    # missing. Pillow can still decode these frames safely.
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+    with Image.open(io.BytesIO(jpeg)) as decoded:
+        image = decoded.convert("RGB")
+        if max_width > 0 and image.width > max_width:
+            height = max(1, round(image.height * max_width / image.width))
+            resampling = getattr(Image, "Resampling", Image)
+            image = image.resize((max_width, height), resampling.BILINEAR)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=quality, optimize=False)
+        return output.getvalue()
+
+
+def publish(interface: str, fps: float, jpeg_quality: int, max_width: int) -> None:
     import rclpy
     from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import CompressedImage
@@ -96,6 +115,7 @@ def publish(interface: str) -> None:
 
     logged_first_frame = False
     last_published_at = 0.0
+    next_transcode_warning_at = 0.0
     try:
         while rclpy.ok():
             size = struct.unpack("<I", read_exact(read_fd, 4))[0]
@@ -104,9 +124,17 @@ def publish(interface: str) -> None:
 
             jpeg = read_exact(read_fd, size)
             now = time.monotonic()
-            # A 720p JPEG is roughly 200 KB on this Go2. Ten FPS keeps the
-            # preview responsive while bounding it to roughly 2 MB/s.
-            if now - last_published_at < 1.0 / 10.0:
+            if now - last_published_at < 1.0 / fps:
+                continue
+
+            try:
+                jpeg = transcode_jpeg(jpeg, jpeg_quality, max_width)
+            except Exception as exc:
+                if now >= next_transcode_warning_at:
+                    node.get_logger().warning(
+                        f"Could not transcode Go2 JPEG; dropping frame: {exc}"
+                    )
+                    next_transcode_warning_at = now + 30.0
                 continue
 
             message = CompressedImage()
@@ -120,7 +148,9 @@ def publish(interface: str) -> None:
 
             if not logged_first_frame:
                 node.get_logger().info(
-                    "Publishing Go2 JPEG frames on /front_camera/image/compressed"
+                    "Publishing Go2 JPEG frames on /front_camera/image/compressed "
+                    f"at up to {fps:g} FPS, quality {jpeg_quality}, "
+                    f"max width {max_width or 'source'}"
                 )
                 logged_first_frame = True
     finally:
@@ -140,6 +170,9 @@ def main() -> None:
     parser.add_argument("--interface", required=True)
     parser.add_argument("--capture", action="store_true")
     parser.add_argument("--output-fd", type=int)
+    parser.add_argument("--fps", type=float, default=8.0)
+    parser.add_argument("--jpeg-quality", type=int, default=65)
+    parser.add_argument("--max-width", type=int, default=960)
     args = parser.parse_args()
 
     if args.capture:
@@ -147,7 +180,7 @@ def main() -> None:
             parser.error("--capture requires --output-fd")
         capture(args.interface, args.output_fd)
     else:
-        publish(args.interface)
+        publish(args.interface, args.fps, args.jpeg_quality, args.max_width)
 
 
 if __name__ == "__main__":

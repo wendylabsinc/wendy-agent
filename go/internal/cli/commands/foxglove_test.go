@@ -212,12 +212,14 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		"https://github.com/unitreerobotics/unitree_sdk2_python.git",
 		"python3 /tmp/unitree_sdk2_to_ros.py",
 		"python3 /opt/wendy/go2_camera_bridge.py --interface enP8p1s0",
+		"--fps 8 --jpeg-quality 65 --max-width 960",
 		"python3 /opt/wendy/hesai_preview_bridge.py",
 		"CYCLONEDDS_HOME=/opt/cyclonedds",
 		"/opt/ros/humble/lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)",
 		"pip3 install --no-cache-dir cyclonedds==0.10.2",
 		"pip3 install --no-cache-dir --no-deps .",
 		"ros-humble-grid-map-msgs",
+		"python3-pil",
 		"--base-paths /tmp/unitree_ros2/cyclonedds_ws/src/unitree",
 		"--packages-select unitree_api unitree_go unitree_hg",
 		"--install-base /opt/unitree_msgs",
@@ -250,7 +252,12 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 		"next_warning_at = now + 30.0",
 		"/front_camera/image/compressed",
 		`message.format = "jpeg"`,
-		"1.0 / 10.0",
+		"1.0 / fps",
+		"transcode_jpeg",
+		"ImageFile.LOAD_TRUNCATED_IMAGES = True",
+		"Could not transcode Go2 JPEG; dropping frame",
+		`image.resize((max_width, height), resampling.BILINEAR)`,
+		`quality=quality`,
 	} {
 		if !strings.Contains(string(cameraBridge), want) {
 			t.Fatalf("Go2 camera bridge missing %q", want)
@@ -271,6 +278,39 @@ func TestWriteFoxgloveAppUnitreeMessages(t *testing.T) {
 	} {
 		if !strings.Contains(string(hesaiBridge), want) {
 			t.Fatalf("Hesai preview bridge missing %q", want)
+		}
+	}
+}
+
+func TestWriteFoxgloveAppCustomCameraEncoding(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{
+		domain:            0,
+		rmw:               "rmw_cyclonedds_cpp",
+		distro:            "humble",
+		iface:             "enP8p1s0",
+		unitree:           true,
+		cameraFPS:         6,
+		cameraJPEGQuality: 50,
+		cameraMaxWidth:    640,
+	}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if !strings.Contains(string(df), "--fps 6 --jpeg-quality 50 --max-width 640") {
+		t.Fatalf("custom camera encoding missing from Dockerfile:\n%s", df)
+	}
+}
+
+func TestWriteFoxgloveAppRejectsInvalidCameraEncoding(t *testing.T) {
+	for _, opts := range []foxgloveServeOpts{
+		{cameraFPS: 31},
+		{cameraJPEGQuality: 101},
+		{cameraMaxWidth: 100},
+	} {
+		if err := writeFoxgloveApp(t.TempDir(), opts); err == nil {
+			t.Fatalf("expected invalid camera encoding options to fail: %+v", opts)
 		}
 	}
 }

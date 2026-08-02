@@ -27,6 +27,12 @@ const foxgloveBridgePort = 8765
 // reaches it through WendyTunnelService; Cloud mode uses the broker tunnel.
 const foxgloveBridgeAddress = "127.0.0.1"
 
+const (
+	foxgloveDefaultCameraFPS         = 8.0
+	foxgloveDefaultCameraJPEGQuality = 65
+	foxgloveDefaultCameraMaxWidth    = 960
+)
+
 // foxgloveAppID is the appId of the generated foxglove_bridge app; used both in
 // the generated wendy.json and to remove a prior instance before redeploy.
 const foxgloveAppID = "sh.wendy.foxglovebridge"
@@ -104,14 +110,17 @@ func newFoxgloveCmd() *cobra.Command {
 
 func newFoxgloveServeCmd() *cobra.Command {
 	var (
-		port    int
-		domain  int
-		rmw     string
-		distro  string
-		iface   string
-		topics  []string
-		all     bool
-		backlog int
+		port              int
+		domain            int
+		rmw               string
+		distro            string
+		iface             string
+		topics            []string
+		all               bool
+		backlog           int
+		cameraFPS         float64
+		cameraJPEGQuality int
+		cameraMaxWidth    int
 	)
 
 	cmd := &cobra.Command{
@@ -136,21 +145,33 @@ either 'wendy device tunnel' or the authenticated Cloud tunnel.`,
 			if cmd.Flags().Changed("message-backlog") && backlog < 1 {
 				return fmt.Errorf("--message-backlog must be at least 1")
 			}
+			if cmd.Flags().Changed("camera-fps") && cameraFPS <= 0 {
+				return fmt.Errorf("--camera-fps must be greater than 0")
+			}
+			if cmd.Flags().Changed("camera-jpeg-quality") && cameraJPEGQuality < 1 {
+				return fmt.Errorf("--camera-jpeg-quality must be between 1 and 100")
+			}
+			if cmd.Flags().Changed("camera-max-width") && cameraMaxWidth < 160 {
+				return fmt.Errorf("--camera-max-width must be at least 160")
+			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			cloudCfg, cloud := cloudDeviceConfigFromContext(ctx)
 			return foxgloveServe(ctx, foxgloveServeOpts{
-				localPort: port,
-				domain:    domain,
-				rmw:       rmw,
-				distro:    distro,
-				device:    deviceFlag,
-				iface:     iface,
-				cloud:     cloud,
-				cloudCfg:  cloudCfg,
-				topics:    topics,
-				allTopics: all,
-				backlog:   backlog,
+				localPort:         port,
+				domain:            domain,
+				rmw:               rmw,
+				distro:            distro,
+				device:            deviceFlag,
+				iface:             iface,
+				cloud:             cloud,
+				cloudCfg:          cloudCfg,
+				topics:            topics,
+				allTopics:         all,
+				backlog:           backlog,
+				cameraFPS:         cameraFPS,
+				cameraJPEGQuality: cameraJPEGQuality,
+				cameraMaxWidth:    cameraMaxWidth,
 			})
 		},
 	}
@@ -163,23 +184,29 @@ either 'wendy device tunnel' or the authenticated Cloud tunnel.`,
 	cmd.Flags().StringArrayVar(&topics, "topic", nil, "Expose only topics matching this regular expression (repeatable; replaces the bandwidth-safe defaults)")
 	cmd.Flags().BoolVar(&all, "all-topics", false, "Expose every ROS topic (may use substantial bandwidth)")
 	cmd.Flags().IntVar(&backlog, "message-backlog", foxgloveDefaultMessageBacklog, "Maximum outgoing data messages queued per client")
+	cmd.Flags().Float64Var(&cameraFPS, "camera-fps", foxgloveDefaultCameraFPS, "Maximum Go2 camera frames per second")
+	cmd.Flags().IntVar(&cameraJPEGQuality, "camera-jpeg-quality", foxgloveDefaultCameraJPEGQuality, "Go2 camera JPEG quality (1-100)")
+	cmd.Flags().IntVar(&cameraMaxWidth, "camera-max-width", foxgloveDefaultCameraMaxWidth, "Maximum Go2 camera width in pixels")
 
 	return cmd
 }
 
 type foxgloveServeOpts struct {
-	localPort int
-	domain    int
-	rmw       string
-	distro    string
-	device    string // global --device; "" = default device
-	iface     string // optional CycloneDDS network interface
-	cloud     bool
-	cloudCfg  cloudDeviceConfig
-	unitree   bool // include public Unitree ROS 2 message definitions
-	topics    []string
-	allTopics bool
-	backlog   int
+	localPort         int
+	domain            int
+	rmw               string
+	distro            string
+	device            string // global --device; "" = default device
+	iface             string // optional CycloneDDS network interface
+	cloud             bool
+	cloudCfg          cloudDeviceConfig
+	unitree           bool // include public Unitree ROS 2 message definitions
+	topics            []string
+	allTopics         bool
+	backlog           int
+	cameraFPS         float64
+	cameraJPEGQuality int
+	cameraMaxWidth    int
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
@@ -420,7 +447,19 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 		launchCommand += " && export CYCLONEDDS_URI='" + cycloneURI + "'"
 	}
 	if opts.unitree && opts.iface != "" {
-		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s &)", opts.iface)
+		cameraFPS := opts.cameraFPS
+		if cameraFPS == 0 {
+			cameraFPS = foxgloveDefaultCameraFPS
+		}
+		cameraJPEGQuality := opts.cameraJPEGQuality
+		if cameraJPEGQuality == 0 {
+			cameraJPEGQuality = foxgloveDefaultCameraJPEGQuality
+		}
+		cameraMaxWidth := opts.cameraMaxWidth
+		if cameraMaxWidth == 0 {
+			cameraMaxWidth = foxgloveDefaultCameraMaxWidth
+		}
+		launchCommand += fmt.Sprintf(" && (python3 /opt/wendy/go2_camera_bridge.py --interface %s --fps %g --jpeg-quality %d --max-width %d &)", opts.iface, cameraFPS, cameraJPEGQuality, cameraMaxWidth)
 		launchCommand += " && (python3 /opt/wendy/hesai_preview_bridge.py &)"
 	}
 	topicWhitelist, err := foxgloveTopicWhitelistArg(opts)
@@ -440,6 +479,7 @@ func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 		aptPackages += fmt.Sprintf(` \
       git \
       python3-pip \
+      python3-pil \
       python3-colcon-common-extensions \
       ros-%s-grid-map-msgs \
       ros-%s-rosidl-default-generators \
@@ -534,6 +574,15 @@ func validateFoxgloveBandwidthOpts(opts foxgloveServeOpts) error {
 	}
 	if opts.backlog < 0 {
 		return fmt.Errorf("--message-backlog must be at least 1")
+	}
+	if opts.cameraFPS < 0 || opts.cameraFPS > 30 {
+		return fmt.Errorf("--camera-fps must be greater than 0 and at most 30")
+	}
+	if opts.cameraJPEGQuality < 0 || opts.cameraJPEGQuality > 100 {
+		return fmt.Errorf("--camera-jpeg-quality must be between 1 and 100")
+	}
+	if opts.cameraMaxWidth < 0 || (opts.cameraMaxWidth > 0 && opts.cameraMaxWidth < 160) {
+		return fmt.Errorf("--camera-max-width must be 0 or at least 160")
 	}
 	return nil
 }
