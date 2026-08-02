@@ -89,6 +89,10 @@ LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to fi
   **Network Requirements**: LAN discovery requires that your network allows mDNS traffic. Many workplace and public networks block this by default.
 </Callout>
 
+## Device address selection
+
+When mDNS returns both IPv4 and IPv6 addresses for the same device — which happens because Avahi emits one resolve record per protocol, and macOS dns-sd lookups can list IPv6 first — the CLI prefers the IPv4 address. IPv6 address sets typically lead with an RFC 4941 temporary (privacy) address that rotates away, making a stored IPv6 address go stale before the next deploy or readiness probe. IPv4 is used only as a fallback when no IPv4 address is available.
+
 ## Troubleshooting LAN Discovery
 
 If your WendyOS device doesn't appear when connected to the same network:

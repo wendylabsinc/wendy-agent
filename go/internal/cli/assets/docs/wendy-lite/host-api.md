@@ -2,6 +2,8 @@
 
 All functions are imported from the `"wendy"` WASM module. The canonical declaration source is `Sources/CWendyLite/include/wendy.h`. This page documents every function by subsystem, including the Swift and Rust equivalents.
 
+> **Scope note:** wendy-lite host imports cover GPIO, I2C, SPI, UART, RMT, NeoPixel, Timer, Storage, System, OTel, BLE, WiFi, Sockets, TLS, and USB. **Camera and display/framebuffer peripherals are not exposed to WASM guests.** Boards with cameras or RGB LCD panels (e.g. ESP32-S31-Korvo-1, ESP32-P4-Function-EV) must drive those peripherals with native ESP-IDF drivers; the wendy-lite runtime can run alongside a native display loop but does not control the panel.
+
 ## Callback Model
 
 Many APIs are asynchronous. They accept a `handler_id` (an `int`/`Int32` you choose) and fire `wendy_handle_callback` on the guest when the event arrives. Your guest must export this function:
