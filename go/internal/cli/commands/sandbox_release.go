@@ -32,7 +32,8 @@ type sandboxRelease struct {
 
 // fetchControlPlaneRelease resolves the control-plane-latest release. Uses the
 // tags endpoint, not /releases/latest — that endpoint excludes prereleases,
-// and control-plane-latest is published as one (see control-plane-release.yml).
+// and control-plane-latest is published as one (see control-plane-release.yml
+// in the wendylabsinc/wendy-sandbox repo).
 func fetchControlPlaneRelease(ctx context.Context) (*sandboxRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", controlPlaneReleaseRepo, controlPlaneReleaseTag)
 	req, err := newGitHubAPIGetRequest(url)
@@ -108,6 +109,10 @@ func extractControlPlaneTarGz(r io.Reader, destDir string) error {
 			continue // the bare "control-plane" dir entry, or something outside it
 		}
 		target := filepath.Join(destDir, rel)
+		// Prevent path traversal: ensure target stays within destDir.
+		if !strings.HasPrefix(target, filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("control-plane tarball entry %q escapes destination directory", hdr.Name)
+		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {

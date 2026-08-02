@@ -68,6 +68,24 @@ func TestExtractControlPlaneTarGz_EmptyTarballErrors(t *testing.T) {
 	}
 }
 
+func TestExtractControlPlaneTarGz_RejectsPathTraversal(t *testing.T) {
+	data := makeControlPlaneTarGz(t, map[string]string{
+		"control-plane/../escape.txt": "malicious content",
+		"control-plane/safe.txt":      "safe content",
+	})
+	dest := t.TempDir()
+
+	if err := extractControlPlaneTarGz(bytes.NewReader(data), dest); err == nil {
+		t.Fatal("expected error for path traversal attack, got nil")
+	}
+
+	// Verify no file was written outside destDir
+	escapePath := filepath.Join(filepath.Dir(dest), "escape.txt")
+	if _, err := os.Stat(escapePath); err == nil {
+		t.Fatalf("path traversal file was created at %s", escapePath)
+	}
+}
+
 func TestFindControlPlaneAsset_ReturnsMatchingAssetURL(t *testing.T) {
 	rel := &sandboxRelease{
 		TagName: "control-plane-latest",
