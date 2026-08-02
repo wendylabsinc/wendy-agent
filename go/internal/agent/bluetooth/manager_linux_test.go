@@ -3,10 +3,12 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
@@ -205,6 +207,87 @@ func TestConnectFailureErrorPrefersNotFound(t *testing.T) {
 		err := m.connectFailureError("AA:BB:CC:DD:EE:FF", nil, connErr)
 		if !strings.Contains(err.Error(), "refused") {
 			t.Errorf("err = %q, want the connect failure text", err.Error())
+		}
+	})
+}
+
+func TestRetryConnect(t *testing.T) {
+	m := &BlueZManager{logger: zap.NewNop()}
+	const testDelay = time.Millisecond
+
+	t.Run("succeeds on first attempt without retrying", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("retries a transient failure and succeeds", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			if calls < 3 {
+				return dbus.Error{Name: "org.bluez.Error.Failed", Body: []any{"br-connection-unknown"}}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil after retries", err)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3", calls)
+		}
+	})
+
+	t.Run("does not retry a non-transient failure", func(t *testing.T) {
+		calls := 0
+		wantErr := dbus.Error{Name: "org.bluez.Error.AuthenticationRejected"}
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return wantErr
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (no retry for a non-transient error)", calls)
+		}
+		if err == nil {
+			t.Fatal("want the non-transient error returned")
+		}
+	})
+
+	t.Run("gives up after the max attempts", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != maxConnectAttempts {
+			t.Errorf("calls = %d, want %d", calls, maxConnectAttempts)
+		}
+		if err == nil {
+			t.Fatal("want an error after exhausting retries")
+		}
+	})
+
+	t.Run("stops early when the context is done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		err := m.retryConnect(ctx, time.Hour, func() error {
+			calls++
+			cancel()
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (context canceled before the retry delay elapses)", calls)
+		}
+		if err == nil {
+			t.Fatal("want an error")
 		}
 	})
 }
