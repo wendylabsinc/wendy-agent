@@ -1,13 +1,33 @@
 package commands
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"math"
 	"strings"
 	"testing"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 )
+
+type topFakeContainerClient struct {
+	agentpb.WendyContainerServiceClient
+	stopCalls []string
+	stopErr   error
+}
+
+func (f *topFakeContainerClient) StopContainer(_ context.Context, req *agentpb.StopContainerRequest, _ ...grpc.CallOption) (*agentpb.StopContainerResponse, error) {
+	f.stopCalls = append(f.stopCalls, req.GetAppName())
+	if f.stopErr != nil {
+		return nil, f.stopErr
+	}
+	return &agentpb.StopContainerResponse{}, nil
+}
 
 func approx(a, b float64) bool { return math.Abs(a-b) < 0.01 }
 
@@ -96,6 +116,15 @@ func TestBuildTopRowsMultiServiceGrouping(t *testing.T) {
 	if !rows[1].isSubrow || !rows[2].isSubrow {
 		t.Errorf("rows 1,2 should be subrows")
 	}
+	if rows[0].state != agentpb.AppRunningState_RUNNING || rows[1].state != agentpb.AppRunningState_RUNNING {
+		t.Errorf("running states not preserved in rows: %+v", rows)
+	}
+}
+
+func TestTopStateLabelCrashLoopingIsCompact(t *testing.T) {
+	if got := topStateLabel(agentpb.AppRunningState_CRASH_LOOPING); got != "crash-loop" {
+		t.Fatalf("topStateLabel(CRASH_LOOPING) = %q, want crash-loop", got)
+	}
 }
 
 func TestBuildTopJSON(t *testing.T) {
@@ -126,6 +155,151 @@ func TestBuildTopJSON(t *testing.T) {
 	}
 	if out.Containers[0].CPUPercent <= 0 {
 		t.Errorf("container cpu%% = %v, want > 0", out.Containers[0].CPUPercent)
+	}
+	if out.Containers[0].State != "running" {
+		t.Errorf("container state = %q, want running", out.Containers[0].State)
+	}
+}
+
+func TestWriteTopPlainSnapshotIncludesStateAndInactiveMetrics(t *testing.T) {
+	containers := []*agentpb.AppContainer{
+		{AppName: "active", RunningState: agentpb.AppRunningState_RUNNING},
+		{AppName: "idle", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+	prev := topSample{
+		host:         &agentpb.HostStats{CpuCount: 2},
+		containers:   map[string]uint64{"active": 0},
+		mem:          map[string]int64{"active": 25},
+		takenAtNanos: 0,
+	}
+	cur := topSample{
+		host:         &agentpb.HostStats{CpuCount: 2},
+		containers:   map[string]uint64{"active": 500_000_000},
+		mem:          map[string]int64{"active": 25},
+		takenAtNanos: 1_000_000_000,
+	}
+
+	var out bytes.Buffer
+	if err := writeTopPlainSnapshot(&out, prev, cur, containers); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if !strings.Contains(text, "STATE") || !strings.Contains(text, "active") || !strings.Contains(text, "running") {
+		t.Fatalf("plain snapshot does not show running state:\n%s", text)
+	}
+	if !strings.Contains(text, "idle") || !strings.Contains(text, "stopped") {
+		t.Fatalf("plain snapshot does not show stopped state:\n%s", text)
+	}
+	idleLine := ""
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "idle") {
+			idleLine = line
+			break
+		}
+	}
+	if strings.Contains(idleLine, "0.0") || strings.Contains(idleLine, "0 B") {
+		t.Fatalf("stopped app should show unavailable resource values, got %q", idleLine)
+	}
+}
+
+func TestTopViewMakesAllAppStatesExplicit(t *testing.T) {
+	m := topModel{
+		width:  100,
+		height: 24,
+		cur: topSample{host: &agentpb.HostStats{MemTotalBytes: 100}, mem: map[string]int64{
+			"active": 25,
+		}},
+		havePrev: true,
+		cachedContainers: []*agentpb.AppContainer{
+			{AppName: "active", RunningState: agentpb.AppRunningState_RUNNING},
+			{AppName: "idle", RunningState: agentpb.AppRunningState_STOPPED},
+			{AppName: "broken", RunningState: agentpb.AppRunningState_CRASH_LOOPING},
+		},
+	}
+	m.rebuildRows()
+	view := m.View()
+	for _, want := range []string{"● active", "running", "○ idle", "stopped", "↻ broken", "crash-loop"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("top view missing %q:\n%s", want, view)
+		}
+	}
+	for _, want := range []string{"1 running", "1 stopped", "1 crash-looping"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("top summary missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTopViewKeepsStateVisibleAtSeventyColumns(t *testing.T) {
+	m := topModel{
+		width:            70,
+		height:           18,
+		havePrev:         true,
+		cur:              topSample{host: &agentpb.HostStats{MemTotalBytes: 100}},
+		cachedContainers: []*agentpb.AppContainer{{AppName: "idle", RunningState: agentpb.AppRunningState_STOPPED}},
+	}
+	m.rebuildRows()
+	view := m.View()
+	if !strings.Contains(view, "○ idle") || !strings.Contains(view, "stopped") {
+		t.Fatalf("state was cropped at 70 columns:\n%s", view)
+	}
+	if strings.Contains(view, "OPEN PORTS") {
+		t.Fatalf("ports panel should yield to the state table at 70 columns:\n%s", view)
+	}
+}
+
+func TestTopStopKeyStopsParentAppFromServiceRow(t *testing.T) {
+	fake := &topFakeContainerClient{}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+	m := newTopModel(context.Background(), conn, 2*time.Second)
+	m.rows = []topRow{
+		{name: "group-app", displayName: "group-app [group]", state: agentpb.AppRunningState_RUNNING},
+		{displayName: "  ↳ worker", state: agentpb.AppRunningState_RUNNING, isSubrow: true},
+	}
+	m.cursor = 1
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(topModel)
+	if cmd == nil || m.stoppingApp != "group-app" || !strings.Contains(m.actionStatus, "Stopping group-app") {
+		t.Fatalf("stop did not enter pending state: stopping=%q status=%q cmd=%v", m.stoppingApp, m.actionStatus, cmd != nil)
+	}
+
+	msg := cmd()
+	updated, _ = m.Update(msg)
+	m = updated.(topModel)
+	if len(fake.stopCalls) != 1 || fake.stopCalls[0] != "group-app" {
+		t.Fatalf("StopContainer calls = %v, want [group-app]", fake.stopCalls)
+	}
+	if m.stoppingApp != "" || m.actionStatus != "Stopped group-app" {
+		t.Fatalf("stop result state: stopping=%q status=%q", m.stoppingApp, m.actionStatus)
+	}
+}
+
+func TestTopStopKeyDoesNotCallAlreadyStoppedApp(t *testing.T) {
+	fake := &topFakeContainerClient{}
+	m := newTopModel(context.Background(), &grpcclient.AgentConnection{ContainerService: fake}, 2*time.Second)
+	m.rows = []topRow{{name: "idle", displayName: "idle", state: agentpb.AppRunningState_STOPPED}}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = updated.(topModel)
+	if cmd == nil {
+		t.Fatal("already-stopped notice should schedule its own cleanup")
+	}
+	if len(fake.stopCalls) != 0 || m.actionStatus != "idle is already stopped" {
+		t.Fatalf("unexpected stopped-app action: calls=%v status=%q", fake.stopCalls, m.actionStatus)
+	}
+}
+
+func TestTopSuccessfulPollDoesNotClearStopStatus(t *testing.T) {
+	m := topModel{
+		actionStatus: "Stopping app…",
+		cur:          topSample{host: &agentpb.HostStats{}},
+		statsCh:      make(chan topStatsMsg),
+	}
+	updated, _ := m.Update(topStatsMsg{resp: &agentpb.GetResourceStatsResponse{}})
+	m = updated.(topModel)
+	if m.actionStatus != "Stopping app…" {
+		t.Fatalf("successful poll cleared lifecycle status: %q", m.actionStatus)
 	}
 }
 
