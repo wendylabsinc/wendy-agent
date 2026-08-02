@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 )
@@ -62,6 +63,9 @@ func newSandboxCmd() *cobra.Command {
 }
 
 func runSandboxInstall(ctx context.Context, cmd *cobra.Command) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("wendy sandbox is only supported on macOS")
+	}
 	if _, err := exec.LookPath("node"); err != nil {
 		return fmt.Errorf("node is required but not found on PATH; run: brew install node")
 	}
@@ -141,18 +145,37 @@ func runSandboxInstall(ctx context.Context, cmd *cobra.Command) error {
 }
 
 func runSandboxStart(ctx context.Context, cmd *cobra.Command) error {
-	target := sandboxLaunchdTarget()
-	if err := sandboxCommandContext(ctx, "launchctl", "kickstart", "-k", target).Run(); err != nil {
-		return fmt.Errorf("launchctl kickstart %s: %w (not installed yet? run: wendy sandbox install)", target, err)
+	// The plist has KeepAlive: true, so the only correct way to (re)start a
+	// stopped agent is to bootstrap it back into launchd — `kickstart` only
+	// affects an already-loaded job and does nothing for one that was
+	// bootout'd. Check status first so re-running start on an already-running
+	// service is a friendly no-op instead of a "already bootstrapped" error
+	// from launchctl.
+	running, err := sandboxLaunchAgentStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if running {
+		cmd.Println("control-plane already running.")
+		return nil
+	}
+	plistPath, err := sandboxLaunchctlPlistPath()
+	if err != nil {
+		return err
+	}
+	if err := loadSandboxLaunchAgent(ctx, plistPath); err != nil {
+		return fmt.Errorf("%w (not installed yet? run: wendy sandbox install)", err)
 	}
 	cmd.Println("control-plane started.")
 	return nil
 }
 
 func runSandboxStop(ctx context.Context, cmd *cobra.Command) error {
-	target := sandboxLaunchdTarget()
-	if err := sandboxCommandContext(ctx, "launchctl", "kill", "SIGTERM", target).Run(); err != nil {
-		return fmt.Errorf("launchctl kill SIGTERM %s: %w", target, err)
+	// With KeepAlive: true in the plist, `launchctl kill` just gets the job
+	// respawned by launchd — the only way to actually stop it is to take it
+	// out of launchd's control entirely via bootout (unloadSandboxLaunchAgent).
+	if err := unloadSandboxLaunchAgent(ctx); err != nil {
+		return err
 	}
 	cmd.Println("control-plane stopped.")
 	return nil

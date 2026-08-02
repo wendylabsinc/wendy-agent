@@ -3,6 +3,7 @@ package commands
 
 import (
 	"os"
+	"runtime"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
@@ -134,6 +135,9 @@ func NewRootCmd() *cobra.Command {
 	// Sandbox
 	sandboxCmd := newSandboxCmd()
 	sandboxCmd.GroupID = "sandbox"
+	// macOS-only (launchd, ~/Library paths); hide from help/completion elsewhere
+	// rather than showing a command group that can't work on the host OS.
+	sandboxCmd.Hidden = runtime.GOOS != "darwin"
 
 	// Manage
 	projectCmd := newProjectCmd()
