@@ -530,7 +530,7 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 // waits delay between attempts, returning early if ctx is done first.
 func (m *BlueZManager) retryConnect(ctx context.Context, delay time.Duration, attempt func() error) error {
 	var err error
-	for i := range maxConnectAttempts {
+	for i := 0; i < maxConnectAttempts; i++ {
 		err = attempt()
 		if err == nil {
 			return nil
