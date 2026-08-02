@@ -1,8 +1,12 @@
 package services
 
 import (
+	"strings"
 	"testing"
 	"unsafe"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // The VIDIOC_ENUM_FRAMESIZES request code encodes the struct's size, so the
@@ -64,5 +68,71 @@ func TestDefaultFrameSizeCapIs720p(t *testing.T) {
 	if defaultMaxDefaultWidth != 1280 || defaultMaxDefaultHeight != 720 {
 		t.Fatalf("default cap is %dx%d, want 1280x720",
 			defaultMaxDefaultWidth, defaultMaxDefaultHeight)
+	}
+}
+
+// withMJPEGProbe overrides the MJPEG capability probe for the duration of a test.
+func withMJPEGProbe(t *testing.T, fn func(string, uint32, uint32) bool) {
+	t.Helper()
+	orig := deviceSupportsMJPEGSize
+	deviceSupportsMJPEGSize = fn
+	t.Cleanup(func() { deviceSupportsMJPEGSize = orig })
+}
+
+// A USB camera that advertises MJPEG at the negotiated size should be captured
+// compressed (image/jpeg + jpegdec) — raw capture is USB-bandwidth-capped to
+// single-digit frame rates at 720p+ on common webcams.
+func TestBuildGStreamerArgs_USB_PrefersMJPEG(t *testing.T) {
+	withMJPEGProbe(t, func(path string, w, h uint32) bool { return w == 1280 && h == 720 })
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720}
+	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
+		"x264enc", true, camera.TransportUSB, "", map[string]bool{"jpegdec": true})
+	if err != nil {
+		t.Fatalf("buildGStreamerArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "image/jpeg,width=1280,height=720") {
+		t.Fatalf("expected MJPEG capture caps, got: %s", joined)
+	}
+	if !strings.Contains(joined, "jpegdec") {
+		t.Fatalf("expected jpegdec in pipeline, got: %s", joined)
+	}
+	// The leaky queue must sit on the compressed side, before the decode.
+	if strings.Index(joined, "jpegdec") < strings.Index(joined, "leaky=downstream") {
+		t.Fatalf("leaky queue must precede jpegdec, got: %s", joined)
+	}
+}
+
+// Without MJPEG support at the negotiated size, capture stays raw.
+func TestBuildGStreamerArgs_USB_RawWhenNoMJPEG(t *testing.T) {
+	withMJPEGProbe(t, func(string, uint32, uint32) bool { return false })
+	req := &agentpb.StreamVideoRequest{Width: 640, Height: 480}
+	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
+		"x264enc", true, camera.TransportUSB, "", map[string]bool{"jpegdec": true})
+	if err != nil {
+		t.Fatalf("buildGStreamerArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "jpegdec") || strings.Contains(joined, "image/jpeg") {
+		t.Fatalf("expected raw capture, got: %s", joined)
+	}
+	if !strings.Contains(joined, "video/x-raw,width=640,height=480") {
+		t.Fatalf("expected raw caps, got: %s", joined)
+	}
+}
+
+// MJPEG capture also needs jpegdec present on the device; otherwise stay raw
+// even when the camera offers MJPEG.
+func TestBuildGStreamerArgs_USB_RawWhenNoJpegdec(t *testing.T) {
+	withMJPEGProbe(t, func(string, uint32, uint32) bool { return true })
+	req := &agentpb.StreamVideoRequest{Width: 1280, Height: 720}
+	args, err := buildGStreamerArgs("/usr/bin/gst-launch-1.0", "/dev/video9", req,
+		"x264enc", true, camera.TransportUSB, "", map[string]bool{"x264enc": true})
+	if err != nil {
+		t.Fatalf("buildGStreamerArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "jpegdec") || strings.Contains(joined, "image/jpeg") {
+		t.Fatalf("expected raw capture without jpegdec available, got: %s", joined)
 	}
 }

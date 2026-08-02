@@ -167,6 +167,31 @@ func bestDefaultFrameSizeForDevice(path string) (uint32, uint32) {
 	return bestW, bestH
 }
 
+// deviceSupportsMJPEGSize reports whether the device advertises MJPEG output at
+// exactly width x height. Behind a var so pipeline-construction tests can fake
+// camera capabilities without a real V4L2 device (same spirit as gstFallbackDirs).
+var deviceSupportsMJPEGSize = func(path string, width, height uint32) bool {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd) //nolint:errcheck
+	for index := uint32(0); index < 64; index++ {
+		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: v4l2PixFmtMJPEG}
+		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
+			uintptr(unsafe.Pointer(&fse))); errno != 0 {
+			return false
+		}
+		if fse.Type != v4l2FrmsizeTypeDiscrete {
+			return false
+		}
+		if fse.Width == width && fse.Height == height {
+			return true
+		}
+	}
+	return false
+}
+
 // v4l2ReqBuffers matches struct v4l2_requestbuffers (20 bytes).
 type v4l2ReqBuffers struct {
 	Count        uint32
@@ -1390,8 +1415,24 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 		capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
 	}
 
+	// Prefer compressed (MJPEG) capture from USB cameras when the device offers
+	// it at the chosen size and jpegdec is available to unpack it. Raw capture
+	// is bottlenecked by USB bandwidth, and UVC descriptors cap raw modes at
+	// frame rates as low as 5 fps for 720p/1080p — the SAME camera delivers
+	// 30 fps over MJPEG (measured on a Brio 101: 5 fps raw at both 1080p and
+	// 720p). jpegdec is cheap relative to the H.264 encode that follows. The
+	// leaky queue sits on the compressed side so backlog is dropped before,
+	// not after, the decode work is spent.
+	useMJPEG := !strings.HasPrefix(src, "libcamerasrc") &&
+		capW > 0 && capH > 0 &&
+		available["jpegdec"] &&
+		deviceSupportsMJPEGSize(devicePath, capW, capH)
+
 	var pipeline string
-	if len(capsParts) > 0 {
+	if useMJPEG {
+		caps := "image/jpeg," + strings.Join(capsParts, ",")
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! jpegdec ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+	} else if len(capsParts) > 0 {
 		caps := "video/x-raw," + strings.Join(capsParts, ",")
 		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
 	} else {
