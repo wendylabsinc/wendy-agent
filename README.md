@@ -1,10 +1,12 @@
 # WendyOS
 
-**An iOS-like developer experience for NVIDIA Jetson, Raspberry Pi, and Linux edge devices.**
+**You can deploy an app to an iPhone over a USB cable. Why isn't it that easy for NVIDIA Jetsons and Raspberry Pis?**
 
-Plug in your device over USB-C, run `wendy run`, and your app builds, deploys, and
-streams logs back to your laptop. No SD card juggling, no SSH setup, no internet
-required on the device. It feels like mobile development, for edge hardware.
+WendyOS makes building robots, drones, and edge products feel like mobile
+development. Plug in your device over USB-C from your Mac, Windows, or Linux
+machine, run `wendy run`, and your app builds, deploys, and streams logs back to
+your laptop. No SD card juggling, no SSH setup, no internet required on the
+device.
 
 <p align="center">
   <img src="docs/media/demo.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="360">
