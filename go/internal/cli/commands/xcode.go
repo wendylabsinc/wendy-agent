@@ -280,8 +280,15 @@ func xcodeSelectGuidance(ctx context.Context) error {
 // xcodeSelectNonInteractiveErr builds the guidance error for scripts/--json
 // callers, which cannot be shown a picker or a confirm prompt.
 func xcodeSelectNonInteractiveErr(apps []string) error {
+	if len(apps) == 1 {
+		developerDir := filepath.Join(apps[0], "Contents", "Developer")
+		return fmt.Errorf(
+			"xcodebuild requires the full Xcode app, but the active developer directory is Command Line Tools; select it with:\n\n    sudo xcode-select -s %s\n",
+			developerDir,
+		)
+	}
 	return fmt.Errorf(
-		"xcodebuild requires the full Xcode app, but the active developer directory is Command Line "+
+		"xcodebuild requires the full Xcode app, but the active developer directory is Command Line " +
 			"Tools; found %s — select one with:\n\n    sudo xcode-select -s <path>/Contents/Developer\n",
 		strings.Join(apps, ", "),
 	)
