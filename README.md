@@ -84,6 +84,10 @@ Use the CLI to install WendyOS on supported hardware:
 wendy os install
 ```
 
+<p align="center">
+  <img src="docs/media/overhead-quick-install.gif" alt="Installing WendyOS on a device with wendy os install" width="600">
+</p>
+
 The installer can download WendyOS images, write them to the selected target
 drive, and pre-seed device configuration such as WiFi credentials. WendyOS
 images come preconfigured for remote development and include `wendy-agent`.
