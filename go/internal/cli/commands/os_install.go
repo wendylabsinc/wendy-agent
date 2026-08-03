@@ -48,6 +48,12 @@ type t234InstallOptions struct {
 	PreEnroll     preEnrollOptions
 }
 
+type unitreeG1InstallOptions struct {
+	Version string
+	Drive   string
+	Force   bool
+}
+
 const (
 	preEnrollAuto   preEnrollMode = iota // prompt if interactive terminal + auth session exists
 	preEnrollForced                      // --pre-enroll explicitly set to true
@@ -343,8 +349,26 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:        dev.Name,
 			Description: displayVersion,
 			Section:     "WendyOS",
-			SortKey:     "0_wendyos_" + strings.ToLower(dev.Name),
+			SortKey:     "1_wendyos_" + strings.ToLower(dev.Name),
 			Value:       dev.Key,
+		})
+	}
+
+	// G1 uses a vendor rootfs image plus matching PC2 module firmware instead
+	// of a WendyOS recovery flashpack. Keep the pair behind one picker entry so
+	// users cannot accidentally select mismatched artifacts. Once signed,
+	// Wendy-controlled artifacts are published this can move into the manifest.
+	if prNumber == 0 && (flagDeviceType == "" || flagDeviceType == unitreeG1DeviceType) {
+		deviceMap[unitreeG1DeviceType] = pickerDevice{
+			Name:    "Unitree G1",
+			Version: "(experimental · JetPack 6.2)",
+		}
+		items = append(items, tui.PickerItem{
+			Name:        "Unitree G1",
+			Description: "JetPack 6.2 · PC2 Orin NX · experimental",
+			Section:     "Robots",
+			SortKey:     "0_robots_unitree_g1",
+			Value:       unitreeG1DeviceType,
 		})
 	}
 
@@ -370,7 +394,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 				Name:        esp.name,
 				Description: espVersion,
 				Section:     "Wendy Lite",
-				SortKey:     "1_lite_" + strings.ToLower(esp.name),
+				SortKey:     "2_lite_" + strings.ToLower(esp.name),
 				Value:       esp.key,
 			})
 		}
@@ -379,7 +403,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:        "Linux Desktop",
 			Description: "Install wendy-agent on an existing Linux machine",
 			Section:     "Linux Desktop",
-			SortKey:     "2_linux_desktop",
+			SortKey:     "3_linux_desktop",
 			Value:       linuxDesktopValue,
 		})
 
@@ -387,7 +411,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			Name:        "Headless Mac",
 			Description: "Install wendy-agent on an existing Mac (Apple Silicon)",
 			Section:     "Headless Mac",
-			SortKey:     "3_headless_mac",
+			SortKey:     "4_headless_mac",
 			Value:       headlessMacValue,
 		})
 	}
@@ -423,6 +447,23 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if err != nil {
 			return err
 		}
+	}
+
+	if selected == unitreeG1DeviceType {
+		if nightly {
+			return fmt.Errorf("--nightly is not available for the experimental Unitree G1 installer")
+		}
+		if rootfsOnly || storageOverride != "" || noBmap || yesOverwriteInternal {
+			return fmt.Errorf("--rootfs-only, --storage, --no-bmap, and --yes-overwrite-internal do not apply to the Unitree G1 installer")
+		}
+		if wifi.SSID != "" || wifi.Password != "" || len(wifi.Entries) > 0 || wifi.NoWifi || deviceName != "" || preOpts.mode == preEnrollForced || preOpts.cloudGRPC != "" {
+			return fmt.Errorf("WiFi, device-name, and pre-enrollment options are not yet available for the Unitree G1 vendor image")
+		}
+		return installUnitreeG1(ctx, unitreeG1InstallOptions{
+			Version: flagVersion,
+			Drive:   flagDrive,
+			Force:   force,
+		})
 	}
 
 	// Thor flashes over USB recovery via its flashpack, never to a drive. The

@@ -43,6 +43,8 @@ type drive struct {
 	DevicePath  string // e.g. /dev/sdb
 	RawPath     string // same as DevicePath on Linux
 	Name        string // human-readable name
+	Model       string // hardware model reported by lsblk
+	Serial      string // hardware serial reported by lsblk
 	Size        string // human-readable size
 	SizeBytes   int64  // size in bytes
 	IsRemovable bool
@@ -66,6 +68,8 @@ type lsblkDevice struct {
 	Hotplug    flexBool      `json:"hotplug"`
 	Transport  string        `json:"tran"`
 	Rotational flexBool      `json:"rota"`
+	Model      string        `json:"model"`
+	Serial     string        `json:"serial"`
 	Mountpoint string        `json:"mountpoint"`
 	Children   []lsblkDevice `json:"children"`
 }
@@ -84,7 +88,7 @@ func listExternalDrives() ([]drive, error) {
 }
 
 func listDrivesLinux() ([]drive, error) {
-	out, err := exec.Command("lsblk", "--json", "--bytes", "-o", "NAME,SIZE,TYPE,RM,HOTPLUG,TRAN,ROTA,MOUNTPOINT").Output()
+	out, err := exec.Command("lsblk", "--json", "--bytes", "-o", "NAME,SIZE,TYPE,RM,HOTPLUG,TRAN,ROTA,MODEL,SERIAL,MOUNTPOINT").Output()
 	if err != nil {
 		return nil, fmt.Errorf("running lsblk: %w", err)
 	}
@@ -118,10 +122,16 @@ func listDrivesLinux() ([]drive, error) {
 		} else if dev.Transport == "usb" {
 			storageType = StorageUSB
 		}
+		displayName := strings.TrimSpace(dev.Model)
+		if displayName == "" {
+			displayName = dev.Name
+		}
 		drives = append(drives, drive{
 			DevicePath: devPath,
 			RawPath:    devPath,
-			Name:       dev.Name,
+			Name:       displayName,
+			Model:      strings.TrimSpace(dev.Model),
+			Serial:     strings.TrimSpace(dev.Serial),
 			Size:       humanize.Bytes(uint64(sizeBytes)),
 			SizeBytes:  sizeBytes,
 			// IsRemovable reflects our external-ness predicate so downstream code

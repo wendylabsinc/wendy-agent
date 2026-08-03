@@ -29,8 +29,9 @@ func TestT234FamilyRecoveryPIDs(t *testing.T) {
 		if d.IsThor() {
 			t.Errorf("PID 0x%04x misclassified as Thor", tc.pid)
 		}
-		if d.IsOrinAGX() != tc.agx || d.IsOrinNano() != tc.nano {
-			t.Errorf("PID 0x%04x: IsOrinAGX=%v IsOrinNano=%v, want %v/%v", tc.pid, d.IsOrinAGX(), d.IsOrinNano(), tc.agx, tc.nano)
+		wantNX := tc.pid == ProductOrinNX16 || tc.pid == ProductOrinNX8
+		if d.IsOrinAGX() != tc.agx || d.IsOrinNX() != wantNX || d.IsOrinNano() != tc.nano {
+			t.Errorf("PID 0x%04x: IsOrinAGX=%v IsOrinNX=%v IsOrinNano=%v, want %v/%v/%v", tc.pid, d.IsOrinAGX(), d.IsOrinNX(), d.IsOrinNano(), tc.agx, wantNX, tc.nano)
 		}
 		if got := d.Describe(); !strings.Contains(got, tc.module) {
 			t.Errorf("Describe() for PID 0x%04x = %q, want module %q", tc.pid, got, tc.module)

@@ -9,6 +9,7 @@ The command presents a unified device picker that lists Linux targets (Raspberry
 - **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
 - **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
 - **Jetson AGX Thor** -> download flashpack -> boot over USB recovery -> flash QSPI and internal NVMe
+- **Unitree G1 (experimental)** -> select the paired local Unitree JetPack 6.2 packages -> image a replacement NVMe -> follow the guided PC2 PWR/REC sequence -> flash matching Orin NX module firmware
 - **ESP32 targets** → detect USB serial port → download firmware `.bin` → flash over serial
 
 ```sh
@@ -23,6 +24,10 @@ wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 -
 
 # Jetson AGX Thor: flash over USB recovery (macOS, Linux, and Windows)
 wendy install --device-type jetson-agx-thor
+
+# Unitree G1: open the guided picker on an Ubuntu x86-64 host
+# (the package folder and replacement NVMe are selected in the UI)
+wendy install --device-type unitree-g1
 
 # Orin Nano: full QSPI + NVMe recovery (macOS or Linux)
 wendy install --device-type jetson-orin-nano
@@ -62,6 +67,53 @@ is not supported for ESP32 targets (Wendy Lite firmware is not built by the
 per-PR pipeline).
 `--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
 image path.
+
+## Unitree G1 experimental path
+
+Select **Unitree G1** under the **Robots** section of the normal `wendy install`
+picker. The installer deliberately keeps the rootfs image and PC2 module
+firmware behind one installation choice so they cannot be mixed across
+releases.
+
+The first hardware-test version requires an Ubuntu x86-64 host and a local
+folder containing this exact pair from the same Unitree G1 JetPack 6.2 release:
+
+```text
+g1-nx-j6.2.img.bz2
+Jetpack_6.2_nx.tar.bz2
+```
+
+The lab obtained both from the historical
+[Unitree G1 package folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
+Wendy does not control that folder, so this experimental flow does not download
+from it automatically. A production release requires publisher-controlled
+artifacts and trusted checksums in the Wendy manifest.
+
+The interactive flow:
+
+1. Selects **Unitree G1 JetPack 6.2**.
+2. Asks for the folder containing the paired packages and validates both exact
+   filenames as non-empty regular files.
+3. Lists external drives by model, device path, and size, then includes the
+   hardware serial (when available) in the final destructive-write review.
+4. Accepts only a fixed external SSD of at least 1 TB, then shows one final
+   destructive-write summary before erasing it.
+5. Streams the bzip2 rootfs image to the replacement NVMe and syncs the write.
+6. Pauses while the operator installs the replacement NVMe in PC2 and preserves
+   the original drive.
+7. Shows the verified PWR/REC and PC2 USB-C recovery instructions, then waits for
+   an Orin NX APX device.
+8. Refuses to invoke Unitree's vendor script if any additional recovery-mode
+   Jetson is connected, because that script cannot be safely pinned to one USB
+   path.
+9. Validates archive paths, extracts `Jetpack_6.2_nx.tar.bz2` into a temporary
+   workspace, and runs its single `Linux_for_Tegra/flash_nx_module.sh` under
+   `sudo`.
+10. Prints the normal-boot and `192.168.123.164` verification commands.
+
+This target flashes only the G1's open Jetson development computer, PC2. It
+must never be used on the separate motion-control computer. The command does
+not issue joint commands or perform a motion test.
 
 ---
 

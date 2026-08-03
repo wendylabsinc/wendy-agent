@@ -463,6 +463,12 @@ const orinDeviceType = "jetson-agx-orin"
 
 const orinNanoDeviceType = "jetson-orin-nano"
 
+// unitreeG1DeviceType is the built-in experimental installer target for the
+// Unitree G1's Orin NX development computer (PC2). It remains built-in rather
+// than manifest-backed until Wendy publishes the paired Unitree rootfs and
+// module-firmware artifacts with trusted checksums.
+const unitreeG1DeviceType = "unitree-g1"
+
 func isT234RecoveryDevice(deviceType string) bool {
 	return deviceType == orinDeviceType || deviceType == orinNanoDeviceType
 }

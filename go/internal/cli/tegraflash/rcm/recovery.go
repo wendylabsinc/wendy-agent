@@ -40,6 +40,13 @@ func (r RecoveryDevice) IsOrinAGX() bool {
 	return r.Product == uint16(ProductOrinAGX32) || r.Product == uint16(ProductOrinAGX64)
 }
 
+// IsOrinNX reports whether the device is an Orin NX module. Unlike the Orin
+// Nano devkit path, vendor robot carriers such as the Unitree G1 use an NX
+// module and must be matched explicitly before invoking their flash tooling.
+func (r RecoveryDevice) IsOrinNX() bool {
+	return r.Product == uint16(ProductOrinNX16) || r.Product == uint16(ProductOrinNX8)
+}
+
 // IsOrinNano reports whether the device is an Orin Nano module.
 func (r RecoveryDevice) IsOrinNano() bool {
 	return r.Product == uint16(ProductOrinNano8) || r.Product == uint16(ProductOrinNano4)
