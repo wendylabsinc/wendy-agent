@@ -34,6 +34,8 @@ const (
 	chipESP32C5
 	chipESP32C6
 	chipESP32P4
+	chipESP32S3
+	chipESP32C61
 )
 
 // chipRegs holds chip-specific peripheral register addresses. Different ESP32
@@ -117,6 +119,51 @@ var regsESP32P4 = chipRegs{
 	spiUser1:   0x5008d020,
 	spiClock:   0x5008d028,
 	spiW0:      0x5008d058,
+}
+
+// ESP32-S3 predates the unified LP_WDT block the other chips here share:
+// its main watchdog and super watchdog both live in RTC_CNTL, and its SPI1
+// controller sits at a different base than the newer chips'.
+var regsESP32S3 = chipRegs{
+	name:       "ESP32-S3",
+	wdtProtect: 0x600080b0,
+	wdtConfig0: 0x60008098,
+	swdProtect: 0x600080b8,
+	swdConf:    0x600080b4,
+	efuseA:     0x60007030,
+	efuseB:     0x60007038,
+	chipID0:    0x60007050,
+	chipID1:    0x60007054,
+	macLow:     0x60007044,
+	macHigh:    0x60007048,
+	spiCmd:     0x60002000,
+	spiUser:    0x60002018,
+	spiUser1:   0x6000201c,
+	spiClock:   0x60002014,
+	spiW0:      0x60002058,
+}
+
+// ESP32-C61 shares C6's unified LP_WDT block (same base address even), but
+// its SPI1 controller's USER1/CLOCK registers moved to different offsets
+// than C5/C6/P4's -- verified against the ESP-IDF v5.5.4 register headers,
+// not assumed from the older chips' layout.
+var regsESP32C61 = chipRegs{
+	name:       "ESP32-C61",
+	wdtProtect: 0x600b1c18,
+	wdtConfig0: 0x600b1c00,
+	swdProtect: 0x600b1c20,
+	swdConf:    0x600b1c1c,
+	efuseA:     0x600b4830,
+	efuseB:     0x600b4838,
+	chipID0:    0x600b4850,
+	chipID1:    0x600b4854,
+	macLow:     0x600b4844,
+	macHigh:    0x600b4848,
+	spiCmd:     0x60003000,
+	spiUser:    0x60003018,
+	spiUser1:   0x6000301c,
+	spiClock:   0x60003014,
+	spiW0:      0x60003058,
 }
 
 // SLIP framing bytes.
@@ -501,6 +548,12 @@ func (f *espFlasher) detectChip() error {
 	case 0x0012:
 		f.chip = chipESP32P4
 		f.regs = &regsESP32P4
+	case 0x0009:
+		f.chip = chipESP32S3
+		f.regs = &regsESP32S3
+	case 0x0014:
+		f.chip = chipESP32C61
+		f.regs = &regsESP32C61
 	default:
 		return fmt.Errorf("unsupported chip id 0x%04x", chipID)
 	}

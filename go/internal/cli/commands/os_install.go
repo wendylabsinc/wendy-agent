@@ -230,7 +230,7 @@ type pickerDevice struct {
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
 	IsESP32    bool
-	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
+	ESP32Chip  string          // e.g. "esp32c6", "esp32c5", "esp32s3", "esp32c61"
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
@@ -359,6 +359,8 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}{
 			{"esp32-c6", "ESP32-C6", "esp32c6"},
 			{"esp32-c5", "ESP32-C5", "esp32c5"},
+			{"esp32-s3", "ESP32-S3", "esp32s3"},
+			{"esp32-c61", "ESP32-C61", "esp32c61"},
 		} {
 			deviceMap[esp.key] = pickerDevice{
 				Name:      esp.name,
@@ -396,7 +398,8 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	var selected string
 	if flagDeviceType != "" {
 		// --device-type is only supported for Linux devices, not ESP32/Wendy Lite.
-		if flagDeviceType == "esp32-c6" || flagDeviceType == "esp32-c5" {
+		switch flagDeviceType {
+		case "esp32-c6", "esp32-c5", "esp32-s3", "esp32-c61":
 			return fmt.Errorf("--device-type does not support ESP32 targets; use the interactive picker for Wendy Lite devices")
 		}
 		if _, ok := deviceMap[flagDeviceType]; !ok {
@@ -2347,7 +2350,7 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 }
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
-// chip is e.g. "esp32c6" or "esp32c5".
+// chip is e.g. "esp32c6", "esp32c5", "esp32s3", or "esp32c61".
 func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
