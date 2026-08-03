@@ -87,29 +87,41 @@ The lab obtained both from the historical
 [Unitree G1 package folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
 Wendy does not control that folder, so this experimental flow does not download
 from it automatically. A production release requires publisher-controlled
-artifacts and trusted checksums in the Wendy manifest.
+artifacts and trusted checksums or signatures in the Wendy manifest. For the
+lab run, the CLI calculates and prints SHA-256 fingerprints for both selected
+files. Those fingerprints make the exact test inputs reproducible but do not
+prove their publisher or safety.
 
 The interactive flow:
 
 1. Selects **Unitree G1 JetPack 6.2**.
 2. Asks for the folder containing the paired packages and validates both exact
    filenames as non-empty regular files.
-3. Lists external drives by model, device path, and size, then includes the
+3. Reads both complete files, prints their SHA-256 fingerprints, explains the
+   missing trust anchor, and requires the operator to type
+   `UNVERIFIED UNITREE LAB FLASH`. `--force` cannot bypass this acceptance.
+4. Lists external drives by model, device path, and size, then includes the
    hardware serial (when available) in the final destructive-write review.
-4. Accepts only a fixed external SSD of at least 1 TB, then shows one final
-   destructive-write summary before erasing it.
-5. Streams the bzip2 rootfs image to the replacement NVMe and syncs the write.
-6. Pauses while the operator installs the replacement NVMe in PC2 and preserves
+5. Accepts only a fixed external SSD of at least 1 TB, then shows one final
+   destructive-write summary and re-hashes the image before erasing the drive.
+6. Streams the bzip2 rootfs image to the replacement NVMe and syncs the write.
+7. Pauses while the operator installs the replacement NVMe in PC2 and preserves
    the original drive.
-7. Shows the verified PWR/REC and PC2 USB-C recovery instructions, then waits for
+8. Shows the verified PWR/REC and PC2 USB-C recovery instructions, then waits for
    an Orin NX APX device.
-8. Refuses to invoke Unitree's vendor script if any additional recovery-mode
+9. Refuses to invoke Unitree's vendor script if any additional recovery-mode
    Jetson is connected, because that script cannot be safely pinned to one USB
    path.
-9. Validates archive paths, extracts `Jetpack_6.2_nx.tar.bz2` into a temporary
-   workspace, and runs its single `Linux_for_Tegra/flash_nx_module.sh` under
-   `sudo`.
-10. Prints the normal-boot and `192.168.123.164` verification commands.
+10. Re-hashes the firmware archive, then extracts it with a constrained
+    in-process extractor:
+    absolute/traversal paths, duplicate paths, special files, writes through
+    symlinks, forward hard links, more than 1,000,000 entries, and more than
+    200 GiB of expanded regular-file data are rejected. Regular files are
+    materialized before any validated in-tree links are created.
+11. Locates the single regular `Linux_for_Tegra/flash_nx_module.sh`, prints its
+    SHA-256, exact temporary working directory, and exact `sudo` command, then
+    requires a second confirmation before execution.
+12. Prints the normal-boot and `192.168.123.164` verification commands.
 
 This target flashes only the G1's open Jetson development computer, PC2. It
 must never be used on the separate motion-control computer. The command does

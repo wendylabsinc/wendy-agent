@@ -6,6 +6,8 @@ import (
 	"archive/tar"
 	"compress/bzip2"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -14,24 +16,34 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 const (
-	unitreeG1Version          = "6.2"
-	unitreeG1ImageName        = "g1-nx-j6.2.img.bz2"
-	unitreeG1FirmwareName     = "Jetpack_6.2_nx.tar.bz2"
-	unitreeG1MinDriveBytes    = int64(900_000_000_000)
-	unitreeG1HistoricalSource = "https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm"
+	unitreeG1Version           = "6.2"
+	unitreeG1ImageName         = "g1-nx-j6.2.img.bz2"
+	unitreeG1FirmwareName      = "Jetpack_6.2_nx.tar.bz2"
+	unitreeG1MinDriveBytes     = int64(900_000_000_000)
+	unitreeG1HistoricalSource  = "https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm"
+	unitreeG1TrustPhrase       = "UNVERIFIED UNITREE LAB FLASH"
+	unitreeG1MaxArchiveEntries = 1_000_000
+	unitreeG1MaxExtractedSize  = int64(200 << 30)
 )
 
 type unitreeG1Packages struct {
 	Directory string
 	Image     string
 	Firmware  string
+}
+
+type unitreeG1Fingerprints struct {
+	Image    string
+	Firmware string
 }
 
 func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
@@ -73,6 +85,13 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	if err != nil {
 		return err
 	}
+	fingerprints, err := fingerprintUnitreeG1Packages(packages)
+	if err != nil {
+		return err
+	}
+	if err := acceptUnverifiedUnitreeG1Artifacts(fingerprints); err != nil {
+		return err
+	}
 
 	if err := preAuthElevation(); err != nil {
 		return err
@@ -94,7 +113,9 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Printf("  Device: %s\n", target.DevicePath)
 	fmt.Printf("  Size:   %s\n", target.Size)
 	fmt.Printf("  Image:  %s\n", filepath.Base(packages.Image))
+	fmt.Printf("          sha256:%s\n", fingerprints.Image)
 	fmt.Printf("  PC2:    %s\n", filepath.Base(packages.Firmware))
+	fmt.Printf("          sha256:%s\n", fingerprints.Firmware)
 
 	if !opts.Force {
 		fmt.Println()
@@ -105,6 +126,9 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 		if !confirmed {
 			return ErrUserCancelled
 		}
+	}
+	if err := recheckUnitreeG1Artifact(packages.Image, fingerprints.Image, "before the destructive write"); err != nil {
+		return err
 	}
 
 	stream, err := streamBzip2Image(packages.Image)
@@ -153,16 +177,35 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 		return err
 	}
 	fmt.Println(tui.SuccessMessage("Detected " + dev.Describe() + " in APX recovery mode."))
+	if err := recheckUnitreeG1Artifact(packages.Firmware, fingerprints.Firmware, "before extraction and privileged execution"); err != nil {
+		return err
+	}
 
 	workspace, script, err := extractUnitreeG1Firmware(ctx, packages.Firmware)
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(workspace)
+	scriptHash, err := hashUnitreeG1File(script, nil)
+	if err != nil {
+		return fmt.Errorf("fingerprinting extracted flash script: %w", err)
+	}
 
 	fmt.Println()
 	fmt.Println(tui.Header("Flashing matching Unitree PC2 module firmware"))
+	fmt.Printf("  Archive:   sha256:%s\n", fingerprints.Firmware)
+	fmt.Printf("  Script:    %s\n", strings.TrimPrefix(script, workspace+string(filepath.Separator)))
+	fmt.Printf("  Script:    sha256:%s\n", scriptHash)
+	fmt.Printf("  Directory: %s\n", filepath.Dir(script))
+	fmt.Println("  Command:   sudo ./flash_nx_module.sh")
 	fmt.Println(tui.WarningMessage("Do not power off the G1 or disconnect USB until flash_nx_module.sh reports success."))
+	confirmed, err := tui.Confirm("Run this unverified vendor script with root privileges?")
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return ErrUserCancelled
+	}
 	if err := runUnitreeG1FirmwareScript(ctx, script); err != nil {
 		return err
 	}
@@ -218,6 +261,120 @@ func resolveUnitreeG1Packages(dir string) (unitreeG1Packages, error) {
 		}
 	}
 	return result, nil
+}
+
+func fingerprintUnitreeG1Packages(packages unitreeG1Packages) (unitreeG1Fingerprints, error) {
+	fmt.Println()
+	fmt.Println(tui.Header("Fingerprinting selected Unitree artifacts"))
+	image, err := fingerprintUnitreeG1Artifact(packages.Image)
+	if err != nil {
+		return unitreeG1Fingerprints{}, err
+	}
+	firmware, err := fingerprintUnitreeG1Artifact(packages.Firmware)
+	if err != nil {
+		return unitreeG1Fingerprints{}, err
+	}
+	return unitreeG1Fingerprints{Image: image, Firmware: firmware}, nil
+}
+
+type unitreeG1HashResult struct {
+	digest string
+	err    error
+}
+
+func fingerprintUnitreeG1Artifact(filePath string) (string, error) {
+	progress := tui.NewProgress("Calculating SHA-256 for " + filepath.Base(filePath) + "...")
+	program := tui.NewProgressProgram(progress)
+	sendProgress := throttledProgress(program, 33*time.Millisecond)
+	resultCh := make(chan unitreeG1HashResult, 1)
+	go func() {
+		digest, err := hashUnitreeG1File(filePath, sendProgress)
+		resultCh <- unitreeG1HashResult{digest: digest, err: err}
+		program.Send(tui.ProgressDoneMsg{Err: err})
+	}()
+	final, runErr := program.Run()
+	result := <-resultCh
+	if runErr != nil {
+		return "", fmt.Errorf("fingerprint progress TUI: %w", runErr)
+	}
+	if err := final.(tui.ProgressModel).Err(); err != nil {
+		return "", err
+	}
+	return result.digest, result.err
+}
+
+func hashUnitreeG1File(filePath string, progress func(read, total int64)) (string, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	buffer := make([]byte, 4<<20)
+	var read int64
+	for {
+		n, readErr := file.Read(buffer)
+		if n > 0 {
+			if _, err := hash.Write(buffer[:n]); err != nil {
+				return "", err
+			}
+			read += int64(n)
+			if progress != nil {
+				progress(read, info.Size())
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return hex.EncodeToString(hash.Sum(nil)), nil
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+	}
+}
+
+func acceptUnverifiedUnitreeG1Artifacts(fingerprints unitreeG1Fingerprints) error {
+	fmt.Println()
+	fmt.Println(tui.Header("Artifact trust review"))
+	fmt.Println(tui.WarningMessage("Wendy has no trusted manifest checksums or signatures for these historical Unitree files."))
+	fmt.Println("The hashes below identify the exact selected bytes for this lab run; they do not prove who published them or that they are safe.")
+	fmt.Printf("  %s\n    sha256:%s\n", unitreeG1ImageName, fingerprints.Image)
+	fmt.Printf("  %s\n    sha256:%s\n", unitreeG1FirmwareName, fingerprints.Firmware)
+	fmt.Println("The firmware archive contains a vendor script that will be shown again and executed with sudo after constrained extraction.")
+	fmt.Println("Production installation remains blocked until Wendy publishes authenticated artifacts and pins both hashes in its manifest.")
+	fmt.Println()
+	_, err := tui.PromptText(
+		"Type "+unitreeG1TrustPhrase+" to continue",
+		"lab-only acceptance; --force does not bypass this",
+		validateUnitreeG1TrustPhrase,
+	)
+	if errors.Is(err, tui.ErrCancelled) {
+		return ErrUserCancelled
+	}
+	return err
+}
+
+func validateUnitreeG1TrustPhrase(value string) error {
+	if value != unitreeG1TrustPhrase {
+		return fmt.Errorf("type %s exactly", unitreeG1TrustPhrase)
+	}
+	return nil
+}
+
+func recheckUnitreeG1Artifact(filePath, acceptedDigest, purpose string) error {
+	fmt.Println()
+	fmt.Println(tui.Header("Rechecking accepted artifact " + purpose))
+	actualDigest, err := fingerprintUnitreeG1Artifact(filePath)
+	if err != nil {
+		return err
+	}
+	if actualDigest != acceptedDigest {
+		return fmt.Errorf("%s changed after artifact trust acceptance: accepted sha256:%s, current sha256:%s", filepath.Base(filePath), acceptedDigest, actualDigest)
+	}
+	return nil
 }
 
 func selectUnitreeG1Drive(ctx context.Context, requested string) (drive, error) {
@@ -328,17 +485,13 @@ func pickUnitreeG1RecoveryDevice() (rcm.RecoveryDevice, error) {
 }
 
 func extractUnitreeG1Firmware(ctx context.Context, archive string) (workspace, script string, err error) {
-	if err := validateUnitreeG1Archive(archive); err != nil {
-		return "", "", err
-	}
 	workspace, err = os.MkdirTemp("", "wendy-unitree-g1-")
 	if err != nil {
 		return "", "", err
 	}
-	cmd := exec.CommandContext(ctx, "tar", "--bzip2", "--extract", "--file", archive, "--directory", workspace, "--no-same-owner", "--no-same-permissions")
-	if output, extractErr := cmd.CombinedOutput(); extractErr != nil {
+	if extractErr := extractUnitreeG1Archive(ctx, archive, workspace); extractErr != nil {
 		os.RemoveAll(workspace)
-		return "", "", fmt.Errorf("extracting Unitree firmware archive: %w: %s", extractErr, strings.TrimSpace(string(output)))
+		return "", "", extractErr
 	}
 	script, err = findUnitreeG1FlashScript(workspace)
 	if err != nil {
@@ -348,46 +501,253 @@ func extractUnitreeG1Firmware(ctx context.Context, archive string) (workspace, s
 	return workspace, script, nil
 }
 
-func validateUnitreeG1Archive(archive string) error {
+type unitreeG1ArchiveLink struct {
+	name   string
+	target string
+}
+
+type unitreeG1ArchiveDirectory struct {
+	path string
+	mode os.FileMode
+}
+
+func extractUnitreeG1Archive(ctx context.Context, archive, root string) error {
 	file, err := os.Open(archive)
 	if err != nil {
 		return fmt.Errorf("opening Unitree firmware archive: %w", err)
 	}
 	defer file.Close()
-	return validateUnitreeG1Tar(bzip2.NewReader(file))
+	if err := extractUnitreeG1Tar(ctx, bzip2.NewReader(file), root); err != nil {
+		return fmt.Errorf("extracting Unitree firmware archive: %w", err)
+	}
+	return nil
 }
 
-func validateUnitreeG1Tar(source io.Reader) error {
+func extractUnitreeG1Tar(ctx context.Context, source io.Reader, root string) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return err
+	}
+	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("archive extraction root %q must be a real directory", root)
+	}
+
 	reader := tar.NewReader(source)
+	seen := make(map[string]byte)
+	var hardLinks []unitreeG1ArchiveLink
+	var symbolicLinks []unitreeG1ArchiveLink
+	var directories []unitreeG1ArchiveDirectory
+	var extractedBytes int64
+	entries := 0
+
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			break
 		}
 		if err != nil {
 			return fmt.Errorf("reading Unitree firmware archive: %w", err)
 		}
-		if !safeUnitreeG1ArchivePath(header.Name) {
-			return fmt.Errorf("Unitree firmware archive contains unsafe path %q", header.Name)
+		entries++
+		if entries > unitreeG1MaxArchiveEntries {
+			return fmt.Errorf("archive exceeds the %d-entry safety limit", unitreeG1MaxArchiveEntries)
 		}
+
+		cleanName, destination, err := unitreeG1ArchiveDestination(root, header.Name)
+		if err != nil {
+			return err
+		}
+		if ancestor, ok := unitreeG1SymlinkAncestor(cleanName, seen); ok {
+			return fmt.Errorf("archive entry %q would write through symlink %q", header.Name, ancestor)
+		}
+
+		var kind byte
 		switch header.Typeflag {
-		case tar.TypeReg, tar.TypeRegA, tar.TypeDir:
+		case tar.TypeReg, tar.TypeRegA:
+			kind = 'f'
+		case tar.TypeDir:
+			kind = 'd'
+		case tar.TypeSymlink:
+			kind = 's'
+		case tar.TypeLink:
+			kind = 'h'
+		default:
+			return fmt.Errorf("archive contains unsupported entry type %d at %q", header.Typeflag, header.Name)
+		}
+		if previous, ok := seen[cleanName]; ok {
+			if kind == 'd' && previous == 'd' {
+				continue
+			}
+			return fmt.Errorf("archive contains duplicate path %q", header.Name)
+		}
+		seen[cleanName] = kind
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := makeUnitreeG1ArchiveDirs(root, destination); err != nil {
+				return err
+			}
+			if destination != root {
+				directories = append(directories, unitreeG1ArchiveDirectory{
+					path: destination,
+					mode: os.FileMode(header.Mode) & 0o777,
+				})
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if destination == root {
+				return fmt.Errorf("archive regular file %q resolves to the extraction root", header.Name)
+			}
+			if header.Size < 0 || header.Size > unitreeG1MaxExtractedSize-extractedBytes {
+				return fmt.Errorf("archive exceeds the %d GiB extracted-size safety limit", unitreeG1MaxExtractedSize>>30)
+			}
+			if err := makeUnitreeG1ArchiveDirs(root, filepath.Dir(destination)); err != nil {
+				return err
+			}
+			output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				return fmt.Errorf("creating archive file %q: %w", header.Name, err)
+			}
+			written, copyErr := io.Copy(output, &unitreeG1ContextReader{ctx: ctx, reader: reader})
+			closeErr := output.Close()
+			if copyErr != nil {
+				return fmt.Errorf("extracting archive file %q: %w", header.Name, copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("closing archive file %q: %w", header.Name, closeErr)
+			}
+			if written != header.Size {
+				return fmt.Errorf("archive file %q declared %d bytes but produced %d", header.Name, header.Size, written)
+			}
+			extractedBytes += written
+			if err := os.Chmod(destination, os.FileMode(header.Mode)&0o777); err != nil {
+				return fmt.Errorf("setting archive file mode for %q: %w", header.Name, err)
+			}
 		case tar.TypeSymlink:
 			if path.IsAbs(header.Linkname) {
-				return fmt.Errorf("Unitree firmware archive symlink %q has an absolute target", header.Name)
+				return fmt.Errorf("archive symlink %q has an absolute target", header.Name)
 			}
 			resolved := path.Join(path.Dir(header.Name), header.Linkname)
 			if !safeUnitreeG1ArchivePath(resolved) {
-				return fmt.Errorf("Unitree firmware archive symlink %q escapes the extraction folder", header.Name)
+				return fmt.Errorf("archive symlink %q escapes the extraction folder", header.Name)
 			}
+			if err := makeUnitreeG1ArchiveDirs(root, filepath.Dir(destination)); err != nil {
+				return err
+			}
+			symbolicLinks = append(symbolicLinks, unitreeG1ArchiveLink{name: destination, target: header.Linkname})
 		case tar.TypeLink:
-			if !safeUnitreeG1ArchivePath(header.Linkname) {
-				return fmt.Errorf("Unitree firmware archive hard link %q escapes the extraction folder", header.Name)
+			cleanTarget, target, err := unitreeG1ArchiveDestination(root, header.Linkname)
+			if err != nil {
+				return fmt.Errorf("archive hard link %q: %w", header.Name, err)
 			}
-		default:
-			return fmt.Errorf("Unitree firmware archive contains unsupported entry type %d at %q", header.Typeflag, header.Name)
+			if seen[cleanTarget] != 'f' {
+				return fmt.Errorf("archive hard link %q must target a prior regular file", header.Name)
+			}
+			if err := makeUnitreeG1ArchiveDirs(root, filepath.Dir(destination)); err != nil {
+				return err
+			}
+			hardLinks = append(hardLinks, unitreeG1ArchiveLink{name: destination, target: target})
 		}
 	}
+
+	// Regular files are fully materialized before any links are created. This
+	// prevents a later archive entry from writing through an extracted symlink.
+	for _, link := range hardLinks {
+		info, err := os.Lstat(link.target)
+		if err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("archive hard link target %q is not a regular extracted file", link.target)
+		}
+		if err := os.Link(link.target, link.name); err != nil {
+			return fmt.Errorf("creating archive hard link %q: %w", link.name, err)
+		}
+	}
+	for _, link := range symbolicLinks {
+		if _, err := os.Lstat(link.name); err == nil || !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("archive symlink destination %q already exists", link.name)
+		}
+		if err := os.Symlink(link.target, link.name); err != nil {
+			return fmt.Errorf("creating archive symlink %q: %w", link.name, err)
+		}
+	}
+
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.Count(directories[i].path, string(filepath.Separator)) > strings.Count(directories[j].path, string(filepath.Separator))
+	})
+	for _, directory := range directories {
+		if err := os.Chmod(directory.path, directory.mode); err != nil {
+			return fmt.Errorf("setting archive directory mode for %q: %w", directory.path, err)
+		}
+	}
+	return nil
+}
+
+type unitreeG1ContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *unitreeG1ContextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(buffer)
+}
+
+func unitreeG1ArchiveDestination(root, name string) (cleanName, destination string, err error) {
+	if !safeUnitreeG1ArchivePath(name) {
+		return "", "", fmt.Errorf("archive contains unsafe path %q", name)
+	}
+	cleanName = path.Clean(name)
+	destination = filepath.Join(root, filepath.FromSlash(cleanName))
+	relative, err := filepath.Rel(root, destination)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("archive path %q escapes the extraction folder", name)
+	}
+	return cleanName, destination, nil
+}
+
+func unitreeG1SymlinkAncestor(cleanName string, seen map[string]byte) (string, bool) {
+	for parent := path.Dir(cleanName); parent != "." && parent != "/"; parent = path.Dir(parent) {
+		if seen[parent] == 's' {
+			return parent, true
+		}
+	}
+	return "", false
+}
+
+func makeUnitreeG1ArchiveDirs(root, directory string) error {
+	relative, err := filepath.Rel(root, directory)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("archive directory %q escapes the extraction folder", directory)
+	}
+	current := root
+	if relative == "." {
+		return nil
+	}
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(current, 0o700); err != nil {
+				return fmt.Errorf("creating archive directory %q: %w", current, err)
+			}
+		case err != nil:
+			return err
+		case !info.IsDir():
+			return fmt.Errorf("archive path component %q is not a real directory", current)
+		}
+	}
+	return nil
 }
 
 func safeUnitreeG1ArchivePath(name string) bool {
@@ -426,6 +786,14 @@ func findUnitreeG1FlashScript(root string) (string, error) {
 }
 
 func runUnitreeG1FirmwareScript(ctx context.Context, script string) error {
+	// SECURITY: This draft-only lab path intentionally runs operator-selected,
+	// unverified Unitree firmware as root because no authenticated publisher
+	// artifacts exist yet. The UI fingerprints both artifacts, requires typed
+	// risk acceptance, extracts without following archive links, shows the exact
+	// script hash/working directory/command, and requires a second confirmation.
+	// Production enablement must replace this exception with Wendy-controlled,
+	// signed or manifest-pinned artifacts; a locally calculated hash alone does
+	// not establish authenticity.
 	cmd := exec.CommandContext(ctx, "sudo", "./flash_nx_module.sh")
 	cmd.Dir = filepath.Dir(script)
 	cmd.Stdin = os.Stdin
