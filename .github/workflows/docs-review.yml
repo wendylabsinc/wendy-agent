@@ -302,6 +302,20 @@ jobs:
           if not isinstance(raw_findings, list):
               raise RuntimeError('Docs review findings must be an array')
 
+          def _raw_severity(raw_finding):
+              if not isinstance(raw_finding, dict):
+                  return 'info'
+              severity = _one_line(raw_finding.get('severity', 'info')).lower()
+              return severity if severity in severity_rank else 'info'
+
+          # Computed over the full (untruncated) list so a blocker beyond the
+          # top 8 findings still fails the job, even if it isn't rendered below.
+          has_blocker = any(_raw_severity(raw_finding) == 'blocker' for raw_finding in raw_findings)
+
+          # Sort before truncating so blocker/concern findings aren't dropped
+          # in favor of lower-severity ones that happened to come first.
+          raw_findings = sorted(raw_findings, key=lambda rf: severity_rank[_raw_severity(rf)])
+
           findings = []
           allowed_finding_keys = {'severity', 'title', 'path', 'overview', 'details'}
           string_finding_keys = {'severity', 'title', 'path', 'overview', 'details'}
@@ -347,6 +361,12 @@ jobs:
                   'details': details,
               })
 
+          github_env = os.environ.get('GITHUB_ENV', '')
+          if github_env and has_blocker:
+              with open(github_env, 'a', encoding='utf-8') as genv:
+                  genv.write('HAS_DOCS_BLOCKER=true\n')
+          print(f'Open blocker findings: {has_blocker}')
+
           if not findings:
               print('No doc changes needed')
               raise SystemExit(0)
@@ -388,14 +408,6 @@ jobs:
           with open(review_file, 'w', encoding='utf-8') as f:
               f.write('\n'.join(lines).rstrip() + '\n')
           print(f'Review written to {review_file}')
-
-          has_blocker = any(finding['severity'] == 'blocker' for finding in findings)
-          print(f'Open blocker findings: {has_blocker}')
-
-          github_env = os.environ.get('GITHUB_ENV', '')
-          if github_env and has_blocker:
-              with open(github_env, 'a', encoding='utf-8') as genv:
-                  genv.write('HAS_DOCS_BLOCKER=true\n')
           PYEOF
 
       - name: Prepare docs review comment
