@@ -455,36 +455,30 @@ Unitree software, or other workloads may use it.
 
 ## Optional: update the G1 development computer to JetPack 6.2
 
-Wendy Agent does not require this update. This appendix records the separate,
-destructive procedure used to move the lab G1's development computer from the
-original Unitree JetPack 5.1.1 environment to Unitree's G1-specific JetPack 6.2
-recovery image. It follows the
-[NVIDIA GEAR G1 JetPack 6 flashing guide](https://nvlabs.github.io/GR00T-WholeBodyControl/references/jetpack6.html).
-
-JetPack 6.2 contains Jetson Linux 36.4.3, an Ubuntu 22.04 root filesystem, and
-CUDA 12.6. See NVIDIA's
-[JetPack 6.2 release page](https://developer.nvidia.com/embedded/jetpack-sdk-62).
+Wendy Agent does not require this update. This section records the exact lab
+process used to replace the G1 development computer's original JetPack 5.1.1
+system with Unitree's JetPack 6.2 packages. It is a historical lab procedure,
+not part of the Wendy Agent installation flow.
 
 <Callout type="warning">
-  This procedure erases the selected NVMe drive and rewrites PC2's boot
-  firmware. It is not an in-place APT upgrade. Use only Unitree's G1-specific
-  image and firmware together; do not flash a generic NVIDIA Orin NX image or
-  touch the G1's private motion-control computer. Power the robot down before
-  opening or closing its rear compartment. During the instructed recovery-mode
-  step, keep it physically supported and touch only the labeled PC2 controls.
+  This is a destructive SSD and PC2 firmware replacement, not an APT upgrade.
+  Do not copy the lab's `/dev/sda` path without identifying the replacement
+  disk on your own Ubuntu host. Never flash the G1's private motion-control
+  computer.
 </Callout>
 
-### What Wendy used
+### Lab hardware and packages
 
-- A native Ubuntu 20.04 or 22.04 x86-64 host, not a virtual machine
-- An NVMe-to-USB enclosure and a USB data cable
-- The original ZHITAI TiPlus5000 2 TB NVMe, removed and preserved unchanged as
-  the physical backup
-- A replacement Crucial P310 1 TB NVMe for the new system
-- Unitree's matching `g1-nx-j6.2.img.bz2` system image and
-  `Jetpack_6.2_nx.tar.bz2` module-firmware package
+- Original drive: ZHITAI TiPlus5000 2 TB with JetPack 5.1.1, L4T 35.3.1,
+  and Ubuntu 20.04
+- Replacement drive: Crucial P310 1 TB, model `CT1000P310SSD8`
+- Native Ubuntu x86-64 host
+- NVMe-to-USB enclosure and a USB data cable
+- Unitree system image: `g1-nx-j6.2.img.bz2`
+- Unitree PC2 firmware package: `Jetpack_6.2_nx.tar.bz2`
 
-The two packages update different storage layers and must match:
+The lab used two matching packages because the NVMe operating system and the
+Orin NX module firmware are separate:
 
 ```text
 Orin NX module
@@ -492,150 +486,122 @@ Orin NX module
 └── NVMe operating system    g1-nx-j6.2.img.bz2 written to the replacement SSD
 ```
 
-Obtain both files through Unitree's current support channel or the download
-linked from NVIDIA's G1 flashing guide. Do not substitute a similarly named
-community image. Use vendor-published checksums or signatures when available.
+Obtain the current G1-specific packages from Unitree before repeating the
+process. A generic NVIDIA Orin NX image does not contain the G1 carrier-board
+configuration.
 
-### 1. Preserve the original system
+### 1. Inspect and preserve the original drive
 
-Shut down PC2 and remove the original NVMe using Unitree's service instructions.
-Label it with the robot and original JetPack version, place it in antistatic
-storage, and do not write the JetPack 6.2 image to it. Back up application data,
-SSH keys, networking, DDS configuration, Unitree services, and Wendy data before
-continuing.
+The original ZHITAI drive was removed from PC2 and attached over USB for
+read-only inspection. Its NVIDIA package metadata reported JetPack 5.1.1 and
+L4T 35.3.1. The drive was then disconnected and kept unchanged as the physical
+backup. The lab did not write the JetPack 6.2 image to the original drive.
 
 The original NVMe is a data backup, but it is not a complete one-step rollback.
 After PC2's module firmware is updated to JetPack 6.2, booting JetPack 5.1.1
 again also requires restoring the matching Unitree JetPack 5.1.1 module
 firmware.
 
-### 2. Identify the replacement NVMe
+### 2. Identify the Crucial P310 on the Ubuntu host
 
-Attach only the replacement NVMe to the Ubuntu host. Record its model, serial,
-capacity, device path, partitions, and the host's root device:
+The P310 was attached to the Ubuntu host through the NVMe-to-USB enclosure. It
+appeared as `/dev/sda` in the lab. Before writing anything, the model, capacity,
+USB transport, partitions, and host root device were checked:
 
 ```bash
 lsblk -d -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN
-lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,MOUNTPOINTS
+lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS /dev/sda
 findmnt -no SOURCE /
 ```
 
-Set a task-specific variable to the **whole replacement disk**, not a partition.
-This example value is intentionally invalid; replace it with the path confirmed
-above:
-
-```bash
-G1_REPLACEMENT_DISK=/dev/replace-with-confirmed-disk
-lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,MOUNTPOINTS \
-  "$G1_REPLACEMENT_DISK"
-```
-
 <Callout type="warning">
-  Stop unless the model, serial, capacity, USB transport, and device path all
-  identify the replacement NVMe, and `findmnt` shows a different device for the
-  Ubuntu host's root filesystem. The next write cannot be undone.
+  `/dev/sda` was the P310 only on the lab Ubuntu host. Stop unless your own
+  output identifies the Crucial P310 replacement and shows a different device
+  for the host's root filesystem.
 </Callout>
 
-Unmount every mounted child partition shown by `lsblk`, one at a time:
+The P310's mounted partitions were unmounted before imaging:
 
 ```bash
-sudo umount <mounted-replacement-partition>
+sudo umount /dev/sda*
 ```
 
-### 3. Write the JetPack 6.2 system image
-
-First test that the downloaded bzip2 stream is complete:
+The Unitree system image was then written to the whole P310:
 
 ```bash
-bzip2 -tvv g1-nx-j6.2.img.bz2
-```
-
-Recheck `G1_REPLACEMENT_DISK`, then write the image to the whole replacement
-disk:
-
-```bash
-lsblk -d -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN "$G1_REPLACEMENT_DISK"
-bzip2 -dc g1-nx-j6.2.img.bz2 | \
-  sudo dd of="$G1_REPLACEMENT_DISK" bs=4M status=progress conv=fsync
+bzip2 -dc g1-nx-j6.2.img.bz2 | sudo dd of=/dev/sda status=progress
 sudo sync
-sudo udisksctl power-off -b "$G1_REPLACEMENT_DISK"
 ```
 
-Wait for `dd`, `sync`, and the power-off command to finish before unplugging the
-enclosure. Keep the imaged replacement NVMe out of the robot until the module
-firmware step is complete.
+After `dd` and `sync` completed, the P310 was disconnected from the enclosure
+and installed in the G1 development computer.
 
-### 4. Put PC2 into Force Recovery Mode
+### 3. Put the G1 development computer into recovery mode
 
-Remove the G1's rear cover using Unitree's service instructions and locate the
-two white PC2 buttons and its dedicated USB-C flashing port. Use the labeled
-photographs in NVIDIA's G1 flashing guide; do not identify the controls by
-guessing.
+With the P310 installed, the lab used the two PC2 buttons inside the rear
+electronics compartment. PWR is the upper button; REC is the lower button above
+PC2's USB-C flashing port.
 
 1. Power on the G1 and wait for all three power indicators to remain steady.
-2. Connect PC2's flashing USB-C port to the Ubuntu host with a data cable.
-3. Hold both white buttons for two seconds.
-4. Release the upper button while continuing to hold the lower button for two
-   more seconds.
-5. Release the lower button when the indicators change from three green lights
-   to two.
+2. Hold PWR and REC together for about two seconds.
+3. Release PWR while continuing to hold REC for two more seconds.
+4. Release REC.
+5. Connect the Ubuntu host to PC2's dedicated USB-C flashing port with a data
+   cable.
 
 On the Ubuntu host, confirm that the Orin NX appears in APX recovery mode:
 
 ```bash
-lsusb | grep -i nvidia
+lsusb
 ```
 
-The output must identify an NVIDIA APX device. If it does not, stop and repeat
-the button sequence or replace a charge-only USB cable. Do not run the firmware
-script until APX is visible.
+The lab continued only after `lsusb` displayed `NVIDIA Corp. APX`.
 
-### 5. Flash the matching PC2 module firmware
+### 4. Flash the matching PC2 module firmware
 
-Keep the robot powered and the USB cable connected throughout this step:
+The firmware archive stayed on the Ubuntu host; it was not copied to the P310 or
+to PC2. From the directory containing the archive, the lab ran:
 
 ```bash
-bzip2 -tvv Jetpack_6.2_nx.tar.bz2
-tar -xjvf Jetpack_6.2_nx.tar.bz2
+sudo tar -xjvf Jetpack_6.2_nx.tar.bz2
 cd Jetpack_6.2_nx/Linux_for_Tegra
 lsusb | grep -i nvidia
 sudo ./flash_nx_module.sh
 ```
 
-Do not interrupt the script, close the terminal, unplug USB, or allow the host
-to sleep. NVIDIA's G1 guide says this takes about eight minutes. Continue only
-after the script explicitly reports a successful flash.
+The G1 remained powered and connected over USB until the script explicitly
+reported success. The process took approximately eight minutes.
 
-### 6. Reassemble, boot, and verify
+### 5. Boot and verify the updated PC2
 
-After a successful firmware flash, power the G1 off and disconnect the recovery
-USB cable. Install the imaged replacement NVMe in PC2, secure its retaining
-screw, and reinstall the rear cover and handle before powering the robot on.
+After the firmware script completed, the G1 was powered off and the recovery
+USB cable was disconnected. The P310 was checked for secure installation, the
+rear compartment was closed, and the G1 was powered on normally. The first boot
+was given several minutes before the lab attempted network access.
 
-Allow extra time for the first boot. Start with non-motion checks. Connect to
-PC2 and record the installed versions:
+The lab then checked PC2 without enabling motion:
 
 ```bash
-head -n 1 /etc/nv_tegra_release
-dpkg-query -W nvidia-l4t-core 2>/dev/null || true
-. /etc/os-release && echo "$PRETTY_NAME"
-uname -m
-nvcc --version 2>/dev/null || true
+ping 192.168.123.164
+ssh unitree@192.168.123.164
+
+cat /etc/nv_tegra_release
+cat /etc/os-release
+nvcc --version
+uname -a
 ```
 
-The Unitree JetPack 6.2 packages should report Jetson Linux/L4T 36.4.x, Ubuntu
-22.04, and `aarch64`. Before installing Wendy Agent or enabling any motion app,
-verify all of the following against Unitree's recovery checklist:
+The remaining lab checks were performed in this order:
 
-- Ethernet and Wi-Fi interfaces and the expected `192.168.123.0/24` robot link
-- USB devices, cameras, and GPU/CUDA access
-- Unitree systemd services and DDS state topics
+- Ethernet and Wi-Fi
+- USB devices and cameras
+- GPU and CUDA
+- Unitree services and DDS communication
 - G1 app video/image display
-- No unexpected failed services in `systemctl --failed`
+- Controlled motion only after all non-motion checks passed
 
-Keep motion disabled during these checks. Test controlled movement only after
-Unitree's non-motion validation passes, with the G1 supported on its gantry and
-the physical remote and E-stop held by the operator.
+Keep the G1 supported on its gantry and keep the physical remote and E-stop with
+the operator for the final controlled-motion check.
 
 ## Next steps
 
