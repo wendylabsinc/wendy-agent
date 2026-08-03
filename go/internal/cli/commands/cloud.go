@@ -69,9 +69,9 @@ func newCloudDeviceCmd() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
 	cmd.PersistentFlags().StringVar(&brokerURL, "broker-url", os.Getenv("WENDY_BROKER_URL"), "Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)")
 
-	wrapCloudDeviceCommands(cmd, func() cloudDeviceConfig {
+	wrapCloudDeviceCommands(cmd, func(executing *cobra.Command) cloudDeviceConfig {
 		return cloudDeviceConfig{
-			CloudGRPC:  cloudGRPC,
+			CloudGRPC:  resolveCloudGRPCFlag(executing, cloudGRPC),
 			DeviceName: deviceFlag,
 			BrokerURL:  brokerURL,
 		}
@@ -79,18 +79,56 @@ func newCloudDeviceCmd() *cobra.Command {
 	return cmd
 }
 
-func wrapCloudDeviceCommands(cmd *cobra.Command, cfg func() cloudDeviceConfig) {
+// resolveCloudGRPCFlag reads --cloud-grpc from the command actually being run,
+// falling back to the value bound to this group's persistent flag.
+//
+// `enroll`, `unenroll`, and `rename` declare their own local --cloud-grpc for
+// the cloud-side cleanup they perform. A local flag shadows an inherited
+// persistent one of the same name, so under `wendy cloud device` those three
+// bound the user's value to their own variable and left this group's persistent
+// flag empty. The endpoint documented on the parent was therefore impossible to
+// set on exactly the three subcommands that talk to the cloud most.
+//
+// Looking the flag up on the executing command resolves whichever definition is
+// in effect, so one --cloud-grpc means one thing regardless of where it is
+// declared.
+func resolveCloudGRPCFlag(executing *cobra.Command, fallback string) string {
+	if executing == nil {
+		return fallback
+	}
+	if f := executing.Flags().Lookup("cloud-grpc"); f != nil && f.Value.String() != "" {
+		return f.Value.String()
+	}
+	return fallback
+}
+
+// effectiveDeviceName prefers a command's own --device value and falls back to the
+// root's persistent --device.
+//
+// `cloud run` and `cloud tunnel` each declare a local --device bound to their own
+// variable, which shadows the persistent one. Without this fallback the flag is
+// position-dependent: `wendy cloud tunnel --device thor` is honoured while
+// `wendy --device thor cloud tunnel` is silently ignored and falls through to the
+// interactive picker.
+func effectiveDeviceName(local string) string {
+	if local != "" {
+		return local
+	}
+	return deviceFlag
+}
+
+func wrapCloudDeviceCommands(cmd *cobra.Command, cfg func(*cobra.Command) cloudDeviceConfig) {
 	if cmd.RunE != nil {
 		runE := cmd.RunE
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
-			cmd.SetContext(context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cfg()))
+			cmd.SetContext(context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cfg(cmd)))
 			return runE(cmd, args)
 		}
 	}
 	if cmd.Run != nil {
 		run := cmd.Run
 		cmd.Run = func(cmd *cobra.Command, args []string) {
-			cmd.SetContext(context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cfg()))
+			cmd.SetContext(context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cfg(cmd)))
 			run(cmd, args)
 		}
 	}
