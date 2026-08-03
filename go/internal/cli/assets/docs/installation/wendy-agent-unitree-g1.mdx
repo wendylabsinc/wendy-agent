@@ -19,18 +19,18 @@ the lab G1.
 
 <Callout type="info">
   These instructions follow Unitree's documented G1 development environment
-  and Wendy's supported installation procedure. Wendy also completed an
-  end-to-end upgrade-path trial on a lab G1 running Ubuntu 20.04.6 on aarch64.
-  We will reconfirm the procedure on the lab G1 and update this guide if its
-  configuration differs.
+  and Wendy's supported installation procedure. Wendy reconfirmed the
+  non-motion workflow on the lab G1 after its Unitree JetPack 6.2 update. That
+  system runs Ubuntu 22.04.5 on arm64 with Jetson Linux R36.4.3. An earlier
+  end-to-end upgrade-path trial used Ubuntu 20.04.6 on arm64.
 </Callout>
 
-The lab trial confirmed the PC2 address and SSH credentials, direct Wi-Fi
-internet access, macOS internet-sharing mechanics, a running `containerd`, the
-Wendy Agent installer and upgrade recovery, and successful discovery from the
-developer machine. The tested robot was not factory-fresh, so clean-image
-dependency resolution and the revised internet-sharing commands remain marked
-for testing where they appear below.
+The latest lab walkthrough confirmed the PC2 address and SSH credentials,
+direct Wi-Fi internet access, the Wendy Agent installation result, automatic
+`containerd` dependency installation, service startup, mDNS discovery, device
+inspection, and RealSense enumeration. The safer macOS internet-sharing recipe
+still needs an end-to-end retest over a physically connected developer-machine
+Ethernet link and remains marked where it appears below.
 
 <Callout type="info">
   You do not need robotics experience to install Wendy Agent. Steps 1–5 work
@@ -156,28 +156,36 @@ run the same Ubuntu or JetPack version.
 ```bash
 uname -m
 . /etc/os-release && echo "$PRETTY_NAME"
+cat /etc/nv_tegra_release
 ip -br address
 ip route
 ```
 
+On the updated lab G1, these commands reported `aarch64`, Ubuntu 22.04.5, and
+Jetson Linux R36.4.3. NVIDIA maps R36.4.3 to JetPack 6.2. Check the BSP release
+directly because a JetPack metapackage might not be installed on a vendor image.
+
 ## Step 3: Check internet access
 
-Do not reconfigure routing if PC2 can already reach the installer:
+The current Unitree JetPack 6.2 image includes `wget` but not `curl`. Do not
+reconfigure routing if PC2 can already reach the installer:
 
 ```bash
-curl -sSIf --max-time 10 https://install.wendy.dev/agent.sh | head -1
+wget --spider https://install.wendy.dev/agent.sh
 ```
 
-If this prints an HTTP success response, skip to Step 4.
+If this reports `200 OK` and `Remote file exists`, skip to Step 4.
 
 PC2 may already be connected to Wi-Fi. A persistent, organization-approved
 Wi-Fi connection is preferable to routing through the developer machine.
 
 <Callout type="info">
-  The lab G1 already had a working `wlan0` connection and could reach Wendy's
-  installer directly. If PC2 is not already online, use Unitree's networking
-  instructions for its installed image, then repeat the internet check above.
-  Wendy will test configuring Wi-Fi from an unconfigured image separately.
+  The lab G1 already had a working Wi-Fi connection and could reach Wendy's
+  installer directly. Interface names vary by image; the updated lab image
+  used `wlxfc23cd8f7621`, not `wlan0`. If PC2 is not already online, use
+  Unitree's networking instructions for its installed image, then repeat the
+  internet check above. Wendy will test configuring Wi-Fi from an unconfigured
+  image separately.
 </Callout>
 
 ### Temporary macOS internet sharing fallback
@@ -200,14 +208,20 @@ printf 'nat on %s from 192.168.123.0/24 to any -> (%s)\n' \
 sudo sysctl -w net.inet.ip.forwarding=1
 ```
 
-Back on PC2, route through the developer machine. `ip route replace` handles a
-pre-existing placeholder default route. Replace `1.1.1.1` with an approved DNS
-resolver when required by your organization.
+Back on PC2, identify the interface carrying `192.168.123.164`, then route
+through the developer machine. Do not assume it is named `eth0`; the lab
+JetPack 6.2 image names it `enP8p1s0`. `ip route replace` handles a pre-existing
+placeholder default route. Replace `1.1.1.1` with an approved DNS resolver when
+required by your organization.
 
 ```bash
-sudo ip route replace default via 192.168.123.99 dev eth0 metric 100
-sudo resolvectl dns eth0 1.1.1.1
-curl -sSIf --max-time 10 https://install.wendy.dev/agent.sh | head -1
+PC2_ETHERNET=$(ip -br address | \
+  awk '$3 ~ /^192\.168\.123\.164\// {print $1; exit}')
+test -n "$PC2_ETHERNET"
+sudo ip route replace default via 192.168.123.99 \
+  dev "$PC2_ETHERNET" metric 100
+sudo resolvectl dns "$PC2_ETHERNET" 1.1.1.1
+wget --spider https://install.wendy.dev/agent.sh
 ```
 
 <Callout type="warning">
@@ -221,8 +235,8 @@ curl -sSIf --max-time 10 https://install.wendy.dev/agent.sh | head -1
 After installation, remove the temporary route and DNS setting on PC2:
 
 ```bash
-sudo ip route del default via 192.168.123.99 dev eth0
-sudo resolvectl revert eth0
+sudo ip route del default via 192.168.123.99 dev "$PC2_ETHERNET"
+sudo resolvectl revert "$PC2_ETHERNET"
 ```
 
 Then restore the Mac in the same terminal used to create the anchor:
@@ -246,21 +260,25 @@ Do not unconditionally install or upgrade `containerd`. The Wendy Debian
 package declares it as a dependency, so APT installs it when absent. This
 avoids unexpectedly restarting an existing runtime merely to perform a check.
 
-On the lab G1, `containerd` 1.7.12 was already installed and active. An earlier
-unconditional installation command upgraded it to 1.7.24 and restarted the
-runtime, which is why this guide performs only the read-only checks above.
+On the freshly updated lab G1, `containerd` was absent before Wendy Agent was
+installed. The package log shows APT installing `containerd` 2.2.1 and
+`wendy-agent` in the same transaction; both services were enabled and active
+after boot. On the earlier Ubuntu 20.04 image, `containerd` 1.7.12 was already
+active. An unconditional installation command upgraded it to 1.7.24 and
+restarted the runtime, which is why this guide performs only the read-only
+checks above.
 
 <Callout type="warning">
-  The lab result confirms the already-installed runtime path. Wendy will also
-  test an image with no runtime and an image using Docker's `containerd.io`
-  package to confirm that dependency resolution does not remove or replace an
-  existing Docker runtime.
+  The lab results confirm both an absent-runtime installation and an
+  already-installed Ubuntu `containerd` runtime. Wendy will separately test an
+  image using Docker's `containerd.io` package to confirm that dependency
+  resolution does not remove or replace an existing Docker runtime.
 </Callout>
 
 Download the installer so it can be reviewed before execution:
 
 ```bash
-curl -fsSLo /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
+wget -O /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
 less /tmp/wendy-agent.sh
 bash /tmp/wendy-agent.sh
 ```
@@ -354,8 +372,10 @@ wendy discover
 The device may appear under a generic Ubuntu hostname rather than a name that
 contains “G1.” Match its address, architecture, operating system, and agent
 version to the PC2 values recorded earlier. During the lab trial,
-`wendy discover` found the provisioned agent at `192.168.123.164` on its
-advertised mTLS port, `50052`.
+`wendy discover` found **Unitree G1 Nx** at `unitree-g1-nx.local` on its
+advertised mTLS port, `50052`. The hostname resolved to the active Wi-Fi address
+while `wendy device info` reported both `192.168.0.108` on Wi-Fi and
+`192.168.123.164` on Ethernet.
 
 You are done when all of the following are true:
 
@@ -393,10 +413,12 @@ service declaration looks like this:
 }
 ```
 
-Host networking lets the container bind DDS to PC2's `eth0` interface. It also
-removes container network isolation and grants access to the robot's internal
-network. Unitree DDS traffic on that network is generally unauthenticated and
-unencrypted, so grant this entitlement only to trusted apps.
+Host networking lets the container bind DDS to PC2's internal Ethernet
+interface (`enP8p1s0` on the updated lab image; verify yours with `ip -br
+address`). It also removes container network isolation and grants access to the
+robot's internal network. Unitree DDS traffic on that network is generally
+unauthenticated and unencrypted, so grant this entitlement only to trusted
+apps.
 
 The G1 uses the `unitree_hg` message package for low-level communication. The
 SDK topic names are `rt/lowstate` and `rt/lowcmd`. `unitree_go` is used by the
@@ -430,9 +452,15 @@ session.
   package versions for the upgrade-lifecycle test.
 - **`wendy run` reports `wendy.json not found`:** Change into a Wendy project
   or create one with `wendy init` before deploying.
-- **Installer download fails:** Re-run the internet check in Step 3. Inspect
-  both PC2's default route and the developer machine's default route before
-  changing either system.
+- **Installer download fails:** Re-run the `wget --spider` internet check in
+  Step 3. Inspect both PC2's default route and the developer machine's default
+  route before changing either system.
+- **SSH warns that the remote host identification changed:** This is expected
+  after reflashing PC2, but it can also indicate the wrong device or a
+  man-in-the-middle attack. Verify the new ED25519 fingerprint from a local PC2
+  terminal with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Only after
+  it matches, remove the single stale developer-machine entry with
+  `ssh-keygen -R 192.168.123.164` and reconnect. Do not bypass host-key checking.
 - **PC2 does not answer ping:** Recheck the physical G1 port, Ethernet link,
   interface name, `192.168.123.99/24` address, and absence of a gateway on the
   developer machine's robot-link service.
@@ -453,12 +481,14 @@ place. Review and remove those directories separately only when their data is
 no longer needed. Do not remove `containerd` automatically because Docker,
 Unitree software, or other workloads may use it.
 
-## Optional: update the G1 development computer to JetPack 6.2
+## Optional: update PC2 to Unitree's JetPack 6.2 image
 
 Wendy Agent does not require this update. This section records the exact lab
 process used to replace the G1 development computer's original JetPack 5.1.1
-system with Unitree's JetPack 6.2 packages. It is a historical lab procedure,
-not part of the Wendy Agent installation flow.
+system with Unitree's G1 packages based on the JetPack 6.2 BSP. It is a
+historical lab procedure, not part of the Wendy Agent installation flow. The
+Unitree image installs Jetson Linux and the G1 board support; it does not
+necessarily install NVIDIA's complete `nvidia-jetpack` development metapackage.
 
 <Callout type="warning">
   This is a destructive SSD and PC2 firmware replacement, not an APT upgrade.
@@ -593,9 +623,37 @@ ssh unitree@192.168.123.164
 
 cat /etc/nv_tegra_release
 cat /etc/os-release
-nvcc --version
+command -v nvcc && nvcc --version
 uname -a
 ```
+
+The updated lab PC2 reported Jetson Linux R36.4.3 and Ubuntu 22.04.5. NVIDIA's
+[JetPack 6.2 release page](https://developer.nvidia.com/embedded/jetpack-sdk-62)
+identifies R36.4.3 as the Jetson Linux release included with JetPack 6.2. At the
+time of the walkthrough, Wendy Agent `2026.07.27-003050` incorrectly displayed
+this system as JetPack 6.1 in `wendy device info`; use the BSP value until that
+detection issue is fixed.
+
+The Unitree image did not install `nvidia-jetpack` or `nvcc`. That is not a
+failed PC2 firmware flash and does not block Wendy Agent. Treat CUDA toolkit
+installation as a separate application prerequisite, and confirm the supported
+packages with Unitree for this carrier-board image before changing the NVIDIA
+software stack.
+
+The non-motion hardware check found the Intel RealSense D435i and six V4L2
+device nodes. From the developer machine, the same camera appeared in Wendy's
+camera and hardware listings:
+
+```bash
+wendy device camera list --device unitree-g1-nx.local:50052
+wendy device hardware list --device unitree-g1-nx.local:50052
+```
+
+Camera enumeration is confirmed, but a stream through `wendy device camera
+view` was not: the generic viewer could not configure the RealSense while the
+G1 demo's RealSense service was running. Stop there rather than interrupting a
+live robot workload; validate the image through the intended G1 app or retest
+the generic viewer during a maintenance window.
 
 The remaining lab checks were performed in this order:
 
