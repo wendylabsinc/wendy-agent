@@ -100,7 +100,7 @@ All platform builds are included:
 
 ## Release assets
 
-Each release also includes SPDX Software Bill of Materials files (`*.spdx.json`) for each shipped binary, Swift packages, and the whole-repo source tree, along with Sigstore-backed SLSA build provenance and SBOM attestations. See [Verifying release artifacts](/security/verification) for how to inspect and verify these files.
+Each release also includes SPDX Software Bill of Materials files (`*.spdx.json`) for each shipped binary, Swift packages, and the whole-repo source tree, along with Sigstore-backed SLSA build provenance and SBOM attestations. See [Verifying release artifacts](/docs/security/verification) for how to inspect and verify these files.
 
 ## Automation
 

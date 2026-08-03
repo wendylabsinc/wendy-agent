@@ -59,7 +59,7 @@ Bluetooth (D-Bus proxied), and host networking. No entitlement, no access.
 
 Every WendyOS release includes SPDX SBOMs for each shipped binary, Swift packages, and the whole-repo source tree. Release archives for the `wendy` CLI and `wendy-agent` also carry Sigstore-backed SLSA build provenance and SBOM attestations, verifiable without managing signing keys.
 
-See [Verifying release artifacts](/security/verification) for verification steps.
+See [Verifying release artifacts](/docs/security/verification) for verification steps.
 
 › **Status:** SBOM and provenance are shipped. Reproducible builds and dedicated signing keys are in progress.
 
@@ -132,7 +132,7 @@ or due-diligence requirements, reach out to **security@wendy.dev**.
 
 ### Supply Chain
 
-SBOM generation and SLSA build provenance ship today — see [Verifying release artifacts](/security/verification). Reproducible builds and dedicated artifact-signing keys are under active development (🛠 In progress); ML-DSA65 signature verification for container images and agent binaries is wired in the agent but dormant until those keys are deployed.
+SBOM generation and SLSA build provenance ship today — see [Verifying release artifacts](/docs/security/verification). Reproducible builds and dedicated artifact-signing keys are under active development (🛠 In progress); ML-DSA65 signature verification for container images and agent binaries is wired in the agent but dormant until those keys are deployed.
 
 Until the signing keys are deployed: container images are verified by SHA256 digest; agent updates require a valid mTLS
 connection to submit.
