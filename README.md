@@ -9,7 +9,7 @@ your laptop. No SD card juggling, no SSH setup, no internet required on the
 device.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="360">
+  <img src="go/internal/cli/assets/docs/media/demo.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="360">
   <br>
   <em><code>wendy run</code> building and deploying an app to a Jetson over USB-C, with live logs.</em>
 </p>
@@ -85,7 +85,7 @@ wendy os install
 ```
 
 <p align="center">
-  <img src="docs/media/overhead-quick-install.gif" alt="Installing WendyOS on a device with wendy os install" width="600">
+  <img src="go/internal/cli/assets/docs/media/overhead-quick-install.gif" alt="Installing WendyOS on a device with wendy os install" width="600">
 </p>
 
 The installer can download WendyOS images, write them to the selected target
