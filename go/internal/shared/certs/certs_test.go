@@ -47,7 +47,7 @@ func TestGenerateCSR(t *testing.T) {
 		t.Fatalf("GenerateKeyPair() error = %v", err)
 	}
 
-	csrPEM, err := GenerateCSR([]byte(keyPEM), "test-device.example.com")
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "test-device.example.com", "")
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)
 	}
@@ -69,6 +69,69 @@ func TestGenerateCSR(t *testing.T) {
 
 	if csr.Subject.CommonName != "test-device.example.com" {
 		t.Errorf("CSR CommonName = %q, want %q", csr.Subject.CommonName, "test-device.example.com")
+	}
+
+	// An empty identityURN must not add any URI SAN.
+	if len(csr.URIs) != 0 {
+		t.Errorf("CSR with empty identityURN has %d URI SANs, want 0", len(csr.URIs))
+	}
+}
+
+// TestGenerateCSRIncludesIdentityURN verifies both entity flavours the callers
+// use (user for the CLI, asset for the agent) land in the CSR as a single URI
+// SAN that IdentityFromCert reads back as the authoritative identity.
+func TestGenerateCSRIncludesIdentityURN(t *testing.T) {
+	cases := []struct {
+		name   string
+		urn    string
+		wantID WendyIdentity
+	}{
+		{"user", UserURN(1, "user-123"), WendyIdentity{OrgID: 1, EntityType: "user", EntityID: "user-123"}},
+		{"asset", AssetURN(7, 42), WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			keyPEM, err := GenerateKeyPair()
+			if err != nil {
+				t.Fatalf("GenerateKeyPair() error = %v", err)
+			}
+
+			csrPEM, err := GenerateCSR([]byte(keyPEM), "sh/wendy/legacy", tc.urn)
+			if err != nil {
+				t.Fatalf("GenerateCSR() error = %v", err)
+			}
+
+			block, _ := pem.Decode([]byte(csrPEM))
+			csr, err := x509.ParseCertificateRequest(block.Bytes)
+			if err != nil {
+				t.Fatalf("parsing generated CSR: %v", err)
+			}
+			if err := csr.CheckSignature(); err != nil {
+				t.Fatalf("CSR signature invalid: %v", err)
+			}
+
+			if len(csr.URIs) != 1 {
+				t.Fatalf("CSR has %d URI SANs, want 1", len(csr.URIs))
+			}
+			if got := csr.URIs[0].String(); got != tc.urn {
+				t.Errorf("CSR URI SAN = %q, want %q", got, tc.urn)
+			}
+
+			// The SAN must be what IdentityFromCert resolves. A CertificateRequest
+			// and a Certificate share the URIs field, so read it via a synthetic
+			// leaf carrying the same SANs.
+			leaf := &x509.Certificate{Subject: csr.Subject, URIs: csr.URIs}
+			id, ok, err := IdentityFromCert(leaf)
+			if err != nil {
+				t.Fatalf("IdentityFromCert() error = %v", err)
+			}
+			if !ok {
+				t.Fatal("IdentityFromCert() found no identity in a URN-bearing cert")
+			}
+			if id != tc.wantID {
+				t.Errorf("IdentityFromCert() = %+v, want %+v", id, tc.wantID)
+			}
+		})
 	}
 }
 
@@ -236,7 +299,7 @@ func TestGenerateAndCSR_RoundTrip(t *testing.T) {
 	}
 
 	// Generate a CSR with the key.
-	csrPEM, err := GenerateCSR([]byte(keyPEM), "roundtrip.example.com")
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "roundtrip.example.com", "")
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)
 	}
@@ -274,7 +337,7 @@ func TestGenerateCSRRequestsClientAuthUsage(t *testing.T) {
 		t.Fatalf("GenerateKeyPair() error = %v", err)
 	}
 
-	csrPEM, err := GenerateCSR([]byte(keyPEM), "wendy/user/abc")
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "wendy/user/abc", "")
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)
 	}
@@ -335,7 +398,7 @@ func TestGenerateCSRRequestsClientAndServerAuthUsage(t *testing.T) {
 		t.Fatalf("GenerateKeyPair() error = %v", err)
 	}
 
-	csrPEM, err := GenerateCSR([]byte(keyPEM), "sh/wendy/1/2",
+	csrPEM, err := GenerateCSR([]byte(keyPEM), "sh/wendy/1/2", AssetURN(1, 2),
 		x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		t.Fatalf("GenerateCSR() error = %v", err)

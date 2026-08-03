@@ -18,7 +18,7 @@ ROS2/
   image for `wendy device ros2` inspection and is not injected as an environment variable.
 - `isolation: shared-ipc` shares the network and IPC namespaces plus `/dev/shm`
   so CycloneDDS can perform zero-copy intra-host transport.
-- The runtime sets `ROS_LOCALHOST_ONLY=1` automatically — DDS communication
+- The runtime sets `ROS_LOCALHOST_ONLY=1` by default — DDS communication
   stays on the loopback interface, not multicast on a physical network.
 - `listener` declares `dependsOn: [talker]` so Wendy starts services in order.
 

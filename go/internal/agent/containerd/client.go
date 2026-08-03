@@ -2192,12 +2192,11 @@ func validateUserEnv(entries []string) error {
 // DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
 // enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
 // until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
-// uses UDP over loopback, which works within the app group's shared network
-// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
-// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
-// interface on top makes it select "lo" twice ("the same interface may not be
-// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
-// iox-roudi system service on the device first (WDY-884).
+// uses UDP. ROS_LOCALHOST_ONLY selects loopback for app-scoped discovery; for
+// host-scoped discovery CycloneDDS selects a device interface automatically.
+// No <Interfaces> block is supplied so the same inline config works for both
+// scopes. Re-enabling zero-copy needs an iox-roudi system service on the device
+// first (WDY-884).
 const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
@@ -2214,6 +2213,10 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 	if domainID < 0 {
 		return nil // invalid explicit domain ID; caller should have validated at config parse time
 	}
+	discoveryScope := ros2.ResolvedDiscoveryScope()
+	if discoveryScope == "" {
+		return nil // invalid scope; caller should have validated at config parse time
+	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
 	// unknown values, so arbitrary wendy.json strings can never reach the
@@ -2224,9 +2227,13 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}
-	// Services in an app group share a network namespace, so localhost is
-	// sufficient and DDS must not discover nodes on the wider network.
-	env = append(env, "ROS_LOCALHOST_ONLY=1")
+	// Services are app-local by default. Host-scoped tools such as Foxglove
+	// explicitly opt in to discovering ROS 2 participants on the device network.
+	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
+		env = append(env, "ROS_LOCALHOST_ONLY=0")
+	} else {
+		env = append(env, "ROS_LOCALHOST_ONLY=1")
+	}
 	return env
 }
 

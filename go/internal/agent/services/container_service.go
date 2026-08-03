@@ -351,9 +351,8 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		}
 	}
 
-	// Note: RunContainerLayersRequest has no Env field; env vars from callers
-	// using this legacy path (wendy run with layer upload) are not forwarded.
-	// Compose deployments use CreateContainerWithProgress which does carry Env.
+	// Same CreateContainer call the registry path makes, so both transports
+	// apply caller env identically and through the same validateUserEnv checks.
 	createReq := &agentpb.CreateContainerRequest{
 		ImageName:     req.GetImageName(),
 		AppName:       req.GetAppName(),
@@ -362,6 +361,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		WorkingDir:    req.GetWorkingDir(),
 		RestartPolicy: req.GetRestartPolicy(),
 		UserArgs:      req.GetUserArgs(),
+		Env:           req.GetEnv(),
 	}
 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {

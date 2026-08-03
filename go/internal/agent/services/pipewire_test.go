@@ -240,3 +240,28 @@ func TestBuildGStreamerArgs_PipeWireKeepsDimensionsInCaps(t *testing.T) {
 		t.Errorf("rate must still go through videorate: %v", args)
 	}
 }
+
+// PipeWire's V4L2 source decodes MJPEG itself and publishes raw video, so an
+// image/jpeg capsfilter on pipewiresrc cannot negotiate. Sharing therefore gives
+// up the MJPEG bandwidth win — a real cost, but a broken pipeline is worse.
+func TestBuildGStreamerArgs_PipeWireSkipsMJPEG(t *testing.T) {
+	withMJPEGProbe(t, func(string, uint32, uint32) bool { return true })
+
+	elements := defaultElements()
+	elements["jpegdec"] = true
+	args, err := buildGStreamerArgs("gst", captureSource{
+		devicePath:   "/dev/video0",
+		transport:    camera.TransportUSB,
+		pipewireNode: "v4l2_input.usb-046d_085e",
+	}, &agentpb.StreamVideoRequest{Width: 1280, Height: 720}, "x264enc", true, elements)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "image/jpeg") || strings.Contains(joined, "jpegdec") {
+		t.Errorf("pipewiresrc cannot deliver MJPEG: %v", args)
+	}
+	if !strings.Contains(joined, "video/x-raw,width=1280,height=720") {
+		t.Errorf("expected raw caps with the pinned size: %v", args)
+	}
+}

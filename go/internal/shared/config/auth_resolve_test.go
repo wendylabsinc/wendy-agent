@@ -99,6 +99,68 @@ func TestResolveAuthPickerResultCertValidated(t *testing.T) {
 	}
 }
 
+// sameEndpointOrgs models the common real-world shape: several orgs, all on
+// the production cloud endpoint, in login order (org 9 first).
+func sameEndpointOrgs() *Config {
+	return &Config{Auth: []AuthConfig{
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 9}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 2}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 75}}},
+	}}
+}
+
+func TestResolveAuthFlagPrefersDefaultOrgOnSharedEndpoint(t *testing.T) {
+	cfg := sameEndpointOrgs()
+	cfg.DefaultOrgID = 75
+	auth, err := ResolveAuth(cfg, "prod:443", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := auth.Certificates[0].OrganizationID; got != 75 {
+		t.Fatalf("flag + default org must pick org 75, got org %d", got)
+	}
+}
+
+func TestResolveAuthFlagFallsBackToFirstWithoutDefaultOrg(t *testing.T) {
+	auth, err := ResolveAuth(sameEndpointOrgs(), "prod:443", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := auth.Certificates[0].OrganizationID; got != 9 {
+		t.Fatalf("without a default org the first session wins, got org %d", got)
+	}
+}
+
+func TestResolveAuthFlagIgnoresDefaultOrgFromOtherEndpoint(t *testing.T) {
+	cfg := sameEndpointOrgs()
+	cfg.Auth = append(cfg.Auth, AuthConfig{CloudGRPC: "dev:50051", Certificates: []CertificateInfo{{OrganizationID: 4}}})
+	cfg.DefaultOrgID = 4 // default org lives on a different endpoint
+	auth, err := ResolveAuth(cfg, "prod:443", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := auth.Certificates[0].OrganizationID; got != 9 {
+		t.Fatalf("default org on another endpoint must not hijack the flag, got org %d", got)
+	}
+}
+
+// The bug this file exists to pin down: `wendy auth use <org>` on a shared
+// endpoint used to persist only DefaultCloudGRPC, which resolves to the FIRST
+// session on that endpoint — the org the user selected was silently ignored.
+// With DefaultOrgID persisted alongside, resolution honors the selection.
+func TestResolveAuthDefaultOrgDisambiguatesSharedEndpoint(t *testing.T) {
+	cfg := sameEndpointOrgs()
+	cfg.DefaultCloudGRPC = "prod:443"
+	cfg.DefaultOrgID = 75
+	auth, err := ResolveAuth(cfg, "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := auth.Certificates[0].OrganizationID; got != 75 {
+		t.Fatalf("default org must disambiguate, got org %d", got)
+	}
+}
+
 func TestDefaultAuthLookup(t *testing.T) {
 	cfg := twoSessions()
 	if _, ok := cfg.DefaultAuth(); ok {

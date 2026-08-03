@@ -178,6 +178,41 @@ For multi-service apps, set `resources` at the top level as the default and/or p
 
 Here `web` inherits the full app-level limits (`1Gi`, `pids: 512`). `worker` uses its own `256Mi` and `0.5` cores, and still **inherits** the app-level `pids: 512` it did not override.
 
+### `env`
+
+Environment variables injected into the container at start. These are deploy-time configuration, applied on top of whatever the image itself sets — unlike a Dockerfile `ENV`, changing them does not rebuild the image.
+
+```json
+{
+  "appId": "my-app",
+  "env": {
+    "LOG_LEVEL": "info",
+    "API_TOKEN": "${MY_API_TOKEN}"
+  }
+}
+```
+
+A value may reference an environment variable on the deploying machine as `${VAR}` (or `$VAR`); `wendy run` expands it at deploy time, which keeps secrets out of the file. An entry whose value expands to empty is dropped, so the container falls back to whatever the image sets rather than receiving an empty override.
+
+Keys must be POSIX-portable environment variable names: letters, digits and `_`, not starting with a digit. The agent additionally reserves the `WENDY_`, `LD_` and `DYLD_` prefixes, and Wendy's own variables (`WENDY_APP_ID`, `WENDY_HOSTNAME`, and the OTel exporter settings) always win over an app-supplied value of the same name.
+
+For multi-service apps, the top-level `env` is the default for every service and `services.<name>.env` overrides it **per key**, so a service can change one variable without dropping the rest:
+
+```json
+{
+  "appId": "fleet",
+  "env": { "LOG_LEVEL": "info", "REGION": "eu" },
+  "services": {
+    "web":    { "context": "./web" },
+    "worker": { "context": "./worker", "env": { "LOG_LEVEL": "debug" } }
+  }
+}
+```
+
+`web` gets `LOG_LEVEL=info` and `REGION=eu`; `worker` gets `LOG_LEVEL=debug` and still inherits `REGION=eu`.
+
+`wendy run --env KEY=VALUE` sets a variable for one run and overrides both.
+
 ### `$schema`
 
 Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.dev/schemas/wendy.json"`.

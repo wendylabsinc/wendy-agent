@@ -47,9 +47,12 @@ func NormalizeAddress(addr string) string {
 	return strings.ToUpper(strings.TrimSpace(addr))
 }
 
-// Sort sorts peripherals in-place: connected first, then paired, then by
-// descending RSSI (stronger signal first), then by name and address ascending
-// so the ordering is stable and obvious at a glance.
+// Sort sorts peripherals in-place: connected first, then paired, then named
+// devices ahead of unnamed ones (a scan often turns up far more anonymous
+// UUIDs than named devices, and the named ones are what people are actually
+// looking for). Within the named group, sort alphabetically by name; within
+// the unnamed group, sort by descending RSSI (stronger signal first). Ties
+// fall back to address ascending so the ordering is stable.
 func Sort(ps []Peripheral) {
 	sort.SliceStable(ps, func(i, j int) bool {
 		a, b := ps[i], ps[j]
@@ -59,11 +62,18 @@ func Sort(ps []Peripheral) {
 		if a.Paired != b.Paired {
 			return a.Paired
 		}
+		aNamed, bNamed := a.Name != "", b.Name != ""
+		if aNamed != bNamed {
+			return aNamed
+		}
+		if aNamed {
+			if a.Name != b.Name {
+				return a.Name < b.Name
+			}
+			return a.Address < b.Address
+		}
 		if a.RSSI != b.RSSI {
 			return a.RSSI > b.RSSI
-		}
-		if a.Name != b.Name {
-			return a.Name < b.Name
 		}
 		return a.Address < b.Address
 	})

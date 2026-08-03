@@ -130,7 +130,9 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 
 // computeBuildInputHash hashes everything that can change the built image:
 // the resolved Dockerfile contents, the build context files (honoring
-// .dockerignore conservatively), and the sorted build args + platform.
+// .dockerignore conservatively), and the sorted build args + platform. deployEnv
+// is hashed too — it is applied at container create rather than at build, so a
+// changed env must still force a redeploy even when the image is identical.
 //
 // Correctness rule: the hash MUST change whenever anything buildkit could use
 // changes. We therefore over-approximate — we hash the whole context minus
@@ -138,10 +140,16 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 // .dockerignore pattern we cannot confidently parse is simply not applied (so a
 // file is hashed rather than skipped). This can only cause an unnecessary
 // rebuild, never a missed change.
-func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[string]string) (string, error) {
+func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[string]string, deployEnv []string) (string, error) {
 	h := sha256.New()
 	io.WriteString(h, "wendy-deploy-fingerprint-v1\n")
 	io.WriteString(h, "platform="+platform+"\n")
+
+	// deployEnv arrives sorted from resolveServiceEnv; --env order is the
+	// user's and is hashed as given.
+	for _, kv := range deployEnv {
+		io.WriteString(h, "env "+kv+"\n")
+	}
 
 	keys := make([]string, 0, len(buildArgs))
 	for k := range buildArgs {

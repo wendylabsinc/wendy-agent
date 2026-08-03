@@ -99,7 +99,7 @@ The `wendy.json` declares both services, the start order, and, for ROS 2, the fr
 
 What this gives you:
 
-- **`frameworks.ros2`** auto-injects `ROS_DOMAIN_ID`, `RMW_IMPLEMENTATION`, and `ROS_LOCALHOST_ONLY=1` into every service container, so you do not hand-set ROS environment variables per service. Omit `domainId` and each app gets a stable domain derived from its `appId`, so unrelated apps never share a domain by accident.
+- **`frameworks.ros2`** auto-injects `ROS_DOMAIN_ID`, `RMW_IMPLEMENTATION`, and `ROS_LOCALHOST_ONLY=1` by default into every service container, so you do not hand-set ROS environment variables per service. Omit `domainId` and each app gets a stable domain derived from its `appId`, so unrelated apps never share a domain by accident. Set `discoveryScope` to `host` only for tools that need to inspect ROS 2 outside their app group.
 - **`isolation: "shared-ipc"`** shares the network and IPC namespaces plus `/dev/shm` across all services. With DDS pinned to localhost, a shared network namespace is what lets the services discover each other, and the shared `/dev/shm` is required for Fast DDS shared-memory transport. (CycloneDDS on WendyOS currently runs over loopback with its shared-memory transport disabled.)
 - **`dependsOn`** starts services in dependency order.
 

@@ -22,7 +22,8 @@ func TestWriteFoxgloveApp(t *testing.T) {
 	for _, want := range []string{
 		"FROM ros:humble",
 		"ros-humble-foxglove-bridge",
-		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0",
+		"export ROS_LOCALHOST_ONLY=0",
+		"ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 address:=0.0.0.0 include_hidden:=true",
 	} {
 		if !strings.Contains(dfs, want) {
 			t.Fatalf("Dockerfile missing %q:\n%s", want, dfs)
@@ -38,6 +39,7 @@ func TestWriteFoxgloveApp(t *testing.T) {
 		`"domainId": 3`,
 		`"rmw": "rmw_cyclonedds_cpp"`,
 		`"distro": "humble"`,
+		`"discoveryScope": "host"`,
 		`"type": "network", "mode": "host"`,
 	} {
 		if !strings.Contains(wjs, want) {
@@ -54,5 +56,25 @@ func TestWriteFoxgloveAppDistroTemplated(t *testing.T) {
 	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
 	if !strings.Contains(string(df), "FROM ros:jazzy") || !strings.Contains(string(df), "ros-jazzy-foxglove-bridge") {
 		t.Fatalf("distro not templated into Dockerfile:\n%s", df)
+	}
+}
+
+func TestWriteFoxgloveAppCycloneDDSInterface(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: "enP8p1s0"}
+	if err := writeFoxgloveApp(dir, opts); err != nil {
+		t.Fatal(err)
+	}
+	df, _ := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if !strings.Contains(string(df), `NetworkInterface name=\"enP8p1s0\"`) {
+		t.Fatalf("CycloneDDS interface not templated into Dockerfile:\n%s", df)
+	}
+}
+
+func TestWriteFoxgloveAppRejectsUnsafeInterface(t *testing.T) {
+	dir := t.TempDir()
+	opts := foxgloveServeOpts{domain: 0, rmw: "rmw_cyclonedds_cpp", distro: "humble", iface: `eth0'; touch /tmp/pwned`}
+	if err := writeFoxgloveApp(dir, opts); err == nil {
+		t.Fatal("expected unsafe interface name to be rejected")
 	}
 }

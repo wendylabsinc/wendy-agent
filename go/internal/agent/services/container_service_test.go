@@ -52,6 +52,7 @@ type mockContainerdClient struct {
 	declaredVolumes       map[string][]string
 	declaredVolumesErr    error
 	assembleImageCalls    int
+	createReqs            []*agentpb.CreateContainerRequest
 }
 
 type stoppedByUserCall struct {
@@ -100,7 +101,8 @@ func (m *mockContainerdClient) AssembleImage(_ context.Context, _ string, _ []*a
 	m.assembleImageCalls++
 	return nil
 }
-func (m *mockContainerdClient) CreateContainer(_ context.Context, _ *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {
+func (m *mockContainerdClient) CreateContainer(_ context.Context, req *agentpb.CreateContainerRequest, _ *appconfig.AppConfig) error {
+	m.createReqs = append(m.createReqs, req)
 	return m.createErr
 }
 func (m *mockContainerdClient) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress ProgressFunc) error {
@@ -1503,5 +1505,48 @@ func TestParseAppConfigEmptyDataStillAllowed(t *testing.T) {
 	}
 	if cfg.AppID != "" {
 		t.Fatalf("appId = %q, want empty", cfg.AppID)
+	}
+}
+
+// TestRunContainer_ForwardsEnv covers WDY-2040: the layer/chunk deploy path
+// applies caller env, the same as the registry-push path that reaches
+// CreateContainer directly.
+func TestRunContainer_ForwardsEnv(t *testing.T) {
+	outputCh := make(chan ContainerOutput, 1)
+	outputCh <- ContainerOutput{Done: true}
+	close(outputCh)
+	mock := &mockContainerdClient{startOutputCh: outputCh}
+
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	want := []string{"FOO=bar", "OTEL_LOGS_EXPORTER=console"}
+	stream, err := client.RunContainer(context.Background(), &agentpb.RunContainerLayersRequest{
+		ImageName: "test-image:latest",
+		AppName:   "env-app",
+		Layers: []*agentpb.RunContainerLayerHeader{
+			{Digest: "sha256:layerdigest", Size: 10, DiffId: "sha256:layerdiffid"},
+		},
+		ImageConfig: []byte(`{}`),
+		Env:         want,
+	})
+	if err != nil {
+		t.Fatalf("RunContainer: %v", err)
+	}
+	if err := drainRunContainerStream(stream); err != nil {
+		t.Fatalf("RunContainer stream: %v", err)
+	}
+
+	if len(mock.createReqs) != 1 {
+		t.Fatalf("CreateContainer calls = %d, want 1", len(mock.createReqs))
+	}
+	got := mock.createReqs[0].GetEnv()
+	if len(got) != len(want) {
+		t.Fatalf("env = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("env[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
 	}
 }
