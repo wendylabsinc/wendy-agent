@@ -37,7 +37,9 @@ Tests:
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
   python-env                Verify top-level wendy.json env reaches the container, incl. \${VAR} expansion (WDY-2040)
+                            Skipped for now: needs an agent carrying RunContainerLayersRequest.env.
   python-env-flag           Verify 'wendy run --env' overrides wendy.json env per key (WDY-2040)
+                            Skipped for now, same agent requirement as python-env.
   python-multiservice-env   Verify app-level env is the per-service default and a service overrides it per key (WDY-2040)
   python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
@@ -399,6 +401,19 @@ for test_name in "${TESTS[@]}"; do
 
     if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
         skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
+        continue
+    fi
+
+    # These two deploy over the chunk-diff path, which carries env only on an
+    # agent built with RunContainerLayersRequest.env (WDY-2040). An older agent
+    # ignores the field and starts the container without the env, and no CLI
+    # change can work around that — so the result would say "product bug" when
+    # it means "stale agent". Delete this block once the CI devices run an
+    # agent carrying the field. python-multiservice-env is deliberately not
+    # gated: it deploys over the registry path, which has carried env since
+    # WDY-1268, so it still covers the app-level/per-service merge.
+    if [[ "$test_name" == "python-env" || "$test_name" == "python-env-flag" ]]; then
+        skip_test "$test_name" "needs an agent with chunk-diff env support (WDY-2040); device has $(device_field version 'unknown')"
         continue
     fi
 
