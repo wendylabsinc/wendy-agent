@@ -15,14 +15,20 @@ motion-control computer. It does make persistent changes to PC2: the installer
 adds Wendy's signed APT repository, installs packages and systemd services, and
 adds an Avahi service for mDNS discovery.
 
-<Callout type="warning">
-  This page is still under hardware validation. Before publication, Wendy will
-  repeat the entire procedure on a factory-fresh Ubuntu 20.04 G1 and verify the
-  physical Ethernet port, default credentials, container runtime packages,
-  Wi-Fi setup, macOS and Linux internet-sharing procedures, upgrade behavior,
-  advertised agent ports, and rollback steps. Do not use this draft for
-  unattended or production provisioning yet.
+<Callout type="info">
+  These instructions follow Unitree's documented G1 development environment
+  and Wendy's supported installation procedure. Wendy also completed an
+  end-to-end upgrade-path trial on a lab G1 running Ubuntu 20.04.6 on aarch64.
+  We will reconfirm the procedure on the lab G1 and update this guide if its
+  configuration differs.
 </Callout>
+
+The lab trial confirmed the PC2 address and SSH credentials, direct Wi-Fi
+internet access, macOS internet-sharing mechanics, a running `containerd`, the
+Wendy Agent installer and upgrade recovery, and successful discovery from the
+developer machine. The tested robot was not factory-fresh, so clean-image
+dependency resolution and the revised internet-sharing commands remain marked
+for testing where they appear below.
 
 ## Requirements
 
@@ -33,7 +39,7 @@ adds an Avahi service for mDNS discovery.
 - Administrator access on the developer machine and `sudo` access on PC2
 - Approximately 15–30 minutes
 
-The factory account documented for PC2 is:
+The factory account documented for PC2 and confirmed on the lab G1 is:
 
 ```text
 Address:  192.168.123.164
@@ -147,10 +153,11 @@ If this prints an HTTP success response, skip to Step 4.
 PC2 may already be connected to Wi-Fi. A persistent, organization-approved
 Wi-Fi connection is preferable to routing through the developer machine.
 
-<Callout type="warning">
-  The exact PC2 Wi-Fi procedure will be tested on the factory Ubuntu 20.04
-  image before publication. Use Unitree's networking instructions for the
-  current image, then repeat the internet check above.
+<Callout type="info">
+  The lab G1 already had a working `wlan0` connection and could reach Wendy's
+  installer directly. If PC2 is not already online, use Unitree's networking
+  instructions for its installed image, then repeat the internet check above.
+  Wendy will test configuring Wi-Fi from an unconfigured image separately.
 </Callout>
 
 ### Temporary macOS internet sharing fallback
@@ -184,10 +191,11 @@ curl -sSIf --max-time 10 https://install.wendy.dev/agent.sh | head -1
 ```
 
 <Callout type="warning">
-  The named-anchor procedure is safer than replacing the main PF ruleset, but
-  Wendy will perform another end-to-end G1 test before publication. A Linux
-  internet-sharing fallback will also be tested and documented. These settings
-  are temporary and are lost on reboot.
+  macOS-to-G1 internet sharing was confirmed during the lab trial. That trial
+  used the older main-ruleset command, so Wendy will retest the safer named
+  anchor and its teardown end-to-end. A Linux internet-sharing fallback will
+  also be tested and documented. These settings are temporary and are lost on
+  reboot.
 </Callout>
 
 After installation, remove the temporary route and DNS setting on PC2:
@@ -218,10 +226,15 @@ Do not unconditionally install or upgrade `containerd`. The Wendy Debian
 package declares it as a dependency, so APT installs it when absent. This
 avoids unexpectedly restarting an existing runtime merely to perform a check.
 
+On the lab G1, `containerd` 1.7.12 was already installed and active. An earlier
+unconditional installation command upgraded it to 1.7.24 and restarted the
+runtime, which is why this guide performs only the read-only checks above.
+
 <Callout type="warning">
-  Wendy will test a factory image with no runtime and an image using Docker's
-  `containerd.io` package before publication. This is required to confirm that
-  dependency resolution does not remove or replace an existing Docker runtime.
+  The lab result confirms the already-installed runtime path. Wendy will also
+  test an image with no runtime and an image using Docker's `containerd.io`
+  package to confirm that dependency resolution does not remove or replace an
+  existing Docker runtime.
 </Callout>
 
 Download the installer so it can be reviewed before execution:
@@ -291,10 +304,10 @@ sudo journalctl -u wendy-agent -n 100 --no-pager
 ```
 
 <Callout type="warning">
-  An upgrade test observed the package stopping an existing agent without
-  restarting it. Wendy will fix and retest the package lifecycle before this
-  guide is published. The manual start above is a temporary recovery step, not
-  the final expected upgrade behavior.
+  The lab G1 upgrade test observed the package stopping an existing agent
+  without restarting it. The manual start above recovered the agent and made
+  it discoverable. Wendy will fix and retest the package lifecycle; manual
+  recovery is not the final expected upgrade behavior.
 </Callout>
 
 Inspect the listening services before connecting PC2 to a shared network:
@@ -320,7 +333,9 @@ wendy discover
 
 The device may appear under a generic Ubuntu hostname rather than a name that
 contains “G1.” Match its address, architecture, operating system, and agent
-version to the PC2 values recorded earlier.
+version to the PC2 values recorded earlier. During the lab trial,
+`wendy discover` found the provisioned agent at `192.168.123.164` on its
+advertised mTLS port, `50052`.
 
 You are done when all of the following are true:
 
