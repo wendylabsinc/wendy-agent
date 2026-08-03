@@ -5,6 +5,7 @@
     "os-logs",
     "dashboard",
     "top",
+    "observe",
     "info",
     "tunnel",
     "set-default",

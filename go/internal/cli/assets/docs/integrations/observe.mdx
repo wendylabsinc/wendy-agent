@@ -1,0 +1,126 @@
+---
+title: Wendy Observe
+description: Preprocess live ROS 2 sensor data on a WendyOS device and stream only what visible tools request.
+---
+
+Wendy Observe is a demand-driven data path for production robots. It discovers
+the device's ROS 2 graph without continuously consuming every topic, starts an
+upstream subscription only when a client asks for a stream, preprocesses
+high-volume sensor data on the device, and destroys the subscription when the
+last client leaves.
+
+Start Observe over the LAN:
+
+```bash
+wendy observe \
+  --domain 0 \
+  --interface enP8p1s0 \
+  --max-bandwidth 8
+```
+
+The equivalent device-scoped form is `wendy device observe`. For a
+cloud-enrolled device, use:
+
+```bash
+wendy cloud device observe --device <id-or-name>
+```
+
+The CLI deploys the `sh.wendy.observe` app, opens an authenticated Wendy tunnel,
+waits for the gateway, and prints four local endpoints:
+
+| Endpoint | Transport | Use |
+| --- | --- | --- |
+| `/v1/live` | WSS | Multiplexed continuous streams with subscribe/unsubscribe control |
+| `/v1/stream` | HTTPS chunked response | One continuous topic per request |
+| `/v1/snapshot` | HTTPS response | One processed message |
+| `/v1/catalog` | HTTPS JSON | Topic names and advertised ROS types |
+
+Both WSS and HTTPS use a short-lived certificate created inside the Observe app.
+The endpoint binds to device loopback and is reachable only through the Wendy
+tunnel. The CLI retrieves that certificate through the authenticated tunnel,
+checks its `localhost` identity, stores it with mode `0600`, and prints its path
+and SHA-256 fingerprint so clients can pin it.
+
+## Processing profiles
+
+Clients choose a profile when subscribing. `auto` is the recommended default.
+
+| Profile | Device behavior |
+| --- | --- |
+| `auto` | Point clouds use `pointcloud`; raw images and compressed images use `jpeg`; other types use `latest` |
+| `pointcloud` | Strips row padding and keeps every Nth complete point record before serializing the smaller `PointCloud2` |
+| `jpeg` | Passes `CompressedImage` JPEG bytes through, or resizes and encodes a raw `Image` |
+| `latest` | Sends rate-limited ROS CDR while retaining only the newest queued message |
+| `raw` | Sends ROS CDR, still subject to the session rate and bandwidth limits |
+
+The command's limits are ceilings. A remote client may request a lower rate,
+lower bandwidth, larger point stride, lower JPEG quality, or smaller image, but
+cannot exceed the device owner's session limits.
+
+## WebSocket control
+
+Connect to the printed `wss://localhost:<port>/v1/live` endpoint using the
+printed certificate, then send JSON control messages:
+
+```json
+{
+  "op": "subscribe",
+  "id": "lidar",
+  "topic": "/hesai/points",
+  "profile": "pointcloud",
+  "max_hz": 5,
+  "point_stride": 4
+}
+```
+
+Stop the work on the device with:
+
+```json
+{ "op": "unsubscribe", "id": "lidar" }
+```
+
+A single WebSocket can carry several stream IDs. Binary messages use the same
+framing as HTTPS streaming:
+
+```text
+uint32 body_length (network byte order)
+uint32 json_header_length
+JSON header
+processed payload
+```
+
+The JSON header identifies the stream, ROS topic and type, encoding, profile,
+timestamp, and number of stale or over-budget messages dropped since the prior
+frame.
+
+## HTTPS examples
+
+Use the CA path printed by `wendy observe`:
+
+```bash
+curl --cacert <observe-ca.pem> \
+  https://localhost:8780/v1/catalog
+```
+
+Request one processed point cloud:
+
+```bash
+curl --cacert <observe-ca.pem> \
+  'https://localhost:8780/v1/snapshot?topic=/hesai/points&profile=pointcloud&point_stride=4' \
+  --output frame.wendy
+```
+
+For a single long-lived stream, replace `/v1/snapshot` with `/v1/stream`.
+
+## Backpressure and lifecycle
+
+Observe never grows an unbounded sensor queue. Each subscription has room for
+one processed message; a newer message replaces a stale queued message. A
+session-wide token bucket enforces `--max-bandwidth` across all open panels, so
+opening more streams cannot multiply the configured network budget. Rate-limit,
+queue, and budget drops are reported in the next frame header.
+
+On a detected Unitree network, Observe also installs the public Unitree message
+definitions and starts Wendy's Go2 camera adapter. The camera's native
+`VideoClient` remains stopped until a client requests
+`/front_camera/image/compressed`, and is stopped again after demand disappears.

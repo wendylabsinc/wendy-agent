@@ -2,6 +2,7 @@
   "pages": [
     "init",
     "run",
+    "observe",
     "install",
     "project",
     "device",

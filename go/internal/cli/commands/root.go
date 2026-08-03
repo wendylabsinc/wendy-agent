@@ -122,6 +122,8 @@ func NewRootCmd() *cobra.Command {
 	initCmd.GroupID = "develop"
 	runCmd := newRunCmd()
 	runCmd.GroupID = "develop"
+	observeCmd := newObserveCmd()
+	observeCmd.GroupID = "develop"
 	appCmd := newAppCmd()
 	appCmd.GroupID = "develop"
 	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
@@ -212,6 +214,7 @@ func NewRootCmd() *cobra.Command {
 		// Develop & Deploy
 		initCmd,
 		runCmd,
+		observeCmd,
 		appCmd,
 		installCmd,
 		// Manage
