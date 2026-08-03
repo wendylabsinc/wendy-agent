@@ -412,3 +412,24 @@ func TestParseAvahiMDNSService(t *testing.T) {
 		t.Fatalf("TXTRecords[wendyosdevice] = %q, want %q", svc.TXTRecords["wendyosdevice"], "769dc651")
 	}
 }
+
+// ── setMeshFields ────────────────────────────────────────────────────
+
+func TestSetMeshFields(t *testing.T) {
+	dev := &models.LANDevice{}
+	setMeshFields(dev, map[string]string{"name": "brave-dolphin", "orgid": "42", "assetid": "215"})
+	if dev.MeshName != "brave-dolphin" {
+		t.Errorf("MeshName = %q, want brave-dolphin", dev.MeshName)
+	}
+	if dev.OrgID != 42 {
+		t.Errorf("OrgID = %d, want 42", dev.OrgID)
+	}
+}
+
+func TestSetMeshFieldsAbsent(t *testing.T) {
+	dev := &models.LANDevice{}
+	setMeshFields(dev, map[string]string{})
+	if dev.MeshName != "" || dev.OrgID != 0 {
+		t.Errorf("expected zero values, got MeshName=%q OrgID=%d", dev.MeshName, dev.OrgID)
+	}
+}

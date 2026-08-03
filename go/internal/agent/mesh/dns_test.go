@@ -7,6 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 )
 
 // startTestDNS binds a listener on 127.0.0.1 with an ephemeral port and
@@ -113,5 +114,104 @@ func TestDNSListenerRefcount(t *testing.T) {
 	// startTestDNS cleanup releases once more; make that a no-op by re-adding.
 	if err := s.EnsureListener("127.0.0.1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// captureWriter is a minimal dns.ResponseWriter stub that captures the
+// written message for direct s.handle(...) assertions in tests below.
+type captureWriter struct {
+	dns.ResponseWriter
+	msg *dns.Msg
+}
+
+func (c *captureWriter) WriteMsg(m *dns.Msg) error { c.msg = m; return nil }
+func (c *captureWriter) LocalAddr() net.Addr       { return &net.UDPAddr{} }
+func (c *captureWriter) RemoteAddr() net.Addr      { return &net.UDPAddr{} }
+
+// fakeResolver is a test double for the friendly-name resolver.
+type fakeResolver struct {
+	slug   string
+	byName map[string]int32
+}
+
+func (f fakeResolver) OrgSlug() string { return f.slug }
+func (f fakeResolver) Resolve(name string) (int32, bool) {
+	id, ok := f.byName[name]
+	return id, ok
+}
+
+func answerA(t *testing.T, s *DNSServer, qname string) (rcode int, ip string) {
+	t.Helper()
+	m := new(dns.Msg)
+	m.SetQuestion(qname, dns.TypeA)
+	rw := &captureWriter{}
+	s.handle(rw, m)
+	if rw.msg == nil {
+		t.Fatal("no reply written")
+	}
+	if len(rw.msg.Answer) == 0 {
+		return rw.msg.Rcode, ""
+	}
+	return rw.msg.Rcode, rw.msg.Answer[0].(*dns.A).A.String()
+}
+
+func TestFriendlyNameResolves(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme", byName: map[string]int32{"brave-dolphin": 215}})
+
+	rcode, ip := answerA(t, s, "brave-dolphin.acme.cloud.wendy.dev.")
+	if rcode != dns.RcodeSuccess || ip != "10.99.0.215" {
+		t.Fatalf("got rcode=%d ip=%q, want SUCCESS 10.99.0.215", rcode, ip)
+	}
+}
+
+func TestFriendlyNameWrongOrgIsNXDOMAIN(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme", byName: map[string]int32{"brave-dolphin": 215}})
+
+	rcode, _ := answerA(t, s, "brave-dolphin.other-org.cloud.wendy.dev.")
+	if rcode != dns.RcodeNameError {
+		t.Fatalf("wrong-org: got rcode=%d, want NXDOMAIN", rcode)
+	}
+}
+
+func TestFriendlyNameUnknownDeviceIsNXDOMAIN(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme", byName: map[string]int32{}})
+
+	rcode, _ := answerA(t, s, "ghost.acme.cloud.wendy.dev.")
+	if rcode != dns.RcodeNameError {
+		t.Fatalf("unknown device: got rcode=%d, want NXDOMAIN", rcode)
+	}
+}
+
+func TestFriendlyNameNoResolverIsNXDOMAIN(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	rcode, _ := answerA(t, s, "brave-dolphin.acme.cloud.wendy.dev.")
+	if rcode != dns.RcodeNameError {
+		t.Fatalf("no resolver: got rcode=%d, want NXDOMAIN", rcode)
+	}
+}
+
+func TestNumericNamePathUnchanged(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme"})
+	rcode, ip := answerA(t, s, "device-215.cloud.wendy.dev.")
+	if rcode != dns.RcodeSuccess || ip != "10.99.0.215" {
+		t.Fatalf("numeric: got rcode=%d ip=%q, want SUCCESS 10.99.0.215", rcode, ip)
+	}
+}
+
+// TestFriendlyNameDoubledHyphenNormalizes proves answerFriendly re-normalizes
+// the captured labels before comparing/resolving: the regex admits a doubled
+// hyphen ("a--b"), which must still resolve against the resolver's
+// already-normalized name ("a-b") because both sides go through Normalize.
+func TestFriendlyNameDoubledHyphenNormalizes(t *testing.T) {
+	s := NewDNSServer(zaptest.NewLogger(t), "")
+	s.SetResolver(fakeResolver{slug: "acme", byName: map[string]int32{"a-b": 215}})
+
+	rcode, ip := answerA(t, s, "a--b.acme.cloud.wendy.dev.")
+	if rcode != dns.RcodeSuccess || ip != "10.99.0.215" {
+		t.Fatalf("doubled hyphen: got rcode=%d ip=%q, want SUCCESS 10.99.0.215", rcode, ip)
 	}
 }
