@@ -222,8 +222,11 @@ func TestBuildGStreamerArgs_V4L2KeepsFramerateInCaps(t *testing.T) {
 	}
 }
 
-// Dimensions still belong in the source caps on the PipeWire path.
-func TestBuildGStreamerArgs_PipeWireKeepsDimensionsInCaps(t *testing.T) {
+// Nothing may constrain pipewiresrc directly: once another client is streaming,
+// a partial caps trips "assertion 'gst_caps_is_fixed' failed" and the pipeline
+// dies — exactly the shared case this feature exists for. Requested dimensions
+// go through videoscale, the rate through videorate.
+func TestBuildGStreamerArgs_PipeWireConvertsInsteadOfConstraining(t *testing.T) {
 	args, err := buildGStreamerArgs("gst", captureSource{
 		devicePath:   "/dev/video0",
 		transport:    camera.TransportUSB,
@@ -233,11 +236,34 @@ func TestBuildGStreamerArgs_PipeWireKeepsDimensionsInCaps(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "video/x-raw,width=640,height=480") {
-		t.Errorf("dimensions must stay in the source caps: %v", args)
+	if !strings.Contains(joined, "videoscale ! video/x-raw,width=640,height=480") {
+		t.Errorf("dimensions must go through videoscale: %v", args)
 	}
 	if !strings.Contains(joined, "videorate max-rate=30") {
-		t.Errorf("rate must still go through videorate: %v", args)
+		t.Errorf("rate must go through videorate: %v", args)
+	}
+	if strings.Contains(joined, "pipewiresrc target-object=v4l2_input.usb-046d_085e ! video/x-raw") {
+		t.Errorf("no capsfilter may sit directly on pipewiresrc: %v", args)
+	}
+}
+
+// With no request the source is left completely unconstrained.
+func TestBuildGStreamerArgs_PipeWireDefaultsAddNoCaps(t *testing.T) {
+	withMJPEGProbe(t, func(string, uint32, uint32) bool { return true })
+	args, err := buildGStreamerArgs("gst", captureSource{
+		devicePath:   "/dev/video0",
+		transport:    camera.TransportUSB,
+		pipewireNode: "v4l2_input.usb-046d_085e",
+	}, &agentpb.StreamVideoRequest{}, "x264enc", true, defaultElements())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "videoscale") || strings.Contains(joined, "videorate") {
+		t.Errorf("nothing was requested, so nothing should be converted: %v", args)
+	}
+	if strings.Contains(joined, "width=") || strings.Contains(joined, "height=") {
+		t.Errorf("the best-default probe must not run on the PipeWire path: %v", args)
 	}
 }
 

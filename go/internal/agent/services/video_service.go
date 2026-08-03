@@ -1472,15 +1472,29 @@ func buildGStreamerArgs(gstPath string, src captureSource, req *agentpb.StreamVi
 	// format (YUYV/MJPEG/...). Any requested dimensions are folded into this same
 	// source capsfilter; a formatless width/height filter still lets libcamerasrc
 	// fall back to Bayer.
+	// A capsfilter must never sit directly on pipewiresrc. The graph already has
+	// a negotiated format when another client is streaming, and a partial caps
+	// (width/height with no format) trips
+	// "handle_format_change: assertion 'gst_caps_is_fixed' failed" — the shared
+	// case, which is the whole point. Convert instead: videoscale and videorate
+	// take whatever the graph hands over. Both verified on an AGX Thor against a
+	// camera already in use.
+	usingPipeWire := strings.HasPrefix(srcElement, "pipewiresrc")
+
 	var capsParts []string
+	var convertStages []string
+
 	if strings.HasPrefix(srcElement, "libcamerasrc") {
 		capsParts = append(capsParts, "format=NV12")
 	}
+
 	// Same "default must not mean smallest" rule as the native path: with no
 	// width/height in the caps the source negotiates its first mode, which on UVC
-	// is the smallest. Ask the device what it has and pin the best.
+	// is the smallest. Ask the device what it has and pin the best. Skipped on the
+	// PipeWire path, where the size comes from whatever the graph is publishing —
+	// rescaling to a size nobody asked for would only cost CPU.
 	capW, capH := req.GetWidth(), req.GetHeight()
-	if (capW == 0 || capH == 0) && !strings.HasPrefix(srcElement, "libcamerasrc") {
+	if (capW == 0 || capH == 0) && !strings.HasPrefix(srcElement, "libcamerasrc") && !usingPipeWire {
 		if bw, bh := bestDefaultFrameSizeForDevice(src.devicePath); bw > 0 && bh > 0 {
 			if capW == 0 {
 				capW = bw
@@ -1490,23 +1504,23 @@ func buildGStreamerArgs(gstPath string, src captureSource, req *agentpb.StreamVi
 			}
 		}
 	}
-	if capW > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
-	}
-	if capH > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("height=%d", capH))
-	}
 
-	// A framerate in the source capsfilter is fatal on the PipeWire path: with an
-	// encoder also constraining negotiation, pipewiresrc asks PipeWire for a format
-	// the camera cannot deliver and the stream dies with "set output format: -22".
-	// videorate caps the rate downstream instead, leaving the source free to
-	// negotiate whatever the camera actually offers.
-	rateElement := ""
-	if req.GetFramerate() > 0 {
-		if strings.HasPrefix(srcElement, "pipewiresrc") {
-			rateElement = fmt.Sprintf("videorate max-rate=%d", req.GetFramerate())
-		} else {
+	if usingPipeWire {
+		if req.GetWidth() > 0 && req.GetHeight() > 0 {
+			convertStages = append(convertStages, "videoscale",
+				fmt.Sprintf("video/x-raw,width=%d,height=%d", req.GetWidth(), req.GetHeight()))
+		}
+		if req.GetFramerate() > 0 {
+			convertStages = append(convertStages, fmt.Sprintf("videorate max-rate=%d", req.GetFramerate()))
+		}
+	} else {
+		if capW > 0 {
+			capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
+		}
+		if capH > 0 {
+			capsParts = append(capsParts, fmt.Sprintf("height=%d", capH))
+		}
+		if req.GetFramerate() > 0 {
 			capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
 		}
 	}
@@ -1523,8 +1537,7 @@ func buildGStreamerArgs(gstPath string, src captureSource, req *agentpb.StreamVi
 	// Not available through PipeWire: its V4L2 source decodes MJPEG itself and
 	// publishes raw video, so asking pipewiresrc for image/jpeg fails to
 	// negotiate. Sharing a camera therefore costs the MJPEG bandwidth win.
-	useMJPEG := !strings.HasPrefix(srcElement, "libcamerasrc") &&
-		!strings.HasPrefix(srcElement, "pipewiresrc") &&
+	useMJPEG := !strings.HasPrefix(srcElement, "libcamerasrc") && !usingPipeWire &&
 		capW > 0 && capH > 0 &&
 		available["jpegdec"] &&
 		deviceSupportsMJPEGSize(src.devicePath, capW, capH)
@@ -1536,9 +1549,7 @@ func buildGStreamerArgs(gstPath string, src captureSource, req *agentpb.StreamVi
 		if len(capsParts) > 0 {
 			stages = append(stages, "video/x-raw,"+strings.Join(capsParts, ","))
 		}
-		if rateElement != "" {
-			stages = append(stages, rateElement)
-		}
+		stages = append(stages, convertStages...)
 		stages = append(stages, leakyRawQueue)
 	}
 	stages = append(stages, encoderSegment(encoder, hasH264Parse, gop), "fdsink fd=1")
