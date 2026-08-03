@@ -12,6 +12,8 @@ The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetso
 |--------|--------|
 | ESP32-C6 | CI-built, nightly releases |
 | ESP32-C5 | CI-built, nightly releases |
+| ESP32-S3 | CI-built, nightly releases |
+| ESP32-C61 | CI-built, nightly releases |
 
 Firmware is built with [ESP-IDF v5.5.1](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c6/index.html) via the official Espressif Docker image.
 
