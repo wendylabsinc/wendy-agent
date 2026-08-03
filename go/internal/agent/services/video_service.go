@@ -1351,17 +1351,30 @@ func buildGStreamerArgs(gstPath string, src captureSource, req *agentpb.StreamVi
 	if req.GetHeight() > 0 {
 		capsParts = append(capsParts, fmt.Sprintf("height=%d", req.GetHeight()))
 	}
+
+	// A framerate in the source capsfilter is fatal on the PipeWire path: with an
+	// encoder also constraining negotiation, pipewiresrc asks PipeWire for a format
+	// the camera cannot deliver and the stream dies with "set output format: -22".
+	// videorate caps the rate downstream instead, leaving the source free to
+	// negotiate whatever the camera actually offers.
+	rateElement := ""
 	if req.GetFramerate() > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
+		if strings.HasPrefix(srcElement, "pipewiresrc") {
+			rateElement = fmt.Sprintf("videorate max-rate=%d", req.GetFramerate())
+		} else {
+			capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
+		}
 	}
 
-	var pipeline string
+	stages := []string{srcElement}
 	if len(capsParts) > 0 {
-		caps := "video/x-raw," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", srcElement, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
-	} else {
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", srcElement, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+		stages = append(stages, "video/x-raw,"+strings.Join(capsParts, ","))
 	}
+	if rateElement != "" {
+		stages = append(stages, rateElement)
+	}
+	stages = append(stages, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop), "fdsink fd=1")
+	pipeline := strings.Join(stages, " ! ")
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
 	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...), nil

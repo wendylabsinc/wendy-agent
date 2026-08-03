@@ -180,3 +180,63 @@ func TestBuildSourceElement_NoPipeWirePluginFallsBackToV4L2(t *testing.T) {
 		t.Errorf("missing pipewiresrc must degrade to v4l2src, got %q", src)
 	}
 }
+
+// A framerate in the source capsfilter kills the PipeWire path: with an encoder
+// downstream also constraining negotiation, pipewiresrc asks PipeWire for a
+// format the camera cannot deliver ("set output format: -22"). Reproduced on an
+// AGX Thor with a Logitech BRIO — the dashboard sends a framerate, the CLI does
+// not, which is why only the dashboard stream failed.
+func TestBuildGStreamerArgs_PipeWireRateGoesThroughVideorate(t *testing.T) {
+	args, err := buildGStreamerArgs("gst", captureSource{
+		devicePath:   "/dev/video0",
+		transport:    camera.TransportUSB,
+		pipewireNode: "v4l2_input.usb-046d_085e",
+	}, &agentpb.StreamVideoRequest{Framerate: 30}, "x264enc", true, defaultElements())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "videorate max-rate=30") {
+		t.Errorf("requested rate must be capped downstream: %v", args)
+	}
+	if strings.Contains(joined, "framerate=30/1") {
+		t.Errorf("framerate must not reach the source capsfilter: %v", args)
+	}
+}
+
+// The direct V4L2 path negotiates a framerate fine and must keep doing so.
+func TestBuildGStreamerArgs_V4L2KeepsFramerateInCaps(t *testing.T) {
+	args, err := buildGStreamerArgs("gst", captureSource{
+		devicePath: "/dev/video0",
+		transport:  camera.TransportUSB,
+	}, &agentpb.StreamVideoRequest{Framerate: 30}, "x264enc", true, defaultElements())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "framerate=30/1") {
+		t.Errorf("v4l2src must still pin the framerate in caps: %v", args)
+	}
+	if strings.Contains(joined, "videorate") {
+		t.Errorf("v4l2src needs no videorate stage: %v", args)
+	}
+}
+
+// Dimensions still belong in the source caps on the PipeWire path.
+func TestBuildGStreamerArgs_PipeWireKeepsDimensionsInCaps(t *testing.T) {
+	args, err := buildGStreamerArgs("gst", captureSource{
+		devicePath:   "/dev/video0",
+		transport:    camera.TransportUSB,
+		pipewireNode: "v4l2_input.usb-046d_085e",
+	}, &agentpb.StreamVideoRequest{Width: 640, Height: 480, Framerate: 30}, "x264enc", true, defaultElements())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "video/x-raw,width=640,height=480") {
+		t.Errorf("dimensions must stay in the source caps: %v", args)
+	}
+	if !strings.Contains(joined, "videorate max-rate=30") {
+		t.Errorf("rate must still go through videorate: %v", args)
+	}
+}
