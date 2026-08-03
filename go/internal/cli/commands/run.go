@@ -489,8 +489,9 @@ type runOptions struct {
 	maxConcurrency       int
 	userArgs             []string
 	// env are extra KEY=VALUE environment variables injected into the container
-	// at create time (CreateContainerRequest.Env). Used by fleet deploys to wire
-	// cross-component discovery (e.g. WENDY_FLEET_PEERS) into a component.
+	// at create time (CreateContainerRequest.Env). Set by --env, and by fleet
+	// deploys to wire cross-component discovery (e.g. WENDY_FLEET_PEERS) into a
+	// component. They override wendy.json env of the same key.
 	env []string
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
@@ -545,6 +546,9 @@ func newRunCmd() *cobra.Command {
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateEnvFlag(opts.env); err != nil {
+				return err
+			}
 			if watch {
 				// In watch mode, hide build output unless a build fails (unless
 				// --verbose); detached + non-interactive are enforced by
@@ -572,6 +576,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
 	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable in the container as KEY=VALUE; repeatable, and overrides wendy.json env of the same key")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
 	cmd.Flags().BoolVar(&watch, "watch", false, "Watch the project directory and redeploy on every change (runs detached; same as 'wendy watch')")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Watch mode (--watch): quiet period in milliseconds after the last change before redeploying")
@@ -1497,7 +1502,10 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs)
+	// wendy.json env plus --env and fleet-injected env, appended last so they
+	// win on key clash. Feeds both the fingerprint and whichever deploy path runs.
+	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
+	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
@@ -1520,7 +1528,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
 	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
-		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, opts); err == nil {
+		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
@@ -1589,70 +1597,95 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		AppConfig:     appConfigData,
 		RestartPolicy: restartPolicy,
 		UserArgs:      opts.userArgs,
-		// Service env from wendy.json (mesh: MESH_PEERS etc.) plus any fleet-injected
-		// env (discovery peers). Fleet env is appended last so it wins on key clash.
-		Env: append(resolveServiceEnv(appCfg), opts.env...),
+		Env:           deployEnv,
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
 }
 
-// expandServiceEnv resolves one service's `env` map from wendy.json into the
-// "KEY=VALUE" list carried by CreateContainerRequest.Env. Values may reference
-// host environment variables via ${VAR} (or $VAR); they are expanded here, on
-// the deploy host, since the agent has no access to this shell's environment.
-// An entry whose value expands to empty is dropped so the container falls
-// back to its own built-in default rather than receiving an empty override.
-// Output is sorted for deterministic requests; the agent re-validates every
-// entry (POSIX key, blocked prefixes) before applying it.
-func expandServiceEnv(svc *appconfig.ServiceConfig) []string {
-	if svc == nil || len(svc.Env) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(svc.Env))
-	for k, v := range svc.Env {
-		if expanded := os.Expand(v, os.Getenv); expanded != "" {
-			out = append(out, k+"="+expanded)
+// validateEnvFlag checks --env entries are KEY=VALUE with a POSIX-portable
+// key, so a typo is reported before a build runs rather than by the agent at
+// container create.
+func validateEnvFlag(entries []string) error {
+	for _, kv := range entries {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			return fmt.Errorf("--env %q must be KEY=VALUE", kv)
+		}
+		if err := appconfig.ValidateEnvKey("--env", key); err != nil {
+			return err
 		}
 	}
-	if len(out) == 0 {
+	return nil
+}
+
+// expandEnvMap resolves one `env` map from wendy.json into expanded key/value
+// pairs. Values may reference host environment variables via ${VAR} (or $VAR);
+// they are expanded here, on the deploy host, since the agent has no access to
+// this shell's environment. An entry whose value expands to empty is dropped so
+// the container falls back to its own built-in default rather than receiving an
+// empty override.
+func expandEnvMap(env map[string]string, into map[string]string) {
+	for k, v := range env {
+		if expanded := os.Expand(v, os.Getenv); expanded != "" {
+			into[k] = expanded
+		}
+	}
+}
+
+// sortedEnvEntries renders expanded env as the sorted "KEY=VALUE" list carried
+// by CreateContainerRequest.Env. Sorting keeps requests deterministic; the
+// agent re-validates every entry (POSIX key, blocked prefixes) before applying
+// it.
+func sortedEnvEntries(env map[string]string) []string {
+	if len(env) == 0 {
 		return nil
+	}
+	out := make([]string, 0, len(env))
+	for k, v := range env {
+		out = append(out, k+"="+v)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// resolveServiceEnv merges expandServiceEnv across every service in appCfg,
-// for single-service deploy paths that build one CreateContainerRequest for
-// the whole app rather than one per service (see multibuild.go for the
-// per-service path, which calls expandServiceEnv directly).
+// expandServiceEnv resolves the env for one service of a multi-service app:
+// the app-level env is the default and the service's own env overrides it key
+// by key, matching how a service's resources override the app's.
+func expandServiceEnv(appCfg *appconfig.AppConfig, svc *appconfig.ServiceConfig) []string {
+	merged := map[string]string{}
+	if appCfg != nil {
+		expandEnvMap(appCfg.Env, merged)
+	}
+	if svc != nil {
+		expandEnvMap(svc.Env, merged)
+	}
+	return sortedEnvEntries(merged)
+}
+
+// resolveServiceEnv is the whole-app env for deploy paths that build one
+// CreateContainerRequest rather than one per service: the app-level env plus
+// every service's env merged over it (see multibuild.go for the per-service
+// path, which calls expandServiceEnv directly).
 func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 	if appCfg == nil {
 		return nil
 	}
+	merged := map[string]string{}
+	expandEnvMap(appCfg.Env, merged)
+
 	// Sort service names so cross-service key collisions resolve deterministically.
 	svcNames := make([]string, 0, len(appCfg.Services))
 	for name := range appCfg.Services {
 		svcNames = append(svcNames, name)
 	}
 	sort.Strings(svcNames)
-
-	merged := map[string]string{}
 	for _, name := range svcNames {
-		for _, kv := range expandServiceEnv(appCfg.Services[name]) {
-			k, v, _ := strings.Cut(kv, "=")
-			merged[k] = v
+		if svc := appCfg.Services[name]; svc != nil {
+			expandEnvMap(svc.Env, merged)
 		}
 	}
-	if len(merged) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(merged))
-	for k, v := range merged {
-		out = append(out, k+"="+v)
-	}
-	sort.Strings(out)
-	return out
+	return sortedEnvEntries(merged)
 }
 
 // startAndStreamContainer handles the deploy/detach/attached lifecycle that is
@@ -2118,7 +2151,7 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // uncompressed layer diff IDs it deployed, so the caller can record them in the
 // deploy fingerprint and later verify the device still holds this content before
 // skipping a rebuild (WDY-1824).
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, opts runOptions) ([]string, error) {
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
 	tmp, err := os.MkdirTemp("", "wendy-oci-*")
 	if err != nil {
@@ -2180,6 +2213,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		RestartPolicy:  resolveRestartPolicy(opts),
 		UserArgs:       opts.userArgs,
 		ImageSignature: imageSignature,
+		Env:            deployEnv,
 	})
 	if err != nil {
 		return nil, err

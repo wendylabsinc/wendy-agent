@@ -730,8 +730,12 @@ type RunContainerLayersRequest struct {
 	// empty the agent synthesises a minimal config (legacy behaviour).
 	ImageConfig    []byte `protobuf:"bytes,9,opt,name=image_config,json=imageConfig,proto3" json:"image_config,omitempty"`
 	ImageSignature []byte `protobuf:"bytes,10,opt,name=image_signature,json=imageSignature,proto3" json:"image_signature,omitempty"` // Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Additional environment variables to inject. Format: "KEY=VALUE".
+	// Same semantics as CreateContainerRequest.env, which this path forwards to.
+	// Agents predating this field ignore it and start the container without it.
+	Env           []string `protobuf:"bytes,11,rep,name=env,proto3" json:"env,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RunContainerLayersRequest) Reset() {
@@ -830,6 +834,13 @@ func (x *RunContainerLayersRequest) GetImageConfig() []byte {
 func (x *RunContainerLayersRequest) GetImageSignature() []byte {
 	if x != nil {
 		return x.ImageSignature
+	}
+	return nil
+}
+
+func (x *RunContainerLayersRequest) GetEnv() []string {
+	if x != nil {
+		return x.Env
 	}
 	return nil
 }
@@ -3025,7 +3036,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\x04size\x18\x02 \x01(\x03R\x04size\"9\n" +
 	"\vLayerHeader\x12\x16\n" +
 	"\x06digest\x18\x01 \x01(\tR\x06digest\x12\x12\n" +
-	"\x04size\x18\x02 \x01(\x03R\x04size\"\xa9\x03\n" +
+	"\x04size\x18\x02 \x01(\x03R\x04size\"\xbb\x03\n" +
 	"\x19RunContainerLayersRequest\x12\x1d\n" +
 	"\n" +
 	"image_name\x18\x01 \x01(\tR\timageName\x12\x19\n" +
@@ -3040,7 +3051,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\tuser_args\x18\b \x03(\tR\buserArgs\x12!\n" +
 	"\fimage_config\x18\t \x01(\fR\vimageConfig\x12'\n" +
 	"\x0fimage_signature\x18\n" +
-	" \x01(\fR\x0eimageSignatureB\x11\n" +
+	" \x01(\fR\x0eimageSignature\x12\x10\n" +
+	"\x03env\x18\v \x03(\tR\x03envB\x11\n" +
 	"\x0f_restart_policy\"\xa2\x02\n" +
 	"\x16CreateContainerRequest\x12\x1d\n" +
 	"\n" +
