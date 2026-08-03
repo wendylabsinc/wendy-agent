@@ -470,6 +470,13 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
 		if err != nil || asset != nil {
+			// With no --device, resolveCloudAsset picks the org's only enrolled
+			// device without asking. Say so, rather than leaving the target
+			// implicit. Note this is not the configured default device: the
+			// cloud path does not consult that setting.
+			if err == nil && deviceName == "" {
+				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
+			}
 			return asset, err
 		}
 	}
