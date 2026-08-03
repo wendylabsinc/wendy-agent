@@ -190,7 +190,7 @@ func TestObserveGatewayProtocolHelpers(t *testing.T) {
 	}
 	script := filepath.Join("observe_gateway.py")
 	program := `
-import argparse, importlib.util, json, struct, sys
+import argparse, importlib.util, json, struct, sys, types
 spec = importlib.util.spec_from_file_location("observe_gateway", sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
@@ -206,6 +206,99 @@ assert body_len == len(packed) - 4
 header = json.loads(packed[8:8+header_len])
 assert header["stream_id"] == "cloud" and header["dropped"] == 2
 assert packed[8+header_len:] == b"payload"
+
+class FakeExecutor:
+    def __init__(self):
+        self.wakes = 0
+        self.added = []
+        self.removed = []
+        self.shutdowns = 0
+    def wake(self):
+        self.wakes += 1
+    def add_node(self, node):
+        self.added.append(node)
+    def remove_node(self, node):
+        self.removed.append(node)
+    def spin(self):
+        pass
+    def shutdown(self, timeout_sec=None):
+        self.shutdowns += 1
+
+class FakeThread:
+    def __init__(self, target):
+        self.target = target
+        self.started = False
+        self.joins = 0
+    def start(self):
+        self.started = True
+        self.target()
+    def join(self, timeout=None):
+        self.joins += 1
+
+class FakeNode:
+    def __init__(self):
+        self.created = []
+        self.destroyed = []
+        self.node_destroyed = False
+    def create_subscription(self, message_class, topic, callback, qos):
+        self.created.append((message_class, topic, callback, qos))
+        return object()
+    def destroy_subscription(self, subscription):
+        self.destroyed.append(subscription)
+    def destroy_node(self):
+        self.node_destroyed = True
+
+class FakeTimer:
+    def __init__(self, callback, args):
+        self.callback = callback
+        self.args = args
+        self.cancelled = False
+    def cancel(self):
+        self.cancelled = True
+    def fire(self):
+        if not self.cancelled:
+            self.callback(*self.args)
+
+class FakeLoop:
+    def __init__(self):
+        self.timers = []
+    def call_later(self, delay, callback, *args):
+        assert delay > 0
+        timer = FakeTimer(callback, args)
+        self.timers.append(timer)
+        return timer
+
+executor = FakeExecutor()
+node = FakeNode()
+gateway = object.__new__(module.ObserveGateway)
+gateway.node = node
+gateway.rclpy = types.SimpleNamespace(create_node=lambda name: node)
+gateway.sensor_qos = object()
+gateway.stream_executor_factory = lambda: executor
+gateway.stream_thread_factory = lambda target: FakeThread(target)
+gateway.loop = FakeLoop()
+gateway.subscription_lock = module.threading.Lock()
+gateway.shared_subscriptions = {}
+gateway.subscription_sequence = 0
+
+first = module.ObserveSubscription(gateway, stream, "sensor_msgs/msg/PointCloud2", object)
+first.start()
+assert len(node.created) == 1 and len(executor.added) == 1
+shared = gateway.shared_subscriptions[(stream.topic, "sensor_msgs/msg/PointCloud2")]
+first.close()
+assert len(node.destroyed) == 0 and len(gateway.loop.timers) == 1
+
+# Reopening before the idle grace expires must reuse the DDS reader instead of
+# racing a destroy/create pair in rclpy's executor wait set.
+second = module.ObserveSubscription(gateway, stream, "sensor_msgs/msg/PointCloud2", object)
+second.start()
+assert len(node.created) == 1 and gateway.loop.timers[0].cancelled
+second.close()
+assert len(gateway.loop.timers) == 2
+gateway.loop.timers[1].fire()
+assert len(node.destroyed) == 1 and node.node_destroyed
+assert len(executor.removed) == 1 and executor.shutdowns == 1
+assert shared.executor_thread.joins == 1
 print("ok")
 `
 	cmd := exec.Command(python, "-c", program, script)

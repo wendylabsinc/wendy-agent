@@ -7,7 +7,8 @@ Wendy Observe is a demand-driven data path for production robots. It discovers
 the device's ROS 2 graph without continuously consuming every topic, starts an
 upstream subscription only when a client asks for a stream, preprocesses
 high-volume sensor data on the device, and destroys the subscription when the
-last client leaves.
+last client leaves. Observe keeps an idle reader for a 0.5-second grace period
+so a panel that immediately reopens can reuse it without churning ROS entities.
 
 Start Observe over the LAN:
 

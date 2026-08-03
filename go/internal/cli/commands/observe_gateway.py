@@ -23,6 +23,7 @@ DEFAULT_MAX_HZ = 10.0
 DEFAULT_MAX_BYTES_PER_SECOND = 1_000_000
 DEFAULT_JPEG_QUALITY = 65
 DEFAULT_MAX_WIDTH = 960
+UPSTREAM_IDLE_GRACE_SECONDS = 0.5
 
 
 class ObserveError(Exception):
@@ -48,6 +49,16 @@ class ProcessedFrame:
     encoding: str
     profile: str
     timestamp_ns: int
+
+
+@dataclasses.dataclass
+class SharedROSSubscription:
+    node: object = None
+    handle: object = None
+    executor: object = None
+    executor_thread: object = None
+    consumers: set = dataclasses.field(default_factory=set)
+    teardown: object = None
 
 
 def pack_frame(spec: StreamSpec, type_name: str, frame: ProcessedFrame, dropped: int) -> bytes:
@@ -151,19 +162,14 @@ class ObserveSubscription:
         self.type_name = type_name
         self.message_class = message_class
         self.queue = asyncio.Queue(maxsize=1)
-        self.ros_subscription = None
+        self.shared_key = None
         self.last_emitted_at = 0.0
         self.dropped = 0
         self.budget = ByteBudget(spec.max_bytes_per_second)
         self.closed = False
 
     def start(self) -> None:
-        self.ros_subscription = self.gateway.node.create_subscription(
-            self.message_class,
-            self.spec.topic,
-            self._on_message,
-            self.gateway.sensor_qos,
-        )
+        self.gateway.attach_consumer(self)
 
     def _on_message(self, message) -> None:
         if self.closed:
@@ -207,9 +213,7 @@ class ObserveSubscription:
         if self.closed:
             return
         self.closed = True
-        if self.ros_subscription is not None:
-            self.gateway.node.destroy_subscription(self.ros_subscription)
-            self.ros_subscription = None
+        self.gateway.detach_consumer(self)
 
 
 def resolve_profile(type_name: str, requested: str) -> str:
@@ -326,7 +330,7 @@ def image_to_jpeg(message, max_width: int, quality: int) -> bytes:
 class ObserveGateway:
     def __init__(self, args, loop: asyncio.AbstractEventLoop) -> None:
         import rclpy
-        from rclpy.executors import MultiThreadedExecutor
+        from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -349,9 +353,115 @@ class ObserveGateway:
         self.executor = MultiThreadedExecutor(num_threads=2)
         self.session_budget = ByteBudget(args.max_bytes_per_second)
         self.session_budget_lock = threading.Lock()
+        self.subscription_lock = threading.Lock()
+        self.shared_subscriptions = {}
+        self.subscription_sequence = 0
+        self.stream_executor_factory = SingleThreadedExecutor
+        self.stream_thread_factory = lambda target: threading.Thread(
+            target=target, daemon=True
+        )
         self.executor.add_node(self.node)
         self.executor_thread = threading.Thread(target=self.executor.spin, daemon=True)
         self.executor_thread.start()
+
+    def attach_consumer(self, consumer: ObserveSubscription) -> None:
+        key = (consumer.spec.topic, consumer.type_name)
+        with self.subscription_lock:
+            shared = self.shared_subscriptions.get(key)
+            if shared is None:
+                shared = SharedROSSubscription()
+                self.shared_subscriptions[key] = shared
+                self.subscription_sequence += 1
+                try:
+                    shared.node = self.rclpy.create_node(
+                        f"wendy_observe_stream_{self.subscription_sequence}"
+                    )
+                    shared.handle = shared.node.create_subscription(
+                        consumer.message_class,
+                        consumer.spec.topic,
+                        lambda message, subscription_key=key: self._dispatch_message(
+                            subscription_key, message
+                        ),
+                        self.sensor_qos,
+                    )
+                    # A demand-driven reader owns its executor thread. This
+                    # lets teardown stop and join the wait set before the ROS
+                    # handle is destroyed; mutating an executor that is
+                    # concurrently spinning can raise rclpy InvalidHandle.
+                    shared.executor = self.stream_executor_factory()
+                    shared.executor.add_node(shared.node)
+                    shared.executor_thread = self.stream_thread_factory(
+                        shared.executor.spin
+                    )
+                    shared.executor_thread.start()
+                except Exception:
+                    del self.shared_subscriptions[key]
+                    if shared.executor is not None:
+                        shared.executor.shutdown(timeout_sec=3.0)
+                    if shared.node is not None:
+                        shared.node.destroy_node()
+                    raise
+            if shared.teardown is not None:
+                shared.teardown.cancel()
+                shared.teardown = None
+            shared.consumers.add(consumer)
+            consumer.shared_key = key
+
+    def detach_consumer(self, consumer: ObserveSubscription) -> None:
+        key = consumer.shared_key
+        consumer.shared_key = None
+        if key is None:
+            return
+        with self.subscription_lock:
+            shared = self.shared_subscriptions.get(key)
+            if shared is None:
+                return
+            shared.consumers.discard(consumer)
+            if not shared.consumers and shared.teardown is None:
+                # Reuse the DDS reader when a panel closes and immediately
+                # reopens. Destroying and recreating the entity back-to-back
+                # can race rclpy's executor wait-set rebuild.
+                shared.teardown = self.loop.call_later(
+                    UPSTREAM_IDLE_GRACE_SECONDS,
+                    self._destroy_idle_subscription,
+                    key,
+                    shared,
+                )
+
+    def _dispatch_message(self, key, message) -> None:
+        with self.subscription_lock:
+            shared = self.shared_subscriptions.get(key)
+            consumers = tuple(shared.consumers) if shared is not None else ()
+        for consumer in consumers:
+            consumer._on_message(message)
+
+    def _destroy_idle_subscription(self, key, expected) -> None:
+        with self.subscription_lock:
+            shared = self.shared_subscriptions.get(key)
+            if shared is not expected or shared.consumers:
+                return
+            del self.shared_subscriptions[key]
+            shared.teardown = None
+            handle = shared.handle
+            node = shared.node
+            shared.handle = None
+            shared.node = None
+        if node is not None:
+            self._stop_shared_subscription(shared, node, handle)
+
+    def _stop_shared_subscription(self, shared, node=None, handle=None) -> None:
+        node = shared.node if node is None else node
+        handle = shared.handle if handle is None else handle
+        if shared.executor is not None:
+            shared.executor.shutdown(timeout_sec=3.0)
+        if shared.executor_thread is not None:
+            shared.executor_thread.join(timeout=3.0)
+        if shared.executor is not None and node is not None:
+            shared.executor.remove_node(node)
+        if node is not None:
+            if handle is not None:
+                node.destroy_subscription(handle)
+            node.destroy_node()
 
     def allow_session_bytes(self, size: int, now: float) -> bool:
         with self.session_budget_lock:
@@ -403,6 +513,16 @@ class ObserveGateway:
         return subscription
 
     def close(self) -> None:
+        with self.subscription_lock:
+            subscriptions = tuple(self.shared_subscriptions.values())
+            self.shared_subscriptions.clear()
+            for shared in subscriptions:
+                if shared.teardown is not None:
+                    shared.teardown.cancel()
+                shared.consumers.clear()
+        for shared in subscriptions:
+            if shared.node is not None:
+                self._stop_shared_subscription(shared)
         self.executor.shutdown(timeout_sec=3.0)
         self.executor_thread.join(timeout=3.0)
         self.node.destroy_node()
