@@ -49,15 +49,55 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 	return services, nil
 }
 
-// resolveMDNSService runs dns-sd -L to resolve a browse result into an MDNSService.
-func resolveMDNSService(ctx context.Context, inst browseResult, serviceType string) (MDNSService, error) {
+// resolvedService is the raw result of a dns-sd -L resolve: exactly what the
+// SRV + TXT records provide. No IP address — resolving the hostname to an
+// address is the caller's concern.
+type resolvedService struct {
+	instanceName string
+	hostname     string
+	port         int
+	txtRecords   map[string]string
+}
+
+// parseDNSSDTXT extracts key=value pairs from a dns-sd TXT record line into txt.
+// dns-sd escapes spaces inside values as "\ "; we split on unescaped
+// whitespace so that values like "Dynamic\ Cosmos" round-trip correctly.
+func parseDNSSDTXT(line string, txt map[string]string) {
+	var fields []string
+	var cur strings.Builder
+	for i := 0; i < len(line); i++ {
+		if line[i] == '\\' && i+1 < len(line) && (line[i+1] == ' ' || line[i+1] == '\t') {
+			cur.WriteByte(line[i+1])
+			i++
+		} else if line[i] == ' ' || line[i] == '\t' {
+			if cur.Len() > 0 {
+				fields = append(fields, cur.String())
+				cur.Reset()
+			}
+		} else {
+			cur.WriteByte(line[i])
+		}
+	}
+	if cur.Len() > 0 {
+		fields = append(fields, cur.String())
+	}
+	for _, field := range fields {
+		if k, v, ok := strings.Cut(field, "="); ok {
+			txt[k] = v
+		}
+	}
+}
+
+// dnssdResolveService runs dns-sd -L to resolve a browse result to hostname,
+// port, and TXT records. Returns as soon as the "can be reached at" line is parsed.
+func dnssdResolveService(ctx context.Context, inst browseResult, serviceType string) (resolvedService, error) {
 	cmd := exec.CommandContext(ctx, "dns-sd", "-L", inst.instanceName, serviceType, inst.domain)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return MDNSService{}, err
+		return resolvedService{}, err
 	}
 	if err := cmd.Start(); err != nil {
-		return MDNSService{}, err
+		return resolvedService{}, err
 	}
 
 	var hostname string
@@ -82,16 +122,12 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 				}
 			}
 
+			// TXT records on the same line (some versions).
+			parseDNSSDTXT(line, txtRecords)
+
+			// TXT records are typically on the next line indented with a space.
 			if scanner.Scan() {
-				txtLine := scanner.Text()
-				if strings.HasPrefix(txtLine, " ") {
-					txtParts := strings.Fields(txtLine)
-					for _, field := range txtParts {
-						if k, v, ok := strings.Cut(field, "="); ok {
-							txtRecords[k] = v
-						}
-					}
-				}
+				parseDNSSDTXT(scanner.Text(), txtRecords)
 			}
 
 			_ = cmd.Process.Kill()
@@ -102,19 +138,35 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 	_ = cmd.Wait()
 
 	if hostname == "" {
-		return MDNSService{}, fmt.Errorf("could not resolve instance %q", inst.instanceName)
+		return resolvedService{}, fmt.Errorf("could not resolve instance %q", inst.instanceName)
+	}
+
+	return resolvedService{
+		instanceName: inst.instanceName,
+		hostname:     hostname,
+		port:         port,
+		txtRecords:   txtRecords,
+	}, nil
+}
+
+// resolveMDNSService resolves a browse result into an MDNSService, including
+// a best-effort IP address lookup for the resolved hostname.
+func resolveMDNSService(ctx context.Context, inst browseResult, serviceType string) (MDNSService, error) {
+	svc, err := dnssdResolveService(ctx, inst, serviceType)
+	if err != nil {
+		return MDNSService{}, err
 	}
 
 	ipAddr := ""
-	if addrs, lookupErr := net.LookupHost(hostname); lookupErr == nil {
+	if addrs, lookupErr := net.LookupHost(svc.hostname); lookupErr == nil {
 		ipAddr = preferIPv4Addr(addrs)
 	}
 
 	return MDNSService{
-		InstanceName: inst.instanceName,
-		Hostname:     hostname,
+		InstanceName: svc.instanceName,
+		Hostname:     svc.hostname,
 		IPAddress:    ipAddr,
-		Port:         port,
-		TXTRecords:   txtRecords,
+		Port:         svc.port,
+		TXTRecords:   svc.txtRecords,
 	}, nil
 }

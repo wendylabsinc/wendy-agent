@@ -2,7 +2,10 @@
 
 package discovery
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestParseBrowseLine(t *testing.T) {
 	// Interface index 9999 never resolves, so interfaceName is deterministically
@@ -55,6 +58,45 @@ func TestParseBrowseLine(t *testing.T) {
 			}
 			if ok && got != tt.want {
 				t.Errorf("parseBrowseLine(%q) = %+v, want %+v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDNSSDTXT(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want map[string]string
+	}{
+		{
+			name: "plain pairs",
+			line: " tls=true id=abc123",
+			want: map[string]string{"tls": "true", "id": "abc123"},
+		},
+		{
+			name: "escaped space in value",
+			line: ` displayname=Dynamic\ Cosmos tls=true`,
+			want: map[string]string{"displayname": "Dynamic Cosmos", "tls": "true"},
+		},
+		{
+			name: "tokens without equals are ignored",
+			line: "some noise displayname=wendy more noise",
+			want: map[string]string{"displayname": "wendy"},
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := make(map[string]string)
+			parseDNSSDTXT(tt.line, got)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseDNSSDTXT(%q) = %v, want %v", tt.line, got, tt.want)
 			}
 		})
 	}

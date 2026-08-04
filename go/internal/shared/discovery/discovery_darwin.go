@@ -147,97 +147,23 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 	}
 }
 
-// dnssdResolve runs dns-sd -L to resolve an instance to hostname, port, and TXT records.
-// Returns as soon as the "can be reached at" line is parsed.
+// dnssdResolve resolves an instance via dns-sd -L and maps the result to a
+// wendy LANDevice, interpreting the wendy-specific TXT records.
 func dnssdResolve(ctx context.Context, inst browseResult, interfaceDisplayNames map[string]string, linkSpeeds map[string]string) (models.LANDevice, error) {
-	cmd := exec.CommandContext(ctx, "dns-sd", "-L", inst.instanceName, wendyServiceType, inst.domain)
-	stdout, err := cmd.StdoutPipe()
+	svc, err := dnssdResolveService(ctx, inst, wendyServiceType)
 	if err != nil {
 		return models.LANDevice{}, err
 	}
-	if err := cmd.Start(); err != nil {
-		return models.LANDevice{}, err
-	}
 
-	var hostname string
-	var port int
-	txtRecords := make(map[string]string)
-
-	// parseTXT extracts key=value pairs from a dns-sd TXT record line.
-	// dns-sd escapes spaces inside values as "\ "; we split on unescaped
-	// whitespace so that values like "Dynamic\ Cosmos" round-trip correctly.
-	parseTXT := func(line string) {
-		var fields []string
-		var cur strings.Builder
-		for i := 0; i < len(line); i++ {
-			if line[i] == '\\' && i+1 < len(line) && (line[i+1] == ' ' || line[i+1] == '\t') {
-				cur.WriteByte(line[i+1])
-				i++
-			} else if line[i] == ' ' || line[i] == '\t' {
-				if cur.Len() > 0 {
-					fields = append(fields, cur.String())
-					cur.Reset()
-				}
-			} else {
-				cur.WriteByte(line[i])
-			}
-		}
-		if cur.Len() > 0 {
-			fields = append(fields, cur.String())
-		}
-		for _, field := range fields {
-			if k, v, ok := strings.Cut(field, "="); ok {
-				txtRecords[k] = v
-			}
-		}
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.Contains(line, "can be reached at") {
-			parts := strings.Fields(line)
-			for i, p := range parts {
-				if p == "at" && i+1 < len(parts) {
-					hostPort := parts[i+1]
-					h, p, err := net.SplitHostPort(hostPort)
-					if err == nil {
-						hostname = strings.TrimSuffix(h, ".")
-						fmt.Sscanf(p, "%d", &port)
-					}
-					break
-				}
-			}
-
-			// TXT records on the same line (some versions).
-			parseTXT(line)
-
-			// TXT records are typically on the next line indented with a space.
-			if scanner.Scan() {
-				parseTXT(scanner.Text())
-			}
-
-			_ = cmd.Process.Kill()
-			break
-		}
-	}
-
-	_ = cmd.Wait()
-
-	if hostname == "" {
-		return models.LANDevice{}, fmt.Errorf("could not resolve instance %q", inst.instanceName)
-	}
-
-	displayName := strings.TrimSuffix(hostname, ".local")
-	if dn, ok := txtRecords["displayname"]; ok {
+	displayName := strings.TrimSuffix(svc.hostname, ".local")
+	if dn, ok := svc.txtRecords["displayname"]; ok {
 		displayName = dn
 	}
 
 	id := ""
-	if v, ok := txtRecords["wendyosdevice"]; ok {
+	if v, ok := svc.txtRecords["wendyosdevice"]; ok {
 		id = v
-	} else if v, ok := txtRecords["id"]; ok {
+	} else if v, ok := svc.txtRecords["id"]; ok {
 		id = v
 	}
 	if id == "" {
@@ -247,13 +173,13 @@ func dnssdResolve(ctx context.Context, inst browseResult, interfaceDisplayNames 
 	dev := models.LANDevice{
 		ID:            id,
 		DisplayName:   displayName,
-		Hostname:      hostname,
-		Port:          port,
-		IsMTLS:        txtRecords["tls"] == "true",
+		Hostname:      svc.hostname,
+		Port:          svc.port,
+		IsMTLS:        svc.txtRecords["tls"] == "true",
 		InterfaceType: string(models.InterfaceLAN),
 		IsWendyDevice: true,
 	}
-	setAssetID(&dev, txtRecords)
+	setAssetID(&dev, svc.txtRecords)
 	setLANNetworkInterface(&dev, inst.interfaceName, interfaceDisplayNames[inst.interfaceName], darwinCachedInterfaceLinkSpeed(ctx, inst.interfaceName, linkSpeeds))
 	return dev, nil
 }
