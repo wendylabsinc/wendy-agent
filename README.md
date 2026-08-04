@@ -143,8 +143,9 @@ sudo systemctl enable --now containerd
 | Hardware         | Install | Deploy |    GPU | Camera | Status  |
 | ---------------- | ------: | -----: | -----: | -----: | ------- |
 | Jetson Orin Nano |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
+| Jetson AGX Orin  |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
 | Raspberry Pi 5   |       ✅ |      ✅ |      — |      ✅ | Stable  |
-| Jetson Thor      |       ✅ |      ✅ |      ✅ |      ✅ | Preview |
+| Jetson AGX Thor  |       ✅ |      ✅ |      ✅ |      ✅ | Preview |
 | Standard Linux   |   Agent |      ✅ | Varies | Varies | Stable  |
 | ESP32 Wendy Lite |   Flash |      ✅ |      — | Varies | Preview |
 
