@@ -9,7 +9,7 @@ The command presents a unified device picker that lists Linux targets (Raspberry
 - **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
 - **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
 - **Jetson AGX Thor** -> download flashpack -> boot over USB recovery -> flash QSPI and internal NVMe
-- **Unitree G1 (experimental)** -> download and verify the official paired Unitree JetPack 6.2 packages -> image a replacement NVMe -> follow the guided PC2 PWR/REC sequence -> flash matching Orin NX module firmware
+- **Unitree G1** -> download and verify the official paired Unitree JetPack 6.2 packages -> image a replacement NVMe -> follow the guided PC2 PWR/REC sequence -> flash matching Orin NX module firmware
 - **ESP32 targets** → detect USB serial port → download firmware `.bin` → flash over serial
 
 ```sh
@@ -68,7 +68,7 @@ per-PR pipeline).
 `--pr` is mutually exclusive with `--nightly`, `--version`, and a positional
 image path.
 
-## Unitree G1 experimental path
+## Unitree G1
 
 Select **Unitree G1** under the **Robots** section of the normal `wendy install`
 picker. The installer deliberately keeps the rootfs image and PC2 module

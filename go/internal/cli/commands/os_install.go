@@ -460,7 +460,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 
 	if selected == unitreeG1DeviceType {
 		if nightly {
-			return fmt.Errorf("--nightly is not available for the experimental Unitree G1 installer")
+			return fmt.Errorf("--nightly is not available for the Unitree G1 installer")
 		}
 		if rootfsOnly || storageOverride != "" || noBmap || yesOverwriteInternal {
 			return fmt.Errorf("--rootfs-only, --storage, --no-bmap, and --yes-overwrite-internal do not apply to the Unitree G1 installer")

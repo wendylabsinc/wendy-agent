@@ -48,7 +48,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 		return err
 	}
 	if !isInteractiveTerminal() {
-		return fmt.Errorf("the experimental Unitree G1 installer currently requires an interactive terminal")
+		return fmt.Errorf("the Unitree G1 installer requires an interactive terminal")
 	}
 
 	version, err := selectUnitreeG1Version(opts.Version)
@@ -59,7 +59,8 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Println()
 	fmt.Println(tui.Header("Install Unitree G1 PC2 · JetPack " + version))
 	fmt.Println("Host requirement: " + unitreeG1HostRequirement + ".")
-	fmt.Println(tui.WarningMessage("Experimental hardware flow: this erases a replacement NVMe and updates PC2 module firmware. It never flashes the G1 motion-control computer."))
+	fmt.Println("This installation writes a replacement NVMe and updates the matching PC2 module firmware.")
+	fmt.Println("It does not flash the G1 motion-control computer.")
 	fmt.Println("The original G1 NVMe must be removed and preserved before continuing.")
 	fmt.Println("Official source: " + unitreeG1OfficialGuide)
 	fmt.Println()
@@ -203,7 +204,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 
 func selectUnitreeG1Version(requested string) (string, error) {
 	if requested != "" && requested != unitreeG1Version {
-		return "", fmt.Errorf("Unitree G1 version %q is unavailable; this experimental installer supports %s", requested, unitreeG1Version)
+		return "", fmt.Errorf("Unitree G1 version %q is unavailable; this installer supports %s", requested, unitreeG1Version)
 	}
 	if requested != "" || !isInteractiveTerminal() {
 		return unitreeG1Version, nil
