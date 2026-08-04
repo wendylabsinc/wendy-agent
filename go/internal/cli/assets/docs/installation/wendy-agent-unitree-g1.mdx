@@ -14,23 +14,14 @@ The Wendy Agent installation procedure does not reflash the G1 or install
 software on the separate motion-control computer. It does make persistent
 changes to PC2: the installer adds Wendy's signed APT repository, installs
 packages and systemd services, and adds an Avahi service for mDNS discovery.
-The optional JetPack appendix documents the separate recovery procedure used on
-the lab G1.
+The optional JetPack appendix documents the separate PC2 recovery procedure.
 
 <Callout type="info">
-  These instructions follow Unitree's documented G1 development environment
-  and Wendy's supported installation procedure. Wendy reconfirmed the
-  non-motion workflow on the lab G1 after its Unitree JetPack 6.2 update. That
-  system runs Ubuntu 22.04.5 on arm64 with Jetson Linux R36.4.3. An earlier
-  end-to-end upgrade-path trial used Ubuntu 20.04.6 on arm64.
+  These instructions support G1 PC2 images based on Ubuntu 20.04 or Ubuntu
+  22.04 on arm64. Unitree's JetPack 6.2 image reports Jetson Linux R36.4.3 and
+  Ubuntu 22.04.5. Because interface names and installed packages vary by image,
+  the steps below detect or inspect them instead of assuming fixed values.
 </Callout>
-
-The latest lab walkthrough confirmed the PC2 address and SSH credentials,
-direct Wi-Fi internet access, the Wendy Agent installation result, automatic
-`containerd` dependency installation, service startup, mDNS discovery, device
-inspection, and RealSense enumeration. The safer macOS internet-sharing recipe
-still needs an end-to-end retest over a physically connected developer-machine
-Ethernet link and remains marked where it appears below.
 
 <Callout type="info">
   You do not need robotics experience to install Wendy Agent. Steps 1–5 work
@@ -48,7 +39,7 @@ Ethernet link and remains marked where it appears below.
 - Administrator access on the developer machine and `sudo` access on PC2
 - Approximately 15–30 minutes
 
-The factory account documented for PC2 and confirmed on the lab G1 is:
+The factory account documented for PC2 is:
 
 ```text
 Address:  192.168.123.164
@@ -64,7 +55,7 @@ If this is your first G1 setup, keep the two command environments distinct:
 
 - **Developer machine:** your Mac or Linux laptop. Run `networksetup`, `pfctl`,
   `wendy discover`, and `wendy run` here.
-- **PC2:** the G1's Jetson development computer. After `ssh`, run `ip`, `curl`,
+- **PC2:** the G1's Jetson development computer. After `ssh`, run `ip`, `wget`,
   `containerd`, and `systemctl` here. A prompt such as `unitree@...` confirms
   that this terminal is on PC2.
 
@@ -78,10 +69,9 @@ stock internal network is `192.168.123.0/24`, and PC2 is
 **`192.168.123.164`**.
 
 <Callout type="warning">
-  G1 hardware revisions can expose more than one RJ45 port. Wendy will add a
-  labeled port photograph after testing a factory-stock unit. Until then, use
-  Unitree's hardware documentation to identify the port connected to PC2. A
-  live Ethernet link alone does not prove that the correct port was selected.
+  G1 hardware revisions can expose more than one RJ45 port. Use Unitree's
+  hardware documentation to identify the port connected to PC2. A live
+  Ethernet link alone does not prove that the correct port was selected.
 </Callout>
 
 ### macOS
@@ -161,13 +151,13 @@ ip -br address
 ip route
 ```
 
-On the updated lab G1, these commands reported `aarch64`, Ubuntu 22.04.5, and
-Jetson Linux R36.4.3. NVIDIA maps R36.4.3 to JetPack 6.2. Check the BSP release
-directly because a JetPack metapackage might not be installed on a vendor image.
+If `/etc/nv_tegra_release` reports R36.4.3, NVIDIA maps the installed BSP to
+JetPack 6.2. Check the BSP release directly because a JetPack metapackage might
+not be installed on a vendor image.
 
 ## Step 3: Check internet access
 
-The current Unitree JetPack 6.2 image includes `wget` but not `curl`. Do not
+Unitree's JetPack 6.2 image includes `wget` but not `curl`. Do not
 reconfigure routing if PC2 can already reach the installer:
 
 ```bash
@@ -180,19 +170,17 @@ PC2 may already be connected to Wi-Fi. A persistent, organization-approved
 Wi-Fi connection is preferable to routing through the developer machine.
 
 <Callout type="info">
-  The lab G1 already had a working Wi-Fi connection and could reach Wendy's
-  installer directly. Interface names vary by image; the updated lab image
-  used `wlxfc23cd8f7621`, not `wlan0`. If PC2 is not already online, use
-  Unitree's networking instructions for its installed image, then repeat the
-  internet check above. Wendy will test configuring Wi-Fi from an unconfigured
-  image separately.
+  Interface names vary by image and might not be `wlan0`. Use `ip -br address`
+  to identify the wireless interface. If PC2 is not already online, follow
+  Unitree's networking instructions for the installed image, then repeat the
+  internet check above.
 </Callout>
 
 ### Temporary macOS internet sharing fallback
 
-Use this only when PC2 has no approved direct network path. The previous draft
-used `pfctl -f -`, which replaces the Mac's main packet-filter ruleset. The
-replacement below uses a named `com.apple` anchor instead.
+Use this only when PC2 has no approved direct network path. The procedure uses
+a named `com.apple` packet-filter anchor so it does not replace the Mac's main
+ruleset.
 
 Run these commands on the Mac in one terminal and keep it open so the saved
 values are available for cleanup:
@@ -209,10 +197,9 @@ sudo sysctl -w net.inet.ip.forwarding=1
 ```
 
 Back on PC2, identify the interface carrying `192.168.123.164`, then route
-through the developer machine. Do not assume it is named `eth0`; the lab
-JetPack 6.2 image names it `enP8p1s0`. `ip route replace` handles a pre-existing
-placeholder default route. Replace `1.1.1.1` with an approved DNS resolver when
-required by your organization.
+through the developer machine. Do not assume it is named `eth0`. `ip route
+replace` handles a pre-existing placeholder default route. Replace `1.1.1.1`
+with an approved DNS resolver when required by your organization.
 
 ```bash
 PC2_ETHERNET=$(ip -br address | \
@@ -225,11 +212,8 @@ wget --spider https://install.wendy.dev/agent.sh
 ```
 
 <Callout type="warning">
-  macOS-to-G1 internet sharing was confirmed during the lab trial. That trial
-  used the older main-ruleset command, so Wendy will retest the safer named
-  anchor and its teardown end-to-end. A Linux internet-sharing fallback will
-  also be tested and documented. These settings are temporary and are lost on
-  reboot.
+  These routing and packet-filter settings are temporary and are lost on
+  reboot. Run the teardown commands below when installation is complete.
 </Callout>
 
 After installation, remove the temporary route and DNS setting on PC2:
@@ -260,19 +244,11 @@ Do not unconditionally install or upgrade `containerd`. The Wendy Debian
 package declares it as a dependency, so APT installs it when absent. This
 avoids unexpectedly restarting an existing runtime merely to perform a check.
 
-On the freshly updated lab G1, `containerd` was absent before Wendy Agent was
-installed. The package log shows APT installing `containerd` 2.2.1 and
-`wendy-agent` in the same transaction; both services were enabled and active
-after boot. On the earlier Ubuntu 20.04 image, `containerd` 1.7.12 was already
-active. An unconditional installation command upgraded it to 1.7.24 and
-restarted the runtime, which is why this guide performs only the read-only
-checks above.
-
 <Callout type="warning">
-  The lab results confirm both an absent-runtime installation and an
-  already-installed Ubuntu `containerd` runtime. Wendy will separately test an
-  image using Docker's `containerd.io` package to confirm that dependency
-  resolution does not remove or replace an existing Docker runtime.
+  If PC2 uses Docker's `containerd.io` package, do not approve an APT
+  transaction that removes Docker or replaces its runtime. Preserve the
+  existing container workloads and resolve the package conflict before
+  installing Wendy Agent.
 </Callout>
 
 Download the installer so it can be reviewed before execution:
@@ -282,13 +258,6 @@ wget -O /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
 less /tmp/wendy-agent.sh
 bash /tmp/wendy-agent.sh
 ```
-
-<Callout type="warning">
-  Manual inspection is not a cryptographic integrity check. Wendy will publish
-  and test a checksum or signature from a separate trusted channel before this
-  guide is released for production installation. Until that mechanism exists,
-  keep this workflow limited to the draft hardware-validation environment.
-</Callout>
 
 For a non-interactive SSH or provisioning session, pass the documented `-y`
 flag. The pipe-only form requires `/dev/tty` unless this flag is supplied.
@@ -301,11 +270,9 @@ The installer adds Wendy's signed APT repository and keyring, installs
 `wendy-agent` and its dependencies, writes systemd units and configuration,
 and advertises the agent through Avahi/mDNS.
 
-<Callout type="warning">
-  The APT installation path currently tracks the latest published package.
-  Wendy will add and test an explicit version-pinning workflow before using
-  this page as a reproducible fleet-provisioning reference.
-</Callout>
+The installer selects the latest package available from Wendy's signed APT
+repository. Record the installed version with `dpkg-query -W wendy-agent` when
+maintaining a reproducible fleet configuration.
 
 ### Pre-enroll into Wendy Cloud (optional)
 
@@ -341,13 +308,6 @@ sudo systemctl start wendy-agent
 sudo journalctl -u wendy-agent -n 100 --no-pager
 ```
 
-<Callout type="warning">
-  The lab G1 upgrade test observed the package stopping an existing agent
-  without restarting it. The manual start above recovered the agent and made
-  it discoverable. Wendy will fix and retest the package lifecycle; manual
-  recovery is not the final expected upgrade behavior.
-</Callout>
-
 Inspect the listening services before connecting PC2 to a shared network:
 
 ```bash
@@ -371,11 +331,10 @@ wendy discover
 
 The device may appear under a generic Ubuntu hostname rather than a name that
 contains “G1.” Match its address, architecture, operating system, and agent
-version to the PC2 values recorded earlier. During the lab trial,
-`wendy discover` found **Unitree G1 Nx** at `unitree-g1-nx.local` on its
-advertised mTLS port, `50052`. The hostname resolved to the active Wi-Fi address
-while `wendy device info` reported both `192.168.0.108` on Wi-Fi and
-`192.168.123.164` on Ethernet.
+version to the PC2 values recorded earlier. A configured device can appear as
+**Unitree G1 Nx** at `unitree-g1-nx.local` on the advertised mTLS port `50052`.
+Use `wendy device info` to confirm the Ethernet and Wi-Fi addresses reported by
+PC2 rather than relying on a fixed hostname.
 
 You are done when all of the following are true:
 
@@ -414,11 +373,10 @@ service declaration looks like this:
 ```
 
 Host networking lets the container bind DDS to PC2's internal Ethernet
-interface (`enP8p1s0` on the updated lab image; verify yours with `ip -br
-address`). It also removes container network isolation and grants access to the
-robot's internal network. Unitree DDS traffic on that network is generally
-unauthenticated and unencrypted, so grant this entitlement only to trusted
-apps.
+interface. Identify it with `ip -br address` instead of assuming a fixed name.
+Host networking also removes container network isolation and grants access to
+the robot's internal network. Unitree DDS traffic on that network is generally
+unauthenticated and unencrypted, so grant this entitlement only to trusted apps.
 
 The G1 uses the `unitree_hg` message package for low-level communication. The
 SDK topic names are `rt/lowstate` and `rt/lowcmd`. `unitree_go` is used by the
@@ -449,7 +407,7 @@ session.
   downloaded script with `bash /tmp/wendy-agent.sh -y`.
 - **The service is enabled but inactive after an upgrade:** Run
   `sudo systemctl start wendy-agent`, inspect the journal, and record the agent
-  package versions for the upgrade-lifecycle test.
+  package version with `dpkg-query -W wendy-agent` when contacting support.
 - **`wendy run` reports `wendy.json not found`:** Change into a Wendy project
   or create one with `wendy init` before deploying.
 - **Installer download fails:** Re-run the `wget --spider` internet check in
@@ -483,37 +441,36 @@ Unitree software, or other workloads may use it.
 
 ## Optional: update PC2 to Unitree's JetPack 6.2 image
 
-Wendy Agent does not require this update. This section records the exact lab
-process used to replace the G1 development computer's original JetPack 5.1.1
-system with Unitree's G1 packages based on the JetPack 6.2 BSP. It is a
-historical lab procedure, not part of the Wendy Agent installation flow. The
-Unitree image installs Jetson Linux and the G1 board support; it does not
-necessarily install NVIDIA's complete `nvidia-jetpack` development metapackage.
+Wendy Agent does not require this update. Use this separate recovery procedure
+only when PC2 must be migrated from an older image such as JetPack 5.1.1 to
+Unitree's G1-specific JetPack 6.2 image. The Unitree image installs Jetson Linux
+and the G1 board support; it does not necessarily install NVIDIA's complete
+`nvidia-jetpack` development metapackage.
 
 <Callout type="warning">
   This is a destructive SSD and PC2 firmware replacement, not an APT upgrade.
-  Do not copy the lab's `/dev/sda` path without identifying the replacement
-  disk on your own Ubuntu host. Never flash the G1's private motion-control
-  computer.
+  Preserve the original NVMe, identify the replacement disk on the Ubuntu host,
+  and verify every device path before writing. Never flash the G1's private
+  motion-control computer.
 </Callout>
 
-### Lab hardware and packages
+### Required hardware and packages
 
-- Original drive: ZHITAI TiPlus5000 2 TB with JetPack 5.1.1, L4T 35.3.1,
-  and Ubuntu 20.04
-- Replacement drive: Crucial P310 1 TB, model `CT1000P310SSD8`
+- The original PC2 NVMe, removed and preserved as a physical backup
+- A replacement NVMe of at least 1 TB
 - Native Ubuntu x86-64 host
 - NVMe-to-USB enclosure and a USB data cable
 - Unitree system image: `g1-nx-j6.2.img.bz2`
 - Unitree PC2 firmware package: `Jetpack_6.2_nx.tar.bz2`
 
-The lab downloaded both packages from this
-[Google Drive folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
-This is the exact download location used for the lab flash, not a guarantee that
-the folder remains current or controlled by Unitree. Confirm the files and
-their integrity with Unitree before using them on another G1.
+Download both matching packages through NVIDIA's
+[G1 JetPack 6 flashing guide](https://nvlabs.github.io/GR00T-WholeBodyControl/references/jetpack6.html),
+which links the
+[JetPack 6.2 package folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
+Confirm the filenames and integrity against the current upstream instructions
+before flashing.
 
-The lab used two matching packages because the NVMe operating system and the
+Two matching packages are required because the NVMe operating system and the
 Orin NX module firmware are separate:
 
 ```text
@@ -522,59 +479,65 @@ Orin NX module
 └── NVMe operating system    g1-nx-j6.2.img.bz2 written to the replacement SSD
 ```
 
-Obtain the current G1-specific packages from Unitree before repeating the
-process. A generic NVIDIA Orin NX image does not contain the G1 carrier-board
-configuration.
+Do not substitute a generic NVIDIA Orin NX image; it does not contain the G1
+carrier-board configuration.
 
 ### 1. Inspect and preserve the original drive
 
-The original ZHITAI drive was removed from PC2 and attached over USB for
-read-only inspection. Its NVIDIA package metadata reported JetPack 5.1.1 and
-L4T 35.3.1. The drive was then disconnected and kept unchanged as the physical
-backup. The lab did not write the JetPack 6.2 image to the original drive.
+Remove the original drive from PC2 and preserve it unchanged as the physical
+backup. If you inspect it over USB, mount it read-only. Write the JetPack 6.2
+image only to the replacement drive.
 
 The original NVMe is a data backup, but it is not a complete one-step rollback.
 After PC2's module firmware is updated to JetPack 6.2, booting JetPack 5.1.1
 again also requires restoring the matching Unitree JetPack 5.1.1 module
 firmware.
 
-### 2. Identify the Crucial P310 on the Ubuntu host
+### 2. Identify the replacement NVMe on the Ubuntu host
 
-The P310 was attached to the Ubuntu host through the NVMe-to-USB enclosure. It
-appeared as `/dev/sda` in the lab. Before writing anything, the model, capacity,
-USB transport, partitions, and host root device were checked:
+Attach the replacement NVMe through the USB enclosure. Before writing anything,
+identify its model, capacity, USB transport, partitions, and the Ubuntu host's
+root device:
 
 ```bash
 lsblk -d -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN
-lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS /dev/sda
 findmnt -no SOURCE /
 ```
 
+Replace `/dev/sdX` below with the whole-disk path reported for the replacement
+NVMe, then inspect it again:
+
+```bash
+lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS /dev/sdX
+```
+
 <Callout type="warning">
-  `/dev/sda` was the P310 only on the lab Ubuntu host. Stop unless your own
-  output identifies the Crucial P310 replacement and shows a different device
-  for the host's root filesystem.
+  `/dev/sdX` is a placeholder. Stop unless your output identifies the intended
+  replacement NVMe and shows a different device for the Ubuntu host's root
+  filesystem. Writing to the wrong whole-disk path destroys that disk.
 </Callout>
 
-The P310's mounted partitions were unmounted before imaging:
+Unmount any mounted partitions on the replacement drive:
 
 ```bash
-sudo umount /dev/sda*
+sudo umount /dev/sdX*
 ```
 
-The Unitree system image was then written to the whole P310:
+Write the Unitree system image to the whole replacement drive:
 
 ```bash
-bzip2 -dc g1-nx-j6.2.img.bz2 | sudo dd of=/dev/sda status=progress
+bzip2 -dc g1-nx-j6.2.img.bz2 | \
+  sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 sudo sync
+sudo udisksctl power-off -b /dev/sdX
 ```
 
-After `dd` and `sync` completed, the P310 was disconnected from the enclosure
-and installed in the G1 development computer.
+After the write and power-off complete, disconnect the replacement NVMe from the
+enclosure and install it in PC2.
 
 ### 3. Put the G1 development computer into recovery mode
 
-With the P310 installed, the lab used the two PC2 buttons inside the rear
+With the replacement NVMe installed, use the two PC2 buttons inside the rear
 electronics compartment. PWR is the upper button; REC is the lower button above
 PC2's USB-C flashing port.
 
@@ -591,12 +554,12 @@ On the Ubuntu host, confirm that the Orin NX appears in APX recovery mode:
 lsusb
 ```
 
-The lab continued only after `lsusb` displayed `NVIDIA Corp. APX`.
+Continue only after `lsusb` displays `NVIDIA Corp. APX`.
 
 ### 4. Flash the matching PC2 module firmware
 
-The firmware archive stayed on the Ubuntu host; it was not copied to the P310 or
-to PC2. From the directory containing the archive, the lab ran:
+Keep the firmware archive on the Ubuntu host; do not copy it to the replacement
+NVMe or PC2. From the directory containing the archive, run:
 
 ```bash
 sudo tar -xjvf Jetpack_6.2_nx.tar.bz2
@@ -611,11 +574,12 @@ reported success. The process took approximately eight minutes.
 ### 5. Boot and verify the updated PC2
 
 After the firmware script completed, the G1 was powered off and the recovery
-USB cable was disconnected. The P310 was checked for secure installation, the
-rear compartment was closed, and the G1 was powered on normally. The first boot
-was given several minutes before the lab attempted network access.
+USB cable was disconnected. The replacement NVMe was checked for secure
+installation, the rear compartment was closed, and the G1 was powered on
+normally. The first boot was given several minutes before attempting network
+access.
 
-The lab then checked PC2 without enabling motion:
+Check PC2 without enabling motion:
 
 ```bash
 ping 192.168.123.164
@@ -627,35 +591,32 @@ command -v nvcc && nvcc --version
 uname -a
 ```
 
-The updated lab PC2 reported Jetson Linux R36.4.3 and Ubuntu 22.04.5. NVIDIA's
+NVIDIA's
 [JetPack 6.2 release page](https://developer.nvidia.com/embedded/jetpack-sdk-62)
-identifies R36.4.3 as the Jetson Linux release included with JetPack 6.2. At the
-time of the walkthrough, Wendy Agent `2026.07.27-003050` incorrectly displayed
-this system as JetPack 6.1 in `wendy device info`; use the BSP value until that
-detection issue is fixed.
+identifies R36.4.3 as the Jetson Linux release included with JetPack 6.2. Use
+the BSP value from `/etc/nv_tegra_release` as the authoritative version if a
+management tool displays a different JetPack label.
 
-The Unitree image did not install `nvidia-jetpack` or `nvcc`. That is not a
-failed PC2 firmware flash and does not block Wendy Agent. Treat CUDA toolkit
-installation as a separate application prerequisite, and confirm the supported
-packages with Unitree for this carrier-board image before changing the NVIDIA
-software stack.
+The Unitree image might not install `nvidia-jetpack` or `nvcc`. Their absence
+does not indicate a failed PC2 firmware flash and does not block Wendy Agent.
+Treat CUDA toolkit installation as a separate application prerequisite, and
+confirm the supported packages with Unitree for this carrier-board image before
+changing the NVIDIA software stack.
 
-The non-motion hardware check found the Intel RealSense D435i and six V4L2
-device nodes. From the developer machine, the same camera appeared in Wendy's
-camera and hardware listings:
+Verify the Intel RealSense and other non-motion hardware from the developer
+machine:
 
 ```bash
 wendy device camera list --device unitree-g1-nx.local:50052
 wendy device hardware list --device unitree-g1-nx.local:50052
 ```
 
-Camera enumeration is confirmed, but a stream through `wendy device camera
-view` was not: the generic viewer could not configure the RealSense while the
-G1 demo's RealSense service was running. Stop there rather than interrupting a
-live robot workload; validate the image through the intended G1 app or retest
-the generic viewer during a maintenance window.
+Camera enumeration does not guarantee that another process can open the stream.
+If a camera viewer reports that the RealSense is busy, stop only the known
+camera-owning service during a maintenance window, then retry. Do not interrupt
+an unidentified robot workload.
 
-The remaining lab checks were performed in this order:
+Perform post-update checks in this order:
 
 - Ethernet and Wi-Fi
 - USB devices and cameras
@@ -668,12 +629,6 @@ Keep the G1 supported on its gantry and keep the physical remote and E-stop with
 the operator for the final controlled-motion check.
 
 ## Next steps
-
-The `g1-rc` template referenced by the previous draft is not in the public
-template registry yet. Wendy will not publish browser-driving instructions
-until the template is available and has completed on-robot crane commissioning,
-authentication review, motion-owner exclusion tests, watchdog tests, and
-physical E-stop review.
 
 Start with a non-motion app instead:
 
