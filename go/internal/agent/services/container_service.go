@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -907,16 +908,20 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
-	// Resolve every container ID that belongs to this app (one for
-	// single-container apps, one per service for multi-service apps) so the
-	// monitor can mark each before any stop is issued. Marking only the bare
-	// appName would miss {appID}_{serviceName} entries registered by the monitor.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	// Resolve the containers this name addresses: every service for a bare
+	// appID, one service for "{appID}_{serviceName}". Resolution is shared with
+	// the stop below so the monitor marks and the stopped-by-user labels can only
+	// ever be written against containers that were actually stopped.
+	//
+	// A name matching neither is NotFound. It used to fall back to
+	// ids = []string{appName}, which manufactured a plausible ID out of an
+	// unresolvable name and reported success without stopping anything (WDY-1847).
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Mark BEFORE stop so the monitor cannot observe the exit and restart in
@@ -964,12 +969,14 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	// each one. Unregistering only the bare appName would leave
 	// {appID}_{serviceName} monitor entries alive and potentially trigger
 	// spurious restart attempts while the container is being removed.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	// Same resolution as stop, and the same reason not to invent an ID for an
+	// unresolvable name (WDY-1847).
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Unregister from the monitor BEFORE deletion to close the window where the
