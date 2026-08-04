@@ -370,7 +370,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if prNumber == 0 && (flagDeviceType == "" || flagDeviceType == unitreeG1DeviceType) {
 		deviceMap[unitreeG1DeviceType] = pickerDevice{
 			Name:    "Unitree G1",
-			Version: "(experimental · JetPack 6.2)",
+			Version: "(JetPack 6.2)",
 		}
 		items = append(items, tui.PickerItem{
 			Name:        "Unitree G1",
