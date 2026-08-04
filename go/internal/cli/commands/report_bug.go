@@ -53,19 +53,31 @@ func truncateForURL(s string, max int) string {
 // depending on the real PATH.
 var lookPath = exec.LookPath
 
+// reportBugOpenResult distinguishes why maybeOpenReportBugURL did not
+// successfully open a browser, so callers can give the user accurate
+// guidance instead of assuming gh is missing.
+type reportBugOpenResult int
+
+const (
+	reportBugOpened reportBugOpenResult = iota
+	reportBugNoGH
+	reportBugOpenFailed
+)
+
 // maybeOpenReportBugURL opens rawURL in the browser when gh is on PATH (used
 // only as a signal that this is an interactive developer machine — gh's own
-// issue-create machinery is never invoked). Returns whether it succeeded;
-// callers own the fallback message for the false case.
-func maybeOpenReportBugURL(cmd *cobra.Command, rawURL string) bool {
+// issue-create machinery is never invoked). Returns which of the three
+// outcomes occurred; callers own the fallback message for the non-opened
+// cases, which differ (gh missing vs. gh present but the open itself failed).
+func maybeOpenReportBugURL(cmd *cobra.Command, rawURL string) reportBugOpenResult {
 	if _, err := lookPath("gh"); err != nil {
-		return false
+		return reportBugNoGH
 	}
 	if err := openBrowser(rawURL); err != nil {
-		return false
+		return reportBugOpenFailed
 	}
 	fmt.Fprintln(cmd.ErrOrStderr(), "Opening a pre-filled bug report in your browser...")
-	return true
+	return reportBugOpened
 }
 
 // newReportBugCmd builds the hidden `wendy report-bug` command: it opens a
@@ -80,16 +92,24 @@ func newReportBugCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := platforminfo.Collect()
 			rawURL := reportBugURL(info, nil, "")
-			if maybeOpenReportBugURL(cmd, rawURL) {
+			switch maybeOpenReportBugURL(cmd, rawURL) {
+			case reportBugOpened:
+				return nil
+			case reportBugOpenFailed:
+				out := cmd.OutOrStdout()
+				fmt.Fprintln(out, "Could not open the browser automatically. Open this link to file a report:")
+				fmt.Fprintln(out, rawURL)
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, info.Block())
+				return nil
+			default: // reportBugNoGH
+				out := cmd.OutOrStdout()
+				fmt.Fprintln(out, "`gh` CLI not found — install it from https://cli.github.com, or open this link to file a report:")
+				fmt.Fprintln(out, rawURL)
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, info.Block())
 				return nil
 			}
-
-			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "`gh` CLI not found — install it from https://cli.github.com, or open this link to file a report:")
-			fmt.Fprintln(out, rawURL)
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, info.Block())
-			return nil
 		},
 	}
 }

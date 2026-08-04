@@ -110,7 +110,11 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 func reportCrashLocally(cmd *cobra.Command, out io.Writer, info platforminfo.Info, bundle crashreport.Bundle, localFile string) {
 	fmt.Fprintf(out, "\nCloud unavailable; report saved locally: %s\n", localFile)
 	rawURL := reportBugURL(info, &bundle, localFile)
-	if !maybeOpenReportBugURL(cmd, rawURL) {
+	switch maybeOpenReportBugURL(cmd, rawURL) {
+	case reportBugOpened:
+	case reportBugOpenFailed:
+		fmt.Fprintln(out, "Could not open the browser automatically. Open a bug report:", rawURL)
+	default: // reportBugNoGH
 		fmt.Fprintln(out, "Open a bug report:", rawURL)
 	}
 }

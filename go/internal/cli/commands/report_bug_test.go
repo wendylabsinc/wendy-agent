@@ -89,8 +89,8 @@ func TestMaybeOpenReportBugURLGHPresentSucceeds(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.SetErr(&stderr)
 
-	if !maybeOpenReportBugURL(cmd, "https://example.com/issue") {
-		t.Fatal("expected true when gh is present and openBrowser succeeds")
+	if got := maybeOpenReportBugURL(cmd, "https://example.com/issue"); got != reportBugOpened {
+		t.Fatalf("expected reportBugOpened when gh is present and openBrowser succeeds, got %v", got)
 	}
 	if openedURL != "https://example.com/issue" {
 		t.Errorf("openBrowser called with %q, want the report URL", openedURL)
@@ -106,8 +106,8 @@ func TestMaybeOpenReportBugURLGHMissing(t *testing.T) {
 	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
 
 	cmd := &cobra.Command{Use: "wendy"}
-	if maybeOpenReportBugURL(cmd, "https://example.com/issue") {
-		t.Fatal("expected false when gh is missing")
+	if got := maybeOpenReportBugURL(cmd, "https://example.com/issue"); got != reportBugNoGH {
+		t.Fatalf("expected reportBugNoGH when gh is missing, got %v", got)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestMaybeOpenReportBugURLOpenBrowserFails(t *testing.T) {
 	openBrowser = func(string) error { return fmt.Errorf("no display") }
 
 	cmd := &cobra.Command{Use: "wendy"}
-	if maybeOpenReportBugURL(cmd, "https://example.com/issue") {
-		t.Fatal("expected false when openBrowser fails")
+	if got := maybeOpenReportBugURL(cmd, "https://example.com/issue"); got != reportBugOpenFailed {
+		t.Fatalf("expected reportBugOpenFailed when openBrowser fails, got %v", got)
 	}
 }
 
@@ -169,6 +169,34 @@ func TestReportBugCmdGHPresentOpensBrowser(t *testing.T) {
 	}
 	if stdout.String() != "" {
 		t.Errorf("expected no stdout output when gh succeeds, got %q", stdout.String())
+	}
+}
+
+func TestReportBugCmdGHPresentButOpenBrowserFails(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	openBrowser = func(string) error { return fmt.Errorf("no display") }
+
+	cmd := newReportBugCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Could not open the browser automatically") {
+		t.Errorf("output = %q, want the open-failed fallback message", out)
+	}
+	if strings.Contains(out, "`gh` CLI not found") {
+		t.Errorf("output = %q, must not claim gh is missing when it is present", out)
+	}
+	if !strings.Contains(out, "issues/new?") {
+		t.Errorf("output = %q, want the fallback URL", out)
 	}
 }
 

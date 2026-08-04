@@ -108,6 +108,27 @@ func TestReportCrashLocallyOpensBrowserWhenGHPresent(t *testing.T) {
 	}
 }
 
+func TestReportCrashLocallyPrintsURLWhenOpenBrowserFails(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	openBrowser = func(string) error { return fmt.Errorf("no display") }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "Could not open the browser automatically") {
+		t.Errorf("out = %q, want the open-failed fallback message", out.String())
+	}
+	if !strings.Contains(out.String(), "issues/new?") {
+		t.Errorf("out = %q, want the report URL", out.String())
+	}
+}
+
 func TestReportCrashLocallyPrintsURLWhenGHMissing(t *testing.T) {
 	origLookPath := lookPath
 	t.Cleanup(func() { lookPath = origLookPath })
