@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/crashreport"
 	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/platforminfo"
 )
 
 func TestMaybeRunCrashReportSkipsRecoverable(t *testing.T) {
@@ -80,6 +83,48 @@ func TestMaybeRunCrashReportNotSuppressedProceeds(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "unrecoverable failure") {
 		t.Errorf("expected output to contain %q, got %q", "unrecoverable failure", buf.String())
+	}
+}
+
+func TestReportCrashLocallyOpensBrowserWhenGHPresent(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	var openedURL string
+	openBrowser = func(u string) error { openedURL = u; return nil }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "/tmp/report.json") {
+		t.Errorf("out = %q, want it to mention the local file", out.String())
+	}
+	if openedURL == "" || !strings.Contains(openedURL, "issues/new?") {
+		t.Errorf("openBrowser called with %q, want a bug_report.yml issue URL", openedURL)
+	}
+}
+
+func TestReportCrashLocallyPrintsURLWhenGHMissing(t *testing.T) {
+	origLookPath := lookPath
+	t.Cleanup(func() { lookPath = origLookPath })
+	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "Open a bug report:") {
+		t.Errorf("out = %q, want the manual fallback line", out.String())
+	}
+	if !strings.Contains(out.String(), "issues/new?") {
+		t.Errorf("out = %q, want the report URL", out.String())
 	}
 }
 
