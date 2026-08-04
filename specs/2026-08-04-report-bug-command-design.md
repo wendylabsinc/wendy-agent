@@ -20,30 +20,44 @@ bug report form, and pointed `bug_report.yml`'s "Host information" field at it. 
   to a local JSON file and tells the user to "attach it to an issue" — a dead end that no one follows
   through on in practice.
 
-`gh` (the GitHub CLI) can turn both of these into one step: build the issue title/body and let `gh`
-open a prefilled compose page in the browser. This design adds a `report-bug` hidden command for
-manual use, and wires the same body-builder into `MaybeRunCrashReport`'s cloud-unavailable branch so
-the flow "spawns automatically" right where a report currently goes nowhere.
+GitHub issue forms (the YAML-based templates like `bug_report.yml`) support pre-filling individual
+fields via URL query parameters matching each field's `id` (documented:
+https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/creating-an-issue#creating-an-issue-from-a-url-query).
+This repo also already has a tested, cross-platform `openBrowser(url string) error` seam
+(`go/internal/cli/commands/open_browser.go`, backed by `browseropen.Open`, used by `wendy utils
+open-browser`). Combined, these mean we can build a properly-prefilled issue-form URL and open it
+without shelling out to `gh` at all. `gh`'s presence is used only as a signal that this is an
+interactive developer machine (not a headless/SSH/CI-like session) worth auto-opening a browser on —
+not as the mechanism that does the filling or opening.
+
+This design adds a `report-bug` hidden command for manual use, and wires the same URL-builder into
+`MaybeRunCrashReport`'s cloud-unavailable branch so the flow "spawns automatically" right where a
+report currently goes nowhere.
 
 ## Goals
 
 1. A hidden `wendy report-bug` command that collects local diagnostics (reusing `platforminfo`) and,
-   when `gh` is installed, opens a prefilled GitHub issue compose page mirroring `bug_report.yml`'s
-   sections.
-2. When `gh` is missing, print the diagnostic block plus a manual issue-creation link — no dead end.
-3. Wire the same body-builder into #1228's `MaybeRunCrashReport`: when cloud submission fails after
-   the user has already consented to send a report, automatically open a prefilled issue (with the
-   actual redacted bundle contents, not placeholders) instead of just printing instructions.
+   when `gh` is installed, opens a pre-filled GitHub issue-form URL in the browser (via the existing
+   `openBrowser` seam) with `bug_report.yml`'s Versions and Host information fields filled in.
+2. When `gh` is missing, print the diagnostic block plus the same URL as a manual link — no auto-open,
+   no dead end.
+3. Wire the same URL-builder into #1228's `MaybeRunCrashReport`: when cloud submission fails after the
+   user has already consented to send a report, automatically open a pre-filled issue (Versions, Host
+   information, a short auto-filled "What happened", and a pointer to the locally-saved report file for
+   the full log tail) instead of just printing instructions.
 4. Fix `bug_report.yml`'s "Host information" field to reference `report-bug` instead of `--host-info`,
    and carry over #1563's `wendy version` → `wendy --version` typo fix.
 
 ## Non-goals
 
-- Submitting the issue automatically without the user looking at it first — `gh issue create --web`
-  always opens an editable compose page; nothing is filed without the user pressing submit in the
-  browser.
-- Reimplementing OS-specific browser-opening — `gh issue create --web` already does this reliably
-  cross-platform, which is the main reason to shell out to `gh` rather than opening a URL ourselves.
+- Submitting the issue automatically without the user looking at it first — this only ever opens an
+  editable compose page; nothing is filed without the user pressing submit in the browser.
+- Shelling out to `gh issue create` — `gh`'s own `--title`/`--body` flags bypass individual form fields
+  in favor of one combined body blob, which is a worse fill than the URL-query-param approach. `gh` is
+  used only via `exec.LookPath` as a presence check.
+- Cramming full log tails into the URL — browsers/servers cap request-target length (~8KB is a common
+  practical ceiling); the automatic path links to the already-saved local report file instead of trying
+  to inline hundreds of log lines as a query parameter.
 - Any change to `--host-info` on `main` or to #1228's existing consent/redaction/submission logic —
   only the cloud-unavailable branch's *output* changes.
 
@@ -53,66 +67,71 @@ the flow "spawns automatically" right where a report currently goes nowhere.
 wendy report-bug (manual)                MaybeRunCrashReport (#1228, automatic)
         │                                            │
         ▼                                            ▼
-platforminfo.Collect()                    (already have: bundle from crashreport.Build)
+platforminfo.Collect()                    (already have: bundle, res.LocalFile)
         │                                            │
         ▼                                            ▼
-        └──────────────► reportBugBody(info, bundle*) ◄──────────────┘
+        └──────────────► reportBugURL(info, bundle*, localFile) ◄──────────────┘
                                    │
                                    ▼
-                     exec.LookPath("gh") found?
+                       lookGH() found on PATH?
                           │             │
                          yes            no
                           │             │
                           ▼             ▼
-              gh issue create      print diagnostic block +
-              --repo wendylabsinc/WendyOS   issues/new?template=bug_report.yml
-              --title <t> --body <b> --web       (manual fallback)
+                openBrowser(url)   print diagnostic block + url
+              "Opening a pre-filled    (manual fallback, no
+               bug report in your       auto-open)
+               browser..."
 ```
 
-`bundle*` is nil for the manual `report-bug` path (no error context exists) and populated for the
-automatic path (error class, severity, chain, log tail already collected by the existing crash flow).
+`bundle*`/`localFile` are empty for the manual `report-bug` path (no error context exists) and
+populated for the automatic path (bundle from `crashreport.Build`, `localFile` from
+`crashreport.Result.LocalFile`).
 
 ## Components
 
-### 1. `reportBugBody(info platforminfo.Info, bundle *crashreport.Bundle) (title, body string)`
+### 1. `reportBugURL(info platforminfo.Info, bundle *crashreport.Bundle, localFile string) string`
 
-New function in `go/internal/cli/commands/report_bug.go`. Builds markdown mirroring
-`bug_report.yml`'s field labels as `###` headers:
+New function in `go/internal/cli/commands/report_bug.go`. Builds:
 
-- `What happened?`, `Steps to reproduce`, `Component`, `Target hardware` — placeholder prompt text
-  (e.g. `_Describe what happened here._`) when `bundle == nil`; when `bundle != nil`, `What happened?`
-  is pre-filled with `bundle.ErrorChain` and a `_(auto-filled from the failure that triggered this
-  report; edit as needed)_` note, the rest stay placeholders (component/hardware aren't inferable).
-- `Versions` — `info.CLIVersion`.
-- `Host information` — `info.Block()`.
-- `Relevant logs or output` — omitted when `bundle == nil`; filled with `bundle.LogTail` (and
-  `bundle.BuildOutputTail` when present) otherwise.
+`https://github.com/wendylabsinc/WendyOS/issues/new?template=bug_report.yml&<query>`
 
-Title: `"bug: <short summary>"` placeholder for manual use; `"bug: " + bundle.ErrorClass` for the
-automatic path.
+where `<query>` is built with `net/url.Values`, field ids matching `bug_report.yml`:
 
-Pure function, no I/O — fully unit-testable against fixed `Info`/`Bundle` values.
+- `version` — `info.CLIVersion`.
+- `host-os` — `info.Block()`.
+- `what-happened` — omitted when `bundle == nil` (manual path leaves it for the user to fill in from
+  the form itself); when `bundle != nil`, set to `bundle.ErrorClass + ": " + bundle.ErrorChain`,
+  truncated to 500 characters with a `…` suffix if longer (`truncate(s string, max int) string`
+  helper).
+- `logs` — omitted when `bundle == nil`; when `bundle != nil` and `localFile != ""`, set to
+  `"Full redacted diagnostic bundle saved locally at " + localFile + " — attach it here."` (never the
+  raw log tail — see Non-goals on URL length).
+- `component`, `hardware` — never set; not inferable from either path, left for the user to pick from
+  the form's dropdowns.
 
-### 2. `openPrefilledIssue(cmd *cobra.Command, title, body string) bool`
+All values are URL-encoded by `url.Values.Encode()`. Pure function, no I/O — fully unit-testable
+against fixed `Info`/`Bundle` values asserting the decoded query string.
 
-- Looks up `gh` via a package-level `lookGH = exec.LookPath` seam (swappable in tests).
-- If found: runs `gh issue create --repo wendylabsinc/WendyOS --title <title> --body <body> --web`,
-  streaming its stderr through so the user sees `gh`'s own "Opening in your browser." message. Returns
-  `true` on success.
-- If not found, or `gh` errors: returns `false` and does nothing else — callers own the fallback
-  message, since the manual and automatic call sites want different wording.
+### 2. `maybeOpenReportBugURL(cmd *cobra.Command, url string) bool`
+
+- Looks up `gh` via a package-level `lookGH = func() (string, error) { return exec.LookPath("gh") }`
+  seam (swappable in tests).
+- If found: calls `openBrowser(url)` (existing seam from `open_browser.go`), prints `"Opening a
+  pre-filled bug report in your browser..."` to `cmd.ErrOrStderr()`, returns `true`.
+- If `gh` not found, or `openBrowser` errors: returns `false` and does nothing else — callers own the
+  fallback message, since the manual and automatic call sites want different wording.
 
 ### 3. `wendy report-bug` (`newReportBugCmd`, hidden, added to root.go's hidden-command block)
 
-```
+```go
 info := platforminfo.Collect()
-title, body := reportBugBody(info, nil)
-if !openPrefilledIssue(cmd, title, body) {
-    fmt.Fprintln(out, "`gh` CLI not found — install it from https://cli.github.com for a pre-filled report.")
+url := reportBugURL(info, nil, "")
+if !maybeOpenReportBugURL(cmd, url) {
+    fmt.Fprintln(out, "`gh` CLI not found — install it from https://cli.github.com, or open this link to file a report:")
+    fmt.Fprintln(out, url)
     fmt.Fprintln(out, "")
     fmt.Fprintln(out, info.Block())
-    fmt.Fprintln(out, "")
-    fmt.Fprintln(out, "Open a bug report: https://github.com/wendylabsinc/WendyOS/issues/new?template=bug_report.yml")
 }
 ```
 
@@ -129,9 +148,9 @@ with:
 
 ```go
 fmt.Fprintf(out, "\nCloud unavailable; report saved locally: %s\n", res.LocalFile)
-title, body := reportBugBody(info, &bundle)
-if !openPrefilledIssue(executed, title, body) {
-    fmt.Fprintln(out, "Attach it to an issue at https://github.com/wendylabsinc/WendyOS/issues/new?template=bug_report.yml")
+url := reportBugURL(info, &bundle, res.LocalFile)
+if !maybeOpenReportBugURL(executed, url) {
+    fmt.Fprintln(out, "Open a bug report:", url)
 }
 ```
 
@@ -146,23 +165,19 @@ degrades to when the cloud path is unavailable.
 
 ## Testing
 
-- `report_bug_body_test.go`: table tests for `reportBugBody` — nil bundle (placeholders) vs populated
-  bundle (error chain/log tail filled in), asserting exact section presence/absence.
-- `report_bug_test.go`: `lookGH` stubbed to simulate gh-present/gh-absent/gh-error; asserts the correct
-  fallback text and that the constructed `gh` argv matches expectations (via a stubbed exec runner,
-  not a real subprocess).
-- Update existing `crashflow_test.go` cloud-unavailable case for the new call, using the same `lookGH`
-  stub.
+- `report_bug_url_test.go`: table tests for `reportBugURL` — nil bundle (only version/host-os set) vs
+  populated bundle (+ what-happened, + logs pointing at localFile), asserting the decoded query string
+  via `url.ParseQuery`. Includes a case for the 500-char truncation.
+- `report_bug_test.go`: `lookGH` and `openBrowser` stubbed to simulate gh-present/gh-absent/
+  openBrowser-error; asserts the correct stdout/stderr text in each case (following the pattern in
+  `open_browser_test.go`).
+- Update existing `crashflow_test.go` cloud-unavailable case for the new call, using the same stubs.
 - `go test ./go/internal/cli/...`, `go vet ./go/internal/cli/...`.
 - Manual: run `wendy report-bug` locally with and without `gh` on PATH; confirm the browser opens with
-  the expected sections pre-filled and nothing is submitted without pressing the button.
+  Versions/Host information pre-filled in their actual form fields and nothing is submitted without
+  pressing the button.
 
 ## Open questions / follow-ups
 
-- `gh issue create --web --title/--body` on a form-only repo bypasses the YAML form UI (GitHub treats
-  it as a plain issue with the given body) rather than pre-filling individual form fields. This is
-  intentional here — it's the reliable, documented behavior versus relying on per-field query-param
-  prefill, which is undocumented for `gh`'s flag surface. Worth revisiting if GitHub/gh add first-class
-  form-field prefill support.
 - #1563 should be closed by its author (`max`) once this lands, keeping only the `bug_report.yml`
   wording fix folded in here.
