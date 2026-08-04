@@ -50,6 +50,39 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 	return services, nil
 }
 
+// BrowseMDNSServicesContinuous browses for serviceType and streams each newly
+// discovered service, resolved, to the returned channel. It runs until ctx is
+// cancelled or the underlying browse exits; the channel is closed when
+// browsing stops. Instances that fail to resolve are skipped, matching
+// BrowseMDNSServices. Consumers signal they are done by cancelling ctx.
+func BrowseMDNSServicesContinuous(ctx context.Context, serviceType string) (<-chan MDNSService, error) {
+	browseCh, err := dnssdBrowseStream(ctx, serviceType)
+	if err != nil {
+		return nil, err
+	}
+
+	ch := make(chan MDNSService, 16)
+	go func() {
+		defer close(ch)
+		for inst := range browseCh {
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
+			svc, err := resolveMDNSService(resolveCtx, inst, serviceType)
+			resolveCancel()
+			if err != nil {
+				continue
+			}
+
+			select {
+			case ch <- svc:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 type browseResult struct {
 	instanceName  string
 	domain        string
