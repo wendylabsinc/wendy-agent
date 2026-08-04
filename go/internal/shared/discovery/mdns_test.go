@@ -55,9 +55,10 @@ func TestParseTXTRecord(t *testing.T) {
 			want: map[string]string{"tls": "true"},
 		},
 		{
-			name: "zero length byte ends parsing",
-			txt:  append(txtWire("tls=true"), 0x00, 'x'),
-			want: map[string]string{"tls": "true"},
+			// A zero-length string must not mask the entries after it.
+			name: "zero length string is skipped, later entries still decoded",
+			txt:  append(append(txtWire("displayname=Tom Rpi4"), 0x00), txtWire("tls=true")...),
+			want: map[string]string{"displayname": "Tom Rpi4", "tls": "true"},
 		},
 		{
 			name: "length overrunning the buffer keeps what was decoded",
