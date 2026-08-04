@@ -56,14 +56,15 @@ body:
     id: version
     attributes:
       label: Versions
-      description: Output of `wendy version` (and agent version if relevant)
+      description: Output of `wendy --version` (and agent version if relevant)
     validations:
       required: true
-  - type: input
+  - type: textarea
     id: host-os
     attributes:
-      label: Host OS
-      placeholder: macOS 15.2 (Apple Silicon), Ubuntu 24.04, Windows 11
+      label: Host information
+      description: Output of `wendy --host-info`. If your CLI does not support this flag, provide your OS name, version, and architecture manually.
+      render: shell
     validations:
       required: true
   - type: textarea

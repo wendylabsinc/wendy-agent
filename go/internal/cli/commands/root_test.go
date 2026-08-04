@@ -54,6 +54,81 @@ func TestRootCommand_VersionFlag(t *testing.T) {
 	}
 }
 
+func TestRootCommand_HostInfoFlag(t *testing.T) {
+	root := NewRootCmd()
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetArgs([]string{"--host-info"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{"Wendy CLI", "Version:", "OS:", "OS Version:", "Arch:", "Go Version:"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("host info output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestRootCommand_HostInfoJSON(t *testing.T) {
+	root := NewRootCmd()
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetArgs([]string{"--host-info", "--json"})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	for _, want := range []string{`"version":`, `"os":`, `"osVersion":`, `"arch":`, `"goVersion":`} {
+		if !strings.Contains(output, want) {
+			t.Errorf("JSON host info output missing %q: %q", want, output)
+		}
+	}
+}
+
+func TestRootCommand_BareInvocationStillPrintsHelp(t *testing.T) {
+	root := NewRootCmd()
+	buf := new(bytes.Buffer)
+	root.SetOut(buf)
+	root.SetArgs([]string{})
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Usage:") {
+		t.Fatalf("bare invocation should print help, got: %q", output)
+	}
+	if strings.Contains(output, "Go Version:") {
+		t.Fatalf("bare invocation printed host info instead of help: %q", output)
+	}
+}
+
+func TestRootCommand_HostInfoFlagIsRootLocal(t *testing.T) {
+	root := NewRootCmd()
+	root.SetArgs([]string{"run", "--host-info"})
+
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --host-info") {
+		t.Fatalf("wendy run --host-info error = %v; want unknown flag", err)
+	}
+}
+
+func TestRootCommand_UnknownRootArgumentStillFails(t *testing.T) {
+	root := NewRootCmd()
+	root.SetArgs([]string{"banana"})
+
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown command "banana" for "wendy"`) {
+		t.Fatalf("wendy banana error = %v; want unknown-command error", err)
+	}
+}
+
 func TestRootCommand_JSONFlag(t *testing.T) {
 	root := NewRootCmd()
 
@@ -87,6 +162,7 @@ func TestRootCommand_Help(t *testing.T) {
 		"Cloud",
 		"Settings",
 		"Flags",
+		"--host-info",
 	}
 	for _, text := range expectedTexts {
 		if !strings.Contains(strings.ToLower(output), strings.ToLower(text)) {

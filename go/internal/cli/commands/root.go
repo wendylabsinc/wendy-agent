@@ -23,6 +23,7 @@ func NewRootCmd() *cobra.Command {
 	// firstRun records whether this invocation showed the first-run analytics
 	// notice in PreRunE, so PostRunE can avoid stacking another prompt on top.
 	var firstRun bool
+	var hostInfo bool
 
 	root := &cobra.Command{
 		Use:           "wendy",
@@ -30,7 +31,20 @@ func NewRootCmd() *cobra.Command {
 		Long:          "Wendy is a CLI for developing and deploying edge computing applications to WendyOS devices.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if hostInfo {
+				return writeCLIInfo(cmd, jsonOutput)
+			}
+			return cmd.Help()
+		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// The root is runnable only to support one-shot informational flags.
+			// Keep bare `wendy` and those flags free from configuration, provider,
+			// analytics, update-check, and completion-prompt side effects.
+			if cmd.Parent() == nil {
+				return nil
+			}
+
 			// Skip heavy init for commands that don't need device/cloud setup.
 			// __usb-setup and __t234-write run as root under sudo; skipping init
 			// avoids config/analytics writes (and an update check) as root, and
@@ -87,6 +101,10 @@ func NewRootCmd() *cobra.Command {
 			return nil
 		},
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Parent() == nil {
+				return nil
+			}
+
 			// Surface a throttled tip about `wendy project optimize` after a
 			// successful build/run (no-op for other commands and in CI).
 			maybeShowOptimizeTip(cmd)
@@ -106,6 +124,7 @@ func NewRootCmd() *cobra.Command {
 
 	root.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	root.PersistentFlags().StringVar(&deviceFlag, "device", "", "Target device hostname")
+	root.Flags().BoolVar(&hostInfo, "host-info", false, "Display CLI version and host system information")
 
 	// Render the top-level command groups in the deliberate order below rather
 	// than alphabetically, so e.g. "project" lists before "device".
