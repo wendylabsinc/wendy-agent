@@ -5,6 +5,7 @@ option go_package = "github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv
 service WendyAudioService {
     rpc ListAudioDevices(ListAudioDevicesRequest) returns (ListAudioDevicesResponse);
     rpc SetDefaultAudioDevice(SetDefaultAudioDeviceRequest) returns (SetDefaultAudioDeviceResponse);
+    rpc SetAudioVolume(SetAudioVolumeRequest) returns (SetAudioVolumeResponse);
     rpc StreamAudioLevels(StreamAudioLevelsRequest) returns (stream AudioLevelUpdate);
     rpc StreamAudio(StreamAudioRequest) returns (stream AudioChunk);
 }
@@ -21,6 +22,7 @@ message AudioDevice {
     string description = 3;
     AudioDeviceType type = 4;
     bool is_default = 5;
+    optional uint32 volume_percent = 6;
 }
 
 message ListAudioDevicesRequest {
@@ -38,6 +40,17 @@ message SetDefaultAudioDeviceRequest {
 message SetDefaultAudioDeviceResponse {
     bool success = 1;
     optional string error_message = 2;
+}
+
+message SetAudioVolumeRequest {
+    uint32 device_id = 1;
+    uint32 volume_percent = 2;
+}
+
+message SetAudioVolumeResponse {
+    bool success = 1;
+    optional string error_message = 2;
+    optional uint32 volume_percent = 3;
 }
 
 message StreamAudioLevelsRequest {
