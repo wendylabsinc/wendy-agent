@@ -88,10 +88,12 @@ func parseBrowseLine(line string) (browseResult, bool) {
 	}, true
 }
 
-// dnssdBrowse runs dns-sd -B and returns as soon as results stop arriving.
-// It uses a short settle timer: once the first result arrives, it waits up to
-// 500ms for more results before returning. This avoids waiting for the full timeout.
-func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
+// dnssdBrowseStream starts dns-sd -B for serviceType and streams each newly
+// discovered instance to the returned channel. Duplicate (instance, interface)
+// pairs are emitted only once. The channel is closed when ctx is cancelled or
+// the dns-sd process exits; the process is killed and reaped on all paths.
+// Consumers signal they are done by cancelling ctx.
+func dnssdBrowseStream(ctx context.Context, serviceType string) (<-chan browseResult, error) {
 	cmd := exec.CommandContext(ctx, "dns-sd", "-B", serviceType, "local")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -101,21 +103,51 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 		return nil, err
 	}
 
-	// Parse lines on a channel so we can select with a timer.
-	lineCh := make(chan browseResult, 16)
-
+	ch := make(chan browseResult, 16)
 	go func() {
-		defer close(lineCh)
+		defer close(ch)
+		defer func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}()
+
+		seen := make(map[string]bool)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			if result, ok := parseBrowseLine(scanner.Text()); ok {
-				lineCh <- result
+			result, ok := parseBrowseLine(scanner.Text())
+			if !ok {
+				continue
+			}
+			key := result.instanceName + "%" + result.interfaceName
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+
+			select {
+			case ch <- result:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
+	return ch, nil
+}
+
+// dnssdBrowse runs dns-sd -B and returns as soon as results stop arriving.
+// It uses a short settle timer: once the first result arrives, it waits up to
+// 500ms for more results before returning. This avoids waiting for the full timeout.
+func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
+	streamCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	browseCh, err := dnssdBrowseStream(streamCtx, serviceType)
+	if err != nil {
+		return nil, err
+	}
+
 	var results []browseResult
-	seen := make(map[string]bool)
 
 	// Wait up to the context deadline for the first result.
 	// Once we get one, use a short settle timer for additional results.
@@ -123,25 +155,16 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 	for {
 		select {
 		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 			return results, nil
-		case result, open := <-lineCh:
+		case result, open := <-browseCh:
 			if !open {
-				_ = cmd.Wait()
 				return results, nil
 			}
-			key := result.instanceName + "%" + result.interfaceName
-			if !seen[key] {
-				seen[key] = true
-				results = append(results, result)
-				// Reset settle timer: wait 500ms for more results.
-				settle = time.After(500 * time.Millisecond)
-			}
+			results = append(results, result)
+			// Reset settle timer: wait 500ms for more results.
+			settle = time.After(500 * time.Millisecond)
 		case <-settle:
 			// No new results in 500ms, we're done.
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
 			return results, nil
 		}
 	}
@@ -267,29 +290,12 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 	interfaceDisplayNames := darwinInterfaceDisplayNameMap(ctx)
 	linkSpeeds := make(map[string]string)
 
-	cmd := exec.CommandContext(ctx, "dns-sd", "-B", wendyServiceType, "local")
-	stdout, err := cmd.StdoutPipe()
+	browseCh, err := dnssdBrowseStream(ctx, wendyServiceType)
 	if err != nil {
 		return
 	}
-	if err := cmd.Start(); err != nil {
-		return
-	}
 
-	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		inst, ok := parseBrowseLine(scanner.Text())
-		if !ok {
-			continue
-		}
-
-		key := inst.instanceName + "%" + inst.interfaceName
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-
+	for inst := range browseCh {
 		resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
 		dev, err := dnssdResolve(resolveCtx, inst, interfaceDisplayNames, linkSpeeds)
 		resolveCancel()
@@ -303,6 +309,4 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 			return
 		}
 	}
-
-	_ = cmd.Wait()
 }
