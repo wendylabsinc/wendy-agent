@@ -158,9 +158,7 @@ func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID strin
 	return []string{appID}, nil
 }
 
-// mockContainerIDs returns the container IDs a deployed app would have.
-// Mirrors appconfig.AppConfig.ContainerName: a single-container app is named
-// for its appID, a multi-service app names each service "{appID}_{service}".
+// mockContainerIDs mirrors appconfig.AppConfig.ContainerName.
 func mockContainerIDs(c *agentpb.AppContainer) []string {
 	svcs := c.GetServices()
 	if len(svcs) <= 1 {
@@ -174,18 +172,14 @@ func mockContainerIDs(c *agentpb.AppContainer) []string {
 }
 
 // ResolveAppContainerIDs mirrors the real resolver: an exact container ID
-// first, then the app-id, then NotFound.
-//
-// Deliberately faithful. The permissive stub this replaces returned
-// []string{name} for every input, so no service-layer test could observe a name
-// that resolves to nothing — which is exactly how WDY-1847 stayed green.
+// first, then the app-id, then NotFound. Faithful on purpose — a mock that
+// accepts any name cannot observe a name that resolves to nothing.
 func (m *mockContainerdClient) ResolveAppContainerIDs(_ context.Context, name string) ([]string, error) {
 	m.resolveCalls = append(m.resolveCalls, name)
 	if m.resolveErr != nil {
 		return nil, m.resolveErr
 	}
-	// Rule 1 wins over rule 2 globally, so scan every app for an exact
-	// container-ID match before considering app-id matches.
+	// Rule 1 wins globally, so scan all apps for an ID match first.
 	for _, c := range m.containers {
 		for _, id := range mockContainerIDs(c) {
 			if id == name {
@@ -657,6 +651,7 @@ type mockMonitorRegistrar struct {
 	registerCalls     []registerCall
 	explicitStopCalls []string
 	clearStopCalls    []string
+	unregisterCalls   []string
 }
 
 type registerCall struct {
@@ -669,7 +664,9 @@ func (m *mockMonitorRegistrar) Register(appName string, policy int, maxRetries i
 	m.registerCalls = append(m.registerCalls, registerCall{appName, policy, maxRetries})
 }
 
-func (m *mockMonitorRegistrar) Unregister(_ string) {}
+func (m *mockMonitorRegistrar) Unregister(appName string) {
+	m.unregisterCalls = append(m.unregisterCalls, appName)
+}
 
 func (m *mockMonitorRegistrar) MarkExplicitStop(appName string) {
 	m.explicitStopCalls = append(m.explicitStopCalls, appName)
@@ -780,8 +777,7 @@ func TestStopContainer_CallsMarkExplicitStop(t *testing.T) {
 	}
 }
 
-// multiServiceMock returns a mock with one two-service app deployed:
-// containers "myapp_alpha" and "myapp_beta", both labelled app-id "myapp".
+// multiServiceMock deploys one app with containers "myapp_alpha"/"myapp_beta".
 func multiServiceMock() *mockContainerdClient {
 	return &mockContainerdClient{
 		containers: []*agentpb.AppContainer{{
@@ -794,11 +790,8 @@ func multiServiceMock() *mockContainerdClient {
 	}
 }
 
-// TestStopContainer_ServiceQualifiedName_StopsOnlyThatService is the WDY-1847
-// regression. "{appID}_{serviceName}" matches no app-id label, so the old
-// label-only resolution found nothing, invented the ID back, reported success,
-// and never issued a stop — while still marking the monitor and writing the
-// stopped-by-user label against a container that kept running.
+// A service-qualified name matches no app-id label, so label-only resolution
+// found nothing, invented the ID back, and reported a stop it never issued.
 func TestStopContainer_ServiceQualifiedName_StopsOnlyThatService(t *testing.T) {
 	mc := multiServiceMock()
 	mon := &mockMonitorRegistrar{}
@@ -811,20 +804,14 @@ func TestStopContainer_ServiceQualifiedName_StopsOnlyThatService(t *testing.T) {
 		t.Fatalf("StopContainer: %v", err)
 	}
 
-	// Resolution must go through the shared resolver. This is the assertion the
-	// old code fails: it called ContainerIDsForApp (an app-id-label lookup that
-	// returns nothing for a service-qualified name) and fell back to the name
-	// itself. Everything downstream then looked correct while the containerd
-	// layer stopped nothing — which is why the rest of this test alone cannot
-	// distinguish fixed from broken.
+	// The assertion the old code fails: it resolved via ContainerIDsForApp and
+	// fell back to the name itself, leaving everything below looking correct.
 	if len(mc.resolveCalls) != 1 || mc.resolveCalls[0] != "myapp_alpha" {
 		t.Errorf("ResolveAppContainerIDs calls = %v; want [myapp_alpha]", mc.resolveCalls)
 	}
-	// The stop must actually be issued, and for the service that was named.
 	if len(mc.stopCalls) != 1 || mc.stopCalls[0] != "myapp_alpha" {
 		t.Errorf("stopCalls = %v; want [myapp_alpha]", mc.stopCalls)
 	}
-	// Bookkeeping must cover that service and no other.
 	if len(mon.explicitStopCalls) != 1 || mon.explicitStopCalls[0] != "myapp_alpha" {
 		t.Errorf("MarkExplicitStop = %v; want [myapp_alpha]", mon.explicitStopCalls)
 	}
@@ -836,8 +823,7 @@ func TestStopContainer_ServiceQualifiedName_StopsOnlyThatService(t *testing.T) {
 	}
 }
 
-// TestStopContainer_BareAppID_StopsEveryService verifies the group form still
-// fans out to every service after the resolution change.
+// The group form must still fan out to every service.
 func TestStopContainer_BareAppID_StopsEveryService(t *testing.T) {
 	mc := multiServiceMock()
 	mon := &mockMonitorRegistrar{}
@@ -862,9 +848,7 @@ func TestStopContainer_BareAppID_StopsEveryService(t *testing.T) {
 	}
 }
 
-// TestStopContainer_UnknownName_NotFound: a name that resolves to nothing must
-// be an error and must leave no trace. Reporting success for an app that does
-// not exist is what made the service-qualified no-op invisible.
+// A name that resolves to nothing must error and leave no trace.
 func TestStopContainer_UnknownName_NotFound(t *testing.T) {
 	mc := multiServiceMock()
 	mon := &mockMonitorRegistrar{}
@@ -888,8 +872,32 @@ func TestStopContainer_UnknownName_NotFound(t *testing.T) {
 	}
 }
 
-// TestDeleteContainer_UnknownName_NotFound: delete carried the same
-// invented-ID fallback as stop.
+// Delete must resolve through the shared resolver and unregister only the
+// named service.
+func TestDeleteContainer_ServiceQualifiedName_ResolvesOneService(t *testing.T) {
+	mc := multiServiceMock()
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	if _, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName: "myapp_alpha",
+	}); err != nil {
+		t.Fatalf("DeleteContainer: %v", err)
+	}
+
+	if len(mc.resolveCalls) != 1 || mc.resolveCalls[0] != "myapp_alpha" {
+		t.Errorf("ResolveAppContainerIDs calls = %v; want [myapp_alpha]", mc.resolveCalls)
+	}
+	if len(mon.unregisterCalls) != 1 || mon.unregisterCalls[0] != "myapp_alpha" {
+		t.Errorf("Unregister = %v; want [myapp_alpha]", mon.unregisterCalls)
+	}
+	if len(mon.explicitStopCalls) != 0 {
+		t.Errorf("MarkExplicitStop = %v; want none on the delete path", mon.explicitStopCalls)
+	}
+}
+
+// Delete carried the same invented-ID fallback as stop.
 func TestDeleteContainer_UnknownName_NotFound(t *testing.T) {
 	mc := multiServiceMock()
 	client, cleanup := startContainerServer(t, mc)
@@ -1170,9 +1178,8 @@ func TestListVolumes_UsedByFromDeclaredVolumes(t *testing.T) {
 
 // deleteVolumesTestSetup creates volume dirs and starts a server whose mock
 // reports the given declared-volumes map.
-// deployedApps names the apps that exist on the fake device. DeleteContainer
-// resolves its target before touching volumes, so an app under test has to be
-// deployed for the delete to reach the volume logic at all.
+// deployedApps names the apps that exist on the fake device; a delete must
+// resolve before it reaches the volume logic.
 func deleteVolumesTestSetup(t *testing.T, dirs []string, declared map[string][]string, declaredErr error, deployedApps ...string) (agentpb.WendyContainerServiceClient, string) {
 	t.Helper()
 	tmp := t.TempDir()

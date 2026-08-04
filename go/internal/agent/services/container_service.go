@@ -908,14 +908,8 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
-	// Resolve the containers this name addresses: every service for a bare
-	// appID, one service for "{appID}_{serviceName}". Resolution is shared with
-	// the stop below so the monitor marks and the stopped-by-user labels can only
-	// ever be written against containers that were actually stopped.
-	//
-	// A name matching neither is NotFound. It used to fall back to
-	// ids = []string{appName}, which manufactured a plausible ID out of an
-	// unresolvable name and reported success without stopping anything (WDY-1847).
+	// Shared with the stop below, so monitor marks and stopped-by-user labels
+	// are only ever written against containers that were actually stopped.
 	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -969,8 +963,6 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	// each one. Unregistering only the bare appName would leave
 	// {appID}_{serviceName} monitor entries alive and potentially trigger
 	// spurious restart attempts while the container is being removed.
-	// Same resolution as stop, and the same reason not to invent an ID for an
-	// unresolvable name (WDY-1847).
 	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
 		if errdefs.IsNotFound(err) {
@@ -983,7 +975,8 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	// monitor could attempt a restart while containers are being removed.
 	if s.monitor != nil {
 		for _, id := range ids {
-			s.monitor.MarkExplicitStop(id)
+			// Unregister alone closes the restart window: the monitor only
+			// restarts containers it still has state for.
 			s.monitor.Unregister(id)
 		}
 	}
