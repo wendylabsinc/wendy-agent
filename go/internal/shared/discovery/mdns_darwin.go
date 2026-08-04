@@ -3,17 +3,14 @@
 package discovery
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
-	"strings"
 	"time"
 )
 
 // BrowseMDNSServices discovers mDNS services of the given type on macOS
-// using dns-sd. Returns all services found within the timeout.
+// through mDNSResponder. Returns all services found within the timeout.
 func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Duration) ([]MDNSService, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
@@ -49,60 +46,11 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 	return services, nil
 }
 
-// resolveMDNSService runs dns-sd -L to resolve a browse result into an MDNSService.
+// resolveMDNSService resolves a browse result into an MDNSService.
 func resolveMDNSService(ctx context.Context, inst browseResult, serviceType string) (MDNSService, error) {
-	cmd := exec.CommandContext(ctx, "dns-sd", "-L", inst.instanceName, serviceType, inst.domain)
-	stdout, err := cmd.StdoutPipe()
+	hostname, port, txtRecords, err := dnssdResolveInstance(ctx, inst, serviceType)
 	if err != nil {
 		return MDNSService{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return MDNSService{}, err
-	}
-
-	var hostname string
-	var port int
-	txtRecords := make(map[string]string)
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.Contains(line, "can be reached at") {
-			parts := strings.Fields(line)
-			for i, p := range parts {
-				if p == "at" && i+1 < len(parts) {
-					hostPort := parts[i+1]
-					h, portStr, splitErr := net.SplitHostPort(hostPort)
-					if splitErr == nil {
-						hostname = strings.TrimSuffix(h, ".")
-						fmt.Sscanf(portStr, "%d", &port)
-					}
-					break
-				}
-			}
-
-			if scanner.Scan() {
-				txtLine := scanner.Text()
-				if strings.HasPrefix(txtLine, " ") {
-					txtParts := strings.Fields(txtLine)
-					for _, field := range txtParts {
-						if k, v, ok := strings.Cut(field, "="); ok {
-							txtRecords[k] = v
-						}
-					}
-				}
-			}
-
-			_ = cmd.Process.Kill()
-			break
-		}
-	}
-
-	_ = cmd.Wait()
-
-	if hostname == "" {
-		return MDNSService{}, fmt.Errorf("could not resolve instance %q", inst.instanceName)
 	}
 
 	ipAddr := ""
