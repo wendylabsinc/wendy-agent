@@ -16,6 +16,71 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
+// TestBuildServicesParallelIsolatesCacheDirs is the end-to-end guard for the
+// buildx local-cache race (WDY-1689/WDY-1711): concurrent service builds must
+// each receive their own non-empty cache key, and those keys must resolve to
+// distinct local cache dirs. buildxLocalCacheDir is unit-tested separately, but
+// nothing else asserts that buildServicesParallel actually *passes* a per-service
+// key — pass "" here (as the pre-fix code did) and every concurrent build shares
+// ~/.cache/wendy/buildx again, corrupting BuildKit's cache-export ingest store.
+func TestBuildServicesParallelIsolatesCacheDirs(t *testing.T) {
+	root := t.TempDir()
+	const appID = "ros2multi"
+	// The ticket's repro shape: a 6-service ROS 2 graph built concurrently.
+	names := []string{"talker", "listener", "bridge", "nav", "perception", "viz"}
+	services := map[string]*appconfig.ServiceConfig{}
+	for _, name := range names {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		services[name] = &appconfig.ServiceConfig{Context: name}
+	}
+
+	var mu sync.Mutex
+	keys := map[string]string{} // repo -> cacheKey
+	orig := buildServiceImage
+	defer func() { buildServiceImage = orig }()
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, repo, _, _ string, _ map[string]string, cacheKey string, _, _ io.Writer) error {
+		mu.Lock()
+		keys[repo] = cacheKey
+		mu.Unlock()
+		return nil
+	}
+
+	failed, infraErr := buildServicesParallel(
+		context.Background(), nil, 5000, root, appID, services, "linux/arm64", nil, "docker", nil, len(names))
+	if infraErr != nil {
+		t.Fatalf("unexpected infra error: %v", infraErr)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("unexpected build failures: %v", sortedServiceErrorKeys(failed))
+	}
+	if len(keys) != len(names) {
+		t.Fatalf("recorded %d builds, want %d", len(keys), len(names))
+	}
+
+	const userCache = "/home/u/.cache"
+	sharedBase := buildxLocalCacheDir(userCache, "")
+	dirs := map[string]string{} // cache dir -> repo that claimed it
+	for repo, key := range keys {
+		if key == "" {
+			t.Fatalf("service %q got an empty cache key: all concurrent builds would share %s", repo, sharedBase)
+		}
+		dir := buildxLocalCacheDir(userCache, key)
+		if dir == sharedBase {
+			t.Fatalf("service %q cache key %q resolves to the shared base dir %s", repo, key, sharedBase)
+		}
+		if other, dup := dirs[dir]; dup {
+			t.Fatalf("services %q and %q share cache dir %s", other, repo, dir)
+		}
+		dirs[dir] = repo
+	}
+}
+
 // TestResolveDeployableServicesFuzz generates random acyclic dependency graphs
 // with random failures and checks resolveDeployableServices against an
 // independent reference: a service is deployable iff it did not fail and all its
