@@ -173,6 +173,7 @@ func NewRootCmd() *cobra.Command {
 	tourCmd.Hidden = true
 	mcpCmd := newMCPCmd()
 	mcpCmd.Hidden = true
+	reportBugCmd := newReportBugCmd()
 	completionCmd := newCompletionCmd()
 	completionCmd.Hidden = true
 	// Keep a valid group on the (hidden) completion command so the help/
@@ -234,6 +235,7 @@ func NewRootCmd() *cobra.Command {
 		discoverCmd,
 		osCmd,
 		infoCmd,
+		reportBugCmd,
 		utilsCmd,
 		tourCmd,
 		mcpCmd,

@@ -122,3 +122,70 @@ func TestMaybeOpenReportBugURLOpenBrowserFails(t *testing.T) {
 		t.Fatal("expected false when openBrowser fails")
 	}
 }
+
+func TestReportBugCmdGHMissingPrintsFallback(t *testing.T) {
+	origLookPath := lookPath
+	t.Cleanup(func() { lookPath = origLookPath })
+	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+
+	cmd := newReportBugCmd()
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "`gh` CLI not found") {
+		t.Errorf("output = %q, want the gh-missing fallback message", out)
+	}
+	if !strings.Contains(out, "issues/new?") {
+		t.Errorf("output = %q, want the fallback URL", out)
+	}
+}
+
+func TestReportBugCmdGHPresentOpensBrowser(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	var openedURL string
+	openBrowser = func(u string) error { openedURL = u; return nil }
+
+	cmd := newReportBugCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if openedURL == "" || !strings.Contains(openedURL, "issues/new?") {
+		t.Errorf("openBrowser called with %q, want a bug_report.yml issue URL", openedURL)
+	}
+	if stdout.String() != "" {
+		t.Errorf("expected no stdout output when gh succeeds, got %q", stdout.String())
+	}
+}
+
+func TestReportBugCmdRejectsArgs(t *testing.T) {
+	cmd := newReportBugCmd()
+	cmd.SetArgs([]string{"unexpected"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected an error for a stray positional argument")
+	}
+}
+
+func TestReportBugCmdIsHidden(t *testing.T) {
+	cmd := newReportBugCmd()
+	if !cmd.Hidden {
+		t.Error("report-bug must be Hidden so it doesn't appear in `wendy --help`")
+	}
+}

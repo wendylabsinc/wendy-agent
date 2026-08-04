@@ -67,3 +67,29 @@ func maybeOpenReportBugURL(cmd *cobra.Command, rawURL string) bool {
 	fmt.Fprintln(cmd.ErrOrStderr(), "Opening a pre-filled bug report in your browser...")
 	return true
 }
+
+// newReportBugCmd builds the hidden `wendy report-bug` command: it opens a
+// pre-filled GitHub issue in the browser when `gh` is on PATH, or prints the
+// URL (plus the platform info block) as a fallback otherwise.
+func newReportBugCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:    "report-bug",
+		Short:  "Open a pre-filled GitHub bug report",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			info := platforminfo.Collect()
+			rawURL := reportBugURL(info, nil, "")
+			if maybeOpenReportBugURL(cmd, rawURL) {
+				return nil
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "`gh` CLI not found — install it from https://cli.github.com, or open this link to file a report:")
+			fmt.Fprintln(out, rawURL)
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, info.Block())
+			return nil
+		},
+	}
+}
