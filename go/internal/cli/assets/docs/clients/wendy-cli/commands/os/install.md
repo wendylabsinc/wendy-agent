@@ -9,7 +9,7 @@ The command presents a unified device picker that lists Linux targets (Raspberry
 - **Jetson Orin Nano / AGX Orin** -> download a recovery flashpack -> verify the module/carrier -> update QSPI and NVMe/eMMC together
 - **Raspberry Pi targets** -> download OS image -> write to SD/NVMe -> write config partition
 - **Jetson AGX Thor** -> download flashpack -> boot over USB recovery -> flash QSPI and internal NVMe
-- **Unitree G1 (experimental)** -> select the paired local Unitree JetPack 6.2 packages -> image a replacement NVMe -> follow the guided PC2 PWR/REC sequence -> flash matching Orin NX module firmware
+- **Unitree G1 (experimental)** -> download and verify the official paired Unitree JetPack 6.2 packages -> image a replacement NVMe -> follow the guided PC2 PWR/REC sequence -> flash matching Orin NX module firmware
 - **ESP32 targets** → detect USB serial port → download firmware `.bin` → flash over serial
 
 ```sh
@@ -26,7 +26,7 @@ wendy install --device-type raspberry-pi-5 --version 0.10.4 --drive /dev/disk4 -
 wendy install --device-type jetson-agx-thor
 
 # Unitree G1: open the guided picker on an Ubuntu x86-64 host
-# (the package folder and replacement NVMe are selected in the UI)
+# (the official packages are downloaded automatically; select the replacement NVMe in the UI)
 wendy install --device-type unitree-g1
 
 # Orin Nano: full QSPI + NVMe recovery (macOS or Linux)
@@ -79,31 +79,29 @@ releases.
 > AMD x86-64 processor. Windows, macOS (including Apple Silicon), and ARM Linux
 > hosts cannot run the Unitree flashing tools and are rejected by the CLI.
 
-The first hardware-test version also requires a local folder containing this
-exact pair from the same Unitree G1 JetPack 6.2 release:
+The installer downloads this exact pair from the source linked by
+[NVIDIA's official G1 JetPack 6 flashing guide](https://nvlabs.github.io/GR00T-WholeBodyControl/references/jetpack6.html):
 
 ```text
 g1-nx-j6.2.img.bz2
 Jetpack_6.2_nx.tar.bz2
 ```
 
-The lab obtained both from the historical
-[Unitree G1 package folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
-Wendy does not control that folder, so this experimental flow does not download
-from it automatically. A production release requires publisher-controlled
-artifacts and trusted checksums or signatures in the Wendy manifest. For the
-lab run, the CLI calculates and prints SHA-256 fingerprints for both selected
-files. Those fingerprints make the exact test inputs reproducible but do not
-prove their publisher or safety.
+The guide currently points to the
+[JetPack 6.2 Google Drive folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
+The CLI uses the two stable file IDs from that official link, checks their exact
+byte lengths, and requires both downloads to match SHA-256 values pinned in
+reviewed CLI source. A changed or corrupted upstream file is rejected before
+any destructive action. Completed downloads are cached under
+`~/.cache/wendy/os-images/unitree-g1/6.2/` on the Ubuntu host; interrupted
+downloads remain as `.partial` files and resume on the next run.
 
 The interactive flow:
 
 1. Selects **Unitree G1 JetPack 6.2**.
-2. Asks for the folder containing the paired packages and validates both exact
-   filenames as non-empty regular files.
-3. Reads both complete files, prints their SHA-256 fingerprints, explains the
-   missing trust anchor, and requires the operator to type
-   `UNVERIFIED UNITREE LAB FLASH`. `--force` cannot bypass this acceptance.
+2. Downloads or resumes both official-source packages into Wendy's cache.
+3. Validates both exact sizes and pinned SHA-256 values, reusing a cached file
+   only after its full hash matches.
 4. Lists external drives by model, device path, and size, then includes the
    hardware serial (when available) in the final destructive-write review.
 5. Accepts only a fixed external SSD of at least 1 TB, then shows one final

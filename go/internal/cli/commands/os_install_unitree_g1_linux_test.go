@@ -6,47 +6,152 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestResolveUnitreeG1PackagesRequiresExactPair(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, unitreeG1ImageName), []byte("image"), 0o600); err != nil {
+func TestResumeUnitreeG1Artifact(t *testing.T) {
+	content := bytes.Repeat([]byte("unitree-g1-official-artifact"), 1024)
+	digest := sha256.Sum256(content)
+	const offset = 117
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Range"), fmt.Sprintf("bytes=%d-", offset); got != want {
+			t.Errorf("Range = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, len(content)-1, len(content)))
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)-offset))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(content[offset:])
+	}))
+	defer server.Close()
+
+	artifact := unitreeG1Artifact{
+		Name:   "artifact.bz2",
+		URL:    server.URL,
+		Size:   int64(len(content)),
+		SHA256: hex.EncodeToString(digest[:]),
+	}
+	partial := filepath.Join(t.TempDir(), artifact.Name+".partial")
+	if err := os.WriteFile(partial, content[:offset], 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveUnitreeG1Packages(dir); err == nil || !strings.Contains(err.Error(), unitreeG1FirmwareName) {
-		t.Fatalf("missing firmware error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, unitreeG1FirmwareName), []byte("firmware"), 0o600); err != nil {
+	var downloaded, total int64
+	if err := resumeUnitreeG1Artifact(context.Background(), server.Client(), artifact, partial, func(got, size int64) {
+		downloaded, total = got, size
+	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveUnitreeG1Packages(dir)
+	got, err := os.ReadFile(partial)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Image != filepath.Join(dir, unitreeG1ImageName) || got.Firmware != filepath.Join(dir, unitreeG1FirmwareName) {
-		t.Fatalf("resolved packages = %+v", got)
+	if !bytes.Equal(got, content) {
+		t.Fatal("resumed artifact does not match source bytes")
+	}
+	if downloaded != int64(len(content)) || total != int64(len(content)) {
+		t.Fatalf("progress = %d/%d, want %d/%d", downloaded, total, len(content), len(content))
 	}
 }
 
-func TestResolveUnitreeG1PackagesRejectsSymlink(t *testing.T) {
+func TestResumeUnitreeG1ArtifactRestartsWhenRangeIsIgnored(t *testing.T) {
+	content := bytes.Repeat([]byte("official"), 512)
+	digest := sha256.Sum256(content)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "" {
+			t.Error("resume request did not include Range")
+		}
+		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
+		_, _ = w.Write(content)
+	}))
+	defer server.Close()
+
+	artifact := unitreeG1Artifact{
+		Name:   "artifact.bz2",
+		URL:    server.URL,
+		Size:   int64(len(content)),
+		SHA256: hex.EncodeToString(digest[:]),
+	}
+	partial := filepath.Join(t.TempDir(), artifact.Name+".partial")
+	if err := os.WriteFile(partial, []byte("stale partial bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := resumeUnitreeG1Artifact(context.Background(), server.Client(), artifact, partial, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(partial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatal("range-ignoring server response was not restarted from byte zero")
+	}
+}
+
+func TestValidateUnitreeG1ArtifactMetadata(t *testing.T) {
+	valid := unitreeG1Artifact{Name: "artifact.bz2", URL: "https://example.com/artifact", Size: 1, SHA256: strings.Repeat("a", 64)}
+	if err := validateUnitreeG1ArtifactMetadata(valid); err != nil {
+		t.Fatalf("valid metadata rejected: %v", err)
+	}
+	for _, edit := range []func(*unitreeG1Artifact){
+		func(a *unitreeG1Artifact) { a.Name = "../artifact.bz2" },
+		func(a *unitreeG1Artifact) { a.URL = "" },
+		func(a *unitreeG1Artifact) { a.Size = 0 },
+		func(a *unitreeG1Artifact) { a.SHA256 = "not-a-digest" },
+	} {
+		candidate := valid
+		edit(&candidate)
+		if err := validateUnitreeG1ArtifactMetadata(candidate); err == nil {
+			t.Fatalf("invalid metadata accepted: %+v", candidate)
+		}
+	}
+}
+
+func TestOfficialUnitreeG1ArtifactMetadata(t *testing.T) {
+	wantNames := map[string]bool{
+		unitreeG1ImageName:    false,
+		unitreeG1FirmwareName: false,
+	}
+	for _, artifact := range unitreeG1OfficialArtifacts {
+		if err := validateUnitreeG1ArtifactMetadata(artifact); err != nil {
+			t.Fatalf("official metadata for %s: %v", artifact.Name, err)
+		}
+		seen, expected := wantNames[artifact.Name]
+		if !expected {
+			t.Fatalf("unexpected official artifact %q", artifact.Name)
+		}
+		if seen {
+			t.Fatalf("duplicate official artifact %q", artifact.Name)
+		}
+		wantNames[artifact.Name] = true
+	}
+	for name, seen := range wantNames {
+		if !seen {
+			t.Errorf("official artifact %q is missing", name)
+		}
+	}
+}
+
+func TestUnitreeG1PartialSizeRejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")
-	if err := os.WriteFile(target, []byte("image"), 0o600); err != nil {
+	if err := os.WriteFile(target, []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(target, filepath.Join(dir, unitreeG1ImageName)); err != nil {
+	link := filepath.Join(dir, "artifact.partial")
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, unitreeG1FirmwareName), []byte("firmware"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := resolveUnitreeG1Packages(dir); err == nil || !strings.Contains(err.Error(), "regular file") {
+	if _, err := unitreeG1PartialSize(link, 100); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("symlink error = %v", err)
 	}
 }
@@ -291,17 +396,6 @@ func TestHashUnitreeG1File(t *testing.T) {
 	const want = "a3cc1c668e3bab252d11494e9181920dde49e94f62f92f60185f420d21d24a46"
 	if digest != want {
 		t.Fatalf("digest = %q; want %q", digest, want)
-	}
-}
-
-func TestValidateUnitreeG1TrustPhrase(t *testing.T) {
-	if err := validateUnitreeG1TrustPhrase(unitreeG1TrustPhrase); err != nil {
-		t.Fatalf("exact phrase rejected: %v", err)
-	}
-	for _, value := range []string{"", "unverified unitree lab flash", unitreeG1TrustPhrase + " "} {
-		if err := validateUnitreeG1TrustPhrase(value); err == nil {
-			t.Fatalf("phrase %q was accepted", value)
-		}
 	}
 }
 

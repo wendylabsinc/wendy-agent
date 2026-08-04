@@ -29,16 +29,13 @@ const (
 	unitreeG1ImageName         = "g1-nx-j6.2.img.bz2"
 	unitreeG1FirmwareName      = "Jetpack_6.2_nx.tar.bz2"
 	unitreeG1MinDriveBytes     = int64(900_000_000_000)
-	unitreeG1HistoricalSource  = "https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm"
-	unitreeG1TrustPhrase       = "UNVERIFIED UNITREE LAB FLASH"
 	unitreeG1MaxArchiveEntries = 1_000_000
 	unitreeG1MaxExtractedSize  = int64(200 << 30)
 )
 
 type unitreeG1Packages struct {
-	Directory string
-	Image     string
-	Firmware  string
+	Image    string
+	Firmware string
 }
 
 type unitreeG1Fingerprints struct {
@@ -64,33 +61,11 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Println("Host requirement: " + unitreeG1HostRequirement + ".")
 	fmt.Println(tui.WarningMessage("Experimental hardware flow: this erases a replacement NVMe and updates PC2 module firmware. It never flashes the G1 motion-control computer."))
 	fmt.Println("The original G1 NVMe must be removed and preserved before continuing.")
-	fmt.Println("Historical lab package source: " + unitreeG1HistoricalSource)
+	fmt.Println("Official source: " + unitreeG1OfficialGuide)
 	fmt.Println()
 
-	packageDir, err := tui.PromptTextWithDefault(
-		"Unitree package folder",
-		fmt.Sprintf("must contain %s and %s", unitreeG1ImageName, unitreeG1FirmwareName),
-		".",
-		func(value string) error {
-			_, err := resolveUnitreeG1Packages(value)
-			return err
-		},
-	)
+	packages, fingerprints, err := resolveOfficialUnitreeG1Packages(ctx)
 	if err != nil {
-		if errors.Is(err, tui.ErrCancelled) {
-			return ErrUserCancelled
-		}
-		return err
-	}
-	packages, err := resolveUnitreeG1Packages(packageDir)
-	if err != nil {
-		return err
-	}
-	fingerprints, err := fingerprintUnitreeG1Packages(packages)
-	if err != nil {
-		return err
-	}
-	if err := acceptUnverifiedUnitreeG1Artifacts(fingerprints); err != nil {
 		return err
 	}
 
@@ -200,7 +175,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Printf("  Directory: %s\n", filepath.Dir(script))
 	fmt.Println("  Command:   sudo ./flash_nx_module.sh")
 	fmt.Println(tui.WarningMessage("Do not power off the G1 or disconnect USB until flash_nx_module.sh reports success."))
-	confirmed, err := tui.Confirm("Run this unverified vendor script with root privileges?")
+	confirmed, err := tui.Confirm("Run this pinned official-source vendor script with root privileges?")
 	if err != nil {
 		return err
 	}
@@ -233,49 +208,6 @@ func selectUnitreeG1Version(requested string) (string, error) {
 			Value:       unitreeG1Version,
 		},
 	})
-}
-
-func resolveUnitreeG1Packages(dir string) (unitreeG1Packages, error) {
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return unitreeG1Packages{}, fmt.Errorf("package folder is required")
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return unitreeG1Packages{}, fmt.Errorf("resolving package folder: %w", err)
-	}
-	result := unitreeG1Packages{
-		Directory: abs,
-		Image:     filepath.Join(abs, unitreeG1ImageName),
-		Firmware:  filepath.Join(abs, unitreeG1FirmwareName),
-	}
-	for _, path := range []string{result.Image, result.Firmware} {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return unitreeG1Packages{}, fmt.Errorf("required package %s: %w", filepath.Base(path), err)
-		}
-		if !info.Mode().IsRegular() {
-			return unitreeG1Packages{}, fmt.Errorf("required package %s must be a regular file, not a directory or symlink", filepath.Base(path))
-		}
-		if info.Size() == 0 {
-			return unitreeG1Packages{}, fmt.Errorf("required package %s is empty", filepath.Base(path))
-		}
-	}
-	return result, nil
-}
-
-func fingerprintUnitreeG1Packages(packages unitreeG1Packages) (unitreeG1Fingerprints, error) {
-	fmt.Println()
-	fmt.Println(tui.Header("Fingerprinting selected Unitree artifacts"))
-	image, err := fingerprintUnitreeG1Artifact(packages.Image)
-	if err != nil {
-		return unitreeG1Fingerprints{}, err
-	}
-	firmware, err := fingerprintUnitreeG1Artifact(packages.Firmware)
-	if err != nil {
-		return unitreeG1Fingerprints{}, err
-	}
-	return unitreeG1Fingerprints{Image: image, Firmware: firmware}, nil
 }
 
 type unitreeG1HashResult struct {
@@ -335,34 +267,6 @@ func hashUnitreeG1File(filePath string, progress func(read, total int64)) (strin
 			return "", readErr
 		}
 	}
-}
-
-func acceptUnverifiedUnitreeG1Artifacts(fingerprints unitreeG1Fingerprints) error {
-	fmt.Println()
-	fmt.Println(tui.Header("Artifact trust review"))
-	fmt.Println(tui.WarningMessage("Wendy has no trusted manifest checksums or signatures for these historical Unitree files."))
-	fmt.Println("The hashes below identify the exact selected bytes for this lab run; they do not prove who published them or that they are safe.")
-	fmt.Printf("  %s\n    sha256:%s\n", unitreeG1ImageName, fingerprints.Image)
-	fmt.Printf("  %s\n    sha256:%s\n", unitreeG1FirmwareName, fingerprints.Firmware)
-	fmt.Println("The firmware archive contains a vendor script that will be shown again and executed with sudo after constrained extraction.")
-	fmt.Println("Production installation remains blocked until Wendy publishes authenticated artifacts and pins both hashes in its manifest.")
-	fmt.Println()
-	_, err := tui.PromptText(
-		"Type "+unitreeG1TrustPhrase+" to continue",
-		"lab-only acceptance; --force does not bypass this",
-		validateUnitreeG1TrustPhrase,
-	)
-	if errors.Is(err, tui.ErrCancelled) {
-		return ErrUserCancelled
-	}
-	return err
-}
-
-func validateUnitreeG1TrustPhrase(value string) error {
-	if value != unitreeG1TrustPhrase {
-		return fmt.Errorf("type %s exactly", unitreeG1TrustPhrase)
-	}
-	return nil
 }
 
 func recheckUnitreeG1Artifact(filePath, acceptedDigest, purpose string) error {
@@ -787,14 +691,12 @@ func findUnitreeG1FlashScript(root string) (string, error) {
 }
 
 func runUnitreeG1FirmwareScript(ctx context.Context, script string) error {
-	// SECURITY: This draft-only lab path intentionally runs operator-selected,
-	// unverified Unitree firmware as root because no authenticated publisher
-	// artifacts exist yet. The UI fingerprints both artifacts, requires typed
-	// risk acceptance, extracts without following archive links, shows the exact
-	// script hash/working directory/command, and requires a second confirmation.
-	// Production enablement must replace this exception with Wendy-controlled,
-	// signed or manifest-pinned artifacts; a locally calculated hash alone does
-	// not establish authenticity.
+	// SECURITY: The archive comes from the link published by NVIDIA's official
+	// G1 JetPack 6 guide and must match a SHA-256 pinned in reviewed CLI source.
+	// The installer re-hashes it immediately before constrained extraction,
+	// shows the extracted script hash, directory, and exact sudo command, then
+	// requires an additional confirmation. Updating the executable bytes requires
+	// an explicit source-and-hash review rather than trusting a mutable download.
 	cmd := exec.CommandContext(ctx, "sudo", "./flash_nx_module.sh")
 	cmd.Dir = filepath.Dir(script)
 	cmd.Stdin = os.Stdin
