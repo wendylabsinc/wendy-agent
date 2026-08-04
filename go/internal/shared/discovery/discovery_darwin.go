@@ -5,6 +5,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -123,10 +124,6 @@ func darwinCachedInterfaceLinkSpeed(ctx context.Context, interfaceName string, l
 	return linkSpeed
 }
 
-// deviceFromBrowse builds a LANDevice from browse results alone, without
-// resolving via dns-sd -L. Used as a fallback when resolve fails (e.g.
-// the service has no TXT records).
-
 var hostnameLabelRegexp = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 // isValidHostnameLabel reports whether s is a valid RFC1123 hostname label.
@@ -137,6 +134,8 @@ func isValidHostnameLabel(s string) bool {
 	return hostnameLabelRegexp.MatchString(s)
 }
 
+// deviceFromBrowse builds a LANDevice from browse results alone. Used as a
+// fallback when resolve fails (e.g. the service has no TXT records).
 func deviceFromBrowse(inst browseResult, interfaceDisplayNames map[string]string) models.LANDevice {
 	// Instance names arrive decoded from mDNSResponder, matching the Linux and
 	// Windows backends — no display-format unescaping to undo.
@@ -184,7 +183,11 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 	// Resolving inside the callback blocks the browse socket pump for up to the
 	// resolve timeout. That matches the previous sequential behaviour, and
 	// mDNSResponder queues further browse replies meanwhile.
-	_ = dnssdBrowseStream(ctx, wendyServiceType, func(inst browseResult) {
+	//
+	// An error here ends discovery for the rest of this call — mDNSResponder
+	// restarting, say. Callers get no further devices, so log rather than
+	// swallow it; the picker's list simply stops growing and gives no clue why.
+	if err := dnssdBrowseStream(ctx, wendyServiceType, func(inst browseResult) {
 		key := inst.instanceName + "%" + inst.interfaceName
 		if seen[key] {
 			return
@@ -202,5 +205,7 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 		case ch <- dev:
 		case <-ctx.Done():
 		}
-	})
+	}); err != nil {
+		log.Printf("discovery: continuous mDNS browse stopped: %v", err)
+	}
 }
