@@ -2,8 +2,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 ![NVIDIA Jetson Orin Nano](https://img.shields.io/badge/NVIDIA-Jetson%20Orin%20Nano-76B900?logo=nvidia&logoColor=white)
-![NVIDIA AGX Orin](https://img.shields.io/badge/NVIDIA-AGX%20Orin-76B900?logo=nvidia&logoColor=white)
-![NVIDIA Jetson Thor](https://img.shields.io/badge/NVIDIA-Jetson%20Thor-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Orin](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Orin-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Thor](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Thor-76B900?logo=nvidia&logoColor=white)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-Supported-E95420?logo=ubuntu&logoColor=white)
 ![Arch Linux](https://img.shields.io/badge/Arch%20Linux-Supported-1793D1?logo=arch-linux&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-Supported-000000?logo=apple&logoColor=white)
