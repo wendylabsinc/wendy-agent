@@ -75,8 +75,12 @@ picker. The installer deliberately keeps the rootfs image and PC2 module
 firmware behind one installation choice so they cannot be mixed across
 releases.
 
-The first hardware-test version requires an Ubuntu x86-64 host and a local
-folder containing this exact pair from the same Unitree G1 JetPack 6.2 release:
+> **Host requirement:** Run this flow from an Ubuntu Linux PC with an Intel or
+> AMD x86-64 processor. Windows, macOS (including Apple Silicon), and ARM Linux
+> hosts cannot run the Unitree flashing tools and are rejected by the CLI.
+
+The first hardware-test version also requires a local folder containing this
+exact pair from the same Unitree G1 JetPack 6.2 release:
 
 ```text
 g1-nx-j6.2.img.bz2

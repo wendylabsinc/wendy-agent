@@ -47,8 +47,8 @@ type unitreeG1Fingerprints struct {
 }
 
 func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
-	if runtime.GOARCH != "amd64" {
-		return fmt.Errorf("Unitree G1 flashing currently requires an Ubuntu x86-64 host; this host is linux/%s", runtime.GOARCH)
+	if err := validateUnitreeG1Host(runtime.GOOS, runtime.GOARCH); err != nil {
+		return err
 	}
 	if !isInteractiveTerminal() {
 		return fmt.Errorf("the experimental Unitree G1 installer currently requires an interactive terminal")
@@ -61,6 +61,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 
 	fmt.Println()
 	fmt.Println(tui.Header("Install Unitree G1 PC2 · JetPack " + version))
+	fmt.Println("Host requirement: " + unitreeG1HostRequirement + ".")
 	fmt.Println(tui.WarningMessage("Experimental hardware flow: this erases a replacement NVMe and updates PC2 module firmware. It never flashes the G1 motion-control computer."))
 	fmt.Println("The original G1 NVMe must be removed and preserved before continuing.")
 	fmt.Println("Historical lab package source: " + unitreeG1HistoricalSource)

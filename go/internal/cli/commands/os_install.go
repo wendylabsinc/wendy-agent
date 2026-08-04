@@ -54,6 +54,15 @@ type unitreeG1InstallOptions struct {
 	Force   bool
 }
 
+const unitreeG1HostRequirement = "Ubuntu Linux on an Intel/AMD x86-64 PC"
+
+func validateUnitreeG1Host(goos, goarch string) error {
+	if goos == "linux" && goarch == "amd64" {
+		return nil
+	}
+	return fmt.Errorf("Unitree G1 flashing requires %s; Windows, macOS, and ARM hosts are unsupported (detected %s/%s)", unitreeG1HostRequirement, goos, goarch)
+}
+
 const (
 	preEnrollAuto   preEnrollMode = iota // prompt if interactive terminal + auth session exists
 	preEnrollForced                      // --pre-enroll explicitly set to true
@@ -365,7 +374,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 		items = append(items, tui.PickerItem{
 			Name:        "Unitree G1",
-			Description: "JetPack 6.2 · PC2 Orin NX · experimental",
+			Description: "JetPack 6.2 · requires x86-64 Ubuntu Linux (no Windows, macOS, or ARM)",
 			Section:     "Robots",
 			SortKey:     "0_robots_unitree_g1",
 			Value:       unitreeG1DeviceType,
