@@ -87,6 +87,19 @@ g1-nx-j6.2.img.bz2
 Jetpack_6.2_nx.tar.bz2
 ```
 
+> **Required order:** Flash the replacement NVMe first. Install that NVMe in
+> PC2, then put PC2 into APX recovery mode and flash the matching Orin NX module
+> firmware. Do not perform the firmware step before the JetPack 6.2 NVMe is
+> installed.
+
+The two files have separate roles:
+
+1. **Stage 1 — NVMe system image:** `g1-nx-j6.2.img.bz2` is written to the
+   replacement P310/NVMe while the drive is attached to the Ubuntu host.
+2. **Stage 2 — Orin NX module firmware:** `Jetpack_6.2_nx.tar.bz2` remains on
+   the Ubuntu host. After installing the replacement NVMe in PC2, the CLI uses
+   this package to flash the module through PC2's recovery USB-C connection.
+
 The guide currently points to the
 [JetPack 6.2 Google Drive folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
 The CLI uses the two stable file IDs from that official link, checks their exact
@@ -102,15 +115,16 @@ The interactive flow:
 2. Downloads or resumes both official-source packages into Wendy's cache.
 3. Validates both exact sizes and pinned SHA-256 values, reusing a cached file
    only after its full hash matches.
-4. Lists external drives by model, device path, and size, then includes the
+4. Begins **Stage 1 of 2 — NVMe system image**, lists external drives by model,
+   device path, and size, then includes the
    hardware serial (when available) in the final destructive-write review.
 5. Accepts only a fixed external SSD of at least 1 TB, then shows one final
    destructive-write summary and re-hashes the image before erasing the drive.
 6. Streams the bzip2 rootfs image to the replacement NVMe and syncs the write.
 7. Pauses while the operator installs the replacement NVMe in PC2 and preserves
    the original drive.
-8. Shows the verified PWR/REC and PC2 USB-C recovery instructions, then waits for
-   an Orin NX APX device.
+8. Begins **Stage 2 of 2 — Orin NX module firmware**, shows the verified PWR/REC
+   and PC2 USB-C recovery instructions, then waits for an Orin NX APX device.
 9. Refuses to invoke Unitree's vendor script if any additional recovery-mode
    Jetson is connected, because that script cannot be safely pinned to one USB
    path.

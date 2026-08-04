@@ -63,6 +63,13 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Println("The original G1 NVMe must be removed and preserved before continuing.")
 	fmt.Println("Official source: " + unitreeG1OfficialGuide)
 	fmt.Println()
+	fmt.Println(tui.Header("Required two-stage order"))
+	fmt.Println("  Stage 1 of 2 — NVMe system image")
+	fmt.Println("    Write g1-nx-j6.2.img.bz2 to the replacement NVMe, then install it in PC2.")
+	fmt.Println("  Stage 2 of 2 — Orin NX module firmware")
+	fmt.Println("    Put PC2 in APX recovery mode, then run the matching firmware package over USB-C.")
+	fmt.Println(tui.WarningMessage("Complete Stage 1 first. Do not flash the module firmware before the matching JetPack 6.2 NVMe is installed."))
+	fmt.Println()
 
 	packages, fingerprints, err := resolveOfficialUnitreeG1Packages(ctx)
 	if err != nil {
@@ -81,7 +88,8 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	}
 
 	fmt.Println()
-	fmt.Println(tui.Header("Review destructive write"))
+	fmt.Println(tui.Header("Stage 1 of 2 · Flash replacement NVMe"))
+	fmt.Println("This writes the JetPack 6.2 system image. The PC2 module firmware is flashed afterward.")
 	fmt.Printf("  Model:  %s\n", target.Name)
 	if target.Serial != "" {
 		fmt.Printf("  Serial: %s\n", target.Serial)
@@ -133,7 +141,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	}
 
 	fmt.Println()
-	fmt.Println(tui.Header("Put G1 PC2 into recovery mode"))
+	fmt.Println(tui.Header("Prepare Stage 2 of 2 · Put G1 PC2 into recovery mode"))
 	fmt.Println("  1. Hold PC2 PWR and REC together for about 2 seconds.")
 	fmt.Println("  2. Release PWR while continuing to hold REC for another 2 seconds.")
 	fmt.Println("  3. Release REC.")
@@ -168,7 +176,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	}
 
 	fmt.Println()
-	fmt.Println(tui.Header("Flashing matching Unitree PC2 module firmware"))
+	fmt.Println(tui.Header("Stage 2 of 2 · Flash matching Unitree PC2 module firmware"))
 	fmt.Printf("  Archive:   sha256:%s\n", fingerprints.Firmware)
 	fmt.Printf("  Script:    %s\n", strings.TrimPrefix(script, workspace+string(filepath.Separator)))
 	fmt.Printf("  Script:    sha256:%s\n", scriptHash)
