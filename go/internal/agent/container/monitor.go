@@ -119,9 +119,8 @@ func (m *ContainerMonitor) Unregister(appName string) {
 }
 
 // MarkExplicitStop marks a container as explicitly stopped, preventing restart.
-// An unknown key is logged rather than ignored: a mark that silently evaporates
-// leaves the restart policy live on a container the user believes is stopped,
-// and that silence is what hid WDY-1847.
+// An unknown key leaves the restart policy live on a container the user
+// believes is stopped, so it is logged rather than ignored.
 func (m *ContainerMonitor) MarkExplicitStop(appName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

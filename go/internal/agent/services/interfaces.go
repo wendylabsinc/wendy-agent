@@ -66,8 +66,6 @@ type ContainerdClient interface {
 	// ResolveAppContainerIDs returns the container IDs addressed by name: a bare
 	// appID yields every service in the app, "{appID}_{serviceName}" yields that
 	// one service, and a name matching neither returns errdefs.ErrNotFound.
-	// Stop and delete resolve through this so they can never act on — or mark —
-	// an ID they invented for an unresolvable name (WDY-1847).
 	ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	// AppDeclaredVolumes maps every deployed app (bare appID) to the persistent

@@ -256,8 +256,7 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 }
 
 // ResolveAppContainerIDs mirrors the real resolver: an exact container name
-// first, then the app-id, then NotFound. This fake keys containers by name, so
-// a bare appID matches the container itself or its "{appID}_{service}" members.
+// first, then the app-id, then NotFound.
 func (m *statefulContainerdClient) ResolveAppContainerIDs(_ context.Context, name string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

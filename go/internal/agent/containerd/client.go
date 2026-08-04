@@ -1478,10 +1478,8 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	}()
 	ctx = c.withNamespace(ctx)
 
-	// Shared with StopContainer: the container ID first, then the app-id label,
-	// so a bare appID and "{appID}_{serviceName}" both work. Start needs exactly
-	// one container because it streams that container's output, so a bare appID
-	// naming a multi-service group is an error here rather than a fan-out.
+	// Start streams one container's output, so a bare appID naming a group is
+	// an error here rather than a fan-out.
 	ctrs, _, _, err := c.resolveTargets(ctx, appName)
 	if err != nil {
 		return nil, fmt.Errorf("loading container %q: %w", appName, err)
@@ -1608,7 +1606,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// getIsolation requires c.mu (held here via muHeld).
 	isolation := c.getIsolation(appID)
 	if appconfig.IsSharedNamespaceIsolation(isolation) {
-		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
+		// Presence alone is not enough: a per-service stop leaves the group
+		// entry behind, so a dead PID must be replaced rather than kept.
+		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		if !hasPrimary || !c.primaryTaskAlive(ctx, appID, primaryPID) {
 			c.setPrimaryPID(appID, task.Pid())
 		}
 	}
@@ -2783,46 +2784,43 @@ func (c *Client) streamOutput(
 	outputCh <- services.ContainerOutput{Done: true}
 }
 
-// resolveTargets resolves a caller-supplied name to the containers it
-// addresses. Resolution order is the same one StartContainer uses:
+// resolveTargets resolves name to the containers it addresses:
 //
 //  1. a container whose ID equals name — a single-container app, or one service
-//     of a multi-service app addressed as "{appID}_{serviceName}"
-//  2. containers whose labelKeyAppID equals name — a bare appID addressing every
-//     service in the group
+//     addressed as "{appID}_{serviceName}"
+//  2. containers whose labelKeyAppID equals name — every service in the group
 //  3. neither — errdefs.ErrNotFound
 //
-// Rule 1 is deterministic rather than a guess: container IDs are unique within
-// the containerd namespace, and both readings of "myapp_alpha" (a single-container
-// app of that name, and service "alpha" of app "myapp") want the same container
-// ID, so at most one can exist.
-//
-// A name that resolves to nothing must be an error, never a silent success: the
-// label-only lookup that predated this returned no containers for any
-// service-qualified name and reported the stop as done (WDY-1847).
-//
-// appID is the label-derived group identity, used for per-app bookkeeping.
-// wholeApp reports whether the name addressed every container in the group,
-// which is true for a bare appID and for any single-container app.
+// Container IDs are unique within the namespace, so rule 1 has at most one hit.
+// appID is the label-derived group identity; wholeApp reports whether name
+// addressed every container in the group.
 //
 // Caller must hold c.mu. ctx must already have the containerd namespace set.
 func (c *Client) resolveTargets(ctx context.Context, name string) (ctrs []containerd.Container, appID string, wholeApp bool, err error) {
-	// Re-validate at the injection site: name reaches the containerd filter
-	// expression via containersForApp below (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	// name reaches the containerd filter expression via containersForApp
+	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 	if verr := appconfig.ValidateAppID(name); verr != nil {
 		return nil, "", false, fmt.Errorf("invalid app name: %w", verr)
 	}
 
-	if ctr, loadErr := c.client.LoadContainer(ctx, name); loadErr == nil {
-		appID = c.appIDForContainer(ctx, ctr, name)
-		group, groupErr := c.containersForApp(ctx, appID)
-		if groupErr != nil {
-			return nil, "", false, groupErr
+	ctr, loadErr := c.client.LoadContainer(ctx, name)
+	switch {
+	case loadErr == nil:
+		// The "default" namespace is shared with anything else that speaks to
+		// containerd, so an ID match alone is not proof this is ours: require
+		// the app-id label (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+		if id, ok := c.wendyAppIDOf(ctx, ctr); ok {
+			group, groupErr := c.containersForApp(ctx, id)
+			if groupErr != nil {
+				return nil, "", false, groupErr
+			}
+			return []containerd.Container{ctr}, id, len(group) <= 1, nil
 		}
-		// A group of one means this container is the whole app, however it was
-		// addressed. Containers predating the app-id label report no group at
-		// all; treat that as whole-app too so their metadata is still released.
-		return []containerd.Container{ctr}, appID, len(group) <= 1, nil
+		// Unlabelled or foreign: fall through, which reports NotFound.
+	case !errdefs.IsNotFound(loadErr):
+		// A real lookup failure must not be laundered into NotFound.
+		return nil, "", false, fmt.Errorf("loading container %q: %w",
+			sanitizeForLog(name, 253), loadErr)
 	}
 
 	group, err := c.containersForApp(ctx, name)
@@ -2836,22 +2834,20 @@ func (c *Client) resolveTargets(ctx context.Context, name string) (ctrs []contai
 	return group, name, true, nil
 }
 
-// appIDForContainer returns the group identity for ctr, preferring the label
-// written at create time over the container ID. The ID is ambiguous for
-// multi-service containers because '_' is legal inside an appID, so
-// "myapp_alpha" would otherwise key group bookkeeping under the wrong identity.
-// Labels are external state, so the value is re-validated before use
-// (SOC2-CC6, NIST-SI-10). Falls back to fallbackID when the label is missing or
-// malformed.
-func (c *Client) appIDForContainer(ctx context.Context, ctr containerd.Container, fallbackID string) string {
+// wendyAppIDOf returns ctr's group identity from its app-id label, and whether
+// ctr is Wendy-managed at all. The container ID cannot stand in for a missing
+// label: '_' is legal inside an appID, so "myapp_alpha" is ambiguous. Labels are
+// external state, so the value is re-validated (SOC2-CC6, NIST-SI-10).
+func (c *Client) wendyAppIDOf(ctx context.Context, ctr containerd.Container) (string, bool) {
 	labels, err := ctr.Labels(ctx)
 	if err != nil {
-		return fallbackID
+		return "", false
 	}
-	if id := labels[labelKeyAppID]; id != "" && appconfig.ValidateAppID(id) == nil {
-		return id
+	id := labels[labelKeyAppID]
+	if id == "" || appconfig.ValidateAppID(id) != nil {
+		return "", false
 	}
-	return fallbackID
+	return id, true
 }
 
 // containersForApp returns all Wendy-managed containers whose labelKeyAppID
@@ -2904,15 +2900,8 @@ func (c *Client) ContainerIDsForApp(ctx context.Context, appID string) ([]string
 	return ids, nil
 }
 
-// ResolveAppContainerIDs returns the container IDs addressed by name, using the
-// same resolution as StopContainer: a bare appID yields every service in the
-// app, "{appID}_{serviceName}" yields that one service, and a name matching
-// neither returns errdefs.ErrNotFound.
-//
-// The service layer uses this to mark containers in the monitor and persist the
-// stopped-by-user label. It must never invent an ID for an unresolvable name:
-// doing so wrote both marks against a container the stop had not touched
-// (WDY-1847).
+// ResolveAppContainerIDs returns the container IDs addressed by name. See
+// resolveTargets.
 func (c *Client) ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error) {
 	ctx = c.withNamespace(ctx)
 	c.mu.Lock()
@@ -3025,9 +3014,8 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	return nil
 }
 
-// StopContainer stops the containers addressed by name. A bare appID stops
-// every service in the app; "{appID}_{serviceName}" stops that one service.
-// A name matching neither is an error — stopping nothing is never a success.
+// StopContainer stops the containers addressed by name: a bare appID stops
+// every service, "{appID}_{serviceName}" stops one. See resolveTargets.
 // c.mu is held for the full duration to prevent a concurrent
 // CreateContainerWithProgress from inserting a new service container between
 // the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
@@ -3063,10 +3051,8 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 		}
 	}
 
-	// Per-app state belongs to the whole group, so it is only released when the
-	// whole group was stopped. Stopping one service of a multi-service app must
-	// leave its siblings' isolation mode, service IPs and namespace-owner PID
-	// intact — they are still running.
+	// Per-app state is only released once the whole group is stopped; siblings
+	// still need it.
 	if wholeApp {
 		// Re-acquire mutex for map cleanup. Both reads and writes of these maps
 		// are protected by c.mu to prevent data races with concurrent callers
@@ -3082,8 +3068,6 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 		// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
 		// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
 		// appStopping is still set during this sweep to block new concurrent creates.
-		// Scoped to the whole-app case: sweeping the group after a single-service
-		// stop would take that service's siblings down with it.
 		if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
 			for _, ctr := range lateCtrs {
 				if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
@@ -3300,20 +3284,15 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 // DeleteContainer deletes all containers belonging to appID. For multi-service
 // apps all service containers are removed. When deleteImage is true, each
 // distinct image is deleted once (services sharing an image are handled safely).
-func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage bool) error {
+func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
-	ctrs, err := c.containersForApp(ctx, appID)
+	// A bare appID deletes every service; "{appID}_{serviceName}" deletes one.
+	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		return err
-	}
-	if len(ctrs) == 0 {
-		if c.systemAPISocketProvider != nil {
-			c.systemAPISocketProvider.ReleaseApp(appID)
-		}
-		return nil // Already gone.
 	}
 
 	seen := make(map[string]bool)
@@ -3337,7 +3316,8 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 			}
 		}
 	}
-	if len(errs) == 0 && c.systemAPISocketProvider != nil {
+	// The system-API socket is per app: only release it once the app is gone.
+	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
 		c.systemAPISocketProvider.ReleaseApp(appID)
 	}
 	return errors.Join(errs...)
