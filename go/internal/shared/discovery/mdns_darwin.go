@@ -5,6 +5,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"time"
 )
@@ -44,6 +45,49 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 	}
 
 	return services, nil
+}
+
+// BrowseMDNSServicesContinuous browses for serviceType and streams each newly
+// discovered service, resolved, to the returned channel. It runs until ctx is
+// cancelled or the browse stops; the channel is closed either way, and a
+// consumer that sees it close while still interested falls back to polling.
+// Instances that fail to resolve are skipped, matching BrowseMDNSServices.
+// Consumers signal they are done by cancelling ctx.
+func BrowseMDNSServicesContinuous(ctx context.Context, serviceType string) (<-chan MDNSService, error) {
+	ch := make(chan MDNSService, 16)
+
+	go func() {
+		defer close(ch)
+
+		seen := make(map[string]bool)
+
+		// Resolving inside the callback blocks the browse socket pump for up to
+		// the resolve timeout, matching discoverLANContinuous; mDNSResponder
+		// queues further browse replies meanwhile.
+		if err := dnssdBrowseStream(ctx, serviceType, func(inst browseResult) {
+			key := inst.instanceName + "%" + inst.interfaceName
+			if seen[key] {
+				return
+			}
+			seen[key] = true
+
+			resolveCtx, resolveCancel := context.WithTimeout(ctx, 2*time.Second)
+			svc, err := resolveMDNSService(resolveCtx, inst, serviceType)
+			resolveCancel()
+			if err != nil {
+				return
+			}
+
+			select {
+			case ch <- svc:
+			case <-ctx.Done():
+			}
+		}); err != nil && ctx.Err() == nil {
+			log.Printf("discovery: continuous mDNS browse for %s stopped: %v", serviceType, err)
+		}
+	}()
+
+	return ch, nil
 }
 
 // resolveMDNSService resolves a browse result into an MDNSService.
