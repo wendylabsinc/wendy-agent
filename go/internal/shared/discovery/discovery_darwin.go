@@ -62,6 +62,32 @@ type browseResult struct {
 	interfaceName string
 }
 
+// parseBrowseLine parses one line of dns-sd -B output. It returns ok=false
+// for lines that are not "Add" records or are too short to parse.
+func parseBrowseLine(line string) (browseResult, bool) {
+	if !strings.Contains(line, "Add") {
+		return browseResult{}, false
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 7 {
+		return browseResult{}, false
+	}
+	interfaceName := ""
+	if interfaceIndex, err := strconv.Atoi(fields[3]); err == nil {
+		// Silently falls through with empty interfaceName when the
+		// interface disappears between browse and resolve; USB detection
+		// will be skipped for that device rather than returning an error.
+		if iface, ifaceErr := net.InterfaceByIndex(interfaceIndex); ifaceErr == nil {
+			interfaceName = iface.Name
+		}
+	}
+	return browseResult{
+		instanceName:  strings.Join(fields[6:], " "),
+		domain:        fields[4],
+		interfaceName: interfaceName,
+	}, true
+}
+
 // dnssdBrowse runs dns-sd -B and returns as soon as results stop arriving.
 // It uses a short settle timer: once the first result arrives, it waits up to
 // 500ms for more results before returning. This avoids waiting for the full timeout.
@@ -76,40 +102,14 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 	}
 
 	// Parse lines on a channel so we can select with a timer.
-	type parsedLine struct {
-		result browseResult
-		ok     bool
-	}
-	lineCh := make(chan parsedLine, 16)
+	lineCh := make(chan browseResult, 16)
 
 	go func() {
 		defer close(lineCh)
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.Contains(line, "Add") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) < 7 {
-				continue
-			}
-			interfaceName := ""
-			if interfaceIndex, err := strconv.Atoi(fields[3]); err == nil {
-				// Silently falls through with empty interfaceName when the
-				// interface disappears between browse and resolve; USB detection
-				// will be skipped for that device rather than returning an error.
-				if iface, ifaceErr := net.InterfaceByIndex(interfaceIndex); ifaceErr == nil {
-					interfaceName = iface.Name
-				}
-			}
-			lineCh <- parsedLine{
-				result: browseResult{
-					instanceName:  strings.Join(fields[6:], " "),
-					domain:        fields[4],
-					interfaceName: interfaceName,
-				},
-				ok: true,
+			if result, ok := parseBrowseLine(scanner.Text()); ok {
+				lineCh <- result
 			}
 		}
 	}()
@@ -126,15 +126,15 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return results, nil
-		case pl, open := <-lineCh:
+		case result, open := <-lineCh:
 			if !open {
 				_ = cmd.Wait()
 				return results, nil
 			}
-			key := pl.result.instanceName + "%" + pl.result.interfaceName
-			if pl.ok && !seen[key] {
+			key := result.instanceName + "%" + result.interfaceName
+			if !seen[key] {
 				seen[key] = true
-				results = append(results, pl.result)
+				results = append(results, result)
 				// Reset settle timer: wait 500ms for more results.
 				settle = time.After(500 * time.Millisecond)
 			}
@@ -353,25 +353,9 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 	seen := make(map[string]bool)
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, "Add") {
+		inst, ok := parseBrowseLine(scanner.Text())
+		if !ok {
 			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 7 {
-			continue
-		}
-
-		interfaceName := ""
-		if interfaceIndex, err := strconv.Atoi(fields[3]); err == nil {
-			if iface, ifaceErr := net.InterfaceByIndex(interfaceIndex); ifaceErr == nil {
-				interfaceName = iface.Name
-			}
-		}
-		inst := browseResult{
-			instanceName:  strings.Join(fields[6:], " "),
-			domain:        fields[4],
-			interfaceName: interfaceName,
 		}
 
 		key := inst.instanceName + "%" + inst.interfaceName
