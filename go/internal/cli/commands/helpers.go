@@ -941,11 +941,23 @@ func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault 
 
 func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
-		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+		conn, err := runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
 		})
+		if err != nil {
+			// The unreachable-default paths report the hostname themselves.
+			return nil, err
+		}
+		// The spinner above clears once it succeeds, so without this the choice
+		// of device leaves no trace.
+		noteImplicitDevice(hostname, implicitDefaultDevice)
+		return conn, nil
 	}
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+	if err == nil && isDefault {
+		noteImplicitDevice(hostname, implicitDefaultDevice)
+	}
+	return conn, err
 }
 
 // connectToAgent establishes a gRPC connection to the target device.

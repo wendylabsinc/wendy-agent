@@ -288,7 +288,7 @@ func xcodeSelectNonInteractiveErr(apps []string) error {
 		)
 	}
 	return fmt.Errorf(
-		"xcodebuild requires the full Xcode app, but the active developer directory is Command Line " +
+		"xcodebuild requires the full Xcode app, but the active developer directory is Command Line "+
 			"Tools; found %s — select one with:\n\n    sudo xcode-select -s <path>/Contents/Developer\n",
 		strings.Join(apps, ", "),
 	)
