@@ -38,6 +38,9 @@ func (a imageHygieneAnalyzer) analyzeFrom(t *Target, inst Instruction, stageName
 	if len(fields) >= 3 && strings.EqualFold(fields[1], "AS") {
 		stageNames[fields[2]] = true
 	}
+	if strings.EqualFold(ref, "scratch") {
+		return nil
+	}
 	if stageNames[ref] || strings.Contains(ref, "@") {
 		return nil // references a prior build stage, or is digest-pinned
 	}
