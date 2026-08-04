@@ -13,8 +13,9 @@
 
 ⭐ Star WendyOS to follow new hardware support and one-command robotics templates.
 
-No need to spend hundreds of dollars on monitors, display port to HDMI adapters, keyboard or mouse. Plug in your device over USB-C from your Mac, Windows, or Linux machine, run `wendy run`, and your app builds, deploys, and streams logs back to your laptop. No SD card juggling, no SSH setup, no internet required on the
-device.
+No need to spend hundreds of dollars on a monitor, a DisplayPort-to-HDMI adapter, a keyboard, or a mouse.
+Plug in your device over USB-C from your Mac, Windows, or Linux machine, run `wendy run`, and your app builds, deploys, and streams logs back to your laptop.
+No SD card juggling, no SSH setup, no internet required on the device.
 
 <p align="center">
   <img src="go/internal/cli/assets/docs/media/overhead-quick-install.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="640">
