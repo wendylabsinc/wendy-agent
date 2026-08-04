@@ -88,11 +88,12 @@ hundreds of MB, so it is slow on a poor link.
 ## Log in & use
 
 Attach an interactive terminal and run Claude. The app id is the full
-`sh.wendy.examples.claude-on-device`, and a device reached through the cloud
-needs `wendy cloud device attach`:
+`sh.wendy.examples.claude-on-device`. Use `wendy device attach` for a device
+on your LAN, or `wendy cloud device attach` when reaching it through the
+cloud instead:
 
 ```
-wendy cloud device attach sh.wendy.examples.claude-on-device --device <host>
+wendy device attach sh.wendy.examples.claude-on-device --device <host>
 ```
 
 On first run, `claude` prints an OAuth URL + code — approve it in your laptop
@@ -142,7 +143,7 @@ and remove it when decommissioning).
 
 ```sh
 B64=$(base64 -i ~/.wendy/config.json | tr -d '\n')
-wendy cloud device attach sh.wendy.examples.claude-on-device --device <host> -- sh -c \
+wendy device attach sh.wendy.examples.claude-on-device --device <host> -- sh -c \
   "mkdir -p /root/.wendy && echo $B64 | base64 -d > /root/.wendy/config.json && chmod 600 /root/.wendy/config.json"
 ```
 
@@ -151,7 +152,7 @@ heredoc — see the gotchas below):
 
 ```sh
 TOKEN=$(gh auth token)
-wendy cloud device attach sh.wendy.examples.claude-on-device --device <host> -- sh -c \
+wendy device attach sh.wendy.examples.claude-on-device --device <host> -- sh -c \
   "printf 'https://x-access-token:%s@github.com\n' '$TOKEN' > /root/.git-credentials && chmod 600 /root/.git-credentials && git config --global credential.helper store"
 ```
 
