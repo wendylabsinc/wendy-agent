@@ -22,7 +22,7 @@ BYTES_PER_SAMPLE = 2  # signed PCM16
 
 # "card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]"
 _ALSA_CARD_LINE = re.compile(
-    r"^card (\d+): (\S+) \[(.+?)\], device (\d+):", re.MULTILINE
+    r"^card (\d+): (\S+) \[(.+?)\], device (\d+): (.*)$", re.MULTILINE
 )
 
 
@@ -39,6 +39,7 @@ class AlsaCard:
     name: str
     description: str
     device: int
+    device_description: str = ""
 
 
 def parse_alsa_cards(listing: str) -> list[AlsaCard]:
@@ -56,15 +57,20 @@ def parse_alsa_cards(listing: str) -> list[AlsaCard]:
                 name=match.group(2),
                 description=match.group(3),
                 device=int(match.group(4)),
+                device_description=match.group(5),
             )
         )
     return cards
 
 
 def pick_alsa_device(cards: list[AlsaCard]) -> str | None:
-    """Pick the first USB card, addressed by CARD name (stable across reboots)."""
+    """Pick the first USB card, addressed by CARD name (stable across reboots).
+
+    The card description is the product string and often lacks "usb"
+    (e.g. "Anker PowerConf S330"), but snd-usb-audio always names the device
+    "USB Audio" — so match against both columns."""
     for card in cards:
-        if "usb" in card.description.lower():
+        if "usb" in f"{card.description} {card.device_description}".lower():
             return f"plughw:CARD={card.name},DEV={card.device}"
     return None
 
@@ -221,7 +227,13 @@ class AlsaMixer:
             self.parse_controls(await self._amixer("scontrols"))
         )
         for control in controls:
-            volume = self.parse_playback_volume(await self._amixer("sget", control))
+            try:
+                output = await self._amixer("sget", control)
+            except RuntimeError:
+                # A control that cannot be queried is skipped, not fatal —
+                # keeps USB and board-specific codecs usable (Go agent parity).
+                continue
+            volume = self.parse_playback_volume(output)
             if volume is not None:
                 self._control = control
                 return control, volume
@@ -459,13 +471,18 @@ class VoiceAssistant:
         percent = self.config.startup_volume_percent
         if percent is None or self._startup_volume_done:
             return
-        self._startup_volume_done = True
         try:
             applied = await mixer.set_volume(percent)
         except Exception as exc:
+            # Don't latch: USB devices can enumerate late, so retry next session.
             LOG.warning("Could not set startup volume: %s", exc)
             return
-        LOG.info("Startup volume set to %d%%", applied)
+        self._startup_volume_done = True
+        LOG.info(
+            "Startup volume set to %d%% (card %s)",
+            applied,
+            getattr(mixer, "card", "unknown"),
+        )
 
     async def run_session(self) -> None:
         # A dropped connection can happen mid-response. Never carry playback
@@ -476,6 +493,7 @@ class VoiceAssistant:
         self.assistant_speaking.clear()
         self._reset_playback_state()
         self.interrupted_item_id = None
+        self.user_speaking = False
         self.transcript_parts.clear()
         url = (
             "wss://api.openai.com/v1/realtime?model="
@@ -492,9 +510,10 @@ class VoiceAssistant:
         output_device = self.config.output_device or await detect_device("aplay")
 
         card = card_from_device(output_device)
-        if card is None:
-            # An explicit but unparsable device (e.g. "default"): fall back to
-            # whatever playback card auto-detection can name.
+        if card is None and self.config.output_device:
+            # An explicit but unparsable device (e.g. "default" via asound.conf):
+            # bind the mixer to whatever playback card auto-detection can name.
+            # Note this card may differ from the one actually playing.
             card = card_from_device(await detect_device("aplay"))
         if card is None:
             self.mixer = None
@@ -629,8 +648,11 @@ class VoiceAssistant:
             if name == "set_volume":
                 applied = await self.mixer.set_volume(int(arguments["percent"]))
             elif name == "adjust_volume":
+                direction = arguments["direction"]
+                if direction not in ("up", "down"):
+                    raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
                 applied = await self.mixer.adjust_volume(
-                    arguments["direction"], step=int(arguments.get("step", 10))
+                    direction, step=int(arguments.get("step", 10))
                 )
             elif name == "get_volume":
                 applied = await self.mixer.get_volume()

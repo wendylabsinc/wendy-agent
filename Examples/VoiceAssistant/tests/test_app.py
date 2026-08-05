@@ -188,6 +188,27 @@ class AlsaDetectionTests(unittest.TestCase):
         self.assertEqual(parse_alsa_cards(""), [])
         self.assertEqual(parse_alsa_cards("no soundcards found...\n"), [])
 
+    def test_pick_alsa_device_finds_usb_named_only_in_device_column(self):
+        # snd-usb-audio always names the device "USB Audio", but the card
+        # description bracket is the product string, which often lacks "usb".
+        listing = (
+            "**** List of PLAYBACK Hardware Devices ****\n"
+            "card 0: vc4hdmi0 [vc4-hdmi-0], device 0: MAI PCM i2s-hifi-0 [MAI PCM]\n"
+            "card 2: S330 [Anker PowerConf S330], device 0: USB Audio [USB Audio]\n"
+        )
+        self.assertEqual(
+            pick_alsa_device(parse_alsa_cards(listing)),
+            "plughw:CARD=S330,DEV=0",
+        )
+        yeti = (
+            "**** List of CAPTURE Hardware Devices ****\n"
+            "card 1: Microphone [Yeti Stereo Microphone], device 0: USB Audio [USB Audio]\n"
+        )
+        self.assertEqual(
+            pick_alsa_device(parse_alsa_cards(yeti)),
+            "plughw:CARD=Microphone,DEV=0",
+        )
+
     def test_pick_alsa_device_prefers_first_usb_card_with_stable_name(self):
         self.assertEqual(
             pick_alsa_device(parse_alsa_cards(APLAY_L_PI)),
@@ -277,18 +298,41 @@ class AlsaMixerTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_resolve_control_skips_controls_without_playback_volume(self):
+        # Non-preferred names keep the original order, so the capture-only
+        # control is probed first and must be skipped.
+        scontrols = (
+            "Simple mixer control 'Mic',0\n"
+            "Simple mixer control 'Custom',0\n"
+        )
         runner = FakeAmixer(
             {
-                "scontrols": (0, SCONTROLS_USB),
+                "scontrols": (0, scontrols),
                 "sget": lambda args: (0, SGET_MIC_CAPTURE_ONLY)
                 if args[1] == "Mic"
                 else (0, SGET_SPEAKER_57),
             }
         )
         mixer = AlsaMixer("Device", run=runner)
+        self.assertEqual(await mixer.resolve_control(), ("Custom", 57))
+        self.assertIn(("sget", "Mic"), runner.calls)
+
+    async def test_resolve_control_skips_controls_whose_sget_fails(self):
+        # Go parity: a failing sget on one control must not abort resolution
+        # (audio_service.go continues to the next control).
+        scontrols = (
+            "Simple mixer control 'Master',0\n"
+            "Simple mixer control 'Speaker',0\n"
+        )
+        runner = FakeAmixer(
+            {
+                "scontrols": (0, scontrols),
+                "sget": lambda args: (1, "amixer: Mixer attach error")
+                if args[1] == "Master"
+                else (0, SGET_SPEAKER_57),
+            }
+        )
+        mixer = AlsaMixer("Device", run=runner)
         self.assertEqual(await mixer.resolve_control(), ("Speaker", 57))
-        # Mic sorts after Speaker (preferred), so only Speaker is probed.
-        self.assertEqual(await mixer.get_volume(), 57)
 
     async def test_set_volume_unmutes_and_returns_quantized_actual(self):
         runner = FakeAmixer(
@@ -373,6 +417,15 @@ class StartupVolumeTests(unittest.IsolatedAsyncioTestCase):
         with self.assertLogs("voice-assistant", level="WARNING"):
             await assistant.apply_startup_volume(FakeMixer(fail=True))
 
+    async def test_startup_volume_retries_after_failure(self):
+        # USB devices can enumerate late; only a successful set should latch.
+        assistant = VoiceAssistant(Config(api_key="test"))
+        with self.assertLogs("voice-assistant", level="WARNING"):
+            await assistant.apply_startup_volume(FakeMixer(fail=True))
+        mixer = FakeMixer()
+        await assistant.apply_startup_volume(mixer)
+        self.assertEqual(mixer.set_calls, [70])
+
 
 def _function_call_done(name, arguments, call_id="call_1"):
     return {
@@ -455,6 +508,16 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             {"type": "input_audio_buffer.speech_stopped"}, self.audio, self.websocket
         )
         self.assertFalse(self.assistant.user_speaking)
+
+    async def test_adjust_volume_rejects_invalid_direction(self):
+        await self.assistant.handle_event(
+            _function_call_done("adjust_volume", json.dumps({"direction": "sideways"})),
+            self.audio,
+            self.websocket,
+        )
+        self.assertEqual(self.assistant.mixer.adjust_calls, [])
+        output = json.loads(self.websocket.sent[0]["item"]["output"])
+        self.assertIn("error", output)
 
     async def test_tool_errors_become_error_payloads(self):
         self.assistant.mixer = FakeMixer(fail=True)
