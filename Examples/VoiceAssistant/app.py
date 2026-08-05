@@ -893,7 +893,10 @@ class VoiceAssistant:
             "input": query,
             "instructions": (
                 "Answer for a voice assistant: 1-3 short spoken sentences, "
-                "current as of today, no markdown or URLs."
+                "current as of today, no markdown or URLs. Never ask "
+                "clarifying questions — this is a one-shot search, so pick "
+                "the most likely interpretation of the query, search, and "
+                "answer with concrete facts."
             ),
             "tools": [{"type": "web_search"}],
         }

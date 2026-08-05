@@ -821,6 +821,9 @@ class WebSearchToolTests(WebToolTestCase):
         self.assertEqual(body["input"], "giants score")
         self.assertEqual(body["tools"], [{"type": "web_search"}])
         self.assertEqual(body["reasoning"], {"effort": "low"})
+        # Live finding: without this the model answers broad queries with
+        # clarifying questions instead of searching, looping the user.
+        self.assertIn("Never ask clarifying questions", body["instructions"])
 
     async def test_web_search_omits_reasoning_for_non_gpt5_models(self):
         self.assistant = VoiceAssistant(
