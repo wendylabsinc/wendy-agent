@@ -830,6 +830,20 @@ func (f *espFlasher) spiSetParams(totalSize uint32) error {
 	return err
 }
 
+// eraseTimeout scales with image size: the ROM performs the erase in full,
+// synchronously, before it ACKs FLASH_BEGIN, so a large image needs much
+// longer than a small one. Mirrors esptool's own
+// timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB=30, size).
+func eraseTimeout(size uint32) time.Duration {
+	const secondsPerMB = 30
+	const floor = 3 * time.Second
+	t := time.Duration(secondsPerMB * float64(size) / 1e6 * float64(time.Second))
+	if t < floor {
+		return floor
+	}
+	return t
+}
+
 // flashBegin starts a flash write operation, erasing the target region.
 func (f *espFlasher) flashBegin(size, blockCount, blockSize, offset uint32) error {
 	data := make([]byte, 20)
@@ -839,7 +853,7 @@ func (f *espFlasher) flashBegin(size, blockCount, blockSize, offset uint32) erro
 	binary.LittleEndian.PutUint32(data[12:16], offset)
 	binary.LittleEndian.PutUint32(data[16:20], 0) // 0 = no encryption
 
-	f.port.SetReadTimeout(30 * time.Second) // erase can be slow
+	f.port.SetReadTimeout(eraseTimeout(size)) // erase can be slow, scales with image size
 	_, err := f.sendCommand(espCmdFlashBegin, data, 0)
 	return err
 }
