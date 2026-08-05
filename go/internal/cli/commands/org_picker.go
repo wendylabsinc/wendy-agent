@@ -20,6 +20,16 @@ import (
 // so unit tests can stub it without a live cloud connection.
 var listOrgsFromCloud = listOrgsFromCloudImpl
 
+// orgPageSize is the explicit page size sent to ListOrganizations. The server
+// applies a small default (20) when the request omits a limit, which silently
+// truncated the org picker to the 20 oldest orgs (WDY: orgs past the first page
+// were unreachable — see listOrgsFromCloudImpl).
+const orgPageSize = 200
+
+// orgPageCap bounds the pagination loop so a server that keeps returning full
+// pages cannot spin forever.
+const orgPageCap = 50
+
 func listOrgsFromCloudImpl(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Organization, error) {
 	conn, err := dialCloudGRPC(auth)
 	if err != nil {
@@ -28,23 +38,38 @@ func listOrgsFromCloudImpl(ctx context.Context, auth *config.AuthConfig) ([]*clo
 	defer conn.Close()
 
 	client := cloudpb.NewOrganizationServiceClient(conn)
-	stream, err := client.ListOrganizations(cloudContext(ctx, auth), &cloudpb.ListOrganizationsRequest{})
-	if err != nil {
-		return nil, fmt.Errorf("listing organizations: %w", err)
-	}
 
+	// The RPC is paginated: it streams one page per call and honours
+	// offset/limit. Keep requesting pages until one comes back short (or empty),
+	// otherwise only the first page of orgs ever reaches the picker.
 	var orgs []*cloudpb.Organization
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF {
+	offset := int32(0)
+	limit := int32(orgPageSize)
+	for page := 0; page < orgPageCap; page++ {
+		req := &cloudpb.ListOrganizationsRequest{Offset: &offset, Limit: &limit}
+		stream, err := client.ListOrganizations(cloudContext(ctx, auth), req)
+		if err != nil {
+			return nil, fmt.Errorf("listing organizations: %w", err)
+		}
+
+		received := int32(0)
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("receiving organizations: %w", err)
+			}
+			if org := resp.GetOrganization(); org != nil {
+				received++
+				orgs = append(orgs, org)
+			}
+		}
+		if received < limit {
 			break
 		}
-		if err != nil {
-			return nil, fmt.Errorf("receiving organizations: %w", err)
-		}
-		if org := resp.GetOrganization(); org != nil {
-			orgs = append(orgs, org)
-		}
+		offset += received
 	}
 	return orgs, nil
 }
