@@ -8,9 +8,10 @@ struct `'wendy cloud run'` {
     /**
      Displays usage for `wendy cloud run`. The output includes the command
      synopsis, local flags, inherited global flags, and concise
-     descriptions. Help exits successfully, writes to stdout, emits no
-     stderr, and leaves configuration, cache, project, cloud, and device
-     state untouched.
+     descriptions. Help exits successfully and writes to stdout. Because the
+     command is deprecated, cobra also emits a deprecation notice to stderr
+     even under `--help`; configuration, cache, project, cloud, and device
+     state are otherwise left untouched.
      */
     @Test
     func `prints command help`() async throws {
@@ -25,7 +26,7 @@ struct `'wendy cloud run'` {
                 #expect(result.stdout.contains("--user-args"))
                 #expect(result.stdout.contains("--prefix"))
                 #expect(result.stdout.contains("--device"))
-                #expect(result.stderr == "")
+                #expect(result.stderr.contains("Command \"run\" is deprecated, use 'wendy run' instead"))
             }
         }
     }
