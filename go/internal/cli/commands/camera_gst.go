@@ -78,28 +78,50 @@ func ensureGSTLaunchForHostOS(ctx context.Context, hostOS string) (string, error
 // instead of streaming Homebrew's own log output; the captured output is
 // printed only if the install fails.
 func installGStreamerViaBrew(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, "brew", "install", "gstreamer")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
+	cmd.Stdin = nil
 
-	s := tui.NewSpinner("Installing GStreamer via Homebrew...")
-	p := tui.NewProgressProgram(s)
+	prog := tui.NewProgressProgram(tui.NewSpinner("Installing GStreamer via Homebrew..."))
+
+	var (
+		runErr error
+		doneCh = make(chan struct{})
+	)
 	go func() {
-		p.Send(tui.SpinnerDoneMsg{Err: cmd.Run()})
+		defer close(doneCh)
+		runErr = cmd.Run()
+		// Keep spinner teardown quiet; callers handle the returned error/output.
+		prog.Send(tui.SpinnerDoneMsg{})
 	}()
 
-	finalModel, err := p.Run()
+	finalModel, err := prog.Run()
 	if err != nil {
-		return fmt.Errorf("TUI error: %w", err)
+		cancel()
+		<-doneCh
+		return fmt.Errorf("spinner TUI: %w", err)
 	}
-	model, ok := finalModel.(tui.SpinnerModel)
+
+	sm, ok := finalModel.(tui.SpinnerModel)
 	if !ok {
-		return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
+		cancel()
+		<-doneCh
+		return fmt.Errorf("spinner TUI: unexpected model type %T", finalModel)
 	}
-	if _, installErr := model.Result(); installErr != nil {
-		os.Stderr.Write(out.Bytes())
-		return installErr
+	if !sm.Done() {
+		cancel()
+		<-doneCh
+		return ErrUserCancelled
+	}
+
+	<-doneCh
+	if runErr != nil {
+		_, _ = os.Stderr.Write(out.Bytes())
+		return runErr
 	}
 	return nil
-}
