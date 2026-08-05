@@ -10,15 +10,80 @@ import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit
 
 from websockets.asyncio.client import connect
 
 
 LOG = logging.getLogger("voice-assistant")
 BYTES_PER_SAMPLE = 2  # signed PCM16
+
+GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
+
+# WMO weather interpretation codes as reported by Open-Meteo.
+_WMO_WEATHER_CODES = {
+    0: "clear sky",
+    1: "mainly clear",
+    2: "partly cloudy",
+    3: "overcast",
+    45: "fog",
+    48: "depositing rime fog",
+    51: "light drizzle",
+    53: "moderate drizzle",
+    55: "dense drizzle",
+    56: "light freezing drizzle",
+    57: "dense freezing drizzle",
+    61: "light rain",
+    63: "moderate rain",
+    65: "heavy rain",
+    66: "light freezing rain",
+    67: "heavy freezing rain",
+    71: "light snow",
+    73: "moderate snow",
+    75: "heavy snow",
+    77: "snow grains",
+    80: "light rain showers",
+    81: "moderate rain showers",
+    82: "violent rain showers",
+    85: "light snow showers",
+    86: "heavy snow showers",
+    95: "thunderstorm",
+    96: "thunderstorm with light hail",
+    99: "thunderstorm with heavy hail",
+}
+
+
+def describe_weather_code(code: int | None) -> str:
+    """Spoken-friendly text for a WMO weather interpretation code."""
+    return _WMO_WEATHER_CODES.get(code, "unknown conditions")
+
+
+# "(...[site](url)...)" citation groups, then any leftover inline [text](url).
+_CITATION_GROUP = re.compile(r"\s*\((?:\[[^\]]+\]\([^)\s]+\)(?:,\s*)?)+\)")
+_MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)\s]*\)")
+
+
+def strip_citations(text: str) -> str:
+    """Drop web-search citation annotations — URLs are noise when spoken."""
+    return _MARKDOWN_LINK.sub(r"\1", _CITATION_GROUP.sub("", text))
+
+
+def extract_output_text(data: dict[str, Any]) -> str:
+    """Concatenate the output_text content of an OpenAI Responses API payload."""
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                parts.append(content.get("text", ""))
+    return "".join(parts)
 
 # "card 2: Device [USB Audio Device], device 0: USB Audio [USB Audio]"
 _ALSA_CARD_LINE = re.compile(
@@ -75,6 +140,46 @@ def pick_alsa_device(cards: list[AlsaCard]) -> str | None:
     return None
 
 
+def _http_json_sync(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Blocking HTTPS JSON call. Raises RuntimeError with a concise message on
+    failure — never echoing request headers, which carry the API key."""
+    host = urlsplit(url).hostname or url
+    data = json.dumps(body).encode() if body is not None else None
+    request = urllib.request.Request(url, data=data, method=method)
+    request.add_header("Content-Type", "application/json")
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read(200).decode(errors="replace")
+        raise RuntimeError(f"HTTP {exc.code} from {host}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"could not reach {host}: {exc}") from exc
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{host} returned invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"{host} returned unexpected {type(parsed).__name__} JSON")
+    return parsed
+
+
+async def http_json(url: str, **kwargs: Any) -> dict[str, Any]:
+    """Run the blocking HTTP call on a worker thread so the event loop (audio
+    pump, barge-in) never stalls. Cancellation cannot stop the thread mid-
+    request; a cancelled tool task simply discards the result."""
+    return await asyncio.to_thread(_http_json_sync, url, **kwargs)
+
+
 async def _run_command(*args: str) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
         *args,
@@ -114,7 +219,9 @@ class Config:
     instructions: str = (
         "You are a friendly voice assistant running on an edge device. "
         "Be conversational, helpful, and concise. Reply in the language the user speaks. "
-        "You can change your own speaker volume with the provided tools when asked."
+        "You can change your own speaker volume, look up the current weather and "
+        "forecast anywhere, and search the web for up-to-date information with "
+        "the provided tools."
     )
     input_device: str | None = None  # None -> auto-detect
     output_device: str | None = None  # None -> auto-detect
@@ -122,6 +229,8 @@ class Config:
     chunk_ms: int = 100
     mute_input_during_playback: bool = False
     startup_volume_percent: int | None = 70
+    search_model: str = "gpt-5-mini"
+    web_search_enabled: bool = True
 
     @staticmethod
     def _parse_startup_volume(raw: str | None) -> int | None:
@@ -166,6 +275,8 @@ class Config:
             startup_volume_percent=cls._parse_startup_volume(
                 os.getenv("STARTUP_VOLUME_PERCENT")
             ),
+            search_model=os.getenv("OPENAI_SEARCH_MODEL", "").strip() or "gpt-5-mini",
+            web_search_enabled=_env_bool("WEB_SEARCH_ENABLED", True),
         )
 
     @property
@@ -384,10 +495,11 @@ class VoiceAssistant:
         self._startup_volume_done = False
         self.mixer: Any | None = None
         self.user_speaking = False
+        self.http_json = http_json
+        self.tool_tasks: set[asyncio.Task[None]] = set()
 
-    @staticmethod
-    def tool_specs() -> list[dict[str, Any]]:
-        return [
+    def tool_specs(self) -> list[dict[str, Any]]:
+        specs: list[dict[str, Any]] = [
             {
                 "type": "function",
                 "name": "set_volume",
@@ -430,7 +542,62 @@ class VoiceAssistant:
                 "description": "Report the current speaker output volume percentage.",
                 "parameters": {"type": "object", "properties": {}},
             },
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": (
+                    "Get the current weather and a 3-day forecast for a named "
+                    "place. Fast and free — always use this for weather "
+                    "questions instead of web_search."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {
+                            "type": "string",
+                            "description": (
+                                "City or place name, e.g. 'Berlin' or "
+                                "'Portland, Oregon'"
+                            ),
+                        },
+                        "units": {
+                            "type": "string",
+                            "enum": ["celsius", "fahrenheit"],
+                            "description": (
+                                "Temperature unit the user expects (fahrenheit "
+                                "for US locations). Default celsius."
+                            ),
+                        },
+                    },
+                    "required": ["location"],
+                },
+            },
         ]
+        if self.config.web_search_enabled:
+            specs.append(
+                {
+                    "type": "function",
+                    "name": "web_search",
+                    "description": (
+                        "Search the live web for current information: news, "
+                        "sports scores, prices, or facts you are not sure "
+                        "about. Slower and costs money — never use it for "
+                        "weather (use get_weather) or for things you already "
+                        "know."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "A concise search query",
+                            }
+                        },
+                        "required": ["query"],
+                    },
+                }
+            )
+        return specs
 
     def session_update_event(self) -> dict[str, Any]:
         return {
@@ -486,10 +653,14 @@ class VoiceAssistant:
 
     async def run_session(self) -> None:
         # A dropped connection can happen mid-response. Never carry playback
-        # gating or transcript fragments into the replacement session.
+        # gating, transcript fragments, or in-flight tool calls into the
+        # replacement session.
         if self.playback_done_task is not None:
             self.playback_done_task.cancel()
             self.playback_done_task = None
+        for task in list(self.tool_tasks):
+            task.cancel()
+        self.tool_tasks.clear()
         self.assistant_speaking.clear()
         self._reset_playback_state()
         self.interrupted_item_id = None
@@ -590,7 +761,12 @@ class VoiceAssistant:
             # deltas.
             item = event.get("item", {})
             if item.get("type") == "function_call" and websocket is not None:
-                await self.handle_tool_call(item, websocket)
+                # Run the tool concurrently: a slow network fetch must not stall
+                # this receive loop, or barge-in (speech_started) would go
+                # unnoticed until the fetch finished.
+                task = asyncio.create_task(self.handle_tool_call(item, websocket))
+                self.tool_tasks.add(task)
+                task.add_done_callback(self._finish_tool_task)
         elif event_type == "response.output_audio.delta":
             item_id = event.get("item_id")
             if item_id and item_id == self.interrupted_item_id:
@@ -636,15 +812,127 @@ class VoiceAssistant:
                 f"{error.get('message', error)}"
             )
 
+    async def get_weather(
+        self, location: str, units: str = "celsius"
+    ) -> dict[str, Any]:
+        location = location.strip()
+        if not location:
+            raise ValueError("location is required")
+        if units not in ("celsius", "fahrenheit"):
+            raise ValueError(f"units must be 'celsius' or 'fahrenheit', got {units!r}")
+        query = urlencode(
+            {"name": location, "count": 1, "language": "en", "format": "json"}
+        )
+        geocoded = await self.http_json(f"{GEOCODING_URL}?{query}")
+        places = geocoded.get("results") or []
+        if not places:
+            return {"error": f"no location found matching {location!r}"}
+        place = places[0]
+        params: dict[str, Any] = {
+            "latitude": place.get("latitude"),
+            "longitude": place.get("longitude"),
+            "current": (
+                "temperature_2m,apparent_temperature,relative_humidity_2m,"
+                "weather_code,wind_speed_10m,is_day"
+            ),
+            "daily": (
+                "weather_code,temperature_2m_max,temperature_2m_min,"
+                "precipitation_probability_max"
+            ),
+            "forecast_days": 3,
+            "timezone": "auto",
+        }
+        if units == "fahrenheit":
+            params["temperature_unit"] = "fahrenheit"
+            params["wind_speed_unit"] = "mph"
+        forecast = await self.http_json(f"{FORECAST_URL}?{urlencode(params)}")
+        current = forecast.get("current") or {}
+        daily = forecast.get("daily") or {}
+
+        def column(key: str, index: int) -> Any:
+            values = daily.get(key) or []
+            return values[index] if index < len(values) else None
+
+        # "Berlin, Berlin, Germany" reads badly aloud: city-states repeat the
+        # name in admin1, so keep only distinct parts.
+        location_parts: list[str] = []
+        for part in (place.get("name"), place.get("admin1"), place.get("country")):
+            if part and str(part) not in location_parts:
+                location_parts.append(str(part))
+        return {
+            "location": ", ".join(location_parts),
+            "units": units,
+            "current": {
+                "temperature": current.get("temperature_2m"),
+                "feels_like": current.get("apparent_temperature"),
+                "humidity_percent": current.get("relative_humidity_2m"),
+                "wind_speed": current.get("wind_speed_10m"),
+                "conditions": describe_weather_code(current.get("weather_code")),
+            },
+            "daily": [
+                {
+                    "date": date,
+                    "high": column("temperature_2m_max", i),
+                    "low": column("temperature_2m_min", i),
+                    "conditions": describe_weather_code(column("weather_code", i)),
+                    "precipitation_chance_percent": column(
+                        "precipitation_probability_max", i
+                    ),
+                }
+                for i, date in enumerate(daily.get("time") or [])
+            ],
+        }
+
+    async def web_search(self, query: str) -> dict[str, Any]:
+        query = query.strip()
+        if not query:
+            raise ValueError("query is required")
+        LOG.info("Searching the web: %s", query)
+        body: dict[str, Any] = {
+            "model": self.config.search_model,
+            "input": query,
+            "instructions": (
+                "Answer for a voice assistant: 1-3 short spoken sentences, "
+                "current as of today, no markdown or URLs."
+            ),
+            "tools": [{"type": "web_search"}],
+        }
+        if self.config.search_model.startswith("gpt-5"):
+            body["reasoning"] = {"effort": "low"}
+        data = await self.http_json(
+            OPENAI_RESPONSES_URL,
+            method="POST",
+            headers={"Authorization": f"Bearer {self.config.api_key}"},
+            body=body,
+            timeout=45,
+        )
+        answer = strip_citations(extract_output_text(data)).strip()
+        if not answer:
+            raise RuntimeError(
+                f"web search returned no answer (status: {data.get('status', 'unknown')})"
+            )
+        return {"answer": answer}
+
     async def execute_tool(self, name: str, arguments_json: str) -> dict[str, Any]:
-        """Run one volume tool; always returns a JSON-safe payload, never raises —
-        a hardware failure must not kill the session."""
-        if self.mixer is None:
-            return {"error": "volume control is unavailable on this audio device"}
+        """Run one tool; always returns a JSON-safe payload, never raises — a
+        hardware or network failure must not kill the session."""
         try:
             arguments = json.loads(arguments_json) if arguments_json.strip() else {}
             if not isinstance(arguments, dict):
                 raise ValueError("arguments must be a JSON object")
+            if name == "get_weather":
+                return await self.get_weather(
+                    str(arguments.get("location", "")),
+                    units=str(arguments.get("units") or "celsius"),
+                )
+            if name == "web_search":
+                if not self.config.web_search_enabled:
+                    return {"error": "web search is disabled on this device"}
+                return await self.web_search(str(arguments.get("query", "")))
+            if name not in ("set_volume", "adjust_volume", "get_volume"):
+                return {"error": f"unknown tool: {name}"}
+            if self.mixer is None:
+                return {"error": "volume control is unavailable on this audio device"}
             if name == "set_volume":
                 applied = await self.mixer.set_volume(int(arguments["percent"]))
             elif name == "adjust_volume":
@@ -654,13 +942,17 @@ class VoiceAssistant:
                 applied = await self.mixer.adjust_volume(
                     direction, step=int(arguments.get("step", 10))
                 )
-            elif name == "get_volume":
-                applied = await self.mixer.get_volume()
             else:
-                return {"error": f"unknown tool: {name}"}
+                applied = await self.mixer.get_volume()
             return {"volume_percent": applied}
         except Exception as exc:
             return {"error": str(exc)}
+
+    def _finish_tool_task(self, task: asyncio.Task[None]) -> None:
+        self.tool_tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            # execute_tool never raises; this is a websocket send failure.
+            LOG.warning("Tool result was not delivered: %s", task.exception())
 
     async def handle_tool_call(self, item: dict[str, Any], websocket: Any) -> None:
         name = item.get("name", "")

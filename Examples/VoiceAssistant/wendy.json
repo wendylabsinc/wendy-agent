@@ -1,6 +1,6 @@
 {
   "appId": "sh.wendy.examples.voiceassistant",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "platform": "linux",
   "entitlements": [
     {
@@ -22,6 +22,8 @@
     "STARTUP_VOLUME_PERCENT": "${STARTUP_VOLUME_PERCENT}",
     "AUDIO_SAMPLE_RATE": "${AUDIO_SAMPLE_RATE}",
     "AUDIO_CHUNK_MS": "${AUDIO_CHUNK_MS}",
+    "WEB_SEARCH_ENABLED": "${WEB_SEARCH_ENABLED}",
+    "OPENAI_SEARCH_MODEL": "${OPENAI_SEARCH_MODEL}",
     "LOG_LEVEL": "${LOG_LEVEL}"
   }
 }

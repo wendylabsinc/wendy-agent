@@ -9,7 +9,9 @@ Interruption/barge-in is enabled by default: speak over the assistant and it
 stops immediately, truncating the unheard part of its reply. The assistant can
 also control its own speaker volume — say "set the volume to 30 percent" or
 "turn it up a bit" and it adjusts the ALSA mixer through Realtime function
-tools.
+tools. It can answer questions that need live data too: weather anywhere via
+the free Open-Meteo API, and anything else current (news, scores, prices)
+via OpenAI web search.
 
 ## Hardware
 
@@ -99,6 +101,23 @@ Agents older than the 2026-08 volume support don't implement `SetAudioVolume`;
 the TUI will say so — update the agent (or push a dev build with
 `wendy device push-agent`).
 
+## Weather and web search
+
+Ask "what's the weather in Tokyo?" or "will it rain in Portland this
+weekend?" and the assistant calls a `get_weather` function tool backed by the
+free, keyless [Open-Meteo](https://open-meteo.com) API — current conditions
+plus a 3-day forecast, in celsius or fahrenheit as the conversation implies.
+
+For anything else that needs the live internet — "what's in the news today?",
+"who won the Giants game?", "what's the bitcoin price?" — the assistant calls
+a `web_search` tool. The Realtime API has no built-in web search, so the app
+forwards the query to the OpenAI Responses API (`/v1/responses`) with its
+built-in `web_search` tool enabled, using the same `OPENAI_API_KEY`, and
+speaks the short text answer. Each search bills one Responses API call
+(`OPENAI_SEARCH_MODEL`, default `gpt-5-mini`) on top of the Realtime session;
+set `WEB_SEARCH_ENABLED=false` to remove the tool entirely. Weather lookups
+are free and unaffected by the toggle.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -113,6 +132,8 @@ the TUI will say so — update the agent (or push a dev build with
 | `MUTE_INPUT_DURING_PLAYBACK` | `false` | Set to `true` for half-duplex echo protection (disables interruption) |
 | `AUDIO_SAMPLE_RATE` | `24000` | PCM sample rate in Hz (the API expects 24 kHz) |
 | `AUDIO_CHUNK_MS` | `100` | Microphone packet duration |
+| `WEB_SEARCH_ENABLED` | `true` | Set to `false` to remove the paid `web_search` tool |
+| `OPENAI_SEARCH_MODEL` | `gpt-5-mini` | Responses API model used for web searches |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
 ## Local checks
@@ -144,13 +165,18 @@ so there are no temporary audio files. When semantic VAD detects speech during
 a reply, the app drops queued speaker audio and truncates the unheard portion
 of the assistant message in the Realtime conversation.
 
-Volume control is Realtime tool calling: the session registers `set_volume`,
-`adjust_volume`, and `get_volume` function tools. When the model decides to
-call one, the finished `function_call` item arrives with its arguments, the
-app runs `amixer` against the playback card (the `audio` entitlement mounts
-`/dev/snd` into the container), sends the result back as a
-`function_call_output` item, and asks for a spoken confirmation with
-`response.create` — unless the user is already talking again.
+Tool calling drives everything beyond conversation: the session registers
+`set_volume`, `adjust_volume`, `get_volume`, `get_weather`, and `web_search`
+function tools. When the model decides to call one, the finished
+`function_call` item arrives with its arguments and the app executes it —
+`amixer` against the playback card for volume (the `audio` entitlement mounts
+`/dev/snd` into the container), a geocode-then-forecast pair of Open-Meteo
+requests for weather, or a Responses API call with OpenAI's built-in
+`web_search` tool for searches. The result goes back as a
+`function_call_output` item followed by `response.create` for a spoken reply
+— unless the user is already talking again. Tool calls run as concurrent
+asyncio tasks (HTTP requests on worker threads), so the event loop keeps
+draining and barge-in stays responsive even mid-search.
 
 This follows OpenAI's current [Realtime WebSocket
 guide](https://developers.openai.com/api/docs/guides/realtime-websocket) and

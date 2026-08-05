@@ -11,6 +11,9 @@ from app import (
     Config,
     VoiceAssistant,
     card_from_device,
+    describe_weather_code,
+    extract_output_text,
+    strip_citations,
     parse_alsa_cards,
     pick_alsa_device,
 )
@@ -102,6 +105,74 @@ class FakeWebSocket:
         self.sent.append(json.loads(message))
 
 
+class FakeFetch:
+    """Injectable stand-in for app.http_json, keyed by URL prefix."""
+
+    def __init__(self, responses):
+        self.responses = responses  # url prefix -> dict, Exception, or callable
+        self.calls = []
+
+    async def __call__(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        for prefix, response in self.responses.items():
+            if url.startswith(prefix):
+                if isinstance(response, Exception):
+                    raise response
+                if callable(response):
+                    return response(url, kwargs)
+                return response
+        raise AssertionError(f"unexpected fetch: {url}")
+
+
+async def _drain_tools(assistant):
+    while assistant.tool_tasks:
+        await asyncio.gather(*list(assistant.tool_tasks), return_exceptions=True)
+
+
+GEOCODE_BERLIN = {
+    "results": [
+        {
+            "name": "Berlin",
+            "latitude": 52.52,
+            "longitude": 13.41,
+            "country": "Germany",
+            "admin1": "Berlin",
+        }
+    ]
+}
+
+FORECAST_BERLIN = {
+    "current": {
+        "temperature_2m": 18.3,
+        "apparent_temperature": 17.1,
+        "relative_humidity_2m": 65,
+        "weather_code": 61,
+        "wind_speed_10m": 12.5,
+        "is_day": 1,
+    },
+    "daily": {
+        "time": ["2026-08-05", "2026-08-06", "2026-08-07"],
+        "weather_code": [61, 3, 0],
+        "temperature_2m_max": [21.0, 24.5, 26.1],
+        "temperature_2m_min": [14.2, 15.0, 16.3],
+        "precipitation_probability_max": [80, 20, 5],
+    },
+}
+
+RESPONSES_ANSWER = {
+    "status": "completed",
+    "output": [
+        {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+        {
+            "type": "message",
+            "content": [
+                {"type": "output_text", "text": "The Giants won 4-2 last night."}
+            ],
+        },
+    ],
+}
+
+
 class OneChunkAudio:
     def __init__(self, chunk):
         self.chunk = chunk
@@ -154,6 +225,28 @@ class ConfigTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "STARTUP_VOLUME_PERCENT"):
                 Config.from_env()
+
+    def test_search_config_defaults(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}, clear=True):
+            config = Config.from_env()
+        self.assertEqual(config.search_model, "gpt-5-mini")
+        self.assertTrue(config.web_search_enabled)
+        self.assertIn("weather", config.instructions)
+        self.assertIn("search the web", config.instructions)
+
+    def test_search_config_overrides(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "test",
+                "OPENAI_SEARCH_MODEL": "gpt-4.1-mini",
+                "WEB_SEARCH_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            config = Config.from_env()
+        self.assertEqual(config.search_model, "gpt-4.1-mini")
+        self.assertFalse(config.web_search_enabled)
 
     def test_unset_audio_devices_mean_auto_detect(self):
         with patch.dict(
@@ -427,6 +520,60 @@ class StartupVolumeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mixer.set_calls, [70])
 
 
+class WebHelperTests(unittest.TestCase):
+    def test_describe_weather_code_maps_known_and_unknown_codes(self):
+        self.assertEqual(describe_weather_code(0), "clear sky")
+        self.assertEqual(describe_weather_code(61), "light rain")
+        self.assertEqual(describe_weather_code(999), "unknown conditions")
+        self.assertEqual(describe_weather_code(None), "unknown conditions")
+
+    def test_extract_output_text_concatenates_message_output_text(self):
+        payload = {
+            "status": "completed",
+            "output": [
+                {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "It is sunny."},
+                        {"type": "output_text", "text": " High of 20."},
+                    ],
+                },
+            ],
+        }
+        self.assertEqual(extract_output_text(payload), "It is sunny. High of 20.")
+
+    def test_extract_output_text_of_empty_or_tool_only_payloads(self):
+        self.assertEqual(extract_output_text({}), "")
+        self.assertEqual(
+            extract_output_text({"output": [{"type": "web_search_call"}]}), ""
+        )
+
+    def test_strip_citations_removes_web_search_annotations(self):
+        # Live web_search answers embed citations despite the no-URLs
+        # instruction; they must not reach the spoken reply.
+        annotated = (
+            "The rate is 3.50% to 3.75%. "
+            "([federalreserve.gov](https://www.federalreserve.gov/a?utm_source=openai))"
+            "\n\nReserves pay 3.65%. "
+            "([a.com](https://a.com/x), [b.org](https://b.org/y))"
+        )
+        self.assertEqual(
+            strip_citations(annotated),
+            "The rate is 3.50% to 3.75%.\n\nReserves pay 3.65%.",
+        )
+
+    def test_strip_citations_unwraps_inline_links_and_keeps_plain_text(self):
+        self.assertEqual(
+            strip_citations("See [the Fed](https://fed.gov) for details."),
+            "See the Fed for details.",
+        )
+        self.assertEqual(
+            strip_citations("Plain text (with an aside) stays."),
+            "Plain text (with an aside) stays.",
+        )
+
+
 def _function_call_done(name, arguments, call_id="call_1"):
     return {
         "type": "response.output_item.done",
@@ -446,14 +593,26 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.audio = FakeAudio()
         self.websocket = FakeWebSocket()
 
-    def test_session_update_registers_volume_tools(self):
+    def test_session_update_registers_tools(self):
         session = self.assistant.session_update_event()["session"]
         self.assertEqual(session["tool_choice"], "auto")
         names = [tool["name"] for tool in session["tools"]]
-        self.assertEqual(names, ["set_volume", "adjust_volume", "get_volume"])
+        self.assertEqual(
+            names,
+            ["set_volume", "adjust_volume", "get_volume", "get_weather", "web_search"],
+        )
         for tool in session["tools"]:
             self.assertEqual(tool["type"], "function")
             self.assertIn("parameters", tool)
+
+    def test_web_search_tool_omitted_when_disabled(self):
+        assistant = VoiceAssistant(Config(api_key="test", web_search_enabled=False))
+        names = [
+            tool["name"]
+            for tool in assistant.session_update_event()["session"]["tools"]
+        ]
+        self.assertNotIn("web_search", names)
+        self.assertIn("get_weather", names)
 
     async def test_set_volume_tool_roundtrip(self):
         await self.assistant.handle_event(
@@ -461,6 +620,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         self.assertEqual(self.assistant.mixer.set_calls, [25])
         output_event, response_event = self.websocket.sent
         self.assertEqual(output_event["type"], "conversation.item.create")
@@ -476,12 +636,14 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         self.assertEqual(self.assistant.mixer.adjust_calls, [("up", 10)])
         await self.assistant.handle_event(
             _function_call_done("get_volume", "{}", call_id="call_2"),
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         outputs = [
             json.loads(event["item"]["output"])
             for event in self.websocket.sent
@@ -496,6 +658,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         types = [event["type"] for event in self.websocket.sent]
         self.assertEqual(types, ["conversation.item.create"])
 
@@ -515,6 +678,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         self.assertEqual(self.assistant.mixer.adjust_calls, [])
         output = json.loads(self.websocket.sent[0]["item"]["output"])
         self.assertIn("error", output)
@@ -542,6 +706,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             self.audio,
             self.websocket,
         )
+        await _drain_tools(self.assistant)
         outputs = [
             json.loads(event["item"]["output"])
             for event in self.websocket.sent
@@ -550,6 +715,201 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(outputs), 4)
         for output in outputs:
             self.assertIn("error", output)
+
+
+class WebToolTestCase(unittest.IsolatedAsyncioTestCase):
+    """Shared harness driving tools through handle_event like the live app."""
+
+    def setUp(self):
+        self.assistant = VoiceAssistant(Config(api_key="test"))
+        self.assistant.mixer = FakeMixer()
+        self.audio = FakeAudio()
+        self.websocket = FakeWebSocket()
+
+    async def call_tool(self, name, arguments):
+        await self.assistant.handle_event(
+            _function_call_done(name, json.dumps(arguments)),
+            self.audio,
+            self.websocket,
+        )
+        await _drain_tools(self.assistant)
+        outputs = [
+            json.loads(event["item"]["output"])
+            for event in self.websocket.sent
+            if event["type"] == "conversation.item.create"
+        ]
+        self.assertEqual(len(outputs), 1)
+        return outputs[0]
+
+
+class WeatherToolTests(WebToolTestCase):
+    def use_fetch(self, geocode=GEOCODE_BERLIN, forecast=FORECAST_BERLIN):
+        fetch = FakeFetch({app.GEOCODING_URL: geocode, app.FORECAST_URL: forecast})
+        self.assistant.http_json = fetch
+        return fetch
+
+    async def test_get_weather_reports_current_and_daily_conditions(self):
+        fetch = self.use_fetch()
+        output = await self.call_tool("get_weather", {"location": "Berlin"})
+        self.assertEqual(output["location"], "Berlin, Germany")
+        self.assertEqual(output["units"], "celsius")
+        self.assertEqual(output["current"]["temperature"], 18.3)
+        self.assertEqual(output["current"]["conditions"], "light rain")
+        self.assertEqual(len(output["daily"]), 3)
+        self.assertEqual(output["daily"][0]["date"], "2026-08-05")
+        self.assertEqual(output["daily"][0]["high"], 21.0)
+        self.assertEqual(output["daily"][0]["precipitation_chance_percent"], 80)
+        geocode_url, forecast_url = (call[0] for call in fetch.calls)
+        self.assertIn("name=Berlin", geocode_url)
+        self.assertIn("latitude=52.52", forecast_url)
+        self.assertNotIn("temperature_unit", forecast_url)
+
+    async def test_get_weather_fahrenheit_switches_units(self):
+        fetch = self.use_fetch()
+        output = await self.call_tool(
+            "get_weather", {"location": "Berlin", "units": "fahrenheit"}
+        )
+        self.assertEqual(output["units"], "fahrenheit")
+        forecast_url = fetch.calls[1][0]
+        self.assertIn("temperature_unit=fahrenheit", forecast_url)
+        self.assertIn("wind_speed_unit=mph", forecast_url)
+
+    async def test_get_weather_unknown_location_is_a_soft_error(self):
+        fetch = self.use_fetch(geocode={"results": []})
+        output = await self.call_tool("get_weather", {"location": "Atlantis"})
+        self.assertIn("Atlantis", output["error"])
+        self.assertEqual(len(fetch.calls), 1)  # forecast never requested
+
+    async def test_get_weather_http_failure_becomes_error_payload(self):
+        self.assistant.http_json = FakeFetch(
+            {app.GEOCODING_URL: RuntimeError("HTTP 500 from geocoding-api.open-meteo.com")}
+        )
+        output = await self.call_tool("get_weather", {"location": "Berlin"})
+        self.assertIn("HTTP 500", output["error"])
+
+    async def test_get_weather_works_without_a_mixer(self):
+        # Network tools must not be blocked by the volume-control guard.
+        self.assistant.mixer = None
+        self.use_fetch()
+        output = await self.call_tool("get_weather", {"location": "Berlin"})
+        self.assertNotIn("error", output)
+
+    async def test_get_weather_rejects_bad_arguments(self):
+        fetch = self.use_fetch()
+        output = await self.call_tool(
+            "get_weather", {"location": "Berlin", "units": "kelvin"}
+        )
+        self.assertIn("units", output["error"])
+        self.websocket.sent.clear()
+        output = await self.call_tool("get_weather", {})
+        self.assertIn("location", output["error"])
+        self.assertEqual(fetch.calls, [])
+
+
+class WebSearchToolTests(WebToolTestCase):
+    async def test_web_search_posts_query_and_returns_answer(self):
+        fetch = FakeFetch({app.OPENAI_RESPONSES_URL: RESPONSES_ANSWER})
+        self.assistant.http_json = fetch
+        output = await self.call_tool("web_search", {"query": "giants score"})
+        self.assertEqual(output, {"answer": "The Giants won 4-2 last night."})
+        url, kwargs = fetch.calls[0]
+        self.assertEqual(url, app.OPENAI_RESPONSES_URL)
+        self.assertEqual(kwargs["method"], "POST")
+        self.assertEqual(kwargs["headers"], {"Authorization": "Bearer test"})
+        body = kwargs["body"]
+        self.assertEqual(body["model"], "gpt-5-mini")
+        self.assertEqual(body["input"], "giants score")
+        self.assertEqual(body["tools"], [{"type": "web_search"}])
+        self.assertEqual(body["reasoning"], {"effort": "low"})
+
+    async def test_web_search_omits_reasoning_for_non_gpt5_models(self):
+        self.assistant = VoiceAssistant(
+            Config(api_key="test", search_model="gpt-4.1-mini")
+        )
+        fetch = FakeFetch({app.OPENAI_RESPONSES_URL: RESPONSES_ANSWER})
+        self.assistant.http_json = fetch
+        await self.call_tool("web_search", {"query": "giants score"})
+        body = fetch.calls[0][1]["body"]
+        self.assertEqual(body["model"], "gpt-4.1-mini")
+        self.assertNotIn("reasoning", body)
+
+    async def test_web_search_answer_is_stripped_of_citations(self):
+        annotated = {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "It is 3.65%. ([fed.gov](https://fed.gov/x))",
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assistant.http_json = FakeFetch({app.OPENAI_RESPONSES_URL: annotated})
+        output = await self.call_tool("web_search", {"query": "rate"})
+        self.assertEqual(output, {"answer": "It is 3.65%."})
+
+    async def test_web_search_empty_answer_becomes_error_payload(self):
+        self.assistant.http_json = FakeFetch(
+            {app.OPENAI_RESPONSES_URL: {"status": "incomplete", "output": []}}
+        )
+        output = await self.call_tool("web_search", {"query": "giants score"})
+        self.assertIn("incomplete", output["error"])
+
+    async def test_web_search_http_failure_becomes_error_payload(self):
+        self.assistant.http_json = FakeFetch(
+            {app.OPENAI_RESPONSES_URL: RuntimeError("HTTP 429 from api.openai.com")}
+        )
+        output = await self.call_tool("web_search", {"query": "giants score"})
+        self.assertIn("HTTP 429", output["error"])
+
+    async def test_web_search_disabled_never_fetches(self):
+        self.assistant = VoiceAssistant(
+            Config(api_key="test", web_search_enabled=False)
+        )
+        fetch = FakeFetch({app.OPENAI_RESPONSES_URL: RESPONSES_ANSWER})
+        self.assistant.http_json = fetch
+        output = await self.call_tool("web_search", {"query": "giants score"})
+        self.assertIn("disabled", output["error"])
+        self.assertEqual(fetch.calls, [])
+
+
+class ToolConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slow_tool_call_does_not_block_events_and_defers_reply(self):
+        assistant = VoiceAssistant(Config(api_key="test"))
+        audio = FakeAudio()
+        websocket = FakeWebSocket()
+        gate = asyncio.Event()
+
+        async def slow_fetch(url, **kwargs):
+            await gate.wait()
+            return GEOCODE_BERLIN if url.startswith(app.GEOCODING_URL) else FORECAST_BERLIN
+
+        assistant.http_json = slow_fetch
+        await asyncio.wait_for(
+            assistant.handle_event(
+                _function_call_done("get_weather", json.dumps({"location": "Berlin"})),
+                audio,
+                websocket,
+            ),
+            timeout=1.0,
+        )
+        # The fetch is still in flight: nothing sent, one task pending.
+        self.assertEqual(websocket.sent, [])
+        self.assertEqual(len(assistant.tool_tasks), 1)
+        # The user barges in while the tool is running...
+        await assistant.handle_event(
+            {"type": "input_audio_buffer.speech_started"}, audio, websocket
+        )
+        gate.set()
+        await _drain_tools(assistant)
+        # ...so the output lands in the conversation without forcing a response.
+        types = [event["type"] for event in websocket.sent]
+        self.assertEqual(types, ["conversation.item.create"])
+        self.assertEqual(assistant.tool_tasks, set())
 
 
 class EventTests(unittest.IsolatedAsyncioTestCase):
