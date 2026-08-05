@@ -1,0 +1,26 @@
+{
+  "appId": "sh.wendy.examples.voiceassistant",
+  "version": "0.1.0",
+  "platform": "linux",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "audio"
+    }
+  ],
+  "env": {
+    "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+    "OPENAI_REALTIME_MODEL": "gpt-realtime-2.1",
+    "OPENAI_VOICE": "marin",
+    "AUDIO_INPUT_DEVICE": "${AUDIO_INPUT_DEVICE}",
+    "AUDIO_OUTPUT_DEVICE": "${AUDIO_OUTPUT_DEVICE}",
+    "ASSISTANT_INSTRUCTIONS": "${ASSISTANT_INSTRUCTIONS}",
+    "MUTE_INPUT_DURING_PLAYBACK": "${MUTE_INPUT_DURING_PLAYBACK}",
+    "AUDIO_SAMPLE_RATE": "${AUDIO_SAMPLE_RATE}",
+    "AUDIO_CHUNK_MS": "${AUDIO_CHUNK_MS}",
+    "LOG_LEVEL": "${LOG_LEVEL}"
+  }
+}
