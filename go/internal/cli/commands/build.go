@@ -477,7 +477,11 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		}
 		return buildComposeProject(dir)
 	case "docker":
-		return buildDockerProjectWithBuilder(ctx, builder, dir, imageName, platform, option.File)
+		resolvedFile, err := compileStagefileIfNeeded(dir, option.File)
+		if err != nil {
+			return err
+		}
+		return buildDockerProjectWithBuilder(ctx, builder, dir, imageName, platform, resolvedFile)
 	case "python":
 		return buildPythonProject(ctx, builder, dir, imageName, platform)
 	case "swift":

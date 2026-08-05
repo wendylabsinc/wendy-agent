@@ -29,12 +29,17 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/joannisorlandos/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// stagefileSourceName is the conventional filename for a Stagefile source,
+// matching the standalone stagefile tool's own CLI default.
+const stagefileSourceName = "build.stagefile.yaml"
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
 // used by neighbor-table helpers. Tests can replace this variable to stub
@@ -197,13 +202,16 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
+// Precedence: compose > Stagefile/Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return "compose", nil
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return "docker", nil
 	}
 	// Check base build files first (fast path), then any variant.
 	for _, name := range []string{"Dockerfile", "Containerfile"} {
@@ -268,7 +276,7 @@ func isContainerBuildFileName(name string) bool {
 }
 
 func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
-	for _, preferred := range []string{"Dockerfile", "Containerfile"} {
+	for _, preferred := range []string{stagefileSourceName, "Dockerfile", "Containerfile"} {
 		for i := range options {
 			if options[i].Type == "docker" && options[i].File == preferred {
 				return &options[i]
@@ -457,6 +465,27 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 	return resolved, nil
 }
 
+// compileStagefileIfNeeded compiles a Stagefile into a real Dockerfile when
+// dockerfile is stagefileSourceName, writing "Dockerfile.generated" and
+// ".dockerignore" into dir and returning the generated Dockerfile's
+// filename. Any other dockerfile value passes through unchanged.
+func compileStagefileIfNeeded(dir, dockerfile string) (string, error) {
+	if dockerfile != stagefileSourceName {
+		return dockerfile, nil
+	}
+	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "")
+	if err != nil {
+		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte(dockerfileText), 0o644); err != nil {
+		return "", fmt.Errorf("writing Dockerfile.generated: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(dockerignoreText), 0o644); err != nil {
+		return "", fmt.Errorf("writing .dockerignore: %w", err)
+	}
+	return "Dockerfile.generated", nil
+}
+
 func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
 	if requested != "" {
 		if err := validateDockerfileName(requested); err != nil {
@@ -479,7 +508,7 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return file, nil
+		return compileStagefileIfNeeded(cwd, file)
 	}
 
 	if len(dockerfiles) <= 1 {
@@ -536,6 +565,17 @@ func detectBuildOptions(dir string) []BuildOption {
 			})
 			break
 		}
+	}
+
+	// Stagefile — the most specific, most intentional signal in a project
+	// (nobody has one by accident), so detected ahead of any plain
+	// Dockerfile/Containerfile that also happens to be present.
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		options = append(options, BuildOption{
+			Label: stagefileSourceName + " (Stagefile)",
+			Type:  "docker",
+			File:  stagefileSourceName,
+		})
 	}
 
 	// Find all container build files.

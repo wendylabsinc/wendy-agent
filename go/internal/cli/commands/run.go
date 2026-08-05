@@ -1210,6 +1210,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
+		if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+			return "docker", nil
+		}
 		// Accept Dockerfile/Containerfile and dot/hyphen variants.
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {

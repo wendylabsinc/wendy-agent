@@ -2505,3 +2505,92 @@ func TestTLSClientDialer_RejectsWrongCA(t *testing.T) {
 		t.Fatal("expected handshake failure against a server signed by an untrusted CA")
 	}
 }
+
+func TestDetectProjectType_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := detectProjectType(dir)
+	if err != nil {
+		t.Fatalf("detectProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
+
+func TestDetectBuildOptions_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	found := false
+	for _, o := range options {
+		if o.Type == "docker" && o.File == "build.stagefile.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a docker/build.stagefile.yaml option, got %+v", options)
+	}
+}
+
+func TestPreferredContainerBuildFileOption_StagefileWinsOverDockerfile(t *testing.T) {
+	options := []BuildOption{
+		{Type: "docker", File: "Dockerfile"},
+		{Type: "docker", File: "build.stagefile.yaml"},
+	}
+	got := preferredContainerBuildFileOption(options)
+	if got == nil || got.File != "build.stagefile.yaml" {
+		t.Fatalf("got %+v, want the build.stagefile.yaml option", got)
+	}
+}
+
+func TestResolveDockerfile_CompilesStagefile(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed a lockfile with an already-resolved pin so this test never
+	// touches a real registry (stagefile.CompileFile only calls the live
+	// resolver for refs that are still missing from the lockfile).
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveDockerfile(dir, "", false)
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading generated Dockerfile: %v", err)
+	}
+	if !strings.Contains(string(data), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing the pinned digest:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); err != nil {
+		t.Fatalf("expected .dockerignore to be written: %v", err)
+	}
+}
+
+func TestResolveRunProjectType_StagefileExplicitDockerOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveRunProjectType(dir, "docker")
+	if err != nil {
+		t.Fatalf("resolveRunProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
