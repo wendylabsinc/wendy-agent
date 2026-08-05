@@ -13,11 +13,22 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/crashreport"
 	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/platforminfo"
 )
 
+// clearCIEnv unsets every CI-detection env var (not just "CI") so tests run
+// correctly under real CI systems, which set vars like GITHUB_ACTIONS that
+// env.IsCI() also checks.
+func clearCIEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range env.CIEnvVars {
+		t.Setenv(key, "")
+	}
+}
+
 func TestMaybeRunCrashReportSkipsRecoverable(t *testing.T) {
-	t.Setenv("CI", "") // ensure not classified as CI
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	MaybeRunCrashReport(context.Background(), &cobra.Command{Use: "wendy"},
 		fmt.Errorf("plain recoverable error"), "other")
@@ -37,7 +48,7 @@ func TestMaybeRunCrashReportSuppressed(t *testing.T) {
 	analyticsEnabledFn = func() bool { return true }
 	isInteractiveTerminalFn = func() bool { return true }
 
-	t.Setenv("CI", "")
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	t.Setenv("HOME", t.TempDir())
 	_ = config.Save(&config.Config{CrashReport: &config.CrashReportConfig{Suppressed: true}})
@@ -69,7 +80,7 @@ func TestMaybeRunCrashReportNotSuppressedProceeds(t *testing.T) {
 	analyticsEnabledFn = func() bool { return true }
 	isInteractiveTerminalFn = func() bool { return true }
 
-	t.Setenv("CI", "")
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	t.Setenv("HOME", t.TempDir())
 	_ = config.Save(&config.Config{CrashReport: &config.CrashReportConfig{Suppressed: false}})
