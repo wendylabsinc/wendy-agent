@@ -696,7 +696,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
 			return err
 		}
-		if shouldOfferWendyLiteESPIDFScaffold(cfgMissing, projectType, target) && !opts.yes && isInteractiveTerminal() {
+		if shouldOfferWendyLiteESPIDFScaffold(cfgMissing, projectType, target) && !opts.yes && isInteractiveTerminal() && !jsonOutput {
 			scaffolded, err := promptAndScaffoldWendyLiteESPIDF(cwd)
 			if err != nil {
 				return err
