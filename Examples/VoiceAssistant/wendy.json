@@ -1,6 +1,6 @@
 {
   "appId": "sh.wendy.examples.voiceassistant",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "platform": "linux",
   "entitlements": [
     {
@@ -19,6 +19,7 @@
     "AUDIO_OUTPUT_DEVICE": "${AUDIO_OUTPUT_DEVICE}",
     "ASSISTANT_INSTRUCTIONS": "${ASSISTANT_INSTRUCTIONS}",
     "MUTE_INPUT_DURING_PLAYBACK": "${MUTE_INPUT_DURING_PLAYBACK}",
+    "STARTUP_VOLUME_PERCENT": "${STARTUP_VOLUME_PERCENT}",
     "AUDIO_SAMPLE_RATE": "${AUDIO_SAMPLE_RATE}",
     "AUDIO_CHUNK_MS": "${AUDIO_CHUNK_MS}",
     "LOG_LEVEL": "${LOG_LEVEL}"
