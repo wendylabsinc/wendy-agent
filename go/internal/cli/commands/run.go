@@ -1312,16 +1312,12 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if app == nil {
 		cliLogln("Building with %s provider...", p.DisplayName())
 		var err error
-		// Pass the resolved project type and Dockerfile to providers that support it.
-		if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
-			app, err = db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
-		} else if tb, ok := p.(providers.TypedBuilder); ok {
-			app, err = tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
-		} else {
-			app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
-		}
+		app, err = providerBuild(ctx, p, device, projectPath, projectType, product, opts)
 		if err != nil {
-			return fmt.Errorf("provider build: %w", err)
+			app, err = offerLiteReinstallAndRebuild(ctx, p, device, projectPath, projectType, product, opts, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1376,6 +1372,132 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		return nil // cancelled by signal
 	}
 	return runErr
+}
+
+// providerBuild dispatches a build to the most specific builder interface the
+// provider implements.
+func providerBuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions) (*providers.BuiltApp, error) {
+	if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
+		return db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
+	}
+	if tb, ok := p.(providers.TypedBuilder); ok {
+		return tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
+	}
+	return p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+}
+
+// shouldOfferLiteReinstall reports whether a failed provider build should turn
+// into an interactive offer to reinstall Wendy Lite, and returns the
+// unsupported-requirements error when it should. The offer only makes sense
+// when the firmware rejected the app's requirements and reflashing can happen
+// over the same USB cable, and only in a session where a human can answer.
+func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, interactive bool) (*providers.AppRequirementsUnsupportedError, bool) {
+	var unsupported *providers.AppRequirementsUnsupportedError
+	if !errors.As(buildErr, &unsupported) {
+		return nil, false
+	}
+	if device.ConnectionType() != "USB" || !interactive {
+		return nil, false
+	}
+	return unsupported, true
+}
+
+// offerLiteReinstallAndRebuild handles a provider build that failed because
+// the device firmware does not support the app's requirements (native or
+// WASM apps): it offers to reinstall Wendy Lite (the classic
+// `wendy os install` flow) and, once the device is back, builds again.
+// In every other case — including --yes, which must not silently accept a
+// destructive reinstall — it returns the build error unchanged.
+func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
+	wrapped := fmt.Errorf("provider build: %w", buildErr)
+	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
+	if !ok {
+		return nil, wrapped
+	}
+
+	cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
+	confirmed, err := tui.Confirm("Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device.")
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
+		return nil, err
+	}
+	if !confirmed {
+		return nil, wrapped
+	}
+
+	board, err := pickWendyLiteBoard()
+	if err != nil {
+		return nil, wrapped
+	}
+
+	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
+	}
+
+	cliLogln("Waiting for the device to restart...")
+
+	// Give the device time to start booting and be discovered by the OS before
+	// probing it.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if err := waitForDeviceReady(ctx, p, device, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("device did not come back after reinstall: %w", err)
+	}
+
+	cliLogln("Building with %s provider...", p.DisplayName())
+	app, err := providerBuild(ctx, p, device, projectPath, projectType, product, opts)
+	if err != nil {
+		return nil, fmt.Errorf("provider build: %w", err)
+	}
+	return app, nil
+}
+
+// pickWendyLiteBoard asks which Wendy Lite variant to install, offering the
+// catalog boards and returns the picked board name. Returns
+// ErrUserCancelled when the user quits the picker.
+func pickWendyLiteBoard() (string, error) {
+	variants, err := WendyLiteVariants()
+	if err != nil {
+		return "", err
+	}
+	items := make([]tui.PickerItem, 0, len(variants))
+	for _, v := range variants {
+		items = append(items, tui.PickerItem{
+			Name:    v.DisplayName,
+			SortKey: strings.ToLower(v.DisplayName),
+			Value:   v.Board,
+		})
+	}
+	fmt.Println()
+	return pickFromItems("Select your board model", items)
+}
+
+// waitForDeviceReady polls the provider until the device answers again after
+// a reboot, or the timeout elapses.
+func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if _, err := p.GetDeviceInfo(ctx, device); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // runWithAgent is the existing gRPC agent pipeline.

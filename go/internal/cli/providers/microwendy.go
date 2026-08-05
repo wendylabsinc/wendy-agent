@@ -123,6 +123,17 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 
 // buildSwift compiles a Swift package to WASM for the embedded WASI target.
 func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+	// get device info
+	di, err := p.GetDeviceInfo(ctx, device)
+	if err != nil {
+		return nil, fmt.Errorf("getting device info: %w", err)
+	}
+
+	// check device capability
+	if !di.WasmAppSupport {
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "WASM apps"}
+	}
+
 	swiftlyTestCmd := exec.CommandContext(ctx, "swiftly", "--version")
 	if swiftlyTestCmd.Run() != nil {
 		return nil, fmt.Errorf("swiftly is not installed or not in PATH")
@@ -214,6 +225,18 @@ func espIdfBinaryPath(projectPath, product string) (string, error) {
 	return binPath, nil
 }
 
+// AppRequirementsUnsupportedError reports that the device firmware does not
+// support what the app being deployed requires. Missing names the unsupported
+// capability (e.g. "native apps", "WASM apps").
+type AppRequirementsUnsupportedError struct {
+	Device  models.ExternalDevice
+	Missing string
+}
+
+func (e *AppRequirementsUnsupportedError) Error() string {
+	return fmt.Sprintf("device %s does not support %s", e.Device.DisplayName, e.Missing)
+}
+
 // buildEspIdf builds an ESP-IDF project with idf.py (via eim) and picks up
 // the firmware binary from the project's build folder. The binary is named
 // after the CMake project() name, which may differ from the app ID.
@@ -226,7 +249,7 @@ func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.Exte
 
 	// check device capability
 	if !di.NativeAppSupport {
-		return nil, fmt.Errorf("device %s does not support native apps", device.DisplayName)
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "native apps"}
 	}
 
 	// ensures the ESP-IDF toolchain is available, install it if not

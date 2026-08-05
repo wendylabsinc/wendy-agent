@@ -451,7 +451,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Board, wifi, deviceName, preOpts)
+		return installESP32Firmware(ctx, nightly, device.ESP32Board, "", wifi, deviceName, preOpts)
 	}
 	if storageOverride == "emmc" && selected != orinDeviceType {
 		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
@@ -2345,8 +2345,9 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 }
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
-// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic".
-func installESP32Firmware(ctx context.Context, nightly bool, board string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic". serialPort
+// is optional: when empty, the device is located by scanning the serial ports.
+func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
 		return err
@@ -2382,17 +2383,19 @@ func installESP32Firmware(ctx context.Context, nightly bool, board string, wifi 
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	fmt.Println("\nScanning for ESP32 devices...")
+	if serialPort == "" {
+		fmt.Println("\nScanning for ESP32 devices...")
 
-	serialPort, err := discovery.ResolveESP32SerialPort()
-	if err != nil {
-		fmt.Println("\nNo ESP32 device detected.")
-		fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
-		fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
-		return fmt.Errorf("ESP32 not found: %w", err)
+		serialPort, err = discovery.ResolveESP32SerialPort()
+		if err != nil {
+			fmt.Println("\nNo ESP32 device detected.")
+			fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
+			fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
+			return fmt.Errorf("ESP32 not found: %w", err)
+		}
+
+		fmt.Printf("Found ESP32 at %s\n", serialPort)
 	}
-
-	fmt.Printf("Found ESP32 at %s\n", serialPort)
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
 	firmwareID, err := WendyLiteFirmwareID(board)
