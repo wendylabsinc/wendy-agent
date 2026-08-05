@@ -4,15 +4,16 @@ Runs your app on a Wendy-enabled device:
 2. [Queries the platform and architecture](./device/version.md) of this device
 3. Invokes a [build](./build.md) using the target triple, and injects a [debugger](../../../debugging/) if needed
 4. Uploads the artifact(s) for [Linux](../../../wendy-agent/connectivity/container-registry.md) or [macOS](../../../wendy-agent/macos/)
-5. [Starts the app](./device/apps/start.md)
+5. [Starts the app](./device/apps/start.md), waits for readiness, and prints the reachable URL (when configured)
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
 ## Reachable app URLs
 
-After the app starts, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
+After the app starts and its readiness probe passes, `wendy run` prints an `App reachable at <url>` line when it can infer a browser URL from the app configuration:
 
 ```text
 App reachable at http://192.168.123.222:3000
+App reachable at http://[2001:db8::1]:3000
 ```
 
 The CLI derives this URL from either:
@@ -21,6 +22,8 @@ The CLI derives this URL from either:
 - `readiness.tcpSocket.port`
 
 The printed URL uses a routable IP address reported by the device instead of the `.local` hostname, which makes it easier to open from browsers that do not resolve mDNS names reliably. If neither an `openURL` hook nor a TCP readiness port is configured, or if the device cannot report an IP address, `wendy run` skips this line.
+
+> **Note:** If the readiness probe fails (timeout or connection error), `wendy run` skips the `App reachable at` line and the `postStart` hook and prints a warning instead. This prevents opening a browser tab pointed at a container that has already exited.
 
 > **Note:** When `wendy.json` is absent, `wendy run` resolves the target device before prompting to create one. If the target is Headless Mac and the detected project type is unsupported, the project/target mismatch error is returned immediately without opening the config creation prompt.
 
@@ -118,7 +121,7 @@ wendy run --device <hostname-or-ip>:50051
 
 When running a Swift Package Manager project on a macOS target, `wendy run`:
 
-1. Builds the project with `swift build -c release` (or `-c debug` when `--debug` is passed).
+1. Builds the project with `swift build -c release` (or `-c debug` when `--debug` is passed). (This is the native macOS build path; for the cross-compiled Linux container target's build configuration, see [Swift Package Manager projects](./build.md#swift-package-manager-projects) in `build.md`.)
 2. Resolves the build products directory via `swift build --show-bin-path`.
 3. Syncs the compiled binary to the device.
 4. Automatically syncs any sibling `.bundle` and `.resources` directories found in the build products directory alongside the binary, so SwiftPM resource bundles are available at runtime.
@@ -145,7 +148,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
-| `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects, builds with `-c debug` instead of `-c release`. |
+| `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects (both native macOS and cross-compiled Linux container targets), builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
 | `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
@@ -192,6 +195,9 @@ period.
 | `off` | Skip chunk-diff entirely; go straight to the registry push. |
 
 > **Note:** When `--deploy` is also passed, `--chunking force` and `--chunking off` are no-ops — `--deploy` always uses the registry path because it must create the container without starting it.
+
+> **Note:** The `postStart` hook fires on both the chunk-diff and registry-push
+> paths. The deploy path does not affect hook execution.
 
 Any value other than `auto`, `force`, or `off` is rejected with an error before the build starts.
 
@@ -240,7 +246,13 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 
 ## postStart hooks
 
-When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it after the app is ready.
+When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it
+after the app reports readiness — regardless of which deploy path is taken
+(registry push **or** the default chunk-diff / CBC path) and regardless of
+whether `--detach` is passed. If the readiness probe fails, the hook is
+skipped (both `openURL` and `cli`) and a warning is printed instead.
+
+> **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 
 ### `openURL`
 
@@ -255,6 +267,8 @@ When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it afte
   }
 }
 ```
+
+When `${WENDY_HOSTNAME}` is substituted and the device address is an IPv6 literal, `wendy run` automatically brackets it (e.g. `2001:db8::1` → `[2001:db8::1]`) so the resulting URL is parseable by browsers. Zone IDs are percent-escaped per RFC 6874. IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) are unmapped to plain IPv4. The `cli` hook receives the raw (unbracketed) address.
 
 If the browser cannot be opened, a warning is printed and `wendy run` continues normally. `openURL` is fire-and-forget and does not affect the process tracked by `wendy run`.
 
@@ -271,3 +285,23 @@ If the browser cannot be opened, a warning is printed and `wendy run` continues 
 On **Windows**, the entire process tree spawned by a `cli` hook — including grandchildren started via `start /B` — is terminated when `wendy run` exits or is interrupted. This is implemented using a Windows Job Object with `KILL_ON_JOB_CLOSE`; closing the job handle causes the kernel to terminate every process assigned to it. If Job Object creation is unavailable, `wendy run` falls back to `taskkill /T /F`, which terminates the direct child and its descendants as long as the parent process is still alive.
 
 On **Unix**, the default shell process-group cleanup is sufficient; no additional termination logic is applied.
+
+### Attached-mode hook lifetime
+
+In the default attached mode (no `--detach`), the `cli` hook process is tied to
+the lifetime of the log stream. When the container stream closes — either
+because the container exits or because the user presses **Ctrl-C** — the hook's
+context is cancelled and the CLI waits for the child process to exit before
+returning. This prevents orphaned hook processes from outliving `wendy run`.
+
+In detached mode (`--detach`) and deploy-only mode (`--deploy`), the hook is
+fired with a long-lived background context and is not reaped on exit (matching
+the previous behaviour for those flags).
+
+## Container image signature
+
+`wendy run` optionally includes a detached **ML-DSA65** signature with every `RunContainer` call. The agent verifies the signature over the SHA256 digest of the OCI image config before assembling or starting the container.
+
+Set `WENDY_IMAGE_SIGNATURE_PATH` to the path of the detached signature file; when the variable is unset or points to an empty file, no signature is sent. Verification is currently dormant on the agent side (the per-org publisher key is not yet wired in), so omitting the signature does not block container creation today. Once the publisher key is provisioned, sending an unsigned or tampered image causes the agent to refuse the run.
+
+> **Note:** `CreateContainer` and `CreateContainerWithProgress` do not yet pass through the image-signature gate — only the `RunContainer` path (used by `wendy run`) verifies it.

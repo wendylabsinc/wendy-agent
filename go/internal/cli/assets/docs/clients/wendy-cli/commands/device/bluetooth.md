@@ -10,7 +10,12 @@ Run without a subcommand to open an interactive table for browsing and managing 
 wendy device bluetooth
 ```
 
-Scans the device for nearby Bluetooth peripherals and presents them in an interactive table that stays open between actions. A spinner is shown while the scan window runs (~8s). Discovered peripherals are deduplicated by address and sorted with connected devices first, then paired devices.
+Results appear quickly — an initial batch of nearby peripherals is delivered after
+about 1 s, and a more complete set arrives once the full ~8 s scan window finishes.
+Discovered peripherals are deduplicated by address and sorted: connected devices
+first, then paired devices, then named devices (alphabetically by name), then
+anonymous peripherals (by descending RSSI — strongest signal first). Ties within
+each group fall back to address ascending.
 
 | Key | Action |
 |-----|--------|
@@ -29,6 +34,9 @@ Actions update the table immediately (optimistically) on success. Because a Blue
 ### `wendy device bluetooth list`
 
 Scans for peripherals and prints them as a table, or as JSON with `--json`.
+The scan runs in two passes over roughly 8 s total (an early ~1 s partial pass,
+then a full pass); `list` waits for the stream to finish before printing, so
+expect it to take up to ~8 s to return.
 
 ```sh
 wendy device bluetooth list [--json]

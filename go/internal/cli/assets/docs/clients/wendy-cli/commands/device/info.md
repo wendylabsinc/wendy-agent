@@ -49,6 +49,80 @@ Loopback, down, and container/virtual bridge interfaces are omitted, as are link
 | `networkInterfaces[].name` | (row label) | Interface name (e.g. `eth0`, `wlan0`). |
 | `networkInterfaces[].ipAddresses` | (row value) | Routable IPv4/IPv6 addresses assigned to the interface. |
 
+### OS Update output
+
+On WendyOS devices that use the **wendyos-update** OTA engine, `wendy device info` prints a compact `OS Update:` block showing the live A/B slot state and the last recorded update outcome:
+
+```
+OS Update:
+  Slot A: booted, rootfs normal, WendyOS 0.17.0
+  Slot B: inactive, retries 2 (trial boot pending)
+  Pending: wendyos-jetson 0.18.0 (installed, target slot B)
+  Last update: committed (0.16.0 → 0.17.0)
+```
+
+The block is omitted entirely when:
+- the device does not use the wendyos-update engine,
+- the agent is too old to support the engine-status probe, or
+- no update record exists and the live probe returns nothing.
+
+When the last update outcome is not `committed`, a hint is printed:
+
+```
+  Details: wendy os update-status
+```
+
+Slot health is colour-coded: `normal` is green, anything else is red. Outcome words follow the same scheme: `committed` is green, `rolled back` is amber, and failure outcomes are red.
+
+### JSON: `osUpdate` field
+
+When OS-update information is available, `--json` includes an `osUpdate` object. It is omitted entirely when nothing is reportable.
+
+```json
+{
+  "osUpdate": {
+    "lastUpdate": {
+      "outcome": "committed",
+      "createdAtUnix": 1750000000,
+      "oldOsVersion": "0.16.0",
+      "newOsVersion": "0.17.0"
+    },
+    "engine": {
+      "connector": "tegrauefi",
+      "currentSlot": "A",
+      "slots": [
+        { "slot": "A", "booted": true, "partition": "/dev/nvme0n1p1", "distro": "WendyOS 0.17.0", "kernel": "5.15.148-tegra", "rootfsHealth": "normal", "retries": "", "note": "" },
+        { "slot": "B", "booted": false, "partition": "/dev/nvme0n1p2", "retries": "2", "note": "trial boot pending" }
+      ],
+      "system": [
+        { "key": "bootloader", "value": "36.3.0" }
+      ],
+      "pending": {
+        "artifactName": "wendyos-jetson",
+        "artifactVersion": "0.18.0",
+        "phase": "installed",
+        "targetSlot": "B"
+      }
+    }
+  }
+}
+```
+
+| Field | Description |
+|---|---|
+| `osUpdate.lastUpdate.outcome` | One of `committed`, `rolled back`, `rollback failed`, `commit failed`, `unknown`. |
+| `osUpdate.lastUpdate.createdAtUnix` | Unix timestamp of the recorded update outcome. |
+| `osUpdate.lastUpdate.oldOsVersion` / `newOsVersion` | OS versions before and after the update (omitted when not recorded). |
+| `osUpdate.lastUpdate.note` | Failure reason from the updater, if any (omitted when empty). |
+| `osUpdate.engine` | Live snapshot from `wendy os update-status --json`; omitted when not available. |
+| `osUpdate.engine.connector` | Platform connector, e.g. `tegrauefi` or `ubootenv`. |
+| `osUpdate.engine.currentSlot` | Slot the device is booted from (`A` or `B`). |
+| `osUpdate.engine.slots[].rootfsHealth` | Bootloader-reported slot health, e.g. `normal`. |
+| `osUpdate.engine.slots[].retries` | Remaining boot-trial retries (string; empty when not tracked). |
+| `osUpdate.engine.system` | Connector-specific key/value pairs (e.g. bootloader version); JSON only, not shown in human-readable output. |
+| `osUpdate.engine.pending` | In-flight update; omitted when none is pending. |
+| `osUpdate.engine.pending.phase` | Engine phase, e.g. `installed` (awaiting reboot + commit). |
+
 ## Flags
 
 | Flag | Default | Description |
@@ -87,3 +161,8 @@ Warning: 'wendy device version' is deprecated; use 'wendy device info' instead.
 No warning is emitted when `--json` is passed, so existing machine-readable scripts that use `wendy device version --json` continue to work without noise on stderr.
 
 Migrate any usage of `wendy device version` to `wendy device info`.
+
+## Related
+
+- [`wendy os update-status`](../os/update.md) — full OS update record including service-level healthcheck details and the live engine snapshot
+- [`wendy os update`](../os/update.md) — apply a WendyOS OTA update
