@@ -587,14 +587,15 @@ func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bo
 		interactive
 }
 
-// chooseT234FlashMode prompts the user to pick between full USB recovery
-// (firmware + OS) and OS-image-only imaging, returning rootfsOnly=true for the
-// image-only choice. A cancelled picker surfaces ErrUserCancelled, which the
-// top-level command maps to a clean exit.
+// chooseT234FlashMode prompts the user to pick between OS-image-only imaging
+// and a full recovery flash (firmware + OS), returning rootfsOnly=true for the
+// image-only choice. Image-only is listed first because it is the common case;
+// a full flash needs the device jumpered into recovery mode. A cancelled picker
+// surfaces ErrUserCancelled, which the top-level command maps to a clean exit.
 func chooseT234FlashMode() (rootfsOnly bool, err error) {
 	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
-		{Name: "Full flash over USB", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+		{Name: "Full flash over UART", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 	})
 	if err != nil {
 		return false, err // ErrUserCancelled propagates unchanged
