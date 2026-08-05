@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
@@ -39,6 +40,12 @@ func writeConfigPartition(d drive, agentBinary []byte, creds []wendyconf.WifiCre
 	return writeConfigFilesTo(target, agentBinary, creds, deviceName, provisioningJSON)
 }
 
+// darwinPartitionRe matches the slice device nodes diskutil reports for
+// partitions (e.g. disk4s2, without the /dev/ prefix). findConfigPartition
+// only returns device paths matching it, so everything downstream — diskutil
+// mount/unmount and the elevated writes — operates on a well-formed /dev node.
+var darwinPartitionRe = regexp.MustCompile(`^disk[0-9]+s[0-9]+$`)
+
 // findConfigPartition runs `diskutil list <diskDev>` (which also rescans the
 // partition table after dd) and returns the device node for the partition
 // labelled "config".
@@ -57,7 +64,7 @@ func findConfigPartition(diskDev string) (string, error) {
 		for i, f := range fields {
 			if strings.EqualFold(f, "config") && i > 0 {
 				last := fields[len(fields)-1]
-				if strings.HasPrefix(last, "disk") {
+				if darwinPartitionRe.MatchString(last) {
 					return "/dev/" + last, nil
 				}
 			}
@@ -124,8 +131,16 @@ func mountConfigPartition(partDev string) (configMount, error) {
 		path:     tmpDir,
 		elevated: !userWritable(tmpDir),
 		release: func() {
-			exec.Command("diskutil", "unmount", tmpDir).Run() //nolint:errcheck
-			os.RemoveAll(tmpDir)                              //nolint:errcheck
+			if out, err := exec.Command("diskutil", "unmount", tmpDir).CombinedOutput(); err != nil {
+				// Leave tmpDir alone: with the volume still mounted there,
+				// RemoveAll would delete the partition's contents, not the
+				// mount point. ejectDisk tears the mount down later anyway.
+				fmt.Printf("Warning: could not unmount config partition at %s: %s: %v\n", tmpDir, strings.TrimSpace(string(out)), err)
+				return
+			}
+			if err := os.RemoveAll(tmpDir); err != nil {
+				fmt.Printf("Warning: could not remove temporary mount dir %s: %v\n", tmpDir, err)
+			}
 		},
 	}, nil
 }
@@ -148,8 +163,10 @@ func userWritable(dir string) bool {
 		return false
 	}
 	name := f.Name()
-	f.Close()       //nolint:errcheck
-	os.Remove(name) //nolint:errcheck
+	f.Close() //nolint:errcheck
+	if err := os.Remove(name); err != nil {
+		fmt.Printf("Warning: could not remove write probe %s: %v\n", name, err)
+	}
 	return true
 }
 
@@ -166,6 +183,17 @@ func userWritable(dir string) bool {
 type sudoDirTarget string
 
 func (s sudoDirTarget) WriteFile(name string, data []byte, perm os.FileMode) error {
+	// The cp below runs as root, so refuse any destination that could land
+	// outside the config mount: name must be a bare file name (today the
+	// callers only pass constants like "wendy.conf") and the mount point must
+	// be an absolute path.
+	if name != filepath.Base(name) || name == "." || name == ".." {
+		return fmt.Errorf("config file name %q is not a bare file name", name)
+	}
+	if !filepath.IsAbs(string(s)) {
+		return fmt.Errorf("config mount point %q is not an absolute path", string(s))
+	}
+
 	staged, err := os.CreateTemp("", "wendyos-cfg-*")
 	if err != nil {
 		return fmt.Errorf("staging %s: %w", name, err)
