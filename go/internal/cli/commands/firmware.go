@@ -18,7 +18,7 @@ type firmwareAsset struct {
 }
 
 // deriveAssetName prefers the basename from the manifest URL/path, falling back to the legacy synthesized name.
-func deriveAssetName(downloadURL, chip string) string {
+func deriveAssetName(downloadURL, firmwareID string) string {
 	if downloadURL != "" {
 		if u, err := url.Parse(downloadURL); err == nil {
 			if base := path.Base(u.Path); base != "" && base != "/" && base != "." {
@@ -26,11 +26,11 @@ func deriveAssetName(downloadURL, chip string) string {
 			}
 		}
 	}
-	return fmt.Sprintf("wendy-lite-%s.bin", chip)
+	return fmt.Sprintf("wendy-lite-%s.bin", firmwareID)
 }
 
 // fetchFirmwareFromManifest finds the latest firmware for a chip from the GCS manifest.
-func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error) {
+func fetchFirmwareFromManifest(firmwareID string, nightly bool) (*firmwareAsset, error) {
 	main, err := fetchMainManifest()
 	if err != nil {
 		return nil, fmt.Errorf("fetching main manifest: %w", err)
@@ -40,23 +40,23 @@ func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error
 		return nil, fmt.Errorf("no firmware entries in manifest")
 	}
 
-	chipEntry, ok := main.Firmware[chip]
+	chipEntry, ok := main.Firmware[firmwareID]
 	if !ok {
-		return nil, fmt.Errorf("chip %s not found in manifest", chip)
+		return nil, fmt.Errorf("firmware %s not found in manifest", firmwareID)
 	}
 
 	if chipEntry.ManifestPath == "" {
-		return nil, fmt.Errorf("no manifest path for chip %s", chip)
+		return nil, fmt.Errorf("no manifest path for firmware %s", firmwareID)
 	}
 
 	fm, err := fetchFirmwareManifest(chipEntry.ManifestPath)
 	if err != nil {
-		return nil, fmt.Errorf("fetching firmware manifest for %s: %w", chip, err)
+		return nil, fmt.Errorf("fetching firmware manifest for %s: %w", firmwareID, err)
 	}
 
 	// Validate that the firmware manifest matches the requested chip.
-	if fm.ChipID != "" && fm.ChipID != chip {
-		return nil, fmt.Errorf("firmware manifest chip ID %q does not match requested chip %q", fm.ChipID, chip)
+	if fm.FirmwareID != "" && fm.FirmwareID != firmwareID {
+		return nil, fmt.Errorf("firmware manifest firmware ID %q does not match requested firmware %q", fm.FirmwareID, firmwareID)
 	}
 
 	// Find the target version
@@ -72,7 +72,7 @@ func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error
 		if nightly {
 			buildType = "nightly"
 		}
-		return nil, fmt.Errorf("no %s firmware version available for %s", buildType, chip)
+		return nil, fmt.Errorf("no %s firmware version available for %s", buildType, firmwareID)
 	}
 
 	info, err := getFirmwareInfo(fm, targetVersion)
@@ -81,7 +81,7 @@ func fetchFirmwareFromManifest(chip string, nightly bool) (*firmwareAsset, error
 	}
 
 	return &firmwareAsset{
-		Name:        deriveAssetName(info.DownloadURL, chip),
+		Name:        deriveAssetName(info.DownloadURL, firmwareID),
 		DownloadURL: info.DownloadURL,
 		Size:        info.ImageSize,
 		Version:     targetVersion,

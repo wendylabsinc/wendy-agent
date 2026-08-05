@@ -230,7 +230,7 @@ type pickerDevice struct {
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
 	IsESP32    bool
-	ESP32Chip  string          // e.g. "esp32c6", "esp32c5"
+	ESP32Board string
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
@@ -353,26 +353,24 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// ignores prNumber, so offering ESP32 here would silently install release
 	// firmware instead of a PR build.
 	if flagDeviceType == "" && prNumber == 0 {
-		espVersion := "(latest)"
-		for _, esp := range []struct {
-			key, name, chip string
-		}{
-			{"esp32-c6", "ESP32-C6", "esp32c6"},
-			{"esp32-c5", "ESP32-C5", "esp32c5"},
-		} {
-			deviceMap[esp.key] = pickerDevice{
-				Name:      esp.name,
-				Version:   espVersion,
-				IsESP32:   true,
-				ESP32Chip: esp.chip,
+		variants, err := WendyLiteVariants()
+		if err == nil {
+			for _, v := range variants {
+				key := "wlite." + v.Board
+				deviceMap[key] = pickerDevice{
+					Name:       v.DisplayName,
+					Version:    v.Version,
+					IsESP32:    true,
+					ESP32Board: v.Board,
+				}
+				items = append(items, tui.PickerItem{
+					Name:      v.DisplayName,
+					FullWidth: true,
+					Section:   "Wendy Lite",
+					SortKey:   "1_lite_" + strings.ToLower(v.DisplayName),
+					Value:     key,
+				})
 			}
-			items = append(items, tui.PickerItem{
-				Name:        esp.name,
-				Description: espVersion,
-				Section:     "Wendy Lite",
-				SortKey:     "1_lite_" + strings.ToLower(esp.name),
-				Value:       esp.key,
-			})
 		}
 
 		items = append(items, tui.PickerItem{
@@ -453,7 +451,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
+		return installESP32Firmware(ctx, nightly, device.ESP32Board, wifi, deviceName, preOpts)
 	}
 	if storageOverride == "emmc" && selected != orinDeviceType {
 		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
@@ -2347,8 +2345,8 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 }
 
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
-// chip is e.g. "esp32c6" or "esp32c5".
-func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic".
+func installESP32Firmware(ctx context.Context, nightly bool, board string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
 		return err
@@ -2397,7 +2395,11 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 	fmt.Printf("Found ESP32 at %s\n", serialPort)
 
 	fmt.Println("Fetching latest Wendy Lite firmware...")
-	asset, err := fetchFirmwareFromManifest(chip, nightly)
+	firmwareID, err := WendyLiteFirmwareID(board)
+	if err != nil {
+		return err
+	}
+	asset, err := fetchFirmwareFromManifest(firmwareID, nightly)
 	if err != nil {
 		return fmt.Errorf("fetching firmware: %w", err)
 	}
