@@ -1,9 +1,14 @@
 package commands
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 // gstLaunchFallbackPathsFn indirects gstLaunchFallbackPaths so tests can stub
@@ -27,4 +32,71 @@ func resolveGSTLaunch() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("%s not found; install GStreamer or use --stdout to pipe raw video", gstLaunchName)
+}
+
+// brewLookPathFn resolves the "brew" binary; indirected so tests can stub it
+// without depending on whether Homebrew is actually installed.
+var brewLookPathFn = exec.LookPath
+
+// installGStreamerFn runs `brew install gstreamer`; indirected so tests can
+// stub it without invoking Homebrew.
+var installGStreamerFn = installGStreamerViaBrew
+
+// ensureGSTLaunch resolves gst-launch-1.0 like resolveGSTLaunch, but on an
+// interactive macOS session where it's missing, offers to install GStreamer
+// via Homebrew first. Non-interactive runs, non-macOS hosts, and hosts
+// without Homebrew fall straight through to resolveGSTLaunch's plain "not
+// found" error instead of prompting.
+func ensureGSTLaunch(ctx context.Context) (string, error) {
+	return ensureGSTLaunchForHostOS(ctx, runtime.GOOS)
+}
+
+func ensureGSTLaunchForHostOS(ctx context.Context, hostOS string) (string, error) {
+	path, err := resolveGSTLaunch()
+	if err == nil {
+		return path, nil
+	}
+	if hostOS != "darwin" || !isInteractiveTerminalFn() {
+		return "", err
+	}
+	if _, lookErr := brewLookPathFn("brew"); lookErr != nil {
+		return "", err
+	}
+	if !confirmFn("GStreamer is required to view the camera and was not found. Install it now with `brew install gstreamer`?") {
+		return "", err
+	}
+	if instErr := installGStreamerFn(ctx); instErr != nil {
+		return "", fmt.Errorf("installing GStreamer via Homebrew: %w", instErr)
+	}
+	return resolveGSTLaunch()
+}
+
+// installGStreamerViaBrew runs `brew install gstreamer` behind a spinner
+// instead of streaming Homebrew's own log output; the captured output is
+// printed only if the install fails.
+func installGStreamerViaBrew(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "brew", "install", "gstreamer")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	s := tui.NewSpinner("Installing GStreamer via Homebrew...")
+	p := tui.NewProgressProgram(s)
+	go func() {
+		p.Send(tui.SpinnerDoneMsg{Err: cmd.Run()})
+	}()
+
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("TUI error: %w", err)
+	}
+	model, ok := finalModel.(tui.SpinnerModel)
+	if !ok {
+		return fmt.Errorf("TUI error: unexpected model type %T", finalModel)
+	}
+	if _, installErr := model.Result(); installErr != nil {
+		os.Stderr.Write(out.Bytes())
+		return installErr
+	}
+	return nil
 }
