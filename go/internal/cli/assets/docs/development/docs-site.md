@@ -119,9 +119,9 @@ bucket root by the `Deploy vanity redirects` step in
 
 | Path | Target |
 |---|---|
-| `/pi` | `latest/installation/wendyos-raspberry-pi-5/` |
-| `/thor` | `latest/installation/wendyos-nvidia-jetson-agx-thor/` |
-| `/jetson`, `/jetson-orin`, `/jetson-orin-nano` | `latest/installation/wendyos-nvidia-jetson-orin-nano/` |
+| `/pi` | `/latest/installation/wendyos-raspberry-pi-5/` |
+| `/thor` | `/latest/installation/wendyos-nvidia-jetson-agx-thor/` |
+| `/jetson`, `/jetson-orin`, `/jetson-orin-nano` | `/latest/installation/wendyos-nvidia-jetson-orin-nano/` |
 
 Add new entries to the `REDIRECTS` map in that workflow step. Slugs must not
 collide with deploy path prefixes (`latest`, `latest-nightly`, `release-*`,
