@@ -34,12 +34,13 @@ func (a aptInstallAnalyzer) Analyze(t *Target) []Finding {
 		}
 		raw := t.Dockerfile.Lines[inst.Line-1]
 
-		if !strings.Contains(inst.Args, "apt-get update") {
+		hasUpdate := strings.Contains(inst.Args, "apt-get update") || strings.Contains(inst.Args, "apt update")
+		if !hasUpdate {
 			out = append(out, Finding{
 				Analyzer: a.ID(),
 				Severity: SeverityWarning,
-				Title:    fmt.Sprintf("%q runs in a RUN layer without apt-get update", aptCmd),
-				Detail: "apt-get update and apt-get install must run in the same RUN instruction. Docker " +
+				Title:    fmt.Sprintf("%q runs in a RUN layer without apt-get/apt update", aptCmd),
+				Detail: "apt-get update (or apt update) and apt-get install (or apt install) must run in the same RUN instruction. Docker " +
 					"caches each RUN independently, so a later apt-get install can silently reuse a stale " +
 					"package index from an old update layer, causing \"unable to locate package\" failures.",
 				Location: &Loc{File: t.Dockerfile.Path, Line: inst.Line},
