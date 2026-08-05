@@ -34,6 +34,11 @@ func (a addCopyAnalyzer) Analyze(t *Target) []Finding {
 		if inst.Cmd != "ADD" {
 			continue
 		}
+		// Skip JSON array form (ADD ["src", "dst"]) since strings.Fields can't safely
+		// detect URLs/archives there.
+		if strings.HasPrefix(strings.TrimSpace(inst.Args), "[") {
+			continue
+		}
 		fields := strings.Fields(inst.Args)
 		if len(fields) < 2 {
 			continue
