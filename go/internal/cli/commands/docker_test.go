@@ -2537,6 +2537,26 @@ func TestDetectBuildOptions_Stagefile(t *testing.T) {
 	}
 }
 
+func TestDetectBuildOptions_IgnoresOwnGeneratedDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	dockerCount := 0
+	for _, o := range options {
+		if o.Type == "docker" {
+			dockerCount++
+		}
+	}
+	if dockerCount != 1 {
+		t.Fatalf("expected exactly 1 docker-type option once Dockerfile.generated exists alongside build.stagefile.yaml, got %d: %+v", dockerCount, options)
+	}
+}
+
 func TestPreferredContainerBuildFileOption_StagefileWinsOverDockerfile(t *testing.T) {
 	options := []BuildOption{
 		{Type: "docker", File: "Dockerfile"},

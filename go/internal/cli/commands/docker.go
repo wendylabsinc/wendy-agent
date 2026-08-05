@@ -586,6 +586,13 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
+			if name == "Dockerfile.generated" {
+				// Never a user-authored build file — it's the internal
+				// artifact compileStagefileIfNeeded produces from a Stagefile
+				// and deliberately never deletes, so it must not re-enter
+				// detection as a rival candidate on subsequent runs.
+				continue
+			}
 			if isContainerBuildFileName(name) {
 				options = append(options, BuildOption{
 					Label: name,
