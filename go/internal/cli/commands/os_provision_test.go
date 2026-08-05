@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -597,5 +598,60 @@ func TestProvisionConfigWithRetry_InteractiveDeclineStops(t *testing.T) {
 
 	if *calls != 1 {
 		t.Errorf("provision called %d times; want 1 (declined retry)", *calls)
+	}
+}
+
+// WendyOS#1562: requested provisioning that never reached the card must surface
+// as an error so the caller exits non-zero, rather than the install printing
+// "Successfully installed" over silently dropped --wifi / --device-name.
+func TestProvisionConfigWithRetry_RequestedFailureReturnsError(t *testing.T) {
+	sentinel := fmt.Errorf("mounting config partition /dev/disk4s2: resource busy")
+
+	tests := []struct {
+		name        string
+		interactive bool
+		confirms    []bool
+	}{
+		{name: "non-interactive", interactive: false},
+		{name: "interactive, retry declined", interactive: true, confirms: []bool{false}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+				return sentinel
+			}, tt.interactive, tt.confirms)
+
+			var got error
+			_, _ = captureCommandStdout(t, func() error {
+				got = provisionConfigWithRetry(drive{}, nil, "brave-dolphin", nil, true)
+				return nil
+			})
+
+			if got == nil {
+				t.Fatal("expected an error when requested provisioning was not applied")
+			}
+			if !errors.Is(got, sentinel) {
+				t.Errorf("error should wrap the underlying cause; got %v", got)
+			}
+		})
+	}
+}
+
+// Provisioning the user did not ask for stays advisory: the agent baked into
+// the image is enough, so a failure must not fail the install.
+func TestProvisionConfigWithRetry_UnrequestedFailureReturnsNil(t *testing.T) {
+	withStubbedProvisioning(t, func(drive, []wendyconf.WifiCredential, string, []byte) error {
+		return fmt.Errorf("downloading agent: network unreachable")
+	}, false, nil)
+
+	var got error
+	_, _ = captureCommandStdout(t, func() error {
+		got = provisionConfigWithRetry(drive{}, nil, "", nil, false)
+		return nil
+	})
+
+	if got != nil {
+		t.Errorf("unrequested provisioning failure must not fail the install; got %v", got)
 	}
 }

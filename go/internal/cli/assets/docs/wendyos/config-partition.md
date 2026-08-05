@@ -12,7 +12,7 @@ The `config` partition is outside the update boundary. Files placed there surviv
 
 Because the partition is FAT32, your computer mounts it automatically when you plug in the storage.
 
-- **macOS / Linux:** appears as a volume labelled `config`
+- **macOS / Linux:** appears as a volume labelled `config`. On macOS, `wendy install` writes provisioning through this auto-mount directly; older versions remounted the partition via `mount_msdos`, which could fail with `Resource busy`.
 - **Windows:** appears as a drive labelled `config`
 
 Write files there, eject, and they are available at `/config` on the device on next boot.
@@ -29,7 +29,7 @@ ls /config
 
 If a file named `wendy-agent` is present in `/config` on boot, the agent validates it (must be a 64-bit ELF binary for the device's architecture) and, if valid, installs it to `/usr/local/bin/wendy-agent` and exits so systemd restarts it with the new binary. The file is deleted from `/config` regardless of outcome, so it is only applied once.
 
-`wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting — the device still boots using the agent baked into the image and fetches updates after first boot.
+`wendy install` writes the latest stable arm64 agent binary to the config partition automatically after flashing. If this write fails, `wendy install` warns rather than aborting (unless WiFi, device-name, or pre-enroll provisioning was explicitly requested — then the install exits non-zero, see [wendy.conf](#wendyconf)) — the device still boots using the agent baked into the image and fetches updates after first boot.
 
 ## wendy.conf
 
@@ -52,7 +52,7 @@ On every boot, `wendy-agent` checks for `/config/wendy.conf`. If found:
 1. If `[wifi]` contains a non-empty `ssid`, runs `nmcli device wifi connect <ssid> [password <password>]` to connect and create a persistent NetworkManager profile.
 2. Deletes `/config/wendy.conf` — even on failure, so bad credentials are not retried on every boot.
 
-`wendy install` writes this file automatically when you supply WiFi credentials (via `--wifi-ssid` / `--wifi-password` flags or the interactive prompt). If writing fails, `wendy install` warns and (on an interactive terminal) offers to retry rather than aborting — the OS image itself is already on the drive, so the install still succeeds and you can re-run it or configure WiFi after the device boots.
+`wendy install` writes this file automatically when you supply WiFi credentials (via `--wifi-ssid` / `--wifi-password` flags or the interactive prompt). If writing fails, `wendy install` warns and (on an interactive terminal) offers to retry. If the write never succeeds and you explicitly requested WiFi or device-name configuration, the install exits non-zero — the OS image itself is already on the drive, and the error message says so, so you can re-run `wendy install` or configure the device after it boots.
 
 ## Size
 
