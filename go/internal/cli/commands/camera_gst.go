@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -66,7 +67,7 @@ func ensureGSTLaunchForHostOS(ctx context.Context, hostOS string) (string, error
 		return "", err
 	}
 	if instErr := installGStreamerFn(ctx); instErr != nil {
-		if instErr == ErrUserCancelled {
+		if errors.Is(instErr, ErrUserCancelled) {
 			return "", instErr
 		}
 		return "", fmt.Errorf("installing GStreamer via Homebrew: %w", instErr)
@@ -125,3 +126,4 @@ func installGStreamerViaBrew(ctx context.Context) error {
 		return runErr
 	}
 	return nil
+}
