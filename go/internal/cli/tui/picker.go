@@ -10,6 +10,7 @@ import (
 	bubbleTable "github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // displayAddress strips a trailing numeric port from an address for display in
@@ -134,6 +135,12 @@ type PickerItem struct {
 	// When no visible item sets Section, the picker renders and navigates
 	// exactly as it does without sections.
 	Section string
+
+	// FullWidth renders this item as a single cell spanning the entire table
+	// width instead of the usual columns. Name provides the text (and still
+	// drives filtering, sorting, and deduplication); every other display
+	// column is ignored. The row remains selectable like any other item.
+	FullWidth bool
 
 	// DedupKey is used for deduplication. If empty, Name is used.
 	// Items with the same DedupKey (case-insensitive) are merged via MergeItem.
@@ -577,7 +584,7 @@ func (m PickerModel) View() string {
 		return sb.String()
 	}
 
-	sb.WriteString(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()) + "\n")
+	sb.WriteString(m.renderFullWidthRows(colorizeSectionHeaders(ColorizeProbeGlyphs(m.tableView()), m.sectionLabels()), visible) + "\n")
 
 	if m.flashMessage != "" {
 		style := lipgloss.NewStyle().Foreground(ColorPrimary)
@@ -937,7 +944,7 @@ func (m *PickerModel) refreshTableWithCursorKey(cursorKey string) {
 
 	visible := m.visibleItems()
 	hasDefaultCol := m.OnSetDefault != nil
-	cols, itemRows := pickerTableDataForColumns(visible, m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
+	cols, itemRows := pickerTableDataForColumns(pickerRenderItems(visible), m.DefaultKey, hasDefaultCol, m.columns, m.fixedColumns)
 	// Determine which column index carries the section label. When a marker
 	// column (default indicator) is present it occupies cols[0] with an empty
 	// title; the first data column is then at index 1.
@@ -1055,6 +1062,101 @@ func sectionHeaderRow(label string, ncols, labelOffset int) bubbleTable.Row {
 // pickerSectionHeader styles section-header lines: a bold accent so a group
 // title (── WendyOS) stands apart from the selectable device rows below it.
 var pickerSectionHeader = lipgloss.NewStyle().Bold(true).Foreground(ColorPrimary)
+
+// fullWidthRowPrefix marks the table row standing in for a FullWidth item so
+// renderFullWidthRows can find it in the rendered view. The cell stays plain
+// and short (see sectionHeaderRow for why styling can't live in cells),
+// carrying only the visible-item index it stands in for. The leading rune is
+// an invisible separator no user-typed filter can contain.
+// fullWidthRowMark is the sentinel's leading rune (INVISIBLE SEPARATOR): it
+// cannot appear in user-typed filters or item names, so its presence in a
+// rendered view reliably signals a full-width row even when other passes have
+// injected ANSI codes into the visible part of the sentinel.
+const fullWidthRowMark = "\u2063"
+
+const fullWidthRowPrefix = fullWidthRowMark + "fw:"
+
+// pickerRenderItems returns the items whose fields feed the table cells.
+// FullWidth items are replaced by a stub whose Name is a sentinel carrying the
+// item's visible index: their real text never enters a cell, so it cannot
+// stretch its column; renderFullWidthRows paints it across the whole row after
+// layout.
+func pickerRenderItems(visible []PickerItem) []PickerItem {
+	hasFullWidth := false
+	for _, item := range visible {
+		if item.FullWidth {
+			hasFullWidth = true
+			break
+		}
+	}
+	if !hasFullWidth {
+		return visible
+	}
+	render := make([]PickerItem, len(visible))
+	copy(render, visible)
+	for i := range render {
+		if render[i].FullWidth {
+			render[i] = PickerItem{
+				Name:    fullWidthRowPrefix + strconv.Itoa(i),
+				Section: render[i].Section,
+			}
+		}
+	}
+	return render
+}
+
+// pickerFullWidthRowSelected mirrors the table's selected-row style
+// (BubbleTableStyles) for full-width rows, whose final text is painted after
+// layout and therefore never goes through the table's own styling.
+var pickerFullWidthRowSelected = lipgloss.NewStyle().
+	Foreground(tableSelectedFg).
+	Background(tableSelectedBg).
+	Bold(true)
+
+// renderFullWidthRows replaces the sentinel rows of FullWidth items (see
+// pickerRenderItems) with their Name painted across the full table width.
+// Layout has already happened, so the text cannot disturb column sizing. The
+// selected row arrives wrapped in the table's selection ANSI codes, so lines
+// are matched on their ANSI-stripped content and restyled from scratch.
+func (m PickerModel) renderFullWidthRows(view string, visible []PickerItem) string {
+	if !strings.Contains(view, fullWidthRowMark) {
+		return view
+	}
+	tableWidth := PickerTableWidth(m.table.Columns())
+	selected := m.itemIndexForRow(m.table.Cursor())
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		plain := ansi.Strip(line)
+		content := strings.TrimLeft(plain, " ")
+		rest, ok := strings.CutPrefix(content, fullWidthRowPrefix)
+		if !ok {
+			continue
+		}
+		idx, err := strconv.Atoi(strings.TrimRight(rest, " "))
+		if err != nil || idx < 0 || idx >= len(visible) {
+			continue
+		}
+		// The spaces the table emitted before the sentinel (cell padding, any
+		// marker column) are kept so the text starts at the same column as
+		// regular cell content, and styled together with it so a selection
+		// background covers the row from its first column. The text may run
+		// past the table's own width — layout is already done — but is padded
+		// to it so the background covers the full row, and never exceeds the
+		// terminal viewport.
+		text := plain[:len(plain)-len(content)] + visible[idx].Name
+		if pad := tableWidth - ansi.StringWidth(text); pad > 0 {
+			text += strings.Repeat(" ", pad)
+		}
+		if vw := m.table.ViewportWidth(); vw > 0 {
+			text = ansi.Cut(text, 0, vw)
+		}
+		if idx == selected {
+			text = pickerFullWidthRowSelected.Render(text)
+		}
+		lines[i] = text
+	}
+	return strings.Join(lines, "\n")
+}
 
 // sectionLabels returns the distinct section names present in the picker, in the
 // order they first appear in the item list. Empty when no item sets a Section,

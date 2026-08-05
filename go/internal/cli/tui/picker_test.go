@@ -1018,3 +1018,110 @@ func TestPickerModel_NoMatchesShowsHint(t *testing.T) {
 		t.Errorf("expected a no-matches hint, got %q", view)
 	}
 }
+
+// ── Full-width rows ──────────────────────────────────────────────────
+
+const fullWidthTestText = "Factory-empty device, Wendy Lite will be installed before running"
+
+// fullWidthPicker builds a two-column picker whose "Wendy Lite" section ends
+// with a FullWidth item far wider than the Name column of the regular rows.
+func fullWidthPicker(t *testing.T) PickerModel {
+	t.Helper()
+	m := NewPickerWithTitleAndColumns("Select a device", []PickerColumn{
+		{Title: "Name", Required: true, Value: func(i PickerItem) string { return i.Name }},
+		{Title: "Version", Required: true, Value: func(i PickerItem) string { return i.Description }},
+	})
+	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{
+		{Name: "Alpha", Description: "1.0", Section: "WendyOS", SortKey: "0_alpha", Value: "alpha"},
+		{Name: "Beta", Description: "2.0", Section: "WendyOS", SortKey: "0_beta", Value: "beta"},
+		{Name: fullWidthTestText, Section: "Wendy Lite", SortKey: "1_full", FullWidth: true, Value: "full"},
+	}})
+	return updated.(PickerModel)
+}
+
+// A FullWidth item must show its whole text across the table — not truncated
+// at its column boundary — without stretching that column for regular rows.
+func TestPickerModel_FullWidthRowSpansColumns(t *testing.T) {
+	pm := fullWidthPicker(t)
+	view := ansi.Strip(pm.View())
+
+	if !strings.Contains(view, fullWidthTestText) {
+		t.Fatalf("expected view to contain the full-width text, got %q", view)
+	}
+	if strings.Contains(view, "fw:") {
+		t.Fatalf("full-width sentinel leaked into the view: %q", view)
+	}
+	// The long text must not have widened the Name column: on Alpha's row the
+	// version still sits far left of where a stretched column would put it.
+	alphaCol := -1
+	for _, line := range strings.Split(view, "\n") {
+		if !strings.Contains(line, "Alpha") {
+			continue
+		}
+		alphaCol = strings.Index(line, "Alpha")
+		idx := strings.Index(line, "1.0")
+		if idx < 0 {
+			t.Fatalf("expected Alpha row to show its version, got %q", line)
+		}
+		if idx > 20 {
+			t.Fatalf("Name column appears stretched by the full-width text: %q", line)
+		}
+	}
+	if alphaCol < 0 {
+		t.Fatalf("no Alpha row in view: %q", view)
+	}
+	// The full-width text must start at the same column as regular cell
+	// content — no extra indent.
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, fullWidthTestText) {
+			if col := strings.Index(line, fullWidthTestText); col != alphaCol {
+				t.Fatalf("full-width text starts at column %d, regular rows at %d: %q", col, alphaCol, line)
+			}
+		}
+	}
+}
+
+// Moving the cursor onto a FullWidth row must select it like any other item
+// and paint the whole line with the table's selection style.
+func TestPickerModel_FullWidthRowSelectable(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(termenv.Ascii)
+
+	pm := fullWidthPicker(t)
+	for i := 0; i < 2; i++ {
+		updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyDown})
+		pm = updated.(PickerModel)
+	}
+
+	styled := false
+	for _, line := range strings.Split(pm.View(), "\n") {
+		if strings.Contains(ansi.Strip(line), fullWidthTestText) {
+			styled = line != ansi.Strip(line)
+		}
+	}
+	if !styled {
+		t.Fatal("expected the selected full-width row to carry ANSI selection styling")
+	}
+
+	updated, _ := pm.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	pm = updated.(PickerModel)
+	sel := pm.Selected()
+	if sel == nil || sel.Value.(string) != "full" {
+		t.Fatalf("expected the full-width item to be selected, got %+v", sel)
+	}
+}
+
+// Typeahead filtering must keep matching FullWidth items by their Name.
+func TestPickerModel_FullWidthRowFilterable(t *testing.T) {
+	pm := fullWidthPicker(t)
+	pm.Filterable = true
+	pm = typeIntoPicker(t, pm, "factory")
+
+	visible := pm.visibleItems()
+	if len(visible) != 1 || !visible[0].FullWidth {
+		t.Fatalf("expected only the full-width item to match, got %+v", visible)
+	}
+	if view := ansi.Strip(pm.View()); !strings.Contains(view, fullWidthTestText) {
+		t.Fatalf("expected filtered view to render the full-width text, got %q", view)
+	}
+}
