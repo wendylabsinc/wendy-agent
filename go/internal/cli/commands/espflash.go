@@ -34,6 +34,7 @@ const (
 	chipESP32C5
 	chipESP32C6
 	chipESP32P4
+	chipESP32S3
 )
 
 // chipRegs holds chip-specific peripheral register addresses. Different ESP32
@@ -46,6 +47,11 @@ type chipRegs struct {
 	wdtConfig0 uint32 // MWDT config0 (write 0 to disable)
 	swdProtect uint32 // SWD write-protect key register
 	swdConf    uint32 // SWD config register
+	// SWD unlock key and auto-feed-enable bit: both differ between the older
+	// RTC_CNTL-based SWD (ESP32-S3) and the newer unified LP_WDT block
+	// (C5/C6/P4), unlike every other register above which is just an address.
+	swdWkey       uint32 // SWD write-protect unlock key
+	swdAutoFeedEn uint32 // bit to OR into swdConf to auto-feed (disable) the super watchdog
 	// eFuse registers.
 	efuseA  uint32 // BLOCK0 misc register A
 	efuseB  uint32 // BLOCK0 misc register B
@@ -54,69 +60,101 @@ type chipRegs struct {
 	macLow  uint32 // eFuse MAC address low word
 	macHigh uint32 // eFuse MAC address high word
 	// SPI flash controller registers (register naming follows esptool offsets).
-	spiCmd   uint32 // SPI_MEM_CMD_REG   (offset +0x00)
-	spiUser  uint32 // SPI_MEM_USER_REG  (offset +0x18)
-	spiUser1 uint32 // SPI_MEM_USER1_REG (offset +0x20)
-	spiClock uint32 // SPI_MEM_CLOCK_REG (offset +0x28)
-	spiW0    uint32 // SPI_MEM_W0_REG    (offset +0x58)
+	spiCmd      uint32 // SPI_MEM_CMD_REG      (offset +0x00)
+	spiUser     uint32 // SPI_MEM_USER_REG     (offset +0x18)
+	spiUser2    uint32 // SPI_MEM_USER2_REG    (offset +0x20) — holds the command opcode
+	spiMisoDlen uint32 // SPI_MEM_MISO_DLEN_REG (offset +0x28) — read_bits-1 before a read-phase command
+	spiW0       uint32 // SPI_MEM_W0_REG       (offset +0x58)
 }
 
 // ESP32-C5 shares WDT and SPI registers with C6; only the eFuse base differs.
 var regsESP32C5 = chipRegs{
-	name:       "ESP32-C5",
-	wdtProtect: 0x600b1c18,
-	wdtConfig0: 0x600b1c00,
-	swdProtect: 0x600b1c20,
-	swdConf:    0x600b1c1c,
-	efuseA:     0x600b4830,
-	efuseB:     0x600b4838,
-	chipID0:    0x600b4850,
-	chipID1:    0x600b4854,
-	macLow:     0x600b4844,
-	macHigh:    0x600b4848,
-	spiCmd:     0x60003000,
-	spiUser:    0x60003018,
-	spiUser1:   0x60003020,
-	spiClock:   0x60003028,
-	spiW0:      0x60003058,
+	name:          "ESP32-C5",
+	wdtProtect:    0x600b1c18,
+	wdtConfig0:    0x600b1c00,
+	swdProtect:    0x600b1c20,
+	swdConf:       0x600b1c1c,
+	swdWkey:       0x50d83aa1,
+	swdAutoFeedEn: 0x00040000, // 1<<18
+	efuseA:        0x600b4830,
+	efuseB:        0x600b4838,
+	chipID0:       0x600b4850,
+	chipID1:       0x600b4854,
+	macLow:        0x600b4844,
+	macHigh:       0x600b4848,
+	spiCmd:        0x60003000,
+	spiUser:       0x60003018,
+	spiUser2:      0x60003020,
+	spiMisoDlen:   0x60003028,
+	spiW0:         0x60003058,
 }
 
 var regsESP32C6 = chipRegs{
-	name:       "ESP32-C6",
-	wdtProtect: 0x600b1c18,
-	wdtConfig0: 0x600b1c00,
-	swdProtect: 0x600b1c20,
-	swdConf:    0x600b1c1c,
-	efuseA:     0x600b0830,
-	efuseB:     0x600b0838,
-	chipID0:    0x600b0850,
-	chipID1:    0x600b0854,
-	macLow:     0x600b0844,
-	macHigh:    0x600b0848,
-	spiCmd:     0x60003000,
-	spiUser:    0x60003018,
-	spiUser1:   0x60003020,
-	spiClock:   0x60003028,
-	spiW0:      0x60003058,
+	name:          "ESP32-C6",
+	wdtProtect:    0x600b1c18,
+	wdtConfig0:    0x600b1c00,
+	swdProtect:    0x600b1c20,
+	swdConf:       0x600b1c1c,
+	swdWkey:       0x50d83aa1,
+	swdAutoFeedEn: 0x00040000, // 1<<18
+	efuseA:        0x600b0830,
+	efuseB:        0x600b0838,
+	chipID0:       0x600b0850,
+	chipID1:       0x600b0854,
+	macLow:        0x600b0844,
+	macHigh:       0x600b0848,
+	spiCmd:        0x60003000,
+	spiUser:       0x60003018,
+	spiUser2:      0x60003020,
+	spiMisoDlen:   0x60003028,
+	spiW0:         0x60003058,
 }
 
 var regsESP32P4 = chipRegs{
-	name:       "ESP32-P4",
-	wdtProtect: 0x50116018,
-	wdtConfig0: 0x50116000,
-	swdProtect: 0x50116020,
-	swdConf:    0x5011601c,
-	efuseA:     0x5012d030,
-	efuseB:     0x5012d038,
-	chipID0:    0x5012d050,
-	chipID1:    0x5012d054,
-	macLow:     0x5012d044,
-	macHigh:    0x5012d048,
-	spiCmd:     0x5008d000,
-	spiUser:    0x5008d018,
-	spiUser1:   0x5008d020,
-	spiClock:   0x5008d028,
-	spiW0:      0x5008d058,
+	name:          "ESP32-P4",
+	wdtProtect:    0x50116018,
+	wdtConfig0:    0x50116000,
+	swdProtect:    0x50116020,
+	swdConf:       0x5011601c,
+	swdWkey:       0x50d83aa1,
+	swdAutoFeedEn: 0x00040000, // 1<<18
+	efuseA:        0x5012d030,
+	efuseB:        0x5012d038,
+	chipID0:       0x5012d050,
+	chipID1:       0x5012d054,
+	macLow:        0x5012d044,
+	macHigh:       0x5012d048,
+	spiCmd:        0x5008d000,
+	spiUser:       0x5008d018,
+	spiUser2:      0x5008d020,
+	spiMisoDlen:   0x5008d028,
+	spiW0:         0x5008d058,
+}
+
+// ESP32-S3 predates the unified LP_WDT block the other chips here share: its
+// main/super watchdog both live in RTC_CNTL at different offsets, its SWD
+// unlock key/auto-feed bit differ from the RISC-V chips', and its SPI1 base
+// differs too. Verified against ESP-IDF's esp32s3 SoC headers and esptool's
+// esp32s3.py target.
+var regsESP32S3 = chipRegs{
+	name:          "ESP32-S3",
+	wdtProtect:    0x600080b0,
+	wdtConfig0:    0x60008098,
+	swdProtect:    0x600080b8,
+	swdConf:       0x600080b4,
+	swdWkey:       0x8f1d312a,
+	swdAutoFeedEn: 0x80000000, // 1<<31
+	efuseA:        0x60007030,
+	efuseB:        0x60007038,
+	chipID0:       0x60007050,
+	chipID1:       0x60007054,
+	macLow:        0x60007044,
+	macHigh:       0x60007048,
+	spiCmd:        0x60002000,
+	spiUser:       0x60002018,
+	spiUser2:      0x60002020,
+	spiMisoDlen:   0x60002028,
+	spiW0:         0x60002058,
 }
 
 // SLIP framing bytes.
@@ -501,6 +539,9 @@ func (f *espFlasher) detectChip() error {
 	case 0x0012:
 		f.chip = chipESP32P4
 		f.regs = &regsESP32P4
+	case 0x0009:
+		f.chip = chipESP32S3
+		f.regs = &regsESP32S3
 	default:
 		return fmt.Errorf("unsupported chip id 0x%04x", chipID)
 	}
@@ -567,8 +608,9 @@ func (f *espFlasher) initChip() error {
 	}
 	dbgf("initChip: MWDT disabled OK")
 
-	// SWD: unlock → read-modify-write config → re-lock.
-	if err := f.writeReg(r.swdProtect, 0x50d83aa1, 0xffffffff, 0); err != nil {
+	// SWD: unlock → OR in the auto-feed-enable bit → re-lock. Key and bit
+	// position are chip-specific (see chipRegs doc).
+	if err := f.writeReg(r.swdProtect, r.swdWkey, 0xffffffff, 0); err != nil {
 		return err
 	}
 	val, err := f.readReg(r.swdConf)
@@ -576,7 +618,7 @@ func (f *espFlasher) initChip() error {
 		return err
 	}
 	dbgf("initChip: swdConf=0x%08x", val)
-	if err := f.writeReg(r.swdConf, val, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.swdConf, val|r.swdAutoFeedEn, 0xffffffff, 0); err != nil {
 		return err
 	}
 	if err := f.writeReg(r.swdProtect, 0x00000000, 0xffffffff, 0); err != nil {
@@ -640,19 +682,19 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err != nil {
 		return JedecID{}, err
 	}
-	user1, err := f.readReg(r.spiUser1)
+	user2, err := f.readReg(r.spiUser2)
 	if err != nil {
 		return JedecID{}, err
 	}
 
-	// Step 1: RDID (0x9f) — read JEDEC ID using a faster clock.
-	if err := f.writeReg(r.spiClock, 0x00000017, 0xffffffff, 0); err != nil {
+	// Step 1: RDID (0x9f) — read the 24-bit JEDEC ID. 0x17 = 24-1 read bits.
+	if err := f.writeReg(r.spiMisoDlen, 0x00000017, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if err := f.writeReg(r.spiUser, 0x90000000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, 0x7000009f, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, 0x7000009f, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if err := f.writeReg(r.spiW0, 0x00000000, 0xffffffff, 0); err != nil {
@@ -678,13 +720,13 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(r.spiUser, user0, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, user1, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, user2, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if _, err := f.readReg(r.spiUser); err != nil {
 		return JedecID{}, err
 	}
-	if _, err := f.readReg(r.spiUser1); err != nil {
+	if _, err := f.readReg(r.spiUser2); err != nil {
 		return JedecID{}, err
 	}
 
@@ -692,7 +734,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(r.spiUser, 0x80000000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, 0x70000066, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, 0x70000066, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if err := f.writeReg(r.spiW0, 0x00000000, 0xffffffff, 0); err != nil {
@@ -711,13 +753,13 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(r.spiUser, user0, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, user1, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, user2, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if _, err := f.readReg(r.spiUser); err != nil {
 		return JedecID{}, err
 	}
-	if _, err := f.readReg(r.spiUser1); err != nil {
+	if _, err := f.readReg(r.spiUser2); err != nil {
 		return JedecID{}, err
 	}
 
@@ -725,7 +767,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(r.spiUser, 0x80000000, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, 0x70000099, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, 0x70000099, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 	if err := f.writeReg(r.spiW0, 0x00000000, 0xffffffff, 0); err != nil {
@@ -744,7 +786,7 @@ func (f *espFlasher) initFlashChip() (JedecID, error) {
 	if err := f.writeReg(r.spiUser, user0, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
-	if err := f.writeReg(r.spiUser1, user1, 0xffffffff, 0); err != nil {
+	if err := f.writeReg(r.spiUser2, user2, 0xffffffff, 0); err != nil {
 		return JedecID{}, err
 	}
 
