@@ -4,17 +4,31 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/crashreport"
 	"github.com/wendylabsinc/wendy/go/internal/cli/diag"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/env"
+	"github.com/wendylabsinc/wendy/go/internal/shared/platforminfo"
 )
 
+// clearCIEnv unsets every CI-detection env var (not just "CI") so tests run
+// correctly under real CI systems, which set vars like GITHUB_ACTIONS that
+// env.IsCI() also checks.
+func clearCIEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range env.CIEnvVars {
+		t.Setenv(key, "")
+	}
+}
+
 func TestMaybeRunCrashReportSkipsRecoverable(t *testing.T) {
-	t.Setenv("CI", "") // ensure not classified as CI
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	MaybeRunCrashReport(context.Background(), &cobra.Command{Use: "wendy"},
 		fmt.Errorf("plain recoverable error"), "other")
@@ -34,7 +48,7 @@ func TestMaybeRunCrashReportSuppressed(t *testing.T) {
 	analyticsEnabledFn = func() bool { return true }
 	isInteractiveTerminalFn = func() bool { return true }
 
-	t.Setenv("CI", "")
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	t.Setenv("HOME", t.TempDir())
 	_ = config.Save(&config.Config{CrashReport: &config.CrashReportConfig{Suppressed: true}})
@@ -66,7 +80,7 @@ func TestMaybeRunCrashReportNotSuppressedProceeds(t *testing.T) {
 	analyticsEnabledFn = func() bool { return true }
 	isInteractiveTerminalFn = func() bool { return true }
 
-	t.Setenv("CI", "")
+	clearCIEnv(t)
 	t.Setenv("WENDY_CRASHREPORT", "true")
 	t.Setenv("HOME", t.TempDir())
 	_ = config.Save(&config.Config{CrashReport: &config.CrashReportConfig{Suppressed: false}})
@@ -80,6 +94,69 @@ func TestMaybeRunCrashReportNotSuppressedProceeds(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "unrecoverable failure") {
 		t.Errorf("expected output to contain %q, got %q", "unrecoverable failure", buf.String())
+	}
+}
+
+func TestReportCrashLocallyOpensBrowserWhenGHPresent(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	var openedURL string
+	openBrowser = func(u string) error { openedURL = u; return nil }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "/tmp/report.json") {
+		t.Errorf("out = %q, want it to mention the local file", out.String())
+	}
+	if openedURL == "" || !strings.Contains(openedURL, "issues/new?") {
+		t.Errorf("openBrowser called with %q, want a bug_report.yml issue URL", openedURL)
+	}
+}
+
+func TestReportCrashLocallyPrintsURLWhenOpenBrowserFails(t *testing.T) {
+	origLookPath, origOpenBrowser := lookPath, openBrowser
+	t.Cleanup(func() { lookPath = origLookPath; openBrowser = origOpenBrowser })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/gh", nil }
+	openBrowser = func(string) error { return fmt.Errorf("no display") }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "Could not open the browser automatically") {
+		t.Errorf("out = %q, want the open-failed fallback message", out.String())
+	}
+	if !strings.Contains(out.String(), "issues/new?") {
+		t.Errorf("out = %q, want the report URL", out.String())
+	}
+}
+
+func TestReportCrashLocallyPrintsURLWhenGHMissing(t *testing.T) {
+	origLookPath := lookPath
+	t.Cleanup(func() { lookPath = origLookPath })
+	lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+
+	cmd := &cobra.Command{Use: "wendy"}
+	var out bytes.Buffer
+	info := platforminfo.Info{CLIVersion: "1.2.3"}
+	bundle := crashreport.Bundle{ErrorClass: "docker_build_failed", ErrorChain: "boom"}
+
+	reportCrashLocally(cmd, &out, info, bundle, "/tmp/report.json")
+
+	if !strings.Contains(out.String(), "Open a bug report:") {
+		t.Errorf("out = %q, want the manual fallback line", out.String())
+	}
+	if !strings.Contains(out.String(), "issues/new?") {
+		t.Errorf("out = %q, want the report URL", out.String())
 	}
 }
 

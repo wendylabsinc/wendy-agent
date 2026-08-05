@@ -100,8 +100,23 @@ func MaybeRunCrashReport(ctx context.Context, executed *cobra.Command, err error
 		}
 		return
 	}
-	fmt.Fprintf(out, "\nCloud unavailable; report saved locally: %s\n", res.LocalFile)
-	fmt.Fprintln(out, "Attach it to an issue at https://github.com/wendylabsinc/wendyos/issues")
+	reportCrashLocally(executed, out, info, bundle, res.LocalFile)
+}
+
+// reportCrashLocally is the cloud-unavailable fallback: point the user at a
+// pre-filled GitHub issue (the same mechanism as `wendy report-bug`) carrying
+// the redacted bundle's error summary and the local report path, instead of
+// the previous dead-end "attach it to an issue" instruction.
+func reportCrashLocally(cmd *cobra.Command, out io.Writer, info platforminfo.Info, bundle crashreport.Bundle, localFile string) {
+	fmt.Fprintf(out, "\nCloud unavailable; report saved locally: %s\n", localFile)
+	rawURL := reportBugURL(info, &bundle, localFile)
+	switch maybeOpenReportBugURL(cmd, rawURL) {
+	case reportBugOpened:
+	case reportBugOpenFailed:
+		fmt.Fprintln(out, "Could not open the browser automatically. Open a bug report:", rawURL)
+	default: // reportBugNoGH
+		fmt.Fprintln(out, "Open a bug report:", rawURL)
+	}
 }
 
 func printTail(out io.Writer, header string, lines []string) {
