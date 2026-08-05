@@ -1429,7 +1429,10 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 
 	board, err := pickWendyLiteBoard()
 	if err != nil {
-		return nil, wrapped
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, wrapped
+		}
+		return nil, err
 	}
 
 	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
