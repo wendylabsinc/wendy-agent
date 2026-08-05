@@ -63,6 +63,7 @@ Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DD
 | `--rmw` | RMW implementation the device's ROS 2 uses (default `rmw_cyclonedds_cpp`). |
 | `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
 | `--interface` | Override the CycloneDDS network interface selected for a multi-interface device. |
+| `--yes` | Trust an auto-detected Unitree robot network without confirming (e.g. in scripts). |
 
 The global `--device` flag selects a device, as with every other command.
 
@@ -98,10 +99,23 @@ Unitree invocation simply:
 wendy device foxglove serve --device Woof
 ```
 
-The command reports the inferred interface before deployment. The subnet is a
-strong signal that the device is Unitree-connected, but not proof of a specific
-robot model. If detection is ambiguous or you need another network, override it
-explicitly:
+Because `192.168.123.0/24` is a public Unitree convention rather than proof of
+identity — anything that can hand the device an address in it, including a
+rogue Wi-Fi network, matches the same way — Wendy asks you to confirm the
+detected interface before trusting it with ROS 2 discovery and the Go2 camera
+bridge:
+
+```
+Detected a probable Unitree robot network on enP8p1s0 (192.168.123.0/24). ...
+Trust enP8p1s0 as the Unitree robot network? [y/N]
+```
+
+Only accept when you know that network is your robot's. Pass `--yes` to accept
+automatically in non-interactive contexts such as scripts (a non-interactive
+session without `--yes` falls back to generic CycloneDDS selection instead of
+prompting). If detection is ambiguous or you need another network, override it
+explicitly — an explicit `--interface` is your own trust decision, so Wendy
+does not re-prompt for it:
 
 ```bash
 wendy device foxglove serve --domain 0 --interface enP8p1s0

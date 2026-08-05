@@ -66,11 +66,12 @@ func newFoxgloveCmd() *cobra.Command {
 
 func newFoxgloveServeCmd() *cobra.Command {
 	var (
-		port   int
-		domain int
-		rmw    string
-		distro string
-		iface  string
+		port      int
+		domain    int
+		rmw       string
+		distro    string
+		iface     string
+		assumeYes bool
 	)
 
 	cmd := &cobra.Command{
@@ -83,9 +84,12 @@ robot's native host ROS 2), then forwards its WebSocket port to your machine.
 Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
-ROS topics, in the selected domain. When no --interface is supplied, Wendy uses
-the unique device interface on Unitree's 192.168.123.0/24 robot network when one
-is present.`,
+ROS topics, in the selected domain. When no --interface is supplied, Wendy looks
+for the unique device interface on Unitree's 192.168.123.0/24 robot network and
+asks you to confirm it before trusting it — that subnet is a public convention,
+not proof of identity, so anything that can hand the device an address in it
+(including a rogue Wi-Fi network) matches the same way. Pass --yes to accept an
+auto-detected network without prompting (e.g. in scripts).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
@@ -97,6 +101,7 @@ is present.`,
 				distro:    distro,
 				device:    deviceFlag,
 				iface:     iface,
+				assumeYes: assumeYes,
 			})
 		},
 	}
@@ -106,6 +111,7 @@ is present.`,
 	cmd.Flags().StringVar(&rmw, "rmw", "rmw_cyclonedds_cpp", "RMW implementation the device's ROS 2 uses")
 	cmd.Flags().StringVar(&distro, "distro", "humble", "ROS 2 distro to build foxglove_bridge from")
 	cmd.Flags().StringVar(&iface, "interface", "", "Override the CycloneDDS network interface (auto-detects a Unitree robot network)")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "Trust an auto-detected Unitree robot network without confirming")
 
 	return cmd
 }
@@ -118,6 +124,7 @@ type foxgloveServeOpts struct {
 	device    string // global --device; "" = default device
 	iface     string // optional CycloneDDS network interface
 	unitree   bool   // include public Unitree ROS 2 message definitions
+	assumeYes bool   // trust an auto-detected Unitree network without confirming
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
@@ -125,19 +132,25 @@ type foxgloveServeOpts struct {
 // localhost via `wendy cloud tunnel`. The tunnel runs until ctx is cancelled.
 func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 	if strings.Contains(strings.ToLower(opts.rmw), "cyclone") {
-		iface, err := detectProbableUnitreeInterface(ctx)
+		detected, err := detectProbableUnitreeInterface(ctx)
 		if err != nil && opts.iface == "" {
 			// Interface inference is a convenience, not a prerequisite. Older
 			// agents may not report network metadata, and normal CycloneDDS
 			// automatic selection remains a useful fallback for other robots.
 			cliLogln("Warning: could not inspect device interfaces; using CycloneDDS automatic selection: %v", err)
-		} else if iface != "" {
-			opts.unitree = true
-			if opts.iface == "" {
-				opts.iface = iface
-				cliLogln("Detected probable Unitree ROS network on %s; using it for CycloneDDS and loading Unitree message definitions", iface)
+		} else if detected != "" {
+			if opts.iface != "" {
+				// The operator already chose this interface explicitly; that
+				// choice is the trust decision. Only add Unitree message
+				// support, don't re-derive the interface.
+				opts.unitree = true
+				cliLogln("Detected probable Unitree ROS network on %s; loading Unitree message definitions", detected)
+			} else if confirmUnitreeNetwork(detected, opts.assumeYes) {
+				opts.unitree = true
+				opts.iface = detected
+				cliLogln("Detected probable Unitree ROS network on %s; using it for CycloneDDS and loading Unitree message definitions", detected)
 			} else {
-				cliLogln("Detected probable Unitree ROS network on %s; loading Unitree message definitions", iface)
+				cliLogln("Not trusting auto-detected network on %s; using generic CycloneDDS automatic selection", detected)
 			}
 		}
 	}
@@ -223,6 +236,31 @@ func detectProbableUnitreeInterface(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("getting device network interfaces: %w", err)
 	}
 	return probableUnitreeInterface(resp.GetNetworkInterfaces()), nil
+}
+
+// confirmUnitreeNetwork asks the operator to confirm trusting an
+// auto-detected Unitree robot network before Wendy points ROS 2 discovery and
+// the Go2 camera bridge at it. Detection (probableUnitreeInterface) is a bare
+// subnet match with no cryptographic or hardware verification behind it, so
+// anything that can hand the device a DHCP lease in 192.168.123.0/24 — such as
+// a rogue Wi-Fi access point — satisfies it exactly like a real robot would.
+// Skipping this gate would mean silently pointing an outbound camera/RPC
+// client (go2_camera_bridge.py) and DDS discovery at whatever answers there.
+func confirmUnitreeNetwork(iface string, assumeYes bool) bool {
+	if assumeYes {
+		return true
+	}
+	if !isInteractiveTerminal() {
+		cliLogln("Warning: auto-detected a probable Unitree network on %s but cannot prompt for confirmation in a non-interactive session; pass --interface or --yes to trust it explicitly. Falling back to generic CycloneDDS selection.", iface)
+		return false
+	}
+	fmt.Printf(
+		"Detected a probable Unitree robot network on %s (192.168.123.0/24). This subnet is a "+
+			"public Unitree convention, not proof this network is your robot — anything that can hand "+
+			"the device an address in it, including a rogue Wi-Fi network, matches the same way. "+
+			"Continuing will point ROS 2 discovery and the Go2 camera bridge at whatever answers on "+
+			"this network.\n", iface)
+	return confirmDefaultNoFn(fmt.Sprintf("Trust %s as the Unitree robot network?", iface))
 }
 
 // probableUnitreeInterface returns the sole valid interface with an address on

@@ -289,3 +289,54 @@ func TestProbableUnitreeInterface(t *testing.T) {
 		})
 	}
 }
+
+// TestConfirmUnitreeNetwork covers the trust gate in front of an
+// auto-detected Unitree network: probableUnitreeInterface is a bare subnet
+// match (nothing ties it to real Unitree hardware), so anything that can hand
+// the device an address in 192.168.123.0/24 — including a rogue Wi-Fi network
+// — must not be silently trusted with ROS 2 discovery and the Go2 camera
+// bridge.
+func TestConfirmUnitreeNetwork(t *testing.T) {
+	origInteractive := isInteractiveTerminalFn
+	origConfirm := confirmDefaultNoFn
+	defer func() {
+		isInteractiveTerminalFn = origInteractive
+		confirmDefaultNoFn = origConfirm
+	}()
+
+	t.Run("assumeYes bypasses the prompt", func(t *testing.T) {
+		isInteractiveTerminalFn = func() bool { t.Fatal("should not check interactivity"); return false }
+		confirmDefaultNoFn = func(string) bool { t.Fatal("should not prompt"); return false }
+		if !confirmUnitreeNetwork("enP8p1s0", true) {
+			t.Fatal("expected assumeYes to trust the network without prompting")
+		}
+	})
+
+	t.Run("non-interactive session fails closed", func(t *testing.T) {
+		isInteractiveTerminalFn = func() bool { return false }
+		confirmDefaultNoFn = func(string) bool { t.Fatal("should not prompt when non-interactive"); return false }
+		if confirmUnitreeNetwork("enP8p1s0", false) {
+			t.Fatal("expected a non-interactive session to decline trusting an auto-detected network")
+		}
+	})
+
+	t.Run("interactive session asks and honors the answer", func(t *testing.T) {
+		isInteractiveTerminalFn = func() bool { return true }
+		var asked string
+		confirmDefaultNoFn = func(question string) bool { asked = question; return true }
+		if !confirmUnitreeNetwork("enP8p1s0", false) {
+			t.Fatal("expected confirmation to trust the network")
+		}
+		if !strings.Contains(asked, "enP8p1s0") {
+			t.Fatalf("expected confirmation prompt to name the interface, got %q", asked)
+		}
+	})
+
+	t.Run("interactive decline is honored", func(t *testing.T) {
+		isInteractiveTerminalFn = func() bool { return true }
+		confirmDefaultNoFn = func(string) bool { return false }
+		if confirmUnitreeNetwork("enP8p1s0", false) {
+			t.Fatal("expected decline to not trust the network")
+		}
+	})
+}
