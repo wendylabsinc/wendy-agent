@@ -242,9 +242,14 @@ const ros2TopicInfoConcurrency = 8
 func (s *ROS2Service) fillROS2TopicCounts(ctx context.Context, sc ros2SC, topics []*agentpbv2.ROS2Topic) {
 	sem := make(chan struct{}, ros2TopicInfoConcurrency)
 	var wg sync.WaitGroup
+LOOP:
 	for _, t := range topics {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break LOOP
+		}
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(t *agentpbv2.ROS2Topic) {
 			defer wg.Done()
 			defer func() { <-sem }()
