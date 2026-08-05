@@ -66,6 +66,9 @@ func ensureGSTLaunchForHostOS(ctx context.Context, hostOS string) (string, error
 		return "", err
 	}
 	if instErr := installGStreamerFn(ctx); instErr != nil {
+		if instErr == ErrUserCancelled {
+			return "", instErr
+		}
 		return "", fmt.Errorf("installing GStreamer via Homebrew: %w", instErr)
 	}
 	return resolveGSTLaunch()
