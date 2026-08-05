@@ -78,10 +78,18 @@ func findConfigPartition(diskDev string) (string, error) {
 type configMount struct {
 	path string
 	// elevated is set when the mount is not writable by the invoking user.
-	// macOS ignores ownership on removable media (SD cards mount `noowners`,
-	// so the caller owns the view) but respects it on fixed/SSD-backed media
-	// — an NVMe SSD, or an SSD in a USB enclosure, the Jetson NVMe target —
-	// where diskarbitrationd mounts the volume root-owned.
+	//
+	// What decides it is per-volume ownership enforcement, not the bus or the
+	// media type: `diskutil enableOwnership`/`disableOwnership` toggle it and it
+	// persists in the OS volume database. It is off by default for plug-in disks
+	// (so SD cards and most USB enclosures mount `noowners` and the caller owns
+	// the view) and ON by default for built-in disks — which is why an internal
+	// NVMe target hits it, as PR #1262 found.
+	//
+	// When enforced, a vfat volume's files come out owned by an unmapped uid
+	// (-101/nobody, not root), so the unprivileged CLI cannot write — or even
+	// stat — inside the mount. Measured on an SSD in a USB enclosure with
+	// ownership enabled.
 	elevated bool
 	release  func()
 }
