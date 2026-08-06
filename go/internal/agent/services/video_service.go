@@ -303,6 +303,7 @@ type VideoService struct {
 	registry    *ipcam.Registry
 	credentials *ipcam.CredentialStore
 	discoverer  *ipcam.Discoverer
+	links       *ipcam.LinkManager
 
 	// runGStreamer is the injection seam for the network capture subprocess.
 	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
@@ -373,6 +374,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		logger.Warn("loading network camera credentials failed", zap.Error(err))
 	}
 	svc.discoverer = ipcam.NewDiscoverer(svc.registry, logger)
+	svc.links = ipcam.NewLinkManager(svc.registry, logger)
 	svc.runGStreamer = svc.gstreamerFrames
 	return svc
 }
@@ -382,13 +384,21 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 // cameras do not come and go quickly.
 const discoveryInterval = 60 * time.Second
 
-// StartDiscovery runs discovery rounds until the service context is cancelled.
-// Call once at agent start.
+// StartDiscovery runs discovery rounds and camera-link management until the
+// service context is cancelled. Call once at agent start.
 //
-// This finds cameras that already have an address. A camera cabled straight into
-// the device has none, because its segment has no DHCP server, and making that
-// case work is a separate change.
+// The link manager is what makes a directly-cabled camera work: such a camera
+// holds no address at all, because its segment has no DHCP server, so it never
+// answers a discovery probe. See ipcam.LinkGuard for the conditions under which
+// the agent is willing to be that server.
 func (s *VideoService) StartDiscovery() {
+	if s.links != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.links.Run(s.ctx)
+		}()
+	}
 	if s.discoverer == nil {
 		return
 	}

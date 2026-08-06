@@ -376,10 +376,27 @@ module and works on current releases.
 on, for scripts and continuous integration.
 
 Two things a network camera needs that a local one does not: a login, and an
-address. A camera cabled straight into the device gets no address unless something
-serves Dynamic Host Configuration Protocol (DHCP) on that link, which is the
-subject of a separate change; until then the camera must be on a network that
-already has a DHCP server.
+address. A camera cabled straight into the device gets no address at all, because
+that segment has no Dynamic Host Configuration Protocol (DHCP) server on it, so
+the agent becomes one — but only where that is safe.
+
+A link qualifies only when it has carrier, holds no IPv4 address of its own
+(which is what excludes the uplink), is not wireless or point-to-point, and has
+shown a DHCP DISCOVER that nothing answered for ten seconds. A single OFFER, ACK
+or NAK from any other server disqualifies the link permanently. Leases come from
+`10.98.<n>.0/24`, chosen over `192.168.x` because the latter collides with home
+and office networks often enough to send camera traffic out of the wrong
+interface.
+
+The agent logs each decision at info level, so `wendy device logs` answers "is it
+even watching that link":
+
+```text
+watching camera link for DHCP   {"link": "eth0"}
+dhcp seen on camera link        {"type": "DISCOVER", "mac": "...", "hostname": "RLC-520A"}
+serving DHCP on camera link     {"address": "10.98.0.1/24", "pool": "10.98.0.50+100"}
+camera leased an address        {"address": "10.98.0.50", "cameraId": "200"}
+```
 
 Diagnostics live behind the same command. `camera list` reports `needs login` for
 a camera with no stored credentials and `offline` for one the last probe could not
