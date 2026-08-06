@@ -91,7 +91,7 @@ var allowedKeys = map[string][]string{
 	EntitlementGPU:       {"type"},
 	EntitlementPersist:   {"type", "name", "path"},
 	EntitlementAudio:     {"type"},
-	EntitlementCamera:    {"type", "mode", "allowlist"},
+	EntitlementCamera:    {"type", "mode", "allowlist", "user", "password"},
 	EntitlementUSB:       {"type"},
 	EntitlementI2C:       {"type", "device"},
 	EntitlementGPIO:      {"type", "pins"},
@@ -320,6 +320,14 @@ type Entitlement struct {
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
 	Port      int           `json:"port,omitempty"`      // MCP
+	// User and Password are optional credentials for a network camera. Local
+	// cameras need none, so they are only consulted for an IP camera that reports
+	// it has no stored login. Supplying them here means an unattended deploy does
+	// not have to answer a prompt; leaving them out means the command line asks
+	// once and the agent remembers.
+	User     string `json:"user,omitempty"`     // Camera
+	Password string `json:"password,omitempty"` // Camera
+
 	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
 	// The agent derives the gateway from the bridge subnet separately; this
 	// field only carries the service CIDR policy.
