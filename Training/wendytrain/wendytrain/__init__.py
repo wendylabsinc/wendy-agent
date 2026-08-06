@@ -11,6 +11,7 @@ from .config import Config, load_config
 from .manifest import ManifestError, verify_manifest, write_manifest
 from .mesh import Fleet, derive_role, http_get, http_post, parse_peers, worker_slice
 from .run import Run
+from .service import serve
 
 __all__ = [
     "wire",
@@ -26,5 +27,6 @@ __all__ = [
     "ManifestError",
     "verify_manifest",
     "write_manifest",
+    "serve",
 ]
 
