@@ -62,13 +62,17 @@ All environment variables are read at startup. Restart the agent after changing 
 | `WENDY_OTEL_PORT` | `4317` | Port for the OTEL gRPC receiver |
 | `WENDY_OTEL_HTTP_PORT` | `4318` | Port for the OTEL HTTP/protobuf receiver |
 | `WENDY_NETWORK_MANAGER` | `auto` | Network manager preference: `auto`, `connman`, `networkmanager`, `force-connman`, `force-networkmanager` |
-| `WENDY_MTLS_ORG_ENFORCEMENT` | `grace` | mTLS client organization enforcement on the device's mTLS gate: `off` (no org check), `grace` (reject any client cert whose organization differs from the device's own org, but allow legacy certs that carry no org identity), `strict` (as `grace`, and additionally reject certs that carry no org identity). See note below. |
+| `WENDY_MTLS_ORG_ENFORCEMENT` | `strict` | mTLS client organization enforcement on the device's mTLS gate: `off` (no org check), `grace` (reject any client cert whose organization differs from the device's own org, but allow legacy certs that carry no org identity), `strict` (as `grace`, and additionally reject certs that carry no org identity). Unrecognized values also default to `strict`. See note below. |
 
 ### `WENDY_MTLS_ORG_ENFORCEMENT` migration
 
-The device derives its own organization from its provisioning certificate and rejects connecting client certificates from a different organization (WDY-1535). A client cert carries its org either as a SAN URI `urn:wendy:org:<org>:user:<id>` (newer certs) or, for devices, in the CN `sh/wendy/<org>/<asset>`.
+The device derives its own organization from its provisioning certificate and rejects connecting client certificates from a different organization. The default mode is `strict`: client certificates that carry no org identity are rejected.
 
-Until cloud-issued **user** certificates carry the org SAN URI, legacy user certs have no org identity. Run in the default `grace` mode during this window: cross-org certs that *do* carry an org are still rejected, while org-less legacy certs are allowed and logged at WARN. After user certs have rotated to carry the org SAN, switch to `strict` to also reject any cert lacking an org identity. If the device cannot determine its own org from its certificate, enforcement is disabled for safety and logged at ERROR.
+If your fleet has certs that predate org identity (no `urn:wendy:org:…` SAN URI and no org-bearing CN), set `WENDY_MTLS_ORG_ENFORCEMENT=grace` during the migration window. In `grace` mode, cross-org certs that *do* carry an org are still rejected, while org-less legacy certs are allowed and logged at WARN.
+
+After user certs have rotated to carry the org SAN URI, remove the override and let the agent run in the default `strict` mode. If the device cannot determine its own org from its certificate, enforcement is disabled for safety and logged at ERROR.
+
+An unrecognized value for `WENDY_MTLS_ORG_ENFORCEMENT` is treated as `strict` (fail-safe), and the agent logs a warning.
 
 ## gRPC Ports and Provisioning State
 

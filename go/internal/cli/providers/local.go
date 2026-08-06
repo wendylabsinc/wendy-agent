@@ -65,7 +65,7 @@ func (p *LocalProvider) CanBuild(projectPath string) bool {
 	return false
 }
 
-func (p *LocalProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *LocalProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	// Determine build strategy based on project markers.
 	if _, err := os.Stat(filepath.Join(projectPath, "Package.swift")); err == nil {
 		return p.buildSwift(ctx, device, projectPath, product, debug)
@@ -218,4 +218,8 @@ func (p *LocalProvider) Stop(_ context.Context, app *BuiltApp) error {
 		return bc.cmd.Process.Kill()
 	}
 	return nil
+}
+
+func (p *LocalProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
 }

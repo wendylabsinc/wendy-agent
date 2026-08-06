@@ -87,7 +87,7 @@ func (p *DockerProvider) CanBuild(projectPath string) bool {
 	return composeFile(projectPath) != ""
 }
 
-func (p *DockerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *DockerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	return p.BuildWithDockerfile(ctx, device, projectPath, product, "", "", debug)
 }
 
@@ -362,6 +362,10 @@ func (p *DockerProvider) Stop(ctx context.Context, app *BuiltApp) error {
 	}
 	cmd := exec.CommandContext(ctx, "docker", "stop", bc.ContainerName)
 	return cmd.Run()
+}
+
+func (p *DockerProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
 }
 
 // ContainerManager implementation for Docker Desktop.

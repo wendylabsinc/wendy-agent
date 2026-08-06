@@ -371,7 +371,7 @@ func playVideoWithGStreamer(ctx context.Context, stream videoStream) error {
 	}
 	codec := first.GetCodec()
 
-	gstPath, err := resolveGSTLaunch()
+	gstPath, err := ensureGSTLaunch(ctx)
 	if err != nil {
 		return err
 	}

@@ -368,6 +368,11 @@ func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	if !strings.Contains(joined, "video/x-raw,format=NV12") {
 		t.Errorf("expected NV12 capsfilter for nvv4l2h264enc: %v", args)
 	}
+	// Without nvvidconv the encoder rejects system-memory NV12 and a USB camera on a
+	// Jetson never streams.
+	if !strings.Contains(joined, "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc") {
+		t.Errorf("nvv4l2h264enc must be fed NVMM NV12 via nvvidconv: %v", args)
+	}
 }
 
 func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
@@ -442,6 +447,70 @@ bad:  h264parse: H.264 parser
 	}
 }
 
+// /dev/null is exactly what Thor ships as /dev/v4l2-nvenc: it opens, then rejects QUERYCAP.
+func TestV4L2NodeUsable(t *testing.T) {
+	if v4l2NodeUsable("/dev/null") {
+		t.Error("/dev/null must not pass as a V4L2 device")
+	}
+	if v4l2NodeUsable(t.TempDir() + "/absent") {
+		t.Error("a missing node must not pass")
+	}
+}
+
+// stubV4L2NodeUsable forces the hardware-encoder device probe for the test's duration.
+func stubV4L2NodeUsable(t *testing.T, usable bool) {
+	t.Helper()
+	prev := v4l2NodeUsable
+	v4l2NodeUsable = func(string) bool { return usable }
+	t.Cleanup(func() { v4l2NodeUsable = prev })
+}
+
+// Thor's exact element set: it registers nvv4l2h264enc but /dev/v4l2-nvenc is a /dev/null
+// stub, so the pipeline cannot preroll. Selection has to fall through to the software encoder.
+func TestFindGStreamerEncoder_SkipsNVENCWithUnusableNode(t *testing.T) {
+	stubV4L2NodeUsable(t, false)
+	available := map[string]bool{
+		"nvv4l2h264enc": true, "x264enc": true, "h264parse": true,
+		"vp8enc": true, "webmmux": true,
+	}
+
+	result, err := findGStreamerEncoderFromSet(available)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.element != "x264enc" {
+		t.Errorf("expected fallback to x264enc, got %q", result.element)
+	}
+}
+
+func TestFindGStreamerEncoder_UsesNVENCWithUsableNode(t *testing.T) {
+	stubV4L2NodeUsable(t, true)
+	available := map[string]bool{"nvv4l2h264enc": true, "x264enc": true, "h264parse": true}
+
+	result, err := findGStreamerEncoderFromSet(available)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.element != "nvv4l2h264enc" {
+		t.Errorf("expected nvv4l2h264enc, got %q", result.element)
+	}
+}
+
+// With only a stubbed encoder there is nothing to fall back to. Reporting that names the
+// remedy, where selecting it anyway produced an opaque preroll failure.
+func TestFindGStreamerEncoder_GatedEncoderIsNeverAFallback(t *testing.T) {
+	stubV4L2NodeUsable(t, false)
+	available := map[string]bool{"nvv4l2h264enc": true, "h264parse": true}
+
+	_, err := findGStreamerEncoderFromSet(available)
+	if err == nil {
+		t.Fatal("expected an error rather than selecting the gated encoder")
+	}
+	if !strings.Contains(err.Error(), "no supported GStreamer encoder found") {
+		t.Errorf("error should name the remedy, got: %v", err)
+	}
+}
+
 func TestFindGStreamerEncoder_PrefersX264(t *testing.T) {
 	tmpDir := t.TempDir()
 	script := tmpDir + "/gst-inspect-1.0"
@@ -491,6 +560,7 @@ func TestFindGStreamerEncoder_H264ParseDetection(t *testing.T) {
 }
 
 func TestFindGStreamerEncoder_PrefersNVV4L2OverOtherH264Encoders(t *testing.T) {
+	stubV4L2NodeUsable(t, true) // no NVENC node on the build host
 	tmpDir := t.TempDir()
 	script := tmpDir + "/gst-inspect-1.0"
 	listing := "x264:  x264enc: H264 video encoder\nvideo4linux2:  v4l2h264enc: V4L2 H264 encoder\nnvvideo4linux2:  nvv4l2h264enc: NVIDIA V4L2 H264 encoder\n"

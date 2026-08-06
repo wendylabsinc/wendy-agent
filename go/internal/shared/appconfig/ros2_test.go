@@ -69,6 +69,22 @@ func TestROS2Config_ResolvedDistro(t *testing.T) {
 	}
 }
 
+func TestROS2Config_ResolvedDiscoveryScope(t *testing.T) {
+	cases := map[string]string{
+		"":       ROS2DiscoveryScopeApp,
+		"app":    ROS2DiscoveryScopeApp,
+		"APP":    ROS2DiscoveryScopeApp,
+		"host":   ROS2DiscoveryScopeHost,
+		"HOST":   ROS2DiscoveryScopeHost,
+		"global": "",
+	}
+	for in, want := range cases {
+		if got := (&ROS2Config{DiscoveryScope: in}).ResolvedDiscoveryScope(); got != want {
+			t.Errorf("ResolvedDiscoveryScope(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestResolveROS2ConfigForService(t *testing.T) {
 	groupID, svcID := 1, 7
 	group := &ROS2Config{DomainID: &groupID}

@@ -1,23 +1,43 @@
 syntax = "proto3";
 
-// Response data for WENDY_COM_CMD_GET_PROTOCOL_VERSION
+// Protocol version, exchanged in the handshake. The major number must match
+// on both sides; minor is informational.
 message WendyComProtocolVersion {
     uint32 major = 1;
     uint32 minor = 2;
 }
 
-// Command parameter messages — empty ones serve as presence markers.
-message WendyComProtocolVersionParams {
-    uint32 major = 1;
-    uint32 minor = 2;
+// First message in each direction after connect. The host sends its version
+// with a fresh handshake_id; the device echoes handshake_id with its own
+// version, then eventually closes the connection if the host's major version
+// is unsupported. Commands are rejected until the handshake completes.
+message WendyComHandshake {
+    uint32                  handshake_id = 1;
+    WendyComProtocolVersion version      = 2;
 }
 
+// Command parameter messages — empty ones serve as presence markers.
 message WendyComPingParams {}
-message WendyComRebootParams {}
+
+// Params for WENDY_COM_CMD_REBOOT. app_auto_start defaults to true when
+// absent. Settings survive exactly one software reboot; a hardware boot
+// resets to defaults. The delay is measured from the end of device init;
+// an AppStart command received during the delay starts the app immediately.
+message WendyComRebootParams {
+    optional bool app_auto_start       = 1; // absent => true
+    uint32        app_auto_start_delay = 2; // milliseconds
+}
+
+// Type of app pushed by WENDY_COM_CMD_APP_PUSH_BEGIN — wasm when omitted.
+enum WendyComAppType {
+    WENDY_COM_APP_TYPE_WASM   = 0;
+    WENDY_COM_APP_TYPE_NATIVE = 1;
+}
 
 // Params for WENDY_COM_CMD_APP_PUSH_BEGIN
 message WendyComAppPushBeginParams {
-    uint32 size = 1;
+    uint32          size     = 1;
+    WendyComAppType app_type = 2;
 }
 
 // Params for WENDY_COM_CMD_APP_PUSH_DATA
@@ -30,6 +50,28 @@ message WendyComAppPushEndParams {}
 message WendyComAppStartParams {}
 message WendyComAppStopParams {}
 
+// Mode of the conf push started by WENDY_COM_CMD_CONF_PUSH_BEGIN — replace
+// when omitted. REPLACE makes the pushed blob the whole configuration; UPDATE
+// keeps the current value of root fields absent from the pushed blob.
+enum WendyComConfPushMode {
+    WENDY_COM_CONF_PUSH_MODE_REPLACE = 0;
+    WENDY_COM_CONF_PUSH_MODE_UPDATE  = 1;
+}
+
+// Params for WENDY_COM_CMD_CONF_PUSH_BEGIN
+message WendyComConfPushBeginParams {
+    uint32               size = 1; // total size of the encoded WendyConf blob
+    WendyComConfPushMode mode = 2;
+}
+
+// Params for WENDY_COM_CMD_CONF_PUSH_DATA
+message WendyComConfPushDataParams {
+    uint32 offset = 1;
+    bytes  data   = 2;
+}
+
+message WendyComConfPushEndParams {}
+
 message WendyComGetDeviceIdentityParams {}
 
 message WendyComDeviceIdentity {
@@ -38,19 +80,73 @@ message WendyComDeviceIdentity {
     string display_name = 3;
 }
 
-// Top-level command message — the oneof variant identifies the command.
+message WendyComGetDeviceInfoParams {}
+
+// Params for WENDY_COM_CMD_CONSOLE_ATTACH — start streaming console output as
+// WendyComConsoleData events carrying the given event_id. A repeated attach
+// with the same event_id refreshes the auto-detach deadline.
+message WendyComConsoleAttachParams {
+    uint32 event_id = 1;
+    uint32 duration = 2;   // milliseconds; 0 = no deadline (attach forever)
+    bool   blocking = 3;   // writers block when the capture buffer is full, instead of overwriting oldest data
+}
+
+// Params for WENDY_COM_CMD_CONSOLE_DETACH — stop streaming console output.
+message WendyComConsoleDetachParams {
+    uint32 event_id = 1;
+}
+
+enum WendyComConsoleIo {
+    WENDY_COM_CONSOLE_IO_STANDARD_INPUT  = 0;
+    WENDY_COM_CONSOLE_IO_STANDARD_OUTPUT = 1;
+    WENDY_COM_CONSOLE_IO_STANDARD_ERROR  = 2;
+}
+
+// Marks the start of a console stream, sent before the first
+// WendyComConsoleData event. Not implemented yet.
+message WendyComConsoleBegin {}
+
+// One chunk of console output, streamed as an event while attached.
+message WendyComConsoleData {
+    WendyComConsoleIo io   = 1;
+    bool              gap  = 2;  // data was lost before this chunk
+    bytes             data = 3;
+}
+
+// Marks the end of a console stream, sent after the last
+// WendyComConsoleData event. Not implemented yet.
+message WendyComConsoleEnd {}
+
+message WendyComDeviceInfo {
+    string os = 1; // typically "wendy-lite"
+    string os_version = 2;
+    string cpu_architecture = 3;
+    // Board can be "esp32c6", but this doesn't mean that this field contains
+    // the SoC name. Here "esp32c6" means "generic esp32c6 board". Should
+    // probably be replaced by "esp32c6-generic" in the future.
+    string board = 4;
+    bool wasm_app_support = 5;
+    bool native_app_support = 6;
+}
+
+// Command sent host -> device — the oneof variant identifies the command.
 message WendyComCommand {
     uint32 request_id = 1;
     oneof params {
-        WendyComProtocolVersionParams      protocol_version      = 2;
-        WendyComPingParams                 ping                  = 3;
-        WendyComRebootParams               reboot                = 4;
-        WendyComAppPushBeginParams         app_push_begin        = 5;
-        WendyComAppPushDataParams          app_push_data         = 6;
-        WendyComAppPushEndParams           app_push_end          = 7;
-        WendyComAppStartParams             app_start             = 8;
-        WendyComAppStopParams              app_stop              = 9;
-        WendyComGetDeviceIdentityParams    get_device_identity   = 10;
+        WendyComPingParams                 ping                  = 2;
+        WendyComRebootParams               reboot                = 3;
+        WendyComAppPushBeginParams         app_push_begin        = 4;
+        WendyComAppPushDataParams          app_push_data         = 5;
+        WendyComAppPushEndParams           app_push_end          = 6;
+        WendyComAppStartParams             app_start             = 7;
+        WendyComAppStopParams              app_stop              = 8;
+        WendyComGetDeviceIdentityParams    get_device_identity   = 9;
+        WendyComGetDeviceInfoParams        get_device_info       = 10;
+        WendyComConsoleAttachParams        console_attach        = 11;
+        WendyComConsoleDetachParams        console_detach        = 12;
+        WendyComConfPushBeginParams        conf_push_begin       = 13;
+        WendyComConfPushDataParams         conf_push_data        = 14;
+        WendyComConfPushEndParams          conf_push_end         = 15;
     }
 }
 
@@ -60,6 +156,9 @@ enum WendyComResult {
     WENDY_COM_RESULT_BAD_PROTOCOL_VERSION = 2;
     WENDY_COM_RESULT_BAD_STATE            = 3;
     WENDY_COM_RESULT_BUSY                 = 4;
+    WENDY_COM_RESULT_BAD_APP_TYPE         = 5;
+    WENDY_COM_RESULT_BAD_APP_SIZE         = 6;
+    WENDY_COM_RESULT_BAD_CONF_SIZE        = 7;
 }
 
 // Response to a WendyComCommand — request_id matches the request.
@@ -67,7 +166,68 @@ message WendyComResponse {
     uint32         request_id = 1;
     WendyComResult result     = 2;
     oneof data {
-        WendyComProtocolVersion  protocol_version  = 3;
-        WendyComDeviceIdentity   device_identity   = 4;
+        WendyComDeviceIdentity   device_identity   = 3;
+        WendyComDeviceInfo       device_info       = 4;
+    }
+}
+
+// Unsolicited device -> host or host -> device message.
+message WendyComEvent {
+    uint32 event_id = 1;
+    oneof data {
+        WendyComConsoleBegin console_begin = 2;
+        WendyComConsoleData  console_data  = 3;
+        WendyComConsoleEnd   console_end   = 4;
+    }
+}
+
+// Channel management. The channel these messages operate on is the one
+// carried by the channel byte of the frame header — OpenChannel arrives on
+// the channel being opened, CloseChannel on the one being closed — so the
+// bodies are empty presence markers. OpenChannel and CloseChannel are sent
+// host -> device; ChannelState is sent device -> host. Devices that don't
+// track channels may ignore these messages.
+message WendyComOpenChannel {}
+message WendyComCloseChannel {}
+
+// Reports the state of the channel carried by the frame's channel byte,
+// sent device -> host.
+message WendyComChannelOpen  {}
+message WendyComChannelClose {}
+
+enum WendyComChannelErrorReason {
+    WENDY_COM_CHANNEL_ERROR_REASON_NOT_OPEN = 0; // command received on a channel that is not open
+    WENDY_COM_CHANNEL_ERROR_REASON_REJECTED = 1; // service message not allowed (open/close refused)
+}
+
+message WendyComChannelError {
+    WendyComChannelErrorReason reason = 1;
+}
+
+message WendyComChannelState {
+    oneof state {
+        WendyComChannelOpen  open  = 1;
+        WendyComChannelClose close = 2;
+        WendyComChannelError error = 3;
+    }
+}
+
+message WendyComService {
+    oneof cmd {
+        WendyComOpenChannel  open_channel  = 1;
+        WendyComCloseChannel close_channel = 2;
+        WendyComChannelState channel_state = 3;
+    }
+}
+
+// Base wrapper — every frame body, in either direction, is exactly one of
+// these.
+message WendyComMessage {
+    oneof msg {
+        WendyComHandshake handshake = 1;
+        WendyComService   service   = 2;
+        WendyComCommand   command   = 3;
+        WendyComResponse  response  = 4;
+        WendyComEvent     event     = 5;
     }
 }

@@ -5,7 +5,7 @@ It runs locally and is read-only by default. It works on a single Dockerfile, a 
 ## What it checks
 
 - **Build caches** — compiled-language build/install steps (`cargo`, `go`, `swift`, `npm`/`yarn`/`pnpm`, `pip`) that run without a BuildKit `--mount=type=cache`, and so re-download or re-compile dependencies on every build.
-- **Release vs. debug** — debug builds shipped to production (`swift build` without `-c release`, `cargo build` without `--release`), and whether `WENDY_DEBUG` is wired to toggle the optimization level.
+- **Release vs. debug** — debug builds shipped to production (`swift build` without `-c release`, `cargo build` without `--release`), and whether `WENDY_DEBUG` is wired to toggle the optimization level. For Swift apps cross-compiled via `wendy run`/`wendy build` (the swift-container-plugin path), the CLI passes `-c release` automatically; no manual `wendy.json` or Dockerfile change is needed for that path.
 - **CUDA / ML** — a CPU-only ML wheel (e.g. `torch==…+cpu`) paired with the `gpu` entitlement (or a CUDA wheel without it), and x86 `nvidia/cuda` base images on an arm64 (Jetson) target.
 - **Architecture & image** — an `amd64` base image on an arm64 device (which runs under slow QEMU emulation or fails), a missing `.dockerignore`, and single-stage builds that ship their full build toolchain.
 

@@ -195,7 +195,7 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 //
 // Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
 // means "don't skip it".
-func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
 	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
@@ -209,7 +209,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		if err != nil {
 			continue
 		}
-		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs)
+		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs, expandServiceEnv(appCfg, svc))
 		if err != nil {
 			continue
 		}
@@ -309,7 +309,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// presence, so this currently skips nothing for multi-service; see
 	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
-	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
+	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
 	if n := len(skip); n > 0 {
 		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
@@ -397,7 +397,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
-			Env:           expandServiceEnv(svc),
+			Env:           expandServiceEnv(appCfg, svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)
@@ -735,6 +735,11 @@ func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *app
 	if svc.Frameworks != nil {
 		cfg.Frameworks = svc.Frameworks
 	}
+	// The per-service config carries no services map, so the agent's
+	// ResolveResourcesForService has nothing to merge — resolve the app-level
+	// default against this service's override here instead. Without this the
+	// container is created with no limits at all (WDY-1729).
+	cfg.Resources = appCfg.ResolveResourcesForService(name)
 	return cfg
 }
 

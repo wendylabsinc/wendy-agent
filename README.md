@@ -1,8 +1,53 @@
+# WendyOS
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+![NVIDIA Jetson Orin Nano](https://img.shields.io/badge/NVIDIA-Jetson%20Orin%20Nano-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Orin](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Orin-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Thor](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Thor-76B900?logo=nvidia&logoColor=white)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-Supported-E95420?logo=ubuntu&logoColor=white)
+![Arch Linux](https://img.shields.io/badge/Arch%20Linux-Supported-1793D1?logo=arch-linux&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-Supported-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-Supported-0078D6?logo=windows&logoColor=white)
+
+### Ship AI apps to robots, drones, and edge devices like you ship an app to a phone.
+
+⭐ Star WendyOS to follow new hardware support and one-command robotics templates.
+
+No need to spend hundreds of dollars on a monitor, a DisplayPort-to-HDMI adapter, a keyboard, or a mouse.
+Plug in your device over USB-C from your Mac, Windows, or Linux machine, run `wendy run`, and your app builds, deploys, and streams logs back to your laptop.
+No SD card juggling, no SSH setup, no internet required on the device.
+
 <p align="center">
-  <img src="docs/media/demo.gif" alt="Wendy on NVIDIA Jetson" width="360">
+  <img src="go/internal/cli/assets/docs/media/overhead-quick-install.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="640">
+  <br>
+  <em><code>wendy run</code> building and deploying an app to a Jetson over USB-C, with live logs.</em>
 </p>
 
-Visit our developer docs at https://docs.wendy.dev/latest
+[![Latest Release](https://img.shields.io/github/v/release/wendylabsinc/wendyos)](https://github.com/wendylabsinc/wendyos/releases)
+[![License](https://img.shields.io/github/license/wendylabsinc/wendyos)](LICENSE)
+[![Go Tests](https://github.com/wendylabsinc/wendyos/actions/workflows/go-tests.yml/badge.svg)](https://github.com/wendylabsinc/wendyos/actions/workflows/go-tests.yml)
+
+Full developer docs: https://docs.wendy.dev/latest
+
+## Quick start
+
+```sh
+# 1. Install the CLI (macOS or Linux)
+curl -fsSL https://install.wendy.dev/cli.sh | bash
+
+# 2. Flash WendyOS to your Jetson or Raspberry Pi (downloads the image,
+#    writes the drive, and pre-seeds WiFi config)
+wendy os install
+
+# 3. Plug the device in over USB-C, then find it
+wendy discover
+
+# 4. Build, deploy, and stream logs from any app with a Dockerfile
+wendy run
+```
+
+Try it with the sample apps in [Examples](Examples/), including GPU, DeepStream
+vision, and HTTP server examples.
 
 # Install
 
@@ -48,6 +93,10 @@ Use the CLI to install WendyOS on supported hardware:
 wendy os install
 ```
 
+<p align="center">
+  <img src="go/internal/cli/assets/docs/media/demo.gif" alt="Installing WendyOS on a device with wendy os install" width="360">
+</p>
+
 The installer can download WendyOS images, write them to the selected target
 drive, and pre-seed device configuration such as WiFi credentials. WendyOS
 images come preconfigured for remote development and include `wendy-agent`.
@@ -89,11 +138,23 @@ containerd is installed and running:
 sudo systemctl enable --now containerd
 ```
 
+## Supported Platforms
+
+| Hardware         | Install | Deploy |    GPU | Camera | Status  |
+| ---------------- | ------: | -----: | -----: | -----: | ------- |
+| Jetson Orin Nano |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
+| Jetson AGX Orin  |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
+| Raspberry Pi 5   |       ✅ |      ✅ |      — |      ✅ | Stable  |
+| Jetson AGX Thor  |       ✅ |      ✅ |      ✅ |      ✅ | Preview |
+| Standard Linux   |   Agent |      ✅ | Varies | Varies | Stable  |
+| ESP32 Wendy Lite |   Flash |      ✅ |      — | Varies | Preview |
+
+
 ## Building from Source
 
-For the full developer workflow — running a dev CLI and agent, tests, protobuf
+For the full developer workflow (running a dev CLI and agent, tests, protobuf
 regeneration, testing WendyOS builds from a PR (`--pr`), and environment
-variables — see [DEVELOPMENT.md](DEVELOPMENT.md).
+variables) see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ### CLI
 

@@ -1,0 +1,20 @@
+{
+    "appId": "sh.wendy.ci.python-multiservice-env",
+    "version": "1.0.0",
+    "env": {
+        "CI_ENV_SHARED": "from-app",
+        "CI_ENV_OVERRIDE": "app-level"
+    },
+    "services": {
+        "alpha": {
+            "context": "alpha"
+        },
+        "beta": {
+            "context": "beta",
+            "env": {
+                "CI_ENV_OVERRIDE": "beta-level",
+                "CI_ENV_BETA_ONLY": "beta-extra"
+            }
+        }
+    }
+}

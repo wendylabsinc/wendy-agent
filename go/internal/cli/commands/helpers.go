@@ -941,11 +941,23 @@ func connectResolvedAgent(ctx context.Context, hostname, addr string, isDefault 
 
 func connectResolvedAgentWithProvisionedHint(ctx context.Context, hostname, addr string, isDefault bool, provisionedMTLS func() bool) (*grpcclient.AgentConnection, error) {
 	if isDefault && !jsonOutput && isInteractiveTerminal() {
-		return runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
+		conn, err := runAgentConnectionSpinner(ctx, defaultDeviceSearchLabel(hostname), func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectAgentAtAddressWithProvisionedHint(spinCtx, addr, provisionedMTLS)
 		})
+		if err != nil {
+			// The unreachable-default paths report the hostname themselves.
+			return nil, err
+		}
+		// The spinner above clears once it succeeds, so without this the choice
+		// of device leaves no trace.
+		noteImplicitDevice(hostname, implicitDefaultDevice)
+		return conn, nil
 	}
-	return connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, provisionedMTLS)
+	if err == nil && isDefault {
+		noteImplicitDevice(hostname, implicitDefaultDevice)
+	}
+	return conn, err
 }
 
 // connectToAgent establishes a gRPC connection to the target device.
@@ -2245,19 +2257,20 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			hint = lanNoAccessHint(&devCopy, dev.AgentVersion)
 		}
 		p.Send(tui.PickerAddMsg{Items: []tui.PickerItem{{
-			Name:         dev.DisplayName,
-			Type:         "LAN",
-			USB:          dev.USB,
-			Address:      preferredLANAddress(dev),
-			AgentVersion: dev.AgentVersion,
-			OS:           dev.OS,
-			OSVersion:    dev.OSVersion,
-			Provisioned:  lanProvisionedDisplay(&devCopy),
-			Hint:         hint,
-			Probe:        probe,
-			DedupKey:     deviceDedupKey(dev.HostKey(), dev.DisplayName),
-			SortKey:      deviceSortKey(dev.DisplayName, dev.USB),
-			Insecure:     insecure,
+			Name:          dev.DisplayName,
+			Type:          "LAN",
+			USB:           dev.USB,
+			Address:       preferredLANAddress(dev),
+			AgentVersion:  dev.AgentVersion,
+			AgentOutdated: agentBehindCLI(version.Version, dev.AgentVersion),
+			OS:            dev.OS,
+			OSVersion:     dev.OSVersion,
+			Provisioned:   lanProvisionedDisplay(&devCopy),
+			Hint:          hint,
+			Probe:         probe,
+			DedupKey:      deviceDedupKey(dev.HostKey(), dev.DisplayName),
+			SortKey:       deviceSortKey(dev.DisplayName, dev.USB),
+			Insecure:      insecure,
 			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 				DisplayName:     dev.DisplayName,
 				AgentVersion:    dev.AgentVersion,
@@ -2369,14 +2382,16 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 							connType = "BLE (Lite)"
 						}
 						items = append(items, tui.PickerItem{
-							Name:         bleDevices[i].DisplayName,
-							DedupKey:     deviceDedupKey(bleDevices[i].HostKey(), bleDevices[i].DisplayName),
-							SortKey:      deviceSortKey(bleDevices[i].DisplayName, ""),
-							Type:         connType,
-							Address:      bleDevices[i].Address,
-							AgentVersion: bleDevices[i].AgentVersion,
-							OS:           bleDevices[i].OS,
-							OSVersion:    bleDevices[i].OSVersion,
+							Name:     bleDevices[i].DisplayName,
+							DedupKey: deviceDedupKey(bleDevices[i].HostKey(), bleDevices[i].DisplayName),
+							SortKey:  deviceSortKey(bleDevices[i].DisplayName, ""),
+							Type:     connType,
+							Address:  bleDevices[i].Address,
+							// A Lite device reports firmware here, not an agent version.
+							AgentVersion:  bleDevices[i].AgentVersion,
+							AgentOutdated: bleDevices[i].IsWendyAgent() && agentBehindCLI(version.Version, bleDevices[i].AgentVersion),
+							OS:            bleDevices[i].OS,
+							OSVersion:     bleDevices[i].OSVersion,
 							Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
 								DisplayName:     bleDevices[i].DisplayName,
 								AgentVersion:    bleDevices[i].AgentVersion,

@@ -32,7 +32,32 @@ BUILDKITD_PID=""
 # container log stream, rather than an unbounded /var/log file: the container
 # runtime's log driver bounds and rotates it, so a chatty or misbehaving daemon
 # can't fill the writable layer / persist volume and wedge the container.
+# buildkitd's lock lives in /var/lib/buildkit, which is a PERSIST volume, so it
+# outlives the container. Any unclean stop — SIGKILL, a crash-loop, a host reboot
+# — leaves it behind, and buildkitd then refuses to start forever:
+#
+#   buildkitd: could not lock /var/lib/buildkit/buildkitd.lock, another instance running?
+#
+# The supervisor below would retry that failure indefinitely, so on-device
+# building stays permanently dead while the container itself looks healthy. It
+# surfaces much later as a confusing builder error from `wendy run`, not as
+# anything pointing at a lock. Observed on spark-3011 after the container
+# crash-looped.
+#
+# Only this container uses the volume (a per-app persist mount), so if our own
+# daemon is not running, any lock present is by definition stale.
+clear_stale_lock() {
+  if [ -n "$BUILDKITD_PID" ] && kill -0 "$BUILDKITD_PID" 2>/dev/null; then
+    return
+  fi
+  if [ -e /var/lib/buildkit/buildkitd.lock ]; then
+    echo "note: clearing stale buildkitd.lock (no buildkitd running)" >&2
+    rm -f /var/lib/buildkit/buildkitd.lock
+  fi
+}
+
 start_buildkitd() {
+  clear_stale_lock
   buildkitd \
     ${BUILDKIT_SNAPSHOTTER:+--oci-worker-snapshotter="$BUILDKIT_SNAPSHOTTER"} \
     >&2 2>&1 &

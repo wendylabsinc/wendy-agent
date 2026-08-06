@@ -71,7 +71,7 @@ FROM ${WENDY_PLATFORM}-base-image
 ### Swift Package Manager projects
 
 - **macOS target**: builds locally with `swift build` and syncs the binary to the device.
-- **Container target (WendyOS / Docker)**: uses [swift-container-plugin](https://github.com/apple/swift-container-plugin) to cross-compile the app for the target device architecture. The plugin takes a Swift base container image and appends your compiled executable and bundle resources.
+- **Container target (WendyOS / Docker)**: uses [swift-container-plugin](https://github.com/apple/swift-container-plugin) to cross-compile the app for the target device architecture. The plugin takes a Swift base container image and appends your compiled executable and bundle resources. The cross-compile runs in **release** configuration by default; pass `--debug` to build in debug configuration instead.
 
 ### Xcode projects
 

@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WendyAudioService_ListAudioDevices_FullMethodName      = "/wendy.agent.services.v2.WendyAudioService/ListAudioDevices"
 	WendyAudioService_SetDefaultAudioDevice_FullMethodName = "/wendy.agent.services.v2.WendyAudioService/SetDefaultAudioDevice"
+	WendyAudioService_SetAudioVolume_FullMethodName        = "/wendy.agent.services.v2.WendyAudioService/SetAudioVolume"
 	WendyAudioService_StreamAudioLevels_FullMethodName     = "/wendy.agent.services.v2.WendyAudioService/StreamAudioLevels"
 	WendyAudioService_StreamAudio_FullMethodName           = "/wendy.agent.services.v2.WendyAudioService/StreamAudio"
 )
@@ -31,6 +32,7 @@ const (
 type WendyAudioServiceClient interface {
 	ListAudioDevices(ctx context.Context, in *ListAudioDevicesRequest, opts ...grpc.CallOption) (*ListAudioDevicesResponse, error)
 	SetDefaultAudioDevice(ctx context.Context, in *SetDefaultAudioDeviceRequest, opts ...grpc.CallOption) (*SetDefaultAudioDeviceResponse, error)
+	SetAudioVolume(ctx context.Context, in *SetAudioVolumeRequest, opts ...grpc.CallOption) (*SetAudioVolumeResponse, error)
 	StreamAudioLevels(ctx context.Context, in *StreamAudioLevelsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AudioLevelUpdate], error)
 	StreamAudio(ctx context.Context, in *StreamAudioRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[AudioChunk], error)
 }
@@ -57,6 +59,16 @@ func (c *wendyAudioServiceClient) SetDefaultAudioDevice(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetDefaultAudioDeviceResponse)
 	err := c.cc.Invoke(ctx, WendyAudioService_SetDefaultAudioDevice_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *wendyAudioServiceClient) SetAudioVolume(ctx context.Context, in *SetAudioVolumeRequest, opts ...grpc.CallOption) (*SetAudioVolumeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetAudioVolumeResponse)
+	err := c.cc.Invoke(ctx, WendyAudioService_SetAudioVolume_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -107,6 +119,7 @@ type WendyAudioService_StreamAudioClient = grpc.ServerStreamingClient[AudioChunk
 type WendyAudioServiceServer interface {
 	ListAudioDevices(context.Context, *ListAudioDevicesRequest) (*ListAudioDevicesResponse, error)
 	SetDefaultAudioDevice(context.Context, *SetDefaultAudioDeviceRequest) (*SetDefaultAudioDeviceResponse, error)
+	SetAudioVolume(context.Context, *SetAudioVolumeRequest) (*SetAudioVolumeResponse, error)
 	StreamAudioLevels(*StreamAudioLevelsRequest, grpc.ServerStreamingServer[AudioLevelUpdate]) error
 	StreamAudio(*StreamAudioRequest, grpc.ServerStreamingServer[AudioChunk]) error
 	mustEmbedUnimplementedWendyAudioServiceServer()
@@ -124,6 +137,9 @@ func (UnimplementedWendyAudioServiceServer) ListAudioDevices(context.Context, *L
 }
 func (UnimplementedWendyAudioServiceServer) SetDefaultAudioDevice(context.Context, *SetDefaultAudioDeviceRequest) (*SetDefaultAudioDeviceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetDefaultAudioDevice not implemented")
+}
+func (UnimplementedWendyAudioServiceServer) SetAudioVolume(context.Context, *SetAudioVolumeRequest) (*SetAudioVolumeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetAudioVolume not implemented")
 }
 func (UnimplementedWendyAudioServiceServer) StreamAudioLevels(*StreamAudioLevelsRequest, grpc.ServerStreamingServer[AudioLevelUpdate]) error {
 	return status.Error(codes.Unimplemented, "method StreamAudioLevels not implemented")
@@ -188,6 +204,24 @@ func _WendyAudioService_SetDefaultAudioDevice_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WendyAudioService_SetAudioVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetAudioVolumeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyAudioServiceServer).SetAudioVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyAudioService_SetAudioVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyAudioServiceServer).SetAudioVolume(ctx, req.(*SetAudioVolumeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WendyAudioService_StreamAudioLevels_Handler(srv interface{}, stream grpc.ServerStream) error {
 	m := new(StreamAudioLevelsRequest)
 	if err := stream.RecvMsg(m); err != nil {
@@ -224,6 +258,10 @@ var WendyAudioService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetDefaultAudioDevice",
 			Handler:    _WendyAudioService_SetDefaultAudioDevice_Handler,
+		},
+		{
+			MethodName: "SetAudioVolume",
+			Handler:    _WendyAudioService_SetAudioVolume_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

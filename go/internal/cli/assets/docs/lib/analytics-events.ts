@@ -44,9 +44,6 @@ export function trackDocsAnalyticsEvent<T extends DocsAnalyticsEventName>(
 ) {
   if (typeof window === 'undefined' || typeof window.gtag !== 'function') return;
 
-  // Consent state is handled centrally through Google Consent Mode. The docs
-  // bootstrap defaults analytics storage to denied and this helper does not keep
-  // a separate JS-writable consent store.
   window.gtag('event', eventName, {
     ...params,
     // Docs install-copy events intentionally share the marketing-site GA4 schema.
