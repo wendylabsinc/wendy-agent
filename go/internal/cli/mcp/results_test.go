@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
 func TestOkResult_HasStructuredAndJSONText(t *testing.T) {
@@ -133,5 +135,58 @@ func TestOkTextBounded_PassesSmall(t *testing.T) {
 	r := okTextBounded("hello", "", 100000)
 	if toolResultText(t, r) != "hello" {
 		t.Error("under-cap text should be returned verbatim")
+	}
+}
+
+// A poorly-behaved or malicious container-supplied MCP tool could return an
+// arbitrarily large payload; capProxiedResult must bound it the same way
+// okResultBounded/okTextBounded bound wendy's own tools.
+func TestCapProxiedResult_TruncatesOversize(t *testing.T) {
+	big := mcpgo.NewToolResultText(strings.Repeat("a", 1000))
+	r := capProxiedResult(big, 200)
+	if r == big {
+		t.Fatal("expected a new, bounded result, got the original pointer back")
+	}
+	sc, ok := r.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected truncation envelope map, got %T", r.StructuredContent)
+	}
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+	if !strings.Contains(toolResultText(t, r), "truncated") {
+		t.Error("expected a truncation note in the text fallback")
+	}
+}
+
+// Oversized error results (isError=true) must still surface as errors after
+// truncation — bounding output size is not license to swallow the error flag.
+func TestCapProxiedResult_PreservesIsErrorOnTruncation(t *testing.T) {
+	big := mcpgo.NewToolResultError(strings.Repeat("e", 1000))
+	r := capProxiedResult(big, 200)
+	if !r.IsError {
+		t.Error("expected IsError to survive truncation")
+	}
+}
+
+func TestCapProxiedResult_PassesSmallUnchanged(t *testing.T) {
+	small := mcpgo.NewToolResultText("hello")
+	r := capProxiedResult(small, defaultProxyMaxBytes)
+	if r != small {
+		t.Fatal("expected the original result to be returned unchanged for a small payload")
+	}
+}
+
+func TestCapProxiedResult_NilPassesThrough(t *testing.T) {
+	if r := capProxiedResult(nil, defaultProxyMaxBytes); r != nil {
+		t.Fatalf("expected nil to pass through, got %v", r)
+	}
+}
+
+func TestCapProxiedResult_ZeroMaxBytesDisablesCap(t *testing.T) {
+	big := mcpgo.NewToolResultText(strings.Repeat("a", 1000))
+	r := capProxiedResult(big, 0)
+	if r != big {
+		t.Fatal("maxBytes<=0 should disable the cap and return the original result")
 	}
 }

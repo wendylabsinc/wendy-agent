@@ -98,3 +98,46 @@ func okTextBounded(s, hint string, maxBytes int) *mcpgo.CallToolResult {
 	}
 	return okText(s)
 }
+
+// defaultProxyMaxBytes bounds the size of a result proxied in from a
+// container's own MCP server (see connectContainerMCPTools in server.go).
+// Unlike wendy's native tools, a container-supplied tool's output shape is
+// not under our control — a poorly-behaved or malicious app could return an
+// arbitrarily large payload (e.g. dumping a huge file or log) straight into
+// the calling LLM's context. This mirrors the 100000-byte default the native
+// tools pass to okResultBounded/okTextBounded (see tools_container.go,
+// tools_cloud.go, tools_telemetry.go) so proxied tools get the same
+// truncation discipline.
+const defaultProxyMaxBytes = 100000
+
+// capProxiedResult enforces maxBytes on a *mcpgo.CallToolResult returned by a
+// proxied container MCP tool. If the serialized result fits under the cap it
+// is returned unchanged (same pointer); otherwise its content is replaced
+// with a truncation envelope in the same spirit as okResultBounded's, so
+// callers get the same truncation signal for proxied tools as for wendy's
+// own bounded ones. IsError is preserved so error results still surface as
+// errors, just with bounded content. maxBytes <= 0 disables the cap. A nil
+// result is passed through untouched.
+func capProxiedResult(result *mcpgo.CallToolResult, maxBytes int) *mcpgo.CallToolResult {
+	if result == nil || maxBytes <= 0 {
+		return result
+	}
+	b, err := json.Marshal(result)
+	if err != nil || len(b) <= maxBytes {
+		// If we can't even measure it, don't fail the call over a bounding
+		// concern — pass it through as-is.
+		return result
+	}
+	env := map[string]any{
+		"truncated": true,
+		"max_bytes": maxBytes,
+		"bytes":     len(b),
+		"note":      "proxied container tool output exceeded max_bytes; ask the app's tool for a narrower result",
+	}
+	eb, _ := json.MarshalIndent(env, "", "  ")
+	return &mcpgo.CallToolResult{
+		Content:           []mcpgo.Content{mcpgo.NewTextContent(string(eb))},
+		StructuredContent: env,
+		IsError:           result.IsError,
+	}
+}
