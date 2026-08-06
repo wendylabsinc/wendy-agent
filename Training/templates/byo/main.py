@@ -15,8 +15,11 @@ from wendytrain import Fleet, serve
 
 
 def main() -> None:
+    # Enumerated ${VAR} passthrough in wendy.json can deliver unset variables
+    # as empty strings; treat empty as unset so every default applies.
+    env = {k: v for k, v in os.environ.items() if v != ""}
     try:
-        fleet = Fleet.from_env()
+        fleet = Fleet.from_env(env)
     except ValueError as exc:
         raise SystemExit(f"cannot resolve the layer-0 contract: {exc}") from exc
 

@@ -454,8 +454,10 @@ def learner_target(env: Mapping[str, str]) -> str:
 
 
 def main() -> None:
-    env = os.environ
-    cfg = load_config(DEFAULTS)
+    # Enumerated ${VAR} passthrough in wendy.json can deliver unset variables
+    # as empty strings; treat empty as unset so every default applies.
+    env = {k: v for k, v in os.environ.items() if v != ""}
+    cfg = load_config(DEFAULTS, env=env)
     fleet = mesh.Fleet.from_env(env)
     role = {"coordinator": "learner", "worker": "actor"}.get(fleet.role, fleet.role)
     if role not in ("learner", "actor"):

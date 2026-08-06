@@ -174,9 +174,12 @@ def serve_result(result: dict, port: int, host: str = "0.0.0.0"):
 
 
 def main() -> None:
-    workers = int(os.environ.get("WT_WORKERS", "0")) or None
-    result = train_member(workers=workers)
-    port = int(os.environ.get("MESH_PORT", "8080"))
+    # Enumerated ${VAR} passthrough in wendy.json can deliver unset variables
+    # as empty strings; treat empty as unset so every default applies.
+    env = {k: v for k, v in os.environ.items() if v != ""}
+    workers = int(env.get("WT_WORKERS", "0")) or None
+    result = train_member(env=env, workers=workers)
+    port = int(env.get("MESH_PORT", "8080"))
     server = serve_result(result, port)
     print(
         f"[sweep] member {result['sweep_index']} finished, serving /result on "

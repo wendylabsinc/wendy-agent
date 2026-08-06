@@ -220,3 +220,21 @@ class TestTrainLoop:
         pooled = Run(tmp_path / "pool", "run")
         train.train_loop(make_cfg(base), pooled, workers=2)
         assert np.array_equal(load_policy(serial)[0]["theta"], load_policy(pooled)[0]["theta"])
+
+
+def test_empty_environment_values_are_treated_as_unset(monkeypatch, tmp_path):
+    """Enumerated ${VAR} passthrough can deliver unset variables as "".
+
+    Found while documenting: with WT_WORKERS="" the previous main crashed on
+    int(""). The contract is that empty means unset and defaults apply.
+    """
+
+    monkeypatch.setenv("WT_WORKERS", "")
+    monkeypatch.setenv("WT_ES__POP", "")
+    monkeypatch.setenv("WT_ES__SIGMA", "")
+    monkeypatch.setenv("WT_POLICY__HIDDEN", "[8]")
+    monkeypatch.setenv("WT_RUN_ID", "empty-env")
+    monkeypatch.setenv("WT_CKPT_DIR", str(tmp_path))
+    monkeypatch.setenv("WT_RUN__MAX_ITERATIONS", "1")
+    train.main()
+    assert (tmp_path / "empty-env").is_dir()
