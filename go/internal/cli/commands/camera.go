@@ -261,24 +261,26 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				Height:    height,
 				Framerate: fps,
 			}
-			stream, err := conn.VideoService.StreamVideo(ctx, req)
-			// A network camera that has no stored login says so in a way we can
-			// act on: supply one from wendy.json or a prompt, then try again. A
-			// local camera never takes this path.
-			if needsLogin, ok := cameraNeedsCredentials(err); ok {
+			startStream := func() (videoStream, error) {
+				return conn.VideoService.StreamVideo(ctx, req)
+			}
+			resolveCredentials := func(needsLogin uint32) error {
 				cwd, cwdErr := os.Getwd()
 				if cwdErr != nil {
 					cwd = "."
 				}
-				if credErr := resolveCameraCredentials(ctx, cmd,
+				return resolveCameraCredentials(ctx, cmd,
 					func(c context.Context, r *agentpb.SetCameraCredentialsRequest) error {
 						_, setErr := conn.VideoService.SetCameraCredentials(c, r)
 						return setErr
-					}, needsLogin, cwd, cameraPromptAllowed()); credErr != nil {
-					return credErr
-				}
-				stream, err = conn.VideoService.StreamVideo(ctx, req)
+					}, needsLogin, cwd, cameraPromptAllowed())
 			}
+
+			// Server-streaming status errors normally arrive on the first Recv,
+			// not while constructing the stream. Wrap both phases so a missing IP
+			// camera login is resolved and retried exactly once wherever gRPC
+			// surfaces it. Local cameras never take this path.
+			stream, err := streamVideoWithCredentialRetry(startStream, resolveCredentials)
 			if err != nil {
 				return fmt.Errorf("starting video stream: %w", cameraStreamDiagnostic(err))
 			}

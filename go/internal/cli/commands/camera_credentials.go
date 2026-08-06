@@ -68,6 +68,66 @@ func cameraNeedsCredentials(err error) (uint32, bool) {
 	return 0, false
 }
 
+// streamVideoWithCredentialRetry starts a camera stream and resolves a missing
+// network-camera login exactly once, whether gRPC reports it while constructing
+// the server stream or on the first Recv call. grpc-go normally uses the latter
+// path for server-handler status errors.
+func streamVideoWithCredentialRetry(
+	start func() (videoStream, error),
+	resolve func(deviceID uint32) error,
+) (videoStream, error) {
+	stream, err := start()
+	attempted := false
+	if deviceID, ok := cameraNeedsCredentials(err); ok {
+		attempted = true
+		if err := resolve(deviceID); err != nil {
+			return nil, err
+		}
+		stream, err = start()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &cameraCredentialRetryStream{
+		stream:    stream,
+		start:     start,
+		resolve:   resolve,
+		attempted: attempted,
+	}, nil
+}
+
+// cameraCredentialRetryStream intercepts the first receive-side credentials
+// error. Once a retry has been attempted, every result passes through unchanged
+// so a bad login cannot trigger an infinite prompt loop.
+type cameraCredentialRetryStream struct {
+	stream    videoStream
+	start     func() (videoStream, error)
+	resolve   func(deviceID uint32) error
+	attempted bool
+}
+
+func (s *cameraCredentialRetryStream) Recv() (*agentpb.VideoFrame, error) {
+	frame, err := s.stream.Recv()
+	if s.attempted {
+		return frame, err
+	}
+	deviceID, ok := cameraNeedsCredentials(err)
+	if !ok {
+		return frame, err
+	}
+
+	s.attempted = true
+	if err := s.resolve(deviceID); err != nil {
+		return nil, err
+	}
+	next, err := s.start()
+	if err != nil {
+		return nil, err
+	}
+	s.stream = next
+	return s.stream.Recv()
+}
+
 // errNoCameraCredentials is returned when neither wendy.json nor a terminal can
 // supply a login.
 var errNoCameraCredentials = errors.New("no camera credentials available")

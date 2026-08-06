@@ -101,8 +101,10 @@ func RedactURL(rawurl string) string {
 	return u.String()
 }
 
-// PipelineArgs returns the gst-launch-1.0 arguments that pull an RTSP stream and
-// write Annex-B H.264 to stdout.
+// PipelineArgs returns GStreamer pipeline tokens that pull an RTSP stream and
+// write Annex-B H.264 to a file descriptor. The agent feeds these tokens to the
+// GStreamer library in-process, rather than putting the credential-bearing URL
+// in a child process's command line.
 //
 // There is deliberately no decode or encode element: the camera already emits
 // H.264, and the agent's job is to depayload it and hand the bytes to the same
