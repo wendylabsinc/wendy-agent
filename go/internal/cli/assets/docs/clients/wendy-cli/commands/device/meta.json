@@ -7,6 +7,7 @@
     "top",
     "info",
     "tunnel",
+    "ping",
     "set-default",
     "unset-default",
     "update",
