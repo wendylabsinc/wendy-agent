@@ -2366,6 +2366,37 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 	return writeConfigPartition(d, agentBinary, creds, deviceName, provisioningJSON)
 }
 
+// maxFlashAttempts bounds installESP32Firmware's retry loop so a permanently
+// unresolvable failure (an unkillable port holder, a device that never comes
+// back) stops instead of looping on default-Yes prompts forever.
+const maxFlashAttempts = 5
+
+// flashRetryAction decides what happens after a flash attempt finished with
+// flashErr. Pure — no prompting, no I/O — so the rules stay testable without
+// hardware. Exactly one of the results is meaningful:
+//
+//	retry=false, fatal=nil   the flash succeeded; stop
+//	retry=false, fatal!=nil  give up and return fatal
+//	retry=true,  fatal=nil   the caller may run its interactive retry flow
+func flashRetryAction(flashErr error, interactive bool) (retry bool, fatal error) {
+	if flashErr == nil {
+		return false, nil
+	}
+
+	// User cancellation is not a flash failure. tui.ProgressModel reports q,
+	// Ctrl+C and SIGINT as context.Canceled, and the retry prompt defaults to
+	// Yes — without this, one Enter after Ctrl+C restarts the very flash the
+	// user just stopped. Same guard the disk-flash path above uses.
+	if errors.Is(flashErr, context.Canceled) {
+		return false, flashErr
+	}
+
+	if !interactive {
+		return false, fmt.Errorf("flashing failed: %w", flashErr)
+	}
+	return true, nil
+}
+
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
 // board is a Wendy Lite catalog board name, e.g. "esp32c6_generic". serialPort
 // is optional: when empty, the device is located by scanning the serial ports.
@@ -2405,7 +2436,12 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	if serialPort == "" {
+	// An empty serialPort means "find it for me", which stays true across
+	// retries below: a reset re-enumerates the USB device and the node can
+	// come back under a different path. An explicitly requested port is used
+	// verbatim, every attempt.
+	autoDiscoverPort := serialPort == ""
+	if autoDiscoverPort {
 		fmt.Println("\nScanning for ESP32 devices...")
 
 		serialPort, err = discovery.ResolveESP32SerialPort()
@@ -2483,10 +2519,24 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 
 	// Flash with progress bar. Retries on failure: a busy port gets an extra
 	// offer to identify and kill whatever holds it; any other failure just
-	// gets the plain retry prompt. Both are gated on isInteractiveTerminal so
-	// a non-interactive run (--json, CI, piped) fails immediately on the
+	// gets the plain retry prompt. Prompting is skipped entirely when the run
+	// isn't interactive or is producing JSON, so those fail immediately on the
 	// first attempt, unchanged from before this loop existed.
-	for {
+	interactive := !jsonOutput && isInteractiveTerminal()
+	for attempt := 1; ; attempt++ {
+		// espResetViaUsbJtag forces USB re-enumeration, after which the device
+		// node can reappear at a different path (macOS: /dev/cu.usbmodem101 →
+		// /dev/cu.usbmodem1101). Re-scan before each retry so the loop follows
+		// the device instead of hammering a path that no longer exists. A
+		// failed re-scan keeps the last known path and lets the attempt report
+		// the real error.
+		if attempt > 1 && autoDiscoverPort {
+			if rescanned, rescanErr := discovery.ResolveESP32SerialPort(); rescanErr == nil && rescanned != serialPort {
+				fmt.Printf("ESP32 reappeared at %s\n", rescanned)
+				serialPort = rescanned
+			}
+		}
+
 		fmt.Println()
 		flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
 		fp := tui.NewProgressProgram(flashProg)
@@ -2505,16 +2555,24 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 
 		flashModel := flashFinal.(tui.ProgressModel)
 		flashErr := flashModel.Err()
-		if flashErr == nil {
+
+		retry, fatal := flashRetryAction(flashErr, interactive)
+		if fatal != nil {
+			return fatal
+		}
+		if !retry {
 			break
 		}
 
-		if !isInteractiveTerminal() {
-			return fmt.Errorf("flashing failed: %w", flashErr)
+		// Cap the attempts: a holder that can't be killed (root-owned, say)
+		// would otherwise fail busy identically forever, and every prompt in
+		// this loop defaults to Yes.
+		if attempt >= maxFlashAttempts {
+			return fmt.Errorf("flashing failed after %d attempts: %w", attempt, flashErr)
 		}
 
 		retriedAutomatically := false
-		if errors.Is(flashErr, ErrPortBusy) {
+		if errors.Is(flashErr, errPortBusy) {
 			retriedAutomatically = offerPortBusyRetry(serialPort)
 		}
 		if !retriedAutomatically && !confirmFn("Do you want to try again?") {

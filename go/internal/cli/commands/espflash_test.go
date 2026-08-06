@@ -3,6 +3,7 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"go.bug.st/serial"
@@ -29,8 +30,17 @@ func TestIsPortBusy(t *testing.T) {
 }
 
 func TestErrPortBusyMatchesThroughWrapping(t *testing.T) {
-	wrapped := fmt.Errorf("%w: opening USB device /dev/fake: %w", ErrPortBusy, &serial.PortError{})
-	if !errors.Is(wrapped, ErrPortBusy) {
-		t.Error("errors.Is(wrapped, ErrPortBusy) = false, want true")
+	wrapped := fmt.Errorf("%w: opening USB device /dev/fake", errPortBusy)
+	if !errors.Is(wrapped, errPortBusy) {
+		t.Error("errors.Is(wrapped, errPortBusy) = false, want true")
+	}
+	// Still matches once the caller has wrapped it further.
+	if !errors.Is(fmt.Errorf("flashing failed: %w", wrapped), errPortBusy) {
+		t.Error("errors.Is(doubly wrapped, errPortBusy) = false, want true")
+	}
+	// The *serial.PortError message is deliberately not repeated: errPortBusy
+	// already carries "serial port busy".
+	if strings.Count(wrapped.Error(), "serial port busy") != 1 {
+		t.Errorf("wrapped.Error() = %q, want the busy phrase exactly once", wrapped.Error())
 	}
 }
