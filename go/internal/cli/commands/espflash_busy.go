@@ -17,7 +17,7 @@ type portHolder struct {
 // with no lookup available (Windows); platforms that can do better repoint
 // this var to a real implementation (see espflash_busy_unix.go). A package
 // var so tests can stub it without shelling out.
-var findPortHoldersFn = func(port string) []portHolder { return nil }
+var findPortHoldersFn = findPortHolders
 
 // killProcessFn best-effort kills a process by PID. A package var so tests
 // can stub it without touching real processes.
