@@ -834,60 +834,83 @@ func TestApplyEntitlements_Multiple(t *testing.T) {
 }
 
 func TestApplyEntitlements_Input(t *testing.T) {
-	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
-	cfg := &appconfig.AppConfig{
-		AppID: "test-app",
-		Entitlements: []appconfig.Entitlement{
-			{Type: appconfig.EntitlementInput},
-		},
+	originalLookup := lookupInputGID
+	t.Cleanup(func() { lookupInputGID = originalLookup })
+
+	tests := []struct {
+		name        string
+		resolvedGID uint32
+		resolved    bool
+		wantGID     uint32
+	}{
+		{name: "WendyOS host group", resolvedGID: 19, resolved: true, wantGID: 19},
+		{name: "lookup fallback", resolved: false, wantGID: 105},
 	}
 
-	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
-		t.Fatalf("ApplyEntitlements() error = %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lookupInputGID = func() (uint32, bool) { return tc.resolvedGID, tc.resolved }
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			// Input access must work for the normal non-root container user and
+			// must not rewrite its primary identity.
+			spec.Process.User.UID = 1000
+			spec.Process.User.GID = 1000
+			cfg := &appconfig.AppConfig{
+				AppID: "test-app",
+				Entitlements: []appconfig.Entitlement{
+					{Type: appconfig.EntitlementInput},
+				},
+			}
 
-	// Should add input group GID 105.
-	if !hasGID(spec, 105) {
-		t.Error("input entitlement did not add GID 105")
-	}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+			if !hasGID(spec, tc.wantGID) {
+				t.Errorf("input entitlement GIDs = %v, want supplemental GID %d", spec.Process.User.AdditionalGids, tc.wantGID)
+			}
+			if spec.Process.User.UID != 1000 || spec.Process.User.GID != 1000 {
+				t.Errorf("input entitlement changed non-root identity to uid=%d gid=%d", spec.Process.User.UID, spec.Process.User.GID)
+			}
 
-	// Should mount /dev/input.
-	if !hasMountDest(spec, "/dev/input") {
-		t.Error("input entitlement did not add /dev/input mount")
-	}
+			// Should mount /dev/input.
+			if !hasMountDest(spec, "/dev/input") {
+				t.Error("input entitlement did not add /dev/input mount")
+			}
 
-	// Verify mount options.
-	for _, m := range spec.Mounts {
-		if m.Destination == "/dev/input" {
-			if m.Source != "/dev/input" {
-				t.Errorf("input mount source = %q, want %q", m.Source, "/dev/input")
+			// Verify mount options.
+			for _, m := range spec.Mounts {
+				if m.Destination == "/dev/input" {
+					if m.Source != "/dev/input" {
+						t.Errorf("input mount source = %q, want %q", m.Source, "/dev/input")
+					}
+					if m.Type != "bind" {
+						t.Errorf("input mount type = %q, want %q", m.Type, "bind")
+					}
+					if !slices.Contains(m.Options, "rbind") {
+						t.Error("input mount missing rbind option")
+					}
+					if !slices.Contains(m.Options, "nosuid") {
+						t.Error("input mount missing nosuid option")
+					}
+					if !slices.Contains(m.Options, "noexec") {
+						t.Error("input mount missing noexec option")
+					}
+					break
+				}
 			}
-			if m.Type != "bind" {
-				t.Errorf("input mount type = %q, want %q", m.Type, "bind")
-			}
-			if !slices.Contains(m.Options, "rbind") {
-				t.Error("input mount missing rbind option")
-			}
-			if !slices.Contains(m.Options, "nosuid") {
-				t.Error("input mount missing nosuid option")
-			}
-			if !slices.Contains(m.Options, "noexec") {
-				t.Error("input mount missing noexec option")
-			}
-			break
-		}
-	}
 
-	// Should add a cgroup rule for input devices (major 13).
-	foundInputRule := false
-	for _, d := range spec.Linux.Resources.Devices {
-		if d.Major != nil && *d.Major == 13 && d.Allow {
-			foundInputRule = true
-			break
-		}
-	}
-	if !foundInputRule {
-		t.Error("input entitlement did not add cgroup device rule (major 13)")
+			// Should add a cgroup rule for hot-plugged input devices (major 13).
+			foundInputRule := false
+			for _, d := range spec.Linux.Resources.Devices {
+				if d.Major != nil && *d.Major == 13 && d.Allow && d.Access == "rw" {
+					foundInputRule = true
+					break
+				}
+			}
+			if !foundInputRule {
+				t.Error("input entitlement did not add rw cgroup device rule (major 13)")
+			}
+		})
 	}
 }
 

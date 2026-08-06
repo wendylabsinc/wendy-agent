@@ -599,6 +599,8 @@ func TestDeduplicateEntitlements(t *testing.T) {
 	net := appconfig.Entitlement{Type: appconfig.EntitlementNetwork, Mode: "host"}
 	persist1 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "data"}
 	persist2 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "logs"}
+	serial0 := appconfig.Entitlement{Type: appconfig.EntitlementSerial, Device: "ttyUSB0"}
+	serial1 := appconfig.Entitlement{Type: appconfig.EntitlementSerial, Device: "ttyUSB1"}
 
 	t.Run("removes exact duplicates", func(t *testing.T) {
 		got := deduplicateEntitlements([]appconfig.Entitlement{gpu, cam, gpu})
@@ -618,6 +620,27 @@ func TestDeduplicateEntitlements(t *testing.T) {
 		got := deduplicateEntitlements([]appconfig.Entitlement{persist1, persist2, persist1})
 		if len(got) != 2 {
 			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("distinct serial devices are kept", func(t *testing.T) {
+		got := deduplicateEntitlements([]appconfig.Entitlement{serial0, serial1, serial0})
+		if len(got) != 2 || got[0].Device != "ttyUSB0" || got[1].Device != "ttyUSB1" {
+			t.Fatalf("want ttyUSB0 and ttyUSB1 once each, got %+v", got)
+		}
+	})
+
+	t.Run("all parameter fields participate in identity", func(t *testing.T) {
+		ents := []appconfig.Entitlement{
+			{Type: appconfig.EntitlementGPIO, Pins: []int{17}},
+			{Type: appconfig.EntitlementGPIO, Pins: []int{18}},
+			{Type: appconfig.EntitlementCamera, Allowlist: []string{"/dev/video0"}},
+			{Type: appconfig.EntitlementCamera, Allowlist: []string{"/dev/video1"}},
+			{Type: appconfig.EntitlementNetwork, Ports: []appconfig.PortMapping{{Host: 8080, Container: 80}}},
+			{Type: appconfig.EntitlementNetwork, Ports: []appconfig.PortMapping{{Host: 9090, Container: 90}}},
+		}
+		if got := deduplicateEntitlements(ents); len(got) != len(ents) {
+			t.Fatalf("parameterized entitlements collapsed: got %+v", got)
 		}
 	})
 
