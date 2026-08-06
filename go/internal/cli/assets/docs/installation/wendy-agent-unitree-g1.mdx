@@ -5,41 +5,27 @@ description: Install wendy-agent on the Unitree G1's onboard computer to deploy 
 
 ## Overview
 
-The Unitree G1 EDU includes an ARM64 NVIDIA Jetson development computer, also
-known as PC2, on the robot's internal network. Installing `wendy-agent` on PC2
-lets you deploy containerized apps with `wendy run`, stream logs and telemetry,
-and communicate with the robot's DDS and `unitree_sdk2` interfaces.
+The Unitree G1 EDU includes an NVIDIA Jetson development computer known as PC2.
+Install Wendy Agent on PC2 to deploy apps, stream logs, inspect hardware, and
+connect to the G1's DDS and `unitree_sdk2` interfaces.
 
-The Wendy Agent installation procedure does not reflash the G1 or install
-software on the separate motion-control computer. It does make persistent
-changes to PC2: the installer adds Wendy's signed APT repository, installs
-packages and systemd services, and adds an Avahi service for mDNS discovery.
-The optional JetPack appendix documents the separate PC2 recovery procedure.
+The Wendy CLI runs on your development machine. Wendy Agent runs on PC2.
 
 <Callout type="info">
-  These instructions support G1 PC2 images based on Ubuntu 20.04 or Ubuntu
-  22.04 on arm64. Unitree's JetPack 6.2 image reports Jetson Linux R36.4.3 and
-  Ubuntu 22.04.5. Because interface names and installed packages vary by image,
-  the steps below detect or inspect them instead of assuming fixed values.
+  This guide supports G1 PC2 images based on Ubuntu 20.04 or Ubuntu 22.04 on
+  arm64.
 </Callout>
 
-<Callout type="info">
-  You do not need robotics experience to install Wendy Agent. Steps 1–5 work
-  only with PC2, the open development computer. They do not command the G1's
-  joints. Do not open the robot, press its PWR/REC buttons, or reflash JetPack
-  for a normal Wendy Agent installation.
-</Callout>
-
-## Requirements
+## What You Need
 
 - A Unitree G1 EDU with the onboard development computer
-- The Wendy CLI on the developer machine ([setup guide](/docs/installation/developer-machine-setup))
-- A working internet connection on the developer machine
+- The [Wendy CLI](/docs/installation/developer-machine-setup) on your
+  development machine
 - An Ethernet cable and, if needed, a USB-to-Ethernet adapter
-- Administrator access on the developer machine and `sudo` access on PC2
-- Approximately 15–30 minutes
+- Internet access from PC2
+- Administrator access on your development machine and `sudo` access on PC2
 
-The factory account documented for PC2 is:
+PC2 uses this factory network configuration:
 
 ```text
 Address:  192.168.123.164
@@ -47,308 +33,150 @@ Username: unitree
 Password: 123
 ```
 
-Use the shared factory password only over the isolated Ethernet link. Step 2
-requires changing it before PC2 is connected to Wi-Fi or another shared
+Change the factory password before connecting PC2 to Wi-Fi or another shared
 network.
 
-If this is your first G1 setup, keep the two command environments distinct:
+## Installation Steps
 
-- **Developer machine:** your Mac or Linux laptop. Run `networksetup`, `pfctl`,
-  `wendy discover`, and `wendy run` here.
-- **PC2:** the G1's Jetson development computer. After `ssh`, run `ip`, `wget`,
-  `containerd`, and `systemctl` here. A prompt such as `unitree@...` confirms
-  that this terminal is on PC2.
+<Steps>
+  <Step>
+    ### Connect Your Development Machine
 
-When a step switches environments, open or label a separate terminal instead
-of guessing where to run its commands.
+    Power on the G1 and wait for PC2 to boot. Connect your development machine
+    to the G1 Ethernet port that reaches PC2.
 
-## Step 1: Connect the developer machine
+    <Tabs items={['macOS', 'Linux']} groupId="g1-developer-os" persist>
+      <Tab value="macOS">
+        Find the Ethernet network service:
 
-Connect the developer machine to the G1 Ethernet port that reaches PC2. The
-stock internal network is `192.168.123.0/24`, and PC2 is
-**`192.168.123.164`**.
+        ```bash
+        networksetup -listallhardwareports
+        networksetup -listnetworkserviceorder
+        ```
 
-<Callout type="warning">
-  G1 hardware revisions can expose more than one RJ45 port. Use Unitree's
-  hardware documentation to identify the port connected to PC2. A live
-  Ethernet link alone does not prove that the correct port was selected.
-</Callout>
+        Assign an address on the G1 network. Replace
+        `<robot-link-service>` with the network service from the previous
+        command:
 
-### macOS
+        ```bash
+        sudo networksetup -setmanual "<robot-link-service>" \
+          192.168.123.99 255.255.255.0 ""
+        ```
+      </Tab>
 
-Find the USB Ethernet device and its network-service name:
+      <Tab value="Linux">
+        Find the Ethernet interface:
 
-```bash
-networksetup -listallhardwareports
-networksetup -listnetworkserviceorder
-```
+        ```bash
+        ip -br link
+        ```
 
-Replace `<robot-link-service>` with the corresponding network service. Leave
-the router value empty so this isolated link does not replace the Mac's real
-default route:
+        Assign an address on the G1 network. Replace
+        `<robot-link-interface>` with the interface from the previous command:
 
-```bash
-sudo networksetup -setmanual "<robot-link-service>" \
-  192.168.123.99 255.255.255.0 ""
-```
+        ```bash
+        sudo ip addr replace 192.168.123.99/24 dev <robot-link-interface>
+        sudo ip link set <robot-link-interface> up
+        ```
+      </Tab>
+    </Tabs>
 
-Confirm the Ethernet link is active and the default route still uses the Mac's
-real internet uplink:
+    Verify the connection:
 
-```bash
-ifconfig <robot-link-interface>
-route -n get default | grep interface
-```
+    ```bash
+    ping 192.168.123.164
+    ```
+  </Step>
 
-### Linux
+  <Step>
+    ### Connect to PC2
 
-Find the wired interface, then assign the robot-link address. Do not add a
-gateway to this interface:
+    Connect to the G1's development computer over SSH:
 
-```bash
-ip -br link
-sudo ip addr replace 192.168.123.99/24 dev <robot-link-interface>
-sudo ip link set <robot-link-interface> up
-```
+    ```bash
+    ssh unitree@192.168.123.164
+    ```
 
-This Linux address is temporary unless it is also added to the distribution's
-persistent network configuration.
+    Sign in with the factory password, then change it:
 
-### Verify the link
+    ```bash
+    passwd
+    ```
 
-```bash
-ping 192.168.123.164
-```
+    Commands in the next two steps run on PC2.
+  </Step>
 
-A successful reply confirms Layer 3 connectivity to PC2. If it fails, verify
-the physical port, interface name, link status, IP address, and subnet mask
-before continuing.
+  <Step>
+    ### Check Internet Access
 
-## Step 2: SSH into PC2
+    Check whether PC2 can reach the Wendy Agent installer:
 
-```bash
-ssh unitree@192.168.123.164
-```
+    ```bash
+    wget --spider https://install.wendy.dev/agent.sh
+    ```
 
-Before continuing, replace the shared factory password:
+    Continue when the command reports `200 OK` and `Remote file exists`. If it
+    fails, connect PC2 to Wi-Fi using Unitree's networking instructions. On
+    macOS, you can also [temporarily share your development machine's internet
+    connection](#temporary-macos-internet-sharing).
+  </Step>
 
-```bash
-passwd
-```
+  <Step>
+    ### Install Wendy Agent
 
-Disconnect and confirm that the new credential works over the isolated link.
-Do not proceed to internet access or enrollment until this check succeeds. Use
-your organization's SSH-key and password-login policy for longer-term access.
+    Download and run the installer on PC2:
 
-On PC2, record the image and network state. G1 images in the field do not all
-run the same Ubuntu or JetPack version.
+    ```bash
+    wget -O /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
+    less /tmp/wendy-agent.sh
+    bash /tmp/wendy-agent.sh
+    ```
 
-```bash
-uname -m
-. /etc/os-release && echo "$PRETTY_NAME"
-cat /etc/nv_tegra_release
-ip -br address
-ip route
-```
+    <Callout type="warning">
+      Stop if APT says it will remove Docker or replace Docker's
+      `containerd.io` package. Resolve the package conflict before continuing.
+    </Callout>
 
-If `/etc/nv_tegra_release` reports R36.4.3, NVIDIA maps the installed BSP to
-JetPack 6.2. Check the BSP release directly because a JetPack metapackage might
-not be installed on a vendor image.
-
-## Step 3: Check internet access
-
-Unitree's JetPack 6.2 image includes `wget` but not `curl`. Do not
-reconfigure routing if PC2 can already reach the installer:
-
-```bash
-wget --spider https://install.wendy.dev/agent.sh
-```
-
-If this reports `200 OK` and `Remote file exists`, skip to Step 4.
-
-PC2 may already be connected to Wi-Fi. A persistent, organization-approved
-Wi-Fi connection is preferable to routing through the developer machine.
-
-<Callout type="info">
-  Interface names vary by image and might not be `wlan0`. Use `ip -br address`
-  to identify the wireless interface. If PC2 is not already online, follow
-  Unitree's networking instructions for the installed image, then repeat the
-  internet check above.
-</Callout>
-
-### Temporary macOS internet sharing fallback
-
-Use this only when PC2 has no approved direct network path. The procedure uses
-a named `com.apple` packet-filter anchor so it does not replace the Mac's main
-ruleset.
-
-Run these commands on the Mac in one terminal and keep it open so the saved
-values are available for cleanup:
-
-```bash
-UPLINK=$(route -n get default | awk '/interface:/{print $2}')
-ORIGINAL_FORWARDING=$(sysctl -n net.inet.ip.forwarding)
-PF_TOKEN=$(sudo pfctl -E 2>&1 | awk '/Token :/ {print $3}')
-
-printf 'nat on %s from 192.168.123.0/24 to any -> (%s)\n' \
-  "$UPLINK" "$UPLINK" | \
-  sudo pfctl -a com.apple/wendy-g1 -f -
-sudo sysctl -w net.inet.ip.forwarding=1
-```
+    Verify the installation:
 
-Back on PC2, identify the interface carrying `192.168.123.164`, then route
-through the developer machine. Do not assume it is named `eth0`. `ip route
-replace` handles a pre-existing placeholder default route. Replace `1.1.1.1`
-with an approved DNS resolver when required by your organization.
-
-```bash
-PC2_ETHERNET=$(ip -br address | \
-  awk '$3 ~ /^192\.168\.123\.164\// {print $1; exit}')
-test -n "$PC2_ETHERNET"
-sudo ip route replace default via 192.168.123.99 \
-  dev "$PC2_ETHERNET" metric 100
-sudo resolvectl dns "$PC2_ETHERNET" 1.1.1.1
-wget --spider https://install.wendy.dev/agent.sh
-```
+    ```bash
+    sudo systemctl is-active wendy-agent
+    ```
 
-<Callout type="warning">
-  These routing and packet-filter settings are temporary and are lost on
-  reboot. Run the teardown commands below when installation is complete.
-</Callout>
+    The command should report `active`.
+  </Step>
 
-After installation, remove the temporary route and DNS setting on PC2:
-
-```bash
-sudo ip route del default via 192.168.123.99 dev "$PC2_ETHERNET"
-sudo resolvectl revert "$PC2_ETHERNET"
-```
-
-Then restore the Mac in the same terminal used to create the anchor:
-
-```bash
-sudo pfctl -a com.apple/wendy-g1 -F all
-if [ -n "${PF_TOKEN:-}" ]; then sudo pfctl -X "$PF_TOKEN"; fi
-sudo sysctl -w net.inet.ip.forwarding="$ORIGINAL_FORWARDING"
-```
+  <Step>
+    ### Discover the G1
 
-## Step 4: Install wendy-agent
-
-First inspect the existing container runtime without modifying it:
-
-```bash
-command -v containerd && containerd --version
-systemctl is-active containerd || true
-```
+    Return to your development machine and run:
 
-Do not unconditionally install or upgrade `containerd`. The Wendy Debian
-package declares it as a dependency, so APT installs it when absent. This
-avoids unexpectedly restarting an existing runtime merely to perform a check.
+    ```bash
+    wendy discover
+    ```
 
-<Callout type="warning">
-  If PC2 uses Docker's `containerd.io` package, do not approve an APT
-  transaction that removes Docker or replaces its runtime. Preserve the
-  existing container workloads and resolve the package conflict before
-  installing Wendy Agent.
-</Callout>
-
-Download the installer so it can be reviewed before execution:
-
-```bash
-wget -O /tmp/wendy-agent.sh https://install.wendy.dev/agent.sh
-less /tmp/wendy-agent.sh
-bash /tmp/wendy-agent.sh
-```
-
-For a non-interactive SSH or provisioning session, pass the documented `-y`
-flag. The pipe-only form requires `/dev/tty` unless this flag is supplied.
-
-```bash
-bash /tmp/wendy-agent.sh -y
-```
-
-The installer adds Wendy's signed APT repository and keyring, installs
-`wendy-agent` and its dependencies, writes systemd units and configuration,
-and advertises the agent through Avahi/mDNS.
-
-The installer selects the latest package available from Wendy's signed APT
-repository. Record the installed version with `dpkg-query -W wendy-agent` when
-maintaining a reproducible fleet configuration.
-
-### Pre-enroll into Wendy Cloud (optional)
-
-On the developer machine, `wendy install` and **Linux Desktop** produce the
-enrollment values for the generic Linux agent used by PC2. The enrollment token
-expires after about an hour.
-
-To keep the token out of shell history on PC2, read it into an environment
-variable instead of writing it directly in the command:
-
-```bash
-read -rsp "Wendy enrollment token: " WENDY_ENROLLMENT_TOKEN; echo
-export WENDY_ENROLLMENT_TOKEN
-WENDY_CLOUD_HOST=<cloud-host> bash /tmp/wendy-agent.sh -y
-unset WENDY_ENROLLMENT_TOKEN
-```
-
-The agent enrolls on first startup. Host the G1 on a trusted network and change
-the factory SSH password before enabling remote management.
-
-### Verify the installation
-
-```bash
-sudo systemctl is-active wendy-agent
-sudo systemctl status --no-pager wendy-agent
-```
-
-If an upgrade leaves an enabled service inactive, start it and inspect the
-journal:
-
-```bash
-sudo systemctl start wendy-agent
-sudo journalctl -u wendy-agent -n 100 --no-pager
-```
-
-Inspect the listening services before connecting PC2 to a shared network:
-
-```bash
-sudo ss -tlnp | grep wendy-agent
-```
-
-The advertised agent port can change with enrollment state: an unenrolled
-agent normally advertises plaintext port `50051`, while a provisioned agent
-normally advertises the mTLS port `50052`. Other agent services can include the
-mesh proxy on `50058` and the embedded development registry on `5000`. Apply
-your organization's firewall policy and treat `wendy discover` as the source
-of truth for the connection address.
-
-## Step 5: Discover PC2
-
-Back on the developer machine:
-
-```bash
-wendy discover
-```
-
-The device may appear under a generic Ubuntu hostname rather than a name that
-contains “G1.” Match its address, architecture, operating system, and agent
-version to the PC2 values recorded earlier. A configured device can appear as
-**Unitree G1 Nx** at `unitree-g1-nx.local` on the advertised mTLS port `50052`.
-Use `wendy device info` to confirm the Ethernet and Wi-Fi addresses reported by
-PC2 rather than relying on a fixed hostname.
-
-You are done when all of the following are true:
-
-- `systemctl is-active wendy-agent` reports `active` on PC2
-- `wendy discover` lists PC2 and its advertised port
-- the developer machine can connect to that advertised address
-
-Once you have created or opened a Wendy project containing `wendy.json`, you
-can deploy it to the address shown by discovery:
-
-```bash
-cd <your-wendy-project>
-wendy run --device <address-from-wendy-discover>
-```
+    PC2 may appear under its Ubuntu hostname or as **Unitree G1 Nx**. Use the
+    address shown by `wendy discover` when deploying an app:
+
+    ```bash
+    cd <your-wendy-project>
+    wendy run --device <address-from-wendy-discover>
+    ```
+
+    PC2 is now ready for Wendy app development. You can use the app, device,
+    debugging, and robotics guides throughout these docs. WendyOS installation
+    guides do not apply because PC2 continues to run Unitree's Ubuntu image.
+  </Step>
+</Steps>
+
+## Wendy Cloud Enrollment
+
+Cloud enrollment is optional. On your development machine, run `wendy install`
+and select **Linux Desktop** to generate an enrollment command for PC2. The
+enrollment token expires after about an hour.
+
+Run the generated command on PC2. The G1 will then appear in Wendy Cloud when
+it is online.
 
 ## Work with the G1 from an app
 
@@ -397,6 +225,58 @@ session.
 
 ## Troubleshooting
 
+### Temporary macOS Internet Sharing
+
+Use these steps if PC2 cannot connect to Wi-Fi. They share your Mac's internet
+connection with PC2 over the Ethernet cable.
+
+<Accordions>
+  <Accordion title="Share your Mac's internet connection">
+    On your Mac, open a terminal and run:
+
+    ```bash
+    UPLINK=$(route -n get default | awk '/interface:/{print $2}')
+    ORIGINAL_FORWARDING=$(sysctl -n net.inet.ip.forwarding)
+    PF_TOKEN=$(sudo pfctl -E 2>&1 | awk '/Token :/ {print $3}')
+
+    printf 'nat on %s from 192.168.123.0/24 to any -> (%s)\n' \
+      "$UPLINK" "$UPLINK" | \
+      sudo pfctl -a com.apple/wendy-g1 -f -
+    sudo sysctl -w net.inet.ip.forwarding=1
+    ```
+
+    Keep this terminal open. You will use the saved values to restore the Mac
+    after installing Wendy Agent.
+
+    On PC2, run:
+
+    ```bash
+    PC2_ETHERNET=$(ip -br address | \
+      awk '$3 ~ /^192\.168\.123\.164\// {print $1; exit}')
+    test -n "$PC2_ETHERNET"
+    sudo ip route replace default via 192.168.123.99 \
+      dev "$PC2_ETHERNET" metric 100
+    sudo resolvectl dns "$PC2_ETHERNET" 1.1.1.1
+    wget --spider https://install.wendy.dev/agent.sh
+    ```
+
+    After installing Wendy Agent, remove the temporary settings from PC2:
+
+    ```bash
+    sudo ip route del default via 192.168.123.99 dev "$PC2_ETHERNET"
+    sudo resolvectl revert "$PC2_ETHERNET"
+    ```
+
+    Return to the same terminal on your Mac and run:
+
+    ```bash
+    sudo pfctl -a com.apple/wendy-g1 -F all
+    if [ -n "${PF_TOKEN:-}" ]; then sudo pfctl -X "$PF_TOKEN"; fi
+    sudo sysctl -w net.inet.ip.forwarding="$ORIGINAL_FORWARDING"
+    ```
+  </Accordion>
+</Accordions>
+
 - **`wendy discover` shows nothing on macOS:** Check System Settings → Privacy
   & Security → Local Network and make sure the terminal has access. Verify the
   advertisement with `dns-sd -B _wendyos._udp`.
@@ -439,194 +319,11 @@ place. Review and remove those directories separately only when their data is
 no longer needed. Do not remove `containerd` automatically because Docker,
 Unitree software, or other workloads may use it.
 
-## Optional: update PC2 to Unitree's JetPack 6.2 image
+## Reflash PC2
 
-Wendy Agent does not require this update. Use this separate recovery procedure
-only when PC2 must be migrated from an older image such as JetPack 5.1.1 to
-Unitree's G1-specific JetPack 6.2 image. The Unitree image installs Jetson Linux
-and the G1 board support; it does not necessarily install NVIDIA's complete
-`nvidia-jetpack` development metapackage.
-
-<Callout type="warning">
-  This is a destructive SSD and PC2 firmware replacement, not an APT upgrade.
-  Preserve the original NVMe, identify the replacement disk on the Ubuntu host,
-  and verify every device path before writing. Never flash the G1's private
-  motion-control computer.
-</Callout>
-
-### Required hardware and packages
-
-- The original PC2 NVMe, removed and preserved as a physical backup
-- A replacement NVMe of at least 1 TB
-- Native Ubuntu x86-64 host
-- NVMe-to-USB enclosure and a USB data cable
-- Unitree system image: `g1-nx-j6.2.img.bz2`
-- Unitree PC2 firmware package: `Jetpack_6.2_nx.tar.bz2`
-
-Download both matching packages through NVIDIA's
-[G1 JetPack 6 flashing guide](https://nvlabs.github.io/GR00T-WholeBodyControl/references/jetpack6.html),
-which links the
-[JetPack 6.2 package folder](https://drive.google.com/drive/folders/1ho17ectOxi7FbaRFdpAbP4tet8BJWjbm).
-Confirm the filenames and integrity against the current upstream instructions
-before flashing.
-
-Two matching packages are required because the NVMe operating system and the
-Orin NX module firmware are separate:
-
-```text
-Orin NX module
-├── QSPI/boot firmware       Jetpack_6.2_nx.tar.bz2 over recovery USB
-└── NVMe operating system    g1-nx-j6.2.img.bz2 written to the replacement SSD
-```
-
-Do not substitute a generic NVIDIA Orin NX image; it does not contain the G1
-carrier-board configuration.
-
-### 1. Inspect and preserve the original drive
-
-Remove the original drive from PC2 and preserve it unchanged as the physical
-backup. If you inspect it over USB, mount it read-only. Write the JetPack 6.2
-image only to the replacement drive.
-
-The original NVMe is a data backup, but it is not a complete one-step rollback.
-After PC2's module firmware is updated to JetPack 6.2, booting JetPack 5.1.1
-again also requires restoring the matching Unitree JetPack 5.1.1 module
-firmware.
-
-### 2. Identify the replacement NVMe on the Ubuntu host
-
-Attach the replacement NVMe through the USB enclosure. Before writing anything,
-identify its model, capacity, USB transport, partitions, and the Ubuntu host's
-root device:
-
-```bash
-lsblk -d -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN
-findmnt -no SOURCE /
-```
-
-Replace `/dev/sdX` below with the whole-disk path reported for the replacement
-NVMe, then inspect it again:
-
-```bash
-lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS /dev/sdX
-```
-
-<Callout type="warning">
-  `/dev/sdX` is a placeholder. Stop unless your output identifies the intended
-  replacement NVMe and shows a different device for the Ubuntu host's root
-  filesystem. Writing to the wrong whole-disk path destroys that disk.
-</Callout>
-
-Unmount any mounted partitions on the replacement drive:
-
-```bash
-sudo umount /dev/sdX*
-```
-
-Write the Unitree system image to the whole replacement drive:
-
-```bash
-bzip2 -dc g1-nx-j6.2.img.bz2 | \
-  sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
-sudo sync
-sudo udisksctl power-off -b /dev/sdX
-```
-
-After the write and power-off complete, disconnect the replacement NVMe from the
-enclosure and install it in PC2.
-
-### 3. Put the G1 development computer into recovery mode
-
-With the replacement NVMe installed, use the two PC2 buttons inside the rear
-electronics compartment. PWR is the upper button; REC is the lower button above
-PC2's USB-C flashing port.
-
-1. Power on the G1 and wait for all three power indicators to remain steady.
-2. Hold PWR and REC together for about two seconds.
-3. Release PWR while continuing to hold REC for two more seconds.
-4. Release REC.
-5. Connect the Ubuntu host to PC2's dedicated USB-C flashing port with a data
-   cable.
-
-On the Ubuntu host, confirm that the Orin NX appears in APX recovery mode:
-
-```bash
-lsusb
-```
-
-Continue only after `lsusb` displays `NVIDIA Corp. APX`.
-
-### 4. Flash the matching PC2 module firmware
-
-Keep the firmware archive on the Ubuntu host; do not copy it to the replacement
-NVMe or PC2. From the directory containing the archive, run:
-
-```bash
-sudo tar -xjvf Jetpack_6.2_nx.tar.bz2
-cd Jetpack_6.2_nx/Linux_for_Tegra
-lsusb | grep -i nvidia
-sudo ./flash_nx_module.sh
-```
-
-The G1 remained powered and connected over USB until the script explicitly
-reported success. The process took approximately eight minutes.
-
-### 5. Boot and verify the updated PC2
-
-After the firmware script completed, the G1 was powered off and the recovery
-USB cable was disconnected. The replacement NVMe was checked for secure
-installation, the rear compartment was closed, and the G1 was powered on
-normally. The first boot was given several minutes before attempting network
-access.
-
-Check PC2 without enabling motion:
-
-```bash
-ping 192.168.123.164
-ssh unitree@192.168.123.164
-
-cat /etc/nv_tegra_release
-cat /etc/os-release
-command -v nvcc && nvcc --version
-uname -a
-```
-
-NVIDIA's
-[JetPack 6.2 release page](https://developer.nvidia.com/embedded/jetpack-sdk-62)
-identifies R36.4.3 as the Jetson Linux release included with JetPack 6.2. Use
-the BSP value from `/etc/nv_tegra_release` as the authoritative version if a
-management tool displays a different JetPack label.
-
-The Unitree image might not install `nvidia-jetpack` or `nvcc`. Their absence
-does not indicate a failed PC2 firmware flash and does not block Wendy Agent.
-Treat CUDA toolkit installation as a separate application prerequisite, and
-confirm the supported packages with Unitree for this carrier-board image before
-changing the NVIDIA software stack.
-
-Verify the Intel RealSense and other non-motion hardware from the developer
-machine:
-
-```bash
-wendy device camera list --device unitree-g1-nx.local:50052
-wendy device hardware list --device unitree-g1-nx.local:50052
-```
-
-Camera enumeration does not guarantee that another process can open the stream.
-If a camera viewer reports that the RealSense is busy, stop only the known
-camera-owning service during a maintenance window, then retry. Do not interrupt
-an unidentified robot workload.
-
-Perform post-update checks in this order:
-
-- Ethernet and Wi-Fi
-- USB devices and cameras
-- GPU and CUDA
-- Unitree services and DDS communication
-- G1 app video/image display
-- Controlled motion only after all non-motion checks passed
-
-Keep the G1 supported on its gantry and keep the physical remote and E-stop with
-the operator for the final controlled-motion check.
+Reflashing PC2 is a separate recovery procedure and is not required to install
+Wendy Agent. See [Reflash Unitree G1 PC2](/docs/installation/unitree-g1-reflash)
+to replace the PC2 operating system and module firmware.
 
 ## Next steps
 

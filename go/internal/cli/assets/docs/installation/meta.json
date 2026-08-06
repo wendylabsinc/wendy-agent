@@ -7,6 +7,7 @@
     "linux",
     "wendy-agent-macos",
     "wendy-agent-unitree-g1",
+    "unitree-g1-reflash",
     "wendy-lite-esp32"
   ]
 }

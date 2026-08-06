@@ -1,0 +1,191 @@
+---
+title: Reflash Unitree G1 PC2
+description: Replace the Unitree G1 PC2 image and firmware with Unitree's JetPack 6.2 release
+---
+
+## Overview
+
+This guide replaces the operating system and module firmware on the Unitree G1
+development computer, known as PC2, with Unitree's JetPack 6.2 image.
+
+You do not need to reflash PC2 to [install Wendy Agent](/docs/installation/wendy-agent-unitree-g1).
+
+<Callout type="warning">
+  This process erases the target NVMe drive and replaces the PC2 firmware.
+  Preserve the original NVMe and verify every device path before writing an
+  image.
+</Callout>
+
+## What You Need
+
+- The original PC2 NVMe, removed and preserved as a backup
+- A replacement NVMe with at least 1 TB of storage
+- A native Ubuntu x86-64 computer
+- An NVMe-to-USB enclosure
+- A USB data cable
+- Unitree system image: `g1-nx-j6.2.img.bz2`
+- Unitree PC2 firmware: `Jetpack_6.2_nx.tar.bz2`
+
+Download both files from the package folder linked by NVIDIA's
+[G1 JetPack 6 flashing guide](https://nvlabs.github.io/GR00T-WholeBodyControl/references/jetpack6.html).
+Confirm the filenames and integrity against NVIDIA's current instructions
+before continuing.
+
+The two files update different parts of PC2:
+
+```text
+Orin NX module
+├── QSPI and boot firmware    Jetpack_6.2_nx.tar.bz2 over recovery USB
+└── NVMe operating system    g1-nx-j6.2.img.bz2 written to the replacement NVMe
+```
+
+Use Unitree's G1-specific image. A generic NVIDIA Orin NX image does not
+include the G1 carrier-board configuration.
+
+## Reflash PC2
+
+<Steps>
+  <Step>
+    ### Preserve the Original NVMe
+
+    Remove the original NVMe from PC2 and keep it unchanged. Write the new
+    image only to the replacement drive.
+
+    The original drive preserves its data, but restoring an older JetPack
+    release also requires restoring the matching PC2 module firmware.
+  </Step>
+
+  <Step>
+    ### Write the PC2 Image
+
+    Attach the replacement NVMe to the Ubuntu computer with the USB enclosure.
+    List the connected drives and identify the Ubuntu system drive:
+
+    ```bash
+    lsblk -d -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN
+    findmnt -no SOURCE /
+    ```
+
+    Replace `/dev/sdX` below with the whole-disk path for the replacement NVMe:
+
+    ```bash
+    lsblk -o NAME,PATH,SIZE,MODEL,SERIAL,TRAN,FSTYPE,LABEL,MOUNTPOINTS /dev/sdX
+    ```
+
+    <Callout type="warning">
+      Stop unless `/dev/sdX` identifies the replacement NVMe and is different
+      from the Ubuntu system drive. Writing to the wrong path destroys that
+      drive.
+    </Callout>
+
+    Unmount the replacement drive, then write the Unitree image:
+
+    ```bash
+    sudo umount /dev/sdX*
+    bzip2 -dc g1-nx-j6.2.img.bz2 | \
+      sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+    sudo sync
+    sudo udisksctl power-off -b /dev/sdX
+    ```
+
+    Disconnect the replacement NVMe from the enclosure and set it aside. Install
+    it after the PC2 firmware flash is complete.
+  </Step>
+
+  <Step>
+    ### Enter Recovery Mode
+
+    PC2 has two buttons inside the rear electronics compartment. PWR is the
+    upper button. REC is the lower button above the PC2 USB-C flashing port.
+
+    1. Power on the G1 and wait for all three power indicators to remain lit.
+    2. Connect the Ubuntu computer to the PC2 USB-C flashing port.
+    3. Hold PWR and REC together for about two seconds.
+    4. Release PWR while continuing to hold REC until only two power indicators
+       remain lit.
+    5. Release REC.
+
+    Verify that PC2 appears in recovery mode:
+
+    ```bash
+    lsusb
+    ```
+
+    Continue when the output includes `NVIDIA Corp. APX`.
+  </Step>
+
+  <Step>
+    ### Flash the PC2 Firmware
+
+    Keep the firmware archive on the Ubuntu computer. From the directory that
+    contains the archive, run:
+
+    ```bash
+    sudo tar -xjvf Jetpack_6.2_nx.tar.bz2
+    cd Jetpack_6.2_nx/Linux_for_Tegra
+    lsusb | grep -i nvidia
+    sudo ./flash_nx_module.sh
+    ```
+
+    Keep the G1 powered on and connected over USB until the script reports
+    success. The flash takes about eight minutes.
+  </Step>
+
+  <Step>
+    ### Boot and Verify PC2
+
+    Power off the G1 and disconnect the recovery USB cable. Install the
+    replacement NVMe in PC2, close the rear compartment, then power on the G1.
+    Wait several minutes for PC2 to boot.
+
+    Connect to PC2 and check the installed release:
+
+    ```bash
+    ping 192.168.123.164
+    ssh unitree@192.168.123.164
+
+    cat /etc/nv_tegra_release
+    cat /etc/os-release
+    uname -a
+    ```
+
+    JetPack 6.2 includes Jetson Linux R36.4.3 and an Ubuntu 22.04-based root
+    filesystem. Use `/etc/nv_tegra_release` as the source of truth for the BSP
+    version.
+
+    Follow NVIDIA's current G1 guide for any required post-flash packages and
+    power-mode configuration.
+  </Step>
+</Steps>
+
+## Verify G1 Hardware
+
+After [installing Wendy Agent](/docs/installation/wendy-agent-unitree-g1), check
+the RealSense camera and other hardware from your development machine:
+
+```bash
+wendy device camera list --device unitree-g1-nx.local:50052
+wendy device hardware list --device unitree-g1-nx.local:50052
+```
+
+Check the G1 in this order:
+
+- Ethernet and Wi-Fi
+- USB devices and cameras
+- GPU and CUDA
+- Unitree services and DDS communication
+- G1 app video and image display
+- Controlled motion
+
+If a camera app reports that the RealSense is busy, stop only the known service
+that owns the camera, then retry.
+
+<Callout type="warning">
+  Keep the G1 supported on its gantry and keep the physical remote and E-stop
+  with the operator for the first controlled-motion check.
+</Callout>
+
+## Next Steps
+
+- [Install Wendy Agent on the G1](/docs/installation/wendy-agent-unitree-g1)
+- [JetPack 6.2 release information](https://developer.nvidia.com/embedded/jetpack-sdk-62)
