@@ -7,6 +7,7 @@ Python standard library and NumPy.
 __version__ = "0.1.0"
 
 from . import wire
+from .config import Config, load_config
 
-__all__ = ["wire"]
+__all__ = ["wire", "Config", "load_config"]
 
