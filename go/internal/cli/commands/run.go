@@ -1387,10 +1387,13 @@ func providerBuild(ctx context.Context, p providers.DeviceProvider, device model
 }
 
 // shouldOfferLiteReinstall reports whether a failed provider build should turn
-// into an interactive offer to reinstall Wendy Lite, and returns the
-// unsupported-requirements error when it should. The offer only makes sense
-// when the firmware rejected the app's requirements and reflashing can happen
-// over the same USB cable, and only in a session where a human can answer.
+// into an interactive offer to install (or reinstall) Wendy Lite, and returns
+// the unsupported-requirements error when it should. This fires both when
+// existing firmware rejected the app's requirements and when the device has
+// no Wendy Lite firmware at all yet (see MicroWendyProvider.GetDeviceInfo's
+// needsInstall short-circuit) — either way GetDeviceInfo returns the same
+// error type. The offer only makes sense when reflashing can happen over the
+// same USB cable, and only in a session where a human can answer.
 func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, interactive bool) (*providers.AppRequirementsUnsupportedError, bool) {
 	var unsupported *providers.AppRequirementsUnsupportedError
 	if !errors.As(buildErr, &unsupported) {
@@ -1402,12 +1405,21 @@ func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, inte
 	return unsupported, true
 }
 
+// deviceNeedsInstall reports whether device is a serial ESP32 board with no
+// Wendy Lite firmware installed yet, as opposed to one whose existing
+// firmware simply doesn't support what the app requires.
+func deviceNeedsInstall(device models.ExternalDevice) bool {
+	return device.ConnectionInfo["needsInstall"] == "true"
+}
+
 // offerLiteReinstallAndRebuild handles a provider build that failed because
-// the device firmware does not support the app's requirements (native or
-// WASM apps): it offers to reinstall Wendy Lite (the classic
-// `wendy os install` flow) and, once the device is back, builds again.
-// In every other case — including --yes, which must not silently accept a
-// destructive reinstall — it returns the build error unchanged.
+// the device cannot host the app: either its existing firmware does not
+// support the app's requirements (native or WASM apps), or it has no Wendy
+// Lite firmware installed at all. Either way, it offers to (re)install Wendy
+// Lite (the classic `wendy os install` flow) and, once the device is back,
+// builds again. In every other case — including --yes, which must not
+// silently accept a destructive reinstall — it returns the build error
+// unchanged.
 func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
 	wrapped := fmt.Errorf("provider build: %w", buildErr)
 	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
@@ -1415,8 +1427,16 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, wrapped
 	}
 
-	cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
-	confirmed, err := tui.Confirm("Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device.")
+	freshInstall := deviceNeedsInstall(device)
+	var confirmPrompt string
+	if freshInstall {
+		cliLogln("Device %s has no Wendy Lite firmware installed.", tui.Value(device.DisplayName))
+		confirmPrompt = "Would you like to install Wendy Lite on it now?"
+	} else {
+		cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
+		confirmPrompt = "Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device."
+	}
+	confirmed, err := tui.Confirm(confirmPrompt)
 	if err != nil {
 		if errors.Is(err, tui.ErrCancelled) {
 			return nil, ErrUserCancelled
@@ -1437,6 +1457,13 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 
 	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
 		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
+	}
+
+	// The device now has firmware where it had none (or different firmware),
+	// so the needsInstall short-circuit in GetDeviceInfo must not fire again —
+	// clear it before probing/building against the freshly flashed board.
+	if freshInstall {
+		delete(device.ConnectionInfo, "needsInstall")
 	}
 
 	cliLogln("Waiting for the device to restart...")

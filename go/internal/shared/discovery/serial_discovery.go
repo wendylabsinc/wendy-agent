@@ -8,12 +8,38 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 )
 
-// SerialDevice is a Wendy Lite device reachable over a serial port.
+// SerialDevice is an ESP32 board reachable over a serial port.
 type SerialDevice struct {
 	Port        string
 	ID          string
 	Name        string
 	DisplayName string
+	// Responsive is false when Port matched the ESP32 USB VID/PID but never
+	// completed a Wendy Lite identity handshake — a board with no (or
+	// incompatible) Wendy Lite firmware installed. ID/Name/DisplayName are
+	// empty in that case.
+	Responsive bool
+}
+
+// resolvePortsFn resolves the VID/PID-matching ESP32 serial ports. Indirected
+// so tests can inject fake ports without real hardware.
+var resolvePortsFn = ResolveESP32SerialPorts
+
+// probeIdentityFn attempts a Wendy Lite identity handshake on port. opened
+// reports whether the serial port itself was successfully opened; false means
+// something else currently holds it (a concurrent probe, another process
+// still attached to the port) or it is otherwise inaccessible right now — a
+// transient condition that must NOT be read as "no firmware installed", only
+// a genuine handshake failure on an opened port means that. Indirected so
+// tests can simulate each outcome without real hardware.
+var probeIdentityFn = func(port string) (identity *liteclient.DeviceIdentity, opened bool, err error) {
+	client := liteclient.NewWendyLiteClient()
+	if err := client.ConnectToSerial(port); err != nil {
+		return nil, false, err
+	}
+	defer client.Close()
+	identity, err = client.GetDeviceIdentity(3 * time.Second)
+	return identity, true, err
 }
 
 // ListenerID identifies a registered listener and is used to remove it.
@@ -89,7 +115,7 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 
 	go func() {
 		for {
-			ports, err := ResolveESP32SerialPorts()
+			ports, err := resolvePortsFn()
 			if err == nil {
 				portSet := make(map[string]bool, len(ports))
 				for _, p := range ports {
@@ -114,17 +140,23 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 					d.notify()
 				}
 
-				// Probe ports not already in the list.
+				// Probe every present port not already confirmed responsive
+				// and not currently mid-probe. A port that matched the VID/PID
+				// but hasn't completed the identity handshake (no Wendy Lite
+				// firmware yet, or it's still booting) is re-probed every
+				// cycle, so it surfaces the moment compatible firmware lands.
 				d.mu.Lock()
-				existing := make(map[string]bool, len(d.devices))
+				responsive := make(map[string]bool, len(d.devices))
 				for _, dev := range d.devices {
-					existing[dev.Port] = true
+					if dev.Responsive {
+						responsive[dev.Port] = true
+					}
 				}
 				d.mu.Unlock()
 
 				for _, p := range ports {
 					d.mu.Lock()
-					skip := existing[p.Port] || d.probing[p.Port]
+					skip := responsive[p.Port] || d.probing[p.Port]
 					if !skip {
 						d.probing[p.Port] = true
 					}
@@ -140,26 +172,37 @@ func (d *SerialDiscovery) StartScan(repeatInterval time.Duration) {
 							delete(d.probing, port)
 							d.mu.Unlock()
 						}()
-						client := liteclient.NewWendyLiteClient()
-						if err := client.ConnectToSerial(port); err != nil {
+
+						identity, opened, err := probeIdentityFn(port)
+						if !opened {
+							// Something else currently holds the port (a
+							// concurrent probe from another wendy process, a
+							// dangling fd inherited by a subprocess, etc.).
+							// Leave any existing entry untouched rather than
+							// mislabel a contended-but-fine device as unflashed;
+							// the next cycle retries once it frees up.
 							return
 						}
-						identity, err := client.GetDeviceIdentity(3 * time.Second)
-						client.Close()
+
+						var dev SerialDevice
 						if err != nil || identity == nil {
-							return
+							dev = SerialDevice{Port: port, Responsive: false}
+						} else {
+							dev = SerialDevice{
+								Port:        port,
+								ID:          identity.ID,
+								Name:        identity.Name,
+								DisplayName: identity.DisplayName,
+								Responsive:  true,
+							}
 						}
 
 						d.mu.Lock()
-						d.devices = append(d.devices, SerialDevice{
-							Port:        port,
-							ID:          identity.ID,
-							Name:        identity.Name,
-							DisplayName: identity.DisplayName,
-						})
+						changed := d.upsertDeviceLocked(dev)
 						d.mu.Unlock()
-
-						d.notify()
+						if changed {
+							d.notify()
+						}
 					}(p.Port)
 				}
 			}
@@ -230,4 +273,21 @@ func (d *SerialDiscovery) snapshotLocked() []SerialDevice {
 	snap := make([]SerialDevice, len(d.devices))
 	copy(snap, d.devices)
 	return snap
+}
+
+// upsertDeviceLocked replaces the entry for dev.Port with dev (appending if
+// none exists yet) and reports whether the list actually changed. Must be
+// called with mu held.
+func (d *SerialDiscovery) upsertDeviceLocked(dev SerialDevice) bool {
+	for i, existing := range d.devices {
+		if existing.Port == dev.Port {
+			if existing == dev {
+				return false
+			}
+			d.devices[i] = dev
+			return true
+		}
+	}
+	d.devices = append(d.devices, dev)
+	return true
 }

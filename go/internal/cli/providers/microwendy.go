@@ -96,8 +96,26 @@ func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) model
 	}
 }
 
-// serialExternalDevice maps a serial-port Wendy Lite device to an ExternalDevice.
+// serialExternalDevice maps a serial-port ESP32 device to an ExternalDevice.
+// An unresponsive device — one that matched the ESP32 USB VID/PID but never
+// completed the Wendy Lite identity handshake, because no compatible firmware
+// is installed yet — is still surfaced rather than dropped, marked with
+// ConnectionInfo["needsInstall"] so `wendy run` can offer to flash Wendy Lite
+// onto it instead of silently ignoring the board.
 func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) models.ExternalDevice {
+	if !dev.Responsive {
+		return models.ExternalDevice{
+			ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
+			DisplayName: fmt.Sprintf("ESP32 (unflashed) — %s", dev.Port),
+			ProviderKey: p.Key(),
+			ConnectionInfo: map[string]string{
+				"type":         "USB",
+				"serialPort":   dev.Port,
+				"needsInstall": "true",
+			},
+			IsWendyDevice: true,
+		}
+	}
 	return models.ExternalDevice{
 		ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
 		DisplayName: dev.DisplayName,
@@ -545,6 +563,13 @@ func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 }
 
 func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	// An unflashed board has nothing listening on the Wendy Lite protocol, so
+	// attempting to connect would only time out. Report the real reason
+	// directly: this surfaces as AppRequirementsUnsupportedError, which the
+	// `wendy run` install-offer flow already knows how to handle.
+	if device.ConnectionInfo["needsInstall"] == "true" {
+		return nil, &AppRequirementsUnsupportedError{Device: device, Missing: "Wendy Lite firmware (none installed)"}
+	}
 	client, err := p.connectClient(device)
 	if err != nil {
 		return nil, err

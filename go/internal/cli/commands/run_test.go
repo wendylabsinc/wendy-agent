@@ -445,3 +445,25 @@ func TestShouldOfferLiteReinstall(t *testing.T) {
 		})
 	}
 }
+
+// deviceNeedsInstall distinguishes a genuinely unflashed board (offer wording:
+// "install") from one whose existing firmware just lacks a capability (offer
+// wording: "reinstall") — see offerLiteReinstallAndRebuild.
+func TestDeviceNeedsInstall(t *testing.T) {
+	cases := []struct {
+		name   string
+		device models.ExternalDevice
+		want   bool
+	}{
+		{"marked needsInstall", models.ExternalDevice{ConnectionInfo: map[string]string{"needsInstall": "true", "type": "USB"}}, true},
+		{"capability mismatch has no marker", models.ExternalDevice{ConnectionInfo: map[string]string{"type": "USB"}}, false},
+		{"nil ConnectionInfo", models.ExternalDevice{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deviceNeedsInstall(tc.device); got != tc.want {
+				t.Errorf("deviceNeedsInstall() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
