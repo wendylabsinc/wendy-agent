@@ -141,3 +141,113 @@ func TestTunnelServiceRelaysTCP(t *testing.T) {
 	}
 	_ = stream.CloseSend()
 }
+
+type fakeDeviceDatagramStream struct {
+	agentpbv2.WendyTunnelService_DatagramTunnelServer
+	ctx context.Context
+	in  chan *agentpbv2.DeviceDatagramFrame
+	out chan *agentpbv2.DeviceDatagramFrame
+}
+
+func newFakeDeviceDatagramStream(ctx context.Context) *fakeDeviceDatagramStream {
+	return &fakeDeviceDatagramStream{
+		ctx: ctx,
+		in:  make(chan *agentpbv2.DeviceDatagramFrame, 16),
+		out: make(chan *agentpbv2.DeviceDatagramFrame, 16),
+	}
+}
+func (f *fakeDeviceDatagramStream) Context() context.Context { return f.ctx }
+func (f *fakeDeviceDatagramStream) Send(msg *agentpbv2.DeviceDatagramFrame) error {
+	select {
+	case f.out <- msg:
+		return nil
+	case <-f.ctx.Done():
+		return f.ctx.Err()
+	}
+}
+func (f *fakeDeviceDatagramStream) Recv() (*agentpbv2.DeviceDatagramFrame, error) {
+	select {
+	case msg, ok := <-f.in:
+		if !ok {
+			return nil, io.EOF
+		}
+		return msg, nil
+	case <-f.ctx.Done():
+		return nil, f.ctx.Err()
+	}
+}
+
+func TestTunnelServiceDatagramTunnelEchoesICMP(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newFakeDeviceDatagramStream(ctx)
+	svc := NewTunnelService(zap.NewNop())
+
+	go func() { _ = svc.DatagramTunnel(stream) }()
+
+	stream.in <- &agentpbv2.DeviceDatagramFrame{
+		Content: &agentpbv2.DeviceDatagramFrame_IcmpRequest{
+			IcmpRequest: &agentpbv2.DeviceIcmpEchoRequest{
+				Identifier: 9, Sequence: 1, Payload: []byte("ping"), OriginateUnixNs: 42,
+			},
+		},
+	}
+
+	select {
+	case reply := <-stream.out:
+		r := reply.GetIcmpReply()
+		if r == nil {
+			t.Fatalf("expected icmp_reply, got %+v", reply)
+		}
+		if r.GetIdentifier() != 9 || r.GetSequence() != 1 || string(r.GetPayload()) != "ping" {
+			t.Fatalf("echo fields not copied: %+v", r)
+		}
+		if r.GetAgentUnixNs() == 0 {
+			t.Fatal("agent_unix_ns not stamped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for icmp reply")
+	}
+}
+
+func TestTunnelServiceDatagramTunnelUDPRoundTrip(t *testing.T) {
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, addr, err := pc.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = pc.WriteToUDP(buf[:n], addr)
+		}
+	}()
+	port := uint32(pc.LocalAddr().(*net.UDPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := newFakeDeviceDatagramStream(ctx)
+	svc := NewTunnelService(zap.NewNop())
+
+	go func() { _ = svc.DatagramTunnel(stream) }()
+
+	stream.in <- &agentpbv2.DeviceDatagramFrame{
+		Content: &agentpbv2.DeviceDatagramFrame_Datagram{
+			Datagram: &agentpbv2.DeviceDatagram{FlowId: 3, Port: port, Payload: []byte("hello")},
+		},
+	}
+
+	select {
+	case reply := <-stream.out:
+		d := reply.GetDatagram()
+		if d == nil || d.GetFlowId() != 3 || string(d.GetPayload()) != "hello" {
+			t.Fatalf("unexpected datagram reply: %+v", reply)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for udp echo")
+	}
+}

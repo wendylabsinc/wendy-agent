@@ -9,6 +9,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -52,6 +53,70 @@ func (s *TunnelService) Tunnel(stream agentpbv2.WendyTunnelService_TunnelServer)
 	s.logger.Info("device tunnel accepted",
 		append([]zap.Field{zap.Uint32("port", open.Port)}, clientAuditFields(stream.Context())...)...)
 	return s.relay(stream, conn)
+}
+
+// DatagramTunnel serves one multiplexed UDP + ICMP-echo session for the LAN
+// tunnel, sharing the same flow-table engine as the cloud broker's datagram
+// path (see datagram_relay.go). There is no open/session handshake — this is
+// already a direct stream to one already-authenticated agent.
+func (s *TunnelService) DatagramTunnel(stream agentpbv2.WendyTunnelService_DatagramTunnelServer) error {
+	newDatagramRelay(s.logger, deviceFrameStream{stream: stream}, datagramFlowIdleTimeout).run(stream.Context())
+	return nil
+}
+
+// deviceFrameStream adapts the LAN tunnel's agentpbv2.DeviceDatagramFrame
+// stream to the protocol-agnostic tunnelframe.Stream the shared
+// datagram-relay engine runs against.
+type deviceFrameStream struct {
+	stream agentpbv2.WendyTunnelService_DatagramTunnelServer
+}
+
+func (d deviceFrameStream) Send(f tunnelframe.Frame) error {
+	msg := &agentpbv2.DeviceDatagramFrame{}
+	switch {
+	case f.Datagram != nil:
+		msg.Content = &agentpbv2.DeviceDatagramFrame_Datagram{Datagram: &agentpbv2.DeviceDatagram{
+			FlowId: f.Datagram.FlowID, Port: f.Datagram.Port, Payload: f.Datagram.Payload,
+		}}
+	case f.IcmpRequest != nil:
+		msg.Content = &agentpbv2.DeviceDatagramFrame_IcmpRequest{IcmpRequest: &agentpbv2.DeviceIcmpEchoRequest{
+			Identifier: f.IcmpRequest.Identifier, Sequence: f.IcmpRequest.Sequence,
+			Payload: f.IcmpRequest.Payload, OriginateUnixNs: f.IcmpRequest.OriginateUnixNs,
+		}}
+	case f.IcmpReply != nil:
+		msg.Content = &agentpbv2.DeviceDatagramFrame_IcmpReply{IcmpReply: &agentpbv2.DeviceIcmpEchoReply{
+			Identifier: f.IcmpReply.Identifier, Sequence: f.IcmpReply.Sequence,
+			Payload: f.IcmpReply.Payload, OriginateUnixNs: f.IcmpReply.OriginateUnixNs,
+			AgentUnixNs: f.IcmpReply.AgentUnixNs,
+		}}
+	}
+	return d.stream.Send(msg)
+}
+
+func (d deviceFrameStream) Recv() (tunnelframe.Frame, error) {
+	msg, err := d.stream.Recv()
+	if err != nil {
+		return tunnelframe.Frame{}, err
+	}
+	var f tunnelframe.Frame
+	switch c := msg.GetContent().(type) {
+	case *agentpbv2.DeviceDatagramFrame_Datagram:
+		f.Datagram = &tunnelframe.Datagram{
+			FlowID: c.Datagram.GetFlowId(), Port: c.Datagram.GetPort(), Payload: c.Datagram.GetPayload(),
+		}
+	case *agentpbv2.DeviceDatagramFrame_IcmpRequest:
+		f.IcmpRequest = &tunnelframe.IcmpEchoRequest{
+			Identifier: c.IcmpRequest.GetIdentifier(), Sequence: c.IcmpRequest.GetSequence(),
+			Payload: c.IcmpRequest.GetPayload(), OriginateUnixNs: c.IcmpRequest.GetOriginateUnixNs(),
+		}
+	case *agentpbv2.DeviceDatagramFrame_IcmpReply:
+		f.IcmpReply = &tunnelframe.IcmpEchoReply{
+			Identifier: c.IcmpReply.GetIdentifier(), Sequence: c.IcmpReply.GetSequence(),
+			Payload: c.IcmpReply.GetPayload(), OriginateUnixNs: c.IcmpReply.GetOriginateUnixNs(),
+			AgentUnixNs: c.IcmpReply.GetAgentUnixNs(),
+		}
+	}
+	return f, nil
 }
 
 func (s *TunnelService) relay(stream agentpbv2.WendyTunnelService_TunnelServer, conn net.Conn) error {
