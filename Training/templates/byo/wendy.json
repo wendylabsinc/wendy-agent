@@ -1,0 +1,29 @@
+{
+    "appId": "sh.wendy.training.byo",
+    "platform": "linux",
+    "version": "0.1.0",
+    "entitlements": [
+        {
+            "type": "network",
+            "mode": "mesh",
+            "serviceCIDR": "10.99.0.0/16",
+            "ports": [
+                { "host": 8080, "container": 8080 }
+            ]
+        },
+        {
+            "type": "persist",
+            "name": "wt-byo-ckpt",
+            "path": "/data/checkpoints"
+        }
+    ],
+    "env": {
+        "MESH_PEERS": "${MESH_PEERS}",
+        "MESH_SELF": "${MESH_SELF}",
+        "MESH_PORT": "${MESH_PORT}",
+        "WT_ROLE": "${WT_ROLE}",
+        "WT_RUN_ID": "${WT_RUN_ID}",
+        "WT_CKPT_DIR": "${WT_CKPT_DIR}",
+        "WT_CONFIG": "${WT_CONFIG}"
+    }
+}
