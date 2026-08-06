@@ -252,8 +252,14 @@ class Coordinator:
         if self._loopback:
             self._loopback_thread = threading.Thread(
                 target=worker_loop,
-                args=(f"127.0.0.1:{self.port}", 0, self.n_nodes),
-                kwargs={"stop": self._stop},
+                args=("in-process", 0, self.n_nodes),
+                kwargs={
+                    "stop": self._stop,
+                    # Direct calls into the same handlers the HTTP routes use;
+                    # see worker_loop's docstring for why this is not HTTP.
+                    "get": lambda: self._handle_params(b"")[1],
+                    "post": lambda body: self._handle_returns(body)[1],
+                },
                 name="es-fleet-loopback-worker",
                 daemon=True,
             )
@@ -374,6 +380,16 @@ class Coordinator:
                 flush=True,
             )
 
+        # The same honesty on standard output: metrics.jsonl lives on a device
+        # volume, and a coordinator that only logs there is silent in every
+        # log viewer. A generation with zero contributions looked exactly like
+        # a hung process on real hardware.
+        mean_text = "none" if mean_return is None else f"{mean_return:.2f}"
+        print(
+            f"[es-fleet] generation {generation}: n_contributed="
+            f"{n_contributed}/{self.population} mean_return={mean_text}",
+            flush=True,
+        )
         # Honest metrics: partial generations say exactly how partial they
         # were, and the line is attributed to its generation explicitly.
         self.run.log_metrics(
@@ -425,20 +441,34 @@ def worker_loop(
     count: int,
     stop: threading.Event | None = None,
     poll_interval: float = 0.05,
+    get=None,
+    post=None,
 ) -> None:
     """Pull parameters, evaluate this worker's slice, post returns; repeat.
 
     ``coordinator`` is a ``host:port`` target. The policy is constructed from
     the architecture in the wire metadata, never inferred from parameter
-    counts. Transient HTTP failures are logged and retried forever; a fleet
-    must not die because the coordinator boots more slowly than its workers.
+    counts. Transient failures are logged and retried forever; a fleet must
+    not die because the coordinator boots more slowly than its workers.
+
+    ``get`` and ``post`` override the transport. The coordinator's loopback
+    worker passes direct in-process calls: on WendyOS the host firewall can
+    reject even a dial to 127.0.0.1 on the published port (observed as
+    "No route to host" on real hardware), and a worker that shares the
+    coordinator's process has no reason to speak HTTP to it at all.
     """
     if stop is None:
         stop = threading.Event()
+    if get is None:
+        def get():
+            return mesh.http_get(f"http://{coordinator}/params", timeout=5.0, retries=2)
+    if post is None:
+        def post(body):
+            return mesh.http_post(f"http://{coordinator}/returns", body, retries=3)
     last_generation = None
     while not stop.is_set():
         try:
-            blob = mesh.http_get(f"http://{coordinator}/params", timeout=5.0, retries=2)
+            blob = get()
         except Exception as exc:
             print(
                 f"[es-fleet] worker {index}: cannot reach coordinator "
@@ -480,7 +510,7 @@ def worker_loop(
             meta={"generation": generation},
         )
         try:
-            mesh.http_post(f"http://{coordinator}/returns", body, retries=3)
+            post(body)
         except Exception as exc:
             print(
                 f"[es-fleet] worker {index}: posting returns for generation "

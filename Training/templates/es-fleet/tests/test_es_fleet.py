@@ -414,3 +414,35 @@ def test_topology_accepts_the_launchers_generic_trio():
     env["ES_WORKER_INDEX"] = "1"
     env["ES_WORKER_COUNT"] = "4"
     assert train.resolve_topology(env) == ("elsewhere:9", 1, 4)
+
+
+def test_loopback_worker_needs_no_network_at_all(monkeypatch, tmp_path):
+    """The coordinator's own slice arrives without HTTP.
+
+    On real hardware the host firewall rejected the loopback worker's dial to
+    127.0.0.1 on the published port ("No route to host"), so every generation
+    advanced with zero contributions. The loopback worker now calls the
+    coordinator's handlers directly; this test breaks the HTTP transport
+    entirely and the fleet-of-one must still contribute in full.
+    """
+
+    def refuse(*args, **kwargs):
+        raise OSError(113, "No route to host")
+
+    monkeypatch.setattr(train.mesh, "http_get", refuse)
+    monkeypatch.setattr(train.mesh, "http_post", refuse)
+
+    cfg = train.load_settings(
+        {"ES_POP": "6", "ES_GEN_TIMEOUT_S": "10", "ES_MAX_GENERATIONS": "2"}
+    )
+    run = Run(tmp_path, run_id="loopback-direct")
+    coordinator = train.Coordinator(cfg, run, n_nodes=1, port=0)
+    coordinator.start()
+    try:
+        coordinator.train(max_generations=2)
+    finally:
+        coordinator.stop()
+    status = json.loads(coordinator._handle_status(b"")[1])
+    assert status["generation"] == 2
+    assert status["n_contributed"] == 6, "every pair must arrive without HTTP"
+    assert status["mean_return"] is not None
