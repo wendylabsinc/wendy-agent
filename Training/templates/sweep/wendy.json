@@ -1,0 +1,44 @@
+{
+    "appId": "sh.wendy.training.sweep",
+    "platform": "linux",
+    "version": "0.1.0",
+    "isolation": "isolated",
+    "services": {
+        "trainer": {
+            "context": ".",
+            "entitlements": [
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16",
+                    "ports": [
+                        { "host": 8080, "container": 8080 }
+                    ]
+                },
+                {
+                    "type": "persist",
+                    "name": "wt-sweep-ckpt",
+                    "path": "/data/checkpoints"
+                }
+            ],
+            "env": {
+                "MESH_PEERS": "${MESH_PEERS}",
+                "MESH_SELF": "${MESH_SELF}",
+                "MESH_PORT": "${MESH_PORT}",
+                "WT_SWEEP_INDEX": "${WT_SWEEP_INDEX}",
+                "WT_SWEEP_PARAMS": "${WT_SWEEP_PARAMS}",
+                "WT_RUN_ID": "${WT_RUN_ID}",
+                "WT_CKPT_DIR": "${WT_CKPT_DIR}",
+                "WT_CONFIG": "${WT_CONFIG}",
+                "WT_WORKERS": "${WT_WORKERS}",
+                "WT_ES__POP": "${WT_ES__POP}",
+                "WT_ES__SIGMA": "${WT_ES__SIGMA}",
+                "WT_ES__LR": "${WT_ES__LR}",
+                "WT_RUN__MAX_ITERATIONS": "${WT_RUN__MAX_ITERATIONS}",
+                "WT_RUN__CHECKPOINT_EVERY": "${WT_RUN__CHECKPOINT_EVERY}",
+                "WT_RUN__SEED": "${WT_RUN__SEED}",
+                "WT_POLICY__HIDDEN": "${WT_POLICY__HIDDEN}"
+            }
+        }
+    }
+}

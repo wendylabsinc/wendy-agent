@@ -1,0 +1,17 @@
+# Configuration for the single-device trainer. The image bakes this file and
+# points WT_CONFIG at it; every key can be overridden at deploy time with a
+# WT_<SECTION>__<KEY> environment variable, for example WT_ES__POP=64.
+# These values mirror the code defaults in train.py.
+
+[es]
+pop = 32     # mirrored perturbation pairs per generation
+sigma = 0.1  # perturbation scale
+lr = 0.02    # Adam learning rate
+
+[run]
+max_iterations = 200  # generations to train
+checkpoint_every = 10 # checkpoint cadence, in generations
+seed = 0              # policy initialization and perturbation stream seed
+
+[policy]
+hidden = [32]  # hidden layer widths of the tanh multi-layer perceptron
