@@ -125,8 +125,6 @@ func NewRootCmd() *cobra.Command {
 	runCmd.GroupID = "develop"
 	observeCmd := newObserveCmd()
 	observeCmd.GroupID = "develop"
-	appCmd := newAppCmd()
-	appCmd.GroupID = "develop"
 	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
 	// group is hidden). A fresh command instance is used because a cobra
 	// command can only be attached to one parent.
@@ -216,7 +214,6 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		observeCmd,
-		appCmd,
 		installCmd,
 		// Manage
 		projectCmd,
