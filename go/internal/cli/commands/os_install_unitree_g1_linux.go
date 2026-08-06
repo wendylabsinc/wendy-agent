@@ -28,19 +28,18 @@ const (
 	unitreeG1Version           = "6.2"
 	unitreeG1ImageName         = "g1-nx-j6.2.img.bz2"
 	unitreeG1FirmwareName      = "Jetpack_6.2_nx.tar.bz2"
-	unitreeG1MinDriveBytes     = int64(900_000_000_000)
 	unitreeG1MaxArchiveEntries = 1_000_000
 	unitreeG1MaxExtractedSize  = int64(200 << 30)
 )
 
-type unitreeG1Packages struct {
-	Image    string
-	Firmware string
+type unitreeG1ResolvedArtifact struct {
+	Path   string
+	SHA256 string
 }
 
-type unitreeG1Fingerprints struct {
-	Image    string
-	Firmware string
+type unitreeG1Packages struct {
+	Image    unitreeG1ResolvedArtifact
+	Firmware unitreeG1ResolvedArtifact
 }
 
 func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
@@ -72,7 +71,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	fmt.Println(tui.WarningMessage("Complete Stage 1 first. Do not flash the module firmware before the matching JetPack 6.2 NVMe is installed."))
 	fmt.Println()
 
-	packages, fingerprints, err := resolveOfficialUnitreeG1Packages(ctx)
+	packages, err := resolveOfficialUnitreeG1Packages(ctx)
 	if err != nil {
 		return err
 	}
@@ -97,10 +96,10 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 	}
 	fmt.Printf("  Device: %s\n", target.DevicePath)
 	fmt.Printf("  Size:   %s\n", target.Size)
-	fmt.Printf("  Image:  %s\n", filepath.Base(packages.Image))
-	fmt.Printf("          sha256:%s\n", fingerprints.Image)
-	fmt.Printf("  PC2:    %s\n", filepath.Base(packages.Firmware))
-	fmt.Printf("          sha256:%s\n", fingerprints.Firmware)
+	fmt.Printf("  Image:  %s\n", filepath.Base(packages.Image.Path))
+	fmt.Printf("          sha256:%s\n", packages.Image.SHA256)
+	fmt.Printf("  PC2:    %s\n", filepath.Base(packages.Firmware.Path))
+	fmt.Printf("          sha256:%s\n", packages.Firmware.SHA256)
 
 	if !opts.Force {
 		fmt.Println()
@@ -112,11 +111,11 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 			return ErrUserCancelled
 		}
 	}
-	if err := recheckUnitreeG1Artifact(packages.Image, fingerprints.Image, "before the destructive write"); err != nil {
+	if err := recheckUnitreeG1Artifact(packages.Image.Path, packages.Image.SHA256, "before the destructive write"); err != nil {
 		return err
 	}
 
-	stream, err := streamBzip2Image(packages.Image)
+	stream, err := streamBzip2Image(packages.Image.Path)
 	if err != nil {
 		return err
 	}
@@ -162,11 +161,11 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 		return err
 	}
 	fmt.Println(tui.SuccessMessage("Detected " + dev.Describe() + " in APX recovery mode."))
-	if err := recheckUnitreeG1Artifact(packages.Firmware, fingerprints.Firmware, "before extraction and privileged execution"); err != nil {
+	if err := recheckUnitreeG1Artifact(packages.Firmware.Path, packages.Firmware.SHA256, "before extraction and privileged execution"); err != nil {
 		return err
 	}
 
-	workspace, script, err := extractUnitreeG1Firmware(ctx, packages.Firmware)
+	workspace, script, err := extractUnitreeG1Firmware(ctx, packages.Firmware.Path)
 	if err != nil {
 		return err
 	}
@@ -178,7 +177,7 @@ func installUnitreeG1(ctx context.Context, opts unitreeG1InstallOptions) error {
 
 	fmt.Println()
 	fmt.Println(tui.Header("Stage 2 of 2 · Flash matching Unitree PC2 module firmware"))
-	fmt.Printf("  Archive:   sha256:%s\n", fingerprints.Firmware)
+	fmt.Printf("  Archive:   sha256:%s\n", packages.Firmware.SHA256)
 	fmt.Printf("  Script:    %s\n", strings.TrimPrefix(script, workspace+string(filepath.Separator)))
 	fmt.Printf("  Script:    sha256:%s\n", scriptHash)
 	fmt.Printf("  Directory: %s\n", filepath.Dir(script))
@@ -315,7 +314,7 @@ func validateUnitreeG1Drive(target drive) error {
 	if !target.MediaFixed {
 		return fmt.Errorf("%s does not look like a fixed SSD; select the replacement NVMe enclosure, not an SD card or USB stick", target.DevicePath)
 	}
-	if target.SizeBytes < unitreeG1MinDriveBytes {
+	if !unitreeG1DriveMeetsMinimumCapacity(target.SizeBytes) {
 		return fmt.Errorf("%s is %s; the verified G1 procedure requires a replacement NVMe of at least 1 TB", target.DevicePath, target.Size)
 	}
 	return nil

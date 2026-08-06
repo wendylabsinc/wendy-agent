@@ -45,34 +45,32 @@ var unitreeG1OfficialArtifacts = []unitreeG1Artifact{
 	},
 }
 
-func resolveOfficialUnitreeG1Packages(ctx context.Context) (unitreeG1Packages, unitreeG1Fingerprints, error) {
+func resolveOfficialUnitreeG1Packages(ctx context.Context) (unitreeG1Packages, error) {
 	cacheRoot, err := osCacheDir()
 	if err != nil {
-		return unitreeG1Packages{}, unitreeG1Fingerprints{}, fmt.Errorf("resolving G1 artifact cache: %w", err)
+		return unitreeG1Packages{}, fmt.Errorf("resolving G1 artifact cache: %w", err)
 	}
 	cacheDir := filepath.Join(cacheRoot, "unitree-g1", unitreeG1Version)
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		return unitreeG1Packages{}, unitreeG1Fingerprints{}, fmt.Errorf("creating G1 artifact cache: %w", err)
+		return unitreeG1Packages{}, fmt.Errorf("creating G1 artifact cache: %w", err)
 	}
 
-	paths := make(map[string]string, len(unitreeG1OfficialArtifacts))
-	digests := make(map[string]string, len(unitreeG1OfficialArtifacts))
+	resolved := make(map[string]unitreeG1ResolvedArtifact, len(unitreeG1OfficialArtifacts))
 	for _, artifact := range unitreeG1OfficialArtifacts {
 		path, err := resolveOfficialUnitreeG1Artifact(ctx, cacheDir, artifact)
 		if err != nil {
-			return unitreeG1Packages{}, unitreeG1Fingerprints{}, err
+			return unitreeG1Packages{}, err
 		}
-		paths[artifact.Name] = path
-		digests[artifact.Name] = artifact.SHA256
+		resolved[artifact.Name] = unitreeG1ResolvedArtifact{
+			Path:   path,
+			SHA256: artifact.SHA256,
+		}
 	}
 
 	return unitreeG1Packages{
-			Image:    paths[unitreeG1ImageName],
-			Firmware: paths[unitreeG1FirmwareName],
-		}, unitreeG1Fingerprints{
-			Image:    digests[unitreeG1ImageName],
-			Firmware: digests[unitreeG1FirmwareName],
-		}, nil
+		Image:    resolved[unitreeG1ImageName],
+		Firmware: resolved[unitreeG1FirmwareName],
+	}, nil
 }
 
 func resolveOfficialUnitreeG1Artifact(ctx context.Context, cacheDir string, artifact unitreeG1Artifact) (string, error) {

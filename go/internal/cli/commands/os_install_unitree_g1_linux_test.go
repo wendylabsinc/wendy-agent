@@ -177,6 +177,7 @@ func TestValidateUnitreeG1Drive(t *testing.T) {
 		{"internal", func(d *drive) { d.IsRemovable = false }, "not an external drive"},
 		{"removable media", func(d *drive) { d.MediaFixed = false }, "does not look like a fixed SSD"},
 		{"undersized", func(d *drive) { d.SizeBytes = 512_000_000_000; d.Size = "512 GB" }, "at least 1 TB"},
+		{"just under one terabyte", func(d *drive) { d.SizeBytes = 999_999_999_999; d.Size = "999 GB" }, "at least 1 TB"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
