@@ -49,6 +49,10 @@ wendy run
 Try it with the sample apps in [Examples](Examples/), including GPU, DeepStream
 vision, and HTTP server examples.
 
+Train models on one device or a whole fleet with [Training](Training/): a
+framework-agnostic training library, ready-to-run templates, and a one-command
+launcher.
+
 # Install
 
 WendyOS is like iOS for developing, deploying, and debugging
