@@ -477,7 +477,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		}
 		return buildComposeProject(dir)
 	case "docker":
-		resolvedFile, err := compileStagefileIfNeeded(dir, option.File)
+		resolvedFile, err := prepareDockerBuildFile(dir, option.File)
 		if err != nil {
 			return err
 		}

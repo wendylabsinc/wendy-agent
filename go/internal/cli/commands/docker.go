@@ -32,6 +32,7 @@ import (
 	"github.com/joannisorlandos/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -465,14 +466,31 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 	return resolved, nil
 }
 
-// compileStagefileIfNeeded compiles a Stagefile into a real Dockerfile when
-// dockerfile is stagefileSourceName, writing "Dockerfile.generated" and
-// ".dockerignore" into dir and returning the generated Dockerfile's
-// filename. Any other dockerfile value passes through unchanged.
-func compileStagefileIfNeeded(dir, dockerfile string) (string, error) {
-	if dockerfile != stagefileSourceName {
-		return dockerfile, nil
+// prepareDockerBuildFile makes sure dockerfile is ready to hand to the
+// actual image builder, without ever modifying a real, user-authored
+// Dockerfile on disk:
+//
+//   - If dockerfile is stagefileSourceName, it's compiled via the stagefile
+//     package into "Dockerfile.generated" (plus ".dockerignore").
+//   - Otherwise, if any purely-additive `wendy project optimize` fix
+//     applies to it (see optimize.SafeAutoApplyFindings), the fixed text is
+//     written to "Dockerfile.generated" and that name is returned instead.
+//   - If neither applies, dockerfile is returned unchanged.
+//
+// Both branches write to the same generated filename — detectBuildOptions
+// already excludes it from re-entering detection as a rival build file, so
+// this covers both origins with one exclusion.
+func prepareDockerBuildFile(dir, dockerfile string) (string, error) {
+	if dockerfile == stagefileSourceName {
+		return compileStagefile(dir)
 	}
+	return applySafeOptimizeFixes(dir, dockerfile)
+}
+
+// compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
+// "Dockerfile.generated" and ".dockerignore" into dir and returning the
+// generated Dockerfile's filename.
+func compileStagefile(dir string) (string, error) {
 	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "")
 	if err != nil {
 		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
@@ -482,6 +500,54 @@ func compileStagefileIfNeeded(dir, dockerfile string) (string, error) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(dockerignoreText), 0o644); err != nil {
 		return "", fmt.Errorf("writing .dockerignore: %w", err)
+	}
+	return "Dockerfile.generated", nil
+}
+
+// applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
+// the Dockerfile at dir/dockerfile and, if any purely-additive fix applies
+// (see optimize.SafeAutoApplyFindings — never npm-ci or a debug->release
+// swap, both of which can change build outcome or behavior), writes the
+// fixed text to "Dockerfile.generated" and returns that name. The real
+// dockerfile on disk is never modified. Returns dockerfile unchanged if
+// there's nothing to fix, or on any analysis error — this never blocks a
+// build over a static-analysis problem.
+func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
+	cfg, _ := loadOptConfig(dir)
+	targets, err := optimize.DiscoverTargets(dir, cfg, "arm64")
+	if err != nil {
+		return dockerfile, nil
+	}
+	dockerfilePath := filepath.Join(dir, dockerfile)
+	var target *optimize.Target
+	for i := range targets {
+		if targets[i].Dockerfile != nil && targets[i].Dockerfile.Path == dockerfilePath {
+			target = &targets[i]
+			break
+		}
+	}
+	if target == nil {
+		return dockerfile, nil // e.g. a named variant like Dockerfile.prod — optimize doesn't scan those today.
+	}
+
+	findings := optimize.SafeAutoApplyFindings(optimize.Analyze([]optimize.Target{*target}, optimize.DefaultAnalyzers()))
+	if len(findings) == 0 {
+		return dockerfile, nil
+	}
+	fixedLines, applied := optimize.ApplyFixesToLines(target.Dockerfile.Lines, findings)
+	anyApplied := false
+	for _, a := range applied {
+		if a.Applied {
+			anyApplied = true
+			break
+		}
+	}
+	if !anyApplied {
+		return dockerfile, nil
+	}
+	fixedText := strings.Join(fixedLines, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte(fixedText), 0o644); err != nil {
+		return dockerfile, nil
 	}
 	return "Dockerfile.generated", nil
 }
@@ -508,7 +574,7 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return compileStagefileIfNeeded(cwd, file)
+		return prepareDockerBuildFile(cwd, file)
 	}
 
 	if len(dockerfiles) <= 1 {

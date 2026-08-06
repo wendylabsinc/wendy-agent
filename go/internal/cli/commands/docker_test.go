@@ -2614,3 +2614,154 @@ func TestResolveRunProjectType_StagefileExplicitDockerOverride(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, "docker")
 	}
 }
+
+func TestApplySafeOptimizeFixes_AppliesAdditiveFixesInMemory(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\n" +
+		"RUN apt-get update && apt-get install -y curl\n" +
+		"RUN pip install -r requirements.txt\n" +
+		"CMD [\"python3\", \"app.py\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+
+	// The real Dockerfile must be byte-for-byte untouched.
+	realData, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(realData) != original {
+		t.Fatalf("original Dockerfile was modified:\n%s", realData)
+	}
+
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	if !strings.Contains(fixed, "--no-install-recommends") {
+		t.Fatalf("expected --no-install-recommends to be auto-applied:\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "--no-cache-dir") {
+		t.Fatalf("expected --no-cache-dir to be auto-applied:\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "--mount=type=cache,target=/root/.cache/pip") {
+		t.Fatalf("expected a pip build-cache mount to be auto-applied:\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NeverAutoAppliesNpmCiOrReleaseFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := "FROM node:20\n" +
+		"RUN npm install\n" +
+		"RUN cargo build\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	// build-cache still applies to both RUN lines, so a Dockerfile.generated IS produced —
+	// but npm ci and --release must never appear in it.
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	if strings.Contains(fixed, "npm ci") {
+		t.Fatalf("npm ci must never be auto-applied (can hard-fail on a drifted lockfile):\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "npm install") || !strings.Contains(fixed, "--mount=type=cache,target=/root/.npm") {
+		t.Fatalf("npm install line should keep npm install and gain a cache mount:\n%s", fixed)
+	}
+	if strings.Contains(fixed, "--release") {
+		t.Fatalf("--release must never be auto-applied (changes runtime behavior):\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NoOpWhenNothingToFix(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM scratch\nCMD [\"/bin/true\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile" {
+		t.Fatalf("got %q, want the original filename unchanged", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile.generated")); err == nil {
+		t.Fatalf("Dockerfile.generated should not be created when there's nothing to fix")
+	}
+}
+
+func TestApplySafeOptimizeFixes_IgnoresNamedVariant(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.prod"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile.prod")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.prod" {
+		t.Fatalf("got %q, want the original filename unchanged (optimize doesn't scan named variants today)", got)
+	}
+}
+
+func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T) {
+	t.Run("stagefile", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"),
+			[]byte("version: 1\nstages:\n  - name: app\n    from: debian:12\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "build.stagefile.yaml")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+
+	t.Run("plain dockerfile with a fixable finding", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"),
+			[]byte("FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "Dockerfile")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+}

@@ -26,8 +26,8 @@ func TestNodeCIFlagsNpmInstallWithLockfile(t *testing.T) {
 	if f.Analyzer != "node-ci" || f.Severity != SeverityWarning {
 		t.Fatalf("finding = %+v", f)
 	}
-	if f.Fix == nil || f.Fix.New != "RUN npm ci" {
-		t.Fatalf("fix = %+v", f.Fix)
+	if f.Fix != nil {
+		t.Fatalf("expected no auto-fix (npm ci can hard-fail on a drifted lockfile — report-only), got %+v", f.Fix)
 	}
 }
 
