@@ -111,6 +111,22 @@ docs host.
 
 Branch-preview objects under `branch-*` are cleaned up by CI after 30 days.
 
+### Vanity redirects
+
+Short marketing paths are served as static redirect pages uploaded to the
+bucket root by the `Deploy vanity redirects` step in
+`.github/workflows/fumadocs.yml` (main-branch pushes and release deploys only):
+
+| Path | Target |
+|---|---|
+| `/pi` | `/latest/installation/wendyos-raspberry-pi-5/` |
+| `/thor` | `/latest/installation/wendyos-nvidia-jetson-agx-thor/` |
+| `/jetson`, `/jetson-orin`, `/jetson-orin-nano` | `/latest/installation/wendyos-nvidia-jetson-orin-nano/` |
+
+Add new entries to the `REDIRECTS` map in that workflow step. Slugs must not
+collide with deploy path prefixes (`latest`, `latest-nightly`, `release-*`,
+`branch-*`).
+
 ## Release Notifications
 
 The release workflow adds docs links to Discord notifications:

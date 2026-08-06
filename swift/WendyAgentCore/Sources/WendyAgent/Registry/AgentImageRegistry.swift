@@ -2,6 +2,8 @@ import Crypto
 import Foundation
 import HTTPTypes
 import Hummingbird
+import HummingbirdCore
+import HummingbirdTLS
 import Logging
 import NIOCore
 
@@ -14,14 +16,43 @@ import NIOCore
 /// server. The behavior contract is what matters here — routes, statuses,
 /// digest verification, and `Location` headers — verified end-to-end in
 /// Task 9.
+///
+/// One instance serves one listener. The agent runs two over a shared
+/// `BlobStore` (see `LocalRegistryRef`): a wildcard push listener (plain HTTP
+/// unprovisioned, TLS + client-cert verification provisioned) and a
+/// loopback-only plain-HTTP pull listener for the on-device container
+/// backends. Blob and manifest writes are digest-addressed and atomic, so two
+/// instances over one store directory are concurrent-safe; the in-memory
+/// chunked-upload sessions are per-instance, which is fine because only the
+/// push listener registers write routes.
 struct AgentImageRegistry: Sendable {
+    /// One listener's shape: where it binds, whether it terminates TLS, and
+    /// which route set it exposes.
+    struct ListenerConfiguration: Sendable {
+        enum Routes: Sendable {
+            /// Full OCI push+pull surface (uploads, manifest PUT, reads).
+            case pushAndPull
+            /// Read-only surface (blob/manifest GET+HEAD, /v2 check).
+            case pullOnly
+        }
+
+        var host: String
+        var port: Int
+        /// Non-nil terminates TLS with the device identity and verifies client
+        /// certificates; nil serves plain HTTP.
+        var tls: RegistryTLS.Configuration?
+        var routes: Routes
+        /// Short name ("push"/"pull") for log lines.
+        var label: String
+    }
+
     /// Maximum accepted blob size (container image layers can be several GiB).
     private static let maxBlobSize = 8 * 1024 * 1024 * 1024
     /// Maximum accepted manifest size (JSON, always small).
     private static let maxManifestSize = 16 * 1024 * 1024
 
     private let store: BlobStore
-    private let port: Int
+    private let configuration: ListenerConfiguration
     private let logger = Logger(label: "sh.wendy.agent.registry")
     private let uploads = UploadBuffers()
 
@@ -44,9 +75,9 @@ struct AgentImageRegistry: Sendable {
             as? String ?? "application/vnd.oci.image.manifest.v1+json"
     }
 
-    init(store: BlobStore, port: Int = 5555) {
+    init(store: BlobStore, configuration: ListenerConfiguration) {
         self.store = store
-        self.port = port
+        self.configuration = configuration
     }
 
     /// Accumulates in-progress chunked uploads keyed by upload UUID.
@@ -68,19 +99,100 @@ struct AgentImageRegistry: Sendable {
         }
     }
 
-    func run() async throws {
+    /// Builds the route table. Write routes (blob uploads, manifest PUT) are
+    /// registered only for `.pushAndPull` listeners; the pull listener exposes
+    /// just the read surface the container backends need.
+    func buildRouter() -> Router<BasicRequestContext> {
         let router = Router()
         router.addMiddleware {
             LogRequestsMiddleware(.info)
         }
         let store = self.store
-        let uploads = self.uploads
-        let maxBlobSize = Self.maxBlobSize
-        let maxManifestSize = Self.maxManifestSize
 
         router.get("/v2") { _, _ in
             Response(status: .ok)
         }
+
+        if case .pushAndPull = self.configuration.routes {
+            self.addWriteRoutes(to: router)
+        }
+
+        router.head("/v2/{repo}/blobs/{digest}") { _, context -> Response in
+            let digest = context.parameters.get("digest") ?? ""
+            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
+            guard store.hasBlob(digest: digest) else { return Response(status: .notFound) }
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "application/octet-stream",
+                    Self.dockerContentDigest: digest,
+                ]
+            )
+        }
+
+        router.get("/v2/{repo}/blobs/{digest}") { _, context -> Response in
+            let digest = context.parameters.get("digest") ?? ""
+            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
+            guard let data = store.readBlob(digest: digest) else {
+                return Response(status: .notFound)
+            }
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: "application/octet-stream",
+                    Self.dockerContentDigest: digest,
+                ],
+                body: .init(byteBuffer: ByteBuffer(bytes: data))
+            )
+        }
+
+        router.head("/v2/{repo}/manifests/{reference}") { _, context -> Response in
+            let repo = context.parameters.get("repo") ?? ""
+            let reference = context.parameters.get("reference") ?? ""
+            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
+                return Response(status: .notFound)
+            }
+            guard let url = store.manifestURL(repository: repo, reference: reference),
+                let data = try? Data(contentsOf: url)
+            else { return Response(status: .notFound) }
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: Self.manifestMediaType(data),
+                    Self.dockerContentDigest: Self.contentDigest(of: data),
+                ]
+            )
+        }
+
+        router.get("/v2/{repo}/manifests/{reference}") { _, context -> Response in
+            let repo = context.parameters.get("repo") ?? ""
+            let reference = context.parameters.get("reference") ?? ""
+            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
+                return Response(status: .notFound)
+            }
+            guard let url = store.manifestURL(repository: repo, reference: reference),
+                let data = try? Data(contentsOf: url)
+            else { return Response(status: .notFound) }
+            // Content-Type must echo the stored manifest's mediaType; default to OCI.
+            return Response(
+                status: .ok,
+                headers: [
+                    .contentType: Self.manifestMediaType(data),
+                    Self.dockerContentDigest: Self.contentDigest(of: data),
+                ],
+                body: .init(byteBuffer: ByteBuffer(bytes: data))
+            )
+        }
+
+        return router
+    }
+
+    /// Registers the push-side (write) routes: blob uploads and manifest PUT.
+    private func addWriteRoutes(to router: Router<BasicRequestContext>) {
+        let store = self.store
+        let uploads = self.uploads
+        let maxBlobSize = Self.maxBlobSize
+        let maxManifestSize = Self.maxManifestSize
 
         // Begin an upload session, or perform a monolithic push when `digest`
         // is supplied on the initial POST (the whole blob is the body).
@@ -139,35 +251,6 @@ struct AgentImageRegistry: Sendable {
             )
         }
 
-        router.head("/v2/{repo}/blobs/{digest}") { _, context -> Response in
-            let digest = context.parameters.get("digest") ?? ""
-            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
-            guard store.hasBlob(digest: digest) else { return Response(status: .notFound) }
-            return Response(
-                status: .ok,
-                headers: [
-                    .contentType: "application/octet-stream",
-                    Self.dockerContentDigest: digest,
-                ]
-            )
-        }
-
-        router.get("/v2/{repo}/blobs/{digest}") { _, context -> Response in
-            let digest = context.parameters.get("digest") ?? ""
-            guard BlobStore.isValidSHA256Digest(digest) else { return Response(status: .notFound) }
-            guard let data = store.readBlob(digest: digest) else {
-                return Response(status: .notFound)
-            }
-            return Response(
-                status: .ok,
-                headers: [
-                    .contentType: "application/octet-stream",
-                    Self.dockerContentDigest: digest,
-                ],
-                body: .init(byteBuffer: ByteBuffer(bytes: data))
-            )
-        }
-
         router.put("/v2/{repo}/manifests/{reference}") { request, context -> Response in
             let repo = context.parameters.get("repo") ?? ""
             let reference = context.parameters.get("reference") ?? ""
@@ -182,50 +265,47 @@ struct AgentImageRegistry: Sendable {
             )
             return Response(status: .created)
         }
+    }
 
-        router.head("/v2/{repo}/manifests/{reference}") { _, context -> Response in
-            let repo = context.parameters.get("repo") ?? ""
-            let reference = context.parameters.get("reference") ?? ""
-            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
-                return Response(status: .notFound)
-            }
-            guard let url = store.manifestURL(repository: repo, reference: reference),
-                let data = try? Data(contentsOf: url)
-            else { return Response(status: .notFound) }
-            return Response(
-                status: .ok,
-                headers: [
-                    .contentType: Self.manifestMediaType(data),
-                    Self.dockerContentDigest: Self.contentDigest(of: data),
-                ]
-            )
+    /// Builds the Hummingbird application for this listener. Throws when the
+    /// TLS configuration is present but unusable (bad PEM) — callers must
+    /// treat that as "listener stays down", never fall back to plain HTTP.
+    ///
+    /// The "listening" log fires from `onServerRunning` so it reports the
+    /// actually-bound address (tests bind port 0).
+    func buildApplication(
+        onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
+    ) throws -> Application<RouterResponder<BasicRequestContext>> {
+        let server: HTTPServerBuilder
+        if let tls = self.configuration.tls {
+            server = try .tls(.http1(), configuration: RegistryTLS.channelConfiguration(tls))
+        } else {
+            server = .http1()
         }
-
-        router.get("/v2/{repo}/manifests/{reference}") { _, context -> Response in
-            let repo = context.parameters.get("repo") ?? ""
-            let reference = context.parameters.get("reference") ?? ""
-            guard BlobStore.isValidRepository(repo), BlobStore.isValidReference(reference) else {
-                return Response(status: .notFound)
+        let logger = self.logger
+        let label = self.configuration.label
+        let scheme = self.configuration.tls == nil ? "http" : "https"
+        return Application(
+            router: self.buildRouter(),
+            server: server,
+            configuration: .init(
+                address: .hostname(self.configuration.host, port: self.configuration.port)
+            ),
+            onServerRunning: { channel in
+                logger.info(
+                    "Agent image registry listening",
+                    metadata: [
+                        "listener": "\(label)",
+                        "scheme": "\(scheme)",
+                        "address": "\(channel.localAddress.map(String.init(describing:)) ?? "unknown")",
+                    ]
+                )
+                await onServerRunning(channel)
             }
-            guard let url = store.manifestURL(repository: repo, reference: reference),
-                let data = try? Data(contentsOf: url)
-            else { return Response(status: .notFound) }
-            // Content-Type must echo the stored manifest's mediaType; default to OCI.
-            return Response(
-                status: .ok,
-                headers: [
-                    .contentType: Self.manifestMediaType(data),
-                    Self.dockerContentDigest: Self.contentDigest(of: data),
-                ],
-                body: .init(byteBuffer: ByteBuffer(bytes: data))
-            )
-        }
-
-        let app = Application(
-            router: router,
-            configuration: .init(address: .hostname("127.0.0.1", port: port))
         )
-        logger.info("Agent image registry listening", metadata: ["port": "\(port)"])
-        try await app.runService()
+    }
+
+    func run() async throws {
+        try await self.buildApplication().runService()
     }
 }

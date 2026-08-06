@@ -70,6 +70,11 @@ The bridge exposes every topic in the selected domain. ROS 2 domains are isolate
 graphs, so stop and restart `serve` with a different `--domain` when you want to
 inspect another graph.
 
+The bridge uses the device's host network for ROS 2 discovery, but its WebSocket
+listener binds only to `127.0.0.1` on the device. Foxglove therefore reaches the
+bridge through Wendy's authenticated Cloud tunnel rather than by connecting
+directly to port `8765` on the device's management or robot LAN.
+
 <Callout type="warning">
 **Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits
 `domainId` gets a stable auto-derived domain (a hash of its `appId`), not domain 0.

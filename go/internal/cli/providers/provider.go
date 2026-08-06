@@ -124,6 +124,16 @@ type ImageBuilder interface {
 	BuildFromImage(device models.ExternalDevice, product, imageName string) *BuiltApp
 }
 
+// ContinuousDiscoverer is optionally implemented by providers that can stream
+// discovered devices as they appear, instead of being polled via DiscoverDevices.
+type ContinuousDiscoverer interface {
+	// DiscoverDevicesContinuous starts continuous discovery and returns a
+	// channel that receives each device as it is found. The channel stays
+	// open until ctx is cancelled (or the stream fails), then is closed.
+	// Implementations may re-send a device; consumers deduplicate.
+	DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error)
+}
+
 // TypedBuilder is optionally implemented by providers that can disambiguate
 // between multiple buildable markers in the same project using the caller's
 // resolved build type (e.g. "docker" vs "compose"). When the build type is

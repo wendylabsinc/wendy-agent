@@ -315,7 +315,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -461,6 +461,7 @@ func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
 	regPort int,
+	agentOS string,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
 	platform string,
@@ -563,7 +564,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = buildServiceImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -603,7 +604,9 @@ func buildServicesParallel(
 	for r := range results {
 		if r.err != nil {
 			failed[r.name] = r.err
-			if r.log != "" {
+			// Skip the raw replay for the friendly "no registry on the Mac agent"
+			// error — the retried-push spam would bury the actionable message.
+			if r.log != "" && !isRegistryUnavailable(r.err) {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}

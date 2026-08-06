@@ -2202,6 +2202,92 @@ func hideLocalProviders(excludes map[string]bool) map[string]bool {
 	return merged
 }
 
+// externalProviderPickerItem builds the picker row for a device discovered
+// through an external provider. wendy-lite devices are presented as merged
+// devices (like LAN discoveries) so they share the LAN row layout.
+func externalProviderPickerItem(prov providers.DeviceProvider, dev *models.ExternalDevice) tui.PickerItem {
+	if prov.Key() == "wendy-lite" {
+		return tui.PickerItem{
+			Name:         dev.DisplayName,
+			DedupKey:     dev.DisplayName,
+			Type:         dev.ConnectionType() + " (Lite)",
+			Address:      dev.ConnectionInfo["ip"],
+			AgentVersion: dev.AgentVersion,
+			OS:           dev.OS,
+			OSVersion:    dev.OSVersion,
+			Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
+				DisplayName:     dev.DisplayName,
+				AgentVersion:    dev.AgentVersion,
+				OSVersion:       dev.OSVersion,
+				CPUArchitecture: dev.CPUArchitecture,
+				Externals:       []*models.ExternalDevice{dev},
+			}},
+		}
+	}
+	return tui.PickerItem{
+		Name:         dev.DisplayName,
+		Type:         prov.DisplayName(),
+		Address:      externalProviderAddress(dev.ProviderKey, dev.ID),
+		AgentVersion: dev.AgentVersion,
+		OS:           dev.OS,
+		OSVersion:    dev.OSVersion,
+		DedupKey:     dev.DisplayName,
+		SortKey:      externalProviderSortKey(prov.Key(), dev.DisplayName),
+		Hint:         externalProviderPickerHint(prov.Key()),
+		Value:        &pickerEntry{externalDevice: dev, provider: prov},
+	}
+}
+
+// providerPollDelay returns how long to wait before the next DiscoverDevices
+// poll given how long the previous scan took: the remainder of the 3s cycle,
+// but never less than 500ms between scans.
+func providerPollDelay(elapsed time.Duration) time.Duration {
+	delay := 3*time.Second - elapsed
+	if delay < 500*time.Millisecond {
+		delay = 500 * time.Millisecond
+	}
+	return delay
+}
+
+// discoverProviderForPicker feeds picker items for prov until ctx is done.
+// Providers implementing providers.ContinuousDiscoverer are consumed as a
+// stream; otherwise DiscoverDevices is polled on a 3-second cadence measured
+// from the start of each scan (with a 500ms minimum gap, so slow scans don't
+// stretch the period). If the stream fails to start or closes while the
+// picker is still open, discovery falls back to polling.
+func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider, send func([]tui.PickerItem)) {
+	if cd, ok := prov.(providers.ContinuousDiscoverer); ok {
+		if ch, err := cd.DiscoverDevicesContinuous(ctx); err == nil {
+			for dev := range ch {
+				send([]tui.PickerItem{externalProviderPickerItem(prov, &dev)})
+			}
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}
+
+	for {
+		start := time.Now()
+		devices, err := prov.DiscoverDevices(ctx)
+		if err == nil {
+			var items []tui.PickerItem
+			for i := range devices {
+				items = append(items, externalProviderPickerItem(prov, &devices[i]))
+			}
+			if len(items) > 0 {
+				send(items)
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(providerPollDelay(time.Since(start))):
+		}
+	}
+}
+
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // LAN discovery runs continuously so devices that come online after the
@@ -2311,62 +2397,15 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		}
 	}()
 
-	// Continuous provider discovery — re-scan every 3 seconds.
+	// Continuous provider discovery — streamed when the provider supports it,
+	// otherwise re-scanned on a 3-second cadence.
 	for _, prov := range providers.AvailableProviders() {
 		if excludeProviders[prov.Key()] {
 			continue
 		}
-		prov := prov
-		go func() {
-			for {
-				devices, err := prov.DiscoverDevices(discoverCtx)
-				if err == nil && len(devices) > 0 {
-					var items []tui.PickerItem
-					for i := range devices {
-						if prov.Key() == "wendy-lite" {
-							items = append(items, tui.PickerItem{
-								Name:         devices[i].DisplayName,
-								DedupKey:     devices[i].DisplayName,
-								Type:         devices[i].ConnectionType() + " (Lite)",
-								Address:      devices[i].ConnectionInfo["ip"],
-								AgentVersion: devices[i].AgentVersion,
-								OS:           devices[i].OS,
-								OSVersion:    devices[i].OSVersion,
-								Value: &pickerEntry{mergedDevice: &models.DiscoveredDevice{
-									DisplayName:     devices[i].DisplayName,
-									AgentVersion:    devices[i].AgentVersion,
-									OSVersion:       devices[i].OSVersion,
-									CPUArchitecture: devices[i].CPUArchitecture,
-									Externals:       []*models.ExternalDevice{&devices[i]},
-								}},
-							})
-						} else {
-							items = append(items, tui.PickerItem{
-								Name:         devices[i].DisplayName,
-								Type:         prov.DisplayName(),
-								Address:      externalProviderAddress(devices[i].ProviderKey, devices[i].ID),
-								AgentVersion: devices[i].AgentVersion,
-								OS:           devices[i].OS,
-								OSVersion:    devices[i].OSVersion,
-								DedupKey:     devices[i].DisplayName,
-								SortKey:      externalProviderSortKey(prov.Key(), devices[i].DisplayName),
-								Hint:         externalProviderPickerHint(prov.Key()),
-								Value:        &pickerEntry{externalDevice: &devices[i], provider: prov},
-							})
-						}
-					}
-					if len(items) > 0 {
-						p.Send(tui.PickerAddMsg{Items: items})
-					}
-				}
-
-				select {
-				case <-discoverCtx.Done():
-					return
-				case <-time.After(3 * time.Second):
-				}
-			}
-		}()
+		go discoverProviderForPicker(discoverCtx, prov, func(items []tui.PickerItem) {
+			p.Send(tui.PickerAddMsg{Items: items})
+		})
 	}
 
 	// Continuous Bluetooth discovery — re-scan every 5 seconds.
