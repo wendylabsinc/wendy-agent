@@ -1550,7 +1550,7 @@ func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, o
 	if arch == "" {
 		return fmt.Errorf("device did not report CPU architecture")
 	}
-	fmt.Fprintf(os.Stderr, "Fetching agent for linux/%s...\n", arch)
+	fmt.Fprintf(os.Stderr, "Fetching agent for %s...\n", agentPlatformLabel(osName, arch))
 	binaryData, resolvedVer, source, err := resolveAgentArtifact(osName, arch, nightly)
 	if err != nil {
 		return fmt.Errorf("resolving agent binary: %w", err)
@@ -1565,7 +1565,11 @@ func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, o
 }
 
 // waitForAgentRestart polls addr with connectWithAutoTLS until the agent answers
-// GetAgentVersion or 60 s elapse. Returns a fresh connection on success.
+// GetAgentVersion or 60 s elapse. Returns a fresh connection on success. This
+// flat 60 s already covers the Mac agent's slower unzip/codesign-verify/relaunch
+// restart (see agentRestartTimeoutFor in device.go for the equivalent OS-aware
+// timeout used by `device update`'s own restart wait), so no OS-specific
+// branching is needed here.
 func waitForAgentRestart(ctx context.Context, addr string) (*grpcclient.AgentConnection, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	time.Sleep(time.Second) // give the agent a moment to begin shutdown

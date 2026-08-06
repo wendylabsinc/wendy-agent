@@ -2172,7 +2172,8 @@ func newDeviceUpdateCmd() *cobra.Command {
 		Long: "Updates the agent binary on the device (downloaded from GitHub, or --binary for a local file), then checks for a newer WendyOS image. " +
 			"When an OS update is available it prompts before applying (default no); use --yes to apply without prompting. Non-interactive runs report the available update without applying it. " +
 			"--nightly selects the nightly channel for both the agent and the OS. " +
-			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL).",
+			"--artifact-url applies a specific OS update artifact instead of the manifest's latest; this works over the cloud tunnel (the device downloads the artifact directly from the URL). " +
+			"macOS agents receive the signed app-bundle zip (wendy-agent-macos-<arch>.zip) instead of a Linux binary; --binary accepts one of those zips for dev pushes to a Mac agent.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
@@ -2203,16 +2204,16 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return fmt.Errorf("reading binary: %w", err)
 				}
 
-				// Validate the binary's ELF architecture against the device.
+				// Validate the local artifact against the device's OS/architecture.
 				// If the device is provisioned and only exposes ProvisioningService
-				// on plaintext, GetAgentVersion may be unavailable — skip arch
-				// validation in that case rather than blocking the upload.
+				// on plaintext, GetAgentVersion may be unavailable — skip validation
+				// in that case rather than blocking the upload.
 				versionResp, versionErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 				if versionErr == nil {
 					preUpdateVersion = versionResp
 					deviceArch := versionResp.GetCpuArchitecture()
 					if deviceArch != "" {
-						if err := checkELFArchitecture(binaryData, deviceArch); err != nil {
+						if err := checkLocalAgentArtifact(binaryData, versionResp.GetOs(), deviceArch); err != nil {
 							return err
 						}
 					}
@@ -2263,7 +2264,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 						if nightly {
 							releaseType = "nightly"
 						}
-						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
+						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for %s...", releaseType, agentPlatformLabel(osName, arch))))
 					}
 					binaryData, _, _, err = resolveAgentArtifact(osName, arch, nightly)
 					if err != nil {
@@ -2320,7 +2321,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 					_ = conn.Close()
 					conn = nil
 				}
-				conn, err = awaitAgentRestart(ctx, reconnect, jsonOutput)
+				conn, err = awaitAgentRestart(ctx, reconnect, preUpdateVersion.GetOs(), jsonOutput)
 				if err != nil {
 					return err
 				}
@@ -2358,6 +2359,10 @@ func newDeviceUpdateCmd() *cobra.Command {
 
 			var outcome osUpdateOutcome
 			if conn != nil {
+				// A Mac agent exits here silently: maybeCheckOSUpdate's
+				// !isWendyOSUpdateTarget gate rejects a non-"WendyOS-" os_version
+				// and empty device_type before any reconnect/network call, so
+				// `device update` on a Mac only ever updates the agent binary.
 				outcome, err = maybeCheckOSUpdate(ctx, preUpdateVersion, conn, nightly, assumeYes, artifactURL)
 				if err != nil {
 					return err
@@ -2377,7 +2382,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}
 			if shouldReapplyBinary(binaryPath != "", outcome) {
 				fmt.Println(tui.InfoMessage("Re-applying your --binary agent onto the updated OS..."))
-				if err := reapplyBinaryAfterOSUpdate(ctx, conn, binaryData, sha256Hash, jsonOutput); err != nil {
+				if err := reapplyBinaryAfterOSUpdate(ctx, conn, preUpdateVersion.GetOs(), binaryData, sha256Hash, jsonOutput); err != nil {
 					return fmt.Errorf("re-applying --binary after OS update: %w", err)
 				}
 				fmt.Println(tui.SuccessMessage("Dev agent re-applied; it survived the OS update."))
@@ -2446,6 +2451,47 @@ func checkELFArchitecture(data []byte, deviceArch string) error {
 	return nil
 }
 
+// isZipArchive reports whether data begins with the zip local-file-header
+// magic "PK\x03\x04" (what ditto -c -k produces).
+func isZipArchive(data []byte) bool {
+	return len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04
+}
+
+// isELFBinary reports whether data begins with the ELF magic (0x7f 'E' 'L' 'F').
+func isELFBinary(data []byte) bool {
+	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
+}
+
+// checkLocalAgentArtifact validates a --binary payload against the device OS,
+// so a mismatched artifact (a Linux ELF pushed to a Mac, or a macOS zip pushed
+// to a Linux box) is caught locally instead of failing deep inside the agent's
+// UpdateAgent stream. On darwin only the container format is checked — the
+// Swift agent itself verifies the zip's contents (sha256, codesign) once it
+// lands. On every other OS, architecture validation is delegated unchanged to
+// checkELFArchitecture, which stays lenient toward non-ELF payloads (shell
+// wrapper scripts, etc.).
+func checkLocalAgentArtifact(data []byte, deviceOS, deviceArch string) error {
+	if strings.EqualFold(deviceOS, "darwin") {
+		if isZipArchive(data) {
+			return nil
+		}
+		if isELFBinary(data) {
+			return fmt.Errorf("this device runs macOS; --binary must be the wendy-agent-macos-%s-<version>.zip app bundle "+
+				"(build one with swift/Scripts/Build.sh), not a Linux agent binary", deviceArch)
+		}
+		return errors.New("this device runs macOS; --binary must be a wendy-agent-macos zip app bundle")
+	}
+
+	if isZipArchive(data) {
+		osLabel := deviceOS
+		if osLabel == "" {
+			osLabel = "linux"
+		}
+		return fmt.Errorf("--binary looks like a macOS agent zip, but this device runs %s; provide the wendy-agent Linux binary", osLabel)
+	}
+	return checkELFArchitecture(data, deviceArch)
+}
+
 type agentRestartWaitOptions struct {
 	InitialDelay time.Duration
 	Timeout      time.Duration
@@ -2456,7 +2502,21 @@ const (
 	defaultAgentRestartInitialDelay = time.Second
 	defaultAgentRestartTimeout      = 20 * time.Second
 	defaultAgentRestartPollInterval = time.Second
+
+	// darwinAgentRestartTimeout gives the Mac agent longer than a Linux
+	// systemd unit swap: it unzips the app-bundle zip, codesign-verifies it,
+	// atomically swaps it in, and relaunches a GUI app.
+	darwinAgentRestartTimeout = 60 * time.Second
 )
+
+// agentRestartTimeoutFor returns how long awaitAgentRestart should wait for
+// the agent to come back after an upload, based on the device's reported OS.
+func agentRestartTimeoutFor(osName string) time.Duration {
+	if strings.EqualFold(osName, "darwin") {
+		return darwinAgentRestartTimeout
+	}
+	return defaultAgentRestartTimeout
+}
 
 // uploadAgentBinary uploads binaryData to the device, showing a spinner when
 // interactive and a plain status line otherwise (nothing extra in JSON mode).
@@ -2489,17 +2549,21 @@ func uploadAgentBinary(ctx context.Context, agentService agentpb.WendyAgentServi
 }
 
 // awaitAgentRestart waits for the agent to come back after an upload and returns
-// a live connection to it (showing a spinner when interactive).
-func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*grpcclient.AgentConnection, error), jsonOutput bool) (*grpcclient.AgentConnection, error) {
+// a live connection to it (showing a spinner when interactive). osName selects
+// the restart timeout via agentRestartTimeoutFor — pass "" when the device's OS
+// is unknown or irrelevant (e.g. it can never be darwin at that call site) to
+// get the default Linux timeout.
+func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*grpcclient.AgentConnection, error), osName string, jsonOutput bool) (*grpcclient.AgentConnection, error) {
+	opts := agentRestartWaitOptions{Timeout: agentRestartTimeoutFor(osName)}
 	if isInteractiveTerminal() && !jsonOutput {
 		return runAgentConnectionSpinner(ctx, "Waiting for agent to restart...", func(spinCtx context.Context) (*grpcclient.AgentConnection, error) {
-			return waitForUpdatedAgentReady(spinCtx, reconnect, agentRestartWaitOptions{})
+			return waitForUpdatedAgentReady(spinCtx, reconnect, opts)
 		})
 	}
 	if !jsonOutput {
 		fmt.Println(tui.InfoMessage("Waiting for agent to restart..."))
 	}
-	return waitForUpdatedAgentReady(ctx, reconnect, agentRestartWaitOptions{})
+	return waitForUpdatedAgentReady(ctx, reconnect, opts)
 }
 
 // reapplyBinaryAfterOSUpdate re-uploads the --binary dev agent after an OS
@@ -2507,9 +2571,12 @@ func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*gr
 // (now-stale) connection whose Host/Reconnect identifies the device; the device
 // is expected to already be back online (maybeCheckOSUpdate waited for it), so
 // the first reconnect resolves promptly. The upload restarts the agent, so it
-// then waits once more for the re-applied dev agent to return.
-func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, binaryData []byte, sha256Hash string, jsonOutput bool) error {
-	conn, err := awaitAgentRestart(ctx, updatedAgentReconnectFunc(ctx, priorConn), jsonOutput)
+// then waits once more for the re-applied dev agent to return. osName is
+// forwarded to awaitAgentRestart for its restart-timeout selection; in
+// practice this path is unreachable for darwin (an OS update is refused on
+// Macs before reaching here), so osName is always a Linux-family value.
+func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, osName string, binaryData []byte, sha256Hash string, jsonOutput bool) error {
+	conn, err := awaitAgentRestart(ctx, updatedAgentReconnectFunc(ctx, priorConn), osName, jsonOutput)
 	if err != nil {
 		return err
 	}
@@ -2526,7 +2593,7 @@ func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.Agent
 
 	reconnectAfter := updatedAgentReconnectFunc(ctx, conn)
 	_ = conn.Close()
-	readyConn, err := awaitAgentRestart(ctx, reconnectAfter, jsonOutput)
+	readyConn, err := awaitAgentRestart(ctx, reconnectAfter, osName, jsonOutput)
 	if err != nil {
 		return err
 	}

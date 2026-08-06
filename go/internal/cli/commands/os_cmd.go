@@ -827,10 +827,7 @@ reason. Useful for diagnosing an update without shell access to the device.`,
 			// shell access — nightlies keep the same WendyOS-x.y.z version string.
 			resp, err := conn.AgentService.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true})
 			if err != nil {
-				if status.Code(err) == codes.Unimplemented {
-					return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
-				}
-				return fmt.Errorf("querying OS update status: %w", err)
+				return osUpdateStatusError(ctx, conn.AgentService, err)
 			}
 			if jsonOutput {
 				out, mErr := protojson.MarshalOptions{Multiline: true, Indent: "  "}.Marshal(resp)
@@ -848,6 +845,23 @@ reason. Useful for diagnosing an update without shell access to the device.`,
 			return nil
 		},
 	}
+}
+
+// osUpdateStatusError maps a GetOSUpdateStatus failure to what the user is
+// told. An Unimplemented RPC means the connected agent predates the
+// GetOSUpdateStatus RPC — except on a Mac agent, where OS update status is
+// permanently unsupported (there is no WendyOS OTA on macOS at all), so
+// telling the user to "update the agent first" would be misleading: no future
+// agent update will make this RPC available there. macOSBetaUnsupportedFeatureError
+// re-probes GetAgentVersion to tell the two cases apart.
+func osUpdateStatusError(ctx context.Context, agent agentpb.WendyAgentServiceClient, err error) error {
+	if status.Code(err) == codes.Unimplemented {
+		if macErr := macOSBetaUnsupportedFeatureError(ctx, agent, err, "OS update status"); macErr != nil {
+			return macErr
+		}
+		return fmt.Errorf("this device's agent does not report OS update status; update the agent first")
+	}
+	return fmt.Errorf("querying OS update status: %w", err)
 }
 
 // formatOSUpdateStatus renders a persisted OS-update record as-is, with no
