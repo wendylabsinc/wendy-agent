@@ -97,8 +97,12 @@ func resolveMDNSService(ctx context.Context, inst browseResult, serviceType stri
 		return MDNSService{}, err
 	}
 
+	// Through the resolver rather than net.LookupHost, which ignores ctx: this
+	// runs inside the browse callback on the streaming path, so a lookup that
+	// hangs stalls the socket pump and stops discovery for every other device.
+	// DefaultResolver keeps the system resolver, which .local names need.
 	ipAddr := ""
-	if addrs, lookupErr := net.LookupHost(hostname); lookupErr == nil {
+	if addrs, lookupErr := net.DefaultResolver.LookupHost(ctx, hostname); lookupErr == nil {
 		ipAddr = preferIPv4Addr(addrs)
 	}
 
