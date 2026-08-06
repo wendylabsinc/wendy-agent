@@ -18,12 +18,14 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
+	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -254,6 +256,40 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	return true
 }
 
+// videoSourceKind distinguishes a local V4L2 node from a network camera.
+type videoSourceKind int
+
+const (
+	sourceV4L2 videoSourceKind = iota
+	sourceIP
+)
+
+// videoSource is what a device ID resolves to. Introducing it removes the
+// assumption, previously baked into a fmt.Sprintf in StreamVideo, that every
+// device ID names a /dev/videoN node.
+type videoSource struct {
+	kind   videoSourceKind
+	key    string // hub map key: "/dev/video0" or "ip:200"
+	path   string // V4L2 node path; empty for a network camera
+	camera ipcam.Camera
+}
+
+// ipHubKeyPrefix marks a hub key as belonging to a network camera. Hub keys are
+// opaque strings, so the two kinds share one map.
+const ipHubKeyPrefix = "ip:"
+
+// reasonIPCameraNoCredentials is the ErrorInfo reason for a network camera with
+// no stored login. The command-line interface turns it into a camera login hint,
+// the same way TEGRA_FIRMWARE_MISMATCH becomes an os install hint.
+const reasonIPCameraNoCredentials = "IP_CAMERA_NO_CREDENTIALS"
+
+// State paths for network cameras, under the agent's existing state directory.
+// Declared as vars so tests can point them at a temporary directory.
+var (
+	ipcamRegistryPath   = "/var/lib/wendy/cameras.json"
+	ipcamCredentialPath = "/var/lib/wendy/camera-credentials.json"
+)
+
 // VideoService implements agentpb.WendyVideoServiceServer.
 type VideoService struct {
 	agentpb.UnimplementedWendyVideoServiceServer
@@ -261,6 +297,15 @@ type VideoService struct {
 	globDevices     func() ([]string, error)
 	readDeviceName  func(base string) (string, error)
 	hasVideoCapture func(path string) bool
+
+	// Network camera state. registry and credentials are nil-safe throughout: a
+	// device that has never seen a network camera behaves exactly as before.
+	registry    *ipcam.Registry
+	credentials *ipcam.CredentialStore
+	discoverer  *ipcam.Discoverer
+
+	// runGStreamer is the injection seam for the network capture subprocess.
+	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
 
 	// CSI/ribbon-camera seams (injectable for tests). classifyTransport maps a
 	// /dev/videoN base to its transport (USB/CSI/Unknown); enumerateLibcamera
@@ -283,7 +328,7 @@ type VideoService struct {
 // Call Shutdown to cancel all active producers and wait for them to exit.
 func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svcCtx, cancel := context.WithCancel(ctx)
-	return &VideoService{
+	svc := &VideoService{
 		logger: logger,
 		ctx:    svcCtx,
 		cancel: cancel,
@@ -315,7 +360,54 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		dumpBootSlots: func(ctx context.Context) ([]byte, error) {
 			return exec.CommandContext(ctx, "nvbootctrl", "dump-slots-info").CombinedOutput()
 		},
+		registry:    ipcam.NewRegistry(ipcamRegistryPath),
+		credentials: ipcam.NewCredentialStore(ipcamCredentialPath),
 	}
+
+	// Load persisted network cameras. A failure here must not stop the video
+	// service: local cameras still work without it.
+	if err := svc.registry.Load(); err != nil {
+		logger.Warn("loading network camera registry failed", zap.Error(err))
+	}
+	if err := svc.credentials.Load(); err != nil {
+		logger.Warn("loading network camera credentials failed", zap.Error(err))
+	}
+	svc.discoverer = ipcam.NewDiscoverer(svc.registry, logger)
+	svc.runGStreamer = svc.gstreamerFrames
+	return svc
+}
+
+// discoveryInterval is how often the agent re-probes for network cameras. It is
+// deliberately unhurried: a round is one multicast probe plus an ARP read, and
+// cameras do not come and go quickly.
+const discoveryInterval = 60 * time.Second
+
+// StartDiscovery runs discovery rounds until the service context is cancelled.
+// Call once at agent start.
+//
+// This finds cameras that already have an address. A camera cabled straight into
+// the device has none, because its segment has no DHCP server, and making that
+// case work is a separate change.
+func (s *VideoService) StartDiscovery() {
+	if s.discoverer == nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(discoveryInterval)
+		defer ticker.Stop()
+		for {
+			if _, err := s.discoverer.Once(s.ctx); err != nil {
+				s.logger.Debug("camera discovery round failed", zap.Error(err))
+			}
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // Shutdown cancels all active producer goroutines and waits for them to exit.
@@ -324,7 +416,9 @@ func (s *VideoService) Shutdown() {
 	s.wg.Wait()
 }
 
-func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDevice, error) {
+// listCameras enumerates every camera the device can offer: local V4L2 nodes
+// first, then registered network cameras.
+func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice, error) {
 	paths, err := s.globDevices()
 	if err != nil {
 		return nil, err
@@ -379,15 +473,146 @@ func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDev
 			devices[csiDeviceIdxs[0]].LibcameraId = id
 		}
 	}
+	devices = append(devices, s.listIPCameras()...)
 	return devices, nil
 }
 
+// listIPCameras renders registered network cameras as VideoDevices. Path stays
+// empty until a loopback node exists, so the listing never names a node the
+// caller cannot open.
+func (s *VideoService) listIPCameras() []*agentpb.VideoDevice {
+	if s.registry == nil {
+		return nil
+	}
+	cameras := s.registry.List()
+	out := make([]*agentpb.VideoDevice, 0, len(cameras))
+	for _, c := range cameras {
+		name := c.Model
+		if name == "" {
+			name = "network camera"
+		}
+		out = append(out, &agentpb.VideoDevice{
+			Id:             c.ID,
+			Name:           name,
+			Transport:      agentpb.VideoTransport_VIDEO_TRANSPORT_IP,
+			Address:        c.Address,
+			Model:          c.Model,
+			Mac:            c.MAC,
+			HasCredentials: s.credentials != nil && s.credentials.Has(c.MAC),
+			Online:         c.Online,
+		})
+	}
+	return out
+}
+
 func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
-	devices, err := s.listV4L2Devices(ctx)
+	devices, err := s.listCameras(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to enumerate video devices: %v", err)
 	}
 	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
+}
+
+// resolveSource maps a device ID onto the thing it names. IDs in the network
+// camera band resolve through the registry; everything else is a V4L2 node.
+func (s *VideoService) resolveSource(devID uint32) (videoSource, error) {
+	if devID >= ipcam.IDBandStart && devID <= ipcam.IDBandEnd {
+		if s.registry == nil {
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		cam, ok := s.registry.Get(devID)
+		if !ok {
+			// An unregistered ID in the band must not fall through to opening
+			// /dev/video<id>, which could be an unrelated node.
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		return videoSource{
+			kind:   sourceIP,
+			key:    fmt.Sprintf("%s%d", ipHubKeyPrefix, devID),
+			camera: cam,
+		}, nil
+	}
+	path := fmt.Sprintf("/dev/video%d", devID)
+	return videoSource{kind: sourceV4L2, key: path, path: path}, nil
+}
+
+// SetCameraCredentials stores the login for a network camera. The secret is
+// write-only: no RPC returns it.
+func (s *VideoService) SetCameraCredentials(_ context.Context, req *agentpb.SetCameraCredentialsRequest) (*agentpb.SetCameraCredentialsResponse, error) {
+	if s.registry == nil || s.credentials == nil {
+		return nil, status.Error(codes.Unavailable, "network camera support unavailable")
+	}
+	cam, ok := s.registry.Get(req.GetDeviceId())
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "camera %d not found", req.GetDeviceId())
+	}
+	if req.GetUsername() == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{
+		Username: req.GetUsername(),
+		Password: req.GetPassword(),
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "storing credentials: %v", err)
+	}
+	return &agentpb.SetCameraCredentialsResponse{}, nil
+}
+
+// ForgetCamera removes a network camera and its stored credentials.
+func (s *VideoService) ForgetCamera(_ context.Context, req *agentpb.ForgetCameraRequest) (*agentpb.ForgetCameraResponse, error) {
+	if s.registry == nil {
+		return nil, status.Error(codes.Unavailable, "network camera support unavailable")
+	}
+	cam, ok := s.registry.Get(req.GetDeviceId())
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "camera %d not found", req.GetDeviceId())
+	}
+	// Credentials go first: a camera left registered without them is recoverable
+	// with camera login, whereas an orphaned credential is invisible.
+	if s.credentials != nil {
+		if err := s.credentials.Delete(cam.MAC); err != nil {
+			return nil, status.Errorf(codes.Internal, "removing credentials: %v", err)
+		}
+	}
+	if !s.registry.Forget(req.GetDeviceId()) {
+		return nil, status.Errorf(codes.Internal, "removing camera %d failed", req.GetDeviceId())
+	}
+	return &agentpb.ForgetCameraResponse{}, nil
+}
+
+// RefreshCameras runs one discovery round and returns the full camera listing.
+func (s *VideoService) RefreshCameras(ctx context.Context, _ *agentpb.RefreshCamerasRequest) (*agentpb.RefreshCamerasResponse, error) {
+	if s.discoverer != nil {
+		if _, err := s.discoverer.Once(ctx); err != nil {
+			// A failed probe still leaves previously discovered cameras listable.
+			s.logger.Warn("camera discovery failed", zap.Error(err))
+		}
+	}
+	devices, err := s.listCameras(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "listing cameras: %v", err)
+	}
+	return &agentpb.RefreshCamerasResponse{Devices: devices}, nil
+}
+
+// ipCameraCredentials returns the stored login, or a FailedPrecondition carrying
+// reasonIPCameraNoCredentials so the client can print the fix.
+func (s *VideoService) ipCameraCredentials(cam ipcam.Camera) (ipcam.Credential, error) {
+	if s.credentials != nil {
+		if cred, ok := s.credentials.Get(cam.MAC); ok {
+			return cred, nil
+		}
+	}
+	st := status.New(codes.FailedPrecondition,
+		fmt.Sprintf("camera %d has no stored credentials", cam.ID))
+	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason:   reasonIPCameraNoCredentials,
+		Metadata: map[string]string{"device_id": fmt.Sprintf("%d", cam.ID)},
+	})
+	if err != nil {
+		return ipcam.Credential{}, st.Err()
+	}
+	return ipcam.Credential{}, detailed.Err()
 }
 
 // maxHubRetries is the maximum number of times getOrCreateHub will retry after
@@ -506,21 +731,27 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 		return h.broadcast(&videoFrame{data: data, tsNs: tsNs, codec: codec})
 	}
 
-	transport, _ := s.classifyTransport(filepath.Base(path))
-	libcameraID := s.lookupLibcameraID(ctx, transport)
-
-	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
-	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-	// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+	// The hub key carries the source kind: network cameras key on "ip:<id>" and
+	// have no device node to classify.
 	var err error
-	if transport == camera.TransportCSI {
-		s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
-		err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+	if strings.HasPrefix(path, ipHubKeyPrefix) {
+		err = s.runIPProducer(ctx, broadcast, path, req)
 	} else {
-		err = s.streamV4L2Native(ctx, broadcast, path, req)
-		if _, ok := err.(nativeH264NotSupported); ok {
-			s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+		transport, _ := s.classifyTransport(filepath.Base(path))
+		libcameraID := s.lookupLibcameraID(ctx, transport)
+
+		// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
+		// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
+		// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+		if transport == camera.TransportCSI {
+			s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
 			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+		} else {
+			err = s.streamV4L2Native(ctx, broadcast, path, req)
+			if _, ok := err.(nativeH264NotSupported); ok {
+				s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+				err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+			}
 		}
 	}
 	if err != nil && ctx.Err() == nil {
@@ -596,10 +827,22 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	if devID > maxVideoDeviceID {
 		return status.Errorf(codes.InvalidArgument, "device ID out of range")
 	}
+	src, err := s.resolveSource(devID)
+	if err != nil {
+		return err
+	}
+
+	if src.kind == sourceIP {
+		// A network camera sends whatever format it is configured for, so the
+		// V4L2 resolution allowlist does not apply. Width instead selects which
+		// of the camera's streams to open.
+		return s.streamIPCamera(stream, src, req)
+	}
+
 	if err := validateStreamParams(req); err != nil {
 		return err
 	}
-	path := fmt.Sprintf("/dev/video%d", devID)
+	path := src.path
 	transport, _ := s.classifyTransport(filepath.Base(path))
 	if transport == camera.TransportCSI && s.isJetson() {
 		if err := s.preflightTegraCSI(ctx); err != nil {
@@ -634,6 +877,14 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 	defer h.unsubscribe(id)
 
+	return s.pumpFrames(stream, h, ch)
+}
+
+// pumpFrames forwards hub frames to a gRPC stream until the stream or the
+// producer ends. Local and network cameras share it, so subscriber teardown and
+// terminal-error reporting behave identically for both.
+func (s *VideoService) pumpFrames(stream grpc.ServerStreamingServer[agentpb.VideoFrame], h *deviceHub, ch chan *videoFrame) error {
+	ctx := stream.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -664,6 +915,111 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 			}
 		}
 	}
+}
+
+// streamIPCamera bridges a network camera into the same hub fan-out used by local
+// cameras, so subscriber accounting, teardown and the client-side keyframe buffer
+// are all shared.
+func (s *VideoService) streamIPCamera(stream grpc.ServerStreamingServer[agentpb.VideoFrame], src videoSource, req *agentpb.StreamVideoRequest) error {
+	// Fail before creating a hub when the camera has no login or no known
+	// address, so the caller gets the actionable error rather than a producer
+	// that dies immediately afterwards.
+	if err := s.preflightIPCamera(src.camera); err != nil {
+		return err
+	}
+
+	h, id, ch, err := s.getOrCreateHub(stream.Context(), src.key, req)
+	if err != nil {
+		return err
+	}
+	defer h.unsubscribe(id)
+	return s.pumpFrames(stream, h, ch)
+}
+
+// preflightIPCamera checks the two conditions that would otherwise surface as a
+// producer dying the instant it starts: no stored login, and no known address.
+func (s *VideoService) preflightIPCamera(cam ipcam.Camera) error {
+	cred, err := s.ipCameraCredentials(cam)
+	if err != nil {
+		return err
+	}
+	if _, err := ipcam.StreamURL(cam, cred, ipcam.StreamAuto); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(cam))
+	}
+	return nil
+}
+
+// runIPProducer resolves the camera behind a hub key and streams it.
+//
+// The requested width selects the stream. That is safe despite a hub being
+// shared, because getOrCreateHub already refuses a subscriber whose stream
+// parameters differ from the running hub's.
+func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, key string, req *agentpb.StreamVideoRequest) error {
+	devID, err := strconv.ParseUint(strings.TrimPrefix(key, ipHubKeyPrefix), 10, 32)
+	if err != nil {
+		return status.Errorf(codes.Internal, "malformed camera key %q", key)
+	}
+	src, err := s.resolveSource(uint32(devID))
+	if err != nil {
+		return err
+	}
+	cred, err := s.ipCameraCredentials(src.camera)
+	if err != nil {
+		return err
+	}
+	streamURL, err := ipcam.StreamURL(src.camera, cred, ipcam.ChooseStream(req.GetWidth()))
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(src.camera))
+	}
+	s.logger.Info("streaming network camera",
+		zap.Uint32("id", uint32(devID)),
+		zap.String("url", ipcam.RedactURL(streamURL)))
+	return s.runGStreamer(ctx, ipcam.PipelineArgs(streamURL), func(chunk []byte) {
+		broadcast(chunk, uint64(time.Now().UnixNano()), agentpb.VideoCodec_VIDEO_CODEC_H264)
+	})
+}
+
+// gstreamerFrames runs the depayload pipeline and hands each buffer of Annex-B
+// bytes to onFrame. It is the production implementation of runGStreamer.
+func (s *VideoService) gstreamerFrames(ctx context.Context, args []string, onFrame func([]byte)) error {
+	bin, err := resolveGSTBinary("gst-launch-1.0")
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("creating capture pipe: %w", err)
+	}
+	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
+	cmd.Stderr = stderrBuf
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting capture: %w", err)
+	}
+	buf := make([]byte, 64*1024)
+	for {
+		n, readErr := stdout.Read(buf)
+		if n > 0 {
+			// The consumer keeps the slice past this iteration, so it gets its own
+			// copy rather than a window onto the reused read buffer.
+			chunk := make([]byte, n)
+			copy(chunk, buf[:n])
+			onFrame(chunk)
+		}
+		if readErr != nil {
+			break
+		}
+	}
+	waitErr := cmd.Wait()
+	if ctx.Err() != nil {
+		// Cancellation is the normal way a viewer disconnects.
+		return nil
+	}
+	if waitErr != nil {
+		return fmt.Errorf("capture pipeline exited: %w (%s)",
+			waitErr, strings.TrimSpace(stderrBuf.buf.String()))
+	}
+	return nil
 }
 
 // streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
@@ -888,6 +1244,9 @@ type limitedBuffer struct {
 	limit int
 }
 
+// maxStderrBytes caps how much subprocess stderr is retained for diagnostics.
+const maxStderrBytes = 64 * 1024
+
 func (l *limitedBuffer) Write(p []byte) (int, error) {
 	remaining := l.limit - l.buf.Len()
 	if remaining <= 0 {
@@ -977,7 +1336,6 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		}
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	const maxStderrBytes = 64 * 1024
 	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
 	cmd.Stderr = stderrBuf
 
@@ -1251,6 +1609,8 @@ func transportToProto(t camera.Transport) agentpb.VideoTransport {
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_USB
 	case camera.TransportCSI:
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_CSI
+	case camera.TransportIP:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_IP
 	default:
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_UNKNOWN
 	}

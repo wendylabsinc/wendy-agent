@@ -268,6 +268,9 @@ func main() {
 
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
+	// Network cameras have to be found before they can be listed, so probe
+	// periodically rather than only when a client asks.
+	videoSvc.StartDiscovery()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
