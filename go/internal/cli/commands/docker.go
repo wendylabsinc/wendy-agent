@@ -1396,9 +1396,125 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 func buildxLocalCacheDir(userCache, cacheKey string) string {
 	dir := filepath.Join(userCache, "wendy", "buildx")
 	if cacheKey != "" {
-		dir = filepath.Join(dir, sanitizeAppleContainerTag(cacheKey))
+		dir = filepath.Join(dir, buildxCacheSubdir(cacheKey))
 	}
 	return dir
+}
+
+// buildxCacheSubdirNameLimit caps the readable part of a cache subdir name so
+// long service names cannot push the full cache path past filesystem limits.
+const buildxCacheSubdirNameLimit = 48
+
+// buildxCacheSubdir maps a build's cache key to one filesystem-safe path element
+// that is unique per key. The readable prefix keeps the cache browsable
+// (…/buildx/ros2multi-talker-<sha256>) while the full digest suffix makes
+// collisions computationally infeasible: sanitization alone folds distinct
+// service names together ("a/b" and "a-b", "Talker" and "talker"), and a
+// collision silently restores the concurrent-ingest corruption this isolation
+// exists to prevent (WDY-1711). The suffix also keeps the element from ever
+// being "." or ".." — service names are not schema-constrained, and a bare ".."
+// would place the cache outside its root.
+func buildxCacheSubdir(cacheKey string) string {
+	sum := sha256.Sum256([]byte(cacheKey))
+	name := sanitizeAppleContainerTag(cacheKey)
+	if len(name) > buildxCacheSubdirNameLimit {
+		name = name[:buildxCacheSubdirNameLimit]
+	}
+	return name + "-" + hex.EncodeToString(sum[:])
+}
+
+// cleanDockerConfigContents is the credential-helper-free Docker config the
+// build paths point DOCKER_CONFIG at.
+const cleanDockerConfigContents = `{"auths":{}}`
+
+// ensureCleanDockerConfig materializes a Docker config directory without a
+// credsStore credential helper and returns its path. It returns "" on Windows,
+// where the host's own config is used unchanged.
+//
+// On macOS the default config has "credsStore":"osxkeychain". When docker buildx
+// forwards credentials to buildkitd via the build session, it calls the
+// credential helper on the host. In CI (launchd agent context), the Keychain is
+// inaccessible and the helper is killed → "signal: killed". Public images (e.g.
+// python:3.11-slim) need no credentials; anonymous pull works fine with an empty
+// auths map.
+//
+// On Windows, Docker Desktop's credential helper is always available and
+// symlinks for builder-state lookup are unreliable in elevated processes, so we
+// skip this override entirely and let docker use its normal config.
+//
+// The config file is written atomically (temp file + rename) and only when its
+// contents differ. Concurrent service builds (the multibuild parallel path) all
+// call this while other builds' buildx clients are reading the very same file,
+// and a plain truncate-then-write briefly exposes an empty config to those
+// readers — one more piece of shared build state that must be concurrency-safe
+// (WDY-1711).
+func ensureCleanDockerConfig() (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".cache", "wendy", "docker-config")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("creating clean docker config directory: %w", err)
+	}
+
+	configFile := filepath.Join(dir, "config.json")
+	if existing, err := os.ReadFile(configFile); err != nil || string(existing) != cleanDockerConfigContents {
+		tmp, err := os.CreateTemp(dir, "config.json.*")
+		if err != nil {
+			return "", fmt.Errorf("writing clean docker config: %w", err)
+		}
+		tmpName := tmp.Name()
+		_, writeErr := tmp.WriteString(cleanDockerConfigContents)
+		if closeErr := tmp.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr == nil {
+			writeErr = os.Chmod(tmpName, 0o644)
+		}
+		if writeErr == nil {
+			writeErr = os.Rename(tmpName, configFile)
+		}
+		if writeErr != nil {
+			os.Remove(tmpName)
+			return "", fmt.Errorf("writing clean docker config: %w", writeErr)
+		}
+	}
+
+	// Symlink subdirs that docker/buildx need to find plugins and builder state.
+	origDockerConfig := os.Getenv("DOCKER_CONFIG")
+	if origDockerConfig == "" {
+		origDockerConfig = filepath.Join(home, ".docker")
+	}
+	for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+		dst := filepath.Join(dir, subdir)
+		if _, err := os.Lstat(dst); err != nil {
+			// best-effort: ignore if source doesn't exist or symlink fails
+			_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+		}
+	}
+
+	return dir, nil
+}
+
+// dockerConfigEnv returns the build command's environment with DOCKER_CONFIG
+// pointed at configDir, or nil when configDir is empty (Windows) and the
+// process environment should be inherited unchanged.
+func dockerConfigEnv(configDir string) []string {
+	if configDir == "" {
+		return nil
+	}
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
+			baseEnv = append(baseEnv, e)
+		}
+	}
+	return append(baseEnv, "DOCKER_CONFIG="+configDir)
 }
 
 // dialErr, when non-nil, exposes the registry proxy's most recent failure to
@@ -1435,44 +1551,9 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
+	cleanDockerConfigDir, err := ensureCleanDockerConfig()
 	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
-	}
-
-	// Use a clean Docker config without a credsStore credential helper.
-	// On macOS, the default config has "credsStore":"osxkeychain". When
-	// docker buildx forwards credentials to buildkitd via the build session,
-	// it calls the credential helper on the host. In CI (launchd agent context),
-	// the Keychain is inaccessible and the helper is killed → "signal: killed".
-	// Public images (e.g. python:3.11-slim) need no credentials; anonymous
-	// pull works fine with an empty auths map.
-	//
-	// On Windows, Docker Desktop's credential helper is always available and
-	// symlinks for builder-state lookup are unreliable in elevated processes,
-	// so we skip this override entirely and let docker use its normal config.
-	var cleanDockerConfigDir string
-	if runtime.GOOS != "windows" {
-		origDockerConfig := os.Getenv("DOCKER_CONFIG")
-		if origDockerConfig == "" {
-			origDockerConfig = filepath.Join(home, ".docker")
-		}
-		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
-		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
-			return fmt.Errorf("creating clean docker config directory: %w", err)
-		}
-		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
-		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
-			return fmt.Errorf("writing clean docker config: %w", err)
-		}
-		// Symlink subdirs that docker/buildx need to find plugins and builder state.
-		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-			dst := filepath.Join(cleanDockerConfigDir, subdir)
-			if _, err := os.Lstat(dst); err != nil {
-				// best-effort: ignore if source doesn't exist or symlink fails
-				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
-			}
-		}
+		return err
 	}
 
 	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
@@ -1519,16 +1600,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	// On macOS/Linux, override DOCKER_CONFIG so the buildx client does not
 	// call the host credential helper when setting up the build session.
 	// On Windows we leave DOCKER_CONFIG untouched (cleanDockerConfigDir == "").
-	var cmdEnv []string
-	if cleanDockerConfigDir != "" {
-		baseEnv := make([]string, 0, len(os.Environ()))
-		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
-				baseEnv = append(baseEnv, e)
-			}
-		}
-		cmdEnv = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
-	}
+	cmdEnv := dockerConfigEnv(cleanDockerConfigDir)
 
 	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 
