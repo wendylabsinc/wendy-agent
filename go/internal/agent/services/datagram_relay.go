@@ -9,7 +9,7 @@ import (
 
 	"go.uber.org/zap"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 )
 
 const (
@@ -41,10 +41,12 @@ var errFlowCapReached = errors.New("datagram flow-table cap reached")
 
 // datagramRelay serves one DATAGRAM tunnel session: a flow table of connected
 // loopback UDP sockets keyed by client-assigned flow_id, plus inline ICMP echo
-// replies (the agent IS the pinged host; no ICMP socket is involved).
+// replies (the agent IS the pinged host; no ICMP socket is involved). It runs
+// against tunnelframe.Stream so it is shared between the cloud broker path
+// and the LAN device path.
 type datagramRelay struct {
 	logger      *zap.Logger
-	stream      agentTunnelStream
+	stream      tunnelframe.Stream
 	idleTimeout time.Duration
 
 	sendMu sync.Mutex // gRPC streams do not allow concurrent Send
@@ -63,7 +65,7 @@ type datagramFlow struct {
 	lastActive time.Time // guarded by datagramRelay.mu
 }
 
-func newDatagramRelay(logger *zap.Logger, stream agentTunnelStream, idleTimeout time.Duration) *datagramRelay {
+func newDatagramRelay(logger *zap.Logger, stream tunnelframe.Stream, idleTimeout time.Duration) *datagramRelay {
 	return &datagramRelay{
 		logger:      logger,
 		stream:      stream,
@@ -78,10 +80,10 @@ func (r *datagramRelay) activeFlows() int {
 	return len(r.flows)
 }
 
-func (r *datagramRelay) send(msg *cloudpb.TunnelData) error {
+func (r *datagramRelay) send(f tunnelframe.Frame) error {
 	r.sendMu.Lock()
 	defer r.sendMu.Unlock()
-	return r.stream.Send(msg)
+	return r.stream.Send(f)
 }
 
 // run serves the session until the stream ends or ctx is cancelled.
@@ -90,17 +92,17 @@ func (r *datagramRelay) run(ctx context.Context) {
 	defer sweep.Stop()
 	defer r.closeAll()
 
-	frames := make(chan *cloudpb.TunnelData)
+	frames := make(chan tunnelframe.Frame)
 	recvErr := make(chan error, 1)
 	go func() {
 		for {
-			msg, err := r.stream.Recv()
+			f, err := r.stream.Recv()
 			if err != nil {
 				recvErr <- err
 				return
 			}
 			select {
-			case frames <- msg:
+			case frames <- f:
 			case <-ctx.Done():
 				return
 			}
@@ -109,12 +111,12 @@ func (r *datagramRelay) run(ctx context.Context) {
 
 	for {
 		select {
-		case msg := <-frames:
+		case f := <-frames:
 			switch {
-			case msg.GetDatagram() != nil:
-				r.handleDatagram(ctx, msg.GetDatagram())
-			case msg.GetIcmpRequest() != nil:
-				r.handleEcho(msg.GetIcmpRequest())
+			case f.Datagram != nil:
+				r.handleDatagram(ctx, f.Datagram)
+			case f.IcmpRequest != nil:
+				r.handleEcho(f.IcmpRequest)
 			}
 		case <-sweep.C:
 			r.expireIdle()
@@ -126,12 +128,12 @@ func (r *datagramRelay) run(ctx context.Context) {
 	}
 }
 
-func (r *datagramRelay) handleEcho(req *cloudpb.IcmpEchoRequest) {
-	err := r.send(&cloudpb.TunnelData{IcmpReply: &cloudpb.IcmpEchoReply{
-		Identifier:      req.GetIdentifier(),
-		Sequence:        req.GetSequence(),
-		Payload:         req.GetPayload(),
-		OriginateUnixNs: req.GetOriginateUnixNs(),
+func (r *datagramRelay) handleEcho(req *tunnelframe.IcmpEchoRequest) {
+	err := r.send(tunnelframe.Frame{IcmpReply: &tunnelframe.IcmpEchoReply{
+		Identifier:      req.Identifier,
+		Sequence:        req.Sequence,
+		Payload:         req.Payload,
+		OriginateUnixNs: req.OriginateUnixNs,
 		AgentUnixNs:     uint64(time.Now().UnixNano()),
 	}})
 	if err != nil {
@@ -139,26 +141,26 @@ func (r *datagramRelay) handleEcho(req *cloudpb.IcmpEchoRequest) {
 	}
 }
 
-func (r *datagramRelay) handleDatagram(ctx context.Context, d *cloudpb.TunnelDatagram) {
-	if len(d.GetPayload()) > maxUDPPayload {
+func (r *datagramRelay) handleDatagram(ctx context.Context, d *tunnelframe.Datagram) {
+	if len(d.Payload) > maxUDPPayload {
 		r.mu.Lock()
 		if time.Since(r.lastOversizeLog) > rateLimitLogInterval {
 			r.lastOversizeLog = time.Now()
 			r.logger.Warn("dropping oversized tunnel datagram",
-				zap.Uint32("flow_id", d.GetFlowId()), zap.Int("size", len(d.GetPayload())))
+				zap.Uint32("flow_id", d.FlowID), zap.Int("size", len(d.Payload)))
 		}
 		r.mu.Unlock()
 		return
 	}
 
-	flow, err := r.flow(ctx, d.GetFlowId(), d.GetPort())
+	flow, err := r.flow(ctx, d.FlowID, d.Port)
 	if err != nil {
 		if errors.Is(err, errFlowCapReached) {
 			r.mu.Lock()
 			if time.Since(r.lastFlowCapLog) > rateLimitLogInterval {
 				r.lastFlowCapLog = time.Now()
 				r.logger.Warn("dropping datagram: session flow-table cap reached",
-					zap.Uint32("flow_id", d.GetFlowId()), zap.Int("max_flows", maxFlowsPerSession))
+					zap.Uint32("flow_id", d.FlowID), zap.Int("max_flows", maxFlowsPerSession))
 			}
 			r.mu.Unlock()
 			return
@@ -167,13 +169,13 @@ func (r *datagramRelay) handleDatagram(ctx context.Context, d *cloudpb.TunnelDat
 		if time.Since(r.lastDialFailLog) > rateLimitLogInterval {
 			r.lastDialFailLog = time.Now()
 			r.logger.Warn("failed to open UDP flow",
-				zap.Uint32("flow_id", d.GetFlowId()), zap.Uint32("port", d.GetPort()), zap.Error(err))
+				zap.Uint32("flow_id", d.FlowID), zap.Uint32("port", d.Port), zap.Error(err))
 		}
 		r.mu.Unlock()
 		return
 	}
-	if _, err := flow.conn.Write(d.GetPayload()); err != nil {
-		r.closeFlow(d.GetFlowId())
+	if _, err := flow.conn.Write(d.Payload); err != nil {
+		r.closeFlow(d.FlowID)
 	}
 }
 
@@ -212,8 +214,8 @@ func (r *datagramRelay) readFlow(ctx context.Context, flowID uint32, f *datagram
 		r.mu.Lock()
 		f.lastActive = time.Now()
 		r.mu.Unlock()
-		if err := r.send(&cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
-			FlowId: flowID, Port: f.port, Payload: payload,
+		if err := r.send(tunnelframe.Frame{Datagram: &tunnelframe.Datagram{
+			FlowID: flowID, Port: f.port, Payload: payload,
 		}}); err != nil {
 			r.closeFlow(flowID)
 			return

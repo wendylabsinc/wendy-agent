@@ -328,7 +328,7 @@ func (c *TunnelBrokerClient) handleDatagramDial(ctx context.Context, client clou
 		return
 	}
 	c.logger.Info("serving datagram session", zap.String("session_id", req.SessionId))
-	newDatagramRelay(c.logger, agentStream, datagramFlowIdleTimeout).run(callCtx)
+	newDatagramRelay(c.logger, cloudFrameStream{stream: agentStream}, datagramFlowIdleTimeout).run(callCtx)
 }
 
 type agentTunnelStream interface {

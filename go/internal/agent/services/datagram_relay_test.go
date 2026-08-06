@@ -10,42 +10,41 @@ import (
 
 	"go.uber.org/zap"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 )
 
-type fakeAgentStream struct {
+type fakeFrameStream struct {
 	ctx context.Context
-	in  chan *cloudpb.TunnelData
-	out chan *cloudpb.TunnelData
+	in  chan tunnelframe.Frame
+	out chan tunnelframe.Frame
 }
 
-func newFakeAgentStream(ctx context.Context) *fakeAgentStream {
-	return &fakeAgentStream{
+func newFakeFrameStream(ctx context.Context) *fakeFrameStream {
+	return &fakeFrameStream{
 		ctx: ctx,
-		in:  make(chan *cloudpb.TunnelData, 16),
-		out: make(chan *cloudpb.TunnelData, 16),
+		in:  make(chan tunnelframe.Frame, 16),
+		out: make(chan tunnelframe.Frame, 16),
 	}
 }
-func (f *fakeAgentStream) Send(d *cloudpb.TunnelData) error {
+func (f *fakeFrameStream) Send(fr tunnelframe.Frame) error {
 	select {
-	case f.out <- d:
+	case f.out <- fr:
 		return nil
 	case <-f.ctx.Done():
 		return f.ctx.Err()
 	}
 }
-func (f *fakeAgentStream) Recv() (*cloudpb.TunnelData, error) {
+func (f *fakeFrameStream) Recv() (tunnelframe.Frame, error) {
 	select {
-	case d, ok := <-f.in:
+	case fr, ok := <-f.in:
 		if !ok {
-			return nil, io.EOF
+			return tunnelframe.Frame{}, io.EOF
 		}
-		return d, nil
+		return fr, nil
 	case <-f.ctx.Done():
-		return nil, f.ctx.Err()
+		return tunnelframe.Frame{}, f.ctx.Err()
 	}
 }
-func (f *fakeAgentStream) CloseSend() error { return nil }
 
 // startUDPEcho starts a loopback UDP echo server and returns its port.
 func startUDPEcho(t *testing.T) uint32 {
@@ -68,14 +67,14 @@ func startUDPEcho(t *testing.T) uint32 {
 	return uint32(pc.LocalAddr().(*net.UDPAddr).Port)
 }
 
-func awaitFrame(t *testing.T, f *fakeAgentStream) *cloudpb.TunnelData {
+func awaitFrame(t *testing.T, f *fakeFrameStream) tunnelframe.Frame {
 	t.Helper()
 	select {
-	case d := <-f.out:
-		return d
+	case fr := <-f.out:
+		return fr
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for relay output frame")
-		return nil
+		return tunnelframe.Frame{}
 	}
 }
 
@@ -83,22 +82,22 @@ func TestDatagramRelayUDPRoundTrip(t *testing.T) {
 	port := startUDPEcho(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := newFakeAgentStream(ctx)
+	stream := newFakeFrameStream(ctx)
 	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
-	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
-		FlowId: 7, Port: port, Payload: []byte("hello"),
+	stream.in <- tunnelframe.Frame{Datagram: &tunnelframe.Datagram{
+		FlowID: 7, Port: port, Payload: []byte("hello"),
 	}}
 
 	reply := awaitFrame(t, stream)
-	if reply.GetDatagram() == nil {
+	if reply.Datagram == nil {
 		t.Fatalf("expected datagram frame, got %+v", reply)
 	}
-	if got := reply.GetDatagram().GetFlowId(); got != 7 {
+	if got := reply.Datagram.FlowID; got != 7 {
 		t.Fatalf("flow_id = %d, want 7", got)
 	}
-	if got := string(reply.GetDatagram().GetPayload()); got != "hello" {
+	if got := string(reply.Datagram.Payload); got != "hello" {
 		t.Fatalf("payload = %q, want hello", got)
 	}
 }
@@ -106,24 +105,24 @@ func TestDatagramRelayUDPRoundTrip(t *testing.T) {
 func TestDatagramRelayEcho(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := newFakeAgentStream(ctx)
+	stream := newFakeFrameStream(ctx)
 	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
-	stream.in <- &cloudpb.TunnelData{IcmpRequest: &cloudpb.IcmpEchoRequest{
+	stream.in <- tunnelframe.Frame{IcmpRequest: &tunnelframe.IcmpEchoRequest{
 		Identifier: 0x1234, Sequence: 3, Payload: []byte("ping"), OriginateUnixNs: 42,
 	}}
 
 	reply := awaitFrame(t, stream)
-	r := reply.GetIcmpReply()
+	r := reply.IcmpReply
 	if r == nil {
 		t.Fatalf("expected icmp_reply frame, got %+v", reply)
 	}
-	if r.GetIdentifier() != 0x1234 || r.GetSequence() != 3 ||
-		string(r.GetPayload()) != "ping" || r.GetOriginateUnixNs() != 42 {
+	if r.Identifier != 0x1234 || r.Sequence != 3 ||
+		string(r.Payload) != "ping" || r.OriginateUnixNs != 42 {
 		t.Fatalf("echo fields not copied: %+v", r)
 	}
-	if r.GetAgentUnixNs() == 0 {
+	if r.AgentUnixNs == 0 {
 		t.Fatal("agent_unix_ns not stamped")
 	}
 }
@@ -132,12 +131,12 @@ func TestDatagramRelayIdleExpiry(t *testing.T) {
 	port := startUDPEcho(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := newFakeAgentStream(ctx)
+	stream := newFakeFrameStream(ctx)
 	relay := newDatagramRelay(zap.NewNop(), stream, 50*time.Millisecond)
 	go relay.run(ctx)
 
-	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
-		FlowId: 1, Port: port, Payload: []byte("x"),
+	stream.in <- tunnelframe.Frame{Datagram: &tunnelframe.Datagram{
+		FlowID: 1, Port: port, Payload: []byte("x"),
 	}}
 	awaitFrame(t, stream) // echo comes back → flow exists
 
@@ -158,7 +157,7 @@ func TestDatagramRelayIdleExpiry(t *testing.T) {
 func TestDatagramRelayFlowCap(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := newFakeAgentStream(ctx)
+	stream := newFakeFrameStream(ctx)
 	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 
 	// UDP connect() doesn't require a listener on the far end, so distinct
@@ -189,18 +188,18 @@ func TestDatagramRelayFlowCap(t *testing.T) {
 func TestDatagramRelayDropsOversized(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stream := newFakeAgentStream(ctx)
+	stream := newFakeFrameStream(ctx)
 	relay := newDatagramRelay(zap.NewNop(), stream, time.Minute)
 	go relay.run(ctx)
 
-	stream.in <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
-		FlowId: 1, Port: 9, Payload: make([]byte, maxUDPPayload+1),
+	stream.in <- tunnelframe.Frame{Datagram: &tunnelframe.Datagram{
+		FlowID: 1, Port: 9, Payload: make([]byte, maxUDPPayload+1),
 	}}
 	// Follow with a valid echo; if the oversized frame had opened a flow or
 	// crashed the loop, this would not come back.
-	stream.in <- &cloudpb.TunnelData{IcmpRequest: &cloudpb.IcmpEchoRequest{Identifier: 1, Sequence: 1}}
+	stream.in <- tunnelframe.Frame{IcmpRequest: &tunnelframe.IcmpEchoRequest{Identifier: 1, Sequence: 1}}
 	reply := awaitFrame(t, stream)
-	if reply.GetIcmpReply() == nil {
+	if reply.IcmpReply == nil {
 		t.Fatalf("relay loop broken after oversized datagram: %+v", reply)
 	}
 	if relay.activeFlows() != 0 {
