@@ -184,16 +184,9 @@ class ObserveSubscription:
             self.gateway.log(f"processor failed for {self.spec.topic}: {exc}")
             self.dropped += 1
             return
-        if not self.budget.allow(len(frame.payload), now):
-            self.dropped += 1
-            return
-        if not self.gateway.allow_session_bytes(len(frame.payload), now):
-            self.dropped += 1
-            return
-        self.last_emitted_at = now
-        self.gateway.loop.call_soon_threadsafe(self._put_latest, frame)
+        self.gateway.loop.call_soon_threadsafe(self._put_latest, frame, now)
 
-    def _put_latest(self, frame: ProcessedFrame) -> None:
+    def _put_latest(self, frame: ProcessedFrame, now: float) -> None:
         if self.closed:
             return
         if self.queue.full():
@@ -202,12 +195,20 @@ class ObserveSubscription:
                 self.dropped += 1
             except asyncio.QueueEmpty:
                 pass
-        self.queue.put_nowait(frame)
+        packed = pack_frame(self.spec, self.type_name, frame, self.dropped)
+        packed_size = len(packed)
+        if not self.budget.allow(packed_size, now):
+            self.dropped += 1
+            return
+        if not self.gateway.allow_session_bytes(packed_size, now):
+            self.dropped += 1
+            return
+        self.last_emitted_at = now
+        self.dropped = 0
+        self.queue.put_nowait(packed)
 
     async def next_packed_frame(self) -> bytes:
-        frame = await self.queue.get()
-        dropped, self.dropped = self.dropped, 0
-        return pack_frame(self.spec, self.type_name, frame, dropped)
+        return await self.queue.get()
 
     def close(self) -> None:
         if self.closed:

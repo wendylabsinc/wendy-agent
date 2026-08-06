@@ -207,6 +207,59 @@ header = json.loads(packed[8:8+header_len])
 assert header["stream_id"] == "cloud" and header["dropped"] == 2
 assert packed[8+header_len:] == b"payload"
 
+class ImmediateLoop:
+    def call_soon_threadsafe(self, callback, *args):
+        callback(*args)
+
+class BudgetGateway:
+    def __init__(self, session_limit):
+        self.loop = ImmediateLoop()
+        self.session_budget = module.ByteBudget(session_limit)
+        self.session_sizes = []
+    def attach_consumer(self, consumer):
+        pass
+    def detach_consumer(self, consumer):
+        pass
+    def allow_session_bytes(self, size, now):
+        self.session_sizes.append(size)
+        return self.session_budget.allow(size, now)
+    def log(self, message):
+        raise AssertionError(message)
+
+original_process_message = module.process_message
+module.process_message = lambda message, type_name, spec: frame
+try:
+    # The media payload fits exactly, but the complete encoded Observe frame
+    # does not. The per-stream budget must reject it.
+    payload_only = module.StreamSpec(
+        stream_id="payload-only",
+        topic="/lowstate",
+        max_hz=10.0,
+        max_bytes_per_second=len(frame.payload),
+    )
+    gateway = BudgetGateway(1_000_000)
+    subscription = module.ObserveSubscription(gateway, payload_only, "example/msg/State", object)
+    subscription._on_message(object())
+    assert subscription.queue.empty()
+    assert subscription.dropped == 1
+
+    # With a large stream allowance, the session budget must still be charged
+    # for the exact serialized frame rather than just the payload.
+    full_frame = module.StreamSpec(
+        stream_id="full-frame",
+        topic="/lowstate",
+        max_hz=10.0,
+        max_bytes_per_second=1_000_000,
+    )
+    gateway = BudgetGateway(1_000_000)
+    subscription = module.ObserveSubscription(gateway, full_frame, "example/msg/State", object)
+    subscription._on_message(object())
+    emitted = subscription.queue.get_nowait()
+    assert emitted == module.pack_frame(full_frame, "example/msg/State", frame, 0)
+    assert gateway.session_sizes == [len(emitted)]
+finally:
+    module.process_message = original_process_message
+
 class FakeExecutor:
     def __init__(self):
         self.wakes = 0

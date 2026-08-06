@@ -95,7 +95,7 @@ func bindObserveFlags(cmd *cobra.Command, opts *observeOpts) {
 	f.StringVar(&opts.distro, "distro", "humble", "ROS 2 distribution for the Observe runtime")
 	f.StringVar(&opts.iface, "interface", "", "Override the CycloneDDS network interface")
 	f.Float64Var(&opts.maxHz, "max-hz", observeDefaultMaxHz, "Maximum output rate allowed per stream")
-	f.Float64Var(&opts.bandwidthMbps, "max-bandwidth", observeDefaultBandwidthMbps, "Total Observe session bandwidth budget in megabits/second")
+	f.Float64Var(&opts.bandwidthMbps, "max-bandwidth", observeDefaultBandwidthMbps, "Serialized Observe-frame budget in megabits/second")
 	f.IntVar(&opts.pointStride, "point-stride", observeDefaultPointStride, "Minimum point-cloud sampling stride")
 	f.IntVar(&opts.jpegQuality, "jpeg-quality", observeDefaultJPEGQuality, "Maximum JPEG quality (1-100)")
 	f.IntVar(&opts.maxWidth, "max-image-width", observeDefaultMaxWidth, "Maximum encoded image width")

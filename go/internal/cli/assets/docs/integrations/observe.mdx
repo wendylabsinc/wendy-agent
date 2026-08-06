@@ -118,8 +118,10 @@ For a single long-lived stream, replace `/v1/snapshot` with `/v1/stream`.
 Observe never grows an unbounded sensor queue. Each subscription has room for
 one processed message; a newer message replaces a stale queued message. A
 session-wide token bucket enforces `--max-bandwidth` across all open panels, so
-opening more streams cannot multiply the configured network budget. Rate-limit,
-queue, and budget drops are reported in the next frame header.
+opening more streams cannot multiply the configured serialized Observe-frame
+budget. The budget includes Observe framing and JSON metadata; WebSocket,
+HTTPS, and TLS transport overhead are outside the configured ceiling.
+Rate-limit, queue, and budget drops are reported in the next frame header.
 
 On a detected Unitree network, Observe also installs the public Unitree message
 definitions and starts Wendy's Go2 camera adapter. The camera's native
