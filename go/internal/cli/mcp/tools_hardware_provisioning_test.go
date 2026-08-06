@@ -159,6 +159,36 @@ func TestHardwareCapabilities_EmptyList(t *testing.T) {
 	}
 }
 
+func TestHardwareCapabilities_MaxBytesTruncates(t *testing.T) {
+	caps := make([]*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability, 0, 200)
+	for i := 0; i < 200; i++ {
+		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
+			Category:    "gpu",
+			DevicePath:  "/dev/gpu0",
+			Description: "some padding description text",
+		})
+	}
+	fake := &fakeHWProvisioningOSServer{capabilities: caps}
+	conn := startFakeHWProvisioningServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "hardware_capabilities", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent has unexpected type %T", result.StructuredContent)
+	}
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+}
+
 // --- Provisioning tests ---
 
 func TestProvisioningStatus_NotConnected(t *testing.T) {

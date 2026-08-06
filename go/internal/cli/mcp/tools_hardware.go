@@ -14,6 +14,7 @@ func (s *mcpServer) registerHardwareTools(srv *server.MCPServer) {
 		mcpgo.WithString("category",
 			mcpgo.Description("Filter by category, e.g. gpu, usb, i2c, gpio, camera (optional)"),
 		),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	capsOpts = append(capsOpts, readOnly()...)
 	capsOpts = append(capsOpts, localOnly()...)
@@ -45,5 +46,5 @@ func (s *mcpServer) handleHardwareCapabilities(ctx context.Context, req mcpgo.Ca
 		}
 		caps = append(caps, entry)
 	}
-	return okList("capabilities", caps), nil
+	return okListBounded("capabilities", caps, intParam(req, "max_bytes", 100000)), nil
 }
