@@ -203,7 +203,7 @@ struct DittoAgentBundleInstallerReplaceTests {
             .filter { $0.hasPrefix(".\(name).") }
     }
 
-    @Test("swaps destination contents and leaves no stray siblings behind")
+    @Test("swaps destination contents and keeps the replaced bundle as a rollback copy")
     func happySwapReplacesContents() async throws {
         let root = try makeTempDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -219,7 +219,50 @@ struct DittoAgentBundleInstallerReplaceTests {
 
         #expect(try readMarker(of: destination) == "new")
         #expect(!FileManager.default.fileExists(atPath: staged.path))
-        #expect(try self.staleSiblings(in: root, name: "Foo.app").isEmpty)
+
+        // The previous bundle is deliberately retained: a new bundle that
+        // installs cleanly can still crash on launch, and this copy is the
+        // only local way back on a headless device. The next replaceBundle
+        // reclaims it.
+        let siblings = try self.staleSiblings(in: root, name: "Foo.app")
+        #expect(siblings.count == 1)
+        let rollback = try #require(siblings.first)
+        #expect(rollback.hasPrefix(".Foo.app.old-"))
+        #expect(try readMarker(of: root.appendingPathComponent(rollback)) == "old")
+    }
+
+    @Test("stale siblings are reclaimed, leaving only the bundle this swap replaced")
+    func staleSiblingsAreReclaimedByTheNextSwap() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let destination = root.appendingPathComponent("Foo.app", isDirectory: true)
+        try makeFakeApp(at: destination, marker: "old")
+
+        // Left behind by earlier updates: a retained rollback copy and an
+        // interrupted attempt's staging directory. This cleanup is the only
+        // thing that reclaims them, so it is load-bearing.
+        let strayOld = root.appendingPathComponent(".Foo.app.old-\(UUID().uuidString)")
+        let strayIncoming = root.appendingPathComponent(".Foo.app.incoming-\(UUID().uuidString)")
+        try makeFakeApp(at: strayOld, marker: "ancient")
+        try makeFakeApp(at: strayIncoming, marker: "interrupted")
+
+        let staged = root.appendingPathComponent("staged/Foo.app", isDirectory: true)
+        try makeFakeApp(at: staged, marker: "new")
+
+        let installer = DittoAgentBundleInstaller()
+        try await installer.replaceBundle(at: destination, with: staged)
+
+        #expect(try readMarker(of: destination) == "new")
+        #expect(!FileManager.default.fileExists(atPath: strayOld.path))
+        #expect(!FileManager.default.fileExists(atPath: strayIncoming.path))
+
+        // Exactly one sibling survives: the bundle this swap just replaced.
+        let siblings = try self.staleSiblings(in: root, name: "Foo.app")
+        #expect(siblings.count == 1)
+        let rollback = try #require(siblings.first)
+        #expect(rollback.hasPrefix(".Foo.app.old-"))
+        #expect(try readMarker(of: root.appendingPathComponent(rollback)) == "old")
     }
 
     @Test("installs fresh when destination does not exist yet")

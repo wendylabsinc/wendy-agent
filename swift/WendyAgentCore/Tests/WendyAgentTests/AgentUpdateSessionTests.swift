@@ -72,6 +72,70 @@ struct AgentUpdateSessionTests {
         #expect(harness.stagingEntries().isEmpty)
     }
 
+    @Test("the commit hook fires before the relaunch and termination are scheduled")
+    func commitHookRunsBeforeTermination() async throws {
+        let harness = try Harness()
+        defer { harness.cleanup() }
+
+        var deps = makeDependencies(harness)
+        let log = harness.log
+        deps.onCommitted = { log.record("commit") }
+
+        try await runSession(
+            [chunkRequest(payload), updateRequest(sha256: payloadSHA256)],
+            deps: deps,
+            log: harness.log
+        )
+
+        // The lock must be pinned as committed before anything can tear the
+        // process down, so a stale-lock steal can never race the shutdown.
+        let expected = ["extract", "replace", "commit", "relaunch", "terminate", "ack"]
+        #expect(harness.log.events() == expected)
+    }
+
+    @Test("the commit hook does not fire when the update fails")
+    func commitHookSkippedOnFailure() async throws {
+        let harness = try Harness()
+        defer { harness.cleanup() }
+
+        var deps = makeDependencies(harness)
+        let log = harness.log
+        deps.onCommitted = { log.record("commit") }
+
+        let error = await runSessionExpectingFailure(
+            [chunkRequest(payload), updateRequest(sha256: String(repeating: "a", count: 64))],
+            deps: deps,
+            log: harness.log
+        )
+
+        #expect(error?.code == .dataLoss)
+        #expect(!harness.log.events().contains("commit"))
+    }
+
+    @Test("the payload is extracted into a subdirectory, never over the payload itself")
+    func extractionUsesDedicatedSubdirectory() async throws {
+        let harness = try Harness()
+        defer { harness.cleanup() }
+
+        try await runSession(
+            [chunkRequest(payload), updateRequest(sha256: payloadSHA256)],
+            deps: makeDependencies(harness),
+            log: harness.log
+        )
+
+        let extract = try #require(harness.log.extractSeen())
+        #expect(extract.into.lastPathComponent == "extract")
+        #expect(extract.zip.lastPathComponent == "payload.zip")
+        // Both live directly under the session directory, so an archive entry
+        // named `payload.zip` cannot clobber the source mid-extract.
+        #expect(
+            extract.zip.deletingLastPathComponent().standardizedFileURL
+                == extract.into.deletingLastPathComponent().standardizedFileURL
+        )
+        let extractRoot = extract.into.standardizedFileURL.path
+        #expect(!extract.zip.standardizedFileURL.path.hasPrefix(extractRoot))
+    }
+
     @Test("a relaunch that cannot be scheduled still terminates and acks")
     func relaunchFailureStillCommits() async throws {
         let harness = try Harness()
@@ -559,6 +623,60 @@ struct AgentServiceUpdateLockingTests {
         #expect(harness.log.events().contains("relaunch"))
         #expect(await lock.tryAcquire() == false)
     }
+
+    @Test("a lock leaked before the response producer runs is stolen once it goes stale")
+    func leakedLockIsStolenWhenStale() async throws {
+        let harness = try Harness()
+        defer { harness.cleanup() }
+
+        let lock = AgentUpdateLock(staleThreshold: .milliseconds(50))
+        let service = AgentService(
+            updateLock: lock,
+            updateDependencies: makeDependencies(harness)
+        )
+
+        // grpc-swift writes the response's initial metadata *before* running
+        // the producer; if the client aborts in that window the producer — and
+        // the `release` in its catch — never runs. Dropping the response here
+        // models exactly that leak.
+        _ = try await service.updateAgent(
+            request: makeStreamingRequest([chunkRequest(payload)]),
+            context: makeUpdateContext()
+        )
+        #expect(await lock.tryAcquire() == false)
+
+        try await Task.sleep(for: .milliseconds(200))
+        // Without the steal, every later update would fail with
+        // failedPrecondition until someone restarted the app by hand.
+        #expect(await lock.tryAcquire() == true)
+    }
+
+    @Test("a committed update pins the lock so it is never stolen")
+    func committedUpdateIsNeverStolen() async throws {
+        let harness = try Harness()
+        defer { harness.cleanup() }
+
+        let lock = AgentUpdateLock(staleThreshold: .milliseconds(50))
+        let service = AgentService(
+            updateLock: lock,
+            updateDependencies: makeDependencies(harness)
+        )
+
+        let response = try await service.updateAgent(
+            request: makeStreamingRequest([
+                chunkRequest(payload),
+                updateRequest(sha256: payloadSHA256),
+            ]),
+            context: makeUpdateContext()
+        )
+        let writer = CollectingWriter<Wendy_Agent_Services_V1_UpdateAgentResponse>()
+        _ = try await response.accepted.get().producer(RPCWriter(wrapping: writer))
+
+        try await Task.sleep(for: .milliseconds(200))
+        // The handler wires the session's commit hook to markCommitted(), so
+        // the shutdown window can never be raced by a second install.
+        #expect(await lock.tryAcquire() == false)
+    }
 }
 
 // MARK: - Fixtures
@@ -582,10 +700,15 @@ private final class SessionLog: @unchecked Sendable {
     private var recordedEvents: [String] = []
     private var recordedResponses: [Wendy_Agent_Services_V1_UpdateAgentResponse] = []
     private var recordedPayload: Data?
+    private var recordedExtract: (zip: URL, into: URL)?
 
     func record(_ event: String) {
         self.queue.sync { self.recordedEvents.append(event) }
     }
+    func recordExtract(zip: URL, into directory: URL) {
+        self.queue.sync { self.recordedExtract = (zip: zip, into: directory) }
+    }
+    func extractSeen() -> (zip: URL, into: URL)? { self.queue.sync { self.recordedExtract } }
     func append(_ response: Wendy_Agent_Services_V1_UpdateAgentResponse) {
         self.queue.sync { self.recordedResponses.append(response) }
     }
@@ -688,6 +811,7 @@ private struct StubInstaller: AgentBundleInstalling {
 
     func extractBundle(zipAt zip: URL, into stagingDir: URL) async throws -> URL {
         self.log.recordPayload(FileManager.default.contents(atPath: zip.path))
+        self.log.recordExtract(zip: zip, into: stagingDir)
         self.log.record("extract")
         if let extractError = self.extractError { throw extractError }
         if self.unexpectedFailure == .extract { throw StubError.installerBroken }

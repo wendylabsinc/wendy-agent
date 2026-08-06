@@ -195,14 +195,20 @@ struct DittoAgentBundleInstaller: AgentBundleInstalling {
             )
         }
 
-        if destinationExisted {
-            try? fileManager.removeItem(at: oldURL)
-        }
+        // `oldURL` is deliberately left in place. A bundle that extracts,
+        // verifies, and swaps cleanly can still crash on launch (the realistic
+        // dev-push failure), and on a headless device that would leave no
+        // agent and no way back. Keeping `.<name>.old-<uuid>` next to the
+        // bundle is the manual-recovery escape (`mv` it back over SSH); the
+        // next update's `removeStaleSiblings` reclaims the space.
     }
 
-    /// Best-effort cleanup of siblings left behind by a prior interrupted
-    /// update attempt. Failures are ignored — a stray leftover from a
-    /// previous run is not worth failing the current one over.
+    /// Best-effort cleanup of siblings left behind by earlier updates: the
+    /// rollback copy the previous successful swap retained, plus anything a
+    /// prior interrupted attempt abandoned. This is the *only* thing that
+    /// reclaims those, so it runs before every swap. Failures are ignored — a
+    /// stray leftover from a previous run is not worth failing the current one
+    /// over.
     private static func removeStaleSiblings(
         named name: String,
         in parent: URL,

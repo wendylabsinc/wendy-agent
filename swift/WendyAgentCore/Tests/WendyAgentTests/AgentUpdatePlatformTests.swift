@@ -123,6 +123,59 @@ struct AgentUpdateLockTests {
         await lock.release()
         #expect(await lock.tryAcquire() == true)
     }
+
+    @Test("a fresh uncommitted lock is not stolen")
+    func freshLockIsNotStolen() async {
+        let lock = AgentUpdateLock(staleThreshold: .seconds(30 * 60))
+        #expect(await lock.tryAcquire() == true)
+        #expect(await lock.tryAcquire() == false)
+    }
+
+    @Test("an uncommitted lock older than the stale threshold is stolen")
+    func staleUncommittedLockIsStolen() async throws {
+        let lock = AgentUpdateLock(staleThreshold: .milliseconds(50))
+        #expect(await lock.tryAcquire() == true)
+        #expect(await lock.tryAcquire() == false)
+
+        // Models the leak: whoever acquired the lock never got to release it
+        // (grpc-swift can fail the initial-metadata write before the response
+        // producer, and its `release`, ever runs).
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await lock.tryAcquire() == true)
+    }
+
+    @Test("a committed lock is never stolen, however old")
+    func committedLockIsNeverStolen() async throws {
+        let lock = AgentUpdateLock(staleThreshold: .milliseconds(50))
+        #expect(await lock.tryAcquire() == true)
+        await lock.markCommitted()
+
+        try await Task.sleep(for: .milliseconds(200))
+        // Post-commit the process is exiting; a steal here could double-install.
+        #expect(await lock.tryAcquire() == false)
+    }
+
+    @Test("the production stale threshold is half an hour")
+    func defaultStaleThreshold() {
+        #expect(AgentUpdateLock.defaultStaleThreshold == .seconds(30 * 60))
+    }
+}
+
+@Suite("AgentRelauncher.scheduleTermination timings")
+struct AgentRelauncherTerminationTimingTests {
+    @Test("the hard-exit watchdog outlasts a multi-app teardown but stays inside the CLI's wait")
+    func hardExitDelayBounds() {
+        #expect(AgentRelauncher.hardExitDelay == .seconds(45))
+        // Two containerized apps stop sequentially at ~10 s + ~5 s each.
+        #expect(AgentRelauncher.hardExitDelay > .seconds(35))
+        // The CLI polls a darwin agent for 60 s after the update ack.
+        #expect(AgentRelauncher.hardExitDelay < .seconds(60))
+    }
+
+    @Test("the ack-flush delay stays short")
+    func ackFlushDelayUnchanged() {
+        #expect(AgentRelauncher.ackFlushDelay == .milliseconds(500))
+    }
 }
 
 @Suite("AgentRelauncher.makeArguments")

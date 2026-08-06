@@ -44,7 +44,17 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         // so `messages` can be captured directly in the @Sendable producer.
         let messages = request.messages
         let updateLock = self.updateLock
-        let dependencies = self.updateDependencies
+        // The commit hook is wired here rather than by whoever built the
+        // dependencies: this is the only place that holds both the lock and
+        // the session. Once the session commits, the lock must stop being
+        // stealable (see `AgentUpdateLock`) — the process is exiting, and a
+        // steal at that point could install a second bundle over the one just
+        // written.
+        let dependencies: AgentUpdateSession.Dependencies = {
+            var dependencies = self.updateDependencies
+            dependencies.onCommitted = { await updateLock.markCommitted() }
+            return dependencies
+        }()
         let logger = Self.updateLogger
 
         return StreamingServerResponse { writer in

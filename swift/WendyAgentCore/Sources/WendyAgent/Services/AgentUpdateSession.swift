@@ -43,6 +43,11 @@ enum AgentUpdateSession {
         var signature: any UpdateSignatureChecking = DefaultUpdateSignatureChecker()
         var installer: any AgentBundleInstalling = DittoAgentBundleInstaller()
         var relauncher: any AgentRelaunchScheduling
+        /// Invoked at the point of no return — the new bundle is installed and
+        /// the relaunch/termination is about to be scheduled. `AgentService`
+        /// wires this to `AgentUpdateLock.markCommitted()` so the update lock
+        /// can no longer be stolen while the process shuts down.
+        var onCommitted: (@Sendable () async -> Void)?
     }
 
     /// Runs the session to completion. Returns normally only after a committed
@@ -180,7 +185,7 @@ enum AgentUpdateSession {
                     ]
                 )
 
-                Self.commitTail(deps: deps, logger: logger)
+                await Self.commitTail(deps: deps, logger: logger)
                 // Parity with the Go agent's `finishCommittedUpdate`: the
                 // restart is already scheduled, so a client that hangs up
                 // before the ack lands must not turn a committed install into
@@ -263,9 +268,15 @@ enum AgentUpdateSession {
         sessionDir: URL,
         deps: Dependencies
     ) async throws {
+        // Extract into a dedicated subdirectory instead of `sessionDir`: the
+        // payload sits at `sessionDir/payload.zip`, and an archive entry with
+        // that same name would otherwise overwrite the source mid-extract.
+        // `extractBundle` creates the directory itself.
+        let extractDir = sessionDir.appendingPathComponent("extract", isDirectory: true)
+
         let stagedApp: URL
         do {
-            stagedApp = try await deps.installer.extractBundle(zipAt: payloadURL, into: sessionDir)
+            stagedApp = try await deps.installer.extractBundle(zipAt: payloadURL, into: extractDir)
         } catch let error as AgentBundleInstallerError {
             throw Self.rpcError(for: error)
         } catch {
@@ -323,7 +334,12 @@ enum AgentUpdateSession {
     /// Schedules the relaunch and this process's termination. Runs *before*
     /// the ack is written so a failed ack cannot strand the agent in the
     /// "installed but never restarted" state.
-    private static func commitTail(deps: Dependencies, logger: Logger) {
+    private static func commitTail(deps: Dependencies, logger: Logger) async {
+        // Announce the commit before anything is scheduled: from here on the
+        // update lock must not be stealable, because the process is on its way
+        // out and a second update starting now could install over the bundle
+        // that was just swapped in.
+        await deps.onCommitted?()
         do {
             try deps.relauncher.scheduleRelaunch(of: deps.currentBundleURL)
         } catch {

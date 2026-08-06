@@ -15,6 +15,23 @@ struct AgentRelauncher: AgentRelaunchScheduling {
     /// Injected by the app target (clean quit path); nil ⇒ exit(0).
     let terminate: (@Sendable () async -> Void)?
 
+    /// How long the graceful quit gets before the process is forced down.
+    /// Two bounds pin this value:
+    ///  - It must outlast a real teardown: `WendyAgent.stop()` stops running
+    ///    apps *sequentially*, and a containerized app can cost ~10 s (the
+    ///    `docker stop` timeout) plus a ~5 s attached wait, so two running
+    ///    apps already need ~30-35 s. The old 15 s hard-killed every update on
+    ///    a device that was actually running something.
+    ///  - It must stay comfortably inside the CLI's darwin agent-restart wait
+    ///    (`darwinAgentRestartTimeout`, 60 s, polled from the update ack):
+    ///    exiting at 45 s still leaves the relaunched app time to come back up
+    ///    before the CLI gives up on it.
+    static let hardExitDelay: Duration = .seconds(45)
+
+    /// How long the gRPC ack gets to flush to the client before the graceful
+    /// quit tears the connection down.
+    static let ackFlushDelay: Duration = .milliseconds(500)
+
     func scheduleRelaunch(of bundleURL: URL) throws {
         let pid = ProcessInfo.processInfo.processIdentifier
         let process = Process()
@@ -52,13 +69,13 @@ struct AgentRelauncher: AgentRelaunchScheduling {
         // Hard watchdog: if a hung graceful stop never calls `terminate`,
         // force the process down anyway so the update can't wedge forever.
         Task.detached {
-            try? await Task.sleep(for: .seconds(15))
+            try? await Task.sleep(for: Self.hardExitDelay)
             exit(0)
         }
         // Give the gRPC ack a brief moment to flush to the client before we
         // tear the connection down.
         Task.detached {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: Self.ackFlushDelay)
             if let terminate = self.terminate {
                 await terminate()
             } else {
