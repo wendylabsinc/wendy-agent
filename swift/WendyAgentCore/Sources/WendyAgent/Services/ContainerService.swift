@@ -881,17 +881,32 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             let process: Foundation.Process
             let stdoutPipe: Pipe
             let stderrPipe: Pipe
+            // Stored image refs keep what the CLI sent (`localhost:5555/...`,
+            // the push listener); backends must pull from the loopback pull
+            // listener instead, so rewrite at use time. This also fixes apps
+            // installed before the push/pull port split with no migration.
+            let imageRef = LocalRegistryRef.rewriteForLocalPull(container.imageName)
+            if imageRef != container.imageName {
+                logger.info(
+                    "Rewriting local registry image ref for on-device pull",
+                    metadata: [
+                        "app_name": "\(appName)",
+                        "from": "\(container.imageName)",
+                        "to": "\(imageRef)",
+                    ]
+                )
+            }
             do {
                 // Pull first, then create+start. Both shell out to the Linux
                 // runtime CLI, which throws a plain `Error` (e.g. a nonzero exit
                 // with stderr) on failure. Wrap those in `RPCError` so the client
                 // sees the actionable message — an un-wrapped error surfaces as
                 // gRPC's opaque "Service method threw an unknown error." instead.
-                try await linuxBackend.pull(image: container.imageName)
+                try await linuxBackend.pull(image: imageRef)
                 self.prepareAppForLaunch(id: appName, launchToken: launchToken)
                 (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
                     appName: appName,
-                    imageName: container.imageName,
+                    imageName: imageRef,
                     appConfig: container.appConfig,
                     terminationHandler: self.makeTerminationHandler(
                         forAppID: appName,

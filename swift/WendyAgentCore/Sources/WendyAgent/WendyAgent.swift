@@ -56,25 +56,21 @@ public actor WendyAgent {
         do {
             let backend = await self.makeLinuxBackend()
 
-            if backend != nil, self.registryTask == nil {
-                let registry = AgentImageRegistry(
-                    store: BlobStore(root: WendyAgentPaths.stateDirectory)
-                )
-                self.registryTask = Task {
-                    do {
-                        try await registry.run()
-                    } catch {
-                        self.logger.error("Registry stopped", metadata: ["error": "\(error)"])
-                    }
-                }
-            }
-
             try await self.startMainServer(
                 linuxBackend: backend,
                 broadcaster: broadcaster
             )
             try await self.startOTelServer(broadcaster: broadcaster)
             try await self.startBonjour()
+
+            // Registry listeners come after startMainServer: the push listener
+            // reads the provisioned identity from provisioningService, which
+            // startMainServer creates. Best-effort — a failed registry bind
+            // must not brick native-app management on the device.
+            if backend != nil {
+                self.startPullRegistryIfNeeded()
+                await self.startPushRegistry()
+            }
 
             self.runIdentifier &+= 1
             self.handlingUnexpectedRuntimeExit = false
@@ -112,9 +108,7 @@ public actor WendyAgent {
         await self.stopOTelServer()
         await self.stopMainServer()
 
-        self.registryTask?.cancel()
-        await self.registryTask?.value
-        self.registryTask = nil
+        await self.stopRegistryListeners()
 
         self.clearRuntimeState()
         self.updateStatus(.stopped)
@@ -169,14 +163,20 @@ public actor WendyAgent {
     private var mainServer: PosixGRPCServer?
     private var mainServerTask: Task<Void, any Error>?
     private var containerService: ContainerService?
-    /// The embedded OCI registry serving `localhost:5555` for Linux container
-    /// image pushes/pulls. Started once, in `start()`, for the lifetime of the
-    /// process — it does not depend on the main gRPC server's plaintext/mTLS
-    /// mode, so it is deliberately NOT torn down/rebuilt by `switchMainServer()`
-    /// (which only stops/starts the main server). It is only cancelled (and
-    /// awaited, so the port is released) on a full agent stop or a failed
-    /// startup, via `rollbackStartup()`/`stop()`.
-    private var registryTask: Task<Void, Never>?
+    /// The embedded OCI registry's loopback pull listener
+    /// (`127.0.0.1:5556`, plain HTTP, read-only routes) that the on-device
+    /// Linux container backends pull from. Started once and kept for the
+    /// process lifetime — it never changes shape, so provisioning transitions
+    /// leave it alone. Cancelled (and awaited, so the port is released) only
+    /// on a full agent stop or a failed startup.
+    private var pullRegistryTask: Task<Void, Never>?
+    /// The registry's wildcard push listener (port 5555, all interfaces) that
+    /// the CLI pushes images to: plain HTTP while unprovisioned, TLS with
+    /// client-certificate verification once provisioned. Unlike the pull
+    /// listener it IS restarted on provisioning transitions (via
+    /// `switchMainServer()` → `startPushRegistry()`) so its scheme tracks the
+    /// device's provisioning state, mirroring the Linux agent's registry.
+    private var pushRegistryTask: Task<Void, Never>?
 
     /// The cloud tunnel-broker presence/relay loop, tied to the mTLS main
     /// server's lifetime: started in `startMainServer` when the server comes up
@@ -643,6 +643,16 @@ public actor WendyAgent {
             return
         }
 
+        // Restart the push listener so its scheme (plain HTTP vs mTLS) tracks
+        // the new provisioning state; the loopback pull listener never changes
+        // shape. Runs only from this detached-task context, never inside the
+        // provisioning RPC, so awaiting the old listener's shutdown here cannot
+        // deadlock the RPC that triggered the switch.
+        if backend != nil {
+            self.startPullRegistryIfNeeded()
+            await self.startPushRegistry()
+        }
+
         self.runIdentifier &+= 1
         self.handlingUnexpectedRuntimeExit = false
         self.startMonitorTask(runIdentifier: self.runIdentifier)
@@ -651,6 +661,98 @@ public actor WendyAgent {
             "Main server switched",
             metadata: ["mtls": "\(self.mainServerIsMTLS)"]
         )
+    }
+
+    /// Starts the loopback pull listener (`127.0.0.1:5556`, plain HTTP,
+    /// read-only routes) once per process. Best-effort: a bind failure is
+    /// logged with a port-in-use hint but never fails agent startup.
+    private func startPullRegistryIfNeeded() {
+        guard self.pullRegistryTask == nil else { return }
+        let registry = AgentImageRegistry(
+            store: BlobStore(root: WendyAgentPaths.stateDirectory),
+            configuration: .init(
+                host: LocalRegistryRef.pullHost,
+                port: LocalRegistryRef.pullPort,
+                tls: nil,
+                routes: .pullOnly,
+                label: "pull"
+            )
+        )
+        let logger = self.logger
+        self.pullRegistryTask = Task {
+            do {
+                try await registry.run()
+            } catch {
+                Self.logRegistryListenerStopped(
+                    logger, listener: "pull", port: LocalRegistryRef.pullPort, error: error)
+            }
+        }
+    }
+
+    /// (Re)starts the wildcard push listener (port 5555, all interfaces):
+    /// plain HTTP while unprovisioned, TLS with client-certificate
+    /// verification once provisioned. Always stop-then-start so a provisioning
+    /// transition swaps the scheme (mirroring the Linux agent's registry
+    /// restart). Fail closed: if the device is provisioned but its TLS
+    /// material is unusable, `run()` throws and the listener stays DOWN — it
+    /// never falls back to plain HTTP on a non-loopback interface. Best-effort
+    /// beyond that: a bind failure (e.g. a stale `wendy-registry` Docker
+    /// container squatting on 5555) must not brick native-app management or
+    /// provisioning, so it is logged, not fatal.
+    private func startPushRegistry() async {
+        self.pushRegistryTask?.cancel()
+        await self.pushRegistryTask?.value
+        self.pushRegistryTask = nil
+
+        var tls: RegistryTLS.Configuration?
+        if let certs = await self.provisioningService?.provisioningCerts() {
+            tls = RegistryTLS.makeConfiguration(certs: certs, logger: self.logger)
+        }
+        let registry = AgentImageRegistry(
+            store: BlobStore(root: WendyAgentPaths.stateDirectory),
+            configuration: .init(
+                host: "::",
+                port: LocalRegistryRef.pushPort,
+                tls: tls,
+                routes: .pushAndPull,
+                label: "push"
+            )
+        )
+        let logger = self.logger
+        self.pushRegistryTask = Task {
+            do {
+                try await registry.run()
+            } catch {
+                Self.logRegistryListenerStopped(
+                    logger, listener: "push", port: LocalRegistryRef.pushPort, error: error)
+            }
+        }
+    }
+
+    /// Cancels and awaits both registry listeners so their ports are released.
+    private func stopRegistryListeners() async {
+        self.pushRegistryTask?.cancel()
+        self.pullRegistryTask?.cancel()
+        await self.pushRegistryTask?.value
+        await self.pullRegistryTask?.value
+        self.pushRegistryTask = nil
+        self.pullRegistryTask = nil
+    }
+
+    private static func logRegistryListenerStopped(
+        _ logger: Logger, listener: String, port: Int, error: any Error
+    ) {
+        if error is CancellationError { return }
+        var metadata: Logger.Metadata = [
+            "listener": "\(listener)",
+            "port": "\(port)",
+            "error": "\(error)",
+        ]
+        if Self.isAddressAlreadyInUse(error) {
+            metadata["hint"] =
+                "port \(port) is already in use — check for a stale `wendy-registry` Docker container or another registry on this Mac"
+        }
+        logger.error("Agent image registry listener stopped", metadata: metadata)
     }
 
     private func startMonitorTask(runIdentifier: UInt64) {
@@ -681,9 +783,7 @@ public actor WendyAgent {
         await self.stopOTelServer()
         await self.stopMainServer()
 
-        self.registryTask?.cancel()
-        await self.registryTask?.value
-        self.registryTask = nil
+        await self.stopRegistryListeners()
     }
 
     private func clearRuntimeState() {
