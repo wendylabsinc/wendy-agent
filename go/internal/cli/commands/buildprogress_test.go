@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -190,5 +191,19 @@ func TestShouldDumpChunkDiffBuildLog(t *testing.T) {
 		if got := shouldDumpChunkDiffBuildLog(c.chunking)(c.err); got != c.want {
 			t.Errorf("shouldDumpChunkDiffBuildLog(%q)(%v) = %v, want %v", c.chunking, c.err, got, c.want)
 		}
+	}
+}
+
+func TestDumpRawUnlessRegistryUnavailable(t *testing.T) {
+	friendly := &registryUnavailableError{host: "mac.local", dialErr: errors.New("connection refused")}
+	if dumpRawUnlessRegistryUnavailable(friendly) {
+		t.Error("raw dump not suppressed for a bare registryUnavailableError")
+	}
+	wrapped := fmt.Errorf("building service web: %w", friendly)
+	if dumpRawUnlessRegistryUnavailable(wrapped) {
+		t.Error("raw dump not suppressed for a wrapped registryUnavailableError")
+	}
+	if !dumpRawUnlessRegistryUnavailable(errors.New("plain build failure")) {
+		t.Error("raw dump suppressed for an unrelated error")
 	}
 }

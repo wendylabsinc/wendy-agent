@@ -48,6 +48,11 @@ func runAppleContainerBuildWithProgress(ctx context.Context, dir, imageName, pla
 // failures are always surfaced to the user (no fallback rebuild follows).
 func dumpRawAlways(error) bool { return true }
 
+// dumpRawUnlessRegistryUnavailable suppresses the raw buildx replay when the
+// failure was converted to the friendly "no registry on the Mac agent" error —
+// the retried-EOF spam would bury the actionable message.
+func dumpRawUnlessRegistryUnavailable(err error) bool { return !isRegistryUnavailable(err) }
+
 // runBuildWithProgress runs build, rendering its buildx output as a clean live
 // step list (interactive) or concise per-step lines (non-interactive). The raw
 // buildx output is retained and printed if the build fails AND

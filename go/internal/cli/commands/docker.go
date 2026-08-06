@@ -32,6 +32,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -605,7 +606,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS, nil)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -1400,7 +1401,9 @@ func buildxLocalCacheDir(userCache, cacheKey string) string {
 	return dir
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+// dialErr, when non-nil, exposes the registry proxy's most recent failure to
+// reach the device registry; a refused dial short-circuits the retry loop.
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool, dialErr func() error) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1551,10 +1554,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 			return nil
 		}
 		lastErr = err
-		// Don't retry on cancellation, on the final attempt, or for errors that
-		// don't look like a transient registry/push hiccup (a real build failure
-		// would just fail again and waste time).
-		if ctx.Err() != nil || attempt >= maxBuildPushAttempts || !isTransientPushError(capture.String()) {
+		var lastDial error
+		if dialErr != nil {
+			lastDial = dialErr()
+		}
+		if !shouldRetryPush(ctx.Err(), attempt, capture.String(), lastDial) {
+			if isDialRefused(lastDial) {
+				fmt.Fprintf(logOutput, "[buildx] device registry refused the connection; not retrying\n")
+			}
 			break
 		}
 		backoff := buildPushRetryBackoff(attempt)
@@ -1571,6 +1578,20 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 // maxBuildPushAttempts bounds how many times a fused buildx build+push is retried
 // on a transient registry/push failure (WDY-1690).
 const maxBuildPushAttempts = 3
+
+// shouldRetryPush decides whether a failed buildx build+push attempt is worth
+// retrying. Cancellation, the final attempt, and non-transient output never
+// retry; neither does a registry that actively refused the proxy's dial —
+// nothing is listening there, so every retry would fail identically.
+func shouldRetryPush(ctxErr error, attempt int, output string, dialErr error) bool {
+	if ctxErr != nil || attempt >= maxBuildPushAttempts {
+		return false
+	}
+	if isDialRefused(dialErr) {
+		return false
+	}
+	return isTransientPushError(output)
+}
 
 // buildPushRetryBackoff returns the wait before retry N+1 (2s, 4s). The tunnel
 // recovers quickly once concurrent push pressure drops, so a short linear backoff
@@ -1610,14 +1631,14 @@ func (c *capturingWriter) Write(p []byte) (int, error) {
 
 func (c *capturingWriter) String() string { return string(c.buf) }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool, dialErr func() error) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1625,12 +1646,12 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
 		// Apple Container builds don't use buildx, so the local-cache key never
@@ -1640,21 +1661,26 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		// require Apple Container and get the startup prompt.
 		if err := checkAppleContainerBuilder(ctx); err != nil {
 			logAppleContainerFallback(logOutput, err)
-		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
+		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
+		} else if isRegistryUnavailable(err) {
+			// The device registry refuses connections; the Docker fallback pushes
+			// to the same registry and would fail identically — surface the
+			// actionable error instead of burning a full rebuild.
+			return err
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
-	registryAddr, cleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
+	registryAddr, cleanup, useMTLS, dialErr, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
 	if err != nil {
 		return err
 	}
@@ -1662,7 +1688,10 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
+	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
+		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+	}
+	return nil
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
@@ -1893,19 +1922,19 @@ func appleContainerTmpAlias(path string) (string, bool) {
 	return candidate, true
 }
 
-func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, dialErr func() error, err error) {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, false, nil, err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		registryAddr, cleanup, err = resolveRegistryForAgent(ctx, conn, port)
-		return registryAddr, cleanup, conn.IsMTLS, err
+		registryAddr, cleanup, dialErr, err = resolveRegistryForAgent(ctx, conn, port)
+		return registryAddr, cleanup, conn.IsMTLS, dialErr, err
 	case imageBuilderAppleContainer:
 		return resolveRegistryForAppleContainer(ctx, conn, port)
 	default:
-		return "", nil, false, fmt.Errorf("unsupported image builder %q", normalized)
+		return "", nil, false, nil, fmt.Errorf("unsupported image builder %q", normalized)
 	}
 }
 
@@ -1935,8 +1964,10 @@ func registryHost(host string, port int) string {
 // the address is link-local or a routable LAN IP.
 //
 // The returned cleanup function MUST be called when the build is complete to
-// stop the proxy and release the port.
-func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
+// stop the proxy and release the port. dialErr reports the proxy's most recent
+// failure to reach the device registry (nil when there is no proxy or the last
+// attempt succeeded); it is non-nil on every nil-error return.
+func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), dialErr func() error, err error) {
 	resolved := resolveRegistryIP(host)
 
 	// On Linux, buildkitd uses host networking (--driver-opt network=host) and
@@ -1947,7 +1978,7 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
 			addr = "[" + addr + "]"
 		}
-		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, func() error { return nil }, nil
 	}
 
 	// On macOS, buildkitd runs inside the Colima VM and cannot reach LAN devices
@@ -1967,11 +1998,11 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 	// Bind loopback only; the Docker VM forwards host.docker.internal to it.
 	proxy, err := startRegistryProxy(ctx, registryProxyListenAddr, target)
 	if err != nil {
-		return "", nil, fmt.Errorf("starting registry proxy: %w", err)
+		return "", nil, nil, fmt.Errorf("starting registry proxy: %w", err)
 	}
 
 	registryAddr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
-	return registryAddr, proxy.Close, nil
+	return registryAddr, proxy.Close, proxy.LastDialError, nil
 }
 
 // ensureBuildxBuilderMu serializes builder creation so that concurrent service
@@ -1979,27 +2010,38 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 // caller would fail with "existing instance for … but no append mode".
 var ensureBuildxBuilderMu sync.Mutex
 
-// dockerRegistryProxyAddrs caches one proxy address per AgentConnection. The
+// registryProxyEntry is the cached result of resolving a device registry for
+// one AgentConnection: the stable proxy address plus the proxy's dial-error
+// accessor, so every build sharing the proxy can also inspect why pushes
+// through it are failing (e.g. a Mac agent with no container runtime).
+type registryProxyEntry struct {
+	addr    string
+	dialErr func() error
+}
+
+// dockerRegistryProxyAddrs caches one proxy entry per AgentConnection. The
 // proxy is allocated once (port 0 → OS-assigned) and reused for all pushes on
 // that connection, so the buildx builder config never changes between concurrent
 // builds and no builder teardown races can kill an in-flight push.
 var (
 	dockerRegistryProxyCacheMu sync.Mutex
-	dockerRegistryProxyAddrs   = map[*grpcclient.AgentConnection]string{}
+	dockerRegistryProxyAddrs   = map[*grpcclient.AgentConnection]registryProxyEntry{}
 )
 
 // resolveRegistryForAgent determines how Docker buildx should reach the
 // agent's registry. The proxy is started once per connection and cached so
 // concurrent pushes to the same device share a stable host:port address.
-func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), err error) {
+// dialErr reports the shared proxy's most recent failure to reach the device
+// registry; it is non-nil on every nil-error return.
+func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), dialErr func() error, err error) {
 	// Hold the lock for the entire operation so concurrent callers block rather
 	// than each starting their own proxy. Proxy creation is just a local
 	// net.Listen call, so the lock is held only briefly.
 	dockerRegistryProxyCacheMu.Lock()
 	defer dockerRegistryProxyCacheMu.Unlock()
 
-	if addr, ok := dockerRegistryProxyAddrs[conn]; ok {
-		return addr, func() {}, nil
+	if entry, ok := dockerRegistryProxyAddrs[conn]; ok {
+		return entry.addr, func() {}, entry.dialErr, nil
 	}
 
 	// Start a proxy tied to context.Background so it outlives this push and is
@@ -2008,9 +2050,9 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 	var stopProxy func()
 
 	if conn.RegistryDialer == nil {
-		addr, stopProxy, err = resolveRegistry(context.Background(), conn.Host, port)
+		addr, stopProxy, dialErr, err = resolveRegistry(context.Background(), conn.Host, port)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	} else {
 		// Bind loopback only; the Docker VM forwards host.docker.internal to it.
@@ -2018,9 +2060,10 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 			return conn.RegistryDialer(ctx, port)
 		})
 		if proxyErr != nil {
-			return "", nil, fmt.Errorf("starting cloud registry proxy: %w", proxyErr)
+			return "", nil, nil, fmt.Errorf("starting cloud registry proxy: %w", proxyErr)
 		}
 		stopProxy = proxy.Close
+		dialErr = proxy.LastDialError
 		if runtime.GOOS == "linux" {
 			addr = fmt.Sprintf("127.0.0.1:%d", proxy.Port())
 		} else {
@@ -2028,7 +2071,7 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
-	dockerRegistryProxyAddrs[conn] = addr
+	dockerRegistryProxyAddrs[conn] = registryProxyEntry{addr: addr, dialErr: dialErr}
 	conn.ExtraClosers = append(conn.ExtraClosers, closeFunc(func() {
 		dockerRegistryProxyCacheMu.Lock()
 		delete(dockerRegistryProxyAddrs, conn)
@@ -2036,7 +2079,7 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 		stopProxy()
 	}))
 
-	return addr, func() {}, nil
+	return addr, func() {}, dialErr, nil
 }
 
 // resolveRegistryForSwift is like resolveRegistry but for the Swift container
@@ -2201,21 +2244,21 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 	}, nil
 }
 
-func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, dialErr func() error, err error) {
 	if conn.RegistryDialer != nil || conn.IsMTLS {
-		registryAddr, appleUseMTLS, cleanup, _, err := resolveRegistryForSwiftAgent(ctx, conn, port)
+		registryAddr, appleUseMTLS, cleanup, proxyDialErr, err := resolveRegistryForSwiftAgent(ctx, conn, port)
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, false, nil, err
 		}
 		if appleUseMTLS {
 			cleanup()
-			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
+			return "", nil, false, nil, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
 		}
 		if !registryAddrUsesLoopback(registryAddr) {
 			cleanup()
-			return "", nil, false, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
+			return "", nil, false, nil, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
 		}
-		return registryAddr, cleanup, false, nil
+		return registryAddr, cleanup, false, proxyDialErr, nil
 	}
 
 	targetHost := resolveRegistryIP(conn.Host)
@@ -2225,9 +2268,49 @@ func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.Agen
 	target := net.JoinHostPort(targetHost, strconv.Itoa(port))
 	proxy, proxyErr := startRegistryProxy(ctx, "127.0.0.1:0", target)
 	if proxyErr != nil {
-		return "", nil, false, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
+		return "", nil, false, nil, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, proxy.LastDialError, nil
+}
+
+// registryUnavailableError is a build/push failure reinterpreted as "the Mac
+// agent has no reachable container registry": the registry proxy recorded a
+// refused dial, meaning nothing was listening on the device's registry port.
+type registryUnavailableError struct {
+	host    string
+	dialErr error
+}
+
+func (e *registryUnavailableError) Error() string {
+	return fmt.Sprintf("the Mac agent at %s isn't running a container registry (%v); "+
+		"install Docker, OrbStack, or Apple's `container` CLI on the Mac — or update the "+
+		"Wendy agent there if a container runtime is already installed — to run Linux/WendyOS "+
+		"apps on it, or set \"platform\": \"darwin\" in wendy.json to run this app natively on "+
+		"the Mac instead", e.host, e.dialErr)
+}
+
+func (e *registryUnavailableError) Unwrap() error { return e.dialErr }
+
+func isRegistryUnavailable(err error) bool {
+	var r *registryUnavailableError
+	return errors.As(err, &r)
+}
+
+// maybeRegistryUnavailable reinterprets a build/push failure as "no registry on
+// the Mac agent" when the registry proxy recorded a refused dial. Darwin-only:
+// a Mac agent only runs a container registry when it found a Linux container
+// backend at startup (or is too old to serve the LAN listener at all), whereas
+// a WendyOS/Linux device always ships its container runtime as part of the OS —
+// a refused connection there is an actual fault, not a missing optional
+// dependency.
+func maybeRegistryUnavailable(agentOS, host string, dialErr func() error, buildErr error) error {
+	if !strings.EqualFold(agentOS, appconfig.PlatformDarwin) || dialErr == nil {
+		return buildErr
+	}
+	if de := dialErr(); isDialRefused(de) {
+		return &registryUnavailableError{host: host, dialErr: de}
+	}
+	return buildErr
 }
 
 // isDialRefused reports whether err looks like a TCP dial that was actively
@@ -2453,8 +2536,8 @@ func (p *registryProxy) recordDialErr(err error) {
 	p.mu.Unlock()
 }
 
-// LastDialError returns the most recent error encountered while reaching the
-// proxy's target, or nil if every connection so far has reached it.
+// LastDialError returns the error from the most recent attempt to reach the
+// proxy's target, or nil if that attempt succeeded (or none was made yet).
 func (p *registryProxy) LastDialError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -2488,6 +2571,10 @@ func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 		p.recordDialErr(err)
 		return
 	}
+	// Clear any earlier failure so LastDialError reflects the latest attempt:
+	// a transient refusal during builder bootstrap must not misclassify a later
+	// healthy push as "registry unavailable".
+	p.recordDialErr(nil)
 	defer remote.Close()
 
 	done := make(chan struct{}, 2)
