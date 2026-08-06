@@ -272,6 +272,22 @@ def plan_fleet(config: FleetConfig, runner=default_runner) -> FleetPlan:
         else:
             env["MESH_PEERS"] = peers_raw
         env["WT_ROLE"] = roles[device.host]
+        # Generic topology contract, emitted for every transport: templates
+        # prefer their own explicit variables, fall back to these, and only
+        # then try numeric derivation. Without them a lan fleet has hostname
+        # peers that numeric derivation rightly refuses to interpret.
+        ranked = sorted(config.devices, key=lambda d: d.asset_id)
+        coordinator_device = next(
+            d for d in config.devices if roles[d.host] == "coordinator"
+        )
+        if config.transport == "lan":
+            env["WT_COORDINATOR"] = f"{coordinator_device.host}:{config.mesh_port}"
+        else:
+            env["WT_COORDINATOR"] = (
+                f"device-{coordinator_device.asset_id}.cloud.wendy.dev:{config.mesh_port}"
+            )
+        env["WT_NODE_INDEX"] = str([d.host for d in ranked].index(device.host))
+        env["WT_NODE_COUNT"] = str(len(ranked))
         if config.is_sweep:
             env["WT_SWEEP_INDEX"] = str(index)
             env["WT_SWEEP_PARAMS"] = json.dumps(config.sweep_params)

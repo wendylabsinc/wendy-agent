@@ -172,6 +172,9 @@ layer is peeled off:
 | `WT_RUN_ID` | stable run identifier, names the checkpoint directory | `default` |
 | `WT_CKPT_DIR` | checkpoint root (a persist entitlement path) | `/data/checkpoints` |
 | `WT_CONFIG` | path to a configuration file baked into the image | unset |
+| `WT_COORDINATOR` | the coordinating node as `host:port`, emitted by the launcher | unset |
+| `WT_NODE_INDEX` | this node's rank by ascending asset identifier, coordinator first | unset |
+| `WT_NODE_COUNT` | number of nodes in the fleet | unset |
 
 A bare asset identifier in `MESH_PEERS` expands to
 `device-<id>.cloud.wendy.dev:<MESH_PORT>`, matching the conventions of
@@ -181,10 +184,13 @@ coordinator (the `ppo-fleet` template maps coordinator to learner and worker
 to actor); every other node is a worker. The rule never guesses: when
 `MESH_SELF` or any peer entry is not a numeric asset identifier, role
 derivation raises and asks for `WT_ROLE` to be set explicitly. For fleets
-addressed by hostname the multi-device templates take their topology
-explicitly as well: `es-fleet` reads `ES_COORDINATOR` (`host:port`),
-`ES_WORKER_INDEX`, and `ES_WORKER_COUNT`, and `ppo-fleet` reads `PPO_LEARNER`;
-both are documented in the template `README.md` files.
+addressed by hostname (the lan transport) the launcher always emits the
+generic topology trio `WT_COORDINATOR`, `WT_NODE_INDEX`, and `WT_NODE_COUNT`,
+which the multi-device templates honor after their own explicit variables:
+`es-fleet` prefers `ES_COORDINATOR` (`host:port`), `ES_WORKER_INDEX`, and
+`ES_WORKER_COUNT`, and `ppo-fleet` prefers `PPO_LEARNER`; all documented in
+the template `README.md` files. Numeric derivation from `MESH_PEERS` remains
+the last resort and never guesses.
 
 `wendy.json` has no wildcard environment passthrough, so each template
 enumerates the `${VAR}` list it forwards (open a template's `wendy.json` for

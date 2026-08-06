@@ -514,12 +514,22 @@ def resolve_topology(env: Mapping[str, str]) -> tuple[str, int, int]:
     With numeric asset ids the topology is fully deterministic: ids sorted
     ascending, the lowest coordinates, and each node's worker index is its
     rank in that order (the coordinator's loopback worker is rank 0).
-    Non-numeric setups must set ``ES_COORDINATOR``, ``ES_WORKER_INDEX``, and
-    ``ES_WORKER_COUNT`` explicitly; this function never guesses.
+    The launcher's generic ``WT_COORDINATOR``, ``WT_NODE_INDEX`` and
+    ``WT_NODE_COUNT`` are honored next. Non-numeric setups without either must
+    set ``ES_COORDINATOR``, ``ES_WORKER_INDEX``, and ``ES_WORKER_COUNT``
+    explicitly; this function never guesses.
     """
     coordinator = env.get("ES_COORDINATOR", "").strip()
     index_raw = env.get("ES_WORKER_INDEX", "").strip()
     count_raw = env.get("ES_WORKER_COUNT", "").strip()
+    if coordinator and index_raw and count_raw:
+        return coordinator, int(index_raw), int(count_raw)
+
+    # The launcher's generic topology contract: preferred over numeric
+    # derivation because it works for hostname peers (the lan transport).
+    coordinator = env.get("WT_COORDINATOR", "").strip()
+    index_raw = env.get("WT_NODE_INDEX", "").strip()
+    count_raw = env.get("WT_NODE_COUNT", "").strip()
     if coordinator and index_raw and count_raw:
         return coordinator, int(index_raw), int(count_raw)
 

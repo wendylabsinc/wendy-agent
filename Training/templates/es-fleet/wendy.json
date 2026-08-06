@@ -12,7 +12,10 @@
                     "mode": "mesh",
                     "serviceCIDR": "10.99.0.0/16",
                     "ports": [
-                        { "host": 8080, "container": 8080 }
+                        {
+                            "host": 8080,
+                            "container": 8080
+                        }
                     ]
                 },
                 {
@@ -38,7 +41,10 @@
                 "ES_SEED": "${ES_SEED}",
                 "ES_COORDINATOR": "${ES_COORDINATOR}",
                 "ES_WORKER_INDEX": "${ES_WORKER_INDEX}",
-                "ES_WORKER_COUNT": "${ES_WORKER_COUNT}"
+                "ES_WORKER_COUNT": "${ES_WORKER_COUNT}",
+                "WT_COORDINATOR": "${WT_COORDINATOR}",
+                "WT_NODE_INDEX": "${WT_NODE_INDEX}",
+                "WT_NODE_COUNT": "${WT_NODE_COUNT}"
             }
         }
     }

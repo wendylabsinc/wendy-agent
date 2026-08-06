@@ -389,3 +389,28 @@ def test_wendy_json_declares_the_contract():
         "ES_GEN_TIMEOUT_S",
     ):
         assert env[name] == "${" + name + "}"
+
+
+def test_topology_accepts_the_launchers_generic_trio():
+    """Hostname peers plus WT_COORDINATOR/WT_NODE_INDEX/WT_NODE_COUNT resolve.
+
+    This is the lan transport shape that aborted on hardware before the
+    launcher emitted the trio: MESH_SELF is numeric but MESH_PEERS entries
+    are hostnames, so numeric derivation refuses; the generic contract must
+    win before that refusal. Template-specific ES_* variables still win over
+    the generic ones.
+    """
+
+    env = {
+        "MESH_SELF": "334",
+        "MESH_PEERS": "spark-48fd.local:8080,spark-edeb.local:8080",
+        "WT_COORDINATOR": "spark-48fd.local:8080",
+        "WT_NODE_INDEX": "2",
+        "WT_NODE_COUNT": "3",
+    }
+    assert train.resolve_topology(env) == ("spark-48fd.local:8080", 2, 3)
+
+    env["ES_COORDINATOR"] = "elsewhere:9"
+    env["ES_WORKER_INDEX"] = "1"
+    env["ES_WORKER_COUNT"] = "4"
+    assert train.resolve_topology(env) == ("elsewhere:9", 1, 4)

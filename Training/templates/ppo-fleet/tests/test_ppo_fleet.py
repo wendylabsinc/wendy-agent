@@ -200,3 +200,15 @@ def test_stale_rollout_rejected_and_counted(tmp_path):
     assert status["version"] == 1
     assert status["accepted_rollouts"] == 1
     assert status["stale_rollouts"] == 1
+
+
+def test_learner_target_accepts_the_launchers_generic_coordinator():
+    """PPO_LEARNER wins, WT_COORDINATOR is next, numeric derivation last."""
+
+    env = {
+        "MESH_PEERS": "spark-48fd.local:8080,spark-edeb.local:8080",
+        "WT_COORDINATOR": "spark-48fd.local:8080",
+    }
+    assert train.learner_target(env) == "spark-48fd.local:8080"
+    env["PPO_LEARNER"] = "elsewhere:9"
+    assert train.learner_target(env) == "elsewhere:9"

@@ -418,3 +418,32 @@ def test_sweep_staging_includes_single_train(tmp_path):
     assert (stage / "cartpole.py").exists()
     manifest = json.loads((stage / "stage-manifest.json").read_text())
     assert "single_train.py" in manifest["files"]
+
+
+def test_generic_topology_trio_emitted_for_every_device(tmp_path):
+    """WT_COORDINATOR, WT_NODE_INDEX, WT_NODE_COUNT accompany every plan.
+
+    Found on hardware: with transport lan the peers are hostnames, and
+    es-fleet's resolve_topology rightly refuses to derive a topology from
+    non-numeric peers. The workers would have exited at startup. The launcher
+    now always emits the generic trio; templates prefer their own explicit
+    variables and fall back to these.
+    """
+
+    template_dir = make_template(tmp_path, "es-like")
+    for transport, expected_coordinator in (
+        (None, "device-211.cloud.wendy.dev:8080"),
+        ("lan", "spark-48fd.local:8080"),
+    ):
+        config_path = write_fleet_toml(tmp_path, str(template_dir), transport=transport)
+        plan = load_plan(config_path, FakeRunner())
+        by_host = {d.host: d for d in plan.devices}
+        coordinator = min(plan.devices, key=lambda d: d.asset_id)
+        assert coordinator.role == "coordinator"
+        for device in plan.devices:
+            assert device.env["WT_COORDINATOR"] == expected_coordinator
+            assert device.env["WT_NODE_COUNT"] == str(len(plan.devices))
+        ranked = sorted(plan.devices, key=lambda d: d.asset_id)
+        indices = [int(by_host[d.host].env["WT_NODE_INDEX"]) for d in ranked]
+        assert indices == list(range(len(ranked)))
+        assert int(coordinator.env["WT_NODE_INDEX"]) == 0

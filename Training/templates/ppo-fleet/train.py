@@ -426,14 +426,20 @@ class Actor:
 def learner_target(env: Mapping[str, str]) -> str:
     """Resolve the learner's ``host:port`` for an actor.
 
-    ``PPO_LEARNER`` wins when set. Otherwise the learner is the lowest
-    numeric asset id named by ``MESH_PEERS``; a non-numeric peer list raises
-    and asks for ``PPO_LEARNER`` explicitly.
+    ``PPO_LEARNER`` wins when set, then the launcher's generic
+    ``WT_COORDINATOR``. Otherwise the learner is the lowest numeric asset id
+    named by ``MESH_PEERS``; a non-numeric peer list raises and asks for
+    ``PPO_LEARNER`` explicitly.
     """
     explicit = env.get("PPO_LEARNER", "").strip()
     default_port = int(env.get("MESH_PORT", str(mesh.DEFAULT_MESH_PORT)))
     if explicit:
         return explicit if ":" in explicit else f"{explicit}:{default_port}"
+    # The launcher's generic topology contract; preferred over numeric
+    # derivation because it also works for hostname peers (lan transport).
+    generic = env.get("WT_COORDINATOR", "").strip()
+    if generic:
+        return generic if ":" in generic else f"{generic}:{default_port}"
     candidates: dict[int, str] = {}
     for item in env.get("MESH_PEERS", "").split(","):
         item = item.strip()
