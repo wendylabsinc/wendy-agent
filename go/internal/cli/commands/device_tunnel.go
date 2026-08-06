@@ -17,26 +17,26 @@ import (
 
 func newDeviceTunnelCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "tunnel <local-port>:<remote-port>",
-		Short: "Forward a local TCP port through the selected LAN agent",
-		Long:  "Listens on local loopback and forwards each connection through the selected LAN agent to a TCP port on the device's loopback interface.",
+		Use:   "tunnel <local-port>:<remote-port>[/udp]",
+		Short: "Forward a local TCP or UDP port through the selected LAN agent",
+		Long:  "Listens on local loopback and forwards each connection or datagram through the selected LAN agent to a port on the device's loopback interface.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, cloud := cloudDeviceConfigFromContext(cmd.Context()); cloud {
 				return fmt.Errorf("use 'wendy cloud tunnel' for cloud-connected devices")
 			}
-			localPort, remotePort, _, err := parseTunnelArg(args[0])
+			localPort, remotePort, udp, err := parseTunnelArg(args[0])
 			if err != nil {
 				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			return deviceTunnelCommand(ctx, localPort, remotePort)
+			return deviceTunnelCommand(ctx, localPort, remotePort, udp)
 		},
 	}
 }
 
-func deviceTunnelCommand(ctx context.Context, localPort, remotePort uint32) error {
+func deviceTunnelCommand(ctx context.Context, localPort, remotePort uint32, udp bool) error {
 	target, err := resolveTarget(ctx, ExcludeBluetooth())
 	if err != nil {
 		return err
@@ -44,6 +44,23 @@ func deviceTunnelCommand(ctx context.Context, localPort, remotePort uint32) erro
 	defer target.Close()
 	if target.Agent == nil || target.Agent.TunnelService == nil {
 		return fmt.Errorf("device tunnel requires a WendyOS LAN agent")
+	}
+
+	if udp {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(localPort)})
+		if err != nil {
+			return fmt.Errorf("listening on udp 127.0.0.1:%d: %w", localPort, err)
+		}
+		defer pc.Close()
+		session, err := openDeviceDatagramSession(ctx, target.Agent.TunnelService)
+		if err != nil {
+			return fmt.Errorf("opening device datagram tunnel: %w", err)
+		}
+		defer session.close()
+		cliSuccess("Forwarding udp 127.0.0.1:%d → %s:%d (via LAN agent)", localPort, target.Agent.Host, remotePort)
+		cliLogln("Press Ctrl+C to stop.")
+		go func() { <-ctx.Done(); pc.Close() }()
+		return serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout)
 	}
 
 	listener, err := listenDeviceTunnel(localPort)
