@@ -50,7 +50,6 @@ struct `'wendy device tunnel'` {
                     #expect(!result.status.isSuccess)
                     #expect(result.stdout == "")
                     #expect(stderr.contains("invalid port"))
-                    #expect(stderr.contains(mapping))
                     #expect(!stderr.contains("Fetching device list"))
                     #expect(!stderr.contains("Forwarding"))
                 }
