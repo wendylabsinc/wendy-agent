@@ -3,6 +3,7 @@
     "init",
     "run",
     "observe",
+    "app",
     "install",
     "project",
     "device",

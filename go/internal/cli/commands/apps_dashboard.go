@@ -35,13 +35,19 @@ type dashboardRow struct {
 }
 
 // buildDashboardRows merges containers, stats, and volume data into display rows.
-// Order follows the containers slice. Multi-service apps produce a group-header
-// row followed by one sub-row per service; sub-rows are display-only (no actions).
+// Running apps appear first, preserving the device's order within each state
+// group. Multi-service apps produce a group-header row followed by one sub-row
+// per service; sub-rows are display-only (no actions).
 func buildDashboardRows(
 	containers []*agentpb.AppContainer,
 	stats []*agentpb.ContainerStats,
 	volumes []*agentpb.VolumeInfo,
 ) []dashboardRow {
+	orderedContainers := append([]*agentpb.AppContainer(nil), containers...)
+	sortRunningFirst(orderedContainers, func(c *agentpb.AppContainer) string {
+		return c.GetRunningState().String()
+	})
+
 	// Index stats by container ID (set to ctr.ID() by GetContainerStats).
 	statsMap := make(map[string]*agentpb.ContainerStats, len(stats))
 	for _, s := range stats {
@@ -59,7 +65,7 @@ func buildDashboardRows(
 	}
 
 	var rows []dashboardRow
-	for _, c := range containers {
+	for _, c := range orderedContainers {
 		appName := c.GetAppName()
 		services := c.GetServices()
 

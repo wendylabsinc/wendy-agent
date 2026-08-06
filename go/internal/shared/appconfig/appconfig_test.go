@@ -2209,3 +2209,136 @@ func TestValidateJSON_BuildEntitlementRejectsExtraKeys(t *testing.T) {
 		t.Fatal("expected a warning for an unknown key on the build entitlement")
 	}
 }
+
+// TestAppConfig_TopLevelEnv covers WDY-2040: a single-container app declares
+// env at the top level, which is the only place it can.
+func TestAppConfig_TopLevelEnv(t *testing.T) {
+	cfg, err := LoadFromBytes([]byte(`{
+		"appId": "envapp",
+		"env": {"OTEL_LOGS_EXPORTER": "console", "TOKEN": "${HOST_TOKEN}"}
+	}`))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got, want := cfg.Env["OTEL_LOGS_EXPORTER"], "console"; got != want {
+		t.Errorf("env[OTEL_LOGS_EXPORTER] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Env["TOKEN"], "${HOST_TOKEN}"; got != want {
+		t.Errorf("env[TOKEN] = %q, want %q (host expansion happens at deploy time)", got, want)
+	}
+}
+
+func TestValidateEnv_RejectsMalformedKeys(t *testing.T) {
+	for _, key := range []string{"BAD-KEY", "1LEADING", "has space", "WITH.DOT", ""} {
+		cfg := &AppConfig{AppID: "envapp", Env: map[string]string{key: "1"}}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() accepted env key %q, want an error", key)
+		}
+	}
+
+	for _, key := range []string{"OK", "_UNDERSCORE", "MIXED_case9"} {
+		cfg := &AppConfig{AppID: "envapp", Env: map[string]string{key: "1"}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() rejected env key %q: %v", key, err)
+		}
+	}
+}
+
+func TestValidateEnv_RejectsMalformedServiceKeys(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "envapp",
+		Services: map[string]*ServiceConfig{
+			"api": {Context: ".", Env: map[string]string{"BAD-KEY": "1"}},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted a malformed service env key, want an error")
+	}
+	if !strings.Contains(err.Error(), `services["api"].env`) {
+		t.Errorf("error %q does not name the offending service env", err)
+	}
+}
+
+// TestValidateJSON_UnknownTopLevelKey covers WDY-2040: keys the config does not
+// decode are discarded by encoding/json, so they are reported as warnings.
+func TestValidateJSON_UnknownTopLevelKey(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"$schema": "https://wendy.dev/schemas/wendy.json",
+		"env": {"OK": "1"},
+		"enviroment": {"OK": "1"},
+		"local": {"darwin-arm64": "python3 app.py"}
+	}`))
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+	// The warning also lists the allowed keys, so check the flagged half only.
+	flagged, _, _ := strings.Cut(warnings[0], "Allowed keys are:")
+	for _, want := range []string{"enviroment", "local"} {
+		if !strings.Contains(flagged, want) {
+			t.Errorf("warning %q does not mention %q", warnings[0], want)
+		}
+	}
+	for _, unwanted := range []string{"appId", "$schema", "env,"} {
+		if strings.Contains(flagged, unwanted) {
+			t.Errorf("warning %q flags known key %s", warnings[0], unwanted)
+		}
+	}
+}
+
+func TestValidateJSON_UnknownServiceKey(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"services": {"api": {"context": ".", "environment": {"OK": "1"}}}
+	}`))
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+	if !strings.Contains(warnings[0], "environment") || !strings.Contains(warnings[0], `services["api"]`) {
+		t.Errorf("warning %q does not name the service and key", warnings[0])
+	}
+}
+
+// A fleet manifest has its own keys and its own validation; ValidateJSON must
+// not report them as unknown.
+func TestValidateJSON_FleetManifestKeysNotFlagged(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "fleet",
+		"components": {"cam": {"path": "./cam", "tags": ["camera-*"]}}
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+}
+
+func TestValidateJSON_KnownKeysProduceNoWarnings(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"version": "0.1.0",
+		"platform": "linux",
+		"language": "swift",
+		"xcode": {"scheme": "App"},
+		"run": {"args": ["--flag"]},
+		"entitlements": [{"type": "network", "mode": "host"}],
+		"readiness": {"tcpSocket": {"port": 8080}},
+		"hooks": {"postStart": {"openURL": "http://localhost:8080"}},
+		"python": {"sourceRoot": "src"},
+		"debug": false,
+		"files": [{"path": "assets"}],
+		"brewfile": "Brewfile.wendy",
+		"isolation": "shared-ipc",
+		"frameworks": {"ros2": {"distro": "humble"}},
+		"resources": {"cpus": 1},
+		"env": {"OK": "1"},
+		"services": {"api": {"context": ".", "env": {"OK": "1"}}}
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+}

@@ -195,7 +195,7 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 //
 // Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
 // means "don't skip it".
-func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
 	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
@@ -209,7 +209,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		if err != nil {
 			continue
 		}
-		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs)
+		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs, expandServiceEnv(appCfg, svc))
 		if err != nil {
 			continue
 		}
@@ -309,13 +309,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// presence, so this currently skips nothing for multi-service; see
 	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
-	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
+	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
 	if n := len(skip); n > 0 {
 		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -397,7 +397,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
-			Env:           expandServiceEnv(svc),
+			Env:           expandServiceEnv(appCfg, svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)
@@ -461,6 +461,7 @@ func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
 	regPort int,
+	agentOS string,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
 	platform string,
@@ -563,7 +564,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = buildServiceImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -603,7 +604,9 @@ func buildServicesParallel(
 	for r := range results {
 		if r.err != nil {
 			failed[r.name] = r.err
-			if r.log != "" {
+			// Skip the raw replay for the friendly "no registry on the Mac agent"
+			// error — the retried-push spam would bury the actionable message.
+			if r.log != "" && !isRegistryUnavailable(r.err) {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}

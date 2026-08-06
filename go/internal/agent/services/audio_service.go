@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,12 @@ var wpctlSetDefault = func(ctx context.Context, id string) ([]byte, error) {
 // so that tests can inject a mock implementation without spawning a real pactl process.
 var pactlSetDefault = func(ctx context.Context, subcmd, name string) ([]byte, error) {
 	return exec.CommandContext(ctx, "pactl", subcmd, name).CombinedOutput()
+}
+
+// amixerRun executes amixer on the host. It is replaceable in tests so mixer
+// discovery and volume changes do not depend on local audio hardware.
+var amixerRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "amixer", args...).CombinedOutput()
 }
 
 // resolvePipeWireNodeIDsFn resolves the ALSA card/device pair to PipeWire node
@@ -68,6 +75,152 @@ func (s *AudioService) ListAudioDevices(ctx context.Context, _ *agentpb.ListAudi
 		return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
 	}
 	return &agentpb.ListAudioDevicesResponse{Devices: devices}, nil
+}
+
+var simpleMixerControlPattern = regexp.MustCompile(`^Simple mixer control '(.+)',\d+$`)
+var playbackVolumePattern = regexp.MustCompile(`\[(\d{1,3})%\]`)
+
+// preferredPlaybackControls covers the conventional ALSA simple-control names.
+// If none is present, mixerControl falls back to the first control that exposes
+// a playback volume, which keeps USB and board-specific codecs usable.
+var preferredPlaybackControls = []string{"Master", "PCM", "Speaker", "Headphone"}
+
+func parseSimpleMixerControls(output string) []string {
+	var controls []string
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		if match := simpleMixerControlPattern.FindStringSubmatch(strings.TrimSpace(scanner.Text())); len(match) == 2 {
+			controls = append(controls, match[1])
+		}
+	}
+	return controls
+}
+
+func orderPlaybackControls(controls []string) []string {
+	ordered := make([]string, 0, len(controls))
+	used := make(map[int]bool, len(controls))
+	for _, preferred := range preferredPlaybackControls {
+		for i, control := range controls {
+			if !used[i] && strings.EqualFold(control, preferred) {
+				ordered = append(ordered, control)
+				used[i] = true
+			}
+		}
+	}
+	for i, control := range controls {
+		if !used[i] {
+			ordered = append(ordered, control)
+		}
+	}
+	return ordered
+}
+
+func parsePlaybackVolume(output string) (uint32, bool) {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, "Playback") {
+			continue
+		}
+		match := playbackVolumePattern.FindStringSubmatch(line)
+		if len(match) != 2 {
+			continue
+		}
+		volume, err := strconv.ParseUint(match[1], 10, 32)
+		if err == nil && volume <= 100 {
+			return uint32(volume), true
+		}
+	}
+	return 0, false
+}
+
+// mixerControl resolves the ALSA simple mixer control that owns playback
+// volume for a card and returns its current percentage.
+func mixerControl(ctx context.Context, card uint64) (string, uint32, error) {
+	cardArg := strconv.FormatUint(card, 10)
+	listOutput, err := amixerRun(ctx, "-c", cardArg, "scontrols")
+	if err != nil {
+		return "", 0, fmt.Errorf("listing mixer controls: %w: %s", err, strings.TrimSpace(string(listOutput)))
+	}
+
+	for _, control := range orderPlaybackControls(parseSimpleMixerControls(string(listOutput))) {
+		output, getErr := amixerRun(ctx, "-c", cardArg, "sget", control)
+		if getErr != nil {
+			continue
+		}
+		if volume, ok := parsePlaybackVolume(string(output)); ok {
+			return control, volume, nil
+		}
+	}
+	return "", 0, fmt.Errorf("no playback volume control found on ALSA card %d", card)
+}
+
+func (s *AudioService) playbackVolumes(ctx context.Context, devices []*agentpb.AudioDevice) map[uint32]*uint32 {
+	type mixerResult struct {
+		volume uint32
+		err    error
+	}
+	byCard := make(map[uint64]mixerResult)
+	volumes := make(map[uint32]*uint32)
+	for _, device := range devices {
+		if device.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
+			continue
+		}
+		card, _ := decodeALSAID(device.GetId())
+		result, ok := byCard[card]
+		if !ok {
+			_, result.volume, result.err = mixerControl(ctx, card)
+			byCard[card] = result
+		}
+		if result.err == nil {
+			volume := result.volume
+			volumes[device.GetId()] = &volume
+		} else {
+			s.logger.Debug("Playback volume unavailable",
+				zap.Uint64("alsa_card", card), zap.Error(result.err))
+		}
+	}
+	return volumes
+}
+
+// SetAudioVolume sets an ALSA output card's playback volume. ALSA simple mixer
+// controls are card-scoped, so the device component of the encoded ID is used
+// for validation but does not select a separate mixer.
+func (s *AudioService) setAudioVolume(ctx context.Context, deviceID, volumePercent uint32) (uint32, error) {
+	if deviceID == 0 {
+		return 0, status.Error(codes.InvalidArgument, "device ID 0 is not a valid audio device")
+	}
+	if volumePercent > 100 {
+		return 0, status.Errorf(codes.InvalidArgument, "volume must be between 0 and 100, got %d", volumePercent)
+	}
+
+	card, _ := decodeALSAID(deviceID)
+	if card > 255 {
+		return 0, status.Errorf(codes.InvalidArgument,
+			"device ID %d encodes out-of-range ALSA card %d (max 255)", deviceID, card)
+	}
+
+	control, _, err := mixerControl(ctx, card)
+	if err != nil {
+		return 0, err
+	}
+	cardArg := strconv.FormatUint(card, 10)
+	percentArg := fmt.Sprintf("%d%%", volumePercent)
+	output, err := amixerRun(ctx, "-c", cardArg, "sset", control, percentArg, "unmute")
+	if err != nil {
+		return 0, fmt.Errorf("setting %s playback volume: %w: %s", control, err, strings.TrimSpace(string(output)))
+	}
+
+	actual := volumePercent
+	if parsed, ok := parsePlaybackVolume(string(output)); ok {
+		actual = parsed
+	}
+	s.logger.Info("Audio playback volume set",
+		zap.Uint32("device_id", deviceID),
+		zap.Uint64("alsa_card", card),
+		zap.String("control", control),
+		zap.Uint32("volume_percent", actual))
+	return actual, nil
 }
 
 // listALSADevices falls back to ALSA for audio device enumeration.

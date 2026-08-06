@@ -53,3 +53,20 @@ Keychain lookup is not supported. Windows has no equivalent of macOS's auto-stor
 | Flag | Description |
 |------|-------------|
 | `--ssid <name>` | Skip the interactive network picker and connect to the named network directly (`connect` only). |
+
+## Wendy Lite devices
+
+Running `wendy device wifi` in interactive mode against a Wendy Lite device is not supported. The command exits immediately with:
+
+```
+selected device does not support full Wi-Fi management; use 'wendy device wifi connect' and 'wendy device wifi disconnect' instead
+```
+
+Use the explicit subcommands instead:
+
+```sh
+wendy device wifi connect --ssid <network>
+wendy device wifi disconnect
+```
+
+> **Note:** `wendy device wifi connect` and `wendy device wifi disconnect` stop the running app on the device before applying the new Wi-Fi configuration. If no app is currently running, this step is skipped silently — no warning is printed.

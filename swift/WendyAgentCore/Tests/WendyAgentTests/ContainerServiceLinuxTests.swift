@@ -9,6 +9,7 @@ import WendyAgentGRPC
 actor FakeLinuxBackend: LinuxContainerBackend {
     private(set) var pulled: [String] = []
     private(set) var started: [String] = []
+    private(set) var startedImages: [String] = []
     private(set) var stopped: [String] = []
     private(set) var removed: [String] = []
     /// Retains the process handed to `ContainerService` so `stop`/`remove` can
@@ -25,6 +26,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         terminationHandler: (@Sendable (Foundation.Process) -> Void)?
     ) async throws -> (process: Foundation.Process, stdout: Pipe, stderr: Pipe) {
         started.append(appName)
+        startedImages.append(imageName)
         let p = Foundation.Process()
         // Long-lived: the app must be observably `.running` until the test stops
         // it. A short-lived process (e.g. `/bin/echo`) would exit immediately and
@@ -56,6 +58,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
 
     func pulledImages() -> [String] { pulled }
     func startedApps() -> [String] { started }
+    func startedImageNames() -> [String] { startedImages }
     func stoppedApps() -> [String] { stopped }
     func removedApps() -> [String] { removed }
 }
@@ -113,8 +116,12 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         let runningInfo = try #require(await service.appInfo(forAppID: "svc"))
         #expect(runningInfo.status == .running)
 
-        #expect(await backend.pulledImages() == ["localhost:5555/svc:latest"])
+        // The stored ref keeps what the CLI sent (localhost:5555, the push
+        // listener); the backend must receive the loopback pull-listener
+        // rewrite, and pull/createAndStart must see the identical string.
+        #expect(await backend.pulledImages() == ["127.0.0.1:5556/svc:latest"])
         #expect(await backend.startedApps() == ["svc"])
+        #expect(await backend.startedImageNames() == ["127.0.0.1:5556/svc:latest"])
 
         // stopContainer routes to the backend's stop(appName:), which ends the
         // container's process and lets the streaming producer return.

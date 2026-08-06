@@ -3,6 +3,7 @@ package commands
 
 import (
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
@@ -247,8 +248,40 @@ func NewRootCmd() *cobra.Command {
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
 
+	rejectStrayArguments(root)
+
 	root.Version = version.Version
 	return root
+}
+
+// rejectStrayArguments gives every command that takes no positional arguments a
+// NoArgs validator, so a stray word is reported instead of silently dropped.
+//
+// Without a validator cobra defaults to accepting anything, which means
+// `wendy device wifi connect MyNetwork` discards "MyNetwork" and proceeds as if
+// no network had been named -- the SSID is supplied with --ssid. Around ninety
+// commands were in that state; none of them had opted into it deliberately.
+//
+// A command is only treated as argument-free when its Use string declares no
+// placeholder. Anything documenting a positional, such as "logs [app]" or
+// "record [topics...]", already states its own contract and is left alone, as is
+// any command that already sets Args.
+func rejectStrayArguments(cmd *cobra.Command) {
+	for _, child := range cmd.Commands() {
+		rejectStrayArguments(child)
+	}
+	if !cmd.Runnable() || cmd.Args != nil {
+		return
+	}
+	for _, token := range strings.Fields(cmd.Use)[1:] {
+		if token == "[flags]" {
+			continue
+		}
+		if strings.HasPrefix(token, "<") || strings.HasPrefix(token, "[") {
+			return
+		}
+	}
+	cmd.Args = cobra.NoArgs
 }
 
 // nextStepHint returns a one-line suggestion for the next command to run after

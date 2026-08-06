@@ -7,7 +7,7 @@ description: Install wendy-agent on any Linux machine to turn it into a managed 
 
 Install `wendy-agent` on **any existing Linux installation**, including Ubuntu, Debian, Raspberry Pi OS, DGX Spark, NUCs, cloud VMs, or any other ARM64 or x86-64 (Intel or AMD) machine, to turn it into a managed Wendy device. Ubuntu 22.04 or later is recommended. Wendy Agent is also known to work on Fedora, Arch, and other popular Linux distributions. Once installed, your `wendy` CLI and the device discover each other over the local network.
 
-(`wendy-agent` is already built into [WendyOS](/docs/installation/wendyos-nvidia-jetson-orin-nano). If you flashed WendyOS, skip this guide.)
+(`wendy-agent` is already built into WendyOS — [Jetson Orin Nano](/docs/installation/wendyos-nvidia-jetson-orin-nano), [Jetson AGX Thor](/docs/installation/wendyos-nvidia-jetson-agx-thor), [Raspberry Pi](/docs/installation/wendyos-raspberry-pi-5). If you flashed WendyOS, skip this guide.)
 
 ## Requirements
 
@@ -39,6 +39,11 @@ The agent enrolls into your organization on first startup. No `wendy device
 enroll` step needed. The token expires after about an hour, so run the command
 promptly. Without these variables the agent installs unenrolled and is
 discovered over your local network as described above.
+
+If the device cannot reach Wendy Cloud during its first startup (for example,
+because the network is not yet up), enrollment is skipped and the token file is
+deleted. In that case, run `wendy device enroll` from the CLI once the device
+is reachable over mDNS, or re-run `wendy install` to obtain a fresh token.
 
 ### Verify the Installation
 

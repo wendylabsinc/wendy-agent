@@ -63,6 +63,10 @@ type ContainerdClient interface {
 	// multi-service apps). Used by the service layer to mark every container in
 	// the monitor before issuing a stop or delete.
 	ContainerIDsForApp(ctx context.Context, appID string) ([]string, error)
+	// ResolveAppContainerIDs returns the container IDs addressed by name: a bare
+	// appID yields every service in the app, "{appID}_{serviceName}" yields that
+	// one service, and a name matching neither returns errdefs.ErrNotFound.
+	ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error)
 	ListContainers(ctx context.Context) ([]*agentpb.AppContainer, error)
 	// AppDeclaredVolumes maps every deployed app (bare appID) to the persistent
 	// volume names its containers declare via persist entitlement labels. This

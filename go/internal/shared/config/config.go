@@ -41,6 +41,11 @@ type Config struct {
 	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
 	// surfaced for that project.
 	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
+	// ImplicitDeviceHintShownAt throttles the follow-up hint that explains how to
+	// override an implicitly chosen device, to once per day. The line naming the
+	// device is always shown; only the explanation is rate-limited. Value is a
+	// date (YYYY-MM-DD).
+	ImplicitDeviceHintShownAt string `json:"implicitDeviceHintShownAt,omitempty"`
 	// DevicePins binds a device hostname to the organisation + cloud host its
 	// TLS identity must belong to (WDY-1149), so a different trust domain
 	// answering at that hostname is caught. Renewal/re-enrollment within the

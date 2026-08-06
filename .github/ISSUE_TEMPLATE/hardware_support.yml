@@ -1,0 +1,33 @@
+name: Hardware support request
+description: Request support for a new board, device, or accessory
+labels: ["hardware-support"]
+body:
+  - type: input
+    id: device
+    attributes:
+      label: Device name and model
+      placeholder: NVIDIA Jetson Orin NX 16GB, Orange Pi 5, Luxonis OAK-D...
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of support?
+      options:
+        - New board to run WendyOS on
+        - Peripheral / accessory (camera, sensor, HAT)
+        - New app entitlement (GPU, bus, device access)
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What would you build with it?
+      description: Helps us prioritize. What app or project is blocked on this hardware?
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Technical details
+      description: Links to specs, kernel/driver requirements, existing Linux support, anything that helps.

@@ -18,6 +18,7 @@
     "enroll",
     "rename",
     "setup",
+    "push-agent",
     "get-default",
     "provision",
     "telemetry-stream",
