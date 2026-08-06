@@ -410,3 +410,28 @@ examples pass into a DSL that already closed 5 rounds of security review.
   first).
 - All changes are staged in the worktree, **not committed** — no commit was
   made per this session's "only commit when explicitly asked" rule.
+
+---
+
+## Dependency resolution: stagefile is vendored, not an external module
+
+The Stagefile library initially entered this repo as an external module
+(`github.com/joannisorlandos/stagefile`), resolved via a `go.mod` `replace`
+directive pointing at an absolute local filesystem path — a workaround for
+a sandboxed environment that couldn't authenticate to that private repo
+over plain git/HTTPS. That workaround only worked on one machine and would
+have broken the build for everyone else, including CI.
+
+Resolved by vendoring the library's source directly into
+`go/internal/stagefile` (facade + `spec`/`lock`/`codegen`/`dockerignore`
+subpackages, same author, import paths rewritten to
+`github.com/wendylabsinc/wendy/go/internal/stagefile/...`) and dropping the
+external module requirement and `replace` line entirely. `go mod tidy`
+promotes `go-containerregistry` (used directly by `internal/stagefile/lock`
+for registry digest resolution) to a direct dependency; `go.sum` is
+otherwise unchanged. All 5 vendored packages' own tests pass (including the
+golden Dockerfile-generation fixture, after fixing its testdata path for
+the new, one-level-shallower directory nesting), the full `commands`/
+`optimize` suites pass, and a real `wendy build` against a Stagefile
+project still produces a correctly digest-pinned Dockerfile via a live
+`docker buildx` build.
