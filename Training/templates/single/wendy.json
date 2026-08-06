@@ -1,0 +1,30 @@
+{
+    "appId": "sh.wendy.training.single",
+    "platform": "linux",
+    "version": "0.1.0",
+    "services": {
+        "trainer": {
+            "context": ".",
+            "entitlements": [
+                {
+                    "type": "persist",
+                    "name": "wt-single-ckpt",
+                    "path": "/data/checkpoints"
+                }
+            ],
+            "env": {
+                "WT_RUN_ID": "${WT_RUN_ID}",
+                "WT_CKPT_DIR": "${WT_CKPT_DIR}",
+                "WT_CONFIG": "${WT_CONFIG}",
+                "WT_WORKERS": "${WT_WORKERS}",
+                "WT_ES__POP": "${WT_ES__POP}",
+                "WT_ES__SIGMA": "${WT_ES__SIGMA}",
+                "WT_ES__LR": "${WT_ES__LR}",
+                "WT_RUN__MAX_ITERATIONS": "${WT_RUN__MAX_ITERATIONS}",
+                "WT_RUN__CHECKPOINT_EVERY": "${WT_RUN__CHECKPOINT_EVERY}",
+                "WT_RUN__SEED": "${WT_RUN__SEED}",
+                "WT_POLICY__HIDDEN": "${WT_POLICY__HIDDEN}"
+            }
+        }
+    }
+}
