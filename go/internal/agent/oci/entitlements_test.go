@@ -446,18 +446,17 @@ func TestApplyEntitlements_Audio(t *testing.T) {
 		fi, err := os.Lstat(path)
 		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
 	}
-	// Mirror applyAudio's socket detection: system path first, then user session.
+	// Mirror applyAudio's socket detection: user session first, then system.
 	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
+	userSockets, _ := filepath.Glob(pipewireUserSocketGlob)
+	for _, s := range userSockets {
+		if isSocket(s) {
+			pipewireSocketSource = s
+			break
 		}
+	}
+	if pipewireSocketSource == "" && isSocket(pipewireSystemSocket) {
+		pipewireSocketSource = pipewireSystemSocket
 	}
 	if pipewireSocketSource != "" {
 		if !hasMountDest(spec, "/run/pipewire/pipewire-0") {
@@ -530,6 +529,106 @@ func TestApplyEntitlements_Persist(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// mountSourceFor returns the host source bound at dest, or "" if not mounted.
+func mountSourceFor(spec *Spec, dest string) string {
+	for _, m := range spec.Mounts {
+		if m.Destination == dest {
+			return m.Source
+		}
+	}
+	return ""
+}
+
+// listenUnix creates a real Unix socket at path so isSocket() accepts it.
+func listenUnix(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v", path, err)
+	}
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("Listen(unix, %s) = %v", path, err)
+	}
+	t.Cleanup(func() { l.Close() })
+}
+
+// The system pipewire.service always has a socket but no WirePlumber, so a
+// container bound to it sees an empty graph — no sinks, no Bluetooth. The
+// user session socket must win whenever one exists.
+func TestApplyEntitlements_Audio_PrefersUserSessionSocket(t *testing.T) {
+	// Short base path: Unix socket paths are limited to ~104 bytes.
+	base, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatalf("MkdirTemp() = %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
+
+	userSocket := filepath.Join(base, "user", "1000", "pipewire-0")
+	systemSocket := filepath.Join(base, "sys", "pipewire-0")
+	pulseSocket := filepath.Join(base, "user", "1000", "pulse", "native")
+
+	tests := []struct {
+		name       string
+		makeUser   bool
+		makeSystem bool
+		wantSource string
+		wantPulse  bool
+	}{
+		{"both present, user wins", true, true, userSocket, true},
+		{"only system", false, true, systemSocket, false},
+		{"only user", true, false, userSocket, true},
+		{"neither", false, false, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := filepath.Join(t.TempDir())
+			_ = run
+
+			origGlob, origSystem := pipewireUserSocketGlob, pipewireSystemSocket
+			t.Cleanup(func() {
+				pipewireUserSocketGlob, pipewireSystemSocket = origGlob, origSystem
+			})
+			pipewireUserSocketGlob = filepath.Join(base, "user", "*", "pipewire-0")
+			pipewireSystemSocket = systemSocket
+
+			os.RemoveAll(filepath.Join(base, "user"))
+			os.RemoveAll(filepath.Join(base, "sys"))
+			if tt.makeUser {
+				listenUnix(t, userSocket)
+				listenUnix(t, pulseSocket)
+			}
+			if tt.makeSystem {
+				listenUnix(t, systemSocket)
+			}
+
+			spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+			cfg := &appconfig.AppConfig{
+				AppID:        "test-app",
+				Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAudio}},
+			}
+			if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+				t.Fatalf("ApplyEntitlements() error = %v", err)
+			}
+
+			got := mountSourceFor(spec, "/run/pipewire/pipewire-0")
+			if got != tt.wantSource {
+				t.Errorf("pipewire mount source = %q, want %q", got, tt.wantSource)
+			}
+
+			// PULSE_SERVER is derived from the chosen socket's directory, so
+			// it must follow the user session rather than the system instance.
+			gotPulse := mountSourceFor(spec, "/run/pipewire/pulse-native")
+			if tt.wantPulse && gotPulse != pulseSocket {
+				t.Errorf("pulse mount source = %q, want %q", gotPulse, pulseSocket)
+			}
+			if !tt.wantPulse && gotPulse != "" {
+				t.Errorf("pulse mounted from %q, want none", gotPulse)
+			}
+		})
 	}
 }
 

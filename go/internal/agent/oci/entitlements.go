@@ -605,20 +605,23 @@ func applyAudio(spec *Spec) {
 		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
 	}
 
-	// Find the PipeWire socket. Check the system path first, then probe
-	// for a user session socket (e.g. /run/user/1000/pipewire-0 on RPi OS
-	// where PipeWire runs as a user service).
+	// Find the PipeWire socket. Prefer a user session socket
+	// (/run/user/<uid>/pipewire-0) over the system one: WendyOS runs
+	// WirePlumber inside the wendy user's session, and only the instance
+	// with a session manager has any devices in its graph. The system
+	// pipewire.service always has a socket but no WirePlumber, so
+	// preferring it hands containers an empty graph — no sinks, no
+	// Bluetooth, and a silent fallback to raw ALSA on /dev/snd.
 	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
+	userSockets, _ := filepath.Glob(pipewireUserSocketGlob)
+	for _, s := range userSockets {
+		if isSocket(s) {
+			pipewireSocketSource = s
+			break
 		}
+	}
+	if pipewireSocketSource == "" && isSocket(pipewireSystemSocket) {
+		pipewireSocketSource = pipewireSystemSocket
 	}
 
 	if pipewireSocketSource != "" {
@@ -678,6 +681,14 @@ var udevRuntimeDir = "/run/udev"
 // to discover the render major(s) (typically 226). Behind a var so tests can
 // redirect into a tempdir.
 var driGlobs = []string{"/dev/dri/*"}
+
+// pipewireUserSocketGlob and pipewireSystemSocket locate the PipeWire socket
+// the audio entitlement mounts, user session first. Behind vars so tests can
+// redirect into a tempdir.
+var (
+	pipewireUserSocketGlob = "/run/user/*/pipewire-0"
+	pipewireSystemSocket   = "/run/pipewire/pipewire-0"
+)
 
 // lookupRenderGID resolves the host "render" group GID, which owns
 // /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
