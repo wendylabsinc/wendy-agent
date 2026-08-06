@@ -64,6 +64,54 @@ func TestNodeCISilentOnGlobalInstall(t *testing.T) {
 	}
 }
 
+func TestNodeCISilentOnDifferentSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install-ci-test\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+func TestNodeCISilentOnIndividualDependencyInstall(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install left-pad\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+func TestNodeCIFixesProjectInstallWithFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install --legacy-peer-deps\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 1 || got[0].Fix == nil || got[0].Fix.New != "RUN npm ci --legacy-peer-deps" {
+		t.Fatalf("got %+v, want one safe npm ci fix", got)
+	}
+}
+
+func TestNodeCIIgnoresMentionOutsideCommandPosition(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN echo npm install\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
 func TestNodeCIIgnoresNonDockerTarget(t *testing.T) {
 	tg := &Target{Name: "app", Kind: KindNativeSwift, Arch: "arm64"}
 	got := nodeCIAnalyzer{}.Analyze(tg)
