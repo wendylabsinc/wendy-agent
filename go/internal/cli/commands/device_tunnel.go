@@ -54,13 +54,16 @@ func deviceTunnelCommand(ctx context.Context, localPort, remotePort uint32, udp 
 		defer pc.Close()
 		session, err := openDeviceDatagramSession(ctx, target.Agent.TunnelService)
 		if err != nil {
-			return fmt.Errorf("opening device datagram tunnel: %w", err)
+			return datagramOpenError(err, target.Agent.Host)
 		}
 		defer session.close()
 		cliSuccess("Forwarding udp 127.0.0.1:%d → %s:%d (via LAN agent)", localPort, target.Agent.Host, remotePort)
 		cliLogln("Press Ctrl+C to stop.")
 		go func() { <-ctx.Done(); pc.Close() }()
-		return serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout)
+		if err := serveUDPForward(ctx, pc, session, remotePort, udpFlowIdleTimeout); err != nil {
+			return datagramOpenError(err, target.Agent.Host)
+		}
+		return nil
 	}
 
 	listener, err := listenDeviceTunnel(localPort)

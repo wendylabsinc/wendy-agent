@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -19,7 +21,9 @@ func newDevicePingCmd() *cobra.Command {
 		Long:  "Sends echo requests over the device's DatagramTunnel session. A reply proves the device's agent is up and measures true end-to-end round-trip time. No ICMP sockets or privileges are involved.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return devicePingCommand(cmd.Context(), count, interval)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return devicePingCommand(ctx, count, interval)
 		},
 	}
 	cmd.Flags().IntVarP(&count, "count", "c", 0, "Stop after this many echoes (0 = until Ctrl+C)")
@@ -39,11 +43,11 @@ func devicePingCommand(ctx context.Context, count int, interval time.Duration) e
 
 	session, err := openDeviceDatagramSession(ctx, target.Agent.TunnelService)
 	if err != nil {
-		return fmt.Errorf("opening device datagram tunnel: %w", err)
+		return datagramOpenError(err, target.Agent.Host)
 	}
 	defer session.close()
 
-	cliLogln("PING %s (via LAN agent)", target.Agent.Host)
+	cliLogln("PING %s", target.Agent.Host)
 	stats := runPingLoop(ctx, session, target.Agent.Host, count, interval, os.Stdout)
 
 	loss := 0.0
@@ -58,7 +62,11 @@ func devicePingCommand(ctx context.Context, count int, interval time.Duration) e
 	}
 	if stats.Received == 0 && stats.Sent > 0 {
 		if stats.Err != nil {
-			return stats.Err
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. datagramOpenError still folds
+			// DeadlineExceeded/Unavailable/Unimplemented into that same hint.
+			return datagramOpenError(stats.Err, target.Agent.Host)
 		}
 		return fmt.Errorf("no replies from %s: the device may be offline or need a WendyOS update for ping support", target.Agent.Host)
 	}

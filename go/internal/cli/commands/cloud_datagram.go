@@ -98,7 +98,7 @@ func (s *datagramSession) close() { _ = s.stream.CloseSend() }
 // protocol field, dials TCP, and never claims the session) to a helpful hint.
 func datagramOpenError(err error, device string) error {
 	if s, ok := status.FromError(err); ok &&
-		(s.Code() == codes.DeadlineExceeded || s.Code() == codes.Unavailable) {
+		(s.Code() == codes.DeadlineExceeded || s.Code() == codes.Unavailable || s.Code() == codes.Unimplemented) {
 		return fmt.Errorf("%s did not answer the datagram session (%v); the device may be offline or need a WendyOS update for UDP/ping tunnel support", device, err)
 	}
 	return err

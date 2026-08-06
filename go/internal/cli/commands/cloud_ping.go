@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -43,7 +45,9 @@ func newCloudPingCmd() *cobra.Command {
 		Long:  "Sends echo requests over a Wendy Cloud datagram tunnel session. A reply proves the device's agent is up and measures true end-to-end round-trip time. No ICMP sockets or privileges are involved.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return cloudPingCommand(cmd.Context(), cloudGRPC, deviceName, brokerURL, count, interval)
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return cloudPingCommand(ctx, cloudGRPC, deviceName, brokerURL, count, interval)
 		},
 	}
 	cmd.Flags().StringVar(&cloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint (optional when a default session is set via 'wendy auth use')")
@@ -90,6 +94,10 @@ func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL stri
 	}
 	if stats.Received == 0 && stats.Sent > 0 {
 		if stats.Err != nil {
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. datagramOpenError still folds
+			// DeadlineExceeded/Unavailable/Unimplemented into that same hint.
 			return datagramOpenError(stats.Err, asset.GetName())
 		}
 		return fmt.Errorf("no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName())
