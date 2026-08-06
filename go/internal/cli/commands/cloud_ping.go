@@ -10,13 +10,13 @@ import (
 
 	"github.com/spf13/cobra"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 )
 
 // pingSession is the slice of datagramSession that runPingLoop needs.
 type pingSession interface {
-	sendEcho(req *cloudpb.IcmpEchoRequest) error
-	recv() (*cloudpb.TunnelData, error)
+	sendEcho(req *tunnelframe.IcmpEchoRequest) error
+	recv() (tunnelframe.Frame, error)
 }
 
 type pingStats struct {
@@ -90,10 +90,6 @@ func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL stri
 	}
 	if stats.Received == 0 && stats.Sent > 0 {
 		if stats.Err != nil {
-			// A genuine transport error (PermissionDenied, Unauthenticated,
-			// mesh-disabled, ...) ended the recv loop — surface it instead of
-			// the generic hint. datagramOpenError still folds
-			// DeadlineExceeded/Unavailable into that same hint.
 			return datagramOpenError(stats.Err, asset.GetName())
 		}
 		return fmt.Errorf("no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName())
@@ -105,8 +101,8 @@ func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL stri
 // each matched reply to out, and returns aggregate stats once every echo has
 // either been answered or the ctx ends. Replies are matched to a pending
 // request by sequence number; only replies carrying this process's identifier
-// are considered (so two concurrent `wendy cloud ping` runs against the same
-// device don't cross-count each other's replies).
+// are considered (so two concurrent ping runs against the same device don't
+// cross-count each other's replies).
 func runPingLoop(ctx context.Context, session pingSession, target string, count int, interval time.Duration, out io.Writer) pingStats {
 	identifier := uint32(os.Getpid() & 0xFFFF)
 	type sentEcho struct{ originate time.Time }
@@ -115,7 +111,7 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 		pending   = map[uint32]sentEcho{} // keyed by sequence
 		total     time.Duration
 		done      = make(chan struct{})
-		replies   = make(chan *cloudpb.IcmpEchoReply, 16)
+		replies   = make(chan *tunnelframe.IcmpEchoReply, 16)
 		lifeErrMu sync.Mutex
 		lifeErr   error // first transport error out of the recv loop, guarded by lifeErrMu
 	)
@@ -130,12 +126,12 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 	go func() {
 		defer close(done)
 		for {
-			msg, err := session.recv()
+			f, err := session.recv()
 			if err != nil {
 				setLifeErr(err)
 				return
 			}
-			if r := msg.GetIcmpReply(); r != nil && r.GetIdentifier() == identifier {
+			if r := f.IcmpReply; r != nil && r.Identifier == identifier {
 				select {
 				case replies <- r:
 				case <-ctx.Done():
@@ -159,7 +155,7 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 		}
 		seq++
 		now := time.Now()
-		req := &cloudpb.IcmpEchoRequest{
+		req := &tunnelframe.IcmpEchoRequest{
 			Identifier:      identifier,
 			Sequence:        seq,
 			Payload:         []byte("wendy-ping"),
@@ -206,8 +202,8 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 	for {
 		select {
 		case r := <-replies:
-			if s, ok := pending[r.GetSequence()]; ok {
-				delete(pending, r.GetSequence())
+			if s, ok := pending[r.Sequence]; ok {
+				delete(pending, r.Sequence)
 				rtt := time.Since(s.originate)
 				stats.Received++
 				total += rtt
@@ -217,7 +213,7 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 				if rtt > stats.Max {
 					stats.Max = rtt
 				}
-				fmt.Fprintf(out, "reply from %s: seq=%d time=%s\n", target, r.GetSequence(), rtt.Round(time.Microsecond))
+				fmt.Fprintf(out, "reply from %s: seq=%d time=%s\n", target, r.Sequence, rtt.Round(time.Microsecond))
 			}
 			if count > 0 && len(pending) == 0 && stats.Sent >= count {
 				return finish()

@@ -10,37 +10,37 @@ import (
 	"testing"
 	"time"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 )
 
 // fakePingSession answers every echo request immediately. It selects on ctx
 // everywhere it can block so a cancelled test context always unblocks both
 // sendEcho and recv, instead of leaking a goroutine parked on an idle channel
 // past test end (see fakeDatagramSession in cloud_datagram_test.go and
-// fakeAgentStream in go/internal/agent/services/datagram_relay_test.go for
+// fakeFrameStream in go/internal/agent/services/datagram_relay_test.go for
 // the same pattern).
 type fakePingSession struct {
 	ctx     context.Context
 	mu      sync.Mutex
-	replies chan *cloudpb.TunnelData
+	replies chan tunnelframe.Frame
 	drop    bool // when true, swallow requests (packet loss)
 }
 
 func newFakePingSession(ctx context.Context) *fakePingSession {
-	return &fakePingSession{ctx: ctx, replies: make(chan *cloudpb.TunnelData, 16)}
+	return &fakePingSession{ctx: ctx, replies: make(chan tunnelframe.Frame, 16)}
 }
-func (f *fakePingSession) sendEcho(req *cloudpb.IcmpEchoRequest) error {
+func (f *fakePingSession) sendEcho(req *tunnelframe.IcmpEchoRequest) error {
 	f.mu.Lock()
 	drop := f.drop
 	f.mu.Unlock()
 	if drop {
 		return nil
 	}
-	reply := &cloudpb.TunnelData{IcmpReply: &cloudpb.IcmpEchoReply{
-		Identifier:      req.GetIdentifier(),
-		Sequence:        req.GetSequence(),
-		Payload:         req.GetPayload(),
-		OriginateUnixNs: req.GetOriginateUnixNs(),
+	reply := tunnelframe.Frame{IcmpReply: &tunnelframe.IcmpEchoReply{
+		Identifier:      req.Identifier,
+		Sequence:        req.Sequence,
+		Payload:         req.Payload,
+		OriginateUnixNs: req.OriginateUnixNs,
 		AgentUnixNs:     uint64(time.Now().UnixNano()),
 	}}
 	select {
@@ -50,15 +50,15 @@ func (f *fakePingSession) sendEcho(req *cloudpb.IcmpEchoRequest) error {
 		return f.ctx.Err()
 	}
 }
-func (f *fakePingSession) recv() (*cloudpb.TunnelData, error) {
+func (f *fakePingSession) recv() (tunnelframe.Frame, error) {
 	select {
-	case d, ok := <-f.replies:
+	case fr, ok := <-f.replies:
 		if !ok {
-			return nil, io.EOF
+			return tunnelframe.Frame{}, io.EOF
 		}
-		return d, nil
+		return fr, nil
 	case <-f.ctx.Done():
-		return nil, f.ctx.Err()
+		return tunnelframe.Frame{}, f.ctx.Err()
 	}
 }
 
@@ -75,16 +75,16 @@ type failingPingSession struct {
 func newFailingPingSession(ctx context.Context, recvErr error) *failingPingSession {
 	return &failingPingSession{ctx: ctx, recvErr: recvErr, sent: make(chan struct{})}
 }
-func (f *failingPingSession) sendEcho(*cloudpb.IcmpEchoRequest) error {
+func (f *failingPingSession) sendEcho(*tunnelframe.IcmpEchoRequest) error {
 	f.once.Do(func() { close(f.sent) })
 	return nil
 }
-func (f *failingPingSession) recv() (*cloudpb.TunnelData, error) {
+func (f *failingPingSession) recv() (tunnelframe.Frame, error) {
 	select {
 	case <-f.sent:
-		return nil, f.recvErr
+		return tunnelframe.Frame{}, f.recvErr
 	case <-f.ctx.Done():
-		return nil, f.ctx.Err()
+		return tunnelframe.Frame{}, f.ctx.Err()
 	}
 }
 

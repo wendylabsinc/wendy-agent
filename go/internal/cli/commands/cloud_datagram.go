@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -29,7 +30,7 @@ type datagramSession struct {
 // datagramSender is the subset used by serveUDPForward, split out for tests.
 type datagramSender interface {
 	sendDatagram(flowID, port uint32, payload []byte) error
-	recv() (*cloudpb.TunnelData, error)
+	recv() (tunnelframe.Frame, error)
 }
 
 func openDatagramSession(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32) (*datagramSession, error) {
@@ -52,11 +53,11 @@ func openDatagramSession(ctx context.Context, brokerConn *grpc.ClientConn, auth 
 	return &datagramSession{stream: stream}, nil
 }
 
-func (s *datagramSession) send(d *cloudpb.TunnelData) error {
+func (s *datagramSession) send(msg *cloudpb.TunnelData) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	return s.stream.Send(&cloudpb.ClientTunnelMessage{
-		Content: &cloudpb.ClientTunnelMessage_Data{Data: d},
+		Content: &cloudpb.ClientTunnelMessage_Data{Data: msg},
 	})
 }
 
@@ -66,11 +67,30 @@ func (s *datagramSession) sendDatagram(flowID, port uint32, payload []byte) erro
 	}})
 }
 
-func (s *datagramSession) sendEcho(req *cloudpb.IcmpEchoRequest) error {
-	return s.send(&cloudpb.TunnelData{IcmpRequest: req})
+func (s *datagramSession) sendEcho(req *tunnelframe.IcmpEchoRequest) error {
+	return s.send(&cloudpb.TunnelData{IcmpRequest: &cloudpb.IcmpEchoRequest{
+		Identifier: req.Identifier, Sequence: req.Sequence,
+		Payload: req.Payload, OriginateUnixNs: req.OriginateUnixNs,
+	}})
 }
 
-func (s *datagramSession) recv() (*cloudpb.TunnelData, error) { return s.stream.Recv() }
+func (s *datagramSession) recv() (tunnelframe.Frame, error) {
+	msg, err := s.stream.Recv()
+	if err != nil {
+		return tunnelframe.Frame{}, err
+	}
+	var f tunnelframe.Frame
+	if d := msg.GetDatagram(); d != nil {
+		f.Datagram = &tunnelframe.Datagram{FlowID: d.GetFlowId(), Port: d.GetPort(), Payload: d.GetPayload()}
+	}
+	if r := msg.GetIcmpReply(); r != nil {
+		f.IcmpReply = &tunnelframe.IcmpEchoReply{
+			Identifier: r.GetIdentifier(), Sequence: r.GetSequence(),
+			Payload: r.GetPayload(), OriginateUnixNs: r.GetOriginateUnixNs(), AgentUnixNs: r.GetAgentUnixNs(),
+		}
+	}
+	return f, nil
+}
 
 func (s *datagramSession) close() { _ = s.stream.CloseSend() }
 
@@ -123,24 +143,24 @@ func serveUDPForward(ctx context.Context, pc *net.UDPConn, session datagramSende
 	// Session → local peers.
 	go func() {
 		for {
-			msg, err := session.recv()
+			f, err := session.recv()
 			if err != nil {
 				setLifeErr(err)
 				pc.Close() // unblocks the read loop below
 				return
 			}
-			d := msg.GetDatagram()
+			d := f.Datagram
 			if d == nil {
 				continue
 			}
 			mu.Lock()
-			entry := byID[d.GetFlowId()]
+			entry := byID[d.FlowID]
 			if entry != nil {
 				entry.lastActive = time.Now()
 			}
 			mu.Unlock()
 			if entry != nil {
-				_, _ = pc.WriteToUDP(d.GetPayload(), entry.addr)
+				_, _ = pc.WriteToUDP(d.Payload, entry.addr)
 			}
 		}
 	}()

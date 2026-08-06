@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
+	"github.com/wendylabsinc/wendy/go/internal/shared/tunnelframe"
 )
 
 func TestParseTunnelArgUDPSuffix(t *testing.T) {
@@ -47,31 +47,31 @@ func TestParseTunnelArgUDPSuffix(t *testing.T) {
 // the same pattern).
 type fakeDatagramSession struct {
 	ctx    context.Context
-	frames chan *cloudpb.TunnelData
+	frames chan tunnelframe.Frame
 }
 
 func newFakeDatagramSession(ctx context.Context) *fakeDatagramSession {
-	return &fakeDatagramSession{ctx: ctx, frames: make(chan *cloudpb.TunnelData, 64)}
+	return &fakeDatagramSession{ctx: ctx, frames: make(chan tunnelframe.Frame, 64)}
 }
 func (f *fakeDatagramSession) sendDatagram(flowID, port uint32, payload []byte) error {
 	select {
-	case f.frames <- &cloudpb.TunnelData{Datagram: &cloudpb.TunnelDatagram{
-		FlowId: flowID, Port: port, Payload: payload,
+	case f.frames <- tunnelframe.Frame{Datagram: &tunnelframe.Datagram{
+		FlowID: flowID, Port: port, Payload: payload,
 	}}:
 		return nil
 	case <-f.ctx.Done():
 		return f.ctx.Err()
 	}
 }
-func (f *fakeDatagramSession) recv() (*cloudpb.TunnelData, error) {
+func (f *fakeDatagramSession) recv() (tunnelframe.Frame, error) {
 	select {
-	case d, ok := <-f.frames:
+	case fr, ok := <-f.frames:
 		if !ok {
-			return nil, io.EOF
+			return tunnelframe.Frame{}, io.EOF
 		}
-		return d, nil
+		return fr, nil
 	case <-f.ctx.Done():
-		return nil, f.ctx.Err()
+		return tunnelframe.Frame{}, f.ctx.Err()
 	}
 }
 
