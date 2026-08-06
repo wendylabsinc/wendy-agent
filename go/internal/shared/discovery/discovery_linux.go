@@ -142,6 +142,7 @@ func parseAvahiResolveLine(line string) (models.LANDevice, bool) {
 		IsWendyDevice: true,
 	}
 	setAssetID(&dev, txtRecords)
+	setMeshFields(&dev, txtRecords)
 	setLANNetworkInterface(&dev, ifaceName, "", linuxInterfaceLinkSpeed(ifaceName))
 	return dev, true
 }
@@ -153,6 +154,19 @@ func setAssetID(dev *models.LANDevice, txtRecords map[string]string) {
 	if v, ok := txtRecords["assetid"]; ok {
 		if id, err := strconv.ParseInt(v, 10, 32); err == nil && id > 0 {
 			dev.AssetID = int32(id)
+		}
+	}
+}
+
+// setMeshFields copies the friendly mesh name and org id out of the TXT
+// records used by the mesh friendly-name resolver.
+func setMeshFields(dev *models.LANDevice, txtRecords map[string]string) {
+	if v, ok := txtRecords["name"]; ok {
+		dev.MeshName = v
+	}
+	if v, ok := txtRecords["orgid"]; ok {
+		if id, err := strconv.ParseInt(v, 10, 32); err == nil && id > 0 {
+			dev.OrgID = int32(id)
 		}
 	}
 }
@@ -283,6 +297,7 @@ func lanDeviceFromMDNSEntry(entry *mdns.ServiceEntry, iface *net.Interface) (mod
 		IsWendyDevice: true,
 	}
 	setAssetID(&dev, txtRecords)
+	setMeshFields(&dev, txtRecords)
 	if iface != nil {
 		setLANNetworkInterface(&dev, iface.Name, "", linuxInterfaceLinkSpeed(iface.Name))
 	}

@@ -1,0 +1,13 @@
+Expected findings (wendy project optimize):
+  warning  image-hygiene   FROM node:latest not pinned to a version          (Dockerfile:9)
+  warning  apt-install     apt-get install split from apt-get update         (Dockerfile:12)
+  warning  apt-install     apt-get install without --no-install-recommends   (Dockerfile:12) [fixable]
+  warning  build-cache     pip install without --mount=type=cache            (Dockerfile:13) [fixable]
+  warning  pip-flags       pip install without --no-cache-dir                (Dockerfile:13) [fixable]
+  warning  build-cache     npm install without --mount=type=cache            (Dockerfile:16) [fixable]
+  warning  node-ci         npm install ignores package-lock.json             (Dockerfile:16) [fixable]
+  info     add-copy        ADD used where COPY would do                      (Dockerfile:18) [fixable]
+  warning  image-hygiene   FROM node:latest not pinned to a version          (Dockerfile:20)
+  warning  image-hygiene   COPY --from copies the entire build stage         (Dockerfile:21)
+  warning  image-hygiene   CMD uses shell form                               (Dockerfile:22)
+  warning  arch-image      No .dockerignore                                  [fixable]

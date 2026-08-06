@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HelloAudio</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 480px;
+    margin: 80px auto;
+    padding: 0 20px;
+    text-align: center;
+    color: #1a1a1a;
+  }
+  h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+  p { color: #666; }
+  button {
+    margin-top: 2rem;
+    padding: 1rem 2rem;
+    font-size: 1.1rem;
+    border: none;
+    border-radius: 8px;
+    background: #2d7ff9;
+    color: white;
+    cursor: pointer;
+  }
+  button:active { background: #1a63d6; }
+  #status { margin-top: 1rem; font-size: 0.9rem; color: #888; }
+</style>
+</head>
+<body>
+  <h1>HelloAudio</h1>
+  <p>Plays a bell sound through the device speaker.</p>
+  <button onclick="playSound()">🔔 Play Sound</button>
+  <div id="status"></div>
+
+  <script>
+    async function playSound() {
+      const status = document.getElementById("status");
+      status.textContent = "Playing…";
+      try {
+        const res = await fetch("/play", { method: "POST" });
+        const data = await res.json();
+        status.textContent = res.ok ? `Played ${data.file}` : `Error: ${data.error}`;
+      } catch (e) {
+        status.textContent = `Error: ${e}`;
+      }
+    }
+  </script>
+</body>
+</html>

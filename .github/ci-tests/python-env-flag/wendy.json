@@ -1,0 +1,9 @@
+{
+    "appId": "sh.wendy.ci.python-env-flag",
+    "version": "1.0.0",
+    "language": "python",
+    "env": {
+        "CI_ENV_LEVEL": "info",
+        "CI_ENV_REGION": "us"
+    }
+}

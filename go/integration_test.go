@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -250,6 +251,27 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 		if name == appID || strings.HasPrefix(name, prefix) {
 			ids = append(ids, name)
 		}
+	}
+	return ids, nil
+}
+
+// ResolveAppContainerIDs mirrors the real resolver: an exact container name
+// first, then the app-id, then NotFound.
+func (m *statefulContainerdClient) ResolveAppContainerIDs(_ context.Context, name string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.containers[name]; ok {
+		return []string{name}, nil
+	}
+	var ids []string
+	prefix := name + "_"
+	for ctr := range m.containers {
+		if strings.HasPrefix(ctr, prefix) {
+			ids = append(ids, ctr)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%w: no app or service named %q", errdefs.ErrNotFound, name)
 	}
 	return ids, nil
 }

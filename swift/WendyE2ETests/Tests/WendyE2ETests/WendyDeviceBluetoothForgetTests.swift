@@ -18,7 +18,7 @@ struct `'wendy device bluetooth forget'` {
             try await cli.sh("wendy device bluetooth forget --help") { result in
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("Forget a paired Bluetooth peripheral"))
-                #expect(result.stdout.contains("wendy device bluetooth forget [address] [flags]"))
+                #expect(result.stdout.contains("wendy device bluetooth forget <address> [flags]"))
                 #expect(result.stdout.contains("--device"))
                 #expect(result.stderr == "")
             }

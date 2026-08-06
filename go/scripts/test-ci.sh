@@ -36,6 +36,11 @@ Tests:
   python-multiservice-resources  Verify per-service resource override + app-level inheritance (WDY-1729)
   python-multiservice       Multi-service wendy.json: parallel build + dep-order creation
   python-servicename        Single service with serviceName: verifies WENDY_HOSTNAME/WENDY_APP_GROUP env injection (WDY-878)
+  python-env                Verify top-level wendy.json env reaches the container, incl. \${VAR} expansion (WDY-2040)
+                            Skipped for now: needs an agent carrying RunContainerLayersRequest.env.
+  python-env-flag           Verify 'wendy run --env' overrides wendy.json env per key (WDY-2040)
+                            Skipped for now, same agent requirement as python-env.
+  python-multiservice-env   Verify app-level env is the per-service default and a service overrides it per key (WDY-2040)
   python-device-top         Deploy a long-running app and verify 'wendy device top --json' reports it (device top)
   compose-hello             docker-compose multi-service deployment with build: Dockerfiles
   compose-images            docker-compose multi-service deployment using public images
@@ -348,6 +353,9 @@ ALL_TESTS=(
     python-multiservice
     python-multiservice-resources
     python-servicename
+    python-env
+    python-env-flag
+    python-multiservice-env
     compose-hello
     compose-images
     compose-companion
@@ -393,6 +401,19 @@ for test_name in "${TESTS[@]}"; do
 
     if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
         skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
+        continue
+    fi
+
+    # These two deploy over the chunk-diff path, which carries env only on an
+    # agent built with RunContainerLayersRequest.env (WDY-2040). An older agent
+    # ignores the field and starts the container without the env, and no CLI
+    # change can work around that — so the result would say "product bug" when
+    # it means "stale agent". Delete this block once the CI devices run an
+    # agent carrying the field. python-multiservice-env is deliberately not
+    # gated: it deploys over the registry path, which has carried env since
+    # WDY-1268, so it still covers the app-level/per-service merge.
+    if [[ "$test_name" == "python-env" || "$test_name" == "python-env-flag" ]]; then
+        skip_test "$test_name" "needs an agent with chunk-diff env support (WDY-2040); device has $(device_field version 'unknown')"
         continue
     fi
 
@@ -462,6 +483,33 @@ for test_name in "${TESTS[@]}"; do
         continue
     fi
 
+    # ── Multi-service env (WDY-2040) ─────────────────────────────────────
+    # 'alpha' declares no env and must inherit both app-level keys; 'beta'
+    # overrides one and adds its own, and must still inherit the other. Each
+    # service prints "<svc>: PASS" / "<svc>: FAIL" and exits.
+    #
+    # Deliberately an attached run, not --deploy: --deploy creates the
+    # containers without starting them, so neither service would ever run.
+    # Attached mode streams both services' stdout, and the per-service exit
+    # codes do not reach the CLI, so assert on the verdict lines.
+    if [[ "$test_name" == "python-multiservice-env" ]]; then
+        app_id="sh.wendy.ci.python-multiservice-env"
+
+        per_service_env_applied() {
+            local out
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" 2>&1)
+            echo "$out"
+            if grep -q "alpha: FAIL" <<<"$out" || grep -q "beta: FAIL" <<<"$out"; then
+                return 1
+            fi
+            grep -q "alpha: PASS" <<<"$out" && grep -q "beta: PASS" <<<"$out"
+        }
+        run_test "$test_name" per_service_env_applied
+
+        "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
     # ── device top (live monitor) ────────────────────────────────────────
     # Deploy a long-running app, then verify `wendy device top --json` reports
     # the host snapshot and lists the deployed container.
@@ -485,8 +533,8 @@ for test_name in "${TESTS[@]}"; do
                 return 1
             fi
             if ! echo "$out" | jq -e --arg a "$app_id" \
-                '(.containers // []) | map(.name) | index($a) != null' >/dev/null 2>&1; then
-                echo "deployed app '$app_id' not found in containers[]: $out"
+				'(.containers // []) | any(.name == $a and .state == "running")' >/dev/null 2>&1; then
+				echo "running app '$app_id' with populated state not found in containers[]: $out"
                 return 1
             fi
             return 0
@@ -538,6 +586,27 @@ for test_name in "${TESTS[@]}"; do
         run_test "swift-start-detach (missing app start fails)" detach_start_missing_app_fails
 
         "$WENDY" device apps remove "$app_id" --device "$HOSTNAME" --force --cleanup >/dev/null 2>&1 || true
+        continue
+    fi
+
+    # ── env tests ────────────────────────────────────────────────────────
+    # An attached `wendy run` exits 0 even when the container exits non-zero,
+    # so assert on the app's own verdict line instead of the exit code.
+    if [[ "$test_name" == python-env* ]]; then
+        env_test_passes() {
+            local out
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" "$@" 2>&1)
+            echo "$out"
+            grep -q '^PASS:' <<<"$out"
+        }
+        if [[ "$test_name" == "python-env-flag" ]]; then
+            # The overrides are the thing under test, so the runner supplies
+            # them: wendy.json sets CI_ENV_LEVEL=info and the flag must win,
+            # CI_ENV_REGION must survive, CI_ENV_ONLY_FLAG is flag-only.
+            run_test "$test_name" env_test_passes --env CI_ENV_LEVEL=debug --env CI_ENV_ONLY_FLAG=1
+        else
+            run_test "$test_name" env_test_passes
+        fi
         continue
     fi
 

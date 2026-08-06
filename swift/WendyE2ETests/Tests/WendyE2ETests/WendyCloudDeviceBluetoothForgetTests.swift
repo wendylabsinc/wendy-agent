@@ -19,7 +19,7 @@ struct `'wendy cloud device bluetooth forget'` {
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("Forget a paired Bluetooth peripheral"))
                 #expect(
-                    result.stdout.contains("wendy cloud device bluetooth forget [address] [flags]")
+                    result.stdout.contains("wendy cloud device bluetooth forget <address> [flags]")
                 )
                 #expect(result.stdout.contains("--device"))
                 #expect(result.stderr == "")

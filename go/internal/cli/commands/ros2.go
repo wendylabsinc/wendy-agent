@@ -1672,7 +1672,7 @@ func drainExecStream(ctx context.Context, stream execRecvStream, args []string, 
 func newROS2ExecCmd() *cobra.Command {
 	var domain int32
 	cmd := &cobra.Command{
-		Use:   "exec [args...]",
+		Use:   "exec <args>...",
 		Short: "Run a raw ros2 CLI command on the device",
 		Long: `Run a raw ros2 CLI command inside the device's ROS 2 sidecar.
 

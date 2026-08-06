@@ -2,6 +2,7 @@
   "pages": [
     "init",
     "run",
+    "app",
     "install",
     "project",
     "device",
