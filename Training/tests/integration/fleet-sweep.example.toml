@@ -1,0 +1,11 @@
+[fleet]
+template = "/Users/wendy/Documents/Projects/WendyOS/.claude/worktrees/fleet-training/Training/templates/sweep"
+devices = ["spark-3011.local", "spark-48fd.local", "spark-edeb.local"]
+transport = "lan"
+
+[env]
+WT_RUN_ID = "stage-d-sweep"
+WT_RUN__MAX_ITERATIONS = "300"
+
+[sweep]
+params = [{ "run.seed" = 11 }, { "run.seed" = 22 }, { "run.seed" = 33 }]

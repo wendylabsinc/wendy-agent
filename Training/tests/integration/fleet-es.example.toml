@@ -1,0 +1,10 @@
+[fleet]
+template = "/Users/wendy/Documents/Projects/WendyOS/.claude/worktrees/fleet-training/Training/templates/es-fleet"
+devices = ["spark-3011.local", "spark-48fd.local", "spark-edeb.local"]
+transport = "lan"
+
+[env]
+WT_RUN_ID = "stage-d-fleet-lan3"
+ES_POP = "24"
+ES_MAX_GENERATIONS = "40"
+ES_GEN_TIMEOUT_S = "45"
