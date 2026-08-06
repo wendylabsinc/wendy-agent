@@ -14,13 +14,17 @@ func newCloudRunCmd() *cobra.Command {
 	var brokerURL string
 
 	cmd := &cobra.Command{
-		Use:    "run",
-		Short:  "Deprecated: use 'wendy run' instead",
-		Hidden: true,
+		Use:   "run",
+		Short: "Deprecated: use 'wendy run' instead",
+		// Hidden keeps it off the help menu, which also means the Short above is
+		// never read. Deprecated makes cobra warn at the point of use, so a
+		// script still calling this finds out.
+		Deprecated: "use 'wendy run' instead",
+		Hidden:     true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.WithValue(cmd.Context(), cloudDeviceContextKey{}, cloudDeviceConfig{
 				CloudGRPC:  cloudGRPC,
-				DeviceName: deviceName,
+				DeviceName: effectiveDeviceName(deviceName),
 				BrokerURL:  brokerURL,
 			})
 			return runCommand(ctx, opts)

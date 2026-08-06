@@ -22,6 +22,20 @@ func (w WendyIdentity) IdentityKey() string {
 	return fmt.Sprintf("urn:wendy:org:%d:%s:%s", w.OrgID, w.EntityType, w.EntityID)
 }
 
+// UserURN returns the canonical Wendy identity URN for a user:
+// "urn:wendy:org:<org>:user:<userID>". This is the URI SAN a user (CLI)
+// certificate carries as its authoritative identity.
+func UserURN(orgID int32, userID string) string {
+	return WendyIdentity{OrgID: orgID, EntityType: "user", EntityID: userID}.IdentityKey()
+}
+
+// AssetURN returns the canonical Wendy identity URN for an asset:
+// "urn:wendy:org:<org>:asset:<assetID>". This is the URI SAN a device (agent)
+// certificate carries as its authoritative identity.
+func AssetURN(orgID, assetID int32) string {
+	return WendyIdentity{OrgID: orgID, EntityType: "asset", EntityID: strconv.Itoa(int(assetID))}.IdentityKey()
+}
+
 // IdentityFromCert extracts the Wendy org+entity identity from a certificate.
 //
 // Resolution order:

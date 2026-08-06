@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/ble"
+	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui/wifitable"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
@@ -53,6 +54,11 @@ func runWifiInteractive(cmd *cobra.Command) error {
 
 	client, err := newWifiClient(target)
 	if err != nil {
+		if target.Provider != nil && target.External != nil {
+			if _, ok := target.Provider.(providers.WifiManager); ok {
+				return errors.New("selected device does not support full Wi-Fi management; use 'wendy device wifi connect' and 'wendy device wifi disconnect' instead")
+			}
+		}
 		return err
 	}
 	defer client.Close()
@@ -401,6 +407,12 @@ func newWifiConnectCmd() *cobra.Command {
 				}
 			}
 
+			if target.Provider != nil && target.External != nil {
+				if wm, ok := target.Provider.(providers.WifiManager); ok {
+					return wm.WifiConnect(ctx, *target.External, ssid, password)
+				}
+			}
+
 			if target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent() {
 				return wifiConnectViaBLELite(target.Bluetooth, ssid, password)
 			}
@@ -492,6 +504,11 @@ func newWifiDisconnectCmd() *cobra.Command {
 			}
 			defer target.Close()
 
+			if target.Provider != nil && target.External != nil {
+				if wm, ok := target.Provider.(providers.WifiManager); ok {
+					return wm.WifiDisconnect(ctx, *target.External)
+				}
+			}
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				return wifiDisconnectViaBLEAgent(target.Bluetooth)
 			}
@@ -689,11 +706,16 @@ func pickWifiNetwork(ctx context.Context, target *SelectedDevice) (string, error
 		}
 	}
 
+	// WifiManager providers cannot scan networks on the device itself (yet), so
+	// their devices are offered the networks visible from the host machine.
+	_, providerManagesWifi := target.Provider.(providers.WifiManager)
+
 	switch {
-	case target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent():
-		// Wendy Lite — scan from the host machine. Cached results paint the
-		// picker instantly, then the fresh rescan fills it in, so SSIDs trickle
-		// in rather than appearing all at once when the scan completes.
+	case (target.Bluetooth != nil && !target.Bluetooth.IsWendyAgent()) || providerManagesWifi:
+		// Wendy Lite (over BLE or a WifiManager provider) — scan from the host
+		// machine. Cached results paint the picker instantly, then the fresh
+		// rescan fills it in, so SSIDs trickle in rather than appearing all at
+		// once when the scan completes.
 		go func() {
 			defer p.Send(tui.PickerDoneMsg{})
 			if err := streamLocalWifiScan(func(batch []localWifiNetwork) {

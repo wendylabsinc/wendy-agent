@@ -28,8 +28,12 @@ Download a release archive, then verify it was built by this repo's workflow:
 
 Or with cosign (attestations are Sigstore bundles):
 
+    gh attestation download wendy-cli-linux-amd64-<version>.tar.gz \
+      --repo wendylabsinc/WendyOS -o bundle.jsonl
+
     cosign verify-blob-attestation \
       --new-bundle-format \
+      --bundle bundle.jsonl \
       --certificate-identity-regexp 'https://github.com/wendylabsinc/WendyOS/.github/workflows/build.yml@.*' \
       --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       wendy-cli-linux-amd64-<version>.tar.gz

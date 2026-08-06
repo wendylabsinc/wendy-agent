@@ -211,13 +211,18 @@ jobs:
               echo "- Allowlisted devices selected: $COUNT"
               if [[ "$DISCOVERED_COUNT" -gt 0 && "$COUNT" -eq 0 ]]; then
                 echo
-                echo "No discovered LAN devices matched the integration allowlist, so downstream integration jobs will be skipped."
+                echo "No discovered LAN devices matched the integration allowlist."
               fi
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$DISCOVERED_COUNT" -eq 0 ]]; then
-            echo "ERROR: No LAN devices found via wendy discover" >&2
+          # Counts allowlisted selections, not raw discoveries: non-CI devices are
+          # always present on this LAN, so a nonzero discovery count is no evidence
+          # that any test can run. An empty matrix skips the integration jobs, and
+          # skipped jobs report success.
+          if [[ "$INPUT_HOSTNAME" == '' && "$INPUT_JOBS" != 'discover' && "$COUNT" -eq 0 ]]; then
+            echo "ERROR: no allowlisted CI device found via wendy discover" >&2
+            echo "Expected one of: ${EXPECTED[*]}" >&2
             exit 1
           fi
 
@@ -330,10 +335,12 @@ jobs:
               exit 0
             fi
           else
-            for t in swift-hello swift-start-detach swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
+            for t in swift-hello swift-start-detach swift-network swift-bluetooth swift-resources python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-notifications python-no-notifications python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-env python-env-flag python-multiservice-env python-device-top otel-localhost-only; do
               TEST_ARGS+=(-t "$t")
             done
           fi
+          # No else branch: with no -t the harness runs its own ALL_TESTS, so a
+          # newly added test cannot be registered there and silently never run.
 
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"
@@ -342,11 +349,18 @@ jobs:
           trap 'docker buildx rm "$BUILDER" --force 2>/dev/null || true' EXIT
 
           echo "==> Starting tests on $INPUT_HOSTNAME (builder: $BUILDER)"
-          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
+          # DOCKER_HOST is often unset here. ssh re-joins its arguments into one
+          # string for the remote shell, so an empty argument disappears and every
+          # positional after it shifts down — which silently handed test-ci.sh a
+          # nonsense argument list. Send a sentinel instead of an empty word; it
+          # must contain no shell metacharacters, since the remote shell parses
+          # that string.
+          if "${SSH[@]}" bash -s -- "$WORKDIR" "$BUILDER" "${DOCKER_HOST:-__unset__}" "$INPUT_HOSTNAME" "${TEST_ARGS[@]}" <<'REMOTE'
           set -euo pipefail
           WORKDIR="$1"; shift
           BUILDER="$1"; shift
           DOCKER_HOST_VALUE="$1"; shift
+          [[ "$DOCKER_HOST_VALUE" == "__unset__" ]] && DOCKER_HOST_VALUE=""
           HOSTNAME="$1"; shift
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
           export DOCKER_HOST="$DOCKER_HOST_VALUE"
@@ -436,11 +450,6 @@ jobs:
                 echo "ERROR: invalid test name: $t" >&2
                 exit 1
               fi
-              # Skip swift-* tests on Linux.
-              if [[ "$t" == swift-* ]]; then
-                echo "Skipping Swift test $t on Linux"
-                continue
-              fi
               TEST_ARGS+=(-t "$t")
               HAS_TESTS=true
             done
@@ -449,10 +458,14 @@ jobs:
               exit 0
             fi
           else
-            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-device-top otel-localhost-only; do
+            for t in python-hello python-network python-gpu python-onnx-gpu python-bluetooth python-notifications python-no-notifications python-no-network python-no-bluetooth python-no-ptrace python-no-unshare python-no-kexec-module python-network-host-admin python-no-net-admin python-resources python-multiservice python-multiservice-resources python-servicename python-env python-env-flag python-multiservice-env python-device-top otel-localhost-only; do
               TEST_ARGS+=(-t "$t")
             done
           fi
+          # No else branch: with no -t the harness runs its own ALL_TESTS and
+          # skips the Swift tests itself when the host has no Swift toolchain.
+          # Keeping a second copy of the list here is how a registered test came
+          # to never run in CI.
 
           builder_slug="$(printf '%s' "$INPUT_HOSTNAME" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_.-]+/-/g; s/^-+//; s/-+$//')"
           BUILDER="wendy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}-${builder_slug}"

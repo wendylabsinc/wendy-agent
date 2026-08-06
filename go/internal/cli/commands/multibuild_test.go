@@ -127,3 +127,38 @@ func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 		t.Errorf("multiServiceContainerName = %q, ContainerName() = %q — start/stop would miss the container", got, cfg.ContainerName())
 	}
 }
+
+// TestMultiServiceCreateConfig_CarriesResolvedResources covers WDY-2171/WDY-1729:
+// the per-service config sent to the agent has no services map, so it must
+// carry the already-resolved limits. Without them the agent resolves nothing
+// and the container runs uncapped.
+func TestMultiServiceCreateConfig_CarriesResolvedResources(t *testing.T) {
+	pids := int64(256)
+	appCfg := &appconfig.AppConfig{
+		AppID:     "app",
+		Resources: &appconfig.ResourceLimits{Memory: "256Mi", PIDs: &pids},
+		Services: map[string]*appconfig.ServiceConfig{
+			"db":  {Context: "db"},
+			"api": {Context: "api", Resources: &appconfig.ResourceLimits{Memory: "128Mi"}},
+		},
+	}
+
+	db := multiServiceCreateConfig(appCfg, "db", appCfg.Services["db"])
+	if db.Resources == nil {
+		t.Fatal("db: resources are nil; the service inherits the app-level limits")
+	}
+	if db.Resources.Memory != "256Mi" {
+		t.Errorf("db memory = %q, want the inherited 256Mi", db.Resources.Memory)
+	}
+
+	api := multiServiceCreateConfig(appCfg, "api", appCfg.Services["api"])
+	if api.Resources == nil {
+		t.Fatal("api: resources are nil")
+	}
+	if api.Resources.Memory != "128Mi" {
+		t.Errorf("api memory = %q, want its own 128Mi", api.Resources.Memory)
+	}
+	if api.Resources.PIDs == nil || *api.Resources.PIDs != pids {
+		t.Errorf("api pids = %v, want the inherited %d (a memory override must not drop it)", api.Resources.PIDs, pids)
+	}
+}

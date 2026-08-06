@@ -117,7 +117,7 @@ func (p *AppleContainerProvider) CanBuild(projectPath string) bool {
 	return hasContainerBuildFile(projectPath)
 }
 
-func (p *AppleContainerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *AppleContainerProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
 	return p.BuildWithDockerfile(ctx, device, projectPath, product, "", "", debug)
 }
 
@@ -349,6 +349,10 @@ func (p *AppleContainerProvider) Stop(ctx context.Context, app *BuiltApp) error 
 		return fmt.Errorf("container stop: %s: %w", strings.TrimSpace(string(out)), err)
 	}
 	return nil
+}
+
+func (p *AppleContainerProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	return nil, nil
 }
 
 func (p *AppleContainerProvider) removeManagedContainer(ctx context.Context, name string) error {

@@ -178,6 +178,41 @@ For multi-service apps, set `resources` at the top level as the default and/or p
 
 Here `web` inherits the full app-level limits (`1Gi`, `pids: 512`). `worker` uses its own `256Mi` and `0.5` cores, and still **inherits** the app-level `pids: 512` it did not override.
 
+### `env`
+
+Environment variables injected into the container at start. These are deploy-time configuration, applied on top of whatever the image itself sets — unlike a Dockerfile `ENV`, changing them does not rebuild the image.
+
+```json
+{
+  "appId": "my-app",
+  "env": {
+    "LOG_LEVEL": "info",
+    "API_TOKEN": "${MY_API_TOKEN}"
+  }
+}
+```
+
+A value may reference an environment variable on the deploying machine as `${VAR}` (or `$VAR`); `wendy run` expands it at deploy time, which keeps secrets out of the file. An entry whose value expands to empty is dropped, so the container falls back to whatever the image sets rather than receiving an empty override.
+
+Keys must be POSIX-portable environment variable names: letters, digits and `_`, not starting with a digit. The agent additionally reserves the `WENDY_`, `LD_` and `DYLD_` prefixes, and Wendy's own variables (`WENDY_APP_ID`, `WENDY_HOSTNAME`, and the OTel exporter settings) always win over an app-supplied value of the same name.
+
+For multi-service apps, the top-level `env` is the default for every service and `services.<name>.env` overrides it **per key**, so a service can change one variable without dropping the rest:
+
+```json
+{
+  "appId": "fleet",
+  "env": { "LOG_LEVEL": "info", "REGION": "eu" },
+  "services": {
+    "web":    { "context": "./web" },
+    "worker": { "context": "./worker", "env": { "LOG_LEVEL": "debug" } }
+  }
+}
+```
+
+`web` gets `LOG_LEVEL=info` and `REGION=eu`; `worker` gets `LOG_LEVEL=debug` and still inherits `REGION=eu`.
+
+`wendy run --env KEY=VALUE` sets a variable for one run and overrides both.
+
 ### `$schema`
 
 Optional URI pointing to the JSON Schema for editor autocompletion and validation. Set to `"https://wendy.dev/schemas/wendy.json"`.
@@ -380,6 +415,46 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same
 | Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
+
+### `notifications`
+
+Allows an app to send operator-facing Wendy Notifications through its private
+app connection.
+
+```json
+{ "type": "notifications" }
+```
+
+The agent/daemon mounts `/run/wendy/system` read-only and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
+app, shared by that app's entitled service containers and by future app-facing
+API capabilities; it is not one socket per capability. The public Swift
+API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
+gRPC directly.
+
+The request supplies one or more user, organization team, or organization role
+selectors, plus title, body, severity, deep link, a caller-chosen
+`notification_id` UUID v4 resource identity, and optional structured metadata.
+After successful creation, every reuse of its canonical UUID—including identical,
+changed, or differently cased requests—returns `ALREADY_EXISTS`; it does not
+replay success. A local validation or rate-limit rejection occurs before Cloud
+and leaves that UUID valid for retry. Selector categories have union semantics.
+The agent accepts at most 100 selector entries, then normalizes and deduplicates
+them; Cloud resolves at most 10,000 recipients. The socket handler stamps Cloud
+`app_id` from trusted container metadata. Wendy Cloud stores
+that identity as `created_by_app_id` and derives `created_by_asset_id` and
+organization identity from the provisioned device certificate; none of those
+identities can be supplied by the app.
+
+Each send has a 15-second Cloud deadline. The per-app host directory lives under
+`/var/lib/wendy/app-system`, so its inode remains stable while the agent/daemon
+restarts and recreates `system.sock` from persisted container labels. Running
+containers reconnect on their next call without a redeploy. Multi-service
+ownership is reference-counted and the directory is removed after the last
+entitled container is deleted.
+
+> **Security:** `notifications` exposes only entitled app-facing APIs. It does
+> not expose `WENDY_AGENT_SOCKET` or any app/device administration RPC.
 
 ### `admin`
 

@@ -220,7 +220,7 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			asset := m.assets[cursor]
 			m.updatingName = asset.GetName()
-			m.flashMessage = "Updating " + asset.GetName() + "..."
+			m.flashMessage = "Checking " + asset.GetName() + "..."
 			m.flashIsError = false
 			return m, m.startCloudUpdateCmd(asset)
 		}
@@ -230,12 +230,18 @@ func (m cloudDiscoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case discoverUpdateDoneMsg:
 		m.updatingName = ""
-		if msg.err != nil {
-			m.flashMessage = fmt.Sprintf("Update failed for %s: %v", msg.deviceName, msg.err)
-			m.flashIsError = true
-		} else {
-			m.flashMessage = fmt.Sprintf("Updated %s successfully.", msg.deviceName)
-			m.flashIsError = false
+		m.flashMessage, m.flashIsError = discoverUpdateFlash(msg)
+		switch {
+		case msg.err != nil:
+			// Nothing learned about the device; leave the cached row alone.
+		case msg.note != "":
+			// No update happened, but the probe behind the note is fresher than
+			// the cached row.
+			if msg.version != nil {
+				m.versions[msg.assetID] = msg.version
+				m.versionPending[msg.assetID] = false
+			}
+		default:
 			// Invalidate cached version so the table shows fresh data after update.
 			delete(m.versions, msg.assetID)
 			delete(m.versionPending, msg.assetID)
@@ -266,7 +272,7 @@ func (m cloudDiscoverModel) View() string {
 	} else {
 		sb.WriteString(m.viewLine(scanStyle.Render("⟳ Scanning for cloud devices...")) + "\n")
 		if m.updatingName != "" {
-			sb.WriteString(m.viewLine(dimStyle.Render("  updating "+m.updatingName+"... (q quit)")) + "\n")
+			sb.WriteString(m.viewLine(dimStyle.Render("  working on "+m.updatingName+"... (q quit)")) + "\n")
 		} else {
 			hint := "  ↑/↓ navigate, enter copy, a copy all, u update, q quit"
 			if m.table.CanScroll() {
@@ -283,6 +289,11 @@ func (m cloudDiscoverModel) View() string {
 	}
 	if len(m.assets) > 0 {
 		sb.WriteString(m.table.View() + "\n")
+		// Cloud rows carry no provisioned/default markers, so the legend exists
+		// only to explain a warning glyph that is actually present.
+		if legend := tui.DeviceWarningLegend(cloudLegendItems(m.assets, m.versions)); legend != "" {
+			sb.WriteString(m.viewLine(dimStyle.Render("  "+legend)) + "\n")
+		}
 	} else if m.err == nil {
 		if m.hasResults {
 			if m.all {
@@ -330,16 +341,41 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 	rows := make([]bubbleTable.Row, 0, len(assets))
 	for _, a := range assets {
 		devType := humanReadableDeviceType(a.GetDeviceType())
+		if devType == "" {
+			devType = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+		}
 		ver := "—"
 		if v := versions[a.GetId()]; v != nil {
-			ver = markOutdated(v.GetVersion())
+			ver = v.GetVersion()
+			if agentBehindCLI(version.Version, ver) {
+				ver += " " + tui.GlyphOutdated
+			}
 			if devType == "" {
 				devType = humanReadableDeviceType(v.GetDeviceType())
+			}
+			if devType == "" {
+				devType = humanReadableOSType(v.GetOs(), v.GetCpuArchitecture())
 			}
 		}
 		rows = append(rows, bubbleTable.Row{"", a.GetName(), devType, ver})
 	}
 	return rows
+}
+
+// cloudLegendItems reduces cloud rows to the fields the shared legend reads.
+func cloudLegendItems(assets []*cloudpb.Asset, versions map[int32]*agentpb.GetAgentVersionResponse) []tui.PickerItem {
+	items := make([]tui.PickerItem, 0, len(assets))
+	for _, a := range assets {
+		v := versions[a.GetId()]
+		if v == nil {
+			continue
+		}
+		items = append(items, tui.PickerItem{
+			AgentVersion:  v.GetVersion(),
+			AgentOutdated: agentBehindCLI(version.Version, v.GetVersion()),
+		})
+	}
+	return items
 }
 
 func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResponse) discoverDeviceInfo {
@@ -349,9 +385,15 @@ func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResp
 		Type:    humanReadableDeviceType(a.GetDeviceType()),
 		Address: a.GetIpAddress(),
 	}
+	if info.Type == "" {
+		info.Type = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+	}
 	if ver != nil {
 		if info.Type == "" {
 			info.Type = humanReadableDeviceType(ver.GetDeviceType())
+		}
+		if info.Type == "" {
+			info.Type = humanReadableOSType(ver.GetOs(), ver.GetCpuArchitecture())
 		}
 		info.Version = ver.GetVersion()
 	}
@@ -417,10 +459,9 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 		if cpuArch := resp.GetCpuArchitecture(); cpuArch != "" {
 			arch = cpuArch
 		}
-		agentVer := resp.GetVersion()
-		if agentVer != "" && version.CompareVersions(latestVer, agentVer) <= 0 {
+		if note := agentAlreadyAtReleaseNote(name, resp.GetVersion(), latestVer); note != "" {
 			conn.Close()
-			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("device is already up to date (%s)", agentVer)}
+			return discoverUpdateDoneMsg{assetID: id, deviceName: name, note: note, version: resp}
 		}
 
 		if arch == "" {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -46,6 +47,9 @@ const (
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 	EntitlementDisplay   = "display"
+	// EntitlementNotifications grants access only to the app-attributed Wendy
+	// System Notification API. It does not expose the Agent control plane.
+	EntitlementNotifications = "notifications"
 	// EntitlementAdmin grants full, unauthenticated local control of the agent
 	// via its local unix socket — the most security-sensitive entitlement.
 	// See entitlements.md for the blast radius.
@@ -75,6 +79,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementSerial,
 	EntitlementMCP,
 	EntitlementDisplay,
+	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
 }
@@ -85,23 +90,24 @@ var deprecatedEntitlementReplacements = map[string]string{
 
 // allowedKeys maps each entitlement type to the set of JSON keys that are valid for it.
 var allowedKeys = map[string][]string{
-	EntitlementNetwork:   {"type", "mode", "ports", "serviceCIDR"},
-	EntitlementBluetooth: {"type", "mode"},
-	EntitlementVideo:     {"type", "mode", "allowlist"},
-	EntitlementGPU:       {"type"},
-	EntitlementPersist:   {"type", "name", "path"},
-	EntitlementAudio:     {"type"},
-	EntitlementCamera:    {"type", "mode", "allowlist", "user", "password"},
-	EntitlementUSB:       {"type"},
-	EntitlementI2C:       {"type", "device"},
-	EntitlementGPIO:      {"type", "pins"},
-	EntitlementSPI:       {"type"},
-	EntitlementInput:     {"type"},
-	EntitlementSerial:    {"type", "device"},
-	EntitlementMCP:       {"type", "port"},
-	EntitlementDisplay:   {"type"},
-	EntitlementAdmin:     {"type"},
-	EntitlementBuild:     {"type"},
+	EntitlementNetwork:       {"type", "mode", "ports", "serviceCIDR"},
+	EntitlementBluetooth:     {"type", "mode"},
+	EntitlementVideo:         {"type", "mode", "allowlist"},
+	EntitlementGPU:           {"type"},
+	EntitlementPersist:       {"type", "name", "path"},
+	EntitlementAudio:         {"type"},
+	EntitlementCamera:        {"type", "mode", "allowlist", "user", "password"},
+	EntitlementUSB:           {"type"},
+	EntitlementI2C:           {"type", "device"},
+	EntitlementGPIO:          {"type", "pins"},
+	EntitlementSPI:           {"type"},
+	EntitlementInput:         {"type"},
+	EntitlementSerial:        {"type", "device"},
+	EntitlementMCP:           {"type", "port"},
+	EntitlementDisplay:       {"type"},
+	EntitlementNotifications: {"type"},
+	EntitlementAdmin:         {"type"},
+	EntitlementBuild:         {"type"},
 }
 
 // Platform constants identify the target hardware family.
@@ -139,6 +145,10 @@ type ROS2Config struct {
 	// "jazzy"). The agent uses it to pick the matching CLI sidecar image.
 	// Defaults to "humble".
 	Distro string `json:"distro,omitempty"`
+	// DiscoveryScope controls whether ROS 2 discovery is restricted to the
+	// app group's network namespace ("app", the default) or may use the
+	// device's host network ("host").
+	DiscoveryScope string `json:"discoveryScope,omitempty"`
 }
 
 // FrameworksConfig holds optional framework-level configuration (e.g. ROS 2).
@@ -247,6 +257,12 @@ type AppConfig struct {
 	// Resources optionally caps the app's CPU/memory/PID usage. For
 	// multi-service apps it is the default; a service may override it.
 	Resources *ResourceLimits `json:"resources,omitempty"`
+	// Env are environment variables injected into the app's container. For a
+	// single-container app this is the only place to declare them; for a
+	// multi-service app it is the default, and a service's own env overrides it
+	// key by key. Values may reference host env vars via ${VAR}, expanded by
+	// `wendy run` at deploy time (see ServiceConfig.Env).
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ContainerName returns the container identifier for this app config.
@@ -454,6 +470,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 		return fmt.Errorf("at most one display entitlement is allowed in %s, found %d", prefix, displayCount)
 	}
 
+	notificationsCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementNotifications {
+			notificationsCount++
+		}
+	}
+	if notificationsCount > 1 {
+		return fmt.Errorf("at most one notifications entitlement is allowed in %s, found %d", prefix, notificationsCount)
+	}
+
 	adminCount := 0
 	for _, e := range entitlements {
 		if e.Type == EntitlementAdmin {
@@ -506,6 +532,36 @@ func ValidateServiceName(name string) error {
 	}
 	if !serviceNamePattern.MatchString(name) {
 		return fmt.Errorf("serviceName %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
+	}
+	return nil
+}
+
+// ValidateEnv checks that every key in an env map is a POSIX-portable
+// environment variable name, so a malformed key is reported against the
+// wendy.json that declares it rather than as a deploy-time RPC failure. prefix
+// is used in error messages (e.g. "env" for top-level, or
+// `services["foo"].env` for service-level). Values are not checked.
+//
+// Reserved prefixes and size limits are enforced by the agent at container
+// creation and deliberately not mirrored here.
+func ValidateEnv(prefix string, env map[string]string) error {
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := ValidateEnvKey(prefix, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateEnvKey checks one environment variable name. See ValidateEnv.
+func ValidateEnvKey(prefix, key string) error {
+	if !envVarNamePattern.MatchString(key) {
+		return fmt.Errorf("%s: %q is not a valid environment variable name (letters, digits and '_' only, not starting with a digit)", prefix, key)
 	}
 	return nil
 }
@@ -576,6 +632,10 @@ func (c *AppConfig) Validate() error {
 		return err
 	}
 
+	if err := ValidateEnv("env", c.Env); err != nil {
+		return err
+	}
+
 	if c.Frameworks != nil {
 		if err := validateROS2Config("frameworks.ros2", c.Frameworks.ROS2); err != nil {
 			return err
@@ -608,6 +668,9 @@ func (c *AppConfig) Validate() error {
 			return err
 		}
 		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
+			return err
+		}
+		if err := ValidateEnv(fmt.Sprintf("services[%q].env", name), svc.Env); err != nil {
 			return err
 		}
 		if svc.Frameworks != nil {
@@ -805,6 +868,10 @@ func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
 		return nil, nil, err
 	}
 
+	if err := ValidateEnv("env", cfg.Env); err != nil {
+		return nil, nil, err
+	}
+
 	for name, svc := range cfg.Services {
 		if svc == nil {
 			return nil, nil, fmt.Errorf("services[%q]: must not be null", name)
@@ -813,6 +880,9 @@ func LoadComposeCompanion(dir string) (*AppConfig, []string, error) {
 			return nil, nil, err
 		}
 		if err := ValidateReadiness(fmt.Sprintf("services[%q].readiness", name), svc.Readiness); err != nil {
+			return nil, nil, err
+		}
+		if err := ValidateEnv(fmt.Sprintf("services[%q].env", name), svc.Env); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -882,6 +952,11 @@ func ValidateJSON(data []byte) []string {
 	}
 
 	var warnings []string
+	// A fleet manifest is a different document with its own keys, and
+	// ParseFleetManifest validates it; skip the app-config key check there.
+	if _, isFleetManifest := raw["components"]; !isFleetManifest {
+		warnings = append(warnings, unknownKeyWarnings(raw, "wendy.json", jsonFieldNames(reflect.TypeOf(AppConfig{})))...)
+	}
 	warnings = append(warnings, validateEntitlementsJSON(raw["entitlements"], "entitlement")...)
 	warnings = append(warnings, validateHooksJSON(raw["hooks"], "hooks")...)
 	warnings = append(warnings, validateFrameworksJSON(raw["frameworks"], "frameworks")...)
@@ -893,11 +968,13 @@ func ValidateJSON(data []byte) []string {
 	if servicesRaw, ok := raw["services"]; ok && len(servicesRaw) > 0 {
 		var serviceEntries map[string]json.RawMessage
 		if err := json.Unmarshal(servicesRaw, &serviceEntries); err == nil {
+			serviceKeys := jsonFieldNames(reflect.TypeOf(ServiceConfig{}))
 			for name, svcRaw := range serviceEntries {
 				var svc map[string]json.RawMessage
 				if err := json.Unmarshal(svcRaw, &svc); err != nil {
 					continue
 				}
+				warnings = append(warnings, unknownKeyWarnings(svc, fmt.Sprintf("services[%q]", name), serviceKeys)...)
 				prefix := fmt.Sprintf("services[%q].entitlement", name)
 				warnings = append(warnings, validateEntitlementsJSON(svc["entitlements"], prefix)...)
 				warnings = append(warnings, validateFrameworksJSON(svc["frameworks"], fmt.Sprintf("services[%q].frameworks", name))...)
@@ -933,6 +1010,52 @@ func ValidateJSON(data []byte) []string {
 	return warnings
 }
 
+// jsonFieldNames returns the set of JSON keys a struct decodes, read from its
+// field tags, so unknownKeyWarnings cannot drift from the struct.
+func jsonFieldNames(t reflect.Type) map[string]bool {
+	names := make(map[string]bool, t.NumField())
+	for i := range t.NumField() {
+		tag := t.Field(i).Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}
+
+// unknownKeyWarnings reports keys in raw that the struct does not decode.
+// encoding/json discards them without complaint, so a typo would otherwise be
+// indistinguishable from a key that took effect. "$schema" is accepted: it is
+// an editor pointer, not configuration.
+func unknownKeyWarnings(raw map[string]json.RawMessage, where string, known map[string]bool) []string {
+	var unknown []string
+	for k := range raw {
+		if k == "$schema" || known[k] {
+			continue
+		}
+		unknown = append(unknown, k)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+
+	allowed := make([]string, 0, len(known))
+	for k := range known {
+		allowed = append(allowed, k)
+	}
+	sort.Strings(allowed)
+
+	return []string{fmt.Sprintf(
+		"Unknown key(s) in %s, ignored: %s. Allowed keys are: %s",
+		where, strings.Join(unknown, ", "), strings.Join(allowed, ", "),
+	)}
+}
+
 // validateFrameworksJSON warns on unknown keys under frameworks.ros2 so a typo
 // like "domian_id" surfaces instead of being silently ignored (WDY-1706 M5).
 func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []string {
@@ -951,7 +1074,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
 		return nil
 	}
-	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true}
+	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true, "discoveryScope": true}
 	var unknown []string
 	for k := range ros2 {
 		if !allowed[k] {
@@ -962,7 +1085,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		return nil
 	}
 	sort.Strings(unknown)
-	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
+	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
 }
 
 // validateEntitlementsJSON checks raw JSON entitlements for deprecated types

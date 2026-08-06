@@ -8,17 +8,29 @@ import (
 	"os"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 func newAudioCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audio",
 		Short: "Manage audio devices on the target device",
+		Long: "Interactively manage audio devices on the target device. " +
+			"Use up/down to select a device, Enter to set it as the default, " +
+			"and left/right to adjust playback volume.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if jsonOutput || !isInteractiveTerminal() {
+				return runAudioList(cmd)
+			}
+			return runAudioTUI(cmd)
+		},
 	}
 
 	cmd.AddCommand(
@@ -35,52 +47,79 @@ func newAudioListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List audio devices",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := cmd.Context()
-			conn, err := connectToAgent(ctx)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
-
-			resp, err := conn.AudioService.ListAudioDevices(ctx, &agentpb.ListAudioDevicesRequest{})
-			if err != nil {
-				return fmt.Errorf("listing audio devices: %w", err)
-			}
-
-			devices := resp.GetDevices()
-			if jsonOutput {
-				data, err := json.MarshalIndent(devices, "", "  ")
-				if err != nil {
-					return err
-				}
-				fmt.Println(string(data))
-				return nil
-			}
-
-			if len(devices) == 0 {
-				fmt.Println("No audio devices found.")
-				return nil
-			}
-
-			headers := []string{"ID", "Name", "Type", "Default"}
-			var rows [][]string
-			for _, d := range devices {
-				defaultStr := ""
-				if d.GetIsDefault() {
-					defaultStr = "*"
-				}
-				rows = append(rows, []string{
-					fmt.Sprintf("%d", d.GetId()),
-					d.GetName(),
-					d.GetType().String(),
-					defaultStr,
-				})
-			}
-			fmt.Print(tui.RenderTable(headers, rows))
-			return nil
-		},
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return runAudioList(cmd) },
 	}
+}
+
+func runAudioList(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := conn.AudioService.ListAudioDevices(ctx, &agentpb.ListAudioDevicesRequest{})
+	if err != nil {
+		return fmt.Errorf("listing audio devices: %w", err)
+	}
+
+	devices := resp.GetDevices()
+	if jsonOutput {
+		data, err := json.MarshalIndent(devices, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return nil
+	}
+
+	if len(devices) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No audio devices found.")
+		return nil
+	}
+
+	headers := []string{"ID", "Name", "Type", "Default"}
+	rows := make([][]string, 0, len(devices))
+	for _, d := range devices {
+		defaultStr := ""
+		if d.GetIsDefault() {
+			defaultStr = "*"
+		}
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", d.GetId()),
+			d.GetName(),
+			d.GetType().String(),
+			defaultStr,
+		})
+	}
+	fmt.Fprint(cmd.OutOrStdout(), tui.RenderTable(headers, rows))
+	return nil
+}
+
+func runAudioTUI(cmd *cobra.Command) error {
+	ctx := cmd.Context()
+	conn, err := connectToAgent(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	resp, err := conn.AudioServiceV2.ListAudioDevices(ctx, &agentpbv2.ListAudioDevicesRequest{})
+	if err != nil {
+		return fmt.Errorf("listing audio devices: %w", err)
+	}
+	if len(resp.GetDevices()) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No audio devices found.")
+		return nil
+	}
+
+	model := newAudioTUIModel(resp.GetDevices(), &audioRPCHandler{ctx: ctx, client: conn.AudioServiceV2})
+	if _, err := tea.NewProgram(model).Run(); err != nil {
+		return fmt.Errorf("audio TUI: %w", err)
+	}
+	return nil
 }
 
 func newAudioSetDefaultCmd() *cobra.Command {

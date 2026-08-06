@@ -11,6 +11,7 @@ import (
 	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
+	"net/url"
 )
 
 // GenerateKeyPair generates a new P-256 EC private key and returns it as a PEM-encoded string.
@@ -34,8 +35,15 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 }
 
 // GenerateCSR creates a PKCS#10 certificate signing request using the provided
-// PEM-encoded private key (as bytes, so callers can zero the slice after use)
-// and common name. The CSR is returned as a PEM string.
+// PEM-encoded private key (as bytes, so callers can zero the slice after use),
+// common name, and identity URN. The CSR is returned as a PEM string.
+//
+// identityURN, when non-empty, is placed in the CSR as a URI Subject
+// Alternative Name. Callers pass the canonical Wendy identity URN — build it
+// with UserURN ("urn:wendy:org:<org>:user:<userID>") for CLI/user certificates
+// and AssetURN ("urn:wendy:org:<org>:asset:<assetID>") for device/agent
+// certificates. This is the authoritative identity IdentityFromCert prefers
+// over the legacy CommonName. Pass "" to omit the SAN (e.g. test fixtures).
 //
 // The CSR requests digitalSignature key usage and the supplied extended key
 // usages so that CAs honoring CSR extensions issue certs the wendy-agent mTLS
@@ -46,7 +54,7 @@ func GenerateKeyPair() (privateKeyPEM string, err error) {
 // as a TLS client to the cloud and a TLS server for the agent's gRPC and tunnel
 // endpoints. The Wendy cloud backends set key usages server-side and ignore
 // these, so this only matters for CAs that derive extensions from the CSR.
-func GenerateCSR(privateKeyPEM []byte, commonName string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
+func GenerateCSR(privateKeyPEM []byte, commonName, identityURN string, extKeyUsages ...x509.ExtKeyUsage) (csrPEM string, err error) {
 	key, err := parseECPrivateKey(privateKeyPEM)
 	if err != nil {
 		return "", err
@@ -74,10 +82,23 @@ func GenerateCSR(privateKeyPEM []byte, commonName string, extKeyUsages ...x509.E
 		return "", fmt.Errorf("marshaling extended key usage: %w", err)
 	}
 
+	var uris []*url.URL
+	if identityURN != "" {
+		u, err := url.Parse(identityURN)
+		if err != nil {
+			return "", fmt.Errorf("parsing identity URN %q: %w", identityURN, err)
+		}
+		uris = append(uris, u)
+	}
+
 	template := &x509.CertificateRequest{
 		Subject: pkix.Name{
 			CommonName: commonName,
 		},
+		// URIs populates the subjectAltName extension (id-ce-subjectAltName,
+		// 2.5.29.17), which is distinct from the key-usage extensions below, so
+		// there is no extension collision.
+		URIs: uris,
 		ExtraExtensions: []pkix.Extension{
 			{
 				Id:       asn1.ObjectIdentifier{2, 5, 29, 15}, // id-ce-keyUsage

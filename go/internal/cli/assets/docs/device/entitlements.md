@@ -16,6 +16,40 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 
 > **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
+## Notifications
+
+Use `{ "type": "notifications" }` when an app needs to alert operators through
+Wendy Cloud and Companion. WendyKit exposes this as
+`WendyNotification.send(_:)`.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/system` (one private app-facing socket per app) |
+| Injected environment | `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock` |
+| Supplementary group | GID `2000`, so non-root apps can connect without world access |
+| Stable host directory | Per-app subdirectory under `/var/lib/wendy/app-system` |
+| Cloud deadline | 15 seconds per `Send` call |
+| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
+
+The app supplies one or more user, organization team, or role selectors plus
+content, severity, deep link, a caller-chosen Notification UUID v4 resource
+identity, and optional metadata. After successful creation, any canonical UUID
+reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
+or rate-limit rejection does not claim the UUID, so that UUID remains valid for
+retry. All selector categories are unioned, normalized, and deduplicated. The
+app-facing API accepts at most 100 selector entries before deduplication; Cloud
+resolves at most 10,000 recipients. The agent/daemon stamps trusted `app_id`;
+Wendy Cloud stores it as `created_by_app_id` and derives device and organization
+identity from device mTLS. Apps without the entitlement receive no private app
+connection mount, environment variable, or socket group. The full administrative Agent socket
+remains separate and requires `admin`.
+
+All entitled services in a multi-service app share the app's stable socket
+directory and app identity. Running containers reconnect on their next call
+after socket restoration; no redeploy is required. Stopped containers retain
+their mount and can reconnect when started again. The directory remains until
+the last entitled service container is deleted.
+
 ## Network
 
 The network entitlement allows the container to access the device's network. If the device is connected to WiFi, Ethernet or otherwise, the container will have access to make TCP and UDP connections to the internet.

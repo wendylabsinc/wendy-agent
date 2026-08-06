@@ -58,7 +58,13 @@ type LANDevice struct {
 	IsMTLS      bool   `json:"isMTLS,omitempty"`
 	// AssetID is the cloud asset ID from the assetid TXT record; 0 when the
 	// device is unprovisioned or pre-mesh.
-	AssetID          int32  `json:"assetId,omitempty"`
+	AssetID int32 `json:"assetId,omitempty"`
+	// MeshName is the device's friendly mesh name from the `name` TXT record
+	// (e.g. "brave-dolphin"); empty when unadvertised or pre-mesh.
+	MeshName string `json:"meshName,omitempty"`
+	// OrgID is the device's cloud organization id from the `orgid` TXT record;
+	// 0 when unprovisioned or pre-mesh.
+	OrgID            int32  `json:"orgId,omitempty"`
 	InterfaceType    string `json:"interfaceType"`
 	NetworkInterface string `json:"-"`
 	USB              string `json:"usb,omitempty"`

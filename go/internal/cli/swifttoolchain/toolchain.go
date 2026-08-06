@@ -19,14 +19,14 @@ import (
 )
 
 const (
-	DefaultVersion  = "6.3.1"
-	WendySDKRelease = "6.3.1-RELEASE"
-	wasmSDKChecksum = "bd47baa20771f366d8beed7970afaa30742b2210097afd15f85427226d8f4cf2"
+	DefaultVersion  = "6.3.2"
+	WendySDKRelease = "6.3.2-RELEASE"
+	wasmSDKChecksum = "a61f0584c93283589f8b2f42db05c1f9a182b506c2957271402992655591dd7c"
 )
 
 var wendySDKChecksums = map[string]string{
-	"x86_64":  "8b1e13f35b06fec17cb72ca64257ed51969d1ab1acd8d891251e28bb96ad4e9d",
-	"aarch64": "a0155f222bf741e8a4a894c1282941b3a86846fe9d27ac53f94a07d84f897981",
+	"x86_64":  "22a82805ead2c9cf1a955e47745ce38bfa849c6de6d8b920197082eea34e9810",
+	"aarch64": "c8f53bb769ea72cd78b25ba152a96b9218a8512f752e9b2b99cab09ad95611cf",
 }
 
 var ErrUserCancelled = errors.New("cancelled")

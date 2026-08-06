@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1640,6 +1642,119 @@ func TestRegistryProxyBindsLoopback(t *testing.T) {
 	ip := proxy.listener.Addr().(*net.TCPAddr).IP
 	if !ip.IsLoopback() {
 		t.Fatalf("registry proxy bound to %s, want a loopback address", ip)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// isDialRefused / registry proxy dial-error recording
+//
+// These guard the "Mac agent has no container runtime" error path: a Mac
+// agent only opens its embedded registry when it found Docker/OrbStack/Apple
+// container at startup, so a push to a Mac with none installed dies with a
+// bare connection-refused. isDialRefused must recognize that specifically,
+// and both proxy types must record it so callers can explain what happened.
+// ---------------------------------------------------------------------------
+
+func TestIsDialRefused(t *testing.T) {
+	if isDialRefused(nil) {
+		t.Error("isDialRefused(nil) = true; want false")
+	}
+	if isDialRefused(errors.New("some other failure")) {
+		t.Error("isDialRefused(unrelated error) = true; want false")
+	}
+	refused := fmt.Errorf("dial tcp 192.168.0.200:5555: connect: %w", syscall.ECONNREFUSED)
+	if !isDialRefused(refused) {
+		t.Errorf("isDialRefused(%v) = false; want true", refused)
+	}
+	if !isDialRefused(errors.New("dial tcp 127.0.0.1:5555: connect: connection refused")) {
+		t.Error("isDialRefused should match on the 'connection refused' message even without a wrapped errno")
+	}
+}
+
+func TestRegistryProxy_RecordsDialError(t *testing.T) {
+	// Reserve a port, then close it immediately so nothing is listening —
+	// dialing it is refused, mirroring a Mac agent with no container runtime.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := ln.Addr().String()
+	ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxy, err := startRegistryProxy(ctx, "127.0.0.1:0", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	if err := proxy.LastDialError(); err != nil {
+		t.Fatalf("LastDialError before any connection = %v; want nil", err)
+	}
+
+	conn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(proxy.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The proxy closes the client connection once the dial to target fails.
+	buf := make([]byte, 1)
+	_, _ = conn.Read(buf)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if dialErr := proxy.LastDialError(); dialErr != nil {
+			if !isDialRefused(dialErr) {
+				t.Errorf("LastDialError = %v; want a connection-refused error", dialErr)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("LastDialError was never recorded")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestMTLSRegistryHTTPProxy_RecordsDialError(t *testing.T) {
+	ca := generateTestCA(t)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	// Reserve then release a port so dialing it is refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := ln.Addr().String()
+	ln.Close()
+
+	proxy, err := startMTLSRegistryHTTPProxy(target, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	if err := proxy.LastDialError(); err != nil {
+		t.Fatalf("LastDialError before any request = %v; want nil", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v2/", proxy.Port()))
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d; want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+
+	dialErr := proxy.LastDialError()
+	if dialErr == nil {
+		t.Fatal("LastDialError = nil after a refused request; want a recorded error")
+	}
+	if !isDialRefused(dialErr) {
+		t.Errorf("LastDialError = %v; want a connection-refused error", dialErr)
 	}
 }
 

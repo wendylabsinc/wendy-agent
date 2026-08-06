@@ -35,6 +35,7 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 | macOS, Windows, unknown non-WendyOS platform, Wendy Lite, external/local provider | `This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install.` |
 | Generic Linux host with `wendy-agent` installed but no WendyOS identity | `This Linux host has wendy-agent installed, but it cannot be updated with WendyOS OTA artifacts. Use the Linux distribution’s package manager, such as apt, dnf, or pacman, to update this machine.` |
 | WendyOS identity present but the device does not advertise the `wendyos-update` featureset | `This WendyOS image does not support OTA updates because the wendyos-update engine was not found on the device. Reinstall or upgrade to a WendyOS image with OTA support.` |
+| WendyOS device running a version older than 0.17.0 | `this device runs WendyOS ‹version›. WendyOS 0.17.0 introduces a new update system with no backward compatibility, so it cannot be updated over the air.\nReflash it with \`wendy os install\` to continue receiving updates.` |
 | No explicit artifact and the device type is missing or unrecognized in the update catalog | Shows a warning and prompts the user to select the correct device type from a picker. The latest version (stable or nightly) is then chosen automatically. |
 
 > **Note:** macOS agents report a host OS version, but this does not qualify the host as a WendyOS OTA target. Only a `WendyOS-`-prefixed `os_version` or a non-empty `device_type` qualifies.
@@ -44,14 +45,16 @@ Hosts that are not WendyOS OTA targets — including macOS, Windows, unknown pla
 ## Update sequence
 
 1. **Validate target identity** — query `GetAgentVersion` and confirm the target is a WendyOS OTA target. Exits immediately with an error if not.
-2. **Update the agent** — ensure the agent binary is at the latest release before proceeding with the OS image update. GitHub release lookups use the `GITHUB_TOKEN` environment variable when present, and fall back to unauthenticated requests otherwise.
-3. **Re-query version** — query `GetAgentVersion` again after the agent update.
-4. **Validate OTA support** — confirm the device advertises the `wendyos-update` featureset.
-5. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
-6. **Check current version** — if the device is already at the latest version, exits without updating.
-7. **Stream update** — call `UpdateOS` on the agent, which runs `wendyos-update install` and streams progress to the terminal. The agent then reboots into the updated OS.
-8. **Wait for reboot** — poll the device until it is reachable again (up to 10 minutes, enough for a rollback's second reboot).
-9. **Report the outcome** — query the device for the post-update commit/rollback verdict and print it. The command exits non-zero when the update was rolled back.
+2. **Check minimum OS version** — if the device reports a WendyOS version older than 0.17.0, exit non-zero with guidance to reflash using `wendy os install`. Dev builds, empty, and unparseable versions are allowed through. This check runs before the agent is updated, so no agent update is wasted on a device that must be reflashed.
+3. **Update the agent** — ensure the agent binary is at the latest release before proceeding with the OS image update. GitHub release lookups use the `GITHUB_TOKEN` environment variable when present, and fall back to unauthenticated requests otherwise.
+4. **Re-query version** — query `GetAgentVersion` again after the agent update.
+5. **Validate OTA support** — confirm the device advertises the `wendyos-update` featureset.
+6. **Resolve artifact** — if no artifact or URL was provided, look up the latest OTA artifact for the device's reported `device_type`. If the device type is missing or not recognized, shows a warning and prompts the user to select the correct device type.
+7. **Check current version** — if the device is already at the latest version, exits without updating.
+8. **Stack-mismatch check** — if the resolved artifact is a `.wendy` file and the device does not advertise the `wendyos-update` featureset, exit non-zero with an explanation that a reflash is required. Skipped only when the device was already reported current in step 7.
+9. **Stream update** — call `UpdateOS` on the agent, which runs `wendyos-update install` and streams progress to the terminal. The agent then reboots into the updated OS.
+10. **Wait for reboot** — poll the device until it is reachable again (up to 10 minutes, enough for a rollback's second reboot).
+11. **Report the outcome** — query the device for the post-update commit/rollback verdict and print it. The command exits non-zero when the update was rolled back.
 
 ---
 
@@ -72,7 +75,28 @@ Reason: wendyos-update commit failed: exit status 4 (health.d/50-containerd.sh e
 
 *(the text in parentheses is whatever `wendyos-update commit` itself reported as the failure reason)*
 
-`wendy os update-status` reports the same record (including the `Reason:` line) after the fact, without re-running the update — useful for diagnosing a commit failure without shell access to the device.
+`wendy os update-status` reports the same record (including the `Reason:` line) after the fact, without re-running the update — useful for diagnosing a commit failure without shell access to the device. In addition to the persisted record, `wendy os update-status` queries the live wendyos-update engine snapshot, which distinguishes a committed nightly from a rolled-back one even when the OS version string is identical across builds.
+
+`wendy os update-status` always requests the live `wendyos-update` engine snapshot in addition to the persisted commit/rollback record. When the agent returns it, the command prints a second block:
+
+```
+Engine status (wendyos-update):
+  Connector:    tegrauefi
+  Booted slot:  A
+* slot A health=good distro=WendyOS-x.y.z
+  slot B health=trial distro=WendyOS-x.y.z retries=0
+  Diagnostics (raw):
+    RootfsStatusSlotA = 0x01
+    RootfsStatusSlotB = 0x00
+```
+
+The booted slot is marked with `*`. Diagnostic keys and values are connector-specific (e.g. tegra `RootfsStatusSlot{A,B}` bytes, EFI boot-chain/capsule variables, or uboot env entries) and may vary between firmware versions.
+
+Pass `--json` to emit the complete `GetOSUpdateStatusResponse` as indented JSON (useful in scripts or when capturing diagnostics off a device without shell access):
+
+```sh
+wendy os update-status --json
+```
 
 > **Note:** for older target images whose agent does not report an update result, the CLI falls back to comparing the OS version before and after the reboot, and warns when the device appears to have rolled back.
 
@@ -83,6 +107,8 @@ Reason: wendyos-update commit failed: exit status 4 (health.d/50-containerd.sh e
 When no artifact path or `--artifact-url` is given, the CLI uses the device's `device_type` field to look up the latest OTA artifact from the WendyOS release manifest. If the device type is missing or not recognized in the update catalog, the CLI shows a warning and falls back to an interactive device-type picker. The latest version (stable or nightly) is then chosen automatically.
 
 Use `--nightly` to select nightly (pre-release) artifacts instead of stable ones.
+
+After the artifact is resolved, the CLI checks its format against the device's advertised backend featureset. A `.wendy` artifact requires the `wendyos-update` engine; if the device does not advertise it, the update errors out with a reflash explanation rather than being applied.
 
 ---
 
@@ -110,7 +136,9 @@ Thor or ESP32 targets. `--pr` is mutually exclusive with `--nightly`,
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--pr` | — | Update to wendyos-builder PR #N (mutually exclusive with `--nightly`, `--artifact-url`, positional path; Linux disk-image devices only) |
-| `--artifact-url` | — | URL of an artifact (`.wendy`) to install directly |
+| `--artifact-url` | — | URL of an artifact (`.wendy`) to install directly. The CLI checks the artifact's format against the device's advertised backend before applying it; a `.wendy` URL on a device that predates the wendyos-update stack is refused with a reflash explanation. |
 | `--nightly` | false | Use nightly/pre-release builds for auto-selection |
 
 A positional argument (a local `.wendy` file path, or a directory containing one) can be used instead of `--artifact-url`.
+
+> **Tip:** After an update, `wendy device info` shows a compact summary of the A/B slot state and the last update outcome. For the full record — including which healthchecks ran and the live engine diagnostics — run `wendy os update-status`.
