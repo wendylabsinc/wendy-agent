@@ -585,14 +585,15 @@ func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bo
 		interactive
 }
 
-// chooseT234FlashMode prompts the user to pick between full USB recovery
-// (firmware + OS) and OS-image-only imaging, returning rootfsOnly=true for the
-// image-only choice. A cancelled picker surfaces ErrUserCancelled, which the
-// top-level command maps to a clean exit.
+// chooseT234FlashMode prompts the user to pick between OS-image-only imaging
+// and a full recovery flash (firmware + OS), returning rootfsOnly=true for the
+// image-only choice. Image-only is listed first because it is the common case;
+// a full flash needs the device jumpered into recovery mode. A cancelled picker
+// surfaces ErrUserCancelled, which the top-level command maps to a clean exit.
 func chooseT234FlashMode() (rootfsOnly bool, err error) {
 	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
-		{Name: "Full flash over USB", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+		{Name: "Full flash over UART", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 	})
 	if err != nil {
 		return false, err // ErrUserCancelled propagates unchanged
@@ -978,6 +979,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
+	var provisionErr error
 
 	if !configPartitionSupported {
 		// writeConfigPartition is not supported on this platform. Skip the
@@ -993,11 +995,22 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// A provisioning failure is not a flash failure: the OS image already
 		// landed on the drive above. provisionConfigWithRetry warns and offers
 		// an interactive retry rather than aborting, so the user knows the
-		// device still boots.
-		provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
+		// device still boots. It returns an error only when the user asked for
+		// provisioning and it was not applied — reported below, after the eject,
+		// so the drive is still safe to remove.
+		provisionErr = provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
 	ejectDisk(targetDrive)
+
+	// Requested provisioning that never reached the card is a failed install:
+	// the device would boot with none of the configuration the user asked for,
+	// and reporting success here is what made WendyOS#1562 look like a device
+	// bug. The image itself is fine, which the warning above already said.
+	if provisionErr != nil {
+		return fmt.Errorf("%s %s was written to %s, but the requested provisioning was not applied: %w",
+			device.Name, imgInfo.Version, targetDrive.Name, provisionErr)
+	}
 
 	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
 	fmt.Println("You can now insert the drive into your device and power it on.")
@@ -2301,11 +2314,18 @@ var confirmProvisioningRetry = func() (bool, error) {
 // --device-name / --pre-enroll (that input did not reach the device), and on an
 // interactive terminal we offer to retry — e.g. after re-seating an SD card
 // whose config partition could not be located.
-func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) {
+// It returns the final provisioning error when the user explicitly asked for
+// provisioning and it was not applied, so the caller can exit non-zero instead
+// of printing "Successfully installed" over dropped input (WendyOS#1562: the
+// config-partition write failed, --wifi and --device-name never reached the
+// card, and the install still reported success — which read as the device
+// ignoring its configuration rather than never receiving it). When provisioning
+// was not requested it stays advisory and returns nil.
+func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) error {
 	for {
 		err := provisionConfigPartitionFn(d, creds, deviceName, provisioningJSON)
 		if err == nil {
-			return
+			return nil
 		}
 
 		if requested {
@@ -2318,16 +2338,18 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 		if !isInteractiveTerminal() {
 			if requested {
 				fmt.Println("Re-run 'wendy os install' to apply WiFi / device-name / pre-enrollment, or configure the device after it boots.")
+				return err
 			}
-			return
+			return nil
 		}
 
-		retry, err := confirmProvisioningRetry()
-		if err != nil || !retry {
+		retry, confirmErr := confirmProvisioningRetry()
+		if confirmErr != nil || !retry {
 			if requested {
 				fmt.Println("Skipping provisioning. Re-run 'wendy os install' to apply it, or configure the device after it boots.")
+				return err
 			}
-			return
+			return nil
 		}
 	}
 }
