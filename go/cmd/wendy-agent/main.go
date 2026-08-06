@@ -1057,8 +1057,21 @@ func handleUtilityCommand(args []string) (bool, int) {
 	}
 
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils open-browser <url>")
+		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils <command>")
 		return true, 2
+	}
+	if args[1] == "ipcam-gstreamer" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "invalid GStreamer helper invocation")
+			return true, 2
+		}
+		if err := services.RunIPCameraGStreamerHelper(os.Stdin, os.Stdout); err != nil {
+			// Keep this deliberately generic: the helper's pipeline contains camera
+			// credentials, and library diagnostics may repeat property values.
+			fmt.Fprintln(os.Stderr, "GStreamer capture pipeline failed")
+			return true, 1
+		}
+		return true, 0
 	}
 	if args[1] != "open-browser" {
 		return false, 0

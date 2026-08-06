@@ -111,6 +111,75 @@ func TestCameraNeedsCredentials(t *testing.T) {
 	}
 }
 
+type credentialTestVideoStream struct {
+	frame *agentpb.VideoFrame
+	err   error
+}
+
+func (s *credentialTestVideoStream) Recv() (*agentpb.VideoFrame, error) {
+	return s.frame, s.err
+}
+
+// grpc-go normally returns a server handler's status from Recv rather than the
+// generated StreamVideo constructor. That delayed path must still perform the
+// documented credential resolution and retry.
+func TestStreamVideoCredentialRetryHandlesFirstRecv(t *testing.T) {
+	starts := 0
+	start := func() (videoStream, error) {
+		starts++
+		if starts == 1 {
+			return &credentialTestVideoStream{err: credentialsNeededError(t, "203")}, nil
+		}
+		return &credentialTestVideoStream{frame: &agentpb.VideoFrame{Data: []byte("frame")}}, nil
+	}
+	resolved := uint32(0)
+	stream, err := streamVideoWithCredentialRetry(start, func(deviceID uint32) error {
+		resolved = deviceID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("streamVideoWithCredentialRetry: %v", err)
+	}
+	frame, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if got := string(frame.GetData()); got != "frame" {
+		t.Fatalf("frame = %q, want frame", got)
+	}
+	if resolved != 203 || starts != 2 {
+		t.Fatalf("resolved=%d starts=%d, want 203/2", resolved, starts)
+	}
+}
+
+// Keep the uncommon constructor-error path working too, without allowing a bad
+// replacement login to prompt forever when the retried stream returns the same
+// status on Recv.
+func TestStreamVideoCredentialRetryRunsOnlyOnce(t *testing.T) {
+	starts := 0
+	start := func() (videoStream, error) {
+		starts++
+		if starts == 1 {
+			return nil, credentialsNeededError(t, "204")
+		}
+		return &credentialTestVideoStream{err: credentialsNeededError(t, "204")}, nil
+	}
+	resolved := 0
+	stream, err := streamVideoWithCredentialRetry(start, func(deviceID uint32) error {
+		resolved++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("streamVideoWithCredentialRetry: %v", err)
+	}
+	if _, err := stream.Recv(); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("Recv error = %v, want credentials status", err)
+	}
+	if resolved != 1 || starts != 2 {
+		t.Fatalf("resolved=%d starts=%d, want 1/2", resolved, starts)
+	}
+}
+
 // wendy.json wins, and no prompt happens even when one would be possible.
 func TestResolveCameraCredentialsPrefersConfig(t *testing.T) {
 	dir := writeWendyJSON(t, `{

@@ -1108,49 +1108,6 @@ func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte,
 	})
 }
 
-// gstreamerFrames runs the depayload pipeline and hands each buffer of Annex-B
-// bytes to onFrame. It is the production implementation of runGStreamer.
-func (s *VideoService) gstreamerFrames(ctx context.Context, args []string, onFrame func([]byte)) error {
-	bin, err := resolveGSTBinary("gst-launch-1.0")
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("creating capture pipe: %w", err)
-	}
-	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
-	cmd.Stderr = stderrBuf
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("starting capture: %w", err)
-	}
-	buf := make([]byte, 64*1024)
-	for {
-		n, readErr := stdout.Read(buf)
-		if n > 0 {
-			// The consumer keeps the slice past this iteration, so it gets its own
-			// copy rather than a window onto the reused read buffer.
-			chunk := make([]byte, n)
-			copy(chunk, buf[:n])
-			onFrame(chunk)
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	waitErr := cmd.Wait()
-	if ctx.Err() != nil {
-		// Cancellation is the normal way a viewer disconnects.
-		return nil
-	}
-	if waitErr != nil {
-		return fmt.Errorf("capture pipeline exited: %w (%s)",
-			waitErr, strings.TrimSpace(stderrBuf.buf.String()))
-	}
-	return nil
-}
-
 // streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
 // allocates mmap buffers, and streams frames until ctx is cancelled or an error occurs.
 // Each captured frame is delivered via the broadcast callback; if the callback returns
