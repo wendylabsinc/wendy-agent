@@ -202,6 +202,18 @@ func isPermissionDenied(err error) bool {
 	return errors.As(err, &portErr) && portErr.Code() == serial.PermissionDenied
 }
 
+// ErrPortBusy indicates the serial port is already open by another process.
+// Wrapped into the error chain wherever go.bug.st/serial reports
+// serial.PortBusy, so callers can detect this specific failure mode via
+// errors.Is regardless of how many layers the error has been wrapped
+// through.
+var ErrPortBusy = errors.New("serial port busy")
+
+func isPortBusy(err error) bool {
+	var portErr *serial.PortError
+	return errors.As(err, &portErr) && portErr.Code() == serial.PortBusy
+}
+
 func espLoaderErrorMessage(code byte) string {
 	switch code {
 	case 0x00:
@@ -948,6 +960,9 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 				return fmt.Errorf("Permission denied to access USB device %s. To have access, you need to be part of the user group '%s'.", portPath, group)
 			}
 		}
+		if isPortBusy(err) {
+			return fmt.Errorf("%w: opening USB device %s: %w", ErrPortBusy, portPath, err)
+		}
 		return fmt.Errorf("opening USB device %s: %w", portPath, err)
 	}
 
@@ -960,6 +975,9 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 	time.Sleep(1500 * time.Millisecond) // wait for USB re-enumeration
 	newPort, err := serial.Open(portPath, mode)
 	if err != nil {
+		if isPortBusy(err) {
+			return fmt.Errorf("%w: reopening port after reset: %w", ErrPortBusy, err)
+		}
 		return fmt.Errorf("reopening port after reset: %w", err)
 	}
 	f.port = newPort
