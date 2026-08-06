@@ -5,3 +5,8 @@ Python standard library and NumPy.
 """
 
 __version__ = "0.1.0"
+
+from . import wire
+
+__all__ = ["wire"]
+
