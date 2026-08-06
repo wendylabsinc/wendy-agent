@@ -276,6 +276,55 @@ func TestManagerNeverServesWhereAnotherServerAnswers(t *testing.T) {
 	}
 }
 
+// A competing server can appear after our unanswered window has elapsed (for
+// example, a slow upstream DHCP server). The manager must stop answering and
+// remove its address, not merely change the diagnostic guard state.
+func TestManagerWithdrawsWhenAnotherServerAnswersAfterClaim(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopped := make(chan struct{}, 1)
+	h.mgr.serve = func(sctx context.Context, link string, seg CameraSegment, pool *LeasePool, onLease func(net.HardwareAddr, net.IP, string)) error {
+		h.mu.Lock()
+		h.served = append(h.served, link)
+		h.segments[link] = seg
+		h.poolsSeen[link] = pool
+		h.onLease[link] = onLease
+		h.mu.Unlock()
+		<-sctx.Done()
+		stopped <- struct{}{}
+		return nil
+	}
+
+	claimEth0(t, h, ctx)
+	h.feed("eth0", &Packet{Type: Offer, XID: 1, ServerID: net.IPv4(192, 168, 0, 1)})
+
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the DHCP server kept running after a foreign offer")
+	}
+	if got := h.mgr.State("eth0"); got != LinkDisqualified {
+		t.Fatalf("state = %v, want disqualified", got)
+	}
+	if h.mgr.isClaimed("eth0") {
+		t.Fatal("link remained claimed after a foreign offer")
+	}
+	if got := h.removedAddresses(); len(got) != 1 || got[0] != "eth0 10.98.0.1/24" {
+		t.Fatalf("removed %v, want the claimed address", got)
+	}
+
+	// Later camera traffic must not resurrect the disqualified link while the
+	// same cable remains connected.
+	h.feed("eth0", &Packet{Type: Discover, XID: 2})
+	h.advance(time.Hour)
+	h.mgr.scanOnce(ctx)
+	if got := h.servedLinks(); len(got) != 1 {
+		t.Fatalf("served %v, want no server after disqualification", got)
+	}
+}
+
 // A leased camera reaches the registry with its address, which is what makes it
 // streamable.
 func TestManagerRecordsLease(t *testing.T) {
@@ -351,6 +400,54 @@ func TestManagerSecondLinkGetsItsOwnSegment(t *testing.T) {
 	defer h.mu.Unlock()
 	if h.segments["eth0"].ServerIP.Equal(h.segments["eth1"].ServerIP) {
 		t.Fatalf("both links got %v", h.segments["eth0"].ServerIP)
+	}
+}
+
+// Releasing a lower-numbered link leaves a hole. Allocation must find that
+// unused subnet rather than using len(claimed), which would duplicate the still
+// active higher-numbered segment.
+func TestManagerReusesReleasedSegmentWithoutCollision(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0"), cabledEth("eth1")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "both initial links to be watched", func() bool { return len(h.watchedLinks()) == 2 })
+	h.feed("eth0", &Packet{Type: Discover, XID: 1})
+	h.feed("eth1", &Packet{Type: Discover, XID: 2})
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "both initial links to be served", func() bool { return len(h.servedLinks()) == 2 })
+
+	h.mgr.release("eth0")
+	eth1 := cabledEth("eth1")
+	eth1.HasIPv4 = true
+	h.mu.Lock()
+	h.ifaces = []Interface{eth1, cabledEth("eth2")}
+	h.mu.Unlock()
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "replacement link to be watched", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		return h.onPacket["eth2"] != nil
+	})
+	h.feed("eth2", &Packet{Type: Discover, XID: 3})
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "replacement link to be served", func() bool { return len(h.servedLinks()) == 3 })
+
+	h.mu.Lock()
+	eth1Segment := h.segments["eth1"]
+	eth2Segment := h.segments["eth2"]
+	h.mu.Unlock()
+	if !eth1Segment.ServerIP.Equal(net.IPv4(10, 98, 1, 1)) {
+		t.Fatalf("eth1 server = %v, want 10.98.1.1", eth1Segment.ServerIP)
+	}
+	if !eth2Segment.ServerIP.Equal(net.IPv4(10, 98, 0, 1)) {
+		t.Fatalf("eth2 server = %v, want released 10.98.0.1", eth2Segment.ServerIP)
+	}
+	if eth1Segment.ServerIP.Equal(eth2Segment.ServerIP) {
+		t.Fatalf("active links share server address %v", eth1Segment.ServerIP)
 	}
 }
 
@@ -528,6 +625,55 @@ func TestManagerReleaseStopsTheServer(t *testing.T) {
 	case <-stopped:
 	case <-time.After(3 * time.Second):
 		t.Fatal("the link server kept running after the link was released")
+	}
+}
+
+// A server startup/runtime failure must not leave the address and claim wedged
+// forever. Cleanup makes the next client request eligible for a fresh attempt.
+func TestManagerRetriesAfterDHCPServerFailure(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	h.mgr.serve = func(sctx context.Context, link string, seg CameraSegment, pool *LeasePool, onLease func(net.HardwareAddr, net.IP, string)) error {
+		h.mu.Lock()
+		h.served = append(h.served, link)
+		h.segments[link] = seg
+		h.poolsSeen[link] = pool
+		h.onLease[link] = onLease
+		attempt := len(h.served)
+		h.mu.Unlock()
+		if attempt == 1 {
+			return errors.New("socket failed")
+		}
+		<-sctx.Done()
+		return nil
+	}
+
+	claimEth0(t, h, ctx)
+	waitFor(t, "failed server claim to be cleaned up", func() bool {
+		return !h.mgr.isClaimed("eth0") && len(h.removedAddresses()) == 1
+	})
+	if got := h.mgr.State("eth0"); got != LinkObserving {
+		t.Fatalf("state = %v, want observing after server failure", got)
+	}
+
+	// Time alone is insufficient: a fresh request is required before retrying.
+	h.advance(time.Hour)
+	h.mgr.scanOnce(ctx)
+	if got := h.servedLinks(); len(got) != 1 {
+		t.Fatalf("served %v without a fresh request", got)
+	}
+
+	h.feed("eth0", &Packet{Type: Discover, XID: 2})
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "DHCP server to be retried", func() bool { return len(h.servedLinks()) == 2 })
+	if got := h.mgr.State("eth0"); got != LinkServing {
+		t.Fatalf("state = %v, want serving after retry", got)
+	}
+	if got := h.addedAddresses(); len(got) != 2 {
+		t.Fatalf("configured %v, want one address per attempt", got)
 	}
 }
 

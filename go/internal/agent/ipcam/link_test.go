@@ -168,6 +168,23 @@ func TestGuardResetForgetsLink(t *testing.T) {
 	}
 }
 
+func TestGuardResetServingPreservesConcurrentDisqualification(t *testing.T) {
+	g := NewLinkGuard()
+	now := time.Now()
+	g.Observe("eth0", &Packet{Type: Discover}, now)
+	if !g.ShouldClaim("eth0", now.Add(unansweredWindow)) {
+		t.Fatal("did not enter serving state")
+	}
+	g.Observe("eth0", &Packet{Type: Offer, ServerID: net.IPv4(192, 168, 0, 1)}, now)
+
+	if g.ResetServing("eth0") {
+		t.Fatal("reset a link that had been disqualified")
+	}
+	if got := g.State("eth0"); got != LinkDisqualified {
+		t.Fatalf("state = %v, want disqualified", got)
+	}
+}
+
 func TestGuardExplicitDisqualify(t *testing.T) {
 	g := NewLinkGuard()
 	g.Disqualify("eth0")

@@ -222,6 +222,20 @@ func (g *LinkGuard) Reset(link string) {
 	delete(g.by, link)
 }
 
+// ResetServing forgets a failed serving decision only if no competing DHCP
+// server has disqualified the link in the meantime. It returns whether the
+// serving state was reset.
+func (g *LinkGuard) ResetServing(link string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	d := g.decision(link)
+	if d.state != LinkServing {
+		return false
+	}
+	delete(g.by, link)
+	return true
+}
+
 // CameraSegment is the addressing for a claimed camera link.
 //
 // 10.98.x is chosen over 192.168.x because the latter very often collides with

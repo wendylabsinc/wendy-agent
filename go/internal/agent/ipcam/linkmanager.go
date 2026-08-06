@@ -163,6 +163,12 @@ func (m *LinkManager) ensureWatching(ctx context.Context, link string) {
 				zap.String("mac", p.CHAddr.String()),
 				zap.String("hostname", p.Hostname))
 			m.guard.Observe(link, p, m.now())
+			// The guard can discover a competing server after we have already
+			// claimed the link. Stop answering immediately and remove our address,
+			// while leaving the disqualification sticky until carrier is lost.
+			if m.guard.State(link) == LinkDisqualified {
+				m.withdrawDisqualifiedClaim(link)
+			}
 			// A DISCOVER names the camera before it has any address, and its
 			// hostname is often the model. That is worth recording even on a link
 			// we will never serve.
@@ -203,7 +209,13 @@ func (m *LinkManager) claim(ctx context.Context, link string) {
 		m.mu.Unlock()
 		return
 	}
-	seg := SegmentFor(len(m.claimed))
+	seg, ok := m.nextSegmentLocked()
+	if !ok {
+		m.mu.Unlock()
+		m.logger.Warn("no camera link subnet available", zap.String("link", link))
+		m.guard.Disqualify(link)
+		return
+	}
 	pool := NewLeasePool(seg.PoolBase, seg.PoolSize)
 	m.claimed[link] = seg
 	m.pools[link] = pool
@@ -221,18 +233,32 @@ func (m *LinkManager) claim(ctx context.Context, link string) {
 		m.guard.Disqualify(link)
 		return
 	}
-	m.guard.RegisterServerID(seg.ServerIP)
-	m.logger.Info("serving DHCP on camera link",
-		zap.String("link", link),
-		zap.String("address", seg.CIDR()),
-		zap.String("pool", fmt.Sprintf("%s+%d", seg.PoolBase, seg.PoolSize)))
-
 	// A per-link context so releasing the link actually stops its server, rather
 	// than leaving one running for every claim the link ever had.
 	serveCtx, cancel := context.WithCancel(ctx)
 	m.mu.Lock()
+	// A foreign DHCP reply may have disqualified and withdrawn this link while
+	// addAddress was in progress. Do not resurrect it after that decision.
+	if currentPool := m.pools[link]; currentPool != pool {
+		m.mu.Unlock()
+		cancel()
+		if err := m.delAddress(link, seg.CIDR()); err != nil {
+			m.logger.Warn("removing disqualified camera link address failed",
+				zap.String("link", link), zap.String("cidr", seg.CIDR()), zap.Error(err))
+		}
+		return
+	}
 	m.stop[link] = cancel
 	m.mu.Unlock()
+	m.guard.RegisterServerID(seg.ServerIP)
+	if m.guard.State(link) == LinkDisqualified {
+		m.withdrawDisqualifiedClaim(link)
+		return
+	}
+	m.logger.Info("serving DHCP on camera link",
+		zap.String("link", link),
+		zap.String("address", seg.CIDR()),
+		zap.String("pool", fmt.Sprintf("%s+%d", seg.PoolBase, seg.PoolSize)))
 
 	go func() {
 		err := m.serve(serveCtx, link, seg, pool, func(mac net.HardwareAddr, addr net.IP, hostname string) {
@@ -241,8 +267,29 @@ func (m *LinkManager) claim(ctx context.Context, link string) {
 		if err != nil && serveCtx.Err() == nil {
 			m.logger.Warn("dhcp server on camera link exited",
 				zap.String("link", link), zap.Error(err))
+			m.recoverFailedServer(link, seg, pool)
 		}
 	}()
+}
+
+// nextSegmentLocked returns the lowest unused camera subnet. Reusing holes is
+// important: len(m.claimed) can name a subnet that is still active after a
+// lower-numbered link has been released. Callers hold m.mu.
+func (m *LinkManager) nextSegmentLocked() (CameraSegment, bool) {
+	for index := 0; index < 256; index++ {
+		candidate := SegmentFor(index)
+		used := false
+		for _, claimed := range m.claimed {
+			if claimed.ServerIP.Equal(candidate.ServerIP) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return candidate, true
+		}
+	}
+	return CameraSegment{}, false
 }
 
 // recordLease puts a leased camera into the registry, which is how a camera that
@@ -291,6 +338,48 @@ func (m *LinkManager) dropClaim(link string) (CameraSegment, bool) {
 		cancel()
 	}
 	return seg, wasClaimed
+}
+
+// withdrawDisqualifiedClaim stops serving a link where another DHCP server has
+// appeared. The guard state is deliberately preserved so later client traffic
+// cannot make the link claimable again without a carrier reset.
+func (m *LinkManager) withdrawDisqualifiedClaim(link string) {
+	seg, wasClaimed := m.dropClaim(link)
+	if !wasClaimed {
+		return
+	}
+	if err := m.delAddress(link, seg.CIDR()); err != nil {
+		m.logger.Warn("removing disqualified camera link address failed",
+			zap.String("link", link), zap.String("cidr", seg.CIDR()), zap.Error(err))
+	}
+	m.logger.Warn("stopped serving disqualified camera link", zap.String("link", link))
+}
+
+// recoverFailedServer removes a failed claim and resets the guard so the next
+// camera request can begin a fresh unanswered window. The pool identity prevents
+// a stale server goroutine from tearing down a newer claim for the same link.
+func (m *LinkManager) recoverFailedServer(link string, seg CameraSegment, pool *LeasePool) {
+	m.mu.Lock()
+	if m.pools[link] != pool {
+		m.mu.Unlock()
+		return
+	}
+	cancel := m.stop[link]
+	delete(m.claimed, link)
+	delete(m.pools, link)
+	delete(m.stop, link)
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if err := m.delAddress(link, seg.CIDR()); err != nil {
+		m.logger.Warn("removing failed camera link address failed",
+			zap.String("link", link), zap.String("cidr", seg.CIDR()), zap.Error(err))
+		m.guard.Disqualify(link)
+		return
+	}
+	// Do not erase a foreign DHCP reply that raced with the server failure.
+	m.guard.ResetServing(link)
 }
 
 // release forgets a link entirely, guard decision included, because a new cable is
