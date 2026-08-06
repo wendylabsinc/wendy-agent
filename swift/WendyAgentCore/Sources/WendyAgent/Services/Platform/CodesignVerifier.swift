@@ -63,7 +63,7 @@ struct SecStaticCodeVerifier: CodesignVerifying {
         )
         guard validityStatus == errSecSuccess else {
             let detail =
-                cfError.map { String(describing: $0.takeRetainedValue() as Error) }
+                cfError.map { String(describing: $0.takeRetainedValue() as (any Error)) }
                 ?? "status \(validityStatus)"
             throw CodesignVerificationError.invalidSignature(detail)
         }
