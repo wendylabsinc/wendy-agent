@@ -25,10 +25,10 @@ require (
 	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
+	github.com/google/go-containerregistry v0.21.8
 	github.com/google/gousb v1.1.3
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/mdns v1.0.6
-	github.com/joannisorlandos/stagefile v0.0.0-00010101000000-000000000000
 	github.com/klauspost/compress v1.19.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/miekg/dns v1.1.72
@@ -84,7 +84,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
-	github.com/google/go-containerregistry v0.21.8 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
@@ -124,7 +123,6 @@ require (
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
+	gotest.tools/v3 v3.5.2 // indirect
 	sigs.k8s.io/knftables v0.0.18 // indirect
 )
-
-replace github.com/joannisorlandos/stagefile => /Users/joannisorlandos/git/stagefile/.worktrees/stagefile-mvp
