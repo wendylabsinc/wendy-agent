@@ -10,11 +10,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -1023,6 +1025,235 @@ func TestHideLocalProviders(t *testing.T) {
 			if got[k] {
 				t.Errorf("hideLocalProviders(nil)[%q] = true with opt-in set; want false", k)
 			}
+		}
+	})
+}
+
+// ── discoverProviderForPicker ───────────────────────────────────────
+
+// fakeProvider is a minimal DeviceProvider for exercising the picker
+// discovery loop.
+type fakeProvider struct {
+	key           string
+	devices       []models.ExternalDevice
+	discoverCalls atomic.Int32
+}
+
+func (p *fakeProvider) Key() string                             { return p.key }
+func (p *fakeProvider) DisplayName() string                     { return "Fake" }
+func (p *fakeProvider) IsAvailable(context.Context) bool        { return true }
+func (p *fakeProvider) CheckRequirements(context.Context) error { return nil }
+func (p *fakeProvider) DiscoverDevices(context.Context) ([]models.ExternalDevice, error) {
+	p.discoverCalls.Add(1)
+	return p.devices, nil
+}
+func (p *fakeProvider) SupportedBuildTypes() []string { return nil }
+func (p *fakeProvider) CanBuild(string) bool          { return false }
+func (p *fakeProvider) Build(context.Context, models.ExternalDevice, string, string, string, bool) (*providers.BuiltApp, error) {
+	return nil, errors.New("not implemented")
+}
+func (p *fakeProvider) Run(context.Context, *providers.BuiltApp, bool, chan<- providers.RunOutput) error {
+	return errors.New("not implemented")
+}
+func (p *fakeProvider) Stop(context.Context, *providers.BuiltApp) error {
+	return errors.New("not implemented")
+}
+func (p *fakeProvider) GetDeviceInfo(context.Context, models.ExternalDevice) (*providers.ProviderDeviceInfo, error) {
+	return nil, nil
+}
+
+// fakeContinuousProvider additionally implements ContinuousDiscoverer.
+type fakeContinuousProvider struct {
+	fakeProvider
+	ch  chan models.ExternalDevice
+	err error
+}
+
+func (p *fakeContinuousProvider) DiscoverDevicesContinuous(context.Context) (<-chan models.ExternalDevice, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return p.ch, nil
+}
+
+var (
+	_ providers.DeviceProvider       = (*fakeProvider)(nil)
+	_ providers.ContinuousDiscoverer = (*fakeContinuousProvider)(nil)
+)
+
+// runDiscoverProviderForPicker starts the discovery loop in a goroutine and
+// returns a channel of items sent to the picker plus a done channel closed
+// when the loop returns.
+func runDiscoverProviderForPicker(ctx context.Context, prov providers.DeviceProvider) (<-chan tui.PickerItem, <-chan struct{}) {
+	got := make(chan tui.PickerItem, 16)
+	done := make(chan struct{})
+	go func() {
+		discoverProviderForPicker(ctx, prov, func(items []tui.PickerItem) {
+			for _, item := range items {
+				got <- item
+			}
+		})
+		close(done)
+	}()
+	return got, done
+}
+
+func awaitPickerItem(t *testing.T, got <-chan tui.PickerItem, wantName string) {
+	t.Helper()
+	select {
+	case item := <-got:
+		if item.Name != wantName {
+			t.Fatalf("picker item name = %q, want %q", item.Name, wantName)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for picker item %q", wantName)
+	}
+}
+
+func awaitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("discoverProviderForPicker did not return after ctx cancel")
+	}
+}
+
+func TestProviderPollDelay(t *testing.T) {
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		want    time.Duration
+	}{
+		{"instant scan waits full cycle", 0, 3 * time.Second},
+		{"scan time counts toward the cycle", 1 * time.Second, 2 * time.Second},
+		{"remainder below minimum gap is clamped", 2600 * time.Millisecond, 500 * time.Millisecond},
+		{"scan as long as the cycle", 3 * time.Second, 500 * time.Millisecond},
+		{"scan longer than the cycle", 10 * time.Second, 500 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerPollDelay(tt.elapsed); got != tt.want {
+				t.Fatalf("providerPollDelay(%v) = %v, want %v", tt.elapsed, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDiscoverProviderForPickerStreamsContinuous(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	prov := &fakeContinuousProvider{
+		fakeProvider: fakeProvider{key: "fake"},
+		ch:           make(chan models.ExternalDevice),
+	}
+	got, done := runDiscoverProviderForPicker(ctx, prov)
+
+	prov.ch <- models.ExternalDevice{ID: "fake:1", DisplayName: "one", ProviderKey: "fake"}
+	awaitPickerItem(t, got, "one")
+	prov.ch <- models.ExternalDevice{ID: "fake:2", DisplayName: "two", ProviderKey: "fake"}
+	awaitPickerItem(t, got, "two")
+
+	// Cancel then close the stream, as a real implementation would on ctx
+	// cancellation; the loop must return without falling back to polling.
+	cancel()
+	close(prov.ch)
+	awaitDone(t, done)
+
+	if n := prov.discoverCalls.Load(); n != 0 {
+		t.Fatalf("DiscoverDevices called %d times; streaming path should not poll", n)
+	}
+}
+
+func TestDiscoverProviderForPickerPollingFallback(t *testing.T) {
+	polled := []models.ExternalDevice{{ID: "fake:1", DisplayName: "polled", ProviderKey: "fake"}}
+
+	tests := []struct {
+		name string
+		prov providers.DeviceProvider
+	}{
+		{"provider without continuous support", &fakeProvider{key: "fake", devices: polled}},
+		{"continuous start error", &fakeContinuousProvider{
+			fakeProvider: fakeProvider{key: "fake", devices: polled},
+			err:          errors.New("stream unavailable"),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			got, done := runDiscoverProviderForPicker(ctx, tt.prov)
+			awaitPickerItem(t, got, "polled")
+			cancel()
+			awaitDone(t, done)
+		})
+	}
+}
+
+func TestDiscoverProviderForPickerStreamDeathFallsBackToPolling(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	prov := &fakeContinuousProvider{
+		fakeProvider: fakeProvider{
+			key:     "fake",
+			devices: []models.ExternalDevice{{ID: "fake:1", DisplayName: "polled", ProviderKey: "fake"}},
+		},
+		ch: make(chan models.ExternalDevice),
+	}
+	got, done := runDiscoverProviderForPicker(ctx, prov)
+
+	// Stream dies while the picker is still open: polling must take over.
+	close(prov.ch)
+	awaitPickerItem(t, got, "polled")
+	cancel()
+	awaitDone(t, done)
+}
+
+func TestExternalProviderPickerItem(t *testing.T) {
+	t.Run("wendy-lite devices become merged devices", func(t *testing.T) {
+		prov := &fakeProvider{key: "wendy-lite"}
+		dev := models.ExternalDevice{
+			ID:              "wendy-lite:board",
+			DisplayName:     "Lite Board",
+			ProviderKey:     "wendy-lite",
+			AgentVersion:    "1.2.3",
+			CPUArchitecture: "riscv",
+			ConnectionInfo:  map[string]string{"type": "LAN", "ip": "10.0.0.9"},
+		}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if item.Type != "LAN (Lite)" {
+			t.Errorf("Type = %q, want %q", item.Type, "LAN (Lite)")
+		}
+		if item.Address != "10.0.0.9" {
+			t.Errorf("Address = %q, want %q", item.Address, "10.0.0.9")
+		}
+		entry, ok := item.Value.(*pickerEntry)
+		if !ok || entry.mergedDevice == nil {
+			t.Fatalf("Value = %#v, want *pickerEntry with mergedDevice", item.Value)
+		}
+		if len(entry.mergedDevice.Externals) != 1 || entry.mergedDevice.Externals[0].ID != dev.ID {
+			t.Errorf("mergedDevice.Externals = %#v, want the source device", entry.mergedDevice.Externals)
+		}
+	})
+
+	t.Run("other providers keep provider row layout", func(t *testing.T) {
+		prov := &fakeProvider{key: "fake"}
+		dev := models.ExternalDevice{ID: "fake:1", DisplayName: "Dev", ProviderKey: "fake"}
+		item := externalProviderPickerItem(prov, &dev)
+
+		if item.Type != "Fake" {
+			t.Errorf("Type = %q, want %q", item.Type, "Fake")
+		}
+		entry, ok := item.Value.(*pickerEntry)
+		if !ok || entry.externalDevice == nil {
+			t.Fatalf("Value = %#v, want *pickerEntry with externalDevice", item.Value)
+		}
+		if entry.provider != providers.DeviceProvider(prov) {
+			t.Errorf("entry.provider = %#v, want the source provider", entry.provider)
 		}
 	})
 }
