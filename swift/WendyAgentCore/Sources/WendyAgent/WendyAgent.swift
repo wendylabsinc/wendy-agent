@@ -140,6 +140,13 @@ public actor WendyAgent {
         }
     }
 
+    /// Registers the app's clean-quit path, used to terminate the process once
+    /// a self-update has been installed. Call before `start()`: the handler is
+    /// captured when the main server's services are built.
+    public func setAgentTerminationHandler(_ handler: @escaping @Sendable () async -> Void) {
+        self.agentTerminationHandler = handler
+    }
+
     public func stopApp(id: String) async {
         await self.containerService?.stopApp(id: id)
     }
@@ -159,6 +166,14 @@ public actor WendyAgent {
     }()
 
     private let logger = Logger(label: "sh.wendy.agent")
+
+    /// Held here, not on `AgentService`, so a single in-flight update stays
+    /// serialized across the service rebuilds that provisioning transitions
+    /// perform (`switchMainServer()`).
+    private let agentUpdateLock = AgentUpdateLock()
+    /// The app's clean-quit path, invoked after an agent update is committed.
+    /// `nil` (e.g. in tests) falls back to `exit(0)` inside `AgentRelauncher`.
+    private var agentTerminationHandler: (@Sendable () async -> Void)?
 
     private var mainServer: PosixGRPCServer?
     private var mainServerTask: Task<Void, any Error>?
@@ -304,7 +319,12 @@ public actor WendyAgent {
         let info = await provisioningService.provisioningInfo()
 
         let services: [any RegistrableRPCService] = [
-            AgentService(),
+            AgentService(
+                updateLock: self.agentUpdateLock,
+                updateDependencies: .init(
+                    relauncher: AgentRelauncher(terminate: self.agentTerminationHandler)
+                )
+            ),
             containerService,
             AudioService(),
             provisioningService,

@@ -1,5 +1,6 @@
 import Foundation
 import GRPCCore
+import Logging
 import WendyAgentGRPC
 
 struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
@@ -7,6 +8,18 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
     var hostname: any HostnameSetting = ScutilHostname()
     var wifi: any WiFiManaging = WiFiController()
     var bluetooth: any BluetoothManaging = BluetoothScanner()
+    /// Serializes agent self-updates. Held by `WendyAgent` (not created here)
+    /// so the same lock survives the service rebuilds that provisioning
+    /// transitions perform.
+    var updateLock: AgentUpdateLock = AgentUpdateLock()
+    var updateDependencies: AgentUpdateSession.Dependencies = .init(
+        relauncher: AgentRelauncher(terminate: nil)
+    )
+
+    // A `static` logger, not a stored property: a private stored property
+    // would make the synthesized memberwise initializer private, and callers
+    // (WendyAgent, tests) construct `AgentService` through it.
+    private static let updateLogger = Logger(label: "sh.wendy.agent.update")
 
     func runContainer(
         request: StreamingServerRequest<Wendy_Agent_Services_V1_RunContainerRequest>,
@@ -23,10 +36,34 @@ struct AgentService: Wendy_Agent_Services_V1_WendyAgentService.ServiceProtocol {
         request: StreamingServerRequest<Wendy_Agent_Services_V1_UpdateAgentRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_UpdateAgentResponse> {
-        throw RPCError(
-            code: .unimplemented,
-            message: "Updating the agent is currently not supported by Wendy Agent for Mac."
-        )
+        guard await self.updateLock.tryAcquire() else {
+            throw RPCError(code: .failedPrecondition, message: "an update is already in progress")
+        }
+
+        // StreamingServerRequest and its RPCAsyncSequence are both Sendable,
+        // so `messages` can be captured directly in the @Sendable producer.
+        let messages = request.messages
+        let updateLock = self.updateLock
+        let dependencies = self.updateDependencies
+        let logger = Self.updateLogger
+
+        return StreamingServerResponse { writer in
+            do {
+                try await AgentUpdateSession.run(
+                    messages: messages,
+                    writeResponse: { try await writer.write($0) },
+                    deps: dependencies,
+                    logger: logger
+                )
+            } catch {
+                // Only released on failure: a committed update exits the
+                // process, and a retry against a committed-but-not-yet-dead
+                // agent must still see "an update is already in progress".
+                await updateLock.release()
+                throw error
+            }
+            return Metadata()
+        }
     }
 
     func getAgentVersion(
