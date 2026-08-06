@@ -60,6 +60,7 @@ func (s *TunnelService) Tunnel(stream agentpbv2.WendyTunnelService_TunnelServer)
 // path (see datagram_relay.go). There is no open/session handshake — this is
 // already a direct stream to one already-authenticated agent.
 func (s *TunnelService) DatagramTunnel(stream agentpbv2.WendyTunnelService_DatagramTunnelServer) error {
+	s.logger.Info("device datagram tunnel accepted", clientAuditFields(stream.Context())...)
 	newDatagramRelay(s.logger, deviceFrameStream{stream: stream}, datagramFlowIdleTimeout).run(stream.Context())
 	return nil
 }
