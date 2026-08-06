@@ -54,9 +54,10 @@ type datagramRelay struct {
 	mu    sync.Mutex
 	flows map[uint32]*datagramFlow
 
-	lastOversizeLog time.Time
-	lastFlowCapLog  time.Time
-	lastDialFailLog time.Time
+	lastOversizeLog    time.Time
+	lastFlowCapLog     time.Time
+	lastDialFailLog    time.Time
+	lastInvalidPortLog time.Time
 }
 
 type datagramFlow struct {
@@ -148,6 +149,17 @@ func (r *datagramRelay) handleDatagram(ctx context.Context, d *tunnelframe.Datag
 			r.lastOversizeLog = time.Now()
 			r.logger.Warn("dropping oversized tunnel datagram",
 				zap.Uint32("flow_id", d.FlowID), zap.Int("size", len(d.Payload)))
+		}
+		r.mu.Unlock()
+		return
+	}
+
+	if d.Port == 0 || d.Port > 65535 {
+		r.mu.Lock()
+		if time.Since(r.lastInvalidPortLog) > rateLimitLogInterval {
+			r.lastInvalidPortLog = time.Now()
+			r.logger.Warn("dropping datagram: invalid port",
+				zap.Uint32("flow_id", d.FlowID), zap.Uint32("port", d.Port))
 		}
 		r.mu.Unlock()
 		return
