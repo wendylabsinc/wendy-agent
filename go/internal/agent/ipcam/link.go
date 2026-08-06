@@ -167,7 +167,11 @@ func (g *LinkGuard) Observe(link string, p *Packet, now time.Time) {
 	}
 
 	switch p.Type {
-	case Discover:
+	case Discover, Request:
+		// A REQUEST counts as well as a DISCOVER. A camera we leased before an
+		// agent restart renews with a REQUEST addressed to a server that is no
+		// longer listening; without this the link sits idle until the camera
+		// eventually gives up and falls back to DISCOVER, which can take hours.
 		if d.pendingSince.IsZero() {
 			d.pendingSince = now
 			d.pendingXID = p.XID

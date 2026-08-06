@@ -245,3 +245,30 @@ func TestInterfacesFrom(t *testing.T) {
 		t.Fatal("carrier reported for lo")
 	}
 }
+
+// A camera we leased before an agent restart renews with a REQUEST, not a
+// DISCOVER. Ignoring that would leave the link idle for hours until the camera
+// gave up and started over.
+func TestGuardClaimsAfterUnansweredRequest(t *testing.T) {
+	g := NewLinkGuard()
+	start := time.Now()
+	g.Observe("eth0", &Packet{Type: Request, XID: 7}, start)
+
+	if g.ShouldClaim("eth0", start.Add(unansweredWindow-time.Second)) {
+		t.Fatal("claimed before the window elapsed")
+	}
+	if !g.ShouldClaim("eth0", start.Add(unansweredWindow)) {
+		t.Fatal("did not claim after an unanswered REQUEST")
+	}
+}
+
+// A REQUEST on a link where another server is live must still be ignored.
+func TestGuardRequestDoesNotOverrideDisqualification(t *testing.T) {
+	g := NewLinkGuard()
+	now := time.Now()
+	g.Observe("eth0", &Packet{Type: Offer, ServerID: net.IPv4(192, 168, 0, 1)}, now)
+	g.Observe("eth0", &Packet{Type: Request, XID: 7}, now.Add(time.Second))
+	if g.ShouldClaim("eth0", now.Add(time.Hour)) {
+		t.Fatal("a REQUEST resurrected a disqualified link")
+	}
+}
