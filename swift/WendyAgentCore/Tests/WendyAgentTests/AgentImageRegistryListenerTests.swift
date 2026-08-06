@@ -50,7 +50,8 @@ struct AgentImageRegistryListenerTests {
             try await client.execute(uri: "/v2", method: .get) { response in
                 #expect(response.status == .ok)
             }
-            try await client.execute(uri: "/v2/app/blobs/\(blobDigest)", method: .head) { response in
+            try await client.execute(uri: "/v2/app/blobs/\(blobDigest)", method: .head) {
+                response in
                 #expect(response.status == .ok)
             }
             try await client.execute(uri: "/v2/app/blobs/\(blobDigest)", method: .get) { response in
@@ -66,7 +67,8 @@ struct AgentImageRegistryListenerTests {
                 #expect(response.status == .notFound)
             }
             try await client.execute(
-                uri: "/v2/app/manifests/latest", method: .put,
+                uri: "/v2/app/manifests/latest",
+                method: .put,
                 body: .init(data: manifest)
             ) { response in
                 #expect(response.status == .notFound)
@@ -83,7 +85,8 @@ struct AgentImageRegistryListenerTests {
             let blob = Data("monolithic-layer".utf8)
             let blobDigest = Self.digest(of: blob)
             try await client.execute(
-                uri: "/v2/app/blobs/uploads?digest=\(blobDigest)", method: .post,
+                uri: "/v2/app/blobs/uploads?digest=\(blobDigest)",
+                method: .post,
                 body: .init(data: blob)
             ) { response in
                 #expect(response.status == .created)
@@ -94,19 +97,23 @@ struct AgentImageRegistryListenerTests {
             let chunked = Data("chunked-layer-contents".utf8)
             let chunkedDigest = Self.digest(of: chunked)
             let location = try await client.execute(
-                uri: "/v2/app/blobs/uploads", method: .post
+                uri: "/v2/app/blobs/uploads",
+                method: .post
             ) { response -> String in
                 #expect(response.status == .accepted)
                 return try #require(response.headers[.location])
             }
             let half = chunked.count / 2
             try await client.execute(
-                uri: location, method: .patch, body: .init(data: chunked.prefix(half))
+                uri: location,
+                method: .patch,
+                body: .init(data: chunked.prefix(half))
             ) { response in
                 #expect(response.status == .accepted)
             }
             try await client.execute(
-                uri: "\(location)?digest=\(chunkedDigest)", method: .put,
+                uri: "\(location)?digest=\(chunkedDigest)",
+                method: .put,
                 body: .init(data: chunked.suffix(from: half))
             ) { response in
                 #expect(response.status == .created)
@@ -115,9 +122,12 @@ struct AgentImageRegistryListenerTests {
 
             // Manifest PUT then read-back.
             let manifest = Data(
-                #"{"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#.utf8)
+                #"{"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#.utf8
+            )
             try await client.execute(
-                uri: "/v2/app/manifests/latest", method: .put, body: .init(data: manifest)
+                uri: "/v2/app/manifests/latest",
+                method: .put,
+                body: .init(data: manifest)
             ) { response in
                 #expect(response.status == .created)
             }
