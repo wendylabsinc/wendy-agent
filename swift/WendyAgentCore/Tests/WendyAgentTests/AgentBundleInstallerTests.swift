@@ -294,8 +294,60 @@ struct DittoAgentBundleInstallerReplaceTests {
         }
     }
 
+    /// `FileMoving` double that always fails when asked to move something
+    /// *from* `source`. `replaceBundle`'s first rename (`staged ->
+    /// incomingURL`) is the only step whose origin is known ahead of time
+    /// (the intermediate `incomingURL`/`oldURL` paths are UUID-suffixed), so
+    /// matching on `source` is what lets a test sabotage exactly that step.
+    private final class FailMovingFrom: FileMoving, @unchecked Sendable {
+        private let source: URL
+
+        init(source: URL) {
+            self.source = source
+        }
+
+        func moveItem(at source: URL, to destination: URL) throws {
+            if source.standardizedFileURL == self.source.standardizedFileURL {
+                throw SabotageError.simulatedFailure
+            }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+    }
+
     private enum SabotageError: Error {
         case simulatedFailure
+    }
+
+    @Test(
+        "a failure staging the incoming bundle is reported as .swapFailed and leaves destination untouched"
+    )
+    func stagingFailureLeavesDestinationUntouched() async throws {
+        let root = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let destination = root.appendingPathComponent("Foo.app", isDirectory: true)
+        try makeFakeApp(at: destination, marker: "old")
+
+        let staged = root.appendingPathComponent("staged/Foo.app", isDirectory: true)
+        try makeFakeApp(at: staged, marker: "new")
+
+        var installer = DittoAgentBundleInstaller()
+        installer.fileMover = FailMovingFrom(source: staged)
+
+        do {
+            try await installer.replaceBundle(at: destination, with: staged)
+            Issue.record("expected .swapFailed")
+        } catch AgentBundleInstallerError.swapFailed(let message) {
+            #expect(message.contains("was not touched"))
+        } catch {
+            Issue.record("expected .swapFailed, got \(error)")
+        }
+
+        // Nothing was moved: the original bundle is still at `destination`
+        // and `staged` is untouched, with no leftover rename-dance siblings.
+        #expect(try readMarker(of: destination) == "old")
+        #expect(try readMarker(of: staged) == "new")
+        #expect(try self.staleSiblings(in: root, name: "Foo.app").isEmpty)
     }
 
     @Test("a failure on the final rename rolls back to the previous version")

@@ -145,7 +145,14 @@ struct DittoAgentBundleInstaller: AgentBundleInstalling {
         let incomingURL = parent.appendingPathComponent(".\(name).incoming-\(uuid)")
         let oldURL = parent.appendingPathComponent(".\(name).old-\(uuid)")
 
-        try self.fileMover.moveItem(at: staged, to: incomingURL)
+        do {
+            try self.fileMover.moveItem(at: staged, to: incomingURL)
+        } catch {
+            throw AgentBundleInstallerError.swapFailed(
+                "failed to stage incoming bundle at \(incomingURL.path): \(error); "
+                    + "destination \(destination.path) was not touched"
+            )
+        }
 
         let destinationExisted = fileManager.fileExists(atPath: destination.path)
         if destinationExisted {
