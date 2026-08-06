@@ -8,6 +8,7 @@ __version__ = "0.1.0"
 
 from . import wire
 from .config import Config, load_config
+from .run import Run
 
-__all__ = ["wire", "Config", "load_config"]
+__all__ = ["wire", "Config", "load_config", "Run"]
 
