@@ -269,6 +269,28 @@ struct AgentUpdateSessionTests {
         }
     }
 
+    @Test("a non-installer failure inside the installer surfaces as internalError")
+    func unexpectedInstallerFailure() async throws {
+        for stage in [StubInstaller.Stage.extract, .replace] {
+            let harness = try Harness()
+            defer { harness.cleanup() }
+
+            let installer = StubInstaller(
+                log: harness.log,
+                stagedApp: harness.stagedApp,
+                unexpectedFailure: stage
+            )
+            let error = await runSessionExpectingFailure(
+                [chunkRequest(payload), updateRequest(sha256: payloadSHA256)],
+                deps: makeDependencies(harness, installer: installer),
+                log: harness.log
+            )
+
+            #expect(error?.code == .internalError)
+            #expect(harness.stagingEntries().isEmpty)
+        }
+    }
+
     // MARK: - Code signature gating
 
     @Test("an incoming bundle with an invalid signature fails with failedPrecondition")
@@ -549,6 +571,7 @@ private enum StubError: Error {
     case ackFailed
     case relaunchFailed
     case signatureBroken
+    case installerBroken
 }
 
 /// Ordered record of the side effects a session performs, plus the responses
@@ -651,21 +674,30 @@ private struct StubCodesignVerifier: CodesignVerifying {
 }
 
 private struct StubInstaller: AgentBundleInstalling {
+    /// Which call throws a non-`AgentBundleInstallerError` error.
+    enum Stage: Sendable {
+        case extract
+        case replace
+    }
+
     let log: SessionLog
     let stagedApp: URL
     var extractError: AgentBundleInstallerError?
     var replaceError: AgentBundleInstallerError?
+    var unexpectedFailure: Stage?
 
     func extractBundle(zipAt zip: URL, into stagingDir: URL) async throws -> URL {
         self.log.recordPayload(FileManager.default.contents(atPath: zip.path))
         self.log.record("extract")
         if let extractError = self.extractError { throw extractError }
+        if self.unexpectedFailure == .extract { throw StubError.installerBroken }
         return self.stagedApp
     }
 
     func replaceBundle(at destination: URL, with staged: URL) async throws {
         self.log.record("replace")
         if let replaceError = self.replaceError { throw replaceError }
+        if self.unexpectedFailure == .replace { throw StubError.installerBroken }
     }
 }
 

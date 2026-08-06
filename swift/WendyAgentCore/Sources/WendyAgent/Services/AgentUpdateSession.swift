@@ -268,6 +268,13 @@ enum AgentUpdateSession {
             stagedApp = try await deps.installer.extractBundle(zipAt: payloadURL, into: sessionDir)
         } catch let error as AgentBundleInstallerError {
             throw Self.rpcError(for: error)
+        } catch {
+            // e.g. the staging directory or `ditto` itself could not be
+            // spawned — an agent-side failure, not a bad payload.
+            throw RPCError(
+                code: .internalError,
+                message: "failed to extract the update payload: \(error)"
+            )
         }
 
         let incoming: CodesignInfo
@@ -305,6 +312,11 @@ enum AgentUpdateSession {
             try await deps.installer.replaceBundle(at: deps.currentBundleURL, with: stagedApp)
         } catch let error as AgentBundleInstallerError {
             throw Self.rpcError(for: error)
+        } catch {
+            throw RPCError(
+                code: .internalError,
+                message: "failed to install updated app bundle: \(error)"
+            )
         }
     }
 
