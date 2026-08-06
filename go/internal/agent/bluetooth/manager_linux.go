@@ -38,6 +38,16 @@ const (
 	// typically appear a few hundred ms into discovery, so a sub-second poll
 	// keeps the added connect latency small.
 	resolvePollInterval = 500 * time.Millisecond
+	// maxConnectAttempts bounds how many times Connect retries the final
+	// device.Connect() call when BlueZ reports a transient failure (see
+	// isTransientBluetoothError). Real hardware (e.g. a JBL Flip 5 that is
+	// already bonded/trusted) has been observed rejecting a connect with
+	// BlueZ's generic "unknown" bearer failure while momentarily busy tearing
+	// down a previous session; a couple of retries clears this without
+	// requiring the caller to re-run the whole command.
+	maxConnectAttempts = 3
+	// connectRetryDelay is the wait between retry attempts.
+	connectRetryDelay = 750 * time.Millisecond
 )
 
 // managedObjects is the result shape of org.freedesktop.DBus.ObjectManager's
@@ -513,6 +523,40 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 	}
 }
 
+// retryConnect calls attempt up to maxConnectAttempts times, retrying only
+// when the failure is classified as transient by isTransientBluetoothError
+// (BlueZ's generic "unknown" bearer failure, InProgress, or a bus-level
+// NoReply). Any other failure, or a non-D-Bus error, returns immediately. It
+// waits delay between attempts, returning early if ctx is done first.
+func (m *BlueZManager) retryConnect(ctx context.Context, delay time.Duration, attempt func() error) error {
+	var err error
+	for i := 0; i < maxConnectAttempts; i++ {
+		err = attempt()
+		if err == nil {
+			return nil
+		}
+		name, message, ok := dbusErrorInfo(err)
+		if !ok || !isTransientBluetoothError(name, message) {
+			return err
+		}
+		if i == maxConnectAttempts-1 {
+			break
+		}
+		m.logger.Info("Retrying transient Bluetooth connect failure",
+			zap.String("dbus_error", name), zap.Int("attempt", i+1))
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
 // Connect connects to a Bluetooth peripheral by address via BlueZ over D-Bus,
 // discovering the device first if BlueZ no longer has it cached. When pair is
 // set it registers a headless pairing agent and pairs first (skipped if the
@@ -562,8 +606,11 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		}
 	}
 
-	if call := device.CallWithContext(ctx, deviceIface+".Connect", 0); call.Err != nil {
-		return false, m.connectFailureError(address, pairErr, call.Err)
+	connectErr := m.retryConnect(ctx, connectRetryDelay, func() error {
+		return device.CallWithContext(ctx, deviceIface+".Connect", 0).Err
+	})
+	if connectErr != nil {
+		return false, m.connectFailureError(address, pairErr, connectErr)
 	}
 
 	// The device's live Paired property is the source of truth: pairing may

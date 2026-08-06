@@ -48,6 +48,10 @@ func TestBuildxLocalCacheDirIsCollisionFree(t *testing.T) {
 		// Same sanitized 48-char prefix, different tails.
 		"ros2multi-" + strings.Repeat("x", 48) + "-one",
 		"ros2multi-" + strings.Repeat("x", 48) + "-two",
+		// This pair has the same sanitized 48-char prefix and the same first
+		// 32 SHA-256 bits, so a four-byte digest suffix would still collide.
+		strings.Repeat("x", 48) + "-40818",
+		strings.Repeat("x", 48) + "-102405",
 	}
 	seen := map[string]string{}
 	for _, key := range keys {

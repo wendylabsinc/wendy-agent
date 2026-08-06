@@ -119,12 +119,18 @@ func (m *ContainerMonitor) Unregister(appName string) {
 }
 
 // MarkExplicitStop marks a container as explicitly stopped, preventing restart.
+// An unknown key leaves the restart policy live on a container the user
+// believes is stopped, so it is logged rather than ignored.
 func (m *ContainerMonitor) MarkExplicitStop(appName string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if state, ok := m.states[appName]; ok {
-		state.ExplicitStop = true
+	state, ok := m.states[appName]
+	if !ok {
+		m.logger.Warn("MarkExplicitStop: container not registered for monitoring; restart policy unchanged",
+			zap.String("app_name", appName))
+		return
 	}
+	state.ExplicitStop = true
 }
 
 // ClearExplicitStop reverts a prior MarkExplicitStop, re-enabling automatic

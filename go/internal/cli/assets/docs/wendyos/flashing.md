@@ -10,6 +10,15 @@ wendy install --device-type <type> --drive <device>
 
 Use `wendy os list-drives` to enumerate available drives.
 
+## Migrating from WendyOS < 0.17.0
+
+WendyOS 0.17.0 introduces a new OTA update system that is not backward-compatible
+with pre-0.17.0 images. Devices running an older image cannot receive OTA updates;
+`wendy os update` and `wendy device update` refuse the OS step and print guidance
+to reflash. Perform a one-time reflash with `wendy install` (or `wendy os install`)
+to migrate the device to the new update system. Once reflashed, OTA updates work
+normally.
+
 ## How it works
 
 `wendy install` downloads the WendyOS release zip (~5.5 GB) for the selected device type and writes it directly to the target drive. The compressed zip is never fully extracted to disk — the image entry is streamed from the zip to the drive in a single pass, so the peak temporary disk usage is the zip file itself.

@@ -3,11 +3,9 @@
 package discovery
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"net"
-	"os/exec"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,7 +14,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-// discoverLAN uses the macOS dns-sd command to browse for WendyOS devices.
+// discoverLAN browses for WendyOS devices through mDNSResponder.
 // This works across all network interfaces including USB host-mode connections,
 // unlike raw multicast libraries which miss interfaces the system resolver covers.
 func discoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
@@ -62,171 +60,16 @@ type browseResult struct {
 	interfaceName string
 }
 
-// dnssdBrowse runs dns-sd -B and returns as soon as results stop arriving.
-// It uses a short settle timer: once the first result arrives, it waits up to
-// 500ms for more results before returning. This avoids waiting for the full timeout.
-func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
-	cmd := exec.CommandContext(ctx, "dns-sd", "-B", serviceType, "local")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
+// dnssdBrowseSettle is how long a browse waits for further results after one
+// arrives. Browsing is open-ended, so this is what bounds a scan on a network
+// that has already answered.
+const dnssdBrowseSettle = 500 * time.Millisecond
 
-	// Parse lines on a channel so we can select with a timer.
-	type parsedLine struct {
-		result browseResult
-		ok     bool
-	}
-	lineCh := make(chan parsedLine, 16)
-
-	go func() {
-		defer close(lineCh)
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.Contains(line, "Add") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) < 7 {
-				continue
-			}
-			interfaceName := ""
-			if interfaceIndex, err := strconv.Atoi(fields[3]); err == nil {
-				// Silently falls through with empty interfaceName when the
-				// interface disappears between browse and resolve; USB detection
-				// will be skipped for that device rather than returning an error.
-				if iface, ifaceErr := net.InterfaceByIndex(interfaceIndex); ifaceErr == nil {
-					interfaceName = iface.Name
-				}
-			}
-			lineCh <- parsedLine{
-				result: browseResult{
-					instanceName:  strings.Join(fields[6:], " "),
-					domain:        fields[4],
-					interfaceName: interfaceName,
-				},
-				ok: true,
-			}
-		}
-	}()
-
-	var results []browseResult
-	seen := make(map[string]bool)
-
-	// Wait up to the context deadline for the first result.
-	// Once we get one, use a short settle timer for additional results.
-	var settle <-chan time.Time
-	for {
-		select {
-		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return results, nil
-		case pl, open := <-lineCh:
-			if !open {
-				_ = cmd.Wait()
-				return results, nil
-			}
-			key := pl.result.instanceName + "%" + pl.result.interfaceName
-			if pl.ok && !seen[key] {
-				seen[key] = true
-				results = append(results, pl.result)
-				// Reset settle timer: wait 500ms for more results.
-				settle = time.After(500 * time.Millisecond)
-			}
-		case <-settle:
-			// No new results in 500ms, we're done.
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return results, nil
-		}
-	}
-}
-
-// dnssdResolve runs dns-sd -L to resolve an instance to hostname, port, and TXT records.
-// Returns as soon as the "can be reached at" line is parsed.
+// dnssdResolve resolves a browse result into a LANDevice.
 func dnssdResolve(ctx context.Context, inst browseResult, interfaceDisplayNames map[string]string, linkSpeeds map[string]string) (models.LANDevice, error) {
-	cmd := exec.CommandContext(ctx, "dns-sd", "-L", inst.instanceName, wendyServiceType, inst.domain)
-	stdout, err := cmd.StdoutPipe()
+	hostname, port, txtRecords, err := dnssdResolveInstance(ctx, inst, wendyServiceType)
 	if err != nil {
 		return models.LANDevice{}, err
-	}
-	if err := cmd.Start(); err != nil {
-		return models.LANDevice{}, err
-	}
-
-	var hostname string
-	var port int
-	txtRecords := make(map[string]string)
-
-	// parseTXT extracts key=value pairs from a dns-sd TXT record line.
-	// dns-sd escapes spaces inside values as "\ "; we split on unescaped
-	// whitespace so that values like "Dynamic\ Cosmos" round-trip correctly.
-	parseTXT := func(line string) {
-		var fields []string
-		var cur strings.Builder
-		for i := 0; i < len(line); i++ {
-			if line[i] == '\\' && i+1 < len(line) && (line[i+1] == ' ' || line[i+1] == '\t') {
-				cur.WriteByte(line[i+1])
-				i++
-			} else if line[i] == ' ' || line[i] == '\t' {
-				if cur.Len() > 0 {
-					fields = append(fields, cur.String())
-					cur.Reset()
-				}
-			} else {
-				cur.WriteByte(line[i])
-			}
-		}
-		if cur.Len() > 0 {
-			fields = append(fields, cur.String())
-		}
-		for _, field := range fields {
-			if k, v, ok := strings.Cut(field, "="); ok {
-				txtRecords[k] = v
-			}
-		}
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.Contains(line, "can be reached at") {
-			parts := strings.Fields(line)
-			for i, p := range parts {
-				if p == "at" && i+1 < len(parts) {
-					hostPort := parts[i+1]
-					h, p, err := net.SplitHostPort(hostPort)
-					if err == nil {
-						hostname = strings.TrimSuffix(h, ".")
-						fmt.Sscanf(p, "%d", &port)
-					}
-					break
-				}
-			}
-
-			// TXT records on the same line (some versions).
-			parseTXT(line)
-
-			// TXT records are typically on the next line indented with a space.
-			if scanner.Scan() {
-				parseTXT(scanner.Text())
-			}
-
-			_ = cmd.Process.Kill()
-			break
-		}
-	}
-
-	_ = cmd.Wait()
-
-	if hostname == "" {
-		return models.LANDevice{}, fmt.Errorf("could not resolve instance %q", inst.instanceName)
 	}
 
 	displayName := strings.TrimSuffix(hostname, ".local")
@@ -281,10 +124,6 @@ func darwinCachedInterfaceLinkSpeed(ctx context.Context, interfaceName string, l
 	return linkSpeed
 }
 
-// deviceFromBrowse builds a LANDevice from browse results alone, without
-// resolving via dns-sd -L. Used as a fallback when resolve fails (e.g.
-// the service has no TXT records).
-
 var hostnameLabelRegexp = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 // isValidHostnameLabel reports whether s is a valid RFC1123 hostname label.
@@ -295,14 +134,12 @@ func isValidHostnameLabel(s string) bool {
 	return hostnameLabelRegexp.MatchString(s)
 }
 
-// unescapeDNSSDName converts dns-sd's backslash-escaped spaces ("\ ") back to
-// regular spaces, matching the display form of an mDNS service instance name.
-func unescapeDNSSDName(s string) string {
-	return strings.ReplaceAll(s, `\ `, " ")
-}
-
+// deviceFromBrowse builds a LANDevice from browse results alone. Used as a
+// fallback when resolve fails (e.g. the service has no TXT records).
 func deviceFromBrowse(inst browseResult, interfaceDisplayNames map[string]string) models.LANDevice {
-	displayName := unescapeDNSSDName(inst.instanceName)
+	// Instance names arrive decoded from mDNSResponder, matching the Linux and
+	// Windows backends — no display-format unescaping to undo.
+	displayName := inst.instanceName
 
 	var (
 		id       string
@@ -331,52 +168,29 @@ func deviceFromBrowse(inst browseResult, interfaceDisplayNames map[string]string
 	return dev
 }
 
-// discoverLANContinuous keeps dns-sd -B running and sends each newly
-// discovered device to ch as it's resolved. Runs until ctx is cancelled.
+// discoverLANContinuous keeps a browse open and sends each newly discovered
+// device to ch as it's resolved. Runs until ctx is cancelled.
 // linkSpeeds is intentionally not shared across goroutines — each call to
 // discoverLANContinuous owns its own map, and dnssdResolve is called
-// synchronously within the same goroutine, so no mutex is required.
+// synchronously from the browse callback, so no mutex is required.
 func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 	defer close(ch)
 	interfaceDisplayNames := darwinInterfaceDisplayNameMap(ctx)
 	linkSpeeds := make(map[string]string)
 
-	cmd := exec.CommandContext(ctx, "dns-sd", "-B", wendyServiceType, "local")
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return
-	}
-	if err := cmd.Start(); err != nil {
-		return
-	}
-
 	seen := make(map[string]bool)
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, "Add") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 7 {
-			continue
-		}
 
-		interfaceName := ""
-		if interfaceIndex, err := strconv.Atoi(fields[3]); err == nil {
-			if iface, ifaceErr := net.InterfaceByIndex(interfaceIndex); ifaceErr == nil {
-				interfaceName = iface.Name
-			}
-		}
-		inst := browseResult{
-			instanceName:  strings.Join(fields[6:], " "),
-			domain:        fields[4],
-			interfaceName: interfaceName,
-		}
-
+	// Resolving inside the callback blocks the browse socket pump for up to the
+	// resolve timeout. That matches the previous sequential behaviour, and
+	// mDNSResponder queues further browse replies meanwhile.
+	//
+	// An error here ends discovery for the rest of this call — mDNSResponder
+	// restarting, say. Callers get no further devices, so log rather than
+	// swallow it; the picker's list simply stops growing and gives no clue why.
+	if err := dnssdBrowseStream(ctx, wendyServiceType, func(inst browseResult) {
 		key := inst.instanceName + "%" + inst.interfaceName
 		if seen[key] {
-			continue
+			return
 		}
 		seen[key] = true
 
@@ -390,9 +204,8 @@ func discoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
 		select {
 		case ch <- dev:
 		case <-ctx.Done():
-			return
 		}
+	}); err != nil {
+		log.Printf("discovery: continuous mDNS browse stopped: %v", err)
 	}
-
-	_ = cmd.Wait()
 }

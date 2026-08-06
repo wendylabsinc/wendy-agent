@@ -93,3 +93,38 @@ func TestFriendlyBluetoothError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsTransientBluetoothError(t *testing.T) {
+	tests := []struct {
+		name       string
+		errName    string
+		errMessage string
+		want       bool
+	}{
+		// BlueZ's catch-all "unknown" bearer failure is frequently a transient
+		// HCI-level race (observed on real hardware: a JBL Flip 5 that is
+		// already bonded/trusted but momentarily busy tearing down its
+		// previous connection) rather than a permanent rejection.
+		{"br unknown is transient", "org.bluez.Error.Failed", "br-connection-unknown", true},
+		{"le unknown is transient", "org.bluez.Error.Failed", "le-connection-unknown", true},
+		{"br busy is transient", "org.bluez.Error.Failed", "br-connection-busy", true},
+		{"le busy is transient", "org.bluez.Error.Failed", "le-connection-busy", true},
+		{"adapter InProgress is transient", "org.bluez.Error.InProgress", "", true},
+		{"bus NoReply is transient", "org.freedesktop.DBus.Error.NoReply", "", true},
+
+		// Reasons that indicate a real, non-transient condition must not retry.
+		{"br refused is not transient", "org.bluez.Error.Failed", "br-connection-refused", false},
+		{"adapter not powered is not transient", "org.bluez.Error.Failed", "br-connection-adapter-not-powered", false},
+		{"auth rejected is not transient", "org.bluez.Error.AuthenticationRejected", "", false},
+		{"device not found is not transient", "org.freedesktop.DBus.Error.UnknownObject", "", false},
+		{"unclassified name is not transient", "org.bluez.Error.NotSupported", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTransientBluetoothError(tt.errName, tt.errMessage); got != tt.want {
+				t.Errorf("isTransientBluetoothError(%q, %q) = %v, want %v", tt.errName, tt.errMessage, got, tt.want)
+			}
+		})
+	}
+}

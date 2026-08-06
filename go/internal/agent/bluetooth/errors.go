@@ -52,6 +52,30 @@ func friendlyBluetoothError(name, message string) (text string, notFound, ok boo
 	return "", false, false
 }
 
+// isTransientBluetoothError reports whether a D-Bus/BlueZ failure, identified
+// by its error name and message body, is worth retrying rather than
+// surfacing immediately. BlueZ's "unknown" bearer reason
+// (br-connection-unknown / le-connection-unknown) is its catch-all for an
+// HCI-level disconnect status it could not classify, and in practice this
+// often fires as a momentary race — e.g. a speaker still tearing down its
+// previous connection — rather than a permanent rejection, so a short retry
+// frequently succeeds. org.bluez.Error.InProgress and a bus-level NoReply are
+// likewise transient by definition. Every other classified reason (refused,
+// timeout, adapter-not-powered, authentication rejected, device not found,
+// ...) reflects a real condition that a bare retry will not fix.
+func isTransientBluetoothError(name, message string) bool {
+	switch name {
+	case "org.bluez.Error.InProgress", "org.freedesktop.DBus.Error.NoReply":
+		return true
+	case "org.bluez.Error.Failed":
+		return strings.Contains(message, "br-connection-unknown") ||
+			strings.Contains(message, "le-connection-unknown") ||
+			strings.Contains(message, "br-connection-busy") ||
+			strings.Contains(message, "le-connection-busy")
+	}
+	return false
+}
+
 // friendlyBearerFailure maps the reason strings BlueZ places in
 // org.bluez.Error.Failed messages (src/error.c, e.g. "br-connection-refused")
 // to actionable text. Unrecognized bearer reasons get a generic hint that
