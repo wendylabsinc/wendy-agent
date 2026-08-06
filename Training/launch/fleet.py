@@ -321,11 +321,27 @@ def stage_context(config: FleetConfig, dest: str | Path | None = None) -> Path:
     if _references_cartpole(config.template_dir) and not (dest / "cartpole.py").exists():
         shutil.copy2(cartpole, dest / "cartpole.py")
 
+    # The sweep template reuses the single template's train loop; in the
+    # repository checkout it imports it by file path, but a staged context is
+    # flat, so the file is staged as single_train.py (the module name the
+    # template imports first).
+    single_train = TRAINING_ROOT / "templates" / "single" / "train.py"
+    if _references_single_train(config.template_dir) and not (dest / "single_train.py").exists():
+        shutil.copy2(single_train, dest / "single_train.py")
+
     if config.transport == "lan":
         _rewrite_network_entitlements_for_lan(dest / "wendy.json")
 
     _write_stage_manifest(dest)
     return dest
+
+
+def _references_single_train(template_dir: Path) -> bool:
+    candidates = [template_dir / "Dockerfile", template_dir / "Containerfile"]
+    candidates += sorted(template_dir.glob("*.py"))
+    return any(
+        path.exists() and "single_train" in path.read_text() for path in candidates
+    )
 
 
 def _references_cartpole(template_dir: Path) -> bool:

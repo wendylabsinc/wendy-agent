@@ -395,3 +395,26 @@ def test_down_stops_only_matching_app_ids(tmp_path):
     )
     assert all("go2-artifacts-export" not in c for c in stops)
     assert all("sh.wendy.training.byoish" not in " ".join(c) for c in stops)
+
+
+def test_sweep_staging_includes_single_train(tmp_path):
+    """The real sweep template imports single_train; a staged context must carry it.
+
+    Found at merge time: the sweep template reuses the single template's train
+    loop as the module single_train, but the staging step only knew about
+    cartpole.py. A staged sweep image would have crashed on import.
+    """
+
+    config_path = write_fleet_toml(
+        tmp_path, str(TRAINING_ROOT / "templates" / "sweep"), extra=SWEEP_EXTRA
+    )
+    config = fleet.load_fleet_config(config_path)
+    stage = tmp_path / "stage"
+    fleet.stage_context(config, stage)
+    staged = stage / "single_train.py"
+    source = TRAINING_ROOT / "templates" / "single" / "train.py"
+    assert staged.exists()
+    assert sha256(staged) == sha256(source)
+    assert (stage / "cartpole.py").exists()
+    manifest = json.loads((stage / "stage-manifest.json").read_text())
+    assert "single_train.py" in manifest["files"]
