@@ -1,0 +1,25 @@
+# ppo-fleet configuration. These values mirror the code defaults in
+# train.py; point WT_CONFIG at this file (baked into the image at
+# /app/config.toml) and edit, or override single keys with environment
+# variables such as WT_PPO__LR=1e-4 (double underscore descends one level).
+
+[ppo]
+steps = 512            # environment steps per rollout an actor collects
+epochs = 4             # optimization epochs over each rollout
+minibatch = 128        # minibatch size within an epoch
+clip = 0.2             # clipped-surrogate epsilon
+gamma = 0.99           # discount factor
+lam = 0.95             # Generalized Advantage Estimation lambda
+lr = 3e-4              # Adam learning rate
+entropy_coef = 0.01    # entropy bonus coefficient
+value_coef = 0.5       # value loss coefficient
+max_staleness = 2      # accepted weight-version lag before a rollout is rejected
+total_versions = 200   # updates to apply before the learner stops
+log_std_init = -0.5    # initial log standard deviation of the action noise
+
+[policy]
+hidden = [32]          # hidden layer sizes; travels in wire metadata
+
+[run]
+checkpoint_every = 10  # checkpoint cadence in versions
+keep_last = 5          # checkpoints retained on disk
