@@ -121,7 +121,7 @@ func TestBuildServicesParallelStress(t *testing.T) {
 	built := map[string]int{}
 	orig := buildServiceImage
 	defer func() { buildServiceImage = orig }()
-	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, repo, _, _ string, _ map[string]string, _ string, _, _ io.Writer) error {
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, _ string, _ map[string]string, _ string, _, _ io.Writer) error {
 		name := repoToName(repo)
 		mu.Lock()
 		built[name]++
@@ -134,7 +134,7 @@ func TestBuildServicesParallelStress(t *testing.T) {
 
 	maxConc := 1 + r.Intn(8)
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, root, appID, services, "linux/arm64", nil, "docker", skip, maxConc)
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", skip, maxConc)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}
