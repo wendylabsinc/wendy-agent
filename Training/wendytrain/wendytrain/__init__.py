@@ -6,7 +6,7 @@ Python standard library and NumPy.
 
 __version__ = "0.1.0"
 
-from . import wire
+from . import es, optim, rl, wire
 from .config import Config, load_config
 from .manifest import ManifestError, verify_manifest, write_manifest
 from .mesh import Fleet, derive_role, http_get, http_post, parse_peers, worker_slice
@@ -15,6 +15,9 @@ from .service import serve
 
 __all__ = [
     "wire",
+    "es",
+    "optim",
+    "rl",
     "Config",
     "load_config",
     "Run",
