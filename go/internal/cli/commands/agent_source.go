@@ -156,27 +156,39 @@ func downloadAgentArtifactFromGCS(baseURL string, m *agentManifest, osName, arch
 		return nil, "", fmt.Errorf("agent manifest has no %s artifact for version %s", agentPlatformLabel(osName, arch), version)
 	}
 
+	// The GCS payload is a .tar.gz on every platform except darwin, where it's
+	// the raw app-bundle .zip — keep the error wording accurate to what's
+	// actually being fetched without touching the non-darwin (tarball) text
+	// pinned by existing tests.
+	artifactNoun := "agent tarball"
+	if strings.EqualFold(osName, "darwin") {
+		artifactNoun = "agent artifact"
+	}
+
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Get(baseURL + "/" + art.Path)
 	if err != nil {
-		return nil, "", fmt.Errorf("downloading agent tarball: %w", err)
+		return nil, "", fmt.Errorf("downloading %s: %w", artifactNoun, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("agent tarball returned status %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("%s returned status %d", artifactNoun, resp.StatusCode)
 	}
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, "", fmt.Errorf("reading agent tarball: %w", err)
+		return nil, "", fmt.Errorf("reading %s: %w", artifactNoun, err)
 	}
 	if art.Checksum != "" {
 		sum := sha256.Sum256(raw)
 		if got := hex.EncodeToString(sum[:]); got != art.Checksum {
-			return nil, "", fmt.Errorf("agent tarball checksum mismatch: manifest %s, got %s", art.Checksum, got)
+			return nil, "", fmt.Errorf("%s checksum mismatch: manifest %s, got %s", artifactNoun, art.Checksum, got)
 		}
 	}
 	if strings.EqualFold(osName, "darwin") {
+		if !isZipArchive(raw) {
+			return nil, "", fmt.Errorf("downloaded macOS agent artifact is not a zip archive")
+		}
 		return raw, version, nil
 	}
 	bin, err := extractAgentFromTarGz(bytes.NewReader(raw))
@@ -211,6 +223,9 @@ func resolveAgentArtifact(osName, arch string, nightly bool) (payload []byte, ve
 		return nil, "", "", err
 	}
 	if strings.EqualFold(osName, "darwin") {
+		if !isZipArchive(raw) {
+			return nil, "", "", fmt.Errorf("downloaded macOS agent artifact is not a zip archive")
+		}
 		return raw, rel.TagName, "github", nil
 	}
 	bin, err := extractAgentFromTarGz(bytes.NewReader(raw))
@@ -218,6 +233,29 @@ func resolveAgentArtifact(osName, arch string, nightly bool) (payload []byte, ve
 		return nil, "", "", err
 	}
 	return bin, rel.TagName, "github", nil
+}
+
+// checkDarwinArtifactVersion guards against a macOS-specific version-skew
+// window: the mac build runs in a separate, slower job from the GCS manifest
+// publish, so "latest" can advance to a release whose macOS zip doesn't exist
+// anywhere yet. In that window resolveAgentArtifact's GitHub fallback finds
+// the newest release that DOES have a mac asset — which can be the version
+// the Mac already runs — so uploading it would be a silent no-op update that
+// still prints success and, worse, loops forever on every future check.
+// Callers that independently resolved a target release version should pass
+// it here alongside the version of the artifact resolveAgentArtifact actually
+// returned; a mismatch fails loudly instead of uploading. target/actual is
+// empty or equal in the common case (no skew), where this is a no-op. Only
+// darwin is checked: non-darwin platforms publish tarball and manifest
+// together, so there is no equivalent skew window to guard against.
+func checkDarwinArtifactVersion(osName, target, actual string) error {
+	if !strings.EqualFold(osName, "darwin") {
+		return nil
+	}
+	if target == "" || actual == "" || target == actual {
+		return nil
+	}
+	return fmt.Errorf("macOS agent artifact for %s is not published yet (latest available: %s); try again once the release completes", target, actual)
 }
 
 // matchAgentReleaseAsset finds the release asset for osName/arch: darwin

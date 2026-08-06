@@ -411,3 +411,133 @@ func TestDownloadAgentArtifactFromGCSMissingLinuxKeyKeepsExistingWording(t *test
 		t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
 	}
 }
+
+// TestDownloadAgentArtifactFromGCSErrorWordingIsPlatformAware pins the darwin
+// vs non-darwin transfer-error noun: "agent artifact" on darwin (finding 3),
+// "agent tarball" everywhere else, byte-identical to the pre-existing wording.
+func TestDownloadAgentArtifactFromGCSErrorWordingIsPlatformAware(t *testing.T) {
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{
+			"arm64":        {Path: "agent/v1/missing.tar.gz"},
+			"darwin-arm64": {Path: "agent/v1/missing.zip"},
+		}},
+	}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, _, err := downloadAgentArtifactFromGCS(srv.URL, m, "", "arm64", false)
+	if err == nil {
+		t.Fatal("expected error for 404 linux download")
+	}
+	if wantMsg := "agent tarball returned status 404"; err.Error() != wantMsg {
+		t.Fatalf("linux wording changed: got %q, want %q", err.Error(), wantMsg)
+	}
+
+	_, _, err = downloadAgentArtifactFromGCS(srv.URL, m, "darwin", "arm64", false)
+	if err == nil {
+		t.Fatal("expected error for 404 darwin download")
+	}
+	if wantMsg := "agent artifact returned status 404"; err.Error() != wantMsg {
+		t.Fatalf("darwin wording wrong: got %q, want %q", err.Error(), wantMsg)
+	}
+}
+
+// TestDownloadAgentArtifactFromGCSDarwinZipSanityCheck covers finding 2: the
+// GCS darwin payload must look like a zip (magic "PK\x03\x04") before it's
+// trusted as the app-bundle artifact, while a well-formed zip payload still
+// round-trips unchanged.
+func TestDownloadAgentArtifactFromGCSDarwinZipSanityCheck(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload []byte
+		wantErr bool
+	}{
+		{"valid zip magic bytes are accepted", []byte("PK\x03\x04-fake-but-zip-shaped-payload"), false},
+		{"non-zip payload is rejected", []byte("this-is-definitely-not-a-zip-file"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sum := sha256.Sum256(tt.payload)
+			checksum := hex.EncodeToString(sum[:])
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/agent/v1/a.zip" {
+					w.Write(tt.payload)
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer srv.Close()
+
+			m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+				"v1": {Artifacts: map[string]agentManifestArtifact{
+					"darwin-arm64": {Path: "agent/v1/a.zip", Checksum: checksum, SizeBytes: int64(len(tt.payload))},
+				}},
+			}}
+
+			bin, ver, err := downloadAgentArtifactFromGCS(srv.URL, m, "darwin", "arm64", false)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				wantMsg := "downloaded macOS agent artifact is not a zip archive"
+				if err.Error() != wantMsg {
+					t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ver != "v1" || !bytes.Equal(bin, tt.payload) {
+				t.Fatalf("ver=%q bin=%q", ver, bin)
+			}
+		})
+	}
+}
+
+// TestCheckDarwinArtifactVersion covers finding 1's version-skew guard:
+// match, mismatch, and non-darwin passthrough (the check must never fire for
+// linux/other platforms, even on a genuine version mismatch).
+func TestCheckDarwinArtifactVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		osName  string
+		target  string
+		actual  string
+		wantErr bool
+	}{
+		{"darwin match is ok", "darwin", "v2", "v2", false},
+		{"darwin mismatch errors", "darwin", "v2", "v1", true},
+		{"darwin mixed-case os still matches", "Darwin", "v2", "v2", false},
+		{"darwin mixed-case os still errors on mismatch", "Darwin", "v2", "v1", true},
+		{"darwin empty target is a no-op", "darwin", "", "v1", false},
+		{"darwin empty actual is a no-op", "darwin", "v2", "", false},
+		{"non-darwin mismatch is a passthrough", "ubuntu", "v2", "v1", false},
+		{"empty os mismatch is a passthrough", "", "v2", "v1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkDarwinArtifactVersion(tt.osName, tt.target, tt.actual)
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestCheckDarwinArtifactVersionMismatchMessage(t *testing.T) {
+	err := checkDarwinArtifactVersion("darwin", "v2", "v1")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	wantMsg := "macOS agent artifact for v2 is not published yet (latest available: v1); try again once the release completes"
+	if err.Error() != wantMsg {
+		t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+	}
+}

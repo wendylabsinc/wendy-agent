@@ -470,10 +470,14 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 		}
 		osName := resp.GetOs()
 
-		binaryData, _, _, err := resolveAgentArtifact(osName, arch, false)
+		binaryData, actualVer, _, err := resolveAgentArtifact(osName, arch, false)
 		if err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
+		}
+		if err := checkDarwinArtifactVersion(osName, latestVer, actualVer); err != nil {
+			conn.Close()
+			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: err}
 		}
 
 		h := sha256.Sum256(binaryData)

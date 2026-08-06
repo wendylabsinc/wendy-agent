@@ -812,10 +812,14 @@ func (m discoverModel) startDeviceUpdateCmd(addr, name string) tea.Cmd {
 		}
 		osName := versionResp.GetOs()
 
-		binaryData, _, _, err := resolveAgentArtifact(osName, arch, false)
+		binaryData, actualVer, _, err := resolveAgentArtifact(osName, arch, false)
 		if err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
+		}
+		if err := checkDarwinArtifactVersion(osName, latestVer, actualVer); err != nil {
+			conn.Close()
+			return discoverUpdateDoneMsg{deviceName: name, err: err}
 		}
 
 		h := sha256.Sum256(binaryData)

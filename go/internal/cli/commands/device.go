@@ -2266,9 +2266,13 @@ func newDeviceUpdateCmd() *cobra.Command {
 						}
 						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for %s...", releaseType, agentPlatformLabel(osName, arch))))
 					}
-					binaryData, _, _, err = resolveAgentArtifact(osName, arch, nightly)
+					var actualAgentVersion string
+					binaryData, actualAgentVersion, _, err = resolveAgentArtifact(osName, arch, nightly)
 					if err != nil {
 						return fmt.Errorf("resolving agent binary: %w", err)
+					}
+					if err := checkDarwinArtifactVersion(osName, resolvedVer, actualAgentVersion); err != nil {
+						return err
 					}
 				}
 			}
