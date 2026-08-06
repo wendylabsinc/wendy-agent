@@ -2481,27 +2481,45 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 		return fmt.Errorf("writing config to firmware image: %w", err)
 	}
 
-	// Flash with progress bar.
+	// Flash with progress bar. Retries on failure: a busy port gets an extra
+	// offer to identify and kill whatever holds it; any other failure just
+	// gets the plain retry prompt. Both are gated on isInteractiveTerminal so
+	// a non-interactive run (--json, CI, piped) fails immediately on the
+	// first attempt, unchanged from before this loop existed.
+	for {
+		fmt.Println()
+		flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
+		fp := tui.NewProgressProgram(flashProg)
 
-	fmt.Println()
-	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tui.NewProgressProgram(flashProg)
+		go func() {
+			flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
+				fp.Send(tui.ProgressUpdateMsg{Percent: pct})
+			})
+			fp.Send(tui.ProgressDoneMsg{Err: flashErr})
+		}()
 
-	go func() {
-		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
-			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
-		})
-		fp.Send(tui.ProgressDoneMsg{Err: flashErr})
-	}()
+		flashFinal, err := fp.Run()
+		if err != nil {
+			return fmt.Errorf("flash TUI: %w", err)
+		}
 
-	flashFinal, err := fp.Run()
-	if err != nil {
-		return fmt.Errorf("flash TUI: %w", err)
-	}
+		flashModel := flashFinal.(tui.ProgressModel)
+		flashErr := flashModel.Err()
+		if flashErr == nil {
+			break
+		}
 
-	flashModel := flashFinal.(tui.ProgressModel)
-	if flashModel.Err() != nil {
-		return fmt.Errorf("flashing failed: %w", flashModel.Err())
+		if !isInteractiveTerminal() {
+			return fmt.Errorf("flashing failed: %w", flashErr)
+		}
+
+		retriedAutomatically := false
+		if errors.Is(flashErr, ErrPortBusy) {
+			retriedAutomatically = offerPortBusyRetry(serialPort)
+		}
+		if !retriedAutomatically && !confirmFn("Do you want to try again?") {
+			return fmt.Errorf("flashing failed: %w", flashErr)
+		}
 	}
 
 	fmt.Printf("\nSuccessfully flashed Wendy Lite %s!\n", asset.Version)
