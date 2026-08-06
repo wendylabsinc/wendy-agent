@@ -25,7 +25,7 @@ func newDeviceTunnelCmd() *cobra.Command {
 			if _, cloud := cloudDeviceConfigFromContext(cmd.Context()); cloud {
 				return fmt.Errorf("use 'wendy cloud tunnel' for cloud-connected devices")
 			}
-			localPort, remotePort, err := parseTunnelArg(args[0])
+			localPort, remotePort, _, err := parseTunnelArg(args[0])
 			if err != nil {
 				return err
 			}
