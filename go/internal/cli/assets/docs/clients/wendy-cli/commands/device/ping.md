@@ -36,4 +36,3 @@ wendy device ping --device woof.local --count 5
 ## See also
 
 - [`wendy device tunnel`](./tunnel.md) — forward TCP or UDP ports over the same connection.
-- [`wendy cloud ping`](../cloud/ping.md) — the cloud-tunnel equivalent for devices not reachable on the LAN.
