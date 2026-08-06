@@ -95,9 +95,20 @@ def make_template(directory: Path, name: str, dockerfile: str = "FROM python:3.1
     return template_dir
 
 
+FAKE_ADDRESSES = {
+    "spark-3011.local": "192.0.2.34",
+    "spark-48fd.local": "192.0.2.11",
+    "spark-edeb.local": "192.0.2.83",
+}
+
+
+def fake_resolver(host: str) -> str:
+    return FAKE_ADDRESSES.get(host, "192.0.2.99")
+
+
 def load_plan(config_path: Path, runner) -> "fleet.FleetPlan":
     config = fleet.load_fleet_config(config_path)
-    return fleet.plan_fleet(config, runner)
+    return fleet.plan_fleet(config, runner, resolver=fake_resolver)
 
 
 BYO_TEMPLATE = str(TRAINING_ROOT / "templates" / "byo")
@@ -302,14 +313,16 @@ def test_lan_transport_rewrites_network_entitlement(tmp_path):
     assert any(e.get("mode") == "mesh" for e in source["entitlements"])
 
 
-def test_lan_transport_renders_hostname_peers_excluding_self(tmp_path):
+def test_lan_transport_renders_resolved_peers_excluding_self(tmp_path):
     config_path = write_fleet_toml(tmp_path, BYO_TEMPLATE, transport="lan")
     plan = load_plan(config_path, FakeRunner())
     by_host = {d.host: d for d in plan.devices}
     peers = by_host["spark-3011.local"].env["MESH_PEERS"].split(",")
-    assert peers == ["spark-48fd.local:8080", "spark-edeb.local:8080"]
+    # Addresses, not .local hostnames: containers cannot resolve multicast
+    # names, so the launcher ships what it resolved (fake_resolver in tests).
+    assert peers == ["192.0.2.11:8080", "192.0.2.83:8080"]
     assert by_host["spark-3011.local"].env["MESH_SELF"] == "334"
-    # Roles still derive from asset ids even though peers are hostnames.
+    # Roles still derive from asset ids even though peers are addresses.
     assert by_host["spark-48fd.local"].role == "coordinator"
 
 
@@ -342,7 +355,8 @@ def test_render_prints_commands_without_executing(tmp_path, capsys):
     assert runner.commands() == [["wendy", "cloud", "device", "list", "--json"]]
 
 
-def test_render_shows_lan_entitlement_and_env(tmp_path, capsys):
+def test_render_shows_lan_entitlement_and_env(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(fleet, "default_resolver", fake_resolver)
     config_path = write_fleet_toml(tmp_path, BYO_TEMPLATE, transport="lan")
     exit_code = fleet.main(
         ["render", "--config", str(config_path), "--stage-dir", str(tmp_path / "stage")],
@@ -351,7 +365,7 @@ def test_render_shows_lan_entitlement_and_env(tmp_path, capsys):
     assert exit_code == 0
     out = capsys.readouterr().out
     assert '{"type": "network", "mode": "host"}' in out
-    assert "MESH_PEERS=spark-48fd.local:8080,spark-edeb.local:8080" in out
+    assert "MESH_PEERS=192.0.2.11:8080,192.0.2.83:8080" in out
     assert "MESH_SELF=334" in out
     assert "WT_RUN_ID=demo-1" in out
 
@@ -433,7 +447,7 @@ def test_generic_topology_trio_emitted_for_every_device(tmp_path):
     template_dir = make_template(tmp_path, "es-like")
     for transport, expected_coordinator in (
         (None, "device-211.cloud.wendy.dev:8080"),
-        ("lan", "spark-48fd.local:8080"),
+        ("lan", "192.0.2.11:8080"),
     ):
         config_path = write_fleet_toml(tmp_path, str(template_dir), transport=transport)
         plan = load_plan(config_path, FakeRunner())
@@ -447,3 +461,23 @@ def test_generic_topology_trio_emitted_for_every_device(tmp_path):
         indices = [int(by_host[d.host].env["WT_NODE_INDEX"]) for d in ranked]
         assert indices == list(range(len(ranked)))
         assert int(coordinator.env["WT_NODE_INDEX"]) == 0
+
+
+def test_lan_peers_are_ip_addresses_not_mdns_names(tmp_path):
+    """Containers cannot resolve .local names; the launcher must not ship them.
+
+    Observed on hardware: every remote worker printed "Name or service not
+    known" for the coordinator's .local hostname. The operator's machine can
+    resolve multicast names, a slim container cannot, so lan plans carry the
+    addresses the launcher resolved.
+    """
+
+    template_dir = make_template(tmp_path, "es-like")
+    config_path = write_fleet_toml(tmp_path, str(template_dir), transport="lan")
+    plan = load_plan(config_path, FakeRunner())
+    for device in plan.devices:
+        assert ".local" not in device.env["MESH_PEERS"]
+        assert ".local" not in device.env["WT_COORDINATOR"]
+        for entry in device.env["MESH_PEERS"].split(","):
+            host = entry.rsplit(":", 1)[0]
+            assert host in FAKE_ADDRESSES.values()

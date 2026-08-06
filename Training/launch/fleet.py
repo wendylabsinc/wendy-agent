@@ -239,9 +239,30 @@ def _parse_device_listing(stdout: str) -> dict[str, int]:
 
 # --- planning ----------------------------------------------------------------
 
-def plan_fleet(config: FleetConfig, runner=default_runner) -> FleetPlan:
+def default_resolver(host: str) -> str:
+    """Resolve ``host`` to an Internet Protocol (IP) address, once, here.
+
+    The lan transport must hand containers addresses they can actually use.
+    Device hostnames are multicast Domain Name System (mDNS) ``.local`` names,
+    which the operator's machine resolves but a slim container image cannot
+    ("Name or service not known" on real hardware, from every worker). The
+    launcher resolves them while it still can and ships plain addresses.
+    """
+    import socket
+
+    infos = socket.getaddrinfo(host, None, family=socket.AF_INET)
+    return infos[0][4][0]
+
+
+def plan_fleet(config: FleetConfig, runner=default_runner,
+               resolver=None) -> FleetPlan:
     """Resolve ids, derive roles, and compute the per-device environment."""
+    if resolver is None:
+        resolver = default_resolver  # looked up at call time, so tests can patch it
     resolve_asset_ids(config, runner)
+    addresses: dict[str, str] = {}
+    if config.transport == "lan":
+        addresses = {d.host: resolver(d.host) for d in config.devices}
     peers_raw = ",".join(str(d.asset_id) for d in config.devices)
     roles: dict[str, str] = {}
     for device in config.devices:
@@ -266,7 +287,7 @@ def plan_fleet(config: FleetConfig, runner=default_runner) -> FleetPlan:
         env["MESH_SELF"] = str(device.asset_id)
         if config.transport == "lan":
             env["MESH_PEERS"] = ",".join(
-                f"{peer.host}:{config.mesh_port}"
+                f"{addresses[peer.host]}:{config.mesh_port}"
                 for peer in config.devices if peer.host != device.host
             )
         else:
@@ -281,7 +302,9 @@ def plan_fleet(config: FleetConfig, runner=default_runner) -> FleetPlan:
             d for d in config.devices if roles[d.host] == "coordinator"
         )
         if config.transport == "lan":
-            env["WT_COORDINATOR"] = f"{coordinator_device.host}:{config.mesh_port}"
+            env["WT_COORDINATOR"] = (
+                f"{addresses[coordinator_device.host]}:{config.mesh_port}"
+            )
         else:
             env["WT_COORDINATOR"] = (
                 f"device-{coordinator_device.asset_id}.cloud.wendy.dev:{config.mesh_port}"
