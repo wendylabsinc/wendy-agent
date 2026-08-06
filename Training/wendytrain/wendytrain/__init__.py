@@ -8,7 +8,19 @@ __version__ = "0.1.0"
 
 from . import wire
 from .config import Config, load_config
+from .mesh import Fleet, derive_role, http_get, http_post, parse_peers, worker_slice
 from .run import Run
 
-__all__ = ["wire", "Config", "load_config", "Run"]
+__all__ = [
+    "wire",
+    "Config",
+    "load_config",
+    "Run",
+    "Fleet",
+    "derive_role",
+    "http_get",
+    "http_post",
+    "parse_peers",
+    "worker_slice",
+]
 
