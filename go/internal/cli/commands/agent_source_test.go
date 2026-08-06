@@ -149,9 +149,9 @@ func TestDownloadAgentFromGCS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch manifest: %v", err)
 	}
-	bin, ver, err := downloadAgentFromGCS(srv.URL, m, "amd64", false)
+	bin, ver, err := downloadAgentArtifactFromGCS(srv.URL, m, "", "amd64", false)
 	if err != nil {
-		t.Fatalf("downloadAgentFromGCS: %v", err)
+		t.Fatalf("downloadAgentArtifactFromGCS: %v", err)
 	}
 	if ver != "v1" || !bytes.Equal(bin, payload) {
 		t.Fatalf("ver=%q bin=%q", ver, bin)
@@ -162,7 +162,7 @@ func TestDownloadAgentFromGCSMissingArch(t *testing.T) {
 	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
 		"v1": {Artifacts: map[string]agentManifestArtifact{"amd64": {Path: "p"}}},
 	}}
-	if _, _, err := downloadAgentFromGCS("http://unused", m, "arm64", false); err == nil {
+	if _, _, err := downloadAgentArtifactFromGCS("http://unused", m, "", "arm64", false); err == nil {
 		t.Fatal("expected error for missing arch")
 	}
 }
@@ -180,7 +180,234 @@ func TestDownloadAgentFromGCSChecksumMismatch(t *testing.T) {
 	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
 		"v1": {Artifacts: map[string]agentManifestArtifact{"amd64": {Path: "agent/v1/a.tar.gz", Checksum: "deadbeef"}}},
 	}}
-	if _, _, err := downloadAgentFromGCS(srv.URL, m, "amd64", false); err == nil {
+	if _, _, err := downloadAgentArtifactFromGCS(srv.URL, m, "", "amd64", false); err == nil {
 		t.Fatal("expected checksum mismatch error")
+	}
+}
+
+const sampleAgentManifestWithDarwin = `{
+  "latest": "2026.07.01-120000",
+  "latest_nightly": "2026.07.03-093000",
+  "versions": {
+    "2026.07.01-120000": {
+      "is_nightly": false,
+      "artifacts": {
+        "amd64": {"path": "agent/2026.07.01-120000/wendy-agent-linux-amd64-2026.07.01-120000.tar.gz", "checksum": "aaa", "size_bytes": 10},
+        "arm64": {"path": "agent/2026.07.01-120000/wendy-agent-linux-arm64-2026.07.01-120000.tar.gz", "checksum": "bbb", "size_bytes": 11},
+        "darwin-arm64": {"path": "agent/2026.07.01-120000/wendy-agent-macos-arm64-2026.07.01-120000.zip", "checksum": "ccc", "size_bytes": 12}
+      }
+    }
+  }
+}`
+
+func TestFetchAgentManifestDecodesDarwinArtifact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/manifest.json" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Write([]byte(sampleAgentManifestWithDarwin))
+	}))
+	defer srv.Close()
+
+	m, err := fetchAgentManifestFrom(srv.URL)
+	if err != nil {
+		t.Fatalf("fetchAgentManifestFrom: %v", err)
+	}
+	v, ok := m.Versions["2026.07.01-120000"]
+	if !ok {
+		t.Fatalf("version entry missing")
+	}
+	art, ok := v.Artifacts["darwin-arm64"]
+	if !ok {
+		t.Fatalf("darwin-arm64 artifact missing: %+v", v.Artifacts)
+	}
+	if art.Checksum != "ccc" || art.SizeBytes != 12 || art.Path == "" {
+		t.Fatalf("darwin-arm64 artifact wrong: %+v", art)
+	}
+}
+
+func TestManifestArtifactKey(t *testing.T) {
+	tests := []struct {
+		name   string
+		osName string
+		arch   string
+		want   string
+	}{
+		{"empty os", "", "arm64", "arm64"},
+		{"wendyos", "wendyos", "arm64", "arm64"},
+		{"darwin lowercase", "darwin", "arm64", "darwin-arm64"},
+		{"darwin mixed case", "Darwin", "arm64", "darwin-arm64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := manifestArtifactKey(tt.osName, tt.arch); got != tt.want {
+				t.Fatalf("manifestArtifactKey(%q, %q) = %q, want %q", tt.osName, tt.arch, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentPlatformLabel(t *testing.T) {
+	tests := []struct {
+		name   string
+		osName string
+		arch   string
+		want   string
+	}{
+		{"darwin", "darwin", "arm64", "macos/arm64"},
+		{"darwin mixed case", "Darwin", "arm64", "macos/arm64"},
+		{"ubuntu", "ubuntu", "arm64", "linux/arm64"},
+		{"empty os", "", "arm64", "linux/arm64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := agentPlatformLabel(tt.osName, tt.arch); got != tt.want {
+				t.Fatalf("agentPlatformLabel(%q, %q) = %q, want %q", tt.osName, tt.arch, got, tt.want)
+			}
+		})
+	}
+}
+
+func sampleReleaseAssets() []githubReleaseAsset {
+	return []githubReleaseAsset{
+		{Name: "wendy-agent-linux-amd64-v1.tar.gz"},
+		{Name: "wendy-agent-linux-arm64-v1.tar.gz"},
+		{Name: "wendy-agent-macos-arm64-v1.zip"},
+		{Name: "wendy-agent-linux-arm64-v1.tar.gz.sha256"},
+		{Name: "checksums.txt"},
+	}
+}
+
+func TestMatchAgentReleaseAsset(t *testing.T) {
+	assets := sampleReleaseAssets()
+
+	t.Run("darwin arm64 picks the zip", func(t *testing.T) {
+		a, err := matchAgentReleaseAsset(assets, "darwin", "arm64", "v1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Name != "wendy-agent-macos-arm64-v1.zip" {
+			t.Fatalf("matched wrong asset: %q", a.Name)
+		}
+	})
+
+	t.Run("linux arm64 picks the tarball, not the zip", func(t *testing.T) {
+		a, err := matchAgentReleaseAsset(assets, "ubuntu", "arm64", "v1")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if a.Name != "wendy-agent-linux-arm64-v1.tar.gz" {
+			t.Fatalf("matched wrong asset: %q", a.Name)
+		}
+	})
+
+	t.Run("darwin amd64 missing errors with macos label and tag", func(t *testing.T) {
+		_, err := matchAgentReleaseAsset(assets, "darwin", "amd64", "v1")
+		if err == nil {
+			t.Fatal("expected error for missing darwin/amd64 asset")
+		}
+		wantMsg := "no asset for macos/amd64 in release v1"
+		if err.Error() != wantMsg {
+			t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+		}
+	})
+
+	t.Run("linux missing keeps existing error wording", func(t *testing.T) {
+		_, err := matchAgentReleaseAsset(assets, "", "riscv64", "v1")
+		if err == nil {
+			t.Fatal("expected error for missing linux/riscv64 asset")
+		}
+		wantMsg := "no asset for linux/riscv64 in release v1"
+		if err.Error() != wantMsg {
+			t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+		}
+	})
+}
+
+func TestDownloadAgentArtifactFromGCSDarwinReturnsRawZipBytes(t *testing.T) {
+	// A payload that is deliberately NOT a valid tar.gz — proves the darwin
+	// path never attempts extraction and returns the bytes verbatim.
+	zipPayload := []byte("PK\x03\x04-this-is-not-a-tarball-fake-zip-bytes")
+	sum := sha256.Sum256(zipPayload)
+	checksum := hex.EncodeToString(sum[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agent/v1/a.zip":
+			w.Write(zipPayload)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{
+			"darwin-arm64": {Path: "agent/v1/a.zip", Checksum: checksum, SizeBytes: int64(len(zipPayload))},
+		}},
+	}}
+
+	got, ver, err := downloadAgentArtifactFromGCS(srv.URL, m, "darwin", "arm64", false)
+	if err != nil {
+		t.Fatalf("downloadAgentArtifactFromGCS: %v", err)
+	}
+	if ver != "v1" {
+		t.Fatalf("version = %q, want v1", ver)
+	}
+	if !bytes.Equal(got, zipPayload) {
+		t.Fatalf("payload mismatch: got %q, want %q", got, zipPayload)
+	}
+}
+
+func TestDownloadAgentArtifactFromGCSDarwinChecksumMismatch(t *testing.T) {
+	zipPayload := []byte("PK\x03\x04-fake-zip-bytes")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/agent/v1/a.zip" {
+			w.Write(zipPayload)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{
+			"darwin-arm64": {Path: "agent/v1/a.zip", Checksum: "deadbeef"},
+		}},
+	}}
+	if _, _, err := downloadAgentArtifactFromGCS(srv.URL, m, "darwin", "arm64", false); err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+}
+
+func TestDownloadAgentArtifactFromGCSMissingDarwinKey(t *testing.T) {
+	// Only the bare-arch (linux) key is present; the darwin-<arch> key is
+	// absent, which is what drives resolveAgentArtifact's GitHub fallback for
+	// a darwin caller against an old manifest.
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{"arm64": {Path: "agent/v1/a.tar.gz"}}},
+	}}
+	_, _, err := downloadAgentArtifactFromGCS("http://unused", m, "darwin", "arm64", false)
+	if err == nil {
+		t.Fatal("expected error for missing darwin-arm64 key")
+	}
+	wantMsg := "agent manifest has no macos/arm64 artifact for version v1"
+	if err.Error() != wantMsg {
+		t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
+	}
+}
+
+func TestDownloadAgentArtifactFromGCSMissingLinuxKeyKeepsExistingWording(t *testing.T) {
+	m := &agentManifest{Latest: "v1", Versions: map[string]agentManifestVersion{
+		"v1": {Artifacts: map[string]agentManifestArtifact{"amd64": {Path: "p"}}},
+	}}
+	_, _, err := downloadAgentArtifactFromGCS("http://unused", m, "", "arm64", false)
+	if err == nil {
+		t.Fatal("expected error for missing arch")
+	}
+	wantMsg := "agent manifest has no linux/arm64 artifact for version v1"
+	if err.Error() != wantMsg {
+		t.Fatalf("error = %q, want %q", err.Error(), wantMsg)
 	}
 }

@@ -1114,6 +1114,7 @@ func progressLabel(phase string, percent int32) string {
 func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, versionResp *agentpb.GetAgentVersionResponse, nightly bool) (*grpcclient.AgentConnection, error) {
 	agentVer := versionResp.GetVersion()
 	arch := versionResp.GetCpuArchitecture()
+	osName := versionResp.GetOs()
 
 	fmt.Printf("Agent version: %s — checking for updates...\n", agentVer)
 
@@ -1135,7 +1136,7 @@ func ensureAgentUpToDate(ctx context.Context, conn *grpcclient.AgentConnection, 
 
 	fmt.Printf("Updating agent: %s → %s\n", agentVer, latestVer)
 	addr := hostPort(conn.Host, defaultAgentPort)
-	if err := performAgentUpdate(ctx, conn, arch, nightly); err != nil {
+	if err := performAgentUpdate(ctx, conn, osName, arch, nightly); err != nil {
 		return nil, fmt.Errorf("agent update failed: %w", err)
 	}
 	conn.Close()

@@ -468,8 +468,9 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
+		osName := resp.GetOs()
 
-		binaryData, _, _, err := resolveAgentBinary(arch, false)
+		binaryData, _, _, err := resolveAgentArtifact(osName, arch, false)
 		if err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}

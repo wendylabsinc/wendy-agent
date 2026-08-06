@@ -1523,9 +1523,10 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	}
 
 	arch := resp.GetCpuArchitecture()
+	osName := resp.GetOs()
 	addr := hostPort(conn.Host, defaultAgentPort)
 
-	if err := performAgentUpdate(ctx, conn, arch, false); err != nil {
+	if err := performAgentUpdate(ctx, conn, osName, arch, false); err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\nContinuing with existing connection.\n", err)
 		return conn, nil
 	}
@@ -1542,15 +1543,15 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	return newConn, nil
 }
 
-// performAgentUpdate downloads the latest release for the given arch and uploads
-// it to conn. Pass nightly=true to fetch the latest prerelease instead of stable.
-// The agent will restart after this returns successfully.
-func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, arch string, nightly bool) error {
+// performAgentUpdate downloads the latest release for the given osName/arch and
+// uploads it to conn. Pass nightly=true to fetch the latest prerelease instead
+// of stable. The agent will restart after this returns successfully.
+func performAgentUpdate(ctx context.Context, conn *grpcclient.AgentConnection, osName, arch string, nightly bool) error {
 	if arch == "" {
 		return fmt.Errorf("device did not report CPU architecture")
 	}
 	fmt.Fprintf(os.Stderr, "Fetching agent for linux/%s...\n", arch)
-	binaryData, resolvedVer, source, err := resolveAgentBinary(arch, nightly)
+	binaryData, resolvedVer, source, err := resolveAgentArtifact(osName, arch, nightly)
 	if err != nil {
 		return fmt.Errorf("resolving agent binary: %w", err)
 	}

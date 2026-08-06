@@ -1893,7 +1893,10 @@ func fetchAgentRelease(nightly bool) (*githubReleaseFull, error) {
 	return nil, fmt.Errorf("no nightly (prerelease) found")
 }
 
-func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
+// downloadReleaseAssetBytes downloads asset and returns its raw bytes,
+// unmodified. Callers that need the extracted linux ELF (rather than the raw
+// tarball) call extractAgentFromTarGz on the result themselves.
+func downloadReleaseAssetBytes(asset githubReleaseAsset) ([]byte, error) {
 	client := &http.Client{Timeout: 5 * time.Minute}
 
 	resp, err := client.Get(asset.BrowserDownloadURL)
@@ -1906,7 +1909,7 @@ func downloadAgentBinary(asset githubReleaseAsset) ([]byte, error) {
 		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
 	}
 
-	return extractAgentFromTarGz(resp.Body)
+	return io.ReadAll(resp.Body)
 }
 
 // reconnectAgentAfterRestart re-establishes a connection to the SAME device
@@ -2227,6 +2230,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 				preUpdateVersion = versionResp
 
 				arch := versionResp.GetCpuArchitecture()
+				osName := versionResp.GetOs()
 				if arch == "" {
 					return fmt.Errorf("device did not report CPU architecture; use --binary to provide the binary manually")
 				}
@@ -2261,7 +2265,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 						}
 						fmt.Println(tui.InfoMessage(fmt.Sprintf("Fetching latest %s agent for linux/%s...", releaseType, arch)))
 					}
-					binaryData, _, _, err = resolveAgentBinary(arch, nightly)
+					binaryData, _, _, err = resolveAgentArtifact(osName, arch, nightly)
 					if err != nil {
 						return fmt.Errorf("resolving agent binary: %w", err)
 					}

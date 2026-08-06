@@ -359,7 +359,7 @@ func prepareT234Workspace(fp *flashpack.Flashpack) (workspace, layoutPath string
 
 func injectRecoveryConfig(imagePath string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
 	detail("downloading agent")
-	agentBinary, agentVer, _, err := resolveAgentBinary("arm64", false)
+	agentBinary, agentVer, _, err := resolveAgentArtifact("", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {

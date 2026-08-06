@@ -266,11 +266,12 @@ func (w fatWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
 // identical on-device path. Runs before stage-2, so a failure aborts with nothing
 // written to the Thor.
 func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
-	// Freshen the agent like a disk install, but best-effort: resolveAgentBinary is
-	// the only network step here, so an offline re-flash of a cached flashpack still
-	// provisions wifi/enrollment, falling back to the agent baked into the image.
+	// Freshen the agent like a disk install, but best-effort: resolveAgentArtifact
+	// is the only network step here, so an offline re-flash of a cached flashpack
+	// still provisions wifi/enrollment, falling back to the agent baked into the
+	// image.
 	detail("downloading agent")
-	agentBinary, agentVer, _, err := resolveAgentBinary("arm64", false)
+	agentBinary, agentVer, _, err := resolveAgentArtifact("", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {

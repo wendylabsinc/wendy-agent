@@ -23,15 +23,38 @@ type agentManifest struct {
 	Versions      map[string]agentManifestVersion `json:"versions"`
 }
 
+// agentManifestVersion.Artifacts is keyed by manifestArtifactKey(osName, arch):
+// bare GOARCH ("amd64", "arm64") for the legacy Linux tarballs, and
+// "darwin-<arch>" (e.g. "darwin-arm64") for the macOS app-bundle zip.
 type agentManifestVersion struct {
 	IsNightly bool                             `json:"is_nightly"`
-	Artifacts map[string]agentManifestArtifact `json:"artifacts"` // key = GOARCH, e.g. "amd64"
+	Artifacts map[string]agentManifestArtifact `json:"artifacts"`
 }
 
 type agentManifestArtifact struct {
 	Path      string `json:"path"`     // bucket-relative, joined as gcsBaseURL + "/" + Path
-	Checksum  string `json:"checksum"` // sha256 hex of the .tar.gz
+	Checksum  string `json:"checksum"` // sha256 hex of the artifact (.tar.gz on linux, .zip on darwin)
 	SizeBytes int64  `json:"size_bytes"`
+}
+
+// manifestArtifactKey returns the key under agentManifestVersion.Artifacts for
+// osName/arch: the bare arch for every platform except darwin, which is keyed
+// "darwin-<arch>" to distinguish the macOS app-bundle zip from the legacy
+// Linux tarballs.
+func manifestArtifactKey(osName, arch string) string {
+	if strings.EqualFold(osName, "darwin") {
+		return "darwin-" + arch
+	}
+	return arch
+}
+
+// agentPlatformLabel renders osName/arch for user-facing messages and error
+// wording: "macos/<arch>" for darwin, "linux/<arch>" otherwise.
+func agentPlatformLabel(osName, arch string) string {
+	if strings.EqualFold(osName, "darwin") {
+		return "macos/" + arch
+	}
+	return "linux/" + arch
 }
 
 func fetchAgentManifestFrom(baseURL string) (*agentManifest, error) {
@@ -114,7 +137,12 @@ func resolveAgentVersion(nightly bool) (version, source string, err error) {
 	return rel.TagName, "github", nil
 }
 
-func downloadAgentFromGCS(baseURL string, m *agentManifest, arch string, nightly bool) ([]byte, string, error) {
+// downloadAgentArtifactFromGCS downloads and verifies the agent artifact for
+// osName/arch from the manifest, returning the raw payload bytes. For darwin
+// the payload is the app-bundle zip, returned verbatim (the Swift agent
+// extracts/verifies it); for every other OS it's the extracted ELF binary
+// pulled out of the .tar.gz.
+func downloadAgentArtifactFromGCS(baseURL string, m *agentManifest, osName, arch string, nightly bool) ([]byte, string, error) {
 	version, err := agentVersionFromManifest(m, nightly)
 	if err != nil {
 		return nil, "", err
@@ -123,9 +151,9 @@ func downloadAgentFromGCS(baseURL string, m *agentManifest, arch string, nightly
 	if !ok {
 		return nil, "", fmt.Errorf("agent manifest missing version entry %q", version)
 	}
-	art, ok := ver.Artifacts[arch]
+	art, ok := ver.Artifacts[manifestArtifactKey(osName, arch)]
 	if !ok || art.Path == "" {
-		return nil, "", fmt.Errorf("agent manifest has no linux/%s artifact for version %s", arch, version)
+		return nil, "", fmt.Errorf("agent manifest has no %s artifact for version %s", agentPlatformLabel(osName, arch), version)
 	}
 
 	client := &http.Client{Timeout: 5 * time.Minute}
@@ -148,6 +176,9 @@ func downloadAgentFromGCS(baseURL string, m *agentManifest, arch string, nightly
 			return nil, "", fmt.Errorf("agent tarball checksum mismatch: manifest %s, got %s", art.Checksum, got)
 		}
 	}
+	if strings.EqualFold(osName, "darwin") {
+		return raw, version, nil
+	}
 	bin, err := extractAgentFromTarGz(bytes.NewReader(raw))
 	if err != nil {
 		return nil, "", err
@@ -155,12 +186,14 @@ func downloadAgentFromGCS(baseURL string, m *agentManifest, arch string, nightly
 	return bin, version, nil
 }
 
-// resolveAgentBinary returns the wendy-agent binary for linux/<arch>, preferring
-// GCS (to avoid GitHub rate limits) and falling back to GitHub releases on any
-// GCS miss. version is the resolved version tag; source is "gcs" or "github".
-func resolveAgentBinary(arch string, nightly bool) (binary []byte, version, source string, err error) {
+// resolveAgentArtifact returns the wendy-agent release artifact for
+// osName/arch, preferring GCS (to avoid GitHub rate limits) and falling back
+// to GitHub releases on any GCS miss. On darwin the payload is the raw
+// app-bundle zip; on every other OS it's the extracted ELF binary. version is
+// the resolved version tag; source is "gcs" or "github".
+func resolveAgentArtifact(osName, arch string, nightly bool) (payload []byte, version, source string, err error) {
 	if m, mErr := fetchAgentManifest(); mErr == nil {
-		if bin, ver, dErr := downloadAgentFromGCS(gcsBaseURL, m, arch, nightly); dErr == nil {
+		if bin, ver, dErr := downloadAgentArtifactFromGCS(gcsBaseURL, m, osName, arch, nightly); dErr == nil {
 			return bin, ver, "gcs", nil
 		}
 	}
@@ -169,21 +202,41 @@ func resolveAgentBinary(arch string, nightly bool) (binary []byte, version, sour
 	if err != nil {
 		return nil, "", "", err
 	}
-	assetPrefix := fmt.Sprintf("wendy-agent-linux-%s-", arch)
-	var matched *githubReleaseAsset
-	for i := range rel.Assets {
-		a := rel.Assets[i]
-		if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, ".tar.gz") {
-			matched = &a
-			break
-		}
+	asset, err := matchAgentReleaseAsset(rel.Assets, osName, arch, rel.TagName)
+	if err != nil {
+		return nil, "", "", err
 	}
-	if matched == nil {
-		return nil, "", "", fmt.Errorf("no asset for linux/%s in release %s", arch, rel.TagName)
+	raw, err := downloadReleaseAssetBytes(*asset)
+	if err != nil {
+		return nil, "", "", err
 	}
-	bin, err := downloadAgentBinary(*matched)
+	if strings.EqualFold(osName, "darwin") {
+		return raw, rel.TagName, "github", nil
+	}
+	bin, err := extractAgentFromTarGz(bytes.NewReader(raw))
 	if err != nil {
 		return nil, "", "", err
 	}
 	return bin, rel.TagName, "github", nil
+}
+
+// matchAgentReleaseAsset finds the release asset for osName/arch: darwin
+// matches "wendy-agent-macos-<arch>-" + ".zip", everything else matches the
+// legacy "wendy-agent-linux-<arch>-" + ".tar.gz" prefix/suffix.
+func matchAgentReleaseAsset(assets []githubReleaseAsset, osName, arch, tagName string) (*githubReleaseAsset, error) {
+	var assetPrefix, assetSuffix string
+	if strings.EqualFold(osName, "darwin") {
+		assetPrefix = fmt.Sprintf("wendy-agent-macos-%s-", arch)
+		assetSuffix = ".zip"
+	} else {
+		assetPrefix = fmt.Sprintf("wendy-agent-linux-%s-", arch)
+		assetSuffix = ".tar.gz"
+	}
+	for i := range assets {
+		a := assets[i]
+		if strings.HasPrefix(a.Name, assetPrefix) && strings.HasSuffix(a.Name, assetSuffix) {
+			return &a, nil
+		}
+	}
+	return nil, fmt.Errorf("no asset for %s in release %s", agentPlatformLabel(osName, arch), tagName)
 }
