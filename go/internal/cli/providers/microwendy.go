@@ -62,16 +62,68 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 		return nil, err
 	}
 
+	// WaitForIdle, not Devices: StartScan returns immediately and probes in
+	// the background, so reading Devices() right after the mDNS browse above
+	// races that pass's own per-port handshake budget against this unrelated
+	// fixed window — on a cold first-plug-in the probe can still be running
+	// when this reads, silently dropping a genuinely connected, responsive
+	// board (WDY-2319). Bounded independently of ctx so a caller with no
+	// deadline can't block here forever on a wedged serial port.
+	serialCtx, cancel := context.WithTimeout(ctx, serialIdleTimeout)
+	defer cancel()
+
 	var devices []models.ExternalDevice
 	for _, svc := range services {
 		devices = append(devices, p.mdnsExternalDevice(svc))
 	}
-	for _, dev := range sd.Devices() {
+	for _, dev := range sd.WaitForIdle(serialCtx) {
 		devices = append(devices, p.serialExternalDevice(dev))
+	}
+
+	// An empty result here is ambiguous: it's indistinguishable from "nothing
+	// plugged in" even when a board is connected but its port is held open by
+	// something else (see ContendedPorts) — the exact shape of WDY-2319.
+	// Surface that distinctly instead of falling through to the generic "no
+	// Wendy Lite devices found".
+	if len(devices) == 0 {
+		if ports := sd.ContendedPorts(); len(ports) > 0 {
+			return nil, contendedPortsError(ports)
+		}
 	}
 
 	return devices, nil
 }
+
+// contendedPortsError explains that ESP32 serial ports were found but every
+// one of them is currently held open by something else, so no Wendy Lite
+// identity handshake could even be attempted.
+func contendedPortsError(ports []string) error {
+	verb := "it"
+	countPrefix := "an ESP32 serial port"
+	if len(ports) > 1 {
+		verb = "them"
+		countPrefix = fmt.Sprintf("%d ESP32 serial ports", len(ports))
+	}
+	return fmt.Errorf(
+		"found %s but couldn't open %s: %s %s in use by another process (e.g. a running `wendy device camera view` or `wendy run`) — stop it and try again",
+		countPrefix, verb, strings.Join(ports, ", "), pluralIs(len(ports)),
+	)
+}
+
+// pluralIs returns the correct copula for the port count in contendedPortsError.
+func pluralIs(n int) string {
+	if n == 1 {
+		return "is"
+	}
+	return "are"
+}
+
+// serialIdleTimeout bounds DiscoverDevices' wait for the serial probe pass it
+// just kicked off. Generous relative to the identity handshake's own 3s
+// per-port budget (see probeIdentityFn) to leave real margin for port
+// enumeration and USB/serial connect overhead — the absence of that margin
+// was the root cause of WDY-2319.
+const serialIdleTimeout = 8 * time.Second
 
 // mdnsExternalDevice maps a resolved _wendy-lite._tcp mDNS service to an
 // ExternalDevice.
@@ -636,7 +688,7 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		if serialPort == "" {
 			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
 		}
-		if err := client.ConnectToSerial(serialPort); err != nil {
+		if err := connectSerialWithRetry(client, serialPort); err != nil {
 			return nil, fmt.Errorf("connect to device via serial: %w", err)
 		}
 	} else if device.ConnectionInfo["type"] == "LAN" {
@@ -690,6 +742,47 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
 	}
 	return client, nil
+}
+
+// serialConnectMaxAttempts bounds how many times connectSerialWithRetry
+// retries a USB serial handshake before giving up. A discovery pass already
+// confirmed the port completes the Wendy Lite identity handshake, but a
+// single handshake round trip can still drop — the same USB-CDC flakiness
+// documented in serial_discovery.go's probeWatchdog (WDY-2319) — so retrying
+// a few times absorbs that instead of failing the whole build/run outright.
+const serialConnectMaxAttempts = 3
+
+// serialConnectRetryDelay is the base backoff between attempts, scaled
+// linearly by attempt number. A var so tests can shrink it.
+var serialConnectRetryDelay = 400 * time.Millisecond
+
+// connectSerialFn performs a single ConnectToSerial attempt. Indirected so
+// tests can simulate transient and permanent failures without real hardware.
+var connectSerialFn = func(client *liteclient.WendyLiteClient, port string) error {
+	return client.ConnectToSerial(port)
+}
+
+// connectSerialWithRetry opens a Wendy Lite serial connection, retrying on
+// failure up to serialConnectMaxAttempts times. ConnectToSerial already
+// leaves the client in a clean state after a failed attempt (port closed,
+// lock released, link cleared), so it's safe to call again on the same
+// client. Prints a short notice to stderr once a retry is actually needed, so
+// a transient hiccup doesn't read as a silent hang.
+func connectSerialWithRetry(client *liteclient.WendyLiteClient, serialPort string) error {
+	var lastErr error
+	for attempt := 1; attempt <= serialConnectMaxAttempts; attempt++ {
+		if lastErr = connectSerialFn(client, serialPort); lastErr == nil {
+			return nil
+		}
+		if attempt < serialConnectMaxAttempts {
+			fmt.Fprintf(os.Stderr, "connecting to %s failed (%v), retrying (%d/%d)...\n", serialPort, lastErr, attempt+1, serialConnectMaxAttempts)
+			time.Sleep(serialConnectRetryDelay * time.Duration(attempt))
+		}
+	}
+	return fmt.Errorf(
+		"%w after %d attempts — if this keeps happening, make sure no other process (e.g. `idf.py monitor`, `wendy device camera view`) is using %s, or try unplugging and reconnecting the board",
+		lastErr, serialConnectMaxAttempts, serialPort,
+	)
 }
 
 func loadAllCLICerts() ([]config.CertificateInfo, error) {

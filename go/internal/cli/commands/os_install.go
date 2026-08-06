@@ -2466,37 +2466,13 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 	}
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
-	// Download with progress bar.
-
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tui.NewProgressProgram(prog)
-
-	var fwPath string
-	var dlErr error
-
-	go func() {
-		fwPath, dlErr = downloadFirmware(asset, func(downloaded, total int64) {
-			if total > 0 {
-				p.Send(tui.ProgressUpdateMsg{Percent: float64(downloaded) / float64(total)})
-			}
-		})
-		if dlErr != nil {
-			p.Send(tui.ProgressDoneMsg{Err: dlErr})
-		} else {
-			p.Send(tui.ProgressDoneMsg{})
-		}
-	}()
-
-	finalModel, err := p.Run()
+	// Reuse a cached download from a previous run when one exists; otherwise
+	// download with a progress bar. The cached file persists across runs and
+	// is only removed via `wendy cache clear`/`cache list`.
+	fwPath, err := resolveFirmware(asset)
 	if err != nil {
-		return fmt.Errorf("progress TUI: %w", err)
+		return fmt.Errorf("resolving firmware: %w", err)
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		return model.Err()
-	}
-	defer os.Remove(fwPath)
 
 	// Include configuration into the flash image.
 

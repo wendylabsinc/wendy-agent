@@ -534,7 +534,7 @@ static cJSON *do_web_search(cJSON *args) {
         return err;
     }
 
-    char auth_header[64];
+    char auth_header[8 + sizeof(OPENAI_API_KEY)];
     snprintf(auth_header, sizeof(auth_header), "Bearer %s", OPENAI_API_KEY);
     char *response_body = http_request(RESPONSES_URL, auth_header, body_text);
     free(body_text);

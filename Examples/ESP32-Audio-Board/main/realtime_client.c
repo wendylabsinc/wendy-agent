@@ -47,7 +47,7 @@ typedef struct {
 static esp_websocket_client_handle_t s_client;
 static SemaphoreHandle_t s_send_mutex;
 static QueueHandle_t s_playback_queue;
-static char s_ws_headers[128];
+static char s_ws_headers[32 + sizeof(OPENAI_API_KEY)];
 
 // Incoming-message reassembly (esp_websocket_client delivers large text
 // frames across multiple WEBSOCKET_EVENT_DATA callbacks).
