@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 
@@ -148,6 +149,29 @@ func TestWiFiList_HasStructuredContent(t *testing.T) {
 	}
 	if _, ok := structuredMap(t, result)["networks"]; !ok {
 		t.Error("wifi_list envelope is missing the networks key")
+	}
+}
+
+func TestWiFiList_MaxBytesTruncates(t *testing.T) {
+	networks := make([]*agentpb.ListWiFiNetworksResponse_WiFiNetwork, 0, 200)
+	for i := 0; i < 200; i++ {
+		networks = append(networks, &agentpb.ListWiFiNetworksResponse_WiFiNetwork{Ssid: "some-padding-ssid-value"})
+	}
+	fake := &fakeWiFiBluetoothServer{wifiNetworks: networks}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "wifi_list", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
 	}
 }
 
@@ -305,6 +329,32 @@ func TestBluetoothScan_HasStructuredContent(t *testing.T) {
 	}
 	if _, ok := structuredMap(t, result)["devices"]; !ok {
 		t.Error("bluetooth_scan envelope is missing the devices key")
+	}
+}
+
+func TestBluetoothScan_MaxBytesTruncates(t *testing.T) {
+	peripherals := make([]*agentpb.DiscoveredBluetoothPeripheral, 0, 200)
+	for i := 0; i < 200; i++ {
+		peripherals = append(peripherals, &agentpb.DiscoveredBluetoothPeripheral{
+			Name:    "some-padding-peripheral-name",
+			Address: fmt.Sprintf("AA:BB:CC:DD:EE:%02X", i%256),
+		})
+	}
+	fake := &fakeWiFiBluetoothServer{btPeripherals: peripherals}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "bluetooth_scan", map[string]any{"timeout_seconds": 2, "max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
 	}
 }
 

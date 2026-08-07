@@ -73,6 +73,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithString("filter",
 			mcpgo.Description("Optional cloud-side asset filter"),
 		),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	discoverOpts = append(discoverOpts, readOnly()...)
 	discoverOpts = append(discoverOpts, openWorld()...)
@@ -94,23 +95,6 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	connectOpts = append(connectOpts, idempotent()...)
 	connectOpts = append(connectOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("cloud_connect", connectOpts...), s.handleCloudConnect)
-
-	deviceConnectOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Alias for cloud_connect; connects existing MCP device tools through the Wendy Cloud tunnel"),
-		mcpgo.WithString("device_name",
-			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
-		),
-		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
-		),
-		mcpgo.WithString("broker_url",
-			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
-		),
-	}
-	deviceConnectOpts = append(deviceConnectOpts, mutating()...)
-	deviceConnectOpts = append(deviceConnectOpts, idempotent()...)
-	deviceConnectOpts = append(deviceConnectOpts, openWorld()...)
-	srv.AddTool(mcpgo.NewTool("cloud_device_connect", deviceConnectOpts...), s.handleCloudConnect)
 
 	enrollOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Enroll the currently connected device with Wendy Cloud"),
@@ -191,47 +175,6 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	runOpts = append(runOpts, mutating()...)
 	runOpts = append(runOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
-
-	cloudRunOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output. The project's wendy.json entitlements apply on the device; a denied entitlement returns error_code ENTITLEMENT_DENIED."),
-		mcpgo.WithString("project_path",
-			mcpgo.Required(),
-			mcpgo.Description("Project directory containing wendy.json"),
-		),
-		mcpgo.WithString("device_name",
-			mcpgo.Description("Cloud device name"),
-		),
-		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
-		),
-		mcpgo.WithString("broker_url",
-			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
-		),
-		mcpgo.WithString("build_type",
-			mcpgo.Description("Build type: docker, swift, or python"),
-		),
-		mcpgo.WithString("product",
-			mcpgo.Description("Swift Package Manager product to build and run"),
-		),
-		mcpgo.WithBoolean("debug",
-			mcpgo.Description("Enable debug logging"),
-		),
-		mcpgo.WithBoolean("deploy",
-			mcpgo.Description("Create container but do not start it"),
-		),
-		mcpgo.WithBoolean("detach",
-			mcpgo.Description("Start container but do not stream logs (default true for MCP)"),
-		),
-		mcpgo.WithNumber("timeout_seconds",
-			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
-		),
-		mcpgo.WithNumber("max_bytes",
-			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
-		),
-	}
-	cloudRunOpts = append(cloudRunOpts, mutating()...)
-	cloudRunOpts = append(cloudRunOpts, openWorld()...)
-	srv.AddTool(mcpgo.NewTool("cloud_run", cloudRunOpts...), s.handleRun)
 }
 
 func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -247,7 +190,7 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	for _, a := range assets {
 		out = append(out, cloudAssetToMap(a))
 	}
-	return okList("devices", out), nil
+	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
