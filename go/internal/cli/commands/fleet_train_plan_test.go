@@ -15,9 +15,9 @@ import (
 // the lowest asset id and therefore coordinates.
 func trainPlanTestTargets() []fleetTarget {
 	return []fleetTarget{
-		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34", AssetID: 334},
-		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11", AssetID: 211},
-		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83", AssetID: 283},
+		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34:50051", PeerHost: "192.0.2.34", AssetID: 334},
+		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11:50051", PeerHost: "192.0.2.11", AssetID: 211},
+		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83:50051", PeerHost: "192.0.2.83", AssetID: 283},
 	}
 }
 
@@ -398,9 +398,9 @@ func TestTrainPlanTopologyTrio(t *testing.T) {
 
 func TestTrainPlanRankFallbackWithoutAssetIDs(t *testing.T) {
 	targets := []fleetTarget{
-		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83", AssetID: 283},
-		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34"},
-		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11"},
+		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83:50051", PeerHost: "192.0.2.83", AssetID: 283},
+		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34:50051", PeerHost: "192.0.2.34"},
+		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11:50051", PeerHost: "192.0.2.11"},
 	}
 
 	t.Run("lan ranks by name and warns", func(t *testing.T) {
@@ -721,8 +721,8 @@ func TestRenderTrainPlanShowsLANRewriteAndStagingSkipped(t *testing.T) {
 
 	t.Run("id-less device renders an honest asset column", func(t *testing.T) {
 		targets := []fleetTarget{
-			{Name: "spark-3011", Address: "192.0.2.34"},
-			{Name: "spark-edeb", Address: "192.0.2.83", AssetID: 283},
+			{Name: "spark-3011", Address: "192.0.2.34:50051", PeerHost: "192.0.2.34"},
+			{Name: "spark-edeb", Address: "192.0.2.83:50051", PeerHost: "192.0.2.83", AssetID: 283},
 		}
 		lanIn := trainPlanTestInput()
 		lanIn.Transport = transportLAN

@@ -21,9 +21,9 @@ import (
 // devices whose lowest asset id (211) therefore coordinates.
 func trainTestTargets() []fleetTarget {
 	return []fleetTarget{
-		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34", AssetID: 334, connect: unusedConnect},
-		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11", AssetID: 211, connect: unusedConnect},
-		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83", AssetID: 283, connect: unusedConnect},
+		{Name: "spark-3011", ID: "spark-3011.local", Address: "192.0.2.34:50051", PeerHost: "192.0.2.34", AssetID: 334, connect: unusedConnect},
+		{Name: "spark-48fd", ID: "spark-48fd.local", Address: "192.0.2.11:50051", PeerHost: "192.0.2.11", AssetID: 211, connect: unusedConnect},
+		{Name: "spark-edeb", ID: "spark-edeb.local", Address: "192.0.2.83:50051", PeerHost: "192.0.2.83", AssetID: 283, connect: unusedConnect},
 	}
 }
 
@@ -275,7 +275,7 @@ func TestMatchTrainContainers(t *testing.T) {
 }
 
 func TestTrainDeviceBaseURL(t *testing.T) {
-	lan := fleetTarget{Name: "spark-48fd", Address: "192.0.2.11", AssetID: 211}
+	lan := fleetTarget{Name: "spark-48fd", Address: "192.0.2.11:50051", PeerHost: "192.0.2.11", AssetID: 211}
 	got, err := trainDeviceBaseURL(lan, 8080)
 	if err != nil {
 		t.Fatal(err)
@@ -311,7 +311,8 @@ func TestPollTrainStatusAuthenticatesAndSanitizes(t *testing.T) {
 	}))
 	defer server.Close()
 
-	target := fleetTarget{Name: "fake", Address: strings.TrimPrefix(server.URL, "http://")}
+	// Status is polled from the operator's machine, so it dials the peer host.
+	target := fleetTarget{Name: "fake", PeerHost: "127.0.0.1"}
 	port := 0
 	if _, portStr, ok := strings.Cut(strings.TrimPrefix(server.URL, "http://"), ":"); ok {
 		for _, r := range portStr {
@@ -339,7 +340,7 @@ func TestPollTrainStatusAuthenticatesAndSanitizes(t *testing.T) {
 
 func TestPollTrainStatusUnreachableDeviceIsReportedNotFatal(t *testing.T) {
 	// Port 1 on the loopback interface refuses immediately.
-	target := fleetTarget{Name: "down", Address: "127.0.0.1"}
+	target := fleetTarget{Name: "down", Address: "127.0.0.1:50051", PeerHost: "127.0.0.1"}
 	got := pollTrainStatus(context.Background(), http.DefaultClient, target, 1, "token")
 	if !strings.Contains(got, "unreachable") {
 		t.Fatalf("got %q, want an unreachable report", got)
@@ -413,5 +414,80 @@ func TestResolveTrainTargetNeedsATemplateOrSavedState(t *testing.T) {
 	}
 	if state != nil {
 		t.Fatal("expected no saved state for a fleet that was never deployed")
+	}
+}
+
+func TestResolveTrainPeerHostsReplacesMulticastNames(t *testing.T) {
+	// Containers cannot resolve multicast names, so a plan must never carry
+	// one. This is the failure that cost a hardware attempt before the
+	// launcher was replaced.
+	original := osLookupHostFn
+	osLookupHostFn = func(_ context.Context, host string) ([]string, error) {
+		switch host {
+		case "spark-48fd.local":
+			return []string{"192.168.0.46"}, nil
+		case "spark-edeb.local":
+			return []string{"192.168.0.132"}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	t.Cleanup(func() { osLookupHostFn = original })
+
+	targets := []fleetTarget{
+		{Name: "spark-48fd", PeerHost: "spark-48fd.local", AssetID: 211},
+		{Name: "spark-edeb", PeerHost: "spark-edeb.local", AssetID: 283},
+	}
+	warnings, err := resolveTrainPeerHosts(context.Background(), targets, transportLAN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("private addresses must not warn: %v", warnings)
+	}
+	if targets[0].PeerHost != "192.168.0.46" || targets[1].PeerHost != "192.168.0.132" {
+		t.Fatalf("peer hosts not resolved: %q %q", targets[0].PeerHost, targets[1].PeerHost)
+	}
+}
+
+func TestResolveTrainPeerHostsRefusesUnresolvableAndWarnsOnPublic(t *testing.T) {
+	original := osLookupHostFn
+	osLookupHostFn = func(_ context.Context, host string) ([]string, error) {
+		if host == "public.example" {
+			return []string{"93.184.216.34"}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	t.Cleanup(func() { osLookupHostFn = original })
+
+	// A device nobody can resolve must fail here, not one layer down inside a
+	// container that reports only "Name or service not known".
+	unresolvable := []fleetTarget{{Name: "ghost", PeerHost: "ghost.local"}}
+	if _, err := resolveTrainPeerHosts(context.Background(), unresolvable, transportLAN); err == nil {
+		t.Fatal("expected an error for an unresolvable device")
+	}
+
+	public := []fleetTarget{{Name: "far", PeerHost: "public.example"}}
+	warnings, err := resolveTrainPeerHosts(context.Background(), public, transportLAN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "outside private address space") {
+		t.Fatalf("expected one public-address warning, got %v", warnings)
+	}
+
+	// The mesh transport addresses peers by asset id, so no resolution happens.
+	meshWarnings, err := resolveTrainPeerHosts(context.Background(), unresolvable, transportMesh)
+	if err != nil || meshWarnings != nil {
+		t.Fatalf("mesh transport must not resolve: %v %v", meshWarnings, err)
+	}
+}
+
+func TestResolveTrainPeerHostsLeavesAddressesAlone(t *testing.T) {
+	targets := []fleetTarget{{Name: "already", PeerHost: "192.0.2.11"}}
+	if _, err := resolveTrainPeerHosts(context.Background(), targets, transportLAN); err != nil {
+		t.Fatal(err)
+	}
+	if targets[0].PeerHost != "192.0.2.11" {
+		t.Fatalf("an address was rewritten to %q", targets[0].PeerHost)
 	}
 }

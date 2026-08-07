@@ -46,7 +46,12 @@ const fleetLANDiscoverTimeout = 5 * time.Second
 type fleetTarget struct {
 	Name    string // display name (LAN: normalized short name; cloud: asset name)
 	ID      string // stable id (LAN: mDNS hostname; cloud: asset id as string)
-	Address string // LAN dial address (empty for cloud targets)
+	Address string // LAN dial address, host:agentPort (empty for cloud targets)
+	// PeerHost is the bare host other devices should dial this one at: the
+	// discovered address when known, otherwise the multicast hostname. It is
+	// deliberately separate from Address, which carries the agent's own port
+	// and is for this machine's use, not for a container on another device.
+	PeerHost string
 	// AssetID is the cloud asset id: the Asset's id for cloud targets, the
 	// assetid mDNS TXT record for LAN ones. 0 when unknown, which on the LAN
 	// means the device is not enrolled (or predates the record). Callers that
@@ -171,10 +176,11 @@ func lanDevicesForTags(ctx context.Context, tags []string, timeout time.Duration
 func targetForDevice(dev models.LANDevice) fleetTarget {
 	addr := preferredLANAddress(dev)
 	return fleetTarget{
-		Name:    deviceShortName(dev),
-		ID:      dev.Hostname,
-		Address: addr,
-		AssetID: dev.AssetID,
+		Name:     deviceShortName(dev),
+		ID:       dev.Hostname,
+		Address:  addr,
+		PeerHost: peerHost(dev),
+		AssetID:  dev.AssetID,
 		connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectWithAutoTLS(ctx, addr)
 		},

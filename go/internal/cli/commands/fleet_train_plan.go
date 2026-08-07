@@ -176,7 +176,7 @@ func computeTrainPlan(targets []fleetTarget, in trainPlanInput) (*trainPlan, err
 	if transport == transportLAN {
 		var unaddressable []string
 		for _, t := range ordered {
-			if strings.TrimSpace(t.Address) == "" {
+			if strings.TrimSpace(t.PeerHost) == "" {
 				unaddressable = append(unaddressable, t.Name)
 			}
 		}
@@ -380,7 +380,7 @@ func trainPeerValues(ordered []fleetTarget, transport trainTransport, port int) 
 			if i == j {
 				continue
 			}
-			peers = append(peers, fmt.Sprintf("%s:%d", peer.Address, port))
+			peers = append(peers, fmt.Sprintf("%s:%d", peer.PeerHost, port))
 		}
 		out[i] = strings.Join(peers, ",")
 	}
@@ -392,7 +392,7 @@ func trainPeerValues(ordered []fleetTarget, transport trainTransport, port int) 
 // computePeers in fleet_manifest.go, which builds the same host.
 func trainCoordinatorAddress(coordinator fleetTarget, transport trainTransport, port int) string {
 	if transport == transportLAN {
-		return fmt.Sprintf("%s:%d", coordinator.Address, port)
+		return fmt.Sprintf("%s:%d", coordinator.PeerHost, port)
 	}
 	return fmt.Sprintf("device-%d.cloud.wendy.dev:%d", coordinator.AssetID, port)
 }

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -212,6 +214,10 @@ func runFleetTrainUp(ctx context.Context, o *trainUpOptions) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("group %q has no devices; on the local network check the name pattern, or add cloud devices with 'wendy fleet group add %s <device>...'", o.group, o.group)
 	}
+	addressWarnings, err := resolveTrainPeerHosts(ctx, targets, transport)
+	if err != nil {
+		return err
+	}
 
 	token, ephemeral, err := ensureFleetToken(o.token, baseEnv, o.group, appCfg.AppID, !o.dryRun)
 	if err != nil {
@@ -233,6 +239,7 @@ func runFleetTrainUp(ctx context.Context, o *trainUpOptions) error {
 		return err
 	}
 	plan.Source = templateSourceLabel(source)
+	plan.Warnings = append(plan.Warnings, addressWarnings...)
 
 	// The local-network transport needs host networking, since peers are
 	// addressed by address rather than through the mesh. Rewriting the parsed
@@ -655,25 +662,13 @@ func trainAppIDForTemplate(name string) string {
 // endpoint: a locally discovered device is reached at its address, a cloud one
 // through its mesh name.
 func trainDeviceBaseURL(target fleetTarget, port int) (string, error) {
-	if target.Address != "" {
-		host := target.Address
-		if !strings.Contains(host, ":") {
-			return fmt.Sprintf("http://%s:%d", host, port), nil
-		}
-		return fmt.Sprintf("http://%s", hostWithPort(host, port)), nil
+	if target.PeerHost != "" {
+		return fmt.Sprintf("http://%s:%d", target.PeerHost, port), nil
 	}
 	if target.AssetID > 0 {
 		return fmt.Sprintf("http://device-%d.cloud.wendy.dev:%d", target.AssetID, port), nil
 	}
-	return "", fmt.Errorf("device %s has neither an address nor an asset id", target.Name)
-}
-
-// hostWithPort replaces any port already present on host with the fleet port.
-func hostWithPort(host string, port int) string {
-	if idx := strings.LastIndex(host, ":"); idx > 0 {
-		host = host[:idx]
-	}
-	return fmt.Sprintf("%s:%d", host, port)
+	return "", fmt.Errorf("device %s has neither a peer host nor an asset id", target.Name)
 }
 
 // pollTrainStatus asks one device for its training status, falling back to a
@@ -730,4 +725,41 @@ func sanitizeStatusBody(body string) string {
 		return "(empty response)"
 	}
 	return summary
+}
+
+// resolveTrainPeerHosts turns each device's peer host into something a
+// container on another device can actually dial.
+//
+// Discovery reports a multicast hostname when it has no address for a device,
+// and a slim container image cannot resolve multicast names: an earlier
+// generation of this feature shipped .local names to the fleet and every
+// worker failed with "Name or service not known". Resolution happens here, on
+// the machine that can still do it, and a device that cannot be resolved is an
+// error rather than a deploy that fails one layer down.
+//
+// Addresses outside private ranges are reported but not rejected: an operator
+// may legitimately train across a routed network, and the warning is there so a
+// surprising resolution is visible before the token travels to it.
+func resolveTrainPeerHosts(ctx context.Context, targets []fleetTarget, transport trainTransport) ([]string, error) {
+	if transport != transportLAN {
+		return nil, nil
+	}
+	var warnings []string
+	for i := range targets {
+		host := targets[i].PeerHost
+		if host == "" {
+			return nil, fmt.Errorf("device %s reported no address to reach it at; it may have gone offline mid-discovery", targets[i].Name)
+		}
+		resolved := resolveHostMDNSFallback(ctx, host)
+		if net.ParseIP(resolved) == nil {
+			return nil, fmt.Errorf("cannot resolve %s to an address; containers on the other devices could not reach it by name", host)
+		}
+		if addr, err := netip.ParseAddr(resolved); err == nil && !addr.IsPrivate() && !addr.IsLoopback() {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s resolved to %s, which is outside private address space; confirm that is the device you mean",
+				targets[i].Name, resolved))
+		}
+		targets[i].PeerHost = resolved
+	}
+	return warnings, nil
 }
