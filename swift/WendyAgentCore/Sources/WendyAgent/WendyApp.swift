@@ -23,8 +23,10 @@ struct WendyApp: Codable {
     /// Durable "the user asked this app to stop" flag. Set by the
     /// `StopContainer` RPC, cleared by `StartContainer`; agent-shutdown stops
     /// (`stopApp`/`stopAllApps`) must never set it, since a quit/update isn't
-    /// user intent to keep the app stopped. Defaults to `false` for legacy
-    /// `info.json` files.
+    /// user intent to keep the app stopped.
+    ///
+    /// Decodes as `true` when the key is absent — see `init(from:)`, and do not
+    /// "correct" that to `false`.
     var stoppedByUser: Bool
 
     var process: Foundation.Process?
@@ -82,6 +84,29 @@ struct WendyApp: Codable {
     /// reading `info.json` files written before those keys existed, and so
     /// the non-persisted runtime fields always start fresh on load.
     /// `encode(to:)` is left to synthesis.
+    ///
+    /// **A missing `stoppedByUser` decodes as `true`, not `false`.** That looks
+    /// backwards, so: the key is absent only in an `info.json` written by an
+    /// agent from before restart parity existed, which makes its absence the
+    /// legacy marker itself — no marker file needed, since `encode(to:)` always
+    /// writes the key. Defaulting it to `false` would make the first reconcile
+    /// after an agent update start every app the device has ever deployed,
+    /// resurrecting arbitrary old workloads unbidden. Defaulting to `true`
+    /// leaves them exactly as the user last saw them; an explicit
+    /// `StartContainer` clears the flag, after which the app takes part in
+    /// restart parity normally.
+    ///
+    /// The Linux agent solves this differently (`MigrateStoppedByUserOnce`,
+    /// `go/internal/agent/containerd/client.go:3417`): a one-shot pass that
+    /// marks every *not currently running* container stopped-by-user, which
+    /// works because containerd still holds live task state at upgrade time.
+    /// That doesn't transfer — the Mac agent's quit path stops every app and
+    /// persists `status: stopped` for all of them before the new binary ever
+    /// runs, so by the time this decoder sees the file, "was running" and "was
+    /// stopped" are indistinguishable.
+    ///
+    /// A missing `restartPolicy` still defaults to unless-stopped: it only
+    /// decides what happens to an app that is *eligible* to be restarted.
     init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.info = try values.decode(WendyAppInfo.self, forKey: .info)
@@ -90,7 +115,7 @@ struct WendyApp: Codable {
         self.restartPolicy =
             try values.decodeIfPresent(PersistedRestartPolicy.self, forKey: .restartPolicy)
             ?? .default
-        self.stoppedByUser = try values.decodeIfPresent(Bool.self, forKey: .stoppedByUser) ?? false
+        self.stoppedByUser = try values.decodeIfPresent(Bool.self, forKey: .stoppedByUser) ?? true
         self.process = nil
         self.launchToken = nil
         self.failureCount = 0

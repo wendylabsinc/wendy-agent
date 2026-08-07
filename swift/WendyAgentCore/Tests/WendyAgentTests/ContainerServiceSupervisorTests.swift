@@ -221,6 +221,57 @@ struct ContainerServiceSupervisorTests {
         await service.stopAllApps()
     }
 
+    @Test("reconcile leaves apps from a legacy info.json down")
+    func reconcileSkipsLegacyApps() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        // Exactly what a device carries after upgrading from an agent that
+        // predates restart parity: apps persisted with neither `restartPolicy`
+        // nor `stoppedByUser`. Without the missing-key-means-stopped rule the
+        // first reconcile would start all of them, unbidden.
+        let appID = "sh.wendy.tests.LegacyOnDisk"
+        try writeSupervisorSleepScript(appsBase: appsBase, appID: appID, name: "sleep.sh")
+        try writeLegacyInfoJSON(appsBase: appsBase, appID: appID, binaryName: "sleep.sh")
+
+        let service = makeService(appsBase: appsBase)
+        await service.reconcileApps()
+
+        #expect(await service.appInfo(forAppID: appID)?.status == .stopped)
+    }
+
+    @Test("an explicit start makes a legacy app eligible for restarts from then on")
+    func explicitStartClearsTheLegacyStopFlag() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "sh.wendy.tests.LegacyThenStarted"
+        try writeSupervisorCrashScript(appsBase: appsBase, appID: appID, name: "crash.sh", code: 4)
+        try writeLegacyInfoJSON(appsBase: appsBase, appID: appID, binaryName: "crash.sh")
+
+        let service = makeService(appsBase: appsBase, restartFloor: .zero)
+
+        // The user starts it: that is explicit intent, and clears the legacy
+        // flag.
+        try await startNativeApp(service: service, appID: appID)
+        try await waitForSupervisor("the legacy app to crash") {
+            await service.appInfo(forAppID: appID)?.status == .stopped
+        }
+
+        // From here on it takes part in restart parity like any other app.
+        await service.superviseApps()
+        #expect(await service.appInfo(forAppID: appID)?.status == .running)
+        #expect(await service.failureCount(forAppID: appID) == 1)
+
+        await service.stopAllApps()
+
+        // And the cleared flag is durable: a later reconcile brings it back.
+        let restarted = makeService(appsBase: appsBase)
+        await restarted.reconcileApps()
+        #expect(await restarted.appInfo(forAppID: appID)?.status == .running)
+        await restarted.stopAllApps()
+    }
+
     @Test("reconcile adopts a container the backend reports running")
     func reconcileAdoptsRunningContainer() async throws {
         let appsBase = try makeSupervisorTempDir()
@@ -1029,6 +1080,18 @@ private func makeSupervisorTempDir() throws -> String {
 
 private func cleanupSupervisorPath(_ path: String) {
     try? FileManager.default.removeItem(atPath: path)
+}
+
+/// Plants an `info.json` in the shape an agent from before restart parity
+/// wrote: no `restartPolicy`, no `stoppedByUser`.
+private func writeLegacyInfoJSON(appsBase: String, appID: String, binaryName: String) throws {
+    let json = legacyInfoJSON(appID: appID, binaryName: binaryName)
+        .replacingOccurrences(of: "/tmp/\(appID)", with: "\(appsBase)/\(appID)")
+    try json.write(
+        to: URL(fileURLWithPath: appsBase).appendingPathComponent("info.json"),
+        atomically: true,
+        encoding: .utf8
+    )
 }
 
 private func writeSupervisorSleepScript(appsBase: String, appID: String, name: String) throws {

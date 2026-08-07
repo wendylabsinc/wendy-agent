@@ -62,34 +62,49 @@ struct RestartPolicyTests {
         #expect(persisted.onFailureMaxRetries == 0)
     }
 
-    @Test("legacy info.json without restartPolicy or stoppedByUser decodes with defaults")
-    func legacyInfoJSONDecodesWithDefaults() throws {
-        // Mirrors an info.json written before this field existed: only
-        // `info`, `native`, and `container` are present.
-        let legacyJSON = """
-            [
-                {
-                    "info": {
-                        "id": "sh.wendy.tests.Legacy",
-                        "kind": "native",
-                        "status": "stopped",
-                        "pid": null
-                    },
-                    "native": {
-                        "directory": "/tmp/sh.wendy.tests.Legacy",
-                        "binaryName": "app",
-                        "args": []
-                    }
-                }
-            ]
-            """
-
-        let apps = try JSONDecoder().decode([WendyApp].self, from: Data(legacyJSON.utf8))
+    @Test("legacy info.json without stoppedByUser decodes as stopped by the user")
+    func legacyInfoJSONDecodesAsStoppedByUser() throws {
+        let apps = try JSONDecoder().decode(
+            [WendyApp].self,
+            from: Data(legacyInfoJSON(appID: "sh.wendy.tests.Legacy").utf8)
+        )
         let app = try #require(apps.first)
 
+        // The missing key IS the legacy marker. Decoding it as `false` would
+        // make the first reconcile after an agent update resurrect every app
+        // the device ever deployed; see `WendyApp.init(from:)`.
+        #expect(app.stoppedByUser == true)
+        // The policy default is unaffected: it only decides what happens to an
+        // app that is eligible to be restarted in the first place.
         #expect(app.restartPolicy == .default)
         #expect(app.restartPolicy.mode == .unlessStopped)
-        #expect(app.stoppedByUser == false)
+    }
+
+    @Test("a file written by the current agent round-trips stoppedByUser in both states")
+    func currentInfoJSONRoundTripsStoppedByUserBothWays() throws {
+        for stoppedByUser in [true, false] {
+            let app = WendyApp(
+                info: WendyAppInfo(
+                    id: "sh.wendy.tests.RoundTripFlag",
+                    kind: .native,
+                    status: .stopped,
+                    pid: nil
+                ),
+                stoppedByUser: stoppedByUser
+            )
+
+            let data = try JSONEncoder().encode(app)
+
+            // The key must always be written, since its absence is what marks a
+            // file as legacy.
+            let rawObject = try #require(
+                try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            )
+            #expect(rawObject["stoppedByUser"] != nil)
+
+            let decoded = try JSONDecoder().decode(WendyApp.self, from: data)
+            #expect(decoded.stoppedByUser == stoppedByUser)
+        }
     }
 
     @Test("round trip preserves policy and stoppedByUser, drops runtime-only fields")
@@ -133,4 +148,26 @@ struct RestartPolicyTests {
         #expect(decoded.lastRestart == nil)
         #expect(decoded.lastExitCode == nil)
     }
+}
+
+/// An `info.json` entry as an agent from before restart parity wrote it: no
+/// `restartPolicy`, no `stoppedByUser`.
+func legacyInfoJSON(appID: String, binaryName: String = "app") -> String {
+    """
+    [
+        {
+            "info": {
+                "id": "\(appID)",
+                "kind": "native",
+                "status": "stopped",
+                "pid": null
+            },
+            "native": {
+                "directory": "/tmp/\(appID)",
+                "binaryName": "\(binaryName)",
+                "args": []
+            }
+        }
+    ]
+    """
 }
