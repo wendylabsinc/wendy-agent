@@ -106,7 +106,8 @@ struct RegistryTLSListenerTests {
                 tls: RegistryTLS.Configuration(
                     certPEM: device.certPEM,
                     chainPEM: ca.pem,
-                    keyPEM: device.keyPEM,
+                    keyBacking: .softwarePEM(device.keyPEM),
+                    seKey: nil,
                     deviceOrg: deviceOrg,
                     orgMode: .grace
                 ),

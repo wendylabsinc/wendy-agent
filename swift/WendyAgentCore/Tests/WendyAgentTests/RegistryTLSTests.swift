@@ -15,7 +15,8 @@ struct RegistryTLSTests {
         let certs = ProvisioningService.ProvisioningCerts(
             certPEM: device.certPEM,
             chainPEM: ca.pem,
-            keyPEM: device.keyPEM
+            keyBacking: .softwarePEM(device.keyPEM),
+            seKey: nil
         )
 
         let config = RegistryTLS.makeConfiguration(
@@ -41,7 +42,8 @@ struct RegistryTLSTests {
         let config = RegistryTLS.Configuration(
             certPEM: device.certPEM,
             chainPEM: ca.pem,
-            keyPEM: device.keyPEM,
+            keyBacking: .softwarePEM(device.keyPEM),
+            seKey: nil,
             deviceOrg: 1,
             orgMode: .grace
         )
@@ -54,7 +56,8 @@ struct RegistryTLSTests {
         let config = RegistryTLS.Configuration(
             certPEM: "not a certificate",
             chainPEM: "not a chain",
-            keyPEM: "not a key",
+            keyBacking: .softwarePEM("not a key"),
+            seKey: nil,
             deviceOrg: 1,
             orgMode: .grace
         )

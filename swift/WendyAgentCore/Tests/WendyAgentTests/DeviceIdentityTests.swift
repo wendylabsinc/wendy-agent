@@ -54,6 +54,39 @@ struct DeviceIdentityTests {
         #expect(eku.contains(.serverAuth))
     }
 
+    @Test("CSR from a SecureEnclaveIdentity has the same subject, keyUsage, EKUs, and URI SAN")
+    func csrFromSecureEnclaveIdentityHasValidSignatureAndCN() throws {
+        try #require(SecureEnclaveIdentity.isAvailable, "no Secure Enclave")
+        let store = KeychainStore(service: "sh.wendy.agent.tests")
+        let acct = "csr-\(UUID().uuidString)"
+        let id = try SecureEnclaveIdentity.generate(store: store, account: acct)
+        defer { try? id.removeFromStore(store, account: acct) }
+
+        let urn = DeviceIdentity.assetURN(organizationID: 7, assetID: 42)
+        let pem = try DeviceIdentity.generateCSRPEM(
+            identity: id,
+            commonName: "device-42",
+            identityURN: urn
+        )
+        let csr = try CertificateSigningRequest(pemEncoded: pem)
+        #expect(csr.subject.description.contains("device-42"))
+
+        // Same extension shape as the software-key overload.
+        let exts = try #require(csr.attributes.extensionRequest?.extensions)
+        let keyUsage = try #require(try exts.keyUsage)
+        #expect(keyUsage.digitalSignature)
+        let eku = try #require(try exts.extendedKeyUsage)
+        #expect(eku.contains(.clientAuth))
+        #expect(eku.contains(.serverAuth))
+        let sans = try #require(try exts.subjectAlternativeNames)
+        let uris = sans.compactMap { name -> String? in
+            if case .uniformResourceIdentifier(let uri) = name { return uri }
+            return nil
+        }
+        #expect(uris == [urn])
+        // swift-certificates validates the CSR self-signature on decode/verify.
+    }
+
     @Test("CSR carries the identity URN as a URI SAN that OrgIdentity reads back")
     func csrIdentityURN() throws {
         let keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
