@@ -8,6 +8,7 @@ to `aplay` (ALSA) if PipeWire isn't available. PipeWire is preferred
 because it routes through the host's WirePlumber session graph, which can
 reach devices — like a paired Bluetooth speaker — that raw ALSA can't.
 """
+import asyncio
 import logging
 import os
 import shutil
@@ -26,19 +27,38 @@ _app_dir = Path(__file__).parent
 _sound_file = _app_dir / "assets" / "sleigh-bells.wav"
 
 
-def _play() -> None:
-    if shutil.which("pw-play"):
-        subprocess.Popen(["pw-play", str(_sound_file)])
-        logger.info("Playing %s via pw-play", _sound_file.name)
-    else:
-        subprocess.Popen(["aplay", str(_sound_file)])
-        logger.info("Playing %s via aplay", _sound_file.name)
+class PlaybackError(Exception):
+    pass
+
+
+async def _play() -> None:
+    """Start the player and confirm it survives its first second.
+
+    A player that can't reach an output (no PipeWire socket, ALSA device
+    busy/unsupported) exits almost immediately, so a short grace-period
+    check turns "silently spawned a dead process" into a real error. A
+    failure after the grace period goes undetected — acceptable for a demo.
+    """
+    player = "pw-play" if shutil.which("pw-play") else "aplay"
+    proc = subprocess.Popen(
+        [player, str(_sound_file)],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    await asyncio.sleep(1.0)
+    if proc.poll() is not None and proc.returncode != 0:
+        err = proc.stderr.read().strip() if proc.stderr else ""
+        raise PlaybackError(f"{player} exited with code {proc.returncode}: {err or 'no error output'}")
+    logger.info("Playing %s via %s", _sound_file.name, player)
 
 
 @app.on_event("startup")
 async def play_on_startup():
     if _sound_file.exists():
-        _play()
+        try:
+            await _play()
+        except (FileNotFoundError, PlaybackError) as e:
+            logger.error("Startup playback failed: %s", e)
 
 
 @app.post("/play")
@@ -46,11 +66,14 @@ async def play_sound():
     if not _sound_file.exists():
         return JSONResponse(content={"error": "sound file not found"}, status_code=404)
     try:
-        _play()
+        await _play()
         return JSONResponse(content={"status": "playing", "file": _sound_file.name})
     except FileNotFoundError:
         logger.error("no audio player (pw-play/aplay) found")
         return JSONResponse(content={"error": "no audio player found on this device"}, status_code=500)
+    except PlaybackError as e:
+        logger.error("Failed to play sound: %s", e)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
     except Exception as e:
         logger.error("Failed to play sound: %s", e)
         return JSONResponse(content={"error": str(e)}, status_code=500)

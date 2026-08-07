@@ -24,7 +24,9 @@ This builds the container, deploys it to your default device, and opens
 ## Endpoints
 
 - `GET /` — web page with a "Play Sound" button
-- `POST /play` — plays `assets/sleigh-bells.wav` via `pw-play`, falling back to `aplay`
+- `POST /play` — plays `assets/sleigh-bells.wav` via `pw-play`, falling back
+  to `aplay`; returns a 500 with the player's error output if playback fails
+  to start (e.g. no PipeWire socket or no usable output device)
 - `GET /health` — health check
 
 ## Run locally
