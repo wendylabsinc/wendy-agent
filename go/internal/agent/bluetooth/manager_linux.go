@@ -959,6 +959,11 @@ func claimBootReconnect(logger *zap.Logger) bool {
 		logger.Debug("Bluetooth boot reconnect not claimed", zap.Error(err))
 		return false
 	}
-	f.Close()
+	// The claim is already made — O_EXCL created the inode — so a close
+	// failure on a file we never write to must not skip the reconnect, which
+	// would leave the boot with no attempt at all.
+	if err := f.Close(); err != nil {
+		logger.Debug("Closing Bluetooth reconnect marker failed", zap.Error(err))
+	}
 	return true
 }
