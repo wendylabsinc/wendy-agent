@@ -1,0 +1,271 @@
+// Package audio talks to the PipeWire graph on the device.
+//
+// PipeWire is the only audio stack the agent uses. Its ALSA monitor enumerates
+// every sound card and exposes each as a node, so listing PipeWire covers
+// everything ALSA would and adds what ALSA cannot represent — most importantly
+// Bluetooth sinks and sources, which have no card behind them and are therefore
+// invisible to aplay, arecord and amixer.
+//
+// The agent runs as root while PipeWire runs in the wendy user's session, so
+// every helper here points the client tools at that session's runtime
+// directory. Root can open the socket regardless of the directory's mode.
+package audio
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// SocketGlob locates the per-user PipeWire socket. Behind a var so tests can
+// redirect it into a tempdir.
+var SocketGlob = "/run/user/*/pipewire-0"
+
+// Node is a PipeWire sink or source.
+type Node struct {
+	// ID is object.id, which wpctl takes for volume and default selection.
+	ID uint32
+	// Serial is object.serial, which pw-record's --target takes. They are
+	// different numbering schemes and are not interchangeable.
+	Serial uint64
+	// Name is node.name, the stable identifier the default-device metadata
+	// refers to (e.g. "bluez_output.78_2B_64_76_F3_CE.1").
+	Name string
+	// Description is node.description, meant for humans.
+	Description string
+	IsSink      bool
+}
+
+// Defaults names the nodes PipeWire currently routes to by default.
+type Defaults struct {
+	SinkName   string
+	SourceName string
+}
+
+// IsDefault reports whether n is the current default for its direction.
+func (d Defaults) IsDefault(n Node) bool {
+	if n.IsSink {
+		return n.Name != "" && n.Name == d.SinkName
+	}
+	return n.Name != "" && n.Name == d.SourceName
+}
+
+// RuntimeDir returns the directory holding the user session's PipeWire socket,
+// or "" when no session is up.
+func RuntimeDir() string {
+	matches, _ := filepath.Glob(SocketGlob)
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.Mode()&os.ModeSocket != 0 {
+			return filepath.Dir(m)
+		}
+	}
+	return ""
+}
+
+// Command builds a command pointed at the user session. It returns an error
+// rather than falling back to the system-wide instance: that instance has no
+// session manager, so it reports an empty graph, and silently listing nothing
+// is worse than saying audio is unavailable.
+func Command(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
+	dir := RuntimeDir()
+	if dir == "" {
+		return nil, fmt.Errorf("no PipeWire session found (looked for %s)", SocketGlob)
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(),
+		"PIPEWIRE_RUNTIME_DIR="+dir,
+		"XDG_RUNTIME_DIR="+dir,
+	)
+	return cmd, nil
+}
+
+// DumpRun returns the raw pw-dump output. Behind a var so tests can supply a
+// fixture instead of running PipeWire.
+var DumpRun = func(ctx context.Context) ([]byte, error) {
+	cmd, err := Command(ctx, "pw-dump")
+	if err != nil {
+		return nil, err
+	}
+	return cmd.Output()
+}
+
+// WpctlRun runs wpctl against the user session. Behind a var for tests.
+var WpctlRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	cmd, err := Command(ctx, "wpctl", args...)
+	if err != nil {
+		return nil, err
+	}
+	return cmd.CombinedOutput()
+}
+
+// pwObject is the subset of a pw-dump entry this package reads. Node properties
+// live under info.props; the default-device metadata object carries its entries
+// in a top-level metadata array.
+type pwObject struct {
+	ID   uint32 `json:"id"`
+	Type string `json:"type"`
+	Info struct {
+		Props map[string]json.RawMessage `json:"props"`
+	} `json:"info"`
+	Props    map[string]json.RawMessage `json:"props"`
+	Metadata []struct {
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	} `json:"metadata"`
+}
+
+// propString reads a property that may be encoded as a JSON string or a bare
+// number — pw-dump uses both, depending on the property.
+func propString(props map[string]json.RawMessage, key string) string {
+	raw, ok := props[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return strings.Trim(string(raw), `"`)
+}
+
+func propUint(props map[string]json.RawMessage, key string) uint64 {
+	v, err := strconv.ParseUint(propString(props, key), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// parseDump extracts audio sinks and sources, and the current defaults.
+func parseDump(data []byte) ([]Node, Defaults, error) {
+	var objects []pwObject
+	if err := json.Unmarshal(data, &objects); err != nil {
+		return nil, Defaults{}, fmt.Errorf("parsing pw-dump output: %w", err)
+	}
+
+	var nodes []Node
+	var defaults Defaults
+	for _, o := range objects {
+		if len(o.Metadata) > 0 && propString(o.Props, "metadata.name") == "default" {
+			for _, m := range o.Metadata {
+				// The value is an object, {"name": "<node.name>"}.
+				var v struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(m.Value, &v) != nil {
+					continue
+				}
+				switch m.Key {
+				case "default.audio.sink":
+					defaults.SinkName = v.Name
+				case "default.audio.source":
+					defaults.SourceName = v.Name
+				}
+			}
+			continue
+		}
+
+		// Exactly "Audio/Sink" or "Audio/Source". Monitor and virtual nodes
+		// carry a further suffix and are not devices anyone chose to install.
+		class := propString(o.Info.Props, "media.class")
+		if class != "Audio/Sink" && class != "Audio/Source" {
+			continue
+		}
+		name := propString(o.Info.Props, "node.name")
+		if name == "" {
+			continue
+		}
+		description := propString(o.Info.Props, "node.description")
+		if description == "" {
+			description = name
+		}
+		nodes = append(nodes, Node{
+			ID:          o.ID,
+			Serial:      propUint(o.Info.Props, "object.serial"),
+			Name:        name,
+			Description: description,
+			IsSink:      class == "Audio/Sink",
+		})
+	}
+	return nodes, defaults, nil
+}
+
+// ListNodes enumerates the sinks and sources PipeWire currently has.
+func ListNodes(ctx context.Context) ([]Node, Defaults, error) {
+	out, err := DumpRun(ctx)
+	if err != nil {
+		return nil, Defaults{}, fmt.Errorf("querying PipeWire: %w", err)
+	}
+	return parseDump(out)
+}
+
+// FindNode returns the node with the given object id.
+func FindNode(nodes []Node, id uint32) (Node, bool) {
+	for _, n := range nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return Node{}, false
+}
+
+// parseVolume reads the "Volume: 0.50" line wpctl get-volume prints, and
+// returns it as a percentage. A muted node prints a trailing "[MUTED]", which
+// does not change the underlying volume and is ignored here.
+func parseVolume(output string) (uint32, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		_, after, found := strings.Cut(strings.TrimSpace(line), "Volume:")
+		if !found {
+			continue
+		}
+		fields := strings.Fields(after)
+		if len(fields) == 0 {
+			continue
+		}
+		v, err := strconv.ParseFloat(fields[0], 64)
+		if err != nil {
+			continue
+		}
+		if v < 0 {
+			v = 0
+		}
+		return uint32(v*100 + 0.5), true
+	}
+	return 0, false
+}
+
+// NodeVolume reports a node's volume as a percentage.
+func NodeVolume(ctx context.Context, id uint32) (uint32, bool) {
+	out, err := WpctlRun(ctx, "get-volume", strconv.FormatUint(uint64(id), 10))
+	if err != nil {
+		return 0, false
+	}
+	return parseVolume(string(out))
+}
+
+// SetNodeVolume sets a node's volume from a percentage. wpctl takes a fraction.
+func SetNodeVolume(ctx context.Context, id, percent uint32) error {
+	if percent > 100 {
+		percent = 100
+	}
+	arg := strconv.FormatFloat(float64(percent)/100, 'f', 2, 64)
+	out, err := WpctlRun(ctx, "set-volume", strconv.FormatUint(uint64(id), 10), arg)
+	if err != nil {
+		return fmt.Errorf("wpctl set-volume: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// SetDefaultNode makes a node the default sink or source for its direction.
+func SetDefaultNode(ctx context.Context, id uint32) error {
+	out, err := WpctlRun(ctx, "set-default", strconv.FormatUint(uint64(id), 10))
+	if err != nil {
+		return fmt.Errorf("wpctl set-default: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
