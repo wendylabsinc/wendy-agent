@@ -36,6 +36,14 @@ struct WendyApp: Codable {
     var lastRestart: Date? = nil
     var lastExitCode: Int32? = nil
 
+    /// The pid `info.json` carried when this app was loaded, if any. `info.pid`
+    /// is deliberately scrubbed on load (the agent has no handle on that
+    /// process, and reporting it would attribute stats to a possibly-recycled
+    /// pid), but reconcile still needs it to recognize a native app that
+    /// survived a disorderly agent exit. Set only by `ContainerService.loadApps`
+    /// and cleared once reconcile has considered it.
+    var persistedPID: Int32? = nil
+
     enum CodingKeys: String, CodingKey {
         case info
         case native
@@ -54,7 +62,8 @@ struct WendyApp: Codable {
         launchToken: UUID? = nil,
         failureCount: Int = 0,
         lastRestart: Date? = nil,
-        lastExitCode: Int32? = nil
+        lastExitCode: Int32? = nil,
+        persistedPID: Int32? = nil
     ) {
         self.info = info
         self.native = native
@@ -66,6 +75,7 @@ struct WendyApp: Codable {
         self.failureCount = failureCount
         self.lastRestart = lastRestart
         self.lastExitCode = lastExitCode
+        self.persistedPID = persistedPID
     }
 
     /// Custom decode so `restartPolicy`/`stoppedByUser` default sensibly when
@@ -86,5 +96,6 @@ struct WendyApp: Codable {
         self.failureCount = 0
         self.lastRestart = nil
         self.lastExitCode = nil
+        self.persistedPID = nil
     }
 }

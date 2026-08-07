@@ -12,6 +12,16 @@ import WendyAgentGRPC
     import Glibc
 #endif
 
+/// Looks up the executable path of a live pid, returning `nil` when the pid is
+/// not alive (or cannot be inspected). Injected into `ContainerService` so the
+/// native-survivor logic is testable without spawning real processes.
+typealias PIDExecutablePathLookup = @Sendable (Int32) -> String?
+
+/// Sends a signal to a pid. Injected alongside `PIDExecutablePathLookup` so
+/// tests can assert exactly which pids were signalled — and, more importantly,
+/// which were not.
+typealias PIDSignalSender = @Sendable (Int32, Int32) -> Void
+
 actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServiceProtocol {
     private let appsBase: URL
     private let blobsDirectory: String
@@ -31,6 +41,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     private let linuxBackend: (any LinuxContainerBackend)?
     private let linuxUnavailableMessage: String
 
+    /// How often the crash supervisor ticks. Mirrors the Linux agent's 15 s
+    /// monitor interval (`go/cmd/wendy-agent/main.go:229`). `nonisolated` so
+    /// the task driving the tick can read it without hopping onto the actor.
+    nonisolated let supervisorInterval: Duration
+    /// Minimum gap between two automatic restarts of the same app, mirroring
+    /// the Linux monitor's 10 s floor (`planRestarts`).
+    private let restartFloorSeconds: TimeInterval
+    private let pidExecutablePath: PIDExecutablePathLookup
+    private let sendSignal: PIDSignalSender
+
     init(
         broadcaster: TelemetryBroadcaster,
         executablePath: String,
@@ -40,6 +60,12 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         linuxBackend: (any LinuxContainerBackend)? = nil,
         linuxUnavailableMessage: String =
             "No Linux container runtime found. Install Apple's `container` (recommended) or Docker on the Mac agent.",
+        supervisorInterval: Duration = .seconds(15),
+        restartFloor: Duration = .seconds(10),
+        pidExecutablePath: @escaping PIDExecutablePathLookup = {
+            ContainerService.executablePath(forPID: $0)
+        },
+        sendSignal: @escaping PIDSignalSender = { pid, signal in _ = Darwin.kill(pid, signal) },
         onAppsChanged: @escaping @Sendable ([WendyAppInfo]) async -> Void = { _ in }
     ) {
         self.broadcaster = broadcaster
@@ -48,6 +74,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.sandboxProfilePath = sandboxProfilePath
         self.linuxBackend = linuxBackend
         self.linuxUnavailableMessage = linuxUnavailableMessage
+        self.supervisorInterval = supervisorInterval
+        self.restartFloorSeconds = Self.seconds(restartFloor)
+        self.pidExecutablePath = pidExecutablePath
+        self.sendSignal = sendSignal
 
         let defaultStateDirectory = WendyAgentPaths.stateDirectory
         let resolvedStateDirectory = stateDirectory ?? appsBase ?? defaultStateDirectory
@@ -113,6 +143,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     )
                     restoredApp.process = nil
                     restoredApp.launchToken = nil
+                    // The pid is scrubbed from `info` (this process owns no
+                    // handle on it) but kept aside: if the previous agent
+                    // process exited disorderly, that pid may still be running
+                    // this app, and reconcile has to deal with the survivor.
+                    restoredApp.persistedPID = app.info.pid
                     return (restoredApp.info.id, restoredApp)
                 }
             )
@@ -150,6 +185,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     func lastExitCode(forAppID id: String) -> Int32? {
         self.appsByID[id]?.lastExitCode
+    }
+
+    func failureCount(forAppID id: String) -> Int? {
+        self.appsByID[id]?.failureCount
+    }
+
+    func persistedPID(forAppID id: String) -> Int32? {
+        self.appsByID[id]?.persistedPID
     }
 
     func beginStopping() {
@@ -352,12 +395,21 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
     @discardableResult
     private func stopTrackedAppIfRunning(id: String) async throws -> Bool {
-        guard let app = self.appsByID[id],
-            let process = app.process,
-            let launchToken = app.launchToken,
-            app.info.status == .running
-        else {
+        guard let app = self.appsByID[id], app.info.status == .running else {
             return false
+        }
+
+        guard let process = app.process, let launchToken = app.launchToken else {
+            // An adopted container: it outlived the agent process that launched
+            // it (an update or a crash), so there is no attached process to
+            // terminate. Stop it by name through the backend instead — without
+            // this an adopted container could never be stopped at all.
+            guard app.info.kind == .container, app.container != nil, let linuxBackend else {
+                return false
+            }
+            try await linuxBackend.stop(appName: id)
+            await self.markAppStopped(id: id)
+            return true
         }
 
         if !process.isRunning {
@@ -400,6 +452,460 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             exitCode: process.terminationStatus
         )
         return true
+    }
+
+    // MARK: - Reconcile & crash supervision
+
+    /// Brings apps back after the agent restarts, and adopts anything that
+    /// outlived the previous agent process. Mirrors the Linux agent's
+    /// `ReconcileBootContainers` (`go/internal/agent/container/monitor.go:173`):
+    /// one immediate pass so apps come back without waiting a supervisor tick.
+    ///
+    /// Apps the user explicitly stopped, and apps deployed with `--no-restart`,
+    /// stay down — that is exactly what `shouldRestart` decides (at this point
+    /// `failureCount` is 0 and `lastExitCode` unknown for every app, since both
+    /// are runtime-only and reset on load).
+    ///
+    /// Resilient by design: one app failing to start is logged and the rest of
+    /// the pass continues.
+    func reconcileApps() async {
+        guard !self.isStopping else { return }
+
+        let backendStates = await self.managedContainerStates()
+        await self.terminateNativeSurvivors()
+
+        let candidates = self.appsByID.values
+            .sorted { $0.info.id < $1.info.id }
+            .filter { Self.shouldRestart($0) }
+
+        guard !candidates.isEmpty else { return }
+        self.logger.info(
+            "Reconciling apps on start",
+            metadata: ["count": "\(candidates.count)"]
+        )
+
+        let now = Date()
+        for candidate in candidates {
+            guard !self.isStopping else { return }
+            let id = candidate.info.id
+            // Re-read every time: reconcile runs concurrently with the gRPC
+            // server, so an RPC can start, stop, or re-register an app across
+            // any of the awaits below. Never start an app that is already
+            // running (or launching) — that would orphan the live process.
+            guard let app = self.appsByID[id],
+                app.info.status != .running,
+                !Self.isLaunchInFlight(app),
+                Self.shouldRestart(app)
+            else {
+                continue
+            }
+
+            if app.container != nil {
+                if Self.isRunning(backendStates?[managedContainerName(for: id)]) {
+                    // Still running from the previous agent process: adopt it
+                    // rather than bouncing a healthy container.
+                    await self.adoptRunningContainer(id: id)
+                    continue
+                }
+            }
+
+            // Record the start time so the first supervisor tick doesn't
+            // immediately restart an app that is still coming up. Unlike the
+            // Linux monitor this does NOT bump `failureCount`: a planned agent
+            // restart isn't an app failure, and counting it would eat an
+            // ON_FAILURE retry on every agent update.
+            self.recordAutomaticStart(id: id, at: now)
+            await self.startAppUnattended(id: id)
+        }
+    }
+
+    /// One supervisor tick. Mirrors the Linux monitor's `planRestarts`
+    /// (`go/internal/agent/container/monitor.go:370`): skip apps that are
+    /// running, skip the ones their policy won't restart, skip anything
+    /// restarted inside the 10 s floor, then bump `failureCount`/`lastRestart`
+    /// and restart.
+    func superviseApps() async {
+        guard !self.isStopping else { return }
+
+        let backendStates = await self.managedContainerStates()
+        // Observed container state first: an adopted container has no attached
+        // process, so nothing else notices when it exits.
+        await self.syncAdoptedContainerStates(backendStates: backendStates)
+
+        let now = Date()
+        for id in self.appsByID.keys.sorted() {
+            guard !self.isStopping else { return }
+            guard var app = self.appsByID[id] else { continue }
+            guard app.info.status != .running, !Self.isLaunchInFlight(app) else { continue }
+            guard Self.shouldRestart(app) else { continue }
+            if let lastRestart = app.lastRestart,
+                now.timeIntervalSince(lastRestart) < self.restartFloorSeconds
+            {
+                continue
+            }
+
+            app.failureCount += 1
+            app.lastRestart = now
+            self.appsByID[id] = app
+            self.logger.info(
+                "Restarting app",
+                metadata: [
+                    "app_name": "\(id)",
+                    "failure_count": "\(app.failureCount)",
+                    "exit_code": "\(app.lastExitCode.map(String.init) ?? "unknown")",
+                ]
+            )
+            await self.startAppUnattended(id: id)
+        }
+    }
+
+    /// Mirrors the Linux monitor's `shouldRestart`
+    /// (`go/internal/agent/container/monitor.go:434`).
+    ///
+    /// Intentional divergence on ON_FAILURE: the Linux monitor has no exit-code
+    /// signal from containerd and therefore restarts on any exit, which it
+    /// documents as a known limitation. The Mac agent owns the child process
+    /// and does see the exit code, so ON_FAILURE restarts only after a non-zero
+    /// exit. An *unknown* exit code (nil — e.g. right after an agent restart,
+    /// where the runtime-only field is cleared) counts as a failure, so
+    /// reconcile still brings ON_FAILURE apps back exactly as Linux does.
+    private static func shouldRestart(_ app: WendyApp) -> Bool {
+        if app.stoppedByUser { return false }
+        switch app.restartPolicy.mode {
+        case .no:
+            return false
+        case .unlessStopped:
+            return true
+        case .onFailure:
+            if app.lastExitCode == 0 { return false }
+            let maxRetries = app.restartPolicy.onFailureMaxRetries
+            if maxRetries > 0, app.failureCount >= maxRetries { return false }
+            return true
+        }
+    }
+
+    /// True while a launch is mid-flight: a token has been claimed but the
+    /// process isn't marked running yet. The supervisor must not start a second
+    /// copy underneath an in-flight `StartContainer` (a container pull can hold
+    /// that window open for a long time).
+    private static func isLaunchInFlight(_ app: WendyApp) -> Bool {
+        app.launchToken != nil && app.info.status != .running
+    }
+
+    /// Starts an app with nobody streaming its RPC response. The pipes still
+    /// have to be consumed, so the output is drained into telemetry.
+    private func startAppUnattended(id: String) async {
+        do {
+            let launched = try await self.launchApp(appName: id)
+            self.drainUnattendedOutput(appName: id, launched: launched)
+        } catch {
+            self.logger.error(
+                "Failed to start app automatically",
+                metadata: [
+                    "app_name": "\(id)",
+                    "error": "\(String(describing: error))",
+                ]
+            )
+        }
+    }
+
+    /// Consumes an unattended launch's stdout/stderr. Without this the app
+    /// blocks as soon as the 64 KB pipe buffer fills; broadcasting the output as
+    /// telemetry keeps `wendy device logs` working for auto-started apps.
+    private func drainUnattendedOutput(appName: String, launched: LaunchedApp) {
+        let broadcaster = self.broadcaster
+        let stdout = launched.stdout
+        let stderr = launched.stderr
+        Task.detached {
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    for await data in stdout.fileHandleForReading.bytes(for: appName) {
+                        await Self.broadcastLog(
+                            broadcaster: broadcaster,
+                            appName: appName,
+                            text: String(decoding: data, as: UTF8.self),
+                            stream: "stdout",
+                            severity: .info
+                        )
+                    }
+                }
+                group.addTask {
+                    for await data in stderr.fileHandleForReading.bytes(for: appName) {
+                        await Self.broadcastLog(
+                            broadcaster: broadcaster,
+                            appName: appName,
+                            text: String(decoding: data, as: UTF8.self),
+                            stream: "stderr",
+                            severity: .warn
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /// One `listContainers()` query per pass, keyed by container name. `nil`
+    /// when there is no Linux backend, no container app to check, or the query
+    /// failed — callers then fall back to the tracked status rather than
+    /// guessing that an app is down and restarting a healthy container.
+    private func managedContainerStates() async -> [String: String]? {
+        guard let linuxBackend,
+            self.appsByID.values.contains(where: { $0.container != nil })
+        else {
+            return nil
+        }
+
+        do {
+            var states: [String: String] = [:]
+            for container in try await linuxBackend.listContainers() {
+                // Apple's `container` reports the run name as the id and copies
+                // it into `name`; Docker reports a hex id and the name. Key on
+                // both so `wendy-<appName>` resolves for either shape.
+                if !container.name.isEmpty { states[container.name] = container.state }
+                if !container.id.isEmpty, states[container.id] == nil {
+                    states[container.id] = container.state
+                }
+            }
+            return states
+        } catch {
+            self.logger.warning(
+                "Failed to list Linux containers while reconciling",
+                metadata: ["error": "\(String(describing: error))"]
+            )
+            return nil
+        }
+    }
+
+    /// Both backends report a lowercase `running`; every other state (exited,
+    /// stopped, created, dead) counts as down. An absent entry — the container
+    /// was removed — is down too.
+    private static func isRunning(_ state: String?) -> Bool {
+        state?.lowercased() == "running"
+    }
+
+    /// Folds observed container state into `appsByID` before the restart pass,
+    /// for container apps with no attached process (adopted ones): mark a
+    /// vanished container stopped, and adopt one that is running while we
+    /// believe it isn't, so the tick doesn't needlessly bounce it.
+    private func syncAdoptedContainerStates(backendStates: [String: String]?) async {
+        guard let backendStates else { return }
+
+        for id in self.appsByID.keys.sorted() {
+            guard let app = self.appsByID[id],
+                app.container != nil,
+                app.process == nil,
+                !Self.isLaunchInFlight(app)
+            else {
+                continue
+            }
+
+            let containerIsRunning = Self.isRunning(backendStates[managedContainerName(for: id)])
+            switch (app.info.status, containerIsRunning) {
+            case (.running, false):
+                await self.markAppStopped(id: id)
+            case (.stopped, true):
+                // Never resurrect the status of an app the user stopped: the
+                // backend can still report its container as running for a
+                // moment after `stop` returns.
+                if !app.stoppedByUser {
+                    await self.adoptRunningContainer(id: id)
+                }
+            default:
+                break
+            }
+        }
+    }
+
+    /// Marks a container app running without a `Foundation.Process`: the
+    /// container outlived the agent process that launched it (an update or a
+    /// crash), so there is no handle to attach. `stopTrackedAppIfRunning` knows
+    /// how to stop these by name through the backend.
+    private func adoptRunningContainer(id: String) async {
+        guard var app = self.appsByID[id] else { return }
+
+        let runningInfo = WendyAppInfo(
+            id: app.info.id,
+            kind: app.info.kind,
+            status: .running,
+            pid: nil
+        )
+        guard app.info != runningInfo || app.process != nil || app.launchToken != nil else {
+            return
+        }
+
+        app.info = runningInfo
+        app.process = nil
+        app.launchToken = nil
+        self.appsByID[id] = app
+
+        do {
+            try self.saveApps()
+        } catch {
+            self.logger.error(
+                "Failed to persist adopted container state",
+                metadata: [
+                    "app_name": "\(id)",
+                    "error": "\(String(describing: error))",
+                ]
+            )
+        }
+
+        await self.publishApps()
+        self.logger.info("Adopted already-running container", metadata: ["app_name": "\(id)"])
+    }
+
+    /// Stamps the restart floor without counting a failure — reconcile's start
+    /// is not a crash restart.
+    private func recordAutomaticStart(id: String, at date: Date) {
+        guard var app = self.appsByID[id] else { return }
+        app.lastRestart = date
+        self.appsByID[id] = app
+    }
+
+    private func clearPersistedPIDs() {
+        for id in Array(self.appsByID.keys) {
+            self.appsByID[id]?.persistedPID = nil
+        }
+    }
+
+    /// Terminates every identified native survivor before reconcile starts
+    /// anything, then forgets the persisted pids.
+    ///
+    /// Deliberately covers ALL native apps, not just the ones about to be
+    /// relaunched: a `--no-restart` app that was running when the agent died is
+    /// still running now, while the agent reports it stopped — and a later
+    /// `wendy device start` would then launch a second copy that nothing can
+    /// see. After this pass, "running" means "the agent launched it".
+    private func terminateNativeSurvivors() async {
+        // The persisted pids have served their purpose once this pass has
+        // looked at them; a later reconcile (a provisioning transition rebuilds
+        // this service) must not reconsider them.
+        defer { self.clearPersistedPIDs() }
+
+        for id in self.appsByID.keys.sorted() {
+            guard !self.isStopping else { return }
+            guard let app = self.appsByID[id], app.native != nil, app.persistedPID != nil else {
+                continue
+            }
+            await self.terminateNativeSurvivorIfAny(app)
+        }
+    }
+
+    /// Deals with a native app that survived a disorderly agent exit.
+    ///
+    /// The agent's children are not killed when it dies, so after a crash (or a
+    /// `SIGKILL`) the app is still running while this process has no handle on
+    /// it. The persisted pid may be that survivor — or a number the kernel has
+    /// since handed to something else entirely. It is treated as ours only when
+    /// the pid is alive AND its executable path is exactly this app's binary,
+    /// and only then is it terminated, so the relaunch that follows leaves
+    /// exactly one copy that the agent owns.
+    ///
+    /// A mismatch is never signalled. That deliberately means apps launched
+    /// through `/usr/bin/sandbox-exec`, or whose "binary" is a script (where the
+    /// pid's executable is the interpreter), are not recognized as survivors and
+    /// are left alone: starting a second copy is a far cheaper mistake than
+    /// killing an unrelated process that merely reused the pid.
+    private func terminateNativeSurvivorIfAny(_ app: WendyApp) async {
+        guard let pid = app.persistedPID, pid > 0, let native = app.native else { return }
+        // Pid reuse cuts both ways: if an RPC has already relaunched this app
+        // and the kernel handed it the same number, the "survivor" is the copy
+        // the agent is currently running. Never signal that one.
+        guard app.info.pid != pid else { return }
+
+        let binaryPath = "\(native.directory)/\(native.binaryName)"
+        guard let survivorPath = self.pidExecutablePath(pid) else { return }
+        guard Self.pathsMatch(survivorPath, binaryPath) else {
+            self.logger.info(
+                "Ignoring persisted pid: it no longer belongs to this app",
+                metadata: [
+                    "app_name": "\(app.info.id)",
+                    "pid": "\(pid)",
+                    "executable": "\(survivorPath)",
+                ]
+            )
+            return
+        }
+
+        self.logger.notice(
+            "Terminating app process that survived a previous agent run",
+            metadata: ["app_name": "\(app.info.id)", "pid": "\(pid)"]
+        )
+        self.sendSignal(pid, SIGTERM)
+        if await self.waitForPIDToExit(pid, matching: binaryPath, timeout: self.nativeStopTimeout) {
+            return
+        }
+
+        self.logger.warning(
+            "Surviving app process ignored SIGTERM, force killing",
+            metadata: ["app_name": "\(app.info.id)", "pid": "\(pid)"]
+        )
+        self.sendSignal(pid, SIGKILL)
+        let didExit = await self.waitForPIDToExit(
+            pid,
+            matching: binaryPath,
+            timeout: .seconds(1)
+        )
+        if !didExit {
+            self.logger.warning(
+                "Surviving app process is still alive after SIGKILL; starting a new copy anyway",
+                metadata: ["app_name": "\(app.info.id)", "pid": "\(pid)"]
+            )
+        }
+    }
+
+    /// Polls until `pid` stops being the process running `binaryPath`, or the
+    /// timeout expires. Checks before sleeping so a pid that is already gone
+    /// costs nothing.
+    private func waitForPIDToExit(
+        _ pid: Int32,
+        matching binaryPath: String,
+        timeout: Duration
+    ) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while true {
+            guard let path = self.pidExecutablePath(pid), Self.pathsMatch(path, binaryPath) else {
+                return true
+            }
+            if clock.now >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// `proc_pidpath` reports the fully resolved path, so both sides are
+    /// canonicalized before comparing (`/var/folders/...` vs the
+    /// `/private/var/folders/...` the kernel reports, symlinked app
+    /// directories, and so on).
+    nonisolated private static func pathsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        Self.canonicalPath(lhs) == Self.canonicalPath(rhs)
+    }
+
+    nonisolated private static func canonicalPath(_ path: String) -> String {
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard path.withCString({ realpath($0, &buffer) }) != nil else {
+            // Nonexistent path (the common case for a dead survivor's binary):
+            // fall back to lexical normalization.
+            return URL(fileURLWithPath: path).standardizedFileURL.path
+        }
+        return String(cString: buffer)
+    }
+
+    /// The executable path of a live pid, or `nil` when the pid is not alive or
+    /// cannot be inspected. Default implementation behind
+    /// `PIDExecutablePathLookup`.
+    nonisolated static func executablePath(forPID pid: Int32) -> String? {
+        // PROC_PIDPATHINFO_MAXSIZE (4 * PATH_MAX) is what proc_pidpath expects.
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) * 4)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    nonisolated private static func seconds(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 
     private func removeApp(id: String) async {
@@ -937,7 +1443,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         try self.ensureLifecycleMutationsAllowed()
         try await self.stopTrackedAppIfRunning(id: appName)
 
-        guard let app = self.appsByID[appName] else {
+        guard self.appsByID[appName] != nil else {
             throw RPCError(
                 code: .failedPrecondition,
                 message: "No registered app found for \(appName). Call CreateContainer first."
@@ -953,6 +1459,39 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             requestedPolicy: request.message.hasRestartPolicy
                 ? PersistedRestartPolicy(from: request.message.restartPolicy) : nil
         )
+
+        let launched = try await self.launchApp(appName: appName)
+        return self.makeStreamingResponse(
+            appName: appName,
+            process: launched.process,
+            stdoutPipe: launched.stdout,
+            stderrPipe: launched.stderr
+        )
+    }
+
+    /// A process the agent has just launched for an app, together with the
+    /// pipes its output has to be read from.
+    private struct LaunchedApp {
+        let process: Foundation.Process
+        let stdout: Pipe
+        let stderr: Pipe
+    }
+
+    /// Launches `appName` (Linux container through the backend, or a native
+    /// Darwin process) and marks it running. Shared by the `StartContainer` RPC
+    /// and the reconcile/supervisor paths so an automatic restart takes exactly
+    /// the same code path a user-initiated start does.
+    ///
+    /// The caller owns the returned pipes and MUST consume them: the RPC path
+    /// streams them to the client, the unattended path drains them into
+    /// telemetry. Left unread, the app blocks once the pipe buffer fills.
+    private func launchApp(appName: String) async throws -> LaunchedApp {
+        guard let app = self.appsByID[appName] else {
+            throw RPCError(
+                code: .failedPrecondition,
+                message: "No registered app found for \(appName). Call CreateContainer first."
+            )
+        }
 
         if let container = app.container {
             guard let linuxBackend else {
@@ -1009,12 +1548,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 "Container started",
                 metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
             )
-            return self.makeStreamingResponse(
-                appName: appName,
-                process: process,
-                stdoutPipe: stdoutPipe,
-                stderrPipe: stderrPipe
-            )
+            return LaunchedApp(process: process, stdout: stdoutPipe, stderr: stderrPipe)
         }
 
         // Native darwin path.
@@ -1086,12 +1620,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             metadata: ["app_name": "\(appName)", "pid": "\(process.processIdentifier)"]
         )
 
-        return self.makeStreamingResponse(
-            appName: appName,
-            process: process,
-            stdoutPipe: stdoutPipe,
-            stderrPipe: stderrPipe
-        )
+        return LaunchedApp(process: process, stdout: stdoutPipe, stderr: stderrPipe)
     }
 
     /// Builds the streaming RPC response shared by both the native-process and
@@ -1220,13 +1749,17 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_ListContainersRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse> {
-        let apps = self.currentAppInfos()
-        return StreamingServerResponse { writer in
-            for app in apps {
+        let containers = self.appsByID.values
+            .sorted { $0.info.id < $1.info.id }
+            .map { app -> AppContainer in
                 var container = AppContainer()
-                container.appName = app.id
-                container.runningState = app.status == .running ? .running : .stopped
+                container.appName = app.info.id
+                container.runningState = Self.runningState(for: app)
+                return container
+            }
 
+        return StreamingServerResponse { writer in
+            for container in containers {
                 var response = Wendy_Agent_Services_V1_ListContainersResponse()
                 response.container = container
                 try await writer.write(response)
@@ -1234,6 +1767,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return Metadata()
         }
+    }
+
+    /// A down app the supervisor has already restarted at least once and will
+    /// restart again reports `CRASH_LOOPING` rather than `STOPPED`, so a crash
+    /// loop is visible instead of masquerading as an ordinary stop. A
+    /// user-stopped app, or one whose policy won't restart it, stays `STOPPED`.
+    private static func runningState(for app: WendyApp) -> AppRunningState {
+        if app.info.status == .running { return .running }
+        if app.failureCount > 0, Self.shouldRestart(app) { return .crashLooping }
+        return .stopped
     }
 
     func listContainerStats(

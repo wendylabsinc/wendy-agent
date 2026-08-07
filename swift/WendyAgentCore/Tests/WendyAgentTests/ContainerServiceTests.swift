@@ -1559,7 +1559,10 @@ private func readPersistedApps(at url: URL) throws -> [WendyApp] {
 
 private func waitUntil(
     description: String,
-    timeout: Duration = .seconds(2),
+    // Generous on purpose: these waits are for a real child process to exit,
+    // and the whole package's tests run in parallel, so a 2 s budget goes
+    // flaky as soon as the machine is loaded.
+    timeout: Duration = .seconds(10),
     pollInterval: Duration = .milliseconds(20),
     condition: @escaping @Sendable () async -> Bool
 ) async throws {
