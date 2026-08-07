@@ -11,6 +11,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 // foxgloveBridgePort is the port foxglove_bridge listens on inside the app.
@@ -44,6 +46,7 @@ func newFoxgloveServeCmd() *cobra.Command {
 	var (
 		port   int
 		domain int
+		app    string
 		rmw    string
 		distro string
 		iface  string
@@ -60,14 +63,24 @@ Connect Foxglove Studio to the printed ws:// URL. For a robot whose ROS 2 uses a
 non-default domain or RMW (e.g. a Unitree Go2 on CycloneDDS), pass --domain and
 --rmw so the bridge matches it. The bridge exposes every topic, including hidden
 ROS topics, in the selected domain. Its device-side WebSocket listens only on
-loopback and is accessed through the authenticated Wendy Cloud tunnel.`,
+loopback and is accessed through the authenticated Wendy Cloud tunnel.
+
+Domain selection matters: a robot's native ROS 2 is usually on domain 0, but a
+Wendy-deployed ROS 2 app with no explicit "domainId" gets a stable domain derived
+from its appId — essentially never 0. To bridge one of those, pass --app <appId>
+and the matching domain is computed for you. With neither flag the bridge sits on
+domain 0 and will show an empty graph if that is not where your nodes are.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			resolvedDomain, err := resolveFoxgloveDomain(domain, app, cmd.Flags().Changed("domain"))
+			if err != nil {
+				return err
+			}
 			return foxgloveServe(ctx, foxgloveServeOpts{
 				localPort: port,
-				domain:    domain,
+				domain:    resolvedDomain,
 				rmw:       rmw,
 				distro:    distro,
 				device:    deviceFlag,
@@ -78,6 +91,7 @@ loopback and is accessed through the authenticated Wendy Cloud tunnel.`,
 
 	cmd.Flags().IntVar(&port, "port", foxgloveBridgePort, "Local port to forward foxglove_bridge to")
 	cmd.Flags().IntVar(&domain, "domain", 0, "ROS_DOMAIN_ID the device's ROS 2 uses")
+	cmd.Flags().StringVar(&app, "app", "", "appId of a Wendy-deployed ROS 2 app to bridge; derives its ROS_DOMAIN_ID")
 	cmd.Flags().StringVar(&rmw, "rmw", "rmw_cyclonedds_cpp", "RMW implementation the device's ROS 2 uses")
 	cmd.Flags().StringVar(&distro, "distro", "humble", "ROS 2 distro to build foxglove_bridge from")
 	cmd.Flags().StringVar(&iface, "interface", "", "CycloneDDS network interface to use (for multi-interface devices)")
@@ -92,6 +106,38 @@ type foxgloveServeOpts struct {
 	distro    string
 	device    string // global --device; "" = default device
 	iface     string // optional CycloneDDS network interface
+}
+
+// resolveFoxgloveDomain decides which ROS_DOMAIN_ID the bridge should join.
+//
+// `--domain` defaulted to 0, which is right for a robot's native ROS 2 but wrong
+// for anything Wendy deployed: an app without an explicit domainId gets
+// ROS2AutoDomainID(appID), a stable hash that is essentially never 0. So the
+// no-flag invocation bridged an empty graph with nothing explaining why. Passing
+// `--app <appId>` now derives the same domain the agent injected — it is a pure
+// function of the appId, so no device round-trip is needed — and the bare default
+// says out loud what it is doing.
+func resolveFoxgloveDomain(domain int, appID string, domainSet bool) (int, error) {
+	switch {
+	case domainSet && appID != "":
+		derived := appconfig.ROS2AutoDomainID(appID)
+		if derived != domain {
+			return 0, fmt.Errorf("--domain %d conflicts with --app %q, whose ROS_DOMAIN_ID is %d; pass only one",
+				domain, appID, derived)
+		}
+		return domain, nil
+	case appID != "":
+		derived := appconfig.ROS2AutoDomainID(appID)
+		cliLogln("Using ROS_DOMAIN_ID=%d, derived from appId %q.", derived, appID)
+		return derived, nil
+	case domainSet:
+		return domain, nil
+	default:
+		cliLogln("No --domain or --app given: using ROS_DOMAIN_ID=0 (a robot's native ROS 2). " +
+			"Wendy-deployed ROS 2 apps get a domain derived from their appId, so if you " +
+			"meant to bridge one of those, re-run with --app <appId>.")
+		return 0, nil
+	}
 }
 
 // foxgloveServe generates a foxglove_bridge app in a temp dir, deploys it to the
@@ -165,6 +211,24 @@ func foxgloveServe(ctx context.Context, opts foxgloveServeOpts) error {
 func writeFoxgloveApp(dir string, opts foxgloveServeOpts) error {
 	if opts.iface != "" && !foxgloveInterfacePattern.MatchString(opts.iface) {
 		return fmt.Errorf("invalid network interface %q: use 1-15 letters, digits, '.', '_', ':', or '-'", opts.iface)
+	}
+	// distro lands in three interpolated positions below: two `apt-get install
+	// ros-<distro>-…` lines and the `source /opt/ros/<distro>/setup.bash` inside a
+	// `bash -lc` CMD. %q protects the Dockerfile's JSON tokenisation but not the
+	// shell semantics *inside* the string, so this is validated for the same reason
+	// `iface` is — the comment above foxgloveInterfacePattern already states the
+	// invariant, distro just wasn't held to it.
+	if !appconfig.ROS2DistroPattern.MatchString(opts.distro) {
+		return fmt.Errorf("invalid ROS 2 distro %q: use lowercase letters and digits, "+
+			"starting with a letter (e.g. %q)", opts.distro, appconfig.ROS2DefaultDistro)
+	}
+	if opts.domain < appconfig.ROS2DomainIDMin || opts.domain > appconfig.ROS2DomainIDMax {
+		return fmt.Errorf("invalid --domain %d: must be between %d and %d",
+			opts.domain, appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
+	}
+	if opts.rmw != "" && !appconfig.IsValidRMWImplementation(opts.rmw) {
+		return fmt.Errorf("invalid --rmw %q: expected one of rmw_cyclonedds_cpp, "+
+			"rmw_fastrtps_cpp, rmw_connextdds, rmw_gurumdds_cpp", opts.rmw)
 	}
 
 	// Keep the explicit ROS_LOCALHOST_ONLY override in the launch command as a

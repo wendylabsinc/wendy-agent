@@ -427,10 +427,17 @@ type fakeServerStream[T any] struct {
 	grpc.ServerStream
 	ctx  context.Context
 	sent []*T
+	// onSend, when set, runs after each Send with the new message count. Lets a
+	// test react to the stream mid-flight (e.g. cancel the client after the
+	// first message).
+	onSend func(count int) error
 }
 
 func (f *fakeServerStream[T]) Send(msg *T) error {
 	f.sent = append(f.sent, msg)
+	if f.onSend != nil {
+		return f.onSend(len(f.sent))
+	}
 	return nil
 }
 

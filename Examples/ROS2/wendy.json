@@ -10,8 +10,7 @@
     "talker": { "context": "./talker" },
     "listener": {
       "context": "./listener",
-      "dependsOn": ["talker"],
-      "frameworks": { "ros2": { "domainId": 42, "rmw": "rmw_cyclonedds_cpp", "distro": "humble" } }
+      "dependsOn": ["talker"]
     }
   }
 }
