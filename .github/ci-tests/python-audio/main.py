@@ -2,8 +2,9 @@
 """Audio entitlement test: ALSA devices, and a PipeWire socket that is usable.
 
 applyAudio grants three things a container can observe: the audio group, a
-/dev/snd bind mount, and — when the host has a PipeWire instance — its socket
-at /run/pipewire/pipewire-0 with PIPEWIRE_RUNTIME_DIR and PULSE_SERVER set.
+/dev/snd bind mount, and — when the host has a user PipeWire session — its
+socket at /run/pipewire/pipewire-0 with PIPEWIRE_RUNTIME_DIR and PULSE_SERVER
+set.
 
 Two things that look like audio access are not evidence of it, and must not be
 asserted on:
@@ -25,6 +26,7 @@ A host with no PipeWire at all mounts no socket; that is not a failure, so the
 paired assertions are skipped rather than failed.
 """
 
+import glob
 import os
 import stat
 import sys
@@ -48,11 +50,39 @@ if os.path.isdir("/dev/snd"):
 else:
     failures.append("/dev/snd is not present; the ALSA bind mount is missing")
 
-# The audio group must be among our supplementary groups.
-if 29 in os.getgroups():
-    print("OK  audio group (29) granted")
+# The granted group must be the one that owns the sound nodes.
+#
+# Comparing os.getgroups() against a hardcoded 29 only works while the host and
+# this image happen to agree: the supplementary GIDs are the *host's*, whereas
+# any name lookup in here resolves this image's /etc/group. Both are Debian-ish
+# today, so both say 29 — but a host whose audio group differs would fail a test
+# that is working correctly.
+#
+# The node's own st_gid is the host GID, seen through the same numeric space as
+# getgroups(), so comparing the two needs no group database on either side and
+# catches an agent that grants a GID which does not own this host's nodes.
+#
+# Opening the node would not test anything: the container runs as root with
+# CAP_DAC_OVERRIDE, so the open succeeds whether or not the group was granted.
+control_nodes = sorted(glob.glob("/dev/snd/controlC*"))
+if control_nodes:
+    node = control_nodes[0]
+    node_gid = os.stat(node).st_gid
+    groups = os.getgroups()
+    if node_gid == 0:
+        print(f"SKIP {node} is root-owned; no group gates it on this host")
+    elif node_gid in groups:
+        print(f"OK  {node} is owned by gid {node_gid}, which is granted to us")
+    else:
+        failures.append(
+            f"{node} is owned by gid {node_gid}, which is not among our "
+            f"supplementary groups {groups}; the audio group grant does not "
+            f"match this host"
+        )
 else:
-    failures.append(f"audio group (29) not in supplementary groups {os.getgroups()}")
+    # No sound card on this host (CI runners, headless VMs). The bind mount is
+    # still asserted above; there is simply no node to check the grant against.
+    print("SKIP no /dev/snd/controlC* node to verify the group grant against")
 
 if is_socket(SOCKET):
     print(f"OK  {SOCKET} is mounted and is a socket")
