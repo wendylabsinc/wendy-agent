@@ -114,6 +114,7 @@ func newFleetCmd() *cobra.Command {
 		newFleetGroupCmd(),
 		newFleetAppsCmd(),
 		newFleetRunCmd(),
+		newFleetTrainCmd(),
 	)
 	return cmd
 }
