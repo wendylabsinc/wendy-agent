@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -921,20 +922,94 @@ const maxVideoDeviceID = 255
 // (documented in Documentation/admin-guide/devices.txt as major 81).
 const v4l2MajorDevice = 81
 
-// validateStreamParams checks width, height, and framerate against known-safe values
-// before constructing GStreamer pipeline arguments. Zero means "device default" and is
-// always accepted. This prevents unexpected pipeline behaviour from extreme values.
-func validateStreamParams(req *agentpb.StreamVideoRequest) error {
+// Absolute bounds on a requested frame size. These are the security property
+// validateStreamParams exists for — keeping pipeline arguments bounded — and are
+// deliberately generous, because *which* sizes are sensible is the device's
+// business, not ours. The lower bound also filters the malformed descriptors
+// some UVC firmware advertises (a TOPDON TC001 thermal module reports
+// 4x12305, 60x3299 and 8x12578 alongside its real modes).
+const (
+	minFrameDimension = 16
+	maxFrameDimension = 8192
+)
+
+// commonFrameSizes is the fallback allowlist, used only when the device cannot
+// be enumerated (unplugged, or a non-V4L2 source such as CSI/libcamera).
+var commonFrameSizes = [][2]uint32{
+	{320, 240}, {640, 480}, {1280, 720}, {1920, 1080}, {3840, 2160},
+}
+
+// deviceAdvertisesFrameSize reports whether path enumerates w×h as a discrete
+// mode for any pixel format the GStreamer path can negotiate.
+//
+// VIDIOC_ENUM_FRAMESIZES only needs a read-only open, so this still answers
+// while another process is streaming the camera — which is the common case,
+// since an app usually holds the device the viewer wants.
+func deviceAdvertisesFrameSize(path string, w, h uint32) (advertised, known bool) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false, false
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	for _, pixfmt := range []uint32{v4l2PixFmtYUYV, v4l2PixFmtMJPEG} {
+		for index := uint32(0); index < 64; index++ {
+			fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
+			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
+				uintptr(unsafe.Pointer(&fse))); errno != 0 {
+				break // EINVAL marks the end of the list
+			}
+			if fse.Type != v4l2FrmsizeTypeDiscrete {
+				break // stepwise/continuous: nothing discrete to match against
+			}
+			known = true
+			if fse.Width == w && fse.Height == h {
+				return true, true
+			}
+		}
+	}
+	return false, known
+}
+
+// validateStreamParams checks width, height, and framerate before they reach the
+// GStreamer pipeline arguments. Zero means "device default" and is always accepted.
+//
+// A non-zero size is accepted when the DEVICE advertises it. It used to be
+// checked against a fixed list of five consumer-webcam modes, which made every
+// camera with a non-standard sensor unstreamable at any explicit size: a
+// TOPDON TC001 thermal module advertises 256x392, 520x192, 512x484, 644x384 and
+// 256x196 — not one of which was on that list — so every explicit request
+// returned "unsupported resolution" while the camera was working fine.
+//
+// devicePath may be empty (or a non-V4L2 source), in which case the old
+// allowlist still applies; the absolute bounds are enforced either way.
+func validateStreamParams(devicePath string, req *agentpb.StreamVideoRequest) error {
 	w, h := req.GetWidth(), req.GetHeight()
 	if w != 0 || h != 0 {
-		switch [2]uint32{w, h} {
-		case [2]uint32{320, 240},
-			[2]uint32{640, 480},
-			[2]uint32{1280, 720},
-			[2]uint32{1920, 1080},
-			[2]uint32{3840, 2160}:
-		default:
-			return status.Errorf(codes.InvalidArgument, "unsupported resolution")
+		if w == 0 || h == 0 {
+			return status.Errorf(codes.InvalidArgument,
+				"width and height must be set together")
+		}
+		if w < minFrameDimension || h < minFrameDimension ||
+			w > maxFrameDimension || h > maxFrameDimension {
+			return status.Errorf(codes.InvalidArgument,
+				"resolution %dx%d out of range (%d..%d per axis)",
+				w, h, minFrameDimension, maxFrameDimension)
+		}
+		advertised, known := false, false
+		if devicePath != "" {
+			advertised, known = deviceAdvertisesFrameSize(devicePath, w, h)
+		}
+		if !advertised {
+			if known {
+				// The device told us its modes and this is not one of them.
+				return status.Errorf(codes.InvalidArgument,
+					"resolution %dx%d not advertised by this camera", w, h)
+			}
+			// Could not ask the device — fall back to the historical allowlist.
+			if !slices.Contains(commonFrameSizes, [2]uint32{w, h}) {
+				return status.Errorf(codes.InvalidArgument, "unsupported resolution")
+			}
 		}
 	}
 	fps := req.GetFramerate()
@@ -968,10 +1043,10 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 		return s.streamIPCamera(stream, src, req)
 	}
 
-	if err := validateStreamParams(req); err != nil {
+	path := src.path
+	if err := validateStreamParams(path, req); err != nil {
 		return err
 	}
-	path := src.path
 	transport, _ := s.classifyTransport(filepath.Base(path))
 	if transport == camera.TransportCSI && s.isJetson() {
 		if err := s.preflightTegraCSI(ctx); err != nil {
@@ -1687,7 +1762,7 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// Validate numeric request parameters here (not only at StreamVideo entry) so
 	// buildGStreamerArgs is safe regardless of call site — prevents injection via
 	// unbounded width/height/framerate values if called from a different path.
-	if err := validateStreamParams(req); err != nil {
+	if err := validateStreamParams(devicePath, req); err != nil {
 		return nil, fmt.Errorf("invalid stream parameters for GStreamer pipeline: %w", err)
 	}
 	for _, s := range []string{devicePath, encoder} {
