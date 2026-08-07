@@ -128,3 +128,32 @@ func TestIsTransientBluetoothError(t *testing.T) {
 		})
 	}
 }
+
+func TestIsStaleBondBluetoothError(t *testing.T) {
+	tests := []struct {
+		name       string
+		errName    string
+		errMessage string
+		want       bool
+	}{
+		// The kernel's missing-key disconnect, either bearer.
+		{"br key missing", "org.bluez.Error.Failed", "br-connection-key-missing", true},
+		{"le key missing", "org.bluez.Error.Failed", "le-connection-key-missing", true},
+		// A peripheral actively rejecting the old bond.
+		{"auth failed", "org.bluez.Error.AuthenticationFailed", "", true},
+		{"auth rejected", "org.bluez.Error.AuthenticationRejected", "", true},
+		// Failures a fresh pair would not fix must not nuke a working bond.
+		{"timeout", "org.bluez.Error.Failed", "le-connection-timeout", false},
+		{"refused", "org.bluez.Error.Failed", "br-connection-refused", false},
+		{"unknown reason", "org.bluez.Error.Failed", "br-connection-unknown", false},
+		{"in progress", "org.bluez.Error.InProgress", "", false},
+		{"unclassified", "org.example.Error", "br-connection-key-missing", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isStaleBondBluetoothError(tt.errName, tt.errMessage); got != tt.want {
+				t.Fatalf("isStaleBondBluetoothError(%q, %q) = %v, want %v", tt.errName, tt.errMessage, got, tt.want)
+			}
+		})
+	}
+}

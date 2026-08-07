@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -521,5 +522,71 @@ func TestIsDefaultAlias(t *testing.T) {
 		if got := isDefaultAlias(tt.alias, tt.address); got != tt.want {
 			t.Errorf("isDefaultAlias(%q, %q) = %v, want %v", tt.alias, tt.address, got, tt.want)
 		}
+	}
+}
+
+func TestIsHIDDevice(t *testing.T) {
+	tests := []struct {
+		name  string
+		props map[string]dbus.Variant
+		want  bool
+	}{
+		{"gamepad icon", map[string]dbus.Variant{"Icon": dbus.MakeVariant("input-gaming")}, true},
+		{"keyboard icon", map[string]dbus.Variant{"Icon": dbus.MakeVariant("input-keyboard")}, true},
+		{"hid service uuid", map[string]dbus.Variant{
+			"UUIDs": dbus.MakeVariant([]string{"0000180f-0000-1000-8000-00805f9b34fb", hidServiceUUID}),
+		}, true},
+		{"uppercase uuid", map[string]dbus.Variant{
+			"UUIDs": dbus.MakeVariant([]string{strings.ToUpper(hidServiceUUID)}),
+		}, true},
+		{"speaker", map[string]dbus.Variant{
+			"Icon":  dbus.MakeVariant("audio-headset"),
+			"UUIDs": dbus.MakeVariant([]string{"0000110b-0000-1000-8000-00805f9b34fb"}),
+		}, false},
+		{"no hints", map[string]dbus.Variant{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isHIDDevice(tt.props); got != tt.want {
+				t.Fatalf("isHIDDevice() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestWaitForInputDevice(t *testing.T) {
+	root := t.TempDir()
+	restore := inputDeviceUniqGlob
+	inputDeviceUniqGlob = root + "/input*/uniq"
+	t.Cleanup(func() { inputDeviceUniqGlob = restore })
+
+	writeUniq := func(dir, uniq string) {
+		t.Helper()
+		if err := os.MkdirAll(root+"/"+dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(root+"/"+dir+"/uniq", []byte(uniq+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Absent (only an unrelated device): the wait must time out.
+	writeUniq("input1", "aa:aa:aa:aa:aa:aa")
+	ctx := context.Background()
+	if waitForInputDevice(ctx, "28:EA:0B:EF:B6:51", 10*time.Millisecond) {
+		t.Fatal("waitForInputDevice must report false when no matching uniq exists")
+	}
+
+	// The kernel stores the address lowercase; the query arrives uppercase.
+	writeUniq("input2", "28:ea:0b:ef:b6:51")
+	if !waitForInputDevice(ctx, "28:EA:0B:EF:B6:51", 10*time.Millisecond) {
+		t.Fatal("waitForInputDevice must match uniq case-insensitively")
+	}
+
+	// A canceled context stops the wait promptly.
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForInputDevice(canceled, "bb:bb:bb:bb:bb:bb", time.Minute) {
+		t.Fatal("waitForInputDevice must report false on context cancellation")
 	}
 }

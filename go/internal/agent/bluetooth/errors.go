@@ -76,6 +76,22 @@ func isTransientBluetoothError(name, message string) bool {
 	return false
 }
 
+// isStaleBondBluetoothError reports whether a connect failure means the
+// stored bond is unusable — the peripheral no longer holds (or rejects) the
+// key this host kept, so no retry with the existing bond can ever succeed.
+// The kernel surfaces the missing-key case as a "*-connection-key-missing"
+// bearer reason inside org.bluez.Error.Failed; a peripheral that actively
+// rejects the old bond surfaces as an authentication failure/rejection.
+func isStaleBondBluetoothError(name, message string) bool {
+	switch name {
+	case "org.bluez.Error.AuthenticationFailed", "org.bluez.Error.AuthenticationRejected":
+		return true
+	case "org.bluez.Error.Failed":
+		return strings.Contains(message, "-connection-key-missing")
+	}
+	return false
+}
+
 // friendlyBearerFailure maps the reason strings BlueZ places in
 // org.bluez.Error.Failed messages (src/error.c, e.g. "br-connection-refused")
 // to actionable text. Unrecognized bearer reasons get a generic hint that
