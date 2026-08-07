@@ -805,6 +805,27 @@ struct RunSessionTests {
         #expect(responses.count == 2)
     }
 
+    @Test("appID traversal in working directory root rejected")
+    func appIDTraversalRejected() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+        let appsBaseURL = URL(fileURLWithPath: appsBase)
+
+        // Sibling of appsBase: writable/user-owned because the test itself just
+        // created appsBase under the same parent directory. Must NOT be created.
+        let evilName = "wendy-evil-\(UUID().uuidString)"
+        let evilAppID = "../\(evilName)"
+        let escapedURL = appsBaseURL.deletingLastPathComponent().appendingPathComponent(evilName)
+        defer { cleanup(escapedURL.path) }
+
+        await expectRunSessionFailure(
+            messages: [startRequest(appID: evilAppID, manifest: [])],
+            appsBase: appsBaseURL
+        )
+
+        #expect(!FileManager.default.fileExists(atPath: escapedURL.path))
+    }
+
     @Test("delete during active transfer rejected")
     func deleteDuringActiveTransferRejected() async throws {
         let appsBase = try makeTempDir()

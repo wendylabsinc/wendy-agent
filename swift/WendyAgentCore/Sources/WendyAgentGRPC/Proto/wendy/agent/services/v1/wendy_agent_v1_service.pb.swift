@@ -395,6 +395,9 @@ public nonisolated struct Wendy_Agent_Services_V1_UpdateAgentRequest: Sendable {
 
       public var sha256: String = String()
 
+      /// Detached ML-DSA65 signature over the SHA256 digest of the agent binary; empty until a signer is deployed.
+      public var signature: Data = Data()
+
       public var unknownFields = SwiftProtobuf.UnknownStorage()
 
       public init() {}
@@ -1191,9 +1194,23 @@ public nonisolated struct Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResp
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
+  /// Whether the device is paired after the connect completed. Optional so
+  /// clients can tell an agent that reports pairing state apart from an
+  /// older agent that does not (absent = unknown).
+  public var paired: Bool {
+    get {_paired ?? false}
+    set {_paired = newValue}
+  }
+  /// Returns true if `paired` has been explicitly set.
+  public var hasPaired: Bool {self._paired != nil}
+  /// Clears the value of `paired`. Subsequent reads from it will return its default value.
+  public mutating func clearPaired() {self._paired = nil}
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _paired: Bool? = nil
 }
 
 public nonisolated struct Wendy_Agent_Services_V1_DisconnectBluetoothPeripheralRequest: Sendable {
@@ -2371,7 +2388,7 @@ nonisolated extension Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand:
 
 nonisolated extension Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.protoMessageName + ".Update"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sha256\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}sha256\0\u{1}signature\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -2380,6 +2397,7 @@ nonisolated extension Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularStringField(value: &self.sha256) }()
+      case 2: try { try decoder.decodeSingularBytesField(value: &self.signature) }()
       default: break
       }
     }
@@ -2389,11 +2407,15 @@ nonisolated extension Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.
     if !self.sha256.isEmpty {
       try visitor.visitSingularStringField(value: self.sha256, fieldNumber: 1)
     }
+    if !self.signature.isEmpty {
+      try visitor.visitSingularBytesField(value: self.signature, fieldNumber: 2)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update, rhs: Wendy_Agent_Services_V1_UpdateAgentRequest.ControlCommand.Update) -> Bool {
     if lhs.sha256 != rhs.sha256 {return false}
+    if lhs.signature != rhs.signature {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -3652,18 +3674,33 @@ nonisolated extension Wendy_Agent_Services_V1_ConnectBluetoothPeripheralRequest:
 
 nonisolated extension Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ConnectBluetoothPeripheralResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap()
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}paired\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
-    // Load everything into unknown fields
-    while try decoder.nextFieldNumber() != nil {}
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self._paired) }()
+      default: break
+      }
+    }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._paired {
+      try visitor.visitSingularBoolField(value: v, fieldNumber: 1)
+    } }()
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse, rhs: Wendy_Agent_Services_V1_ConnectBluetoothPeripheralResponse) -> Bool {
+    if lhs._paired != rhs._paired {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

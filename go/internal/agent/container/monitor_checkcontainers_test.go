@@ -111,6 +111,9 @@ func (f *fakeContainerd) DeleteContainer(ctx context.Context, appName string, de
 func (f *fakeContainerd) ContainerIDsForApp(ctx context.Context, appID string) ([]string, error) {
 	return nil, nil
 }
+func (f *fakeContainerd) ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeContainerd) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error) {
 	return nil, nil
 }
@@ -177,6 +180,37 @@ func TestCheckContainers_SingleServiceMapApp_NotRestarted(t *testing.T) {
 	}
 	m.mu.Lock()
 	fc := m.states["myapp_web"].FailureCount
+	m.mu.Unlock()
+	if fc != 0 {
+		t.Fatalf("FailureCount = %d, want 0 (no spurious restart)", fc)
+	}
+}
+
+// Single-service apps deploy as a BARE-named container (AppConfig.ContainerName
+// returns the appID when ServiceName is empty), so their monitor state is
+// registered under the bare appID — while ListContainers still reports the
+// service via Services. The monitor must recognize the bare registration as
+// running too, or it force-restarts the healthy app every tick.
+func TestCheckContainers_SingleServiceMapApp_BareRegistration_NotRestarted(t *testing.T) {
+	fake := &fakeContainerd{
+		containers: []*agentpb.AppContainer{{
+			AppName:      "myapp",
+			RunningState: agentpb.AppRunningState_RUNNING,
+			Services: []*agentpb.ServiceEntry{
+				{Name: "web", RunningState: agentpb.AppRunningState_RUNNING},
+			},
+		}},
+	}
+	m := newMonitorWithClient(fake)
+	m.Register("myapp", RestartUnlessStopped, 0)
+
+	m.checkContainers(context.Background())
+
+	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("StartContainer called for healthy service: %v", calls)
+	}
+	m.mu.Lock()
+	fc := m.states["myapp"].FailureCount
 	m.mu.Unlock()
 	if fc != 0 {
 		t.Fatalf("FailureCount = %d, want 0 (no spurious restart)", fc)

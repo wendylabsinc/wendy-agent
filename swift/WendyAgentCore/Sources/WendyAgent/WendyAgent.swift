@@ -56,19 +56,6 @@ public actor WendyAgent {
         do {
             let backend = await self.makeLinuxBackend()
 
-            if backend != nil, self.registryTask == nil {
-                let registry = AgentImageRegistry(
-                    store: BlobStore(root: WendyAgentPaths.stateDirectory)
-                )
-                self.registryTask = Task {
-                    do {
-                        try await registry.run()
-                    } catch {
-                        self.logger.error("Registry stopped", metadata: ["error": "\(error)"])
-                    }
-                }
-            }
-
             try await self.startMainServer(
                 linuxBackend: backend,
                 broadcaster: broadcaster
@@ -76,9 +63,21 @@ public actor WendyAgent {
             try await self.startOTelServer(broadcaster: broadcaster)
             try await self.startBonjour()
 
+            // Registry listeners come after startMainServer: the push listener
+            // reads the provisioned identity from provisioningService, which
+            // startMainServer creates. Best-effort — a failed registry bind
+            // must not brick native-app management on the device.
+            if backend != nil {
+                self.startPullRegistryIfNeeded()
+                await self.startPushRegistry()
+            }
+
             self.runIdentifier &+= 1
             self.handlingUnexpectedRuntimeExit = false
             self.startMonitorTask(runIdentifier: self.runIdentifier)
+            // Cold start: apps recorded as running are leftovers from a previous
+            // agent process, so reconcile them.
+            self.startAppSupervisor(reconcile: true)
 
             self.updateStatus(.running)
             self.logger.info(
@@ -105,16 +104,19 @@ public actor WendyAgent {
         self.updateStatus(.stopping)
         self.stopMonitorTask()
 
+        // Order matters: mark the service as stopping so no further supervisor
+        // tick does any work, then cancel the supervisor and wait for a tick
+        // that is already in flight, and only then stop the apps. Otherwise a
+        // restart could race the shutdown and leave an orphaned child behind.
         await self.containerService?.beginStopping()
+        await self.stopAppSupervisor()
         await self.containerService?.stopAllApps()
 
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
 
-        self.registryTask?.cancel()
-        await self.registryTask?.value
-        self.registryTask = nil
+        await self.stopRegistryListeners()
 
         self.clearRuntimeState()
         self.updateStatus(.stopped)
@@ -146,6 +148,13 @@ public actor WendyAgent {
         }
     }
 
+    /// Registers the app's clean-quit path, used to terminate the process once
+    /// a self-update has been installed. Call before `start()`: the handler is
+    /// captured when the main server's services are built.
+    public func setAgentTerminationHandler(_ handler: @escaping @Sendable () async -> Void) {
+        self.agentTerminationHandler = handler
+    }
+
     public func stopApp(id: String) async {
         await self.containerService?.stopApp(id: id)
     }
@@ -166,17 +175,31 @@ public actor WendyAgent {
 
     private let logger = Logger(label: "sh.wendy.agent")
 
+    /// Held here, not on `AgentService`, so a single in-flight update stays
+    /// serialized across the service rebuilds that provisioning transitions
+    /// perform (`switchMainServer()`).
+    private let agentUpdateLock = AgentUpdateLock()
+    /// The app's clean-quit path, invoked after an agent update is committed.
+    /// `nil` (e.g. in tests) falls back to `exit(0)` inside `AgentRelauncher`.
+    private var agentTerminationHandler: (@Sendable () async -> Void)?
+
     private var mainServer: PosixGRPCServer?
     private var mainServerTask: Task<Void, any Error>?
     private var containerService: ContainerService?
-    /// The embedded OCI registry serving `localhost:5555` for Linux container
-    /// image pushes/pulls. Started once, in `start()`, for the lifetime of the
-    /// process — it does not depend on the main gRPC server's plaintext/mTLS
-    /// mode, so it is deliberately NOT torn down/rebuilt by `switchMainServer()`
-    /// (which only stops/starts the main server). It is only cancelled (and
-    /// awaited, so the port is released) on a full agent stop or a failed
-    /// startup, via `rollbackStartup()`/`stop()`.
-    private var registryTask: Task<Void, Never>?
+    /// The embedded OCI registry's loopback pull listener
+    /// (`127.0.0.1:5556`, plain HTTP, read-only routes) that the on-device
+    /// Linux container backends pull from. Started once and kept for the
+    /// process lifetime — it never changes shape, so provisioning transitions
+    /// leave it alone. Cancelled (and awaited, so the port is released) only
+    /// on a full agent stop or a failed startup.
+    private var pullRegistryTask: Task<Void, Never>?
+    /// The registry's wildcard push listener (port 5555, all interfaces) that
+    /// the CLI pushes images to: plain HTTP while unprovisioned, TLS with
+    /// client-certificate verification once provisioned. Unlike the pull
+    /// listener it IS restarted on provisioning transitions (via
+    /// `switchMainServer()` → `startPushRegistry()`) so its scheme tracks the
+    /// device's provisioning state, mirroring the Linux agent's registry.
+    private var pushRegistryTask: Task<Void, Never>?
 
     /// The cloud tunnel-broker presence/relay loop, tied to the mTLS main
     /// server's lifetime: started in `startMainServer` when the server comes up
@@ -210,6 +233,13 @@ public actor WendyAgent {
     private var bonjourTask: Task<Void, any Error>?
 
     private var monitorTask: Task<Void, Never>?
+    /// Restart supervision for deployed apps: one reconcile pass that brings
+    /// apps back after an agent restart, then a periodic tick that restarts
+    /// crashed ones per their policy. Held here — next to the other runtime
+    /// task handles — so every teardown path cancels it, including the
+    /// provisioning-driven server switch, which builds a fresh
+    /// `ContainerService` the old task must not keep supervising.
+    private var appSupervisorTask: Task<Void, Never>?
     private var runIdentifier: UInt64 = 0
     private var handlingUnexpectedRuntimeExit = false
     private var statusObservationRegistry = WendyObservationRegistry<WendyAgentStatus>(
@@ -304,7 +334,12 @@ public actor WendyAgent {
         let info = await provisioningService.provisioningInfo()
 
         let services: [any RegistrableRPCService] = [
-            AgentService(),
+            AgentService(
+                updateLock: self.agentUpdateLock,
+                updateDependencies: .init(
+                    relauncher: AgentRelauncher(terminate: self.agentTerminationHandler)
+                )
+            ),
             containerService,
             AudioService(),
             provisioningService,
@@ -623,6 +658,9 @@ public actor WendyAgent {
         guard case .running = self.status else { return }
 
         self.stopMonitorTask()
+        // The switch builds a fresh ContainerService, so the supervisor has to
+        // be torn down with the old one and restarted against the new one.
+        await self.stopAppSupervisor()
         await self.stopBonjour()
         await self.stopMainServer()
 
@@ -646,14 +684,131 @@ public actor WendyAgent {
             return
         }
 
+        // Restart the push listener so its scheme (plain HTTP vs mTLS) tracks
+        // the new provisioning state; the loopback pull listener never changes
+        // shape. Runs only from this detached-task context, never inside the
+        // provisioning RPC, so awaiting the old listener's shutdown here cannot
+        // deadlock the RPC that triggered the switch.
+        if backend != nil {
+            self.startPullRegistryIfNeeded()
+            await self.startPushRegistry()
+        }
+
         self.runIdentifier &+= 1
         self.handlingUnexpectedRuntimeExit = false
         self.startMonitorTask(runIdentifier: self.runIdentifier)
+        // Warm restart: the apps this switch's new ContainerService just loaded
+        // as stopped are still running under the process handles the previous
+        // one held, so supervise from here on but do NOT reconcile.
+        self.startAppSupervisor(reconcile: false)
 
         self.logger.info(
             "Main server switched",
             metadata: ["mtls": "\(self.mainServerIsMTLS)"]
         )
+    }
+
+    /// Starts the loopback pull listener (`127.0.0.1:5556`, plain HTTP,
+    /// read-only routes) once per process. Best-effort: a bind failure is
+    /// logged with a port-in-use hint but never fails agent startup.
+    private func startPullRegistryIfNeeded() {
+        guard self.pullRegistryTask == nil else { return }
+        let registry = AgentImageRegistry(
+            store: BlobStore(root: WendyAgentPaths.stateDirectory),
+            configuration: .init(
+                host: LocalRegistryRef.pullHost,
+                port: LocalRegistryRef.pullPort,
+                tls: nil,
+                routes: .pullOnly,
+                label: "pull"
+            )
+        )
+        let logger = self.logger
+        self.pullRegistryTask = Task {
+            do {
+                try await registry.run()
+            } catch {
+                Self.logRegistryListenerStopped(
+                    logger,
+                    listener: "pull",
+                    port: LocalRegistryRef.pullPort,
+                    error: error
+                )
+            }
+        }
+    }
+
+    /// (Re)starts the wildcard push listener (port 5555, all interfaces):
+    /// plain HTTP while unprovisioned, TLS with client-certificate
+    /// verification once provisioned. Always stop-then-start so a provisioning
+    /// transition swaps the scheme (mirroring the Linux agent's registry
+    /// restart). Fail closed: if the device is provisioned but its TLS
+    /// material is unusable, `run()` throws and the listener stays DOWN — it
+    /// never falls back to plain HTTP on a non-loopback interface. Best-effort
+    /// beyond that: a bind failure (e.g. a stale `wendy-registry` Docker
+    /// container squatting on 5555) must not brick native-app management or
+    /// provisioning, so it is logged, not fatal.
+    private func startPushRegistry() async {
+        self.pushRegistryTask?.cancel()
+        await self.pushRegistryTask?.value
+        self.pushRegistryTask = nil
+
+        var tls: RegistryTLS.Configuration?
+        if let certs = await self.provisioningService?.provisioningCerts() {
+            tls = RegistryTLS.makeConfiguration(certs: certs, logger: self.logger)
+        }
+        let registry = AgentImageRegistry(
+            store: BlobStore(root: WendyAgentPaths.stateDirectory),
+            configuration: .init(
+                host: "::",
+                port: LocalRegistryRef.pushPort,
+                tls: tls,
+                routes: .pushAndPull,
+                label: "push"
+            )
+        )
+        let logger = self.logger
+        self.pushRegistryTask = Task {
+            do {
+                try await registry.run()
+            } catch {
+                Self.logRegistryListenerStopped(
+                    logger,
+                    listener: "push",
+                    port: LocalRegistryRef.pushPort,
+                    error: error
+                )
+            }
+        }
+    }
+
+    /// Cancels and awaits both registry listeners so their ports are released.
+    private func stopRegistryListeners() async {
+        self.pushRegistryTask?.cancel()
+        self.pullRegistryTask?.cancel()
+        await self.pushRegistryTask?.value
+        await self.pullRegistryTask?.value
+        self.pushRegistryTask = nil
+        self.pullRegistryTask = nil
+    }
+
+    private static func logRegistryListenerStopped(
+        _ logger: Logger,
+        listener: String,
+        port: Int,
+        error: any Error
+    ) {
+        if error is CancellationError { return }
+        var metadata: Logger.Metadata = [
+            "listener": "\(listener)",
+            "port": "\(port)",
+            "error": "\(error)",
+        ]
+        if Self.isAddressAlreadyInUse(error) {
+            metadata["hint"] =
+                "port \(port) is already in use — check for a stale `wendy-registry` Docker container or another registry on this Mac"
+        }
+        logger.error("Agent image registry listener stopped", metadata: metadata)
     }
 
     private func startMonitorTask(runIdentifier: UInt64) {
@@ -679,14 +834,74 @@ public actor WendyAgent {
         self.monitorTask = nil
     }
 
+    /// Starts crash supervision against the current `ContainerService`, with an
+    /// optional one-shot reconcile pass first. Safe to call repeatedly: any
+    /// previous supervisor is cancelled first.
+    ///
+    /// `reconcile` must be true only on a cold start. Reconcile assumes nothing
+    /// else is running the apps: it terminates native processes recorded in
+    /// `info.json` as survivors of a disorderly exit. On a warm restart — a
+    /// provisioning transition, which rebuilds the `ContainerService` over the
+    /// same state directory while the previous one's app processes are still
+    /// very much alive — those pids are not survivors, and reconciling would
+    /// SIGTERM every running native app: a downtime blip for `unless-stopped`
+    /// apps, and permanent death for `--no-restart` ones.
+    private func startAppSupervisor(reconcile: Bool) {
+        guard let containerService = self.containerService else { return }
+        self.cancelAppSupervisorTask()
+        self.appSupervisorTask = Self.makeAppSupervisorTask(
+            containerService: containerService,
+            reconcile: reconcile
+        )
+    }
+
+    @discardableResult
+    private func cancelAppSupervisorTask() -> Task<Void, Never>? {
+        let task = self.appSupervisorTask
+        self.appSupervisorTask = nil
+        task?.cancel()
+        return task
+    }
+
+    /// Cancels supervision and waits for an in-flight tick to finish, so a
+    /// restart cannot race whatever shutdown follows.
+    private func stopAppSupervisor() async {
+        await self.cancelAppSupervisorTask()?.value
+    }
+
+    /// Internal rather than private so the cold/warm-start distinction can be
+    /// exercised directly, without standing up a whole agent.
+    nonisolated static func makeAppSupervisorTask(
+        containerService: ContainerService,
+        reconcile: Bool
+    ) -> Task<Void, Never> {
+        let interval = containerService.supervisorInterval
+        return Task.detached {
+            // Reconcile runs inside this task rather than being awaited by
+            // `start()`: bringing apps back takes seconds (a Linux image pull,
+            // far longer), and the gRPC server has to be answering RPCs the
+            // moment it is listening.
+            if reconcile {
+                await containerService.reconcileApps()
+            }
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: interval)
+                } catch {
+                    return  // Cancelled.
+                }
+                await containerService.superviseApps()
+            }
+        }
+    }
+
     private func rollbackStartup() async {
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
 
-        self.registryTask?.cancel()
-        await self.registryTask?.value
-        self.registryTask = nil
+        await self.stopRegistryListeners()
     }
 
     private func clearRuntimeState() {
@@ -702,6 +917,10 @@ public actor WendyAgent {
         self.bonjourRegistration = nil
         self.bonjourTask = nil
         self.stopMonitorTask()
+        // Cancelled (not awaited) — this is the synchronous teardown path, and
+        // the supervisor holds the last reference to the ContainerService being
+        // dropped, so leaving it running would leak both.
+        self.cancelAppSupervisorTask()
         self.handlingUnexpectedRuntimeExit = false
     }
 
@@ -792,6 +1011,16 @@ public actor WendyAgent {
                 metadata: ["subsystem": "\(subsystem)"]
             )
         }
+
+        // Order matters, mirroring `stop()` (WendyAgent.swift:107-113): mark the
+        // service as stopping so no further supervisor tick does any work, then
+        // cancel the supervisor and wait for a tick that is already in flight,
+        // before tearing anything else down. Without this a tick already inside
+        // `superviseApps` could keep launching apps into a `ContainerService`
+        // that is about to be dropped, and a subsequent `start()` in the same
+        // process would race its cold reconcile against those launches.
+        await self.containerService?.beginStopping()
+        await self.stopAppSupervisor()
 
         await self.stopBonjour()
         await self.stopOTelServer()

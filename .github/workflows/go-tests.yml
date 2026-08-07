@@ -8,6 +8,7 @@ on:
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/**'
+      - '.github/scripts/**'
 
 concurrency:
   group: go-tests-${{ github.event.pull_request.number }}
@@ -96,3 +97,15 @@ jobs:
             echo "Run 'gofmt -w -s .' to fix."
             exit 1
           fi
+
+  shell-tests:
+    name: Install script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: shellcheck install scripts
+        run: shellcheck go/internal/cli/assets/docs/agent.sh go/internal/cli/assets/docs/cli.sh
+      - name: resolver + deferral tests
+        run: bash .github/scripts/install-scripts_test.sh
+      - name: manifest merge tests
+        run: bash .github/scripts/install-manifest-merge_test.sh

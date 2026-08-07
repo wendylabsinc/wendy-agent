@@ -61,7 +61,7 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 		},
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestListV4L2Devices_ExcludesNonCameraDrivers(t *testing.T) {
 		return camera.TransportCSI, drv
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestListV4L2Devices_NoDevices(t *testing.T) {
 		nil,
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestListV4L2Devices_SysfsReadFailFallsBackToPath(t *testing.T) {
 		func(base string) (string, error) { return "", fmt.Errorf("no sysfs") },
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestListV4L2Devices_GlobError(t *testing.T) {
 		nil,
 	)
 
-	_, err := svc.listV4L2Devices(context.Background())
+	_, err := svc.listCameras(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -368,6 +368,11 @@ func TestBuildGStreamerArgs_NVV4L2HardwareEncoder(t *testing.T) {
 	if !strings.Contains(joined, "video/x-raw,format=NV12") {
 		t.Errorf("expected NV12 capsfilter for nvv4l2h264enc: %v", args)
 	}
+	// Without nvvidconv the encoder rejects system-memory NV12 and a USB camera on a
+	// Jetson never streams.
+	if !strings.Contains(joined, "nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc") {
+		t.Errorf("nvv4l2h264enc must be fed NVMM NV12 via nvvidconv: %v", args)
+	}
 }
 
 func TestBuildGStreamerArgs_VP8Encoder(t *testing.T) {
@@ -442,6 +447,70 @@ bad:  h264parse: H.264 parser
 	}
 }
 
+// /dev/null is exactly what Thor ships as /dev/v4l2-nvenc: it opens, then rejects QUERYCAP.
+func TestV4L2NodeUsable(t *testing.T) {
+	if v4l2NodeUsable("/dev/null") {
+		t.Error("/dev/null must not pass as a V4L2 device")
+	}
+	if v4l2NodeUsable(t.TempDir() + "/absent") {
+		t.Error("a missing node must not pass")
+	}
+}
+
+// stubV4L2NodeUsable forces the hardware-encoder device probe for the test's duration.
+func stubV4L2NodeUsable(t *testing.T, usable bool) {
+	t.Helper()
+	prev := v4l2NodeUsable
+	v4l2NodeUsable = func(string) bool { return usable }
+	t.Cleanup(func() { v4l2NodeUsable = prev })
+}
+
+// Thor's exact element set: it registers nvv4l2h264enc but /dev/v4l2-nvenc is a /dev/null
+// stub, so the pipeline cannot preroll. Selection has to fall through to the software encoder.
+func TestFindGStreamerEncoder_SkipsNVENCWithUnusableNode(t *testing.T) {
+	stubV4L2NodeUsable(t, false)
+	available := map[string]bool{
+		"nvv4l2h264enc": true, "x264enc": true, "h264parse": true,
+		"vp8enc": true, "webmmux": true,
+	}
+
+	result, err := findGStreamerEncoderFromSet(available)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.element != "x264enc" {
+		t.Errorf("expected fallback to x264enc, got %q", result.element)
+	}
+}
+
+func TestFindGStreamerEncoder_UsesNVENCWithUsableNode(t *testing.T) {
+	stubV4L2NodeUsable(t, true)
+	available := map[string]bool{"nvv4l2h264enc": true, "x264enc": true, "h264parse": true}
+
+	result, err := findGStreamerEncoderFromSet(available)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.element != "nvv4l2h264enc" {
+		t.Errorf("expected nvv4l2h264enc, got %q", result.element)
+	}
+}
+
+// With only a stubbed encoder there is nothing to fall back to. Reporting that names the
+// remedy, where selecting it anyway produced an opaque preroll failure.
+func TestFindGStreamerEncoder_GatedEncoderIsNeverAFallback(t *testing.T) {
+	stubV4L2NodeUsable(t, false)
+	available := map[string]bool{"nvv4l2h264enc": true, "h264parse": true}
+
+	_, err := findGStreamerEncoderFromSet(available)
+	if err == nil {
+		t.Fatal("expected an error rather than selecting the gated encoder")
+	}
+	if !strings.Contains(err.Error(), "no supported GStreamer encoder found") {
+		t.Errorf("error should name the remedy, got: %v", err)
+	}
+}
+
 func TestFindGStreamerEncoder_PrefersX264(t *testing.T) {
 	tmpDir := t.TempDir()
 	script := tmpDir + "/gst-inspect-1.0"
@@ -491,6 +560,7 @@ func TestFindGStreamerEncoder_H264ParseDetection(t *testing.T) {
 }
 
 func TestFindGStreamerEncoder_PrefersNVV4L2OverOtherH264Encoders(t *testing.T) {
+	stubV4L2NodeUsable(t, true) // no NVENC node on the build host
 	tmpDir := t.TempDir()
 	script := tmpDir + "/gst-inspect-1.0"
 	listing := "x264:  x264enc: H264 video encoder\nvideo4linux2:  v4l2h264enc: V4L2 H264 encoder\nnvvideo4linux2:  nvv4l2h264enc: NVIDIA V4L2 H264 encoder\n"
@@ -798,7 +868,7 @@ func TestListV4L2Devices_UsbAndCsiMix(t *testing.T) {
 		return camera.TransportUnknown, ""
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -823,7 +893,7 @@ func TestListV4L2Devices_CsiPopulatesLibcameraID(t *testing.T) {
 		return map[string]string{"/base/soc/i2c/cam@1a": "Sensor"}, nil
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -842,7 +912,7 @@ func TestListV4L2Devices_AmbiguousLibcameraLeavesIDEmpty(t *testing.T) {
 		return map[string]string{"/cam1": "A", "/cam2": "B"}, nil
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -861,9 +931,9 @@ func TestListV4L2Devices_LibcameraUnavailable_NoError(t *testing.T) {
 	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, fmt.Errorf("no cam binary") }
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
-		t.Fatalf("listV4L2Devices must not fail when libcamera enumeration errors: %v", err)
+		t.Fatalf("listCameras must not fail when libcamera enumeration errors: %v", err)
 	}
 	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI {
 		t.Errorf("transport still must be classified: %+v", devices[0])

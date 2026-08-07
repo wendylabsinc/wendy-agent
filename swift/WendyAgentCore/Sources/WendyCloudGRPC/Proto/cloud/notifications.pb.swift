@@ -66,57 +66,157 @@ public nonisolated enum Wendycloud_V1_NotificationSeverity: SwiftProtobuf.Enum, 
 
 }
 
-public nonisolated struct Wendycloud_V1_Notification: Sendable {
+public nonisolated struct Wendycloud_V1_NotificationAudience: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var id: Int32 = 0
+  /// At least one selector is required and must resolve to at least one recipient.
+  /// Cloud resolves the selectors as a deduplicated union, with at most 100 raw
+  /// selectors across all three lists and at most 10,000 resolved users.
+  public var userIds: [String] = []
 
-  public var userID: String = String()
+  public var teamIds: [Int32] = []
 
-  public var organizationID: Int32 = 0
+  public var roles: [Wendycloud_V1_OrganizationRole] = []
 
-  public var body: String = String()
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  public var severity: Wendycloud_V1_NotificationSeverity = .unspecified
+  public init() {}
+}
+
+public nonisolated struct Wendycloud_V1_Notification: @unchecked Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Fields 1 through 8 are the legacy Companion contract and must remain stable.
+  /// MIGRATION(wendycloud.v2): Migrate the read model to canonical UUID APIs; see API_V2_MIGRATION.md.
+  public var id: Int32 {
+    get {_storage._id}
+    set {_uniqueStorage()._id = newValue}
+  }
+
+  public var userID: String {
+    get {_storage._userID}
+    set {_uniqueStorage()._userID = newValue}
+  }
+
+  public var organizationID: Int32 {
+    get {_storage._organizationID}
+    set {_uniqueStorage()._organizationID = newValue}
+  }
+
+  public var body: String {
+    get {_storage._body}
+    set {_uniqueStorage()._body = newValue}
+  }
+
+  public var severity: Wendycloud_V1_NotificationSeverity {
+    get {_storage._severity}
+    set {_uniqueStorage()._severity = newValue}
+  }
 
   public var relatedEntities: SwiftProtobuf.Google_Protobuf_Struct {
-    get {_relatedEntities ?? SwiftProtobuf.Google_Protobuf_Struct()}
-    set {_relatedEntities = newValue}
+    get {_storage._relatedEntities ?? SwiftProtobuf.Google_Protobuf_Struct()}
+    set {_uniqueStorage()._relatedEntities = newValue}
   }
   /// Returns true if `relatedEntities` has been explicitly set.
-  public var hasRelatedEntities: Bool {self._relatedEntities != nil}
+  public var hasRelatedEntities: Bool {_storage._relatedEntities != nil}
   /// Clears the value of `relatedEntities`. Subsequent reads from it will return its default value.
-  public mutating func clearRelatedEntities() {self._relatedEntities = nil}
+  public mutating func clearRelatedEntities() {_uniqueStorage()._relatedEntities = nil}
 
   public var createdAt: SwiftProtobuf.Google_Protobuf_Timestamp {
-    get {_createdAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
-    set {_createdAt = newValue}
+    get {_storage._createdAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._createdAt = newValue}
   }
   /// Returns true if `createdAt` has been explicitly set.
-  public var hasCreatedAt: Bool {self._createdAt != nil}
+  public var hasCreatedAt: Bool {_storage._createdAt != nil}
   /// Clears the value of `createdAt`. Subsequent reads from it will return its default value.
-  public mutating func clearCreatedAt() {self._createdAt = nil}
+  public mutating func clearCreatedAt() {_uniqueStorage()._createdAt = nil}
 
   public var deletedAt: SwiftProtobuf.Google_Protobuf_Timestamp {
-    get {_deletedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
-    set {_deletedAt = newValue}
+    get {_storage._deletedAt ?? SwiftProtobuf.Google_Protobuf_Timestamp()}
+    set {_uniqueStorage()._deletedAt = newValue}
   }
   /// Returns true if `deletedAt` has been explicitly set.
-  public var hasDeletedAt: Bool {self._deletedAt != nil}
+  public var hasDeletedAt: Bool {_storage._deletedAt != nil}
   /// Clears the value of `deletedAt`. Subsequent reads from it will return its default value.
-  public mutating func clearDeletedAt() {self._deletedAt = nil}
+  public mutating func clearDeletedAt() {_uniqueStorage()._deletedAt = nil}
+
+  public var title: String {
+    get {_storage._title}
+    set {_uniqueStorage()._title = newValue}
+  }
+
+  public var deepLink: String {
+    get {_storage._deepLink}
+    set {_uniqueStorage()._deepLink = newValue}
+  }
+
+  /// Canonical UUID v4; absent for legacy Notifications.
+  public var notificationID: String {
+    get {_storage._notificationID ?? String()}
+    set {_uniqueStorage()._notificationID = newValue}
+  }
+  /// Returns true if `notificationID` has been explicitly set.
+  public var hasNotificationID: Bool {_storage._notificationID != nil}
+  /// Clears the value of `notificationID`. Subsequent reads from it will return its default value.
+  public mutating func clearNotificationID() {_uniqueStorage()._notificationID = nil}
+
+  public var metadata: SwiftProtobuf.Google_Protobuf_Struct {
+    get {_storage._metadata ?? SwiftProtobuf.Google_Protobuf_Struct()}
+    set {_uniqueStorage()._metadata = newValue}
+  }
+  /// Returns true if `metadata` has been explicitly set.
+  public var hasMetadata: Bool {_storage._metadata != nil}
+  /// Clears the value of `metadata`. Subsequent reads from it will return its default value.
+  public mutating func clearMetadata() {_uniqueStorage()._metadata = nil}
+
+  public var audience: Wendycloud_V1_NotificationAudience {
+    get {_storage._audience ?? Wendycloud_V1_NotificationAudience()}
+    set {_uniqueStorage()._audience = newValue}
+  }
+  /// Returns true if `audience` has been explicitly set.
+  public var hasAudience: Bool {_storage._audience != nil}
+  /// Clears the value of `audience`. Subsequent reads from it will return its default value.
+  public mutating func clearAudience() {_uniqueStorage()._audience = nil}
+
+  public var createdByUserID: String {
+    get {_storage._createdByUserID ?? String()}
+    set {_uniqueStorage()._createdByUserID = newValue}
+  }
+  /// Returns true if `createdByUserID` has been explicitly set.
+  public var hasCreatedByUserID: Bool {_storage._createdByUserID != nil}
+  /// Clears the value of `createdByUserID`. Subsequent reads from it will return its default value.
+  public mutating func clearCreatedByUserID() {_uniqueStorage()._createdByUserID = nil}
+
+  public var createdByAssetID: Int32 {
+    get {_storage._createdByAssetID ?? 0}
+    set {_uniqueStorage()._createdByAssetID = newValue}
+  }
+  /// Returns true if `createdByAssetID` has been explicitly set.
+  public var hasCreatedByAssetID: Bool {_storage._createdByAssetID != nil}
+  /// Clears the value of `createdByAssetID`. Subsequent reads from it will return its default value.
+  public mutating func clearCreatedByAssetID() {_uniqueStorage()._createdByAssetID = nil}
+
+  public var createdByAppID: String {
+    get {_storage._createdByAppID ?? String()}
+    set {_uniqueStorage()._createdByAppID = newValue}
+  }
+  /// Returns true if `createdByAppID` has been explicitly set.
+  public var hasCreatedByAppID: Bool {_storage._createdByAppID != nil}
+  /// Clears the value of `createdByAppID`. Subsequent reads from it will return its default value.
+  public mutating func clearCreatedByAppID() {_uniqueStorage()._createdByAppID = nil}
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
 
-  fileprivate var _relatedEntities: SwiftProtobuf.Google_Protobuf_Struct? = nil
-  fileprivate var _createdAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
-  fileprivate var _deletedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+  fileprivate var _storage = _StorageClass.defaultInstance
 }
 
+/// NOTE: This message was marked as deprecated in the .proto file.
 public nonisolated struct Wendycloud_V1_CreateNotificationRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -146,6 +246,94 @@ public nonisolated struct Wendycloud_V1_CreateNotificationRequest: Sendable {
   fileprivate var _relatedEntities: SwiftProtobuf.Google_Protobuf_Struct? = nil
 }
 
+public nonisolated struct Wendycloud_V1_CreateNotificationV2Request: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Required for user-authenticated callers. Provisioned devices omit it because Cloud
+  /// derives the organization from their certificate.
+  public var organizationID: Int32 {
+    get {_organizationID ?? 0}
+    set {_organizationID = newValue}
+  }
+  /// Returns true if `organizationID` has been explicitly set.
+  public var hasOrganizationID: Bool {self._organizationID != nil}
+  /// Clears the value of `organizationID`. Subsequent reads from it will return its default value.
+  public mutating func clearOrganizationID() {self._organizationID = nil}
+
+  public var audience: Wendycloud_V1_NotificationAudience {
+    get {_audience ?? Wendycloud_V1_NotificationAudience()}
+    set {_audience = newValue}
+  }
+  /// Returns true if `audience` has been explicitly set.
+  public var hasAudience: Bool {self._audience != nil}
+  /// Clears the value of `audience`. Subsequent reads from it will return its default value.
+  public mutating func clearAudience() {self._audience = nil}
+
+  /// REFACTOR: Request content intentionally duplicates Notification content because
+  /// Notification must retain legacy flat fields 1-8 for Companion wire compatibility.
+  /// MIGRATION(wendycloud.v2): Extract NotificationContent; see API_V2_MIGRATION.md.
+  /// Required; 1-120 UTF-8 bytes, with no surrounding whitespace or control characters.
+  public var title: String = String()
+
+  /// Required; 1-2,000 UTF-8 bytes, with no surrounding whitespace or control characters.
+  public var body: String = String()
+
+  /// NOTIFICATION_SEVERITY_UNSPECIFIED is invalid.
+  public var severity: Wendycloud_V1_NotificationSeverity = .unspecified
+
+  /// Required absolute wendy:// URI understood by Wendy clients; 1-2,048 UTF-8 bytes,
+  /// with a host and no userinfo or credentials.
+  public var deepLink: String = String()
+
+  /// Caller-generated UUID v4, stored and returned as canonical lowercase text.
+  public var notificationID: String = String()
+
+  /// Optional structured metadata; serialized JSON is limited to 16 KiB.
+  public var metadata: SwiftProtobuf.Google_Protobuf_Struct {
+    get {_metadata ?? SwiftProtobuf.Google_Protobuf_Struct()}
+    set {_metadata = newValue}
+  }
+  /// Returns true if `metadata` has been explicitly set.
+  public var hasMetadata: Bool {self._metadata != nil}
+  /// Clears the value of `metadata`. Subsequent reads from it will return its default value.
+  public mutating func clearMetadata() {self._metadata = nil}
+
+  /// Required for provisioned-device callers and stamped by the Wendy agent/daemon.
+  /// Cloud validates that this app belongs to the authenticated organization and device.
+  public var appID: String {
+    get {_appID ?? String()}
+    set {_appID = newValue}
+  }
+  /// Returns true if `appID` has been explicitly set.
+  public var hasAppID: Bool {self._appID != nil}
+  /// Clears the value of `appID`. Subsequent reads from it will return its default value.
+  public mutating func clearAppID() {self._appID = nil}
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+
+  fileprivate var _organizationID: Int32? = nil
+  fileprivate var _audience: Wendycloud_V1_NotificationAudience? = nil
+  fileprivate var _metadata: SwiftProtobuf.Google_Protobuf_Struct? = nil
+  fileprivate var _appID: String? = nil
+}
+
+public nonisolated struct Wendycloud_V1_CreateNotificationV2Response: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Canonical lowercase UUID v4.
+  public var notificationID: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
 public nonisolated struct Wendycloud_V1_ListNotificationsRequest: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
@@ -155,9 +343,24 @@ public nonisolated struct Wendycloud_V1_ListNotificationsRequest: Sendable {
 
   public var userID: String = String()
 
-  public var pageSize: Int32 = 0
+  /// Offset/limit based pagination
+  public var offset: Int32 {
+    get {_offset ?? 0}
+    set {_offset = newValue}
+  }
+  /// Returns true if `offset` has been explicitly set.
+  public var hasOffset: Bool {self._offset != nil}
+  /// Clears the value of `offset`. Subsequent reads from it will return its default value.
+  public mutating func clearOffset() {self._offset = nil}
 
-  public var pageToken: String = String()
+  public var limit: Int32 {
+    get {_limit ?? 0}
+    set {_limit = newValue}
+  }
+  /// Returns true if `limit` has been explicitly set.
+  public var hasLimit: Bool {self._limit != nil}
+  /// Clears the value of `limit`. Subsequent reads from it will return its default value.
+  public mutating func clearLimit() {self._limit = nil}
 
   public var severityFilter: Wendycloud_V1_NotificationSeverity {
     get {_severityFilter ?? .unspecified}
@@ -174,6 +377,8 @@ public nonisolated struct Wendycloud_V1_ListNotificationsRequest: Sendable {
 
   public init() {}
 
+  fileprivate var _offset: Int32? = nil
+  fileprivate var _limit: Int32? = nil
   fileprivate var _severityFilter: Wendycloud_V1_NotificationSeverity? = nil
 }
 
@@ -182,15 +387,22 @@ public nonisolated struct Wendycloud_V1_ListNotificationsResponse: Sendable {
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  public var notifications: [Wendycloud_V1_Notification] = []
+  public var notification: Wendycloud_V1_Notification {
+    get {_notification ?? Wendycloud_V1_Notification()}
+    set {_notification = newValue}
+  }
+  /// Returns true if `notification` has been explicitly set.
+  public var hasNotification: Bool {self._notification != nil}
+  /// Clears the value of `notification`. Subsequent reads from it will return its default value.
+  public mutating func clearNotification() {self._notification = nil}
 
-  public var nextPageToken: String = String()
-
-  public var totalCount: Int32 = 0
+  public var total: Int32 = 0
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
+
+  fileprivate var _notification: Wendycloud_V1_Notification? = nil
 }
 
 public nonisolated struct Wendycloud_V1_GetNotificationRequest: Sendable {
@@ -289,9 +501,9 @@ nonisolated extension Wendycloud_V1_NotificationSeverity: SwiftProtobuf._ProtoNa
   public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\0NOTIFICATION_SEVERITY_UNSPECIFIED\0\u{1}NOTIFICATION_SEVERITY_INFO\0\u{1}NOTIFICATION_SEVERITY_WARNING\0\u{1}NOTIFICATION_SEVERITY_ERROR\0\u{1}NOTIFICATION_SEVERITY_CRITICAL\0")
 }
 
-nonisolated extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  public static let protoMessageName: String = _protobuf_package + ".Notification"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}user_id\0\u{3}organization_id\0\u{1}body\0\u{1}severity\0\u{3}related_entities\0\u{3}created_at\0\u{3}deleted_at\0")
+nonisolated extension Wendycloud_V1_NotificationAudience: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".NotificationAudience"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}user_ids\0\u{3}team_ids\0\u{1}roles\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -299,60 +511,206 @@ nonisolated extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftPr
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeSingularInt32Field(value: &self.id) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.userID) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.body) }()
-      case 5: try { try decoder.decodeSingularEnumField(value: &self.severity) }()
-      case 6: try { try decoder.decodeSingularMessageField(value: &self._relatedEntities) }()
-      case 7: try { try decoder.decodeSingularMessageField(value: &self._createdAt) }()
-      case 8: try { try decoder.decodeSingularMessageField(value: &self._deletedAt) }()
+      case 1: try { try decoder.decodeRepeatedStringField(value: &self.userIds) }()
+      case 2: try { try decoder.decodeRepeatedInt32Field(value: &self.teamIds) }()
+      case 3: try { try decoder.decodeRepeatedEnumField(value: &self.roles) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    // The use of inline closures is to circumvent an issue where the compiler
-    // allocates stack space for every if/case branch local when no optimizations
-    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
-    // https://github.com/apple/swift-protobuf/issues/1182
-    if self.id != 0 {
-      try visitor.visitSingularInt32Field(value: self.id, fieldNumber: 1)
+    if !self.userIds.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.userIds, fieldNumber: 1)
     }
-    if !self.userID.isEmpty {
-      try visitor.visitSingularStringField(value: self.userID, fieldNumber: 2)
+    if !self.teamIds.isEmpty {
+      try visitor.visitPackedInt32Field(value: self.teamIds, fieldNumber: 2)
     }
-    if self.organizationID != 0 {
-      try visitor.visitSingularInt32Field(value: self.organizationID, fieldNumber: 3)
+    if !self.roles.isEmpty {
+      try visitor.visitPackedEnumField(value: self.roles, fieldNumber: 3)
     }
-    if !self.body.isEmpty {
-      try visitor.visitSingularStringField(value: self.body, fieldNumber: 4)
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendycloud_V1_NotificationAudience, rhs: Wendycloud_V1_NotificationAudience) -> Bool {
+    if lhs.userIds != rhs.userIds {return false}
+    if lhs.teamIds != rhs.teamIds {return false}
+    if lhs.roles != rhs.roles {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendycloud_V1_Notification: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".Notification"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}id\0\u{3}user_id\0\u{3}organization_id\0\u{1}body\0\u{1}severity\0\u{3}related_entities\0\u{3}created_at\0\u{3}deleted_at\0\u{1}title\0\u{3}deep_link\0\u{3}notification_id\0\u{1}metadata\0\u{1}audience\0\u{3}created_by_user_id\0\u{3}created_by_asset_id\0\u{3}created_by_app_id\0")
+
+  fileprivate class _StorageClass {
+    var _id: Int32 = 0
+    var _userID: String = String()
+    var _organizationID: Int32 = 0
+    var _body: String = String()
+    var _severity: Wendycloud_V1_NotificationSeverity = .unspecified
+    var _relatedEntities: SwiftProtobuf.Google_Protobuf_Struct? = nil
+    var _createdAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _deletedAt: SwiftProtobuf.Google_Protobuf_Timestamp? = nil
+    var _title: String = String()
+    var _deepLink: String = String()
+    var _notificationID: String? = nil
+    var _metadata: SwiftProtobuf.Google_Protobuf_Struct? = nil
+    var _audience: Wendycloud_V1_NotificationAudience? = nil
+    var _createdByUserID: String? = nil
+    var _createdByAssetID: Int32? = nil
+    var _createdByAppID: String? = nil
+
+      // This property is used as the initial default value for new instances of the type.
+      // The type itself is protecting the reference to its storage via CoW semantics.
+      // This will force a copy to be made of this reference when the first mutation occurs;
+      // hence, it is safe to mark this as `nonisolated(unsafe)`.
+      static nonisolated(unsafe) let defaultInstance = _StorageClass()
+
+    private init() {}
+
+    init(copying source: _StorageClass) {
+      _id = source._id
+      _userID = source._userID
+      _organizationID = source._organizationID
+      _body = source._body
+      _severity = source._severity
+      _relatedEntities = source._relatedEntities
+      _createdAt = source._createdAt
+      _deletedAt = source._deletedAt
+      _title = source._title
+      _deepLink = source._deepLink
+      _notificationID = source._notificationID
+      _metadata = source._metadata
+      _audience = source._audience
+      _createdByUserID = source._createdByUserID
+      _createdByAssetID = source._createdByAssetID
+      _createdByAppID = source._createdByAppID
     }
-    if self.severity != .unspecified {
-      try visitor.visitSingularEnumField(value: self.severity, fieldNumber: 5)
+  }
+
+  fileprivate mutating func _uniqueStorage() -> _StorageClass {
+    if !isKnownUniquelyReferenced(&_storage) {
+      _storage = _StorageClass(copying: _storage)
     }
-    try { if let v = self._relatedEntities {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
-    } }()
-    try { if let v = self._createdAt {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
-    } }()
-    try { if let v = self._deletedAt {
-      try visitor.visitSingularMessageField(value: v, fieldNumber: 8)
-    } }()
+    return _storage
+  }
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    _ = _uniqueStorage()
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      while let fieldNumber = try decoder.nextFieldNumber() {
+        // The use of inline closures is to circumvent an issue where the compiler
+        // allocates stack space for every case branch when no optimizations are
+        // enabled. https://github.com/apple/swift-protobuf/issues/1034
+        switch fieldNumber {
+        case 1: try { try decoder.decodeSingularInt32Field(value: &_storage._id) }()
+        case 2: try { try decoder.decodeSingularStringField(value: &_storage._userID) }()
+        case 3: try { try decoder.decodeSingularInt32Field(value: &_storage._organizationID) }()
+        case 4: try { try decoder.decodeSingularStringField(value: &_storage._body) }()
+        case 5: try { try decoder.decodeSingularEnumField(value: &_storage._severity) }()
+        case 6: try { try decoder.decodeSingularMessageField(value: &_storage._relatedEntities) }()
+        case 7: try { try decoder.decodeSingularMessageField(value: &_storage._createdAt) }()
+        case 8: try { try decoder.decodeSingularMessageField(value: &_storage._deletedAt) }()
+        case 9: try { try decoder.decodeSingularStringField(value: &_storage._title) }()
+        case 10: try { try decoder.decodeSingularStringField(value: &_storage._deepLink) }()
+        case 11: try { try decoder.decodeSingularStringField(value: &_storage._notificationID) }()
+        case 12: try { try decoder.decodeSingularMessageField(value: &_storage._metadata) }()
+        case 13: try { try decoder.decodeSingularMessageField(value: &_storage._audience) }()
+        case 14: try { try decoder.decodeSingularStringField(value: &_storage._createdByUserID) }()
+        case 15: try { try decoder.decodeSingularInt32Field(value: &_storage._createdByAssetID) }()
+        case 16: try { try decoder.decodeSingularStringField(value: &_storage._createdByAppID) }()
+        default: break
+        }
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    try withExtendedLifetime(_storage) { (_storage: _StorageClass) in
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every if/case branch local when no optimizations
+      // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+      // https://github.com/apple/swift-protobuf/issues/1182
+      if _storage._id != 0 {
+        try visitor.visitSingularInt32Field(value: _storage._id, fieldNumber: 1)
+      }
+      if !_storage._userID.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._userID, fieldNumber: 2)
+      }
+      if _storage._organizationID != 0 {
+        try visitor.visitSingularInt32Field(value: _storage._organizationID, fieldNumber: 3)
+      }
+      if !_storage._body.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._body, fieldNumber: 4)
+      }
+      if _storage._severity != .unspecified {
+        try visitor.visitSingularEnumField(value: _storage._severity, fieldNumber: 5)
+      }
+      try { if let v = _storage._relatedEntities {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 6)
+      } }()
+      try { if let v = _storage._createdAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 7)
+      } }()
+      try { if let v = _storage._deletedAt {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 8)
+      } }()
+      if !_storage._title.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._title, fieldNumber: 9)
+      }
+      if !_storage._deepLink.isEmpty {
+        try visitor.visitSingularStringField(value: _storage._deepLink, fieldNumber: 10)
+      }
+      try { if let v = _storage._notificationID {
+        try visitor.visitSingularStringField(value: v, fieldNumber: 11)
+      } }()
+      try { if let v = _storage._metadata {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 12)
+      } }()
+      try { if let v = _storage._audience {
+        try visitor.visitSingularMessageField(value: v, fieldNumber: 13)
+      } }()
+      try { if let v = _storage._createdByUserID {
+        try visitor.visitSingularStringField(value: v, fieldNumber: 14)
+      } }()
+      try { if let v = _storage._createdByAssetID {
+        try visitor.visitSingularInt32Field(value: v, fieldNumber: 15)
+      } }()
+      try { if let v = _storage._createdByAppID {
+        try visitor.visitSingularStringField(value: v, fieldNumber: 16)
+      } }()
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_Notification, rhs: Wendycloud_V1_Notification) -> Bool {
-    if lhs.id != rhs.id {return false}
-    if lhs.userID != rhs.userID {return false}
-    if lhs.organizationID != rhs.organizationID {return false}
-    if lhs.body != rhs.body {return false}
-    if lhs.severity != rhs.severity {return false}
-    if lhs._relatedEntities != rhs._relatedEntities {return false}
-    if lhs._createdAt != rhs._createdAt {return false}
-    if lhs._deletedAt != rhs._deletedAt {return false}
+    if lhs._storage !== rhs._storage {
+      let storagesAreEqual: Bool = withExtendedLifetime((lhs._storage, rhs._storage)) { (_args: (_StorageClass, _StorageClass)) in
+        let _storage = _args.0
+        let rhs_storage = _args.1
+        if _storage._id != rhs_storage._id {return false}
+        if _storage._userID != rhs_storage._userID {return false}
+        if _storage._organizationID != rhs_storage._organizationID {return false}
+        if _storage._body != rhs_storage._body {return false}
+        if _storage._severity != rhs_storage._severity {return false}
+        if _storage._relatedEntities != rhs_storage._relatedEntities {return false}
+        if _storage._createdAt != rhs_storage._createdAt {return false}
+        if _storage._deletedAt != rhs_storage._deletedAt {return false}
+        if _storage._title != rhs_storage._title {return false}
+        if _storage._deepLink != rhs_storage._deepLink {return false}
+        if _storage._notificationID != rhs_storage._notificationID {return false}
+        if _storage._metadata != rhs_storage._metadata {return false}
+        if _storage._audience != rhs_storage._audience {return false}
+        if _storage._createdByUserID != rhs_storage._createdByUserID {return false}
+        if _storage._createdByAssetID != rhs_storage._createdByAssetID {return false}
+        if _storage._createdByAppID != rhs_storage._createdByAppID {return false}
+        return true
+      }
+      if !storagesAreEqual {return false}
+    }
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }
@@ -412,9 +770,113 @@ nonisolated extension Wendycloud_V1_CreateNotificationRequest: SwiftProtobuf.Mes
   }
 }
 
+nonisolated extension Wendycloud_V1_CreateNotificationV2Request: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CreateNotificationV2Request"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{1}audience\0\u{1}title\0\u{1}body\0\u{1}severity\0\u{3}deep_link\0\u{3}notification_id\0\u{1}metadata\0\u{3}app_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularInt32Field(value: &self._organizationID) }()
+      case 2: try { try decoder.decodeSingularMessageField(value: &self._audience) }()
+      case 3: try { try decoder.decodeSingularStringField(value: &self.title) }()
+      case 4: try { try decoder.decodeSingularStringField(value: &self.body) }()
+      case 5: try { try decoder.decodeSingularEnumField(value: &self.severity) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.deepLink) }()
+      case 7: try { try decoder.decodeSingularStringField(value: &self.notificationID) }()
+      case 8: try { try decoder.decodeSingularMessageField(value: &self._metadata) }()
+      case 9: try { try decoder.decodeSingularStringField(value: &self._appID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._organizationID {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 1)
+    } }()
+    try { if let v = self._audience {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 2)
+    } }()
+    if !self.title.isEmpty {
+      try visitor.visitSingularStringField(value: self.title, fieldNumber: 3)
+    }
+    if !self.body.isEmpty {
+      try visitor.visitSingularStringField(value: self.body, fieldNumber: 4)
+    }
+    if self.severity != .unspecified {
+      try visitor.visitSingularEnumField(value: self.severity, fieldNumber: 5)
+    }
+    if !self.deepLink.isEmpty {
+      try visitor.visitSingularStringField(value: self.deepLink, fieldNumber: 6)
+    }
+    if !self.notificationID.isEmpty {
+      try visitor.visitSingularStringField(value: self.notificationID, fieldNumber: 7)
+    }
+    try { if let v = self._metadata {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 8)
+    } }()
+    try { if let v = self._appID {
+      try visitor.visitSingularStringField(value: v, fieldNumber: 9)
+    } }()
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendycloud_V1_CreateNotificationV2Request, rhs: Wendycloud_V1_CreateNotificationV2Request) -> Bool {
+    if lhs._organizationID != rhs._organizationID {return false}
+    if lhs._audience != rhs._audience {return false}
+    if lhs.title != rhs.title {return false}
+    if lhs.body != rhs.body {return false}
+    if lhs.severity != rhs.severity {return false}
+    if lhs.deepLink != rhs.deepLink {return false}
+    if lhs.notificationID != rhs.notificationID {return false}
+    if lhs._metadata != rhs._metadata {return false}
+    if lhs._appID != rhs._appID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Wendycloud_V1_CreateNotificationV2Response: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".CreateNotificationV2Response"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}notification_id\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.notificationID) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.notificationID.isEmpty {
+      try visitor.visitSingularStringField(value: self.notificationID, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Wendycloud_V1_CreateNotificationV2Response, rhs: Wendycloud_V1_CreateNotificationV2Response) -> Bool {
+    if lhs.notificationID != rhs.notificationID {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
 nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListNotificationsRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}user_id\0\u{3}page_size\0\u{3}page_token\0\u{3}severity_filter\0\u{3}include_deleted\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}organization_id\0\u{3}user_id\0\u{1}offset\0\u{1}limit\0\u{3}severity_filter\0\u{3}include_deleted\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -424,8 +886,8 @@ nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Mess
       switch fieldNumber {
       case 1: try { try decoder.decodeSingularInt32Field(value: &self.organizationID) }()
       case 2: try { try decoder.decodeSingularStringField(value: &self.userID) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self.pageSize) }()
-      case 4: try { try decoder.decodeSingularStringField(value: &self.pageToken) }()
+      case 3: try { try decoder.decodeSingularInt32Field(value: &self._offset) }()
+      case 4: try { try decoder.decodeSingularInt32Field(value: &self._limit) }()
       case 5: try { try decoder.decodeSingularEnumField(value: &self._severityFilter) }()
       case 6: try { try decoder.decodeSingularBoolField(value: &self.includeDeleted) }()
       default: break
@@ -444,12 +906,12 @@ nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Mess
     if !self.userID.isEmpty {
       try visitor.visitSingularStringField(value: self.userID, fieldNumber: 2)
     }
-    if self.pageSize != 0 {
-      try visitor.visitSingularInt32Field(value: self.pageSize, fieldNumber: 3)
-    }
-    if !self.pageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.pageToken, fieldNumber: 4)
-    }
+    try { if let v = self._offset {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 3)
+    } }()
+    try { if let v = self._limit {
+      try visitor.visitSingularInt32Field(value: v, fieldNumber: 4)
+    } }()
     try { if let v = self._severityFilter {
       try visitor.visitSingularEnumField(value: v, fieldNumber: 5)
     } }()
@@ -462,8 +924,8 @@ nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Mess
   public static func ==(lhs: Wendycloud_V1_ListNotificationsRequest, rhs: Wendycloud_V1_ListNotificationsRequest) -> Bool {
     if lhs.organizationID != rhs.organizationID {return false}
     if lhs.userID != rhs.userID {return false}
-    if lhs.pageSize != rhs.pageSize {return false}
-    if lhs.pageToken != rhs.pageToken {return false}
+    if lhs._offset != rhs._offset {return false}
+    if lhs._limit != rhs._limit {return false}
     if lhs._severityFilter != rhs._severityFilter {return false}
     if lhs.includeDeleted != rhs.includeDeleted {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -473,7 +935,7 @@ nonisolated extension Wendycloud_V1_ListNotificationsRequest: SwiftProtobuf.Mess
 
 nonisolated extension Wendycloud_V1_ListNotificationsResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".ListNotificationsResponse"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}notifications\0\u{3}next_page_token\0\u{3}total_count\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}notification\0\u{1}total\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -481,31 +943,30 @@ nonisolated extension Wendycloud_V1_ListNotificationsResponse: SwiftProtobuf.Mes
       // allocates stack space for every case branch when no optimizations are
       // enabled. https://github.com/apple/swift-protobuf/issues/1034
       switch fieldNumber {
-      case 1: try { try decoder.decodeRepeatedMessageField(value: &self.notifications) }()
-      case 2: try { try decoder.decodeSingularStringField(value: &self.nextPageToken) }()
-      case 3: try { try decoder.decodeSingularInt32Field(value: &self.totalCount) }()
+      case 1: try { try decoder.decodeSingularMessageField(value: &self._notification) }()
+      case 2: try { try decoder.decodeSingularInt32Field(value: &self.total) }()
       default: break
       }
     }
   }
 
   public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
-    if !self.notifications.isEmpty {
-      try visitor.visitRepeatedMessageField(value: self.notifications, fieldNumber: 1)
-    }
-    if !self.nextPageToken.isEmpty {
-      try visitor.visitSingularStringField(value: self.nextPageToken, fieldNumber: 2)
-    }
-    if self.totalCount != 0 {
-      try visitor.visitSingularInt32Field(value: self.totalCount, fieldNumber: 3)
+    // The use of inline closures is to circumvent an issue where the compiler
+    // allocates stack space for every if/case branch local when no optimizations
+    // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
+    // https://github.com/apple/swift-protobuf/issues/1182
+    try { if let v = self._notification {
+      try visitor.visitSingularMessageField(value: v, fieldNumber: 1)
+    } }()
+    if self.total != 0 {
+      try visitor.visitSingularInt32Field(value: self.total, fieldNumber: 2)
     }
     try unknownFields.traverse(visitor: &visitor)
   }
 
   public static func ==(lhs: Wendycloud_V1_ListNotificationsResponse, rhs: Wendycloud_V1_ListNotificationsResponse) -> Bool {
-    if lhs.notifications != rhs.notifications {return false}
-    if lhs.nextPageToken != rhs.nextPageToken {return false}
-    if lhs.totalCount != rhs.totalCount {return false}
+    if lhs._notification != rhs._notification {return false}
+    if lhs.total != rhs.total {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -14,7 +14,7 @@
 - Env vars: exactly **`WENDY_ENROLLMENT_TOKEN`** and **`WENDY_CLOUD_HOST`**. The agent derives org/asset from token claims; do not add more env vars.
 - Enrollment handoff file: **`/etc/wendy-agent/enrollment.json`**, mode **`0600`**, JSON `{"token": "...", "cloudHost": "..."}`, consumed-and-deleted by the agent.
 - `agent.sh` (`go/internal/cli/assets/docs/agent.sh`) is the published `install.wendy.dev/agent.sh` source; new logic must be inert unless `WENDY_ENROLLMENT_TOKEN` is set (backward-safe).
-- `WENDY_CLOUD_HOST` value is the auth session's `auth.CloudGRPC` verbatim (e.g. `cloud.wendy.sh:443`); the agent's `certificateServiceAddr` handles host/port normalization.
+- `WENDY_CLOUD_HOST` value is the auth session's `auth.CloudGRPC` verbatim (e.g. `cloud.wendy.dev:443`); the agent's `certificateServiceAddr` handles host/port normalization.
 - Follow existing package patterns: stubbable package-level func vars for tests (as in `os_install_enroll.go`), and the `newTestProvisioningService` / `startFakeCloudServer` harness for agent tests.
 
 ---
@@ -241,10 +241,10 @@ func TestRenderLinuxDesktopInstructions_Plain(t *testing.T) {
 
 func TestRenderLinuxDesktopInstructions_Enrolled(t *testing.T) {
 	exp := time.Date(2026, 7, 7, 15, 4, 5, 0, time.UTC)
-	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.sh:443", "Acme", exp)
+	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.dev:443", "Acme", exp)
 	for _, want := range []string{
 		"WENDY_ENROLLMENT_TOKEN=tok-abc",
-		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"WENDY_CLOUD_HOST=cloud.wendy.dev:443",
 		"install.wendy.dev/agent.sh",
 		"Acme",
 	} {
@@ -695,7 +695,7 @@ SH
 ( unset WENDY_ENROLLMENT_TOKEN WENDY_CLOUD_HOST; bash "$tmp/test.sh" "$tmp/a" )
 test ! -f "$tmp/a/etc/wendy-agent/enrollment.json" && echo "PASS: no file without token"
 # token+host -> file with expected contents
-( WENDY_ENROLLMENT_TOKEN=tok WENDY_CLOUD_HOST=cloud.wendy.sh:443 bash "$tmp/test.sh" "$tmp/b" )
+( WENDY_ENROLLMENT_TOKEN=tok WENDY_CLOUD_HOST=cloud.wendy.dev:443 bash "$tmp/test.sh" "$tmp/b" )
 grep -q '"token":"tok"' "$tmp/b/etc/wendy-agent/enrollment.json" && echo "PASS: file staged with token"
 rm -rf "$tmp"
 ```

@@ -1,42 +1,66 @@
 import Testing
+import WendyE2ETesting
 
 /// Hidden deprecated compatibility command for `wendy cloud device info`.
-///
-/// Use `wendy cloud device info` in new scripts and documentation.
 @Suite
 struct `'wendy cloud device version'` {
-    // MARK: - Compatibility
+    let scenario = CLIAndAgentScenario()
 
     /**
-     The hidden command remains directly invocable for older scripts, but
-     `wendy cloud device --help` does not advertise it. Direct help preserves
-     the `wendy cloud device info` option surface for users who still discover
-     the legacy command explicitly.
+     Keeps the deprecated cloud `version` alias out of parent command discovery
+     while preserving direct help for compatibility.
+
+     Direct help identifies the canonical cloud device information command.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `is hidden from parent help while direct help mirrors '... cloud device info'`()
-        async throws
-    {
-        // TODO: implement.
+    @Test
+    func `is hidden from parent help while direct help mirrors cloud device info`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy cloud device --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("info"))
+                #expect(!result.stdout.contains("\n  version "))
+                #expect(result.stderr == "")
+            }
+            try await cli.sh("wendy cloud device version --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(
+                    result.stdout.contains(
+                        "Show agent version, OS, architecture, GPU, and hardware info"
+                    )
+                )
+                #expect(result.stdout.contains("wendy cloud device version [flags]"))
+                #expect(result.stdout.contains("--check-updates"))
+                #expect(result.stdout.contains("--prerelease"))
+                #expect(result.stdout.contains("--cloud-grpc"))
+                #expect(result.stdout.contains("--broker-url"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
-     In human-readable mode, the deprecated command reports the same cloud-routed
-     device information as `wendy cloud device info` and writes a deprecation
-     warning that names `wendy cloud device info` as the replacement command.
+     Routes the deprecated cloud `version` command to cloud device information.
+
+     Successful output includes a deprecation notice that directs users to the
+     canonical command.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `aliases '... cloud device info' with a deprecation notice`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: cloud-routed info equivalence and deprecation output need seeded tunnel/auth and managed-agent metadata."
+        )
+    )
+    func `aliases cloud device info with a deprecation notice`() async throws {}
 
     /**
-     With `--json` or non-interactive JSON output, deprecation guidance stays
-     out of stdout and stderr so existing scripts can continue parsing the
-     response.
+     Keeps machine-readable command results on stdout when `--json` is requested.
+
+     Deprecation notices and diagnostics remain on stderr so automation can parse
+     stdout independently.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `'--json' keeps JSON output clean`() async throws {
-        // TODO: implement.
-    }
+    @Test(
+        .disabled(
+            "WDY-1952: cloud-routed JSON compatibility needs seeded tunnel/auth and managed-agent metadata."
+        )
+    )
+    func `JSON keeps output clean`() async throws {}
 }

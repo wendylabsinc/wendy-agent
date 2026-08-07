@@ -305,7 +305,7 @@ func TestDiscoverTableItemsHidesAddressForDockerAndLocal(t *testing.T) {
 func TestDiscoverModel_ViewShowsLegendWithDevices(t *testing.T) {
 	m := newDiscoverModel(context.Background(), defaultOpts(), true)
 
-	if strings.Contains(m.View(), tui.DeviceTableLegend) {
+	if strings.Contains(m.View(), tui.DeviceTableLegendBase) {
 		t.Fatalf("expected no legend before any device is found, got %q", m.View())
 	}
 
@@ -316,7 +316,7 @@ func TestDiscoverModel_ViewShowsLegendWithDevices(t *testing.T) {
 	}}})
 	m = updated.(discoverModel)
 
-	if !strings.Contains(m.View(), tui.DeviceTableLegend) {
+	if !strings.Contains(m.View(), tui.DeviceTableLegendBase) {
 		t.Fatalf("expected legend under device table, got %q", m.View())
 	}
 }
@@ -333,7 +333,7 @@ func TestRenderDeviceTable(t *testing.T) {
 	}
 
 	output := renderDeviceTable(collection)
-	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10", tui.DeviceTableLegend} {
+	for _, want := range []string{"Name", "Type", "Address", "Agent", "OS", "wendy-alpha", "1.2.3", "WendyOS-0.10.4", "LAN", "192.168.1.10", tui.DeviceTableLegendBase} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected output to contain %q, got %q", want, output)
 		}

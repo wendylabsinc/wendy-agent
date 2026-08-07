@@ -12,6 +12,17 @@ Jetson AGX Thor uses a dedicated USB recovery flash path. WendyOS flashes the Th
 - Supplied Thor power supply
 - Wendy CLI installed on your development machine
 
+<figure style={{ margin: '1.5rem 0' }}>
+  <img
+    src="/images/installation/jetson-thor-usb-c-ports.webp"
+    alt="Back of the NVIDIA Jetson AGX Thor with the left USB-C port labeled USB-C to Power Supply and the right USB-C port labeled USB-C to Developer Machine"
+    style={{ width: '100%', borderRadius: '8px' }}
+  />
+  <figcaption style={{ textAlign: 'center', fontSize: '0.875rem', color: 'var(--color-fd-muted-foreground)', marginTop: '0.5rem' }}>
+    USB-C cable for the left goes into the power supply and the right goes into your Macbook
+  </figcaption>
+</figure>
+
 ## Installation Steps
 
 <Steps>
@@ -52,7 +63,7 @@ Jetson AGX Thor uses a dedicated USB recovery flash path. WendyOS flashes the Th
     Run the installer from your terminal:
 
     ```bash
-    sudo wendy os install
+    wendy install
     ```
 
     Follow the on-screen instructions. The CLI downloads a Thor flashpack, detects the Thor in USB recovery mode, and flashes QSPI plus its internal NVMe.

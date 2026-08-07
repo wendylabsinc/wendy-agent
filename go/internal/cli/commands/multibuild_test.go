@@ -79,6 +79,45 @@ func TestMultiServiceCreateConfig_ServiceFrameworksOverride(t *testing.T) {
 	}
 }
 
+// A service's own readiness/hooks must travel with its per-service AppConfig so
+// startAndStreamServices can fire them scoped to that container (WDY-1271).
+func TestMultiServiceCreateConfig_PropagatesReadinessHooks(t *testing.T) {
+	appCfg := ros2ExampleAppConfig()
+	readiness := &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 8080}, TimeoutSeconds: 5}
+	hooks := &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:8080", Agent: "echo hi"}}
+	svc := appCfg.Services["talker"]
+	svc.Readiness = readiness
+	svc.Hooks = hooks
+
+	got := multiServiceCreateConfig(appCfg, "talker", svc)
+
+	if got.Readiness != readiness {
+		t.Errorf("Readiness = %p, want the same pointer as svc.Readiness (%p)", got.Readiness, readiness)
+	}
+	if got.Hooks != hooks {
+		t.Errorf("Hooks = %p, want the same pointer as svc.Hooks (%p)", got.Hooks, hooks)
+	}
+}
+
+// The group's top-level readiness/hooks are the app-level fallback, fired once
+// after ALL services start — never per service. Copying them onto every
+// per-service config would run hooks.postStart.agent in every container, so a
+// service that declares nothing must get nil readiness/hooks (WDY-1271).
+func TestMultiServiceCreateConfig_DoesNotInheritTopLevelHooks(t *testing.T) {
+	appCfg := ros2ExampleAppConfig()
+	appCfg.Readiness = &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 9090}}
+	appCfg.Hooks = &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "echo app-level"}}
+
+	got := multiServiceCreateConfig(appCfg, "talker", appCfg.Services["talker"])
+
+	if got.Readiness != nil {
+		t.Errorf("Readiness = %+v, want nil (top-level readiness must not leak per-service)", got.Readiness)
+	}
+	if got.Hooks != nil {
+		t.Errorf("Hooks = %+v, want nil (top-level hooks must not leak per-service)", got.Hooks)
+	}
+}
+
 func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 	appCfg := ros2ExampleAppConfig()
 	cfg := multiServiceCreateConfig(appCfg, "talker", appCfg.Services["talker"])
@@ -86,5 +125,40 @@ func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 	// the agent derives from (AppID, ServiceName) at creation time.
 	if got := multiServiceContainerName(appCfg.AppID, "talker"); got != cfg.ContainerName() {
 		t.Errorf("multiServiceContainerName = %q, ContainerName() = %q — start/stop would miss the container", got, cfg.ContainerName())
+	}
+}
+
+// TestMultiServiceCreateConfig_CarriesResolvedResources covers WDY-2171/WDY-1729:
+// the per-service config sent to the agent has no services map, so it must
+// carry the already-resolved limits. Without them the agent resolves nothing
+// and the container runs uncapped.
+func TestMultiServiceCreateConfig_CarriesResolvedResources(t *testing.T) {
+	pids := int64(256)
+	appCfg := &appconfig.AppConfig{
+		AppID:     "app",
+		Resources: &appconfig.ResourceLimits{Memory: "256Mi", PIDs: &pids},
+		Services: map[string]*appconfig.ServiceConfig{
+			"db":  {Context: "db"},
+			"api": {Context: "api", Resources: &appconfig.ResourceLimits{Memory: "128Mi"}},
+		},
+	}
+
+	db := multiServiceCreateConfig(appCfg, "db", appCfg.Services["db"])
+	if db.Resources == nil {
+		t.Fatal("db: resources are nil; the service inherits the app-level limits")
+	}
+	if db.Resources.Memory != "256Mi" {
+		t.Errorf("db memory = %q, want the inherited 256Mi", db.Resources.Memory)
+	}
+
+	api := multiServiceCreateConfig(appCfg, "api", appCfg.Services["api"])
+	if api.Resources == nil {
+		t.Fatal("api: resources are nil")
+	}
+	if api.Resources.Memory != "128Mi" {
+		t.Errorf("api memory = %q, want its own 128Mi", api.Resources.Memory)
+	}
+	if api.Resources.PIDs == nil || *api.Resources.PIDs != pids {
+		t.Errorf("api pids = %v, want the inherited %d (a memory override must not drop it)", api.Resources.PIDs, pids)
 	}
 }

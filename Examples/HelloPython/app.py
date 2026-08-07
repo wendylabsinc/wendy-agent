@@ -9,12 +9,18 @@ import os
 import socket
 
 class HelloWorldHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def send_body(self, status, content_type, body):
+        payload = body.encode('utf-8')
+        self.send_response(status)
+        self.send_header('Content-type', content_type)
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         if self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/html')
-            self.end_headers()
-            
             html_content = """
             <!DOCTYPE html charset="utf-8">
             <html lang="en">
@@ -48,67 +54,47 @@ class HelloWorldHandler(BaseHTTPRequestHandler):
             </body>
             </html>
             """
-            self.wfile.write(html_content.encode())
+            self.send_body(200, 'text/html', html_content)
             
         elif self.path == '/api/hello':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
             response = {
                 "message": "Hello World!",
                 "status": "success",
                 "server": "Python HTTP Server"
             }
-            self.wfile.write(json.dumps(response, indent=2).encode())
+            self.send_body(200, 'application/json', json.dumps(response, indent=2))
             
         elif self.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
             health_response = {
                 "status": "healthy",
                 "message": "Server is running"
             }
-            self.wfile.write(json.dumps(health_response).encode())
+            self.send_body(200, 'application/json', json.dumps(health_response))
             
         else:
-            self.send_response(404)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
             error_response = {
                 "error": "Not Found",
                 "message": f"Path {self.path} not found"
             }
-            self.wfile.write(json.dumps(error_response).encode())
+            self.send_body(404, 'application/json', json.dumps(error_response))
 
     def do_POST(self):
         if self.path == '/api/echo':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
             
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
             response = {
                 "message": "Echo endpoint",
                 "received_data": post_data.decode('utf-8'),
                 "status": "success"
             }
-            self.wfile.write(json.dumps(response, indent=2).encode())
+            self.send_body(200, 'application/json', json.dumps(response, indent=2))
         else:
-            self.send_response(404)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
-            
             error_response = {
                 "error": "Not Found",
                 "message": f"POST endpoint {self.path} not found"
             }
-            self.wfile.write(json.dumps(error_response).encode())
+            self.send_body(404, 'application/json', json.dumps(error_response))
 
     def log_message(self, format, *args):
         print(f"[{self.date_time_string()}] {format % args}", flush=True)

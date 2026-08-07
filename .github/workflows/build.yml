@@ -264,6 +264,12 @@ jobs:
     name: ${{ matrix.artifact-name }}
     runs-on: macos-15
     needs: [determine-version]
+    # Attest SLSA build provenance in the job that produces the archive, so the
+    # provenance reflects the actual build environment (not a downstream job).
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -426,7 +432,10 @@ jobs:
   sbom-binaries:
     name: SBOM+attest (${{ matrix.artifact-name }})
     runs-on: ubuntu-latest
-    needs: [determine-version, build, build-go-macos]
+    # build-cli-linux produces the wendy-cli-linux-* archives; without it in
+    # needs, those matrix entries race the upload and fail with "Artifact not
+    # found".
+    needs: [determine-version, build, build-cli-linux, build-go-macos]
     permissions:
       contents: read
       id-token: write
@@ -441,7 +450,8 @@ jobs:
           - { artifact-name: wendy-cli-linux-arm64,   binary: wendy,       ext: tar.gz }
           - { artifact-name: wendy-cli-windows-amd64, binary: wendy.exe,   ext: zip }
           - { artifact-name: wendy-cli-windows-arm64, binary: wendy.exe,   ext: zip }
-          - { artifact-name: wendy-cli-darwin-amd64,  binary: wendy,       ext: tar.gz }
+          # Intel (amd64) macOS CLI is not built (see build-go-macos), so there
+          # is no wendy-cli-darwin-amd64 archive to attest.
           - { artifact-name: wendy-cli-darwin-arm64,  binary: wendy,       ext: tar.gz }
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -583,8 +593,8 @@ jobs:
             -v "$VERSION" \
             --architecture ${{ matrix.arch }} \
             --description "Wendy CLI - Remote device debugging and deployment" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "devel" \
@@ -600,8 +610,8 @@ jobs:
             -v "$VERSION" \
             --architecture ${{ matrix.arch }} \
             --description "Wendy Agent - Runs on target devices for remote debugging" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "devel" \
@@ -637,8 +647,8 @@ jobs:
             -v "$RPM_VERSION" \
             --architecture ${{ matrix.rpm-arch }} \
             --description "Wendy CLI - Remote device debugging and deployment" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "Development/Tools" \
@@ -654,8 +664,8 @@ jobs:
             -v "$RPM_VERSION" \
             --architecture ${{ matrix.rpm-arch }} \
             --description "Wendy Agent - Runs on target devices for remote debugging" \
-            --url "https://wendy.sh" \
-            --maintainer "Wendy Labs Inc. <support@wendy.sh>" \
+            --url "https://wendy.dev" \
+            --maintainer "Wendy Labs Inc. <support@wendy.dev>" \
             --license "Proprietary" \
             --vendor "Wendy Labs Inc." \
             --category "Development/Tools" \
@@ -931,6 +941,50 @@ jobs:
           BUCKET: wendyos-images-public
           PROJECT: ${{ vars.GCP_PROJECT_ID }}
         run: ./.github/scripts/publish-agent-gcs.sh
+
+  publish-install-scripts:
+    name: Publish install scripts to GCS
+    runs-on: ubuntu-latest
+    needs: [determine-version, build]
+    if: |
+      always() &&
+      needs.determine-version.result == 'success' &&
+      needs.build.result == 'success' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish == true))
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Upload install scripts and update manifest
+        env:
+          VERSION: ${{ needs.determine-version.outputs.version }}
+          IS_RELEASE: ${{ needs.determine-version.outputs.is_release }}
+          BUCKET: wendy-install-public
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: ./.github/scripts/publish-install-scripts.sh
+
+      - name: Verify scripts are reachable
+        # Verifies the bucket directly, since install.wendy.dev isn't fronted by the
+        # load balancer yet (see the Task 5 runbook for that DNS/LB cutover). Flip this
+        # to https://install.wendy.dev/${name} once that cutover is live.
+        run: |
+          set -euo pipefail
+          for name in agent.sh cli.sh manifest.json; do
+            curl -fsS --max-time 30 "https://storage.googleapis.com/wendy-install-public/${name}" >/dev/null
+            echo "ok: https://storage.googleapis.com/wendy-install-public/${name}"
+          done
 
   integration-tests:
     name: Integration Tests (macOS, stable gate)

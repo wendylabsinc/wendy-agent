@@ -3,10 +3,12 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
@@ -209,6 +211,87 @@ func TestConnectFailureErrorPrefersNotFound(t *testing.T) {
 	})
 }
 
+func TestRetryConnect(t *testing.T) {
+	m := &BlueZManager{logger: zap.NewNop()}
+	const testDelay = time.Millisecond
+
+	t.Run("succeeds on first attempt without retrying", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("retries a transient failure and succeeds", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			if calls < 3 {
+				return dbus.Error{Name: "org.bluez.Error.Failed", Body: []any{"br-connection-unknown"}}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil after retries", err)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3", calls)
+		}
+	})
+
+	t.Run("does not retry a non-transient failure", func(t *testing.T) {
+		calls := 0
+		wantErr := dbus.Error{Name: "org.bluez.Error.AuthenticationRejected"}
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return wantErr
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (no retry for a non-transient error)", calls)
+		}
+		if err == nil {
+			t.Fatal("want the non-transient error returned")
+		}
+	})
+
+	t.Run("gives up after the max attempts", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != maxConnectAttempts {
+			t.Errorf("calls = %d, want %d", calls, maxConnectAttempts)
+		}
+		if err == nil {
+			t.Fatal("want an error after exhausting retries")
+		}
+	})
+
+	t.Run("stops early when the context is done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		err := m.retryConnect(ctx, time.Hour, func() error {
+			calls++
+			cancel()
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (context canceled before the retry delay elapses)", calls)
+		}
+		if err == nil {
+			t.Fatal("want an error")
+		}
+	})
+}
+
 func TestIncludePeripheral(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -388,4 +471,55 @@ func TestWrapBluetoothError(t *testing.T) {
 			t.Errorf("err = %q, want raw text preserved", err.Error())
 		}
 	})
+}
+
+func TestDeviceFromPropsIgnoresBlueZDefaultAlias(t *testing.T) {
+	// BlueZ sets Alias to the address (':' -> '-') when a device has never
+	// advertised a real name. That must not surface as a Name, or every
+	// anonymous device sorts as if it were named.
+	props := deviceProps("03:F8:5C:73:77:6B", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("03-F8-5C-73-77-6B"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "" {
+		t.Fatalf("Name = %q, want empty for BlueZ default alias", p.Name)
+	}
+}
+
+func TestDeviceFromPropsKeepsRealAlias(t *testing.T) {
+	props := deviceProps("40:C1:F6:E2:53:24", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("JBL Flip 5"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "JBL Flip 5" {
+		t.Fatalf("Name = %q, want %q", p.Name, "JBL Flip 5")
+	}
+}
+
+func TestDeviceFromPropsFallsBackToNameWhenAliasIsDefault(t *testing.T) {
+	props := deviceProps("AA:BB:CC:DD:EE:FF", map[string]dbus.Variant{
+		"Alias": dbus.MakeVariant("AA-BB-CC-DD-EE-FF"),
+		"Name":  dbus.MakeVariant("Real Advertised Name"),
+	})
+	p := deviceFromProps(props)
+	if p.Name != "Real Advertised Name" {
+		t.Fatalf("Name = %q, want fallback to Name property", p.Name)
+	}
+}
+
+func TestIsDefaultAlias(t *testing.T) {
+	tests := []struct {
+		alias, address string
+		want           bool
+	}{
+		{"AA-BB-CC-DD-EE-FF", "AA:BB:CC:DD:EE:FF", true},
+		{"aa-bb-cc-dd-ee-ff", "AA:BB:CC:DD:EE:FF", true},
+		{"JBL Flip 5", "AA:BB:CC:DD:EE:FF", false},
+		{"AA-BB-CC-DD-EE-FF", "", false},
+	}
+	for _, tt := range tests {
+		if got := isDefaultAlias(tt.alias, tt.address); got != tt.want {
+			t.Errorf("isDefaultAlias(%q, %q) = %v, want %v", tt.alias, tt.address, got, tt.want)
+		}
+	}
 }

@@ -13,7 +13,7 @@ import (
 )
 
 func TestRenderLinuxDesktopInstructions_Plain(t *testing.T) {
-	out := renderLinuxDesktopInstructions("", "", "", time.Time{})
+	out := renderLinuxDesktopInstructions("", "", "", linuxDesktopMachineLabel, time.Time{})
 	if !strings.Contains(out, "curl -fsSL https://install.wendy.dev/agent.sh | bash") {
 		t.Fatalf("plain output missing curl command:\n%s", out)
 	}
@@ -23,14 +23,33 @@ func TestRenderLinuxDesktopInstructions_Plain(t *testing.T) {
 	if !strings.Contains(out, "wendy device enroll") {
 		t.Fatalf("plain output should point at later enrollment:\n%s", out)
 	}
+	if !strings.Contains(out, "Linux machine") {
+		t.Fatalf("plain output should name the Linux machine target:\n%s", out)
+	}
+}
+
+// The Headless Mac path reuses the same renderer with a Mac label: the command
+// is byte-for-byte identical (agent.sh auto-detects the platform) but the
+// surrounding prose names the Mac.
+func TestRenderLinuxDesktopInstructions_HeadlessMac(t *testing.T) {
+	out := renderLinuxDesktopInstructions("", "", "", headlessMacMachineLabel, time.Time{})
+	if !strings.Contains(out, "curl -fsSL https://install.wendy.dev/agent.sh | bash") {
+		t.Fatalf("mac output missing curl command:\n%s", out)
+	}
+	if !strings.Contains(out, "your Mac") {
+		t.Fatalf("mac output should name the Mac target:\n%s", out)
+	}
+	if strings.Contains(out, "Linux machine") {
+		t.Fatalf("mac output should not mention a Linux machine:\n%s", out)
+	}
 }
 
 func TestRenderLinuxDesktopInstructions_Enrolled(t *testing.T) {
 	exp := time.Date(2026, 7, 7, 15, 4, 5, 0, time.UTC)
-	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.sh:443", "Acme", exp)
+	out := renderLinuxDesktopInstructions("tok-abc", "cloud.wendy.dev:443", "Acme", linuxDesktopMachineLabel, exp)
 	for _, want := range []string{
 		"WENDY_ENROLLMENT_TOKEN=tok-abc",
-		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"WENDY_CLOUD_HOST=cloud.wendy.dev:443",
 		"install.wendy.dev/agent.sh",
 		"Acme",
 	} {
@@ -51,8 +70,8 @@ func TestInstallLinuxDesktop_SkipMode_PrintsPlain(t *testing.T) {
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
 	out := captureStdout(t, func() {
-		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip}, ""); err != nil {
-			t.Fatalf("installLinuxDesktop: %v", err)
+		if err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollSkip}, "", linuxDesktopMachineLabel); err != nil {
+			t.Fatalf("installDesktop: %v", err)
 		}
 	})
 	if called {
@@ -70,7 +89,7 @@ func stubLinuxDesktopSingleSessionConfig(t *testing.T) {
 		return &config.Config{
 			Auth: []config.AuthConfig{
 				{
-					CloudGRPC: "cloud.wendy.sh:443",
+					CloudGRPC: "cloud.wendy.dev:443",
 					Certificates: []config.CertificateInfo{
 						{OrganizationID: 7},
 					},
@@ -101,8 +120,8 @@ func TestInstallLinuxDesktop_EnrolledPrintsToken(t *testing.T) {
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
 	out := captureStdout(t, func() {
-		if err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box"); err != nil {
-			t.Fatalf("installLinuxDesktop: %v", err)
+		if err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel); err != nil {
+			t.Fatalf("installDesktop: %v", err)
 		}
 	})
 
@@ -114,7 +133,7 @@ func TestInstallLinuxDesktop_EnrolledPrintsToken(t *testing.T) {
 	}
 	for _, want := range []string{
 		"WENDY_ENROLLMENT_TOKEN=tok-xyz",
-		"WENDY_CLOUD_HOST=cloud.wendy.sh:443",
+		"WENDY_CLOUD_HOST=cloud.wendy.dev:443",
 		"Acme",
 	} {
 		if !strings.Contains(out, want) {
@@ -142,7 +161,7 @@ func TestInstallLinuxDesktop_EnrolledValidatesDeviceName(t *testing.T) {
 	}
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
-	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "BadName")
+	err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "BadName", linuxDesktopMachineLabel)
 	if err == nil {
 		t.Fatal("expected an error for an invalid --device-name, got nil")
 	}
@@ -158,8 +177,8 @@ func TestLinuxDesktopCommand(t *testing.T) {
 	if got := linuxDesktopCommand("", ""); got != "curl -fsSL https://install.wendy.dev/agent.sh | bash" {
 		t.Fatalf("plain command = %q", got)
 	}
-	got := linuxDesktopCommand("tok-abc", "cloud.wendy.sh:443")
-	want := "curl -fsSL https://install.wendy.dev/agent.sh | WENDY_ENROLLMENT_TOKEN=tok-abc WENDY_CLOUD_HOST=cloud.wendy.sh:443 bash"
+	got := linuxDesktopCommand("tok-abc", "cloud.wendy.dev:443")
+	want := "curl -fsSL https://install.wendy.dev/agent.sh | WENDY_ENROLLMENT_TOKEN=tok-abc WENDY_CLOUD_HOST=cloud.wendy.dev:443 bash"
 	if got != want {
 		t.Fatalf("enrolled command\n got: %q\nwant: %q", got, want)
 	}
@@ -176,11 +195,11 @@ func TestCopyLinuxDesktopCommand_Interactive(t *testing.T) {
 	t.Cleanup(func() { clipboardWriter = orig })
 
 	out := captureStdout(t, func() {
-		if !copyLinuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443", true) {
+		if !copyLinuxDesktopCommand("tok-xyz", "cloud.wendy.dev:443", true) {
 			t.Fatal("expected copyLinuxDesktopCommand to report success")
 		}
 	})
-	if copied != linuxDesktopCommand("tok-xyz", "cloud.wendy.sh:443") {
+	if copied != linuxDesktopCommand("tok-xyz", "cloud.wendy.dev:443") {
 		t.Fatalf("clipboard got %q", copied)
 	}
 	if !strings.Contains(out, "clipboard") {
@@ -226,7 +245,7 @@ func TestInstallLinuxDesktop_ForcedNonInteractive_TokenError(t *testing.T) {
 	}
 	t.Cleanup(func() { linuxDesktopTokenFn = origTok })
 
-	err := installLinuxDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box")
+	err := installDesktop(context.Background(), preEnrollOptions{mode: preEnrollForced}, "my-box", linuxDesktopMachineLabel)
 	if err == nil {
 		t.Fatal("expected an error, got nil")
 	}

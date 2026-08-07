@@ -25,7 +25,7 @@ Nothing persists per-user authenticated activity: `users` has only `created_at`/
 
 ### How the dashboard reaches the backend
 
-`dashboard` (Next.js 15, `cloud.wendy.sh`) is a pure frontend; all product data flows via gRPC-web to the Swift `Broker` (`swift/Sources/Broker/main.swift`), with the user's Firebase ID token as `Authorization: Bearer` (`dashboard/src/lib/grpc-client-web.ts:8-53`). Every one of the ~19 handlers registered at `Broker/main.swift:268-289` is wrapped by the same interceptor stack (`main.swift:316-319`): `[UserIDInterceptor, RateLimitInterceptor]`.
+`dashboard` (Next.js 15, `cloud.wendy.dev`) is a pure frontend; all product data flows via gRPC-web to the Swift `Broker` (`swift/Sources/Broker/main.swift`), with the user's Firebase ID token as `Authorization: Bearer` (`dashboard/src/lib/grpc-client-web.ts:8-53`). Every one of the ~19 handlers registered at `Broker/main.swift:268-289` is wrapped by the same interceptor stack (`main.swift:316-319`): `[UserIDInterceptor, RateLimitInterceptor]`.
 
 ## Goals
 

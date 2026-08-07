@@ -1,66 +1,189 @@
+import Foundation
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy mcp serve'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
-     Displays usage for `wendy mcp serve`. The output includes the command
-     synopsis, local flags, inherited global flags, and concise
-     descriptions. Help exits successfully, writes to stdout, emits no
-     stderr, and leaves configuration, cache, project, cloud, and device
-     state untouched.
+     Displays stdio server usage and flags without starting the protocol loop.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy mcp serve --help") { result in
+                let stdout = result.stdout
+                #expect(result.status.isSuccess)
+                #expect(stdout.contains("Model Context Protocol server"))
+                #expect(stdout.contains("Usage:"))
+                #expect(stdout.contains("wendy mcp serve [flags]"))
+                #expect(stdout.contains("--device"))
+                #expect(stdout.contains("--help"))
+                #expect(stdout.contains("--json"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
-     Starts a Model Context Protocol server on stdin and stdout with
-     Wendy device tools registered. Protocol messages are written only
-     to stdout; diagnostics and logs use stderr.
+     Negotiates an MCP session over newline-delimited stdio and lists Wendy
+     tools without mixing diagnostics into protocol stdout.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `serves MCP tools over stdio`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix: """
+                    printf '%s\n' \
+                      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"swift-e2e","version":"1"}}}' \
+                      '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
+                      '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+                    | wendy mcp serve
+                    """,
+                power: """
+                    @(
+                      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"swift-e2e","version":"1"}}}',
+                      '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}',
+                      '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+                    ) | wendy mcp serve
+                    exit $LASTEXITCODE
+                    """
+            ) { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stderr == "")
+
+                let lines = result.normalizedStdout.split(separator: "\n")
+                #expect(lines.count == 2)
+                let initialize = try #require(
+                    try JSONSerialization.jsonObject(with: Data(lines[0].utf8))
+                        as? [String: Any]
+                )
+                #expect(initialize["jsonrpc"] as? String == "2.0")
+                #expect(initialize["id"] as? Int == 1)
+                let initializeResult = try #require(initialize["result"] as? [String: Any])
+                #expect(initializeResult["protocolVersion"] as? String == "2024-11-05")
+                let serverInfo = try #require(initializeResult["serverInfo"] as? [String: Any])
+                #expect(serverInfo["name"] as? String == "wendy")
+
+                let toolsResponse = try #require(
+                    try JSONSerialization.jsonObject(with: Data(lines[1].utf8))
+                        as? [String: Any]
+                )
+                #expect(toolsResponse["id"] as? Int == 2)
+                let toolsResult = try #require(toolsResponse["result"] as? [String: Any])
+                let tools = try #require(toolsResult["tools"] as? [[String: Any]])
+                let names = Set(tools.compactMap { $0["name"] as? String })
+                #expect(names.contains("wendy_status"))
+                #expect(names.contains("device_connect"))
+                #expect(names.contains("cloud_connect"))
+            }
+        }
     }
 
     /**
-     `--device` preselects a device for tools that need one. Startup
-     reports device connection problems through MCP errors without
-     corrupting the stdio protocol stream.
+     An initial device failure remains disconnected and is exposed through
+     structured MCP state or errors without corrupting protocol stdout.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(
+        .disabled(
+            "WDY-1942: --device uses a lazy gRPC connection, records an unreachable target as active, and exposes the failure only as a stderr warning during container scanning rather than structured MCP state."
+        )
+    )
     func `connects to an initial device when provided`() async throws {
-        // TODO: implement.
+        // TODO: enable with an unreachable loopback endpoint when MCP reports accurate structured connection state (WDY-1942).
     }
 
     /**
-     The server is suitable for AI assistant launches. It does not open
-     interactive pickers, browser windows, or terminal UI while handling
-     protocol requests.
+     Handles protocol requests without opening interactive pickers, browser
+     windows, or terminal UI.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `does not prompt while serving`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix: """
+                    printf '%s\n' \
+                      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"swift-e2e","version":"1"}}}' \
+                      '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}' \
+                      '{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}' \
+                    | wendy mcp serve
+                    """,
+                power: """
+                    @(
+                      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"swift-e2e","version":"1"}}}',
+                      '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}',
+                      '{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}'
+                    ) | wendy mcp serve
+                    exit $LASTEXITCODE
+                    """
+            ) { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stderr == "")
+                #expect(!result.stdout.lowercased().contains("select a device"))
+                #expect(!result.stdout.lowercased().contains("press enter"))
+
+                let lines = result.normalizedStdout.split(separator: "\n")
+                #expect(lines.count == 2)
+                let resourcesResponse = try #require(
+                    try JSONSerialization.jsonObject(with: Data(lines[1].utf8))
+                        as? [String: Any]
+                )
+                #expect(resourcesResponse["id"] as? Int == 2)
+                #expect(resourcesResponse["error"] == nil)
+                let resourcesResult = try #require(resourcesResponse["result"] as? [String: Any])
+                let resources = try #require(resourcesResult["resources"] as? [[String: Any]])
+                #expect(resources.contains { $0["uri"] as? String == "wendy://guide" })
+            }
+        }
     }
 
     /**
-     Closing stdin or sending the MCP shutdown request releases device
-     connections and exits without leaving background processes.
+     Closing stdin terminates the server successfully without protocol output
+     or a lingering child process.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `shuts down cleanly when stdin closes`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh(
+                posix: "wendy mcp serve < /dev/null",
+                power: """
+                    $null | wendy mcp serve
+                    exit $LASTEXITCODE
+                    """
+            ) { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout == "")
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
-     Accepts only the documented arguments and flags for `wendy mcp serve`.
-     Extra positional arguments or unknown flags produce a usage diagnostic
-     on stderr, return a failure status, emit no success output, and leave
-     existing state unchanged.
+     Unknown flags fail before the stdio protocol loop starts.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+    @Test
+    func `rejects undocumented flags`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy mcp serve --bogus") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+                #expect(result.stderr.contains("--bogus"))
+            }
+        }
+    }
+
+    /**
+     Extra positional arguments are rejected instead of being silently
+     ignored while the server starts.
+     */
+    @Test(
+        .disabled(
+            "WDY-1934: 'wendy mcp serve' silently accepts extra positional arguments because the leaf command has no cobra.NoArgs validator."
+        )
+    )
+    func `rejects undocumented positional arguments`() async throws {
+        // TODO: enable when MCP leaf commands reject positional arguments (WDY-1934).
     }
 }

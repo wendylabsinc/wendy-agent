@@ -71,7 +71,7 @@ actor FileSyncService: Wendy_Agent_Services_V1_WendyFileSyncService.ServiceProto
         }
 
         let appID = startMsg.appID
-        let workDir = appsBase.appendingPathComponent(appID)
+        let workDir = try validateContainedPath(base: appsBase, relative: appID)
 
         // Ensure working directory exists.
         try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)

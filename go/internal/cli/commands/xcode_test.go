@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -103,6 +104,187 @@ func TestRunXcodebuild_ReturnsErrorOnFailure(t *testing.T) {
 
 	if err := runXcodebuild(context.Background(), dir); err == nil {
 		t.Fatal("expected error on xcodebuild failure, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// looksLikeCLTOnlySelected / installedXcodeApps
+// ---------------------------------------------------------------------------
+
+func TestLooksLikeCLTOnlySelected(t *testing.T) {
+	cltOutput := `xcodebuild: error: unable to find utility "xcodebuild", not a developer tool or in PATH
+xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance`
+	if !looksLikeCLTOnlySelected(cltOutput) {
+		t.Error("expected CLT-only output to be detected")
+	}
+	if looksLikeCLTOnlySelected("xcodebuild: error: Scheme MyScheme is not currently configured") {
+		t.Error("did not expect an unrelated xcodebuild error to be detected as CLT-only")
+	}
+	if looksLikeCLTOnlySelected("") {
+		t.Error("did not expect empty output to be detected as CLT-only")
+	}
+}
+
+func TestInstalledXcodeApps_FiltersToRealXcodeBundles(t *testing.T) {
+	dir := t.TempDir()
+	origAppsDir := applicationsDir
+	applicationsDir = dir
+	t.Cleanup(func() { applicationsDir = origAppsDir })
+
+	// A real Xcode install: has Contents/Developer/usr/bin/xcodebuild.
+	makeXcodeBundle(t, dir, "Xcode.app")
+	makeXcodeBundle(t, dir, "Xcode-beta.app")
+	// A stray folder that merely looks like an Xcode install (no xcodebuild inside).
+	if err := os.MkdirAll(filepath.Join(dir, "NotXcode.app", "Contents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Command Line Tools is not an .app bundle, so it never matches the glob;
+	// nothing to special-case here.
+
+	apps := installedXcodeApps()
+	if len(apps) != 2 {
+		t.Fatalf("installedXcodeApps = %v; want 2 entries", apps)
+	}
+	if filepath.Base(apps[0]) != "Xcode-beta.app" || filepath.Base(apps[1]) != "Xcode.app" {
+		t.Errorf("installedXcodeApps = %v; want sorted [Xcode-beta.app Xcode.app]", apps)
+	}
+}
+
+func TestInstalledXcodeApps_NoneInstalled(t *testing.T) {
+	dir := t.TempDir()
+	origAppsDir := applicationsDir
+	applicationsDir = dir
+	t.Cleanup(func() { applicationsDir = origAppsDir })
+
+	if apps := installedXcodeApps(); len(apps) != 0 {
+		t.Errorf("installedXcodeApps = %v; want empty", apps)
+	}
+}
+
+// makeXcodeBundle creates a fake Xcode.app bundle under dir with just enough
+// structure (Contents/Developer/usr/bin/xcodebuild) to satisfy installedXcodeApps.
+func makeXcodeBundle(t *testing.T, dir, name string) string {
+	t.Helper()
+	binDir := filepath.Join(dir, name, "Contents", "Developer", "usr", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xcodebuildPath := filepath.Join(binDir, "xcodebuild")
+	if err := os.WriteFile(xcodebuildPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, name)
+}
+
+// ---------------------------------------------------------------------------
+// xcodeSelectGuidance
+// ---------------------------------------------------------------------------
+
+func TestXcodeSelectGuidance_NoXcodeInstalled(t *testing.T) {
+	dir := t.TempDir()
+	origAppsDir := applicationsDir
+	applicationsDir = dir
+	t.Cleanup(func() { applicationsDir = origAppsDir })
+
+	err := xcodeSelectGuidance(context.Background())
+	if err == nil {
+		t.Fatal("expected guidance error when no Xcode is installed")
+	}
+	if !strings.Contains(err.Error(), "App Store") || !strings.Contains(err.Error(), "developer.apple.com") {
+		t.Errorf("expected install guidance mentioning the App Store and developer.apple.com, got: %v", err)
+	}
+}
+
+func TestXcodeSelectGuidance_NonInteractive_ListsCandidates(t *testing.T) {
+	dir := t.TempDir()
+	origAppsDir := applicationsDir
+	applicationsDir = dir
+	t.Cleanup(func() { applicationsDir = origAppsDir })
+	makeXcodeBundle(t, dir, "Xcode.app")
+	makeXcodeBundle(t, dir, "Xcode-beta.app")
+
+	origInteractive := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = origInteractive })
+
+	err := xcodeSelectGuidance(context.Background())
+	if err == nil {
+		t.Fatal("expected guidance error in non-interactive mode")
+	}
+	if !strings.Contains(err.Error(), "Xcode.app") || !strings.Contains(err.Error(), "Xcode-beta.app") {
+		t.Errorf("expected both candidates named in the error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "xcode-select -s") {
+		t.Errorf("expected the xcode-select -s command in the error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// findXcodeScheme CLT recovery
+// ---------------------------------------------------------------------------
+
+func TestFindXcodeScheme_RecoversFromCLTOnlySelected(t *testing.T) {
+	origExec := execCommandContext
+	t.Cleanup(func() { execCommandContext = origExec })
+	origGuidance := xcodeSelectGuidanceFn
+	t.Cleanup(func() { xcodeSelectGuidanceFn = origGuidance })
+
+	calls := 0
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		calls++
+		if calls == 1 {
+			script := `echo "xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance" >&2; exit 1`
+			return exec.CommandContext(ctx, "sh", "-c", script)
+		}
+		script := `echo '{"project":{"schemes":["HelloXcode"]}}'`
+		return exec.CommandContext(ctx, "sh", "-c", script)
+	}
+	guidanceCalls := 0
+	xcodeSelectGuidanceFn = func(ctx context.Context) error {
+		guidanceCalls++
+		return nil // simulate a successful xcode-select fix
+	}
+
+	scheme, err := findXcodeScheme(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatalf("findXcodeScheme error: %v", err)
+	}
+	if scheme != "HelloXcode" {
+		t.Errorf("findXcodeScheme = %q; want %q", scheme, "HelloXcode")
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 xcodebuild calls (fail + retry), got %d", calls)
+	}
+	if guidanceCalls != 1 {
+		t.Errorf("expected xcodeSelectGuidanceFn to be called once, got %d", guidanceCalls)
+	}
+}
+
+func TestFindXcodeScheme_CLTGuidanceErrorPropagates(t *testing.T) {
+	origExec := execCommandContext
+	t.Cleanup(func() { execCommandContext = origExec })
+	origGuidance := xcodeSelectGuidanceFn
+	t.Cleanup(func() { xcodeSelectGuidanceFn = origGuidance })
+
+	calls := 0
+	execCommandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		calls++
+		script := `echo "xcode-select: error: tool 'xcodebuild' requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance" >&2; exit 1`
+		return exec.CommandContext(ctx, "sh", "-c", script)
+	}
+	xcodeSelectGuidanceFn = func(ctx context.Context) error {
+		return fmt.Errorf("install Xcode from the App Store")
+	}
+
+	_, err := findXcodeScheme(context.Background(), t.TempDir())
+	if err == nil {
+		t.Fatal("expected error to propagate from xcodeSelectGuidanceFn")
+	}
+	if !strings.Contains(err.Error(), "App Store") {
+		t.Errorf("expected guidance error to propagate, got: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected only 1 xcodebuild call when guidance fails (no retry), got %d", calls)
 	}
 }
 

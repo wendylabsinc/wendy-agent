@@ -1,0 +1,74 @@
+name: Bug report
+description: Something isn't working with the wendy CLI, wendy-agent, or WendyOS
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you can give, the faster we can fix it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen, and what actually happened?
+      placeholder: I ran `wendy run` and expected the app to deploy, but instead...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Flash WendyOS with `wendy os install`
+        2. Plug in the device over USB-C
+        3. Run `wendy run` in the sample app directory
+        4. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - wendy CLI
+        - wendy-agent
+        - WendyOS image / flashing
+        - USB-C host mode / discovery
+        - App runtime (containerd / entitlements)
+        - Docs
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Target hardware
+      options:
+        - NVIDIA Jetson Orin Nano
+        - NVIDIA Jetson AGX Orin
+        - NVIDIA Jetson Thor
+        - Raspberry Pi 5
+        - Generic Linux machine
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versions
+      description: Output of `wendy version` (and agent version if relevant)
+    validations:
+      required: true
+  - type: input
+    id: host-os
+    attributes:
+      label: Host OS
+      placeholder: macOS 15.2 (Apple Silicon), Ubuntu 24.04, Windows 11
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste any CLI output, agent logs, or error messages. This will be formatted as code automatically.
+      render: shell

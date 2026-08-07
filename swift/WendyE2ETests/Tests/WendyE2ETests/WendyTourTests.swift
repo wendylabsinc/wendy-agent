@@ -1,16 +1,28 @@
 import Testing
+import WendyE2ETesting
 
 @Suite
 struct `'wendy tour'` {
+    let scenario = CLIAndAgentScenario()
+
     /**
      Displays usage for `wendy tour`. The output includes the command synopsis,
      local flags, inherited global flags, and concise descriptions. Help exits
      successfully, writes to stdout, emits no stderr, and leaves configuration,
      cache, project, cloud, and device state untouched.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `prints command help`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy tour --help") { result in
+                #expect(result.status.isSuccess)
+                #expect(result.stdout.contains("Walk through device setup"))
+                #expect(result.stdout.contains("wendy tour [flags]"))
+                #expect(result.stdout.contains("--help"))
+                #expect(result.stdout.contains("--json"))
+                #expect(result.stderr == "")
+            }
+        }
     }
 
     /**
@@ -18,46 +30,86 @@ struct `'wendy tour'` {
      project setup, device discovery, and deployment choices. Each step
      explains what happens before performing side effects.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(
+        .disabled(
+            "WDY-1951: the multi-step Bubble Tea tour needs scripted PTY screen synchronization plus isolated auth, project, discovery, install, MCP, and deployment fixtures."
+        )
+    )
     func `runs the guided setup tour interactively`() async throws {
-        // TODO: implement.
+        // TODO: enable with the scripted isolated tour fixture (WDY-1951).
     }
 
     /**
      Existing auth sessions, projects, or configured devices are detected
      and presented as completed rather than repeated unnecessarily.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(
+        .disabled(
+            "WDY-1951: completed-step coverage needs a scripted PTY and isolated fixture state for every downstream tour integration."
+        )
+    )
     func `skips completed steps using existing state`() async throws {
-        // TODO: implement.
+        // TODO: enable with the scripted isolated tour fixture (WDY-1951).
     }
 
     /**
      Cancelling the tour stops at the current step, preserves state already
      confirmed by the user, and avoids starting later steps.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test(
+        .disabled(
+            "WDY-1951: cancellation checkpoints need PTY process control and observable isolated side effects to prove later steps did not run."
+        )
+    )
     func `cancels without continuing later side effects`() async throws {
-        // TODO: implement.
+        // TODO: enable with scripted cancellation control (WDY-1951).
     }
 
     /**
      Without an interactive terminal, reports that the tour requires a
      terminal and exits with guidance instead of blocking for input.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
+    @Test
     func `runs safely in non-interactive contexts`() async throws {
-        // TODO: implement.
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy tour") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("wendy tour requires an interactive terminal"))
+            }
+        }
     }
 
     /**
-     Accepts only the documented arguments and flags for `wendy tour`. Extra
-     positional arguments or unknown flags produce a usage diagnostic on
-     stderr, return a failure status, emit no success output, and leave
-     existing state unchanged.
+     Rejects flags that are not part of the command's documented interface.
+
+     The command reports a usage error on stderr and does not perform the
+     requested operation.
      */
-    @Test(.disabled("SPEC STUB: behavior agreed, implementation pending"))
-    func `rejects undocumented arguments and flags`() async throws {
-        // TODO: implement.
+    @Test
+    func `rejects undocumented flags`() async throws {
+        try await self.scenario.run(authenticated: false) { cli, _ in
+            try await cli.sh("wendy tour --bogus") { result in
+                #expect(result.status.isFailure)
+                #expect(result.stdout == "")
+                #expect(result.stderr.contains("unknown flag"))
+                #expect(result.stderr.contains("--bogus"))
+            }
+        }
+    }
+
+    /**
+     Rejects positional arguments because this command is entirely flag-driven.
+
+     The command reports a usage error instead of treating undocumented input as
+     a valid request.
+     */
+    @Test(
+        .disabled(
+            "WDY-1934: 'wendy tour' silently accepts extra positional arguments because the command has no cobra.NoArgs validator."
+        )
+    )
+    func `rejects undocumented positional arguments`() async throws {
+        // TODO: enable when tour rejects positional arguments (WDY-1934).
     }
 }

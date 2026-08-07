@@ -9,7 +9,6 @@ package winusb
 
 import (
 	"fmt"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -143,6 +142,12 @@ func interfaceDetailPath(set uintptr, ifd *spDeviceInterfaceData) (string, error
 // re-enumerates and shares no substring with a location path). Empty opens the
 // first device found.
 func Open(locationPath string) (*USBDevice, error) {
+	return OpenExpected(locationPath, 0)
+}
+
+// OpenExpected pins both physical location and USB product. Recovery callers
+// use this to ensure an Orin at the same host cannot satisfy a Thor re-open.
+func OpenExpected(locationPath string, expectedProduct uint16) (*USBDevice, error) {
 	paths, err := openDevicePaths()
 	if err != nil {
 		return nil, err
@@ -153,26 +158,52 @@ func Open(locationPath string) (*USBDevice, error) {
 	if locationPath == "" {
 		return openPath(paths[0])
 	}
-	// Pin by physical location: find the present NVIDIA device at locationPath and
-	// open the interface path belonging to that device instance. A device-interface
-	// path contains the instance ID (USB\VID_xxxx&PID_yyyy\serial) with '\' rendered
-	// as '#', so correlate the two on that.
+	// Pin by physical location: find the present NVIDIA device at locationPath
+	// and open the interface path CM reports for exactly that devnode.
 	devs, err := ListDevices()
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range devs {
-		if d.LocationPath != locationPath {
+		if d.LocationPath != locationPath || (expectedProduct != 0 && d.PID != expectedProduct) {
 			continue
 		}
-		key := strings.ToLower(strings.ReplaceAll(d.InstanceID, `\`, "#"))
-		for _, p := range paths {
-			if strings.Contains(strings.ToLower(p), key) {
-				return openPath(p)
-			}
+		if p := devInterfacePath(d.InstanceID); p != "" {
+			return openPath(p)
 		}
 	}
-	return nil, fmt.Errorf("no Jetson WinUSB device at location %q among %d present (is our driver bound to it?)", locationPath, len(paths))
+	return nil, fmt.Errorf("no Jetson WinUSB product 0x%04x at location %q among %d present (is our driver bound to it?)", expectedProduct, locationPath, len(paths))
+}
+
+// OpenInstance opens the exact devnode named by its PnP instance ID — stronger
+// than location pinning, which hosts with redirected/virtualized USB (no
+// SPDRP_LOCATION_PATHS) cannot provide. Recovery flows that already selected a
+// specific device must not fall back to "first interface found".
+func OpenInstance(instanceID string, expectedProduct uint16) (*USBDevice, error) {
+	if expectedProduct != 0 {
+		if _, pid, ok := ParseVIDPID(instanceID); !ok || pid != expectedProduct {
+			return nil, fmt.Errorf("device %s is not USB product 0x%04x", instanceID, expectedProduct)
+		}
+	}
+	p := devInterfacePath(instanceID)
+	if p == "" {
+		return nil, fmt.Errorf("device %s does not expose the Jetson WinUSB interface (is our driver bound to it?)", instanceID)
+	}
+	return openPath(p)
+}
+
+// devInterfacePath returns the wendy Jetson WinUSB interface path the devnode
+// exposes, or "" when it is not bound to our driver. This is exact per-devnode
+// correlation via CM_Get_Device_Interface_List — never substring matching of
+// instance IDs against interface paths, whose rendering no API guarantees and
+// where one device's ID can be a prefix of another's (Windows-generated
+// instance IDs for serial-less devices differ only in their port digits).
+func devInterfacePath(instanceID string) string {
+	paths, err := windows.CM_Get_Device_Interface_List(instanceID, &interfaceGUID, windows.CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+	if err != nil || len(paths) == 0 {
+		return ""
+	}
+	return paths[0]
 }
 
 // InterfacePresent reports whether any present device currently exposes wendy's
@@ -182,6 +213,16 @@ func Open(locationPath string) (*USBDevice, error) {
 func InterfacePresent() bool {
 	paths, err := openDevicePaths()
 	return err == nil && len(paths) > 0
+}
+
+// DeviceHasOurInterface reports whether this specific device is bound to
+// wendy's Jetson WinUSB interface. InterfacePresent alone is host-global and
+// can be satisfied by a *different* bound Jetson — e.g. a Thor bound by a
+// driver package staged before the T234 PIDs were added — while the target
+// device sits driverless; callers deciding whether to (re)install the driver
+// must check the device they are about to open.
+func DeviceHasOurInterface(d Device) bool {
+	return devInterfacePath(d.InstanceID) != ""
 }
 
 func openPath(devPath string) (*USBDevice, error) {

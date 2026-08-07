@@ -57,9 +57,10 @@ export function generateStaticParams() {
 
 export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const params = await props.params;
+  const slug = params.slug?.join('/');
   const redirect = getLegacyRedirect(params.slug);
   if (redirect) {
-    const isLegacyJetsonRoute = params.slug?.join('/') === 'installation/wendyos-nvidia-jetson';
+    const isLegacyJetsonRoute = slug === 'installation/wendyos-nvidia-jetson';
     return {
       title: isLegacyJetsonRoute ? 'NVIDIA Jetson Orin Nano' : 'Linux',
       description: isLegacyJetsonRoute
@@ -71,15 +72,20 @@ export async function generateMetadata(props: PageProps): Promise<Metadata> {
   const page = source.getPage(params.slug);
   if (!page) notFound();
 
+  const pageOgImage =
+    slug === 'installation/wendyos-nvidia-jetson-agx-thor'
+      ? withBasePath('/images/opengraph-thor.png')
+      : ogImage;
+
   return {
     title: page.data.title,
     description: page.data.description,
     openGraph: {
-      images: ogImage,
+      images: pageOgImage,
     },
     twitter: {
       card: 'summary_large_image',
-      images: ogImage,
+      images: pageOgImage,
     },
   };
 }

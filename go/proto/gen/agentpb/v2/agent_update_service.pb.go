@@ -282,6 +282,7 @@ func (*UpdateAgentRequest_ControlCommand_Update_) isUpdateAgentRequest_ControlCo
 type UpdateAgentRequest_ControlCommand_Update struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Sha256        string                 `protobuf:"bytes,1,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Signature     []byte                 `protobuf:"bytes,2,opt,name=signature,proto3" json:"signature,omitempty"` // Detached ML-DSA65 signature over the SHA256 digest of the agent binary; empty until a signer is deployed.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -321,6 +322,13 @@ func (x *UpdateAgentRequest_ControlCommand_Update) GetSha256() string {
 		return x.Sha256
 	}
 	return ""
+}
+
+func (x *UpdateAgentRequest_ControlCommand_Update) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
 }
 
 type UpdateAgentResponse_Updated struct {
@@ -363,16 +371,17 @@ var File_wendy_agent_services_v2_agent_update_service_proto protoreflect.FileDes
 
 const file_wendy_agent_services_v2_agent_update_service_proto_rawDesc = "" +
 	"\n" +
-	"2wendy/agent/services/v2/agent_update_service.proto\x12\x17wendy.agent.services.v2\"\x81\x03\n" +
+	"2wendy/agent/services/v2/agent_update_service.proto\x12\x17wendy.agent.services.v2\"\x9f\x03\n" +
 	"\x12UpdateAgentRequest\x12I\n" +
 	"\x05chunk\x18\x01 \x01(\v21.wendy.agent.services.v2.UpdateAgentRequest.ChunkH\x00R\x05chunk\x12V\n" +
 	"\acontrol\x18\x02 \x01(\v2:.wendy.agent.services.v2.UpdateAgentRequest.ControlCommandH\x00R\acontrol\x1a\x1b\n" +
 	"\x05Chunk\x12\x12\n" +
-	"\x04data\x18\x01 \x01(\fR\x04data\x1a\x9a\x01\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x1a\xb8\x01\n" +
 	"\x0eControlCommand\x12[\n" +
-	"\x06update\x18\x01 \x01(\v2A.wendy.agent.services.v2.UpdateAgentRequest.ControlCommand.UpdateH\x00R\x06update\x1a \n" +
+	"\x06update\x18\x01 \x01(\v2A.wendy.agent.services.v2.UpdateAgentRequest.ControlCommand.UpdateH\x00R\x06update\x1a>\n" +
 	"\x06Update\x12\x16\n" +
-	"\x06sha256\x18\x01 \x01(\tR\x06sha256B\t\n" +
+	"\x06sha256\x18\x01 \x01(\tR\x06sha256\x12\x1c\n" +
+	"\tsignature\x18\x02 \x01(\fR\tsignatureB\t\n" +
 	"\acommandB\x0e\n" +
 	"\frequest_type\"\x83\x01\n" +
 	"\x13UpdateAgentResponse\x12P\n" +

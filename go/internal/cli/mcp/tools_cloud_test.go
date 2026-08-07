@@ -2,12 +2,10 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"net"
 	"strings"
 	"testing"
 
-	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 	"google.golang.org/grpc"
@@ -71,11 +69,7 @@ func TestCloudDiscover_ReturnsConfiguredCloudDevices(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("len(devices) = %d, want 1", len(devices))
 	}
@@ -87,6 +81,101 @@ func TestCloudDiscover_ReturnsConfiguredCloudDevices(t *testing.T) {
 	}
 	if !fake.req.GetIsComputeDevice() {
 		t.Fatal("ListAssets did not request compute devices")
+	}
+}
+
+func TestCloudDiscover_HasStructuredContent(t *testing.T) {
+	fake := &fakeCloudAssetServer{
+		assets: []*cloudpb.Asset{
+			{
+				Id:              42,
+				OrganizationId:  7,
+				Name:            "edge-one",
+				AssetType:       "device",
+				IsComputeDevice: true,
+			},
+		},
+	}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if _, ok := structuredMap(t, result)["devices"]; !ok {
+		t.Error("cloud_discover envelope is missing the devices key")
+	}
+}
+
+func TestCloudDiscover_MaxBytesTruncates(t *testing.T) {
+	assets := make([]*cloudpb.Asset, 0, 200)
+	for i := int32(0); i < 200; i++ {
+		assets = append(assets, &cloudpb.Asset{
+			Id:              i,
+			OrganizationId:  7,
+			Name:            "some-padding-device-name",
+			AssetType:       "device",
+			IsComputeDevice: true,
+		})
+	}
+	fake := &fakeCloudAssetServer{assets: assets}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_discover", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent has unexpected type %T", result.StructuredContent)
+	}
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+}
+
+func TestCloud_MultipleSessions_Code(t *testing.T) {
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{
+			{CloudGRPC: "one:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+			{CloudGRPC: "two:123", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
+		},
+	}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result")
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map structured content, got %T", result.StructuredContent)
+	}
+	if sc["error_code"] != string(errCodeMultipleSessions) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeMultipleSessions)
 	}
 }
 
@@ -109,17 +198,6 @@ func TestCloudDiscover_RequiresCloudGRPCWhenMultipleAuthSessionsExist(t *testing
 		},
 	}, nil)
 	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error result")
-	}
-}
-
-func TestCloudRun_RequiresProjectPath(t *testing.T) {
-	srv := New(&config.Config{}, nil)
-	result, err := srv.callTool(context.Background(), "cloud_run", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

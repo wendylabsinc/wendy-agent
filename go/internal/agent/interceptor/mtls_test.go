@@ -185,14 +185,14 @@ func TestParseOrgMode(t *testing.T) {
 		wantMode OrgMode
 		wantOK   bool
 	}{
-		{"", OrgModeGrace, true},
+		{"", OrgModeStrict, true},
 		{"grace", OrgModeGrace, true},
 		{"GRACE", OrgModeGrace, true},
 		{" strict ", OrgModeStrict, true},
 		{"strict", OrgModeStrict, true},
 		{"off", OrgModeOff, true},
 		{"OFF", OrgModeOff, true},
-		{"bogus", OrgModeGrace, false},
+		{"bogus", OrgModeStrict, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.in, func(t *testing.T) {

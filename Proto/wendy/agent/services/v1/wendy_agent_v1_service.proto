@@ -159,6 +159,7 @@ message UpdateAgentRequest {
 
         message Update {
             string sha256 = 1;
+            bytes signature = 2;  // Detached ML-DSA65 signature over the SHA256 digest of the agent binary; empty until a signer is deployed.
         }
     }
 }

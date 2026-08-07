@@ -684,6 +684,305 @@ services:
 	}
 }
 
+func TestParseXWendy(t *testing.T) {
+	parseSvc := func(t *testing.T, body string) composeService {
+		t.Helper()
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Services["web"]
+	}
+
+	t.Run("full config populates readiness and hooks", func(t *testing.T) {
+		svc := parseSvc(t, `
+services:
+  web:
+    image: alpine
+    x-wendy:
+      readiness:
+        tcpSocket:
+          port: 3000
+        timeoutSeconds: 30
+      hooks:
+        postStart:
+          openURL: "http://${WENDY_HOSTNAME}:3000"
+          agent: "touch /tmp/x"
+`)
+		r, h, warnings, err := parseXWendy(svc.XWendy, "web")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("unexpected warnings: %v", warnings)
+		}
+		if r == nil || r.TCPSocket == nil || r.TCPSocket.Port != 3000 || r.TimeoutSeconds != 30 {
+			t.Fatalf("readiness not populated as expected: %+v", r)
+		}
+		if h == nil || h.PostStart == nil {
+			t.Fatalf("hooks not populated: %+v", h)
+		}
+		if h.PostStart.OpenURL != "http://${WENDY_HOSTNAME}:3000" || h.PostStart.Agent != "touch /tmp/x" || h.PostStart.CLI != "" {
+			t.Fatalf("hooks.postStart mismatch: %+v", h.PostStart)
+		}
+	})
+
+	t.Run("zero node returns all nil", func(t *testing.T) {
+		svc := parseSvc(t, "services:\n  web:\n    image: alpine\n")
+		r, h, warnings, err := parseXWendy(svc.XWendy, "web")
+		if err != nil || r != nil || h != nil || warnings != nil {
+			t.Fatalf("expected all nil/no error, got r=%v h=%v warnings=%v err=%v", r, h, warnings, err)
+		}
+	})
+
+	t.Run("unknown keys warn in sorted order, config still parses", func(t *testing.T) {
+		// Declared zeta-before-alpha so the assertion proves the warnings are
+		// emitted sorted (parseXWendy sorts unknown keys), not map-iteration order.
+		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      zeta: 1\n      alpha: 2\n")
+		r, h, warnings, err := parseXWendy(svc.XWendy, "web")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r != nil || h != nil {
+			t.Fatalf("expected nil readiness/hooks, got r=%v h=%v", r, h)
+		}
+		if len(warnings) != 2 {
+			t.Fatalf("expected two unknown-key warnings, got %v", warnings)
+		}
+		if !strings.Contains(warnings[0], `unknown x-wendy key "alpha"`) {
+			t.Fatalf("expected first (sorted) warning to name \"alpha\", got %v", warnings)
+		}
+		if !strings.Contains(warnings[1], `unknown x-wendy key "zeta"`) {
+			t.Fatalf("expected second (sorted) warning to name \"zeta\", got %v", warnings)
+		}
+	})
+
+	t.Run("invalid port errors with service-scoped prefix", func(t *testing.T) {
+		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      readiness:\n        tcpSocket:\n          port: 0\n")
+		_, _, _, err := parseXWendy(svc.XWendy, "web")
+		if err == nil || !strings.Contains(err.Error(), "services.web.x-wendy.readiness") {
+			t.Fatalf("expected readiness validation error, got %v", err)
+		}
+	})
+
+	t.Run("non-portable cli opener produces one lint warning", func(t *testing.T) {
+		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      hooks:\n        postStart:\n          cli: \"open http://x\"\n")
+		r, h, warnings, err := parseXWendy(svc.XWendy, "web")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if r != nil {
+			t.Fatalf("expected nil readiness, got %v", r)
+		}
+		if h == nil || h.PostStart == nil || h.PostStart.CLI != "open http://x" {
+			t.Fatalf("hooks not populated as expected: %+v", h)
+		}
+		if len(warnings) != 1 {
+			t.Fatalf("expected exactly one lint warning, got %v", warnings)
+		}
+	})
+
+	t.Run("scalar readiness value errors", func(t *testing.T) {
+		svc := parseSvc(t, "services:\n  web:\n    x-wendy:\n      readiness: \"yes\"\n")
+		_, _, _, err := parseXWendy(svc.XWendy, "web")
+		if err == nil {
+			t.Fatal("expected error for scalar readiness value")
+		}
+	})
+}
+
+// TestComposeAppLevelAgentHookDropped guards the condition behind the warning
+// runComposeWithAgent prints when a compose companion declares a top-level
+// hooks.postStart.agent: compose apps have no app-level container to run it in,
+// so it is dropped — and Stage-A ValidateJSON stays silent because a compose
+// companion has no services map. Only a non-empty .agent triggers it;
+// openURL/cli-only top-level hooks (which DO run as an app-level fallback) do not.
+func TestComposeAppLevelAgentHookDropped(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  *appconfig.AppConfig
+		want bool
+	}{
+		{"nil cfg", nil, false},
+		{"nil hooks", &appconfig.AppConfig{AppID: "app"}, false},
+		{"nil postStart", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{}}, false},
+		{"openURL only", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://x"}}}, false},
+		{"cli only", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{CLI: "touch x"}}}, false},
+		{"agent set", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "echo hi"}}}, true},
+		{"agent set alongside openURL", &appconfig.AppConfig{Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://x", Agent: "echo hi"}}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := composeAppLevelAgentHookDropped(tc.cfg); got != tc.want {
+				t.Errorf("composeAppLevelAgentHookDropped(%+v) = %v, want %v", tc.cfg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildComposeServiceConfigs_XWendy(t *testing.T) {
+	t.Run("multi-service: only x-wendy service gets readiness/hooks", func(t *testing.T) {
+		body := `
+services:
+  frontend:
+    image: alpine
+    x-wendy:
+      readiness:
+        tcpSocket:
+          port: 3000
+      hooks:
+        postStart:
+          agent: "touch /tmp/ready"
+  backend:
+    image: alpine
+`
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		svcCfgs, warnings, err := buildComposeServiceConfigs("proj", &cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(warnings) != 0 {
+			t.Fatalf("unexpected warnings: %v", warnings)
+		}
+		frontend := svcCfgs["frontend"]
+		if frontend == nil {
+			t.Fatal("expected frontend AppConfig")
+		}
+		if frontend.AppID != "proj" || frontend.ServiceName != "frontend" {
+			t.Fatalf("frontend grouped naming wrong: AppID=%q ServiceName=%q", frontend.AppID, frontend.ServiceName)
+		}
+		if frontend.Readiness == nil || frontend.Readiness.TCPSocket == nil || frontend.Readiness.TCPSocket.Port != 3000 {
+			t.Fatalf("frontend readiness not applied: %+v", frontend.Readiness)
+		}
+		if frontend.Hooks == nil || frontend.Hooks.PostStart == nil || frontend.Hooks.PostStart.Agent != "touch /tmp/ready" {
+			t.Fatalf("frontend hooks not applied: %+v", frontend.Hooks)
+		}
+
+		backend := svcCfgs["backend"]
+		if backend == nil {
+			t.Fatal("expected backend AppConfig")
+		}
+		if backend.AppID != "proj" || backend.ServiceName != "backend" {
+			t.Fatalf("backend grouped naming wrong: AppID=%q ServiceName=%q", backend.AppID, backend.ServiceName)
+		}
+		if backend.Readiness != nil || backend.Hooks != nil {
+			t.Fatalf("backend should have nil readiness/hooks, got %+v / %+v", backend.Readiness, backend.Hooks)
+		}
+	})
+
+	t.Run("single-service: legacy naming with x-wendy applied", func(t *testing.T) {
+		body := `
+services:
+  web:
+    image: alpine
+    x-wendy:
+      readiness:
+        tcpSocket:
+          port: 8080
+`
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		svcCfgs, _, err := buildComposeServiceConfigs("myapp", &cfg, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		web := svcCfgs["web"]
+		if web == nil {
+			t.Fatal("expected web AppConfig")
+		}
+		if web.AppID != "myapp-web" {
+			t.Fatalf("legacy appID: want %q, got %q", "myapp-web", web.AppID)
+		}
+		if web.ServiceName != "" {
+			t.Fatalf("legacy ServiceName: want empty, got %q", web.ServiceName)
+		}
+		if web.Readiness == nil || web.Readiness.TCPSocket == nil || web.Readiness.TCPSocket.Port != 8080 {
+			t.Fatalf("readiness not applied: %+v", web.Readiness)
+		}
+	})
+}
+
+func TestApplyComposeCompanion_LifecycleOverride(t *testing.T) {
+	xWendyAppCfg := func() *appconfig.AppConfig {
+		return &appconfig.AppConfig{
+			AppID:     "proj-web",
+			Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 3000}},
+			Hooks:     &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "touch /tmp/x-wendy"}},
+		}
+	}
+
+	t.Run("companion service-level readiness and hooks override x-wendy values", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"web": {
+					Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 9000}},
+					Hooks:     &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "touch /tmp/companion"}},
+				},
+			},
+		}
+		got := xWendyAppCfg()
+		applyComposeCompanion(got, companion, "web")
+		if got.Readiness == nil || got.Readiness.TCPSocket == nil || got.Readiness.TCPSocket.Port != 9000 {
+			t.Fatalf("readiness not overridden: %+v", got.Readiness)
+		}
+		if got.Hooks == nil || got.Hooks.PostStart == nil || got.Hooks.PostStart.Agent != "touch /tmp/companion" {
+			t.Fatalf("hooks not overridden: %+v", got.Hooks)
+		}
+	})
+
+	t.Run("companion sets only readiness: hooks stay x-wendy, readiness replaced", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID: "com.example.robot",
+			Services: map[string]*appconfig.ServiceConfig{
+				"web": {
+					Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 9000}},
+				},
+			},
+		}
+		got := xWendyAppCfg()
+		applyComposeCompanion(got, companion, "web")
+		if got.Readiness == nil || got.Readiness.TCPSocket == nil || got.Readiness.TCPSocket.Port != 9000 {
+			t.Fatalf("readiness not overridden: %+v", got.Readiness)
+		}
+		if got.Hooks == nil || got.Hooks.PostStart == nil || got.Hooks.PostStart.Agent != "touch /tmp/x-wendy" {
+			t.Fatalf("hooks should survive from x-wendy, got %+v", got.Hooks)
+		}
+	})
+
+	t.Run("companion top-level readiness/hooks never land per-service", func(t *testing.T) {
+		companion := &appconfig.AppConfig{
+			AppID:     "com.example.robot",
+			Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 1234}},
+			Hooks:     &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{Agent: "touch /tmp/top-level"}},
+		}
+
+		t.Run("service with x-wendy values keeps them", func(t *testing.T) {
+			got := xWendyAppCfg()
+			applyComposeCompanion(got, companion, "web")
+			if got.Readiness == nil || got.Readiness.TCPSocket.Port != 3000 {
+				t.Fatalf("readiness should stay x-wendy value, got %+v", got.Readiness)
+			}
+			if got.Hooks == nil || got.Hooks.PostStart.Agent != "touch /tmp/x-wendy" {
+				t.Fatalf("hooks should stay x-wendy value, got %+v", got.Hooks)
+			}
+		})
+
+		t.Run("service with no x-wendy values stays nil", func(t *testing.T) {
+			got := &appconfig.AppConfig{AppID: "proj-other"}
+			applyComposeCompanion(got, companion, "other")
+			if got.Readiness != nil || got.Hooks != nil {
+				t.Fatalf("top-level readiness/hooks must not land per-service, got readiness=%+v hooks=%+v", got.Readiness, got.Hooks)
+			}
+		})
+	})
+}
+
 func TestComposeWarnUnsupportedFields_NoneWhenClean(t *testing.T) {
 	raw := `
 services:

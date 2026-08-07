@@ -205,7 +205,8 @@ func TestTourCreateProjectPromptSkip(t *testing.T) {
 func TestTourTemplatePickerBuiltIn(t *testing.T) {
 	m := newTourWizardModel()
 	m.phase = phaseTemplatePicker
-	m.templateItems = nil // only the built-in row exists
+	m.templateItems = nil          // only the built-in row exists
+	m.projectBaseDir = t.TempDir() // never scaffold into the real ~/Documents
 	got, _ := stepTour(t, m, key("enter"))
 	// Built-in selection creates the project then advances.
 	if got.phase != phaseCreateProject && got.phase != phaseError {

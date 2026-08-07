@@ -35,33 +35,48 @@ func thorPrepareHost(out io.Writer) error {
 // pickThorRecoveryDevice lists Jetsons in recovery mode and selects one, with a
 // rescan loop and USB-access guidance.
 func pickThorRecoveryDevice() (thorDevice, error) {
-	for {
+	dev, err := pickUnixRecoveryDevice(thorRecoveryHints(), func(d rcm.RecoveryDevice) bool { return d.IsThor() })
+	if err != nil {
+		return thorDevice{}, err
+	}
+	return thorDevice{PathKey: dev.PathKey, Label: dev.Describe()}, nil
+}
+
+// pickUnixRecoveryDevice selects only devices matching the requested family.
+// Filtering happens before the single-device fast path and on every rescan, so
+// an attached Orin can never be selected by a Thor installation (or vice versa).
+func pickUnixRecoveryDevice(hints recoveryWaitHints, match func(rcm.RecoveryDevice) bool) (rcm.RecoveryDevice, error) {
+	scan := func() ([]rcm.RecoveryDevice, error) {
 		devs, err := rcm.ListRecoveryDevices()
+		return filterRecoveryDevices(devs, match), err
+	}
+	for {
+		devs, err := scan()
 		switch {
 		case errors.Is(err, rcm.ErrUSBAccess) && len(devs) == 0:
 			fmt.Println("\n" + usbAccessHintBox())
 			fmt.Print("Press Enter to rescan, or 'q' to quit: ")
 			if readQuit() {
-				return thorDevice{}, fmt.Errorf("cannot open the Jetson's USB device: permission denied")
+				return rcm.RecoveryDevice{}, fmt.Errorf("cannot open the Jetson's USB device: permission denied")
 			}
 			continue
 		case errors.Is(err, rcm.ErrUSBAccess):
 			fmt.Println()
 			fmt.Println(tui.WarningMessage("Another Jetson in recovery mode was detected but couldn't be opened (USB access denied) — it is NOT listed below."))
 		case err != nil:
-			return thorDevice{}, err
+			return rcm.RecoveryDevice{}, err
 		}
 		if len(devs) == 0 {
-			// The user already confirmed the Thor is in recovery mode, so an empty
+			// The user already confirmed the board is in recovery mode, so an empty
 			// scan usually means cabling or the button sequence needs another try.
 			// Wait passively (spinner) until a device appears or the user quits.
-			if devs, err = waitForThorRecovery(rcm.ListRecoveryDevices); err != nil {
-				return thorDevice{}, err
+			if devs, err = waitForRecovery(hints, scan); err != nil {
+				return rcm.RecoveryDevice{}, err
 			}
 		}
 		switch len(devs) {
 		case 1:
-			return thorDevice{PathKey: devs[0].PathKey, Label: devs[0].Describe()}, nil
+			return devs[0], nil
 		default:
 			var items []tui.PickerItem
 			byKey := make(map[string]rcm.RecoveryDevice, len(devs))
@@ -74,13 +89,23 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 					Value:   d.PathKey,
 				})
 			}
-			sel, err := pickFromItems("Select the Thor to flash", items)
+			sel, err := pickFromItems("Select the "+hints.label+" to flash", items)
 			if err != nil {
-				return thorDevice{}, err
+				return rcm.RecoveryDevice{}, err
 			}
-			return thorDevice{PathKey: byKey[sel].PathKey, Label: byKey[sel].Describe()}, nil
+			return byKey[sel], nil
 		}
 	}
+}
+
+func filterRecoveryDevices(devs []rcm.RecoveryDevice, match func(rcm.RecoveryDevice) bool) []rcm.RecoveryDevice {
+	filtered := make([]rcm.RecoveryDevice, 0, len(devs))
+	for _, d := range devs {
+		if match(d) {
+			filtered = append(filtered, d)
+		}
+	}
+	return filtered
 }
 
 // thorIsUSBAccessErr reports whether err is the OS denying wendy access to the
@@ -113,11 +138,12 @@ func diskAvailBytes(path string) (avail int64, ok bool) {
 // thorStageOne performs the stage-1 RCM boot over gousb.
 func thorStageOne(fp *flashpack.Flashpack, dev thorDevice, out io.Writer) error {
 	return bringup.Run(bringup.Options{
-		Dir:        fp.Stage1Dir(),
-		MemBCT:     fp.MemBCT(),
-		DevicePath: dev.PathKey,
-		SendOrder:  fp.Manifest.Stage1SendOrder,
-		Out:        out,
+		Dir:             fp.Stage1Dir(),
+		MemBCT:          fp.MemBCT(),
+		DevicePath:      dev.PathKey,
+		ExpectedProduct: uint16(rcm.ProductThor),
+		SendOrder:       fp.Manifest.Stage1SendOrder,
+		Out:             out,
 	})
 }
 

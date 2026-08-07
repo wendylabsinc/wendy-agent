@@ -10,6 +10,6 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 }
 
 // WaitForDeviceAt is unsupported off macOS/Linux.
-func WaitForDeviceAt(string) (*Device, error) {
+func WaitForDeviceAt(string, uint16) (*Device, error) {
 	return nil, fmt.Errorf("Jetson USB recovery flashing is not supported on this platform")
 }

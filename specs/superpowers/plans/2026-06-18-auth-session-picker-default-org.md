@@ -64,7 +64,7 @@ import (
 
 func twoSessions() *Config {
 	return &Config{Auth: []AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []CertificateInfo{{OrganizationID: 7}}},
 		{CloudDashboard: "http://localhost:3000", CloudGRPC: "localhost:50051", Certificates: []CertificateInfo{{OrganizationID: 1}}},
 	}}
 }
@@ -306,14 +306,14 @@ func TestAuthSessionLabel(t *testing.T) {
 
 func TestAuthPickerItems(t *testing.T) {
 	cfg := &config.Config{Auth: []config.AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
 		{CloudGRPC: "local:50051", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
 	}}
 	items := authPickerItems(cfg)
 	if len(items) != 2 {
 		t.Fatalf("want 2 items, got %d", len(items))
 	}
-	if items[0].Name != "https://cloud.wendy.sh" {
+	if items[0].Name != "https://cloud.wendy.dev" {
 		t.Errorf("item 0 name = %q", items[0].Name)
 	}
 	if !strings.Contains(items[0].Description, "org 7") {
@@ -509,7 +509,7 @@ import (
 
 func selectorConfig() *config.Config {
 	return &config.Config{Auth: []config.AuthConfig{
-		{CloudDashboard: "https://cloud.wendy.sh", CloudGRPC: "prod.example.com:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
+		{CloudDashboard: "https://cloud.wendy.dev", CloudGRPC: "prod.example.com:443", Certificates: []config.CertificateInfo{{OrganizationID: 7}}},
 		{CloudDashboard: "http://localhost:3000", CloudGRPC: "localhost:50051", Certificates: []config.CertificateInfo{{OrganizationID: 1}}},
 	}}
 }

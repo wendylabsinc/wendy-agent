@@ -322,7 +322,7 @@ func TestApplyPreProvisioning_Success(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := t.TempDir()
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"fake-key","certPem":"fake-cert","chainPem":"fake-chain"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +405,7 @@ func TestApplyPreProvisioning_IncompleteState(t *testing.T) {
 	configPath := t.TempDir()
 	srcPath := filepath.Join(cfgDir, "provisioning.json")
 	// Missing keyPem — should be rejected.
-	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.sh","certPem":"cert"}`), 0o600); err != nil {
+	if err := os.WriteFile(srcPath, []byte(`{"enrolled":true,"cloudHost":"cloud.wendy.dev","certPem":"cert"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	logger, _ := zap.NewDevelopment()
@@ -423,7 +423,7 @@ func TestApplyPreProvisioning_CreatesConfigDir(t *testing.T) {
 	cfgDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "subdir", "wendy-agent")
 
-	state := `{"enrolled":true,"cloudHost":"cloud.wendy.sh","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
+	state := `{"enrolled":true,"cloudHost":"cloud.wendy.dev","orgId":1,"assetId":42,"keyPem":"k","certPem":"c","chainPem":"ch"}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "provisioning.json"), []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ const avahiServiceTemplate = `<?xml version="1.0" standalone='no'?>
 `
 
 func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
-	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0)
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0, 0)
 
 	if !strings.Contains(out, "<port>50052</port>") {
 		t.Errorf("expected wendyos port updated to 50052:\n%s", out)
@@ -466,8 +466,8 @@ func TestUpdateWendyOSServicePort_Provisioned(t *testing.T) {
 
 func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
 	// Start from a provisioned advertisement and revert it.
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0)
-	out := updateWendyOSServicePort(provisioned, 50051, false, 0)
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 0, 0)
+	out := updateWendyOSServicePort(provisioned, 50051, false, 0, 0)
 
 	if !strings.Contains(out, "<port>50051</port>") {
 		t.Errorf("expected wendyos port reverted to 50051:\n%s", out)
@@ -481,7 +481,7 @@ func TestUpdateWendyOSServicePort_Unprovisioned(t *testing.T) {
 }
 
 func TestUpdateWendyOSServicePort_ProvisionedWithAssetID(t *testing.T) {
-	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	out := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215, 0)
 
 	if !strings.Contains(out, "<txt-record>assetid=215</txt-record>") {
 		t.Errorf("expected assetid=215 TXT record:\n%s", out)
@@ -489,12 +489,12 @@ func TestUpdateWendyOSServicePort_ProvisionedWithAssetID(t *testing.T) {
 }
 
 func TestUpdateWendyOSServicePort_UnprovisioningRemovesAssetID(t *testing.T) {
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215, 0)
 	if !strings.Contains(provisioned, "assetid=215") {
 		t.Fatalf("test setup: expected assetid=215 to be present:\n%s", provisioned)
 	}
 
-	out := updateWendyOSServicePort(provisioned, 50051, false, 0)
+	out := updateWendyOSServicePort(provisioned, 50051, false, 0, 0)
 
 	if strings.Contains(out, "assetid=") {
 		t.Errorf("expected assetid TXT record to be removed on unprovisioning:\n%s", out)
@@ -506,8 +506,8 @@ func TestUpdateWendyOSServicePort_UnprovisioningRemovesAssetID(t *testing.T) {
 }
 
 func TestUpdateWendyOSServicePort_UpdatesExistingAssetID(t *testing.T) {
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
-	out := updateWendyOSServicePort(provisioned, 50052, true, 999)
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215, 0)
+	out := updateWendyOSServicePort(provisioned, 50052, true, 999, 0)
 
 	if !strings.Contains(out, "<txt-record>assetid=999</txt-record>") {
 		t.Errorf("expected assetid updated to 999:\n%s", out)
@@ -525,7 +525,7 @@ func TestUpdateAvahiService_ProvisioningWritesAssetIDTXTRecord(t *testing.T) {
 	}
 
 	logger, _ := zap.NewDevelopment()
-	updateAvahiService(logger, dir, 50052, true, 215)
+	updateAvahiService(logger, dir, 50052, true, 215, 0)
 
 	got, err := os.ReadFile(serviceFile)
 	if err != nil {
@@ -542,13 +542,13 @@ func TestUpdateAvahiService_ProvisioningWritesAssetIDTXTRecord(t *testing.T) {
 func TestUpdateAvahiService_UnprovisioningRemovesAssetID(t *testing.T) {
 	dir := t.TempDir()
 	serviceFile := filepath.Join(dir, "wendyos-mdns.service")
-	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215)
+	provisioned := updateWendyOSServicePort(avahiServiceTemplate, 50052, true, 215, 0)
 	if err := os.WriteFile(serviceFile, []byte(provisioned), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	logger, _ := zap.NewDevelopment()
-	updateAvahiService(logger, dir, 50051, false, 0)
+	updateAvahiService(logger, dir, 50051, false, 0, 0)
 
 	got, err := os.ReadFile(serviceFile)
 	if err != nil {
@@ -603,5 +603,18 @@ func TestApplyClockFloor_NoFile(t *testing.T) {
 	applyClockFloor(logger, t.TempDir(), configPath)
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Error("configPath should not be created when there is no clock_floor to copy")
+	}
+}
+
+func TestUpdateOrgIDTXTRecord(t *testing.T) {
+	block := "  <service>\n    <type>_wendyos._udp</type>\n  </service>"
+	got := updateOrgIDTXTRecord(block, 42)
+	if !strings.Contains(got, "<txt-record>orgid=42</txt-record>") {
+		t.Fatalf("orgid record not inserted: %q", got)
+	}
+	// Idempotent replace, not duplicate.
+	got2 := updateOrgIDTXTRecord(got, 7)
+	if strings.Count(got2, "<txt-record>orgid=") != 1 || !strings.Contains(got2, "orgid=7") {
+		t.Fatalf("orgid record not replaced idempotently: %q", got2)
 	}
 }

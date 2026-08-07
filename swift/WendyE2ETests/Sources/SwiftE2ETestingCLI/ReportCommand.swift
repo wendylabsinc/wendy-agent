@@ -829,22 +829,22 @@ private func percentString(_ percent: Double) -> String {
 }
 
 private func durationColor(seconds: Double) -> String {
-    let white = RGB(red: 255, green: 255, blue: 255)
+    let cream = RGB(red: 241, green: 238, blue: 231)
     let orange = RGB(red: 245, green: 158, blue: 11)
     let deepRed = RGB(red: 153, green: 27, blue: 27)
-    let black = RGB(red: 0, green: 0, blue: 0)
+    let slate = RGB(red: 23, green: 28, blue: 35)
 
     let color: RGB
     if seconds <= 0 {
-        color = white
+        color = cream
     } else if seconds <= 1 {
-        color = interpolateRGB(from: white, to: orange, t: seconds)
+        color = interpolateRGB(from: cream, to: orange, t: seconds)
     } else if seconds <= 10 {
         color = interpolateRGB(from: orange, to: deepRed, t: (seconds - 1) / 9)
     } else if seconds < 30 {
-        color = interpolateRGB(from: deepRed, to: black, t: (seconds - 10) / 20)
+        color = interpolateRGB(from: deepRed, to: slate, t: (seconds - 10) / 20)
     } else {
-        color = black
+        color = slate
     }
 
     return "rgb(\(color.red), \(color.green), \(color.blue))"
@@ -1178,10 +1178,10 @@ private func renderReport(
     )
 
     let replacements: [String: String] = [
-        "{{REPORT_TITLE}}": "Wendy E2E Report",
-        "{{REPORT_HEADING}}": "Wendy E2E Report",
+        "{{REPORT_TITLE}}": "Swift E2E run report",
+        "{{REPORT_HEADING}}": "Swift E2E run report",
         "{{REPORT_SUMMARY}}":
-            "Generated from Swift E2E run results, Swift Testing results, and captured command recordings.",
+            "Test outcomes, review findings, and captured diagnostics from this Swift E2E run.",
         "{{RUN_ID}}": runID(outputURL: outputURL),
         "{{REVIEW_AGGREGATE_LINK}}": renderReviewAggregateLink(runURL: runURL),
         "{{TARGET_OVERVIEW}}": targetOverview,
@@ -1273,69 +1273,70 @@ private func renderReviewAggregateHTML(markdown: String, title: String, runID: S
       <title>\(escapeHTML(title))</title>
       <style>
         :root {
-          color-scheme: light dark;
-          --bg: #f7f8fb;
-          --panel: #ffffff;
-          --text: #18202f;
-          --muted: #687083;
-          --line: #d9dfeb;
-          --soft: #f0f3f9;
-          --accent: #2563eb;
+          color-scheme: light;
+          --background: #F1EEE7;
+          --foreground: #171C23;
+          --card: #F1EEE7;
+          --secondary: #E6E2D8;
+          --muted-foreground: #5B5A56;
+          --border: #DEDEDE;
+          --link: #2A7050;
         }
         @media (prefers-color-scheme: dark) {
           :root {
-            --bg: #0f1117;
-            --panel: #171b24;
-            --text: #edf1fa;
-            --muted: #a7afc0;
-            --line: #303746;
-            --soft: #232936;
-            --accent: #8fa0ff;
+            color-scheme: dark;
+            --background: #171C23;
+            --foreground: #F1EEE7;
+            --card: #1E242D;
+            --secondary: #242B35;
+            --muted-foreground: #C7C2B7;
+            --border: rgba(241, 238, 231, .18);
+            --link: #9FE2BF;
           }
         }
         body {
           margin: 0;
           padding: 32px;
-          background: var(--bg);
-          color: var(--text);
-          font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: var(--background);
+          color: var(--foreground);
+          font: 15px/1.55 "Geist", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
         main {
           max-width: 920px;
           margin: 0 auto;
           padding: 28px;
-          border: 1px solid var(--line);
-          border-radius: 16px;
-          background: var(--panel);
+          border: 1px solid var(--border);
+          background: var(--card);
         }
-        h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.03em; }
-        h2 { margin: 22px 0 10px; font-size: 18px; }
+        h1 { margin: 0 0 8px; font-size: 32px; font-weight: 500; }
+        h2 { margin: 22px 0 10px; font-size: 18px; font-weight: 500; }
         p { margin: 8px 0; }
-        a { color: var(--accent); text-decoration: none; }
-        a:hover { text-decoration: underline; }
+        a { color: var(--link); text-underline-offset: 2px; }
+        :where(a, summary):focus-visible { outline: 3px solid var(--link); outline-offset: 3px; }
         code {
           padding: .12em .34em;
-          border: 1px solid var(--line);
+          border: 1px solid var(--border);
           border-radius: 5px;
-          background: var(--soft);
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          background: var(--secondary);
+          font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
           font-size: .9em;
         }
         ul, ol { padding-left: 22px; }
         details {
           margin: 12px 0;
           padding: 12px 14px;
-          border: 1px solid var(--line);
-          border-radius: 12px;
-          background: color-mix(in srgb, var(--panel), var(--bg) 35%);
+          border: 1px solid var(--border);
+          background: var(--secondary);
         }
         summary {
           cursor: pointer;
-          font-weight: 800;
+          font-weight: 500;
         }
         .run-meta {
           margin: 0 0 22px;
-          color: var(--muted);
+          color: var(--muted-foreground);
+          font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+          font-size: 12px;
         }
       </style>
     </head>

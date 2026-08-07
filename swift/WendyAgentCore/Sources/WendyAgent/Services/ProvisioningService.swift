@@ -128,6 +128,10 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             organizationID: request.organizationID,
             assetID: request.assetID
         )
+        let identityURN = DeviceIdentity.assetURN(
+            organizationID: request.organizationID,
+            assetID: request.assetID
+        )
 
         // Prefer the Secure Enclave when this Mac has one: the key is
         // generated and signs entirely inside the enclave and never exists as
@@ -149,7 +153,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             do {
                 csrPEM = try DeviceIdentity.generateCSRPEM(
                     identity: identity,
-                    commonName: commonName
+                    commonName: commonName,
+                    identityURN: identityURN
                 )
             } catch {
                 throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
@@ -169,7 +174,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             do {
                 csrPEM = try DeviceIdentity.generateCSRPEM(
                     privateKeyPEM: keyPEM,
-                    commonName: commonName
+                    commonName: commonName,
+                    identityURN: identityURN
                 )
             } catch {
                 throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")

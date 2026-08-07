@@ -406,8 +406,28 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 }
 
 func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string) (*cloudpb.Asset, error) {
+	return pickCloudDeviceWithRelogin(ctx, auth, deviceName, brokerURL, true)
+}
+
+// pickCloudDeviceWithRelogin lists the org's cloud devices and lets the user
+// pick one. When the cloud rejects the session as unauthenticated and allowRelogin
+// is set, it offers to log in again (the spinner has already exited, so the
+// terminal is free for the prompt) and retries once with the fresh credentials.
+func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string, allowRelogin bool) (*cloudpb.Asset, error) {
 	if len(auth.Certificates) == 0 {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
+	}
+
+	retryAfterRelogin := func(cause error) (*cloudpb.Asset, error, bool) {
+		if !allowRelogin || !offerReloginOnUnauthenticated(ctx, auth, cause) {
+			return nil, nil, false
+		}
+		fresh := reloadAuthEntry(auth)
+		if fresh == nil {
+			return nil, nil, false
+		}
+		asset, err := pickCloudDeviceWithRelogin(ctx, fresh, deviceName, brokerURL, false)
+		return asset, err, true
 	}
 
 	var assets []*cloudpb.Asset
@@ -426,12 +446,18 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 			return nil, ErrUserCancelled
 		}
 		if fetchErr != nil {
+			if asset, err, handled := retryAfterRelogin(fetchErr); handled {
+				return asset, err
+			}
 			return nil, fetchErr
 		}
 	} else {
 		var err error
 		assets, err = fetchCloudAssets(ctx, auth)
 		if err != nil {
+			if asset, rerr, handled := retryAfterRelogin(err); handled {
+				return asset, rerr
+			}
 			return nil, err
 		}
 	}
@@ -444,6 +470,13 @@ func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, b
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
 		if err != nil || asset != nil {
+			// With no --device, resolveCloudAsset picks the org's only enrolled
+			// device without asking. Say so, rather than leaving the target
+			// implicit. Note this is not the configured default device: the
+			// cloud path does not consult that setting.
+			if err == nil && deviceName == "" {
+				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
+			}
 			return asset, err
 		}
 	}

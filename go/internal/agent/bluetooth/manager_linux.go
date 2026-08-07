@@ -21,6 +21,11 @@ const (
 	deviceIface  = "org.bluez.Device1"
 	// scanDuration is how long discovery runs before results are collected.
 	scanDuration = 8 * time.Second
+	// quickScanDuration is how long to wait before sending an early, partial
+	// batch of results, so a caller has something to show almost immediately
+	// while discovery keeps running for the full scanDuration to find more
+	// devices before the final, more thorough batch.
+	quickScanDuration = 1 * time.Second
 	// resolveDiscoveryTimeout bounds the on-demand discovery Connect runs when
 	// the target device is not in BlueZ's cache (BlueZ evicts unpaired devices
 	// ~30s after a scan stops, so this is the common case when connecting a
@@ -33,6 +38,16 @@ const (
 	// typically appear a few hundred ms into discovery, so a sub-second poll
 	// keeps the added connect latency small.
 	resolvePollInterval = 500 * time.Millisecond
+	// maxConnectAttempts bounds how many times Connect retries the final
+	// device.Connect() call when BlueZ reports a transient failure (see
+	// isTransientBluetoothError). Real hardware (e.g. a JBL Flip 5 that is
+	// already bonded/trusted) has been observed rejecting a connect with
+	// BlueZ's generic "unknown" bearer failure while momentarily busy tearing
+	// down a previous session; a couple of retries clears this without
+	// requiring the caller to re-run the whole command.
+	maxConnectAttempts = 3
+	// connectRetryDelay is the wait between retry attempts.
+	connectRetryDelay = 750 * time.Millisecond
 )
 
 // managedObjects is the result shape of org.freedesktop.DBus.ObjectManager's
@@ -260,7 +275,10 @@ func (m *BlueZManager) connectFailureError(address string, pairErr, connectErr e
 // discovered devices on the channel. It powers on the adapter, runs discovery
 // for scanDuration, then enumerates known devices through the BlueZ
 // ObjectManager so typed properties (RSSI, paired/connected/trusted, icon) are
-// read directly rather than parsed from bluetoothctl text output.
+// read directly rather than parsed from bluetoothctl text output. An early,
+// partial batch is sent after quickScanDuration so callers get data fast,
+// followed by a second, more thorough batch once the full scanDuration
+// elapses.
 func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBluetoothPeripheral, error) {
 	ch := make(chan []*agentpb.DiscoveredBluetoothPeripheral, 10)
 
@@ -301,11 +319,25 @@ func (m *BlueZManager) Scan(ctx context.Context) (<-chan []*agentpb.DiscoveredBl
 			return
 		}
 
-		// Let discovery run, then collect results while it is still active —
-		// some BlueZ versions clear volatile properties (RSSI) once discovery
-		// stops, which would defeat the includePeripheral presence filter.
+		// Send an early, partial batch after a short quick pass so a caller has
+		// something to show fast, while discovery keeps running underneath.
 		select {
-		case <-time.After(scanDuration):
+		case <-time.After(quickScanDuration):
+		case <-ctx.Done():
+		}
+		if quick := m.collectPeripherals(ctx, conn, adapterPath, preexisting); len(quick) > 0 {
+			select {
+			case ch <- quick:
+			case <-ctx.Done():
+			}
+		}
+
+		// Let discovery run the rest of the way, then collect results while it
+		// is still active — some BlueZ versions clear volatile properties
+		// (RSSI) once discovery stops, which would defeat the includePeripheral
+		// presence filter.
+		select {
+		case <-time.After(scanDuration - quickScanDuration):
 		case <-ctx.Done():
 		}
 		peripherals := m.collectPeripherals(ctx, conn, adapterPath, preexisting)
@@ -359,7 +391,10 @@ func deviceFromProps(props map[string]dbus.Variant) *agentpb.DiscoveredBluetooth
 		p.Address = s
 	}
 	// Alias is the user-facing name (falls back to Name when unset by BlueZ).
-	if s, ok := stringProp(props, "Alias"); ok && s != "" {
+	// BlueZ synthesizes a default Alias for devices advertising no real name —
+	// the address with ':' replaced by '-' — which must not count as a name,
+	// or every anonymous device would sort as if it were named.
+	if s, ok := stringProp(props, "Alias"); ok && s != "" && !isDefaultAlias(s, p.Address) {
 		p.Name = s
 	} else if s, ok := stringProp(props, "Name"); ok {
 		p.Name = s
@@ -378,6 +413,16 @@ func deviceFromProps(props map[string]dbus.Variant) *agentpb.DiscoveredBluetooth
 	p.Trusted = boolProp(props, "Trusted")
 
 	return p
+}
+
+// isDefaultAlias reports whether alias is BlueZ's synthesized default for a
+// device advertising no name: the address with ':' replaced by '-' (e.g.
+// "AA:BB:CC:DD:EE:FF" -> "AA-BB-CC-DD-EE-FF").
+func isDefaultAlias(alias, address string) bool {
+	if address == "" {
+		return false
+	}
+	return strings.EqualFold(alias, strings.ReplaceAll(address, ":", "-"))
 }
 
 func stringProp(props map[string]dbus.Variant, key string) (string, bool) {
@@ -478,6 +523,40 @@ func (m *BlueZManager) resolveDevice(ctx context.Context, conn *dbus.Conn, addre
 	}
 }
 
+// retryConnect calls attempt up to maxConnectAttempts times, retrying only
+// when the failure is classified as transient by isTransientBluetoothError
+// (BlueZ's generic "unknown" bearer failure, InProgress, or a bus-level
+// NoReply). Any other failure, or a non-D-Bus error, returns immediately. It
+// waits delay between attempts, returning early if ctx is done first.
+func (m *BlueZManager) retryConnect(ctx context.Context, delay time.Duration, attempt func() error) error {
+	var err error
+	for i := 0; i < maxConnectAttempts; i++ {
+		err = attempt()
+		if err == nil {
+			return nil
+		}
+		name, message, ok := dbusErrorInfo(err)
+		if !ok || !isTransientBluetoothError(name, message) {
+			return err
+		}
+		if i == maxConnectAttempts-1 {
+			break
+		}
+		m.logger.Info("Retrying transient Bluetooth connect failure",
+			zap.String("dbus_error", name), zap.Int("attempt", i+1))
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
 // Connect connects to a Bluetooth peripheral by address via BlueZ over D-Bus,
 // discovering the device first if BlueZ no longer has it cached. When pair is
 // set it registers a headless pairing agent and pairs first (skipped if the
@@ -527,8 +606,11 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		}
 	}
 
-	if call := device.CallWithContext(ctx, deviceIface+".Connect", 0); call.Err != nil {
-		return false, m.connectFailureError(address, pairErr, call.Err)
+	connectErr := m.retryConnect(ctx, connectRetryDelay, func() error {
+		return device.CallWithContext(ctx, deviceIface+".Connect", 0).Err
+	})
+	if connectErr != nil {
+		return false, m.connectFailureError(address, pairErr, connectErr)
 	}
 
 	// The device's live Paired property is the source of truth: pairing may

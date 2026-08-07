@@ -2,7 +2,9 @@ package services
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -22,6 +25,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -31,6 +35,20 @@ type ContainerService struct {
 	containerd ContainerdClient
 	logManager *ContainerLogManager
 	monitor    ContainerMonitorRegistrar
+
+	// imageVerifier checks the container image signature (see RunContainer)
+	// before the image is assembled or the container created. This verifies
+	// against the per-org PUBLISHER key sourced from provisioning/PKI (the
+	// cosign / per-org-registry trust model) — container images are per-org
+	// artifacts, not first-party Wendy artifacts. It MUST NOT default to (or
+	// otherwise use) sigverify.DefaultVerifier, which is the Wendy
+	// build-embedded key reserved for first-party agent-binary / OS
+	// artifact verification (see agent_service.go / agent_update_service.go).
+	// Until the org publisher key is wired in from provisioning, this stays
+	// a disabled placeholder (sigverify.Disabled()); settable within-package
+	// so tests can inject an enabled verifier without changing the exported
+	// constructor signature.
+	imageVerifier *sigverify.Verifier
 
 	// appMu serialises create/stop/delete operations per appID so that
 	// ContainerIDsForApp and the subsequent monitor marks + containerd call are
@@ -57,8 +75,9 @@ func (a *appMutex) lockApp(appName string) func() {
 
 func NewContainerService(logger *zap.Logger, client ContainerdClient, opts ...ContainerServiceOption) *ContainerService {
 	s := &ContainerService{
-		logger:     logger,
-		containerd: client,
+		logger:        logger,
+		containerd:    client,
+		imageVerifier: sigverify.Disabled(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -288,6 +307,26 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		return status.Errorf(codes.InvalidArgument, "invalid app config: %v", err)
 	}
 
+	// Verify the container image signature before assembling or creating the
+	// container. Contract for the cross-repo image signer (must match
+	// exactly): the signature is a detached ML-DSA65 signature over
+	// sha256(image_config) — the SHA256 digest of the raw OCI image config
+	// bytes (req.GetImageConfig()), not the assembled manifest, a layer
+	// digest, or any other derived value. When the verifier is disabled (no
+	// pinned key embedded yet), Verify is a fail-safe no-op and RunContainer
+	// proceeds exactly as before this check existed.
+	imageDigest := sha256.Sum256(req.GetImageConfig())
+	if err := s.imageVerifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
+		switch {
+		case errors.Is(err, sigverify.ErrUnsigned):
+			return status.Error(codes.FailedPrecondition, "container image is unsigned; refusing to run")
+		case errors.Is(err, sigverify.ErrBadSignature):
+			return status.Error(codes.DataLoss, "container image signature verification failed; refusing to run")
+		default:
+			return status.Errorf(codes.Internal, "container image signature verification error: %v", err)
+		}
+	}
+
 	if layers := req.GetLayers(); len(layers) > 0 {
 		for _, l := range layers {
 			if hs := l.GetChunkHashes(); len(hs) > 0 {
@@ -313,9 +352,8 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		}
 	}
 
-	// Note: RunContainerLayersRequest has no Env field; env vars from callers
-	// using this legacy path (wendy run with layer upload) are not forwarded.
-	// Compose deployments use CreateContainerWithProgress which does carry Env.
+	// Same CreateContainer call the registry path makes, so both transports
+	// apply caller env identically and through the same validateUserEnv checks.
 	createReq := &agentpb.CreateContainerRequest{
 		ImageName:     req.GetImageName(),
 		AppName:       req.GetAppName(),
@@ -324,6 +362,7 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 		WorkingDir:    req.GetWorkingDir(),
 		RestartPolicy: req.GetRestartPolicy(),
 		UserArgs:      req.GetUserArgs(),
+		Env:           req.GetEnv(),
 	}
 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {
@@ -361,8 +400,12 @@ func (s *ContainerService) startGroup(
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
+	// See streamContainerOutput: a group start must survive the requesting
+	// client disconnecting, so detach it from the request's cancellation.
+	startCtx := context.WithoutCancel(ctx)
+
 	for _, id := range containerIDs {
-		outputCh, startErr := s.containerd.StartContainer(ctx, id, "", restartPolicy)
+		outputCh, startErr := s.containerd.StartContainer(startCtx, id, "", restartPolicy)
 		if startErr != nil {
 			return status.Errorf(codes.Internal, "failed to start service %q: %v", id, startErr)
 		}
@@ -376,11 +419,11 @@ func (s *ContainerService) startGroup(
 		if s.monitor != nil {
 			s.monitor.ClearExplicitStop(id)
 		}
-		if err := s.containerd.SetStoppedByUser(ctx, id, false); err != nil {
+		if err := s.containerd.SetStoppedByUser(startCtx, id, false); err != nil {
 			s.logger.Warn("failed to clear stopped-by-user mark",
 				zap.String("container_id", id), zap.Error(err))
 		}
-		s.registerContainerWithMonitor(ctx, id, restartPolicy)
+		s.registerContainerWithMonitor(startCtx, id, restartPolicy)
 	}
 
 	return stream.Send(&agentpb.RunContainerLayersResponse{
@@ -532,7 +575,16 @@ func (s *ContainerService) streamContainerOutput(
 	restartPolicy *agentpb.RestartPolicy,
 	stream grpc.ServerStreamingServer[agentpb.RunContainerLayersResponse],
 ) error {
-	outputCh, err := s.containerd.StartContainer(ctx, appName, postStartAgentCommand, restartPolicy)
+	// Starting a container must not be abortable by the client that requested
+	// it. A detached `apps start` returns the instant the stream is opened and
+	// closes the connection, which cancels this RPC's context; if the start
+	// were bound to it, the agent aborts mid-load ("loading container: context
+	// canceled") and the container never runs. Detach the start (and the
+	// post-start bookkeeping that records it succeeded) from the request's
+	// cancellation while keeping its values; the output stream below still
+	// honors the request ctx and ends on disconnect.
+	startCtx := context.WithoutCancel(ctx)
+	outputCh, err := s.containerd.StartContainer(startCtx, appName, postStartAgentCommand, restartPolicy)
 	if err != nil {
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
 	}
@@ -553,12 +605,12 @@ func (s *ContainerService) streamContainerOutput(
 	// Clear the persisted stop mark too, so a user-initiated start re-enables
 	// boot reconcile for this app. Best-effort. (Only user starts reach this
 	// path; the boot reconcile starts via the monitor and never clears it.)
-	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
 		s.logger.Warn("failed to clear stopped-by-user mark",
 			zap.String("app_name", appName), zap.Error(err))
 	}
 
-	s.registerContainerWithMonitor(ctx, appName, restartPolicy)
+	s.registerContainerWithMonitor(startCtx, appName, restartPolicy)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -618,6 +670,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 
 	ctx := stream.Context()
 	postStartAgentCommand := postStartAgentHookFromContext(ctx)
+	// See streamContainerOutput: detach the start (and its post-start
+	// bookkeeping) from the request's cancellation so a client disconnect
+	// during startup cannot abort it. The stdin pump and output stream below
+	// still honor the request ctx.
+	startCtx := context.WithoutCancel(ctx)
 
 	stdinR, stdinW := io.Pipe()
 	defer stdinR.Close()
@@ -637,7 +694,7 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 		}
 	}()
 
-	outputCh, err := s.containerd.StartContainerWithStdin(ctx, appName, stdinR, postStartAgentCommand, nil)
+	outputCh, err := s.containerd.StartContainerWithStdin(startCtx, appName, stdinR, postStartAgentCommand, nil)
 	if err != nil {
 		stdinR.Close()
 		return status.Errorf(codes.Internal, "failed to start container: %v", err)
@@ -653,11 +710,11 @@ func (s *ContainerService) AttachContainer(stream grpc.BidiStreamingServer[agent
 	if s.monitor != nil {
 		s.monitor.ClearExplicitStop(appName)
 	}
-	if err := s.containerd.SetStoppedByUser(ctx, appName, false); err != nil {
+	if err := s.containerd.SetStoppedByUser(startCtx, appName, false); err != nil {
 		s.logger.Warn("failed to clear stopped-by-user mark",
 			zap.String("app_name", appName), zap.Error(err))
 	}
-	s.registerContainerWithMonitor(ctx, appName, nil)
+	s.registerContainerWithMonitor(startCtx, appName, nil)
 
 	if err := stream.Send(&agentpb.RunContainerLayersResponse{
 		ResponseType: &agentpb.RunContainerLayersResponse_Started_{
@@ -851,16 +908,14 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
-	// Resolve every container ID that belongs to this app (one for
-	// single-container apps, one per service for multi-service apps) so the
-	// monitor can mark each before any stop is issued. Marking only the bare
-	// appName would miss {appID}_{serviceName} entries registered by the monitor.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	// Shared with the stop below, so monitor marks and stopped-by-user labels
+	// are only ever written against containers that were actually stopped.
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Mark BEFORE stop so the monitor cannot observe the exit and restart in
@@ -908,19 +963,20 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	// each one. Unregistering only the bare appName would leave
 	// {appID}_{serviceName} monitor entries alive and potentially trigger
 	// spurious restart attempts while the container is being removed.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Unregister from the monitor BEFORE deletion to close the window where the
 	// monitor could attempt a restart while containers are being removed.
 	if s.monitor != nil {
 		for _, id := range ids {
-			s.monitor.MarkExplicitStop(id)
+			// Unregister alone closes the restart window: the monitor only
+			// restarts containers it still has state for.
 			s.monitor.Unregister(id)
 		}
 	}

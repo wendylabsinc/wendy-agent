@@ -59,23 +59,61 @@ detect_arch() {
   esac
 }
 
-# --- Resolve latest release tag ---
+# >>> wendy-install-shared
+# Shared installer helpers. This block MUST be byte-identical in cli.sh and
+# agent.sh (enforced by .github/scripts/install-scripts_test.sh). It resolves
+# the latest version from the GCS-hosted manifest first, so the mainstream
+# install paths never call the rate-limited GitHub API.
+MANIFEST_URL="https://install.wendy.dev/manifest.json"
+
+# Fetch a raw URL to stdout using curl or wget.
+fetch_stdout() {
+  local url="$1"
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$url"
+  elif command -v wget &>/dev/null; then
+    wget -qO- "$url"
+  else
+    return 1
+  fi
+}
+
+# Print the manifest's stable "latest" version, or nothing on any failure.
+# Matches the "latest" key only (not "latest_nightly").
+manifest_latest() {
+  fetch_stdout "$MANIFEST_URL" 2>/dev/null \
+    | grep -oE '"latest"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# Print the newest GitHub release tag, or nothing on failure.
+github_latest() {
+  fetch_stdout "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
+}
+
+# Resolve the version to install: explicit override, else GCS manifest, else GitHub.
 resolve_version() {
   if [[ -n "${WENDY_VERSION:-}" ]]; then
     echo "$WENDY_VERSION"
     return
   fi
-
-  if command -v curl &>/dev/null; then
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  elif command -v wget &>/dev/null; then
-    wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" \
-      | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'
-  else
-    echo "Error: curl or wget is required" >&2
-    exit 1
+  # `|| true` keeps a failed fetch (e.g. missing manifest) from tripping the
+  # script's `set -e` inside the command substitution, so we can fall through.
+  local v
+  v="$(manifest_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
   fi
+  v="$(github_latest || true)"
+  if [[ -n "$v" ]]; then
+    echo "$v"
+    return
+  fi
+  echo "Error: could not resolve the latest version from GCS or GitHub." >&2
+  return 1
 }
 
 # --- Download helper ---
@@ -87,6 +125,7 @@ download() {
     wget -qO "$dest" "$url"
   fi
 }
+# <<< wendy-install-shared
 
 # --- Homebrew helper ---
 homebrew_supports_trust() {
@@ -152,23 +191,25 @@ if [[ "$ARCH" == "unsupported" ]]; then
   exit 1
 fi
 
-TAG=$(resolve_version)
-if [[ -z "$TAG" ]]; then
-  echo "Error: Could not determine latest version."
-  exit 1
-fi
-
-# Strip leading 'v' for the version used in artifact filenames.
-VERSION="${TAG#v}"
-
 # --- Determine sudo prefix for Linux (macOS uses sudo selectively, Windows doesn't need it) ---
 SUDO=""
 if [[ "$OS" == "linux" && "$(id -u)" -ne 0 ]]; then
   SUDO="sudo"
 fi
 
+# resolve_and_set_version populates TAG and VERSION for the binary-download
+# fallback paths only. The Homebrew and apt/dnf/yum/pacman paths install from
+# package sources and never need a version, so they never call this.
+resolve_and_set_version() {
+  TAG=$(resolve_version) || exit 1
+  if [[ -z "$TAG" ]]; then
+    echo "Error: Could not determine latest version."
+    exit 1
+  fi
+  VERSION="${TAG#v}"
+}
+
 echo "Detected: OS=${OS} Arch=${ARCH}"
-echo "Version:  ${TAG}"
 echo ""
 
 # ===== macOS =====
@@ -197,6 +238,7 @@ if [[ "$OS" == "darwin" ]]; then
     trust_homebrew_formula "$HOMEBREW_FORMULA"
     brew install "$HOMEBREW_FORMULA"
   else
+    resolve_and_set_version
     ARTIFACT="wendy-cli-darwin-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
     echo "Will download ${ARTIFACT}"
@@ -300,6 +342,7 @@ REPO
     TMPDIR_DL=$(mktemp -d)
     trap 'rm -rf "$TMPDIR_DL"' EXIT
 
+    resolve_and_set_version
     ARTIFACT="wendy-cli-linux-${ARCH}-${VERSION}.tar.gz"
     URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
     echo "Will download ${ARTIFACT}"
@@ -314,6 +357,7 @@ REPO
 
 # ===== Windows (Git Bash / MSYS2) =====
 elif [[ "$OS" == "windows" ]]; then
+  resolve_and_set_version
   ARTIFACT="wendy-cli-windows-${ARCH}-${VERSION}.zip"
   URL="https://github.com/${REPO}/releases/download/${TAG}/${ARTIFACT}"
   INSTALL_DIR="${INSTALL_DIR:-$HOME/bin}"

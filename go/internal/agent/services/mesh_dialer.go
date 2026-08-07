@@ -299,7 +299,7 @@ func (d *MeshDialer) meshDialLAN(ctx context.Context, hostport string, deviceID 
 // opening the tunnel; once established the stream survives past ctx.
 func (d *MeshDialer) meshDialBroker(ctx context.Context, deviceID int32, port uint16) (net.Conn, error) {
 	ident := d.identity()
-	opts, md, err := brokerDialOpts(d.logger, ident.orgID, ident.assetID, ident.chainPEM)
+	opts, md, err := brokerDialOpts(d.logger, ident.orgID, ident.assetID, ident.certPEM, ident.keyPEM, ident.chainPEM)
 	if err != nil {
 		return nil, err
 	}

@@ -88,6 +88,20 @@ func TestDeviceInfo_ReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestDeviceInfo_HasStructuredContent(t *testing.T) {
+	fake := &fakeAgentServer{versionResp: &agentpb.GetAgentVersionResponse{Version: "9.9.9", Os: "linux"}}
+	conn, _ := startFakeAgentServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+	result, err := srv.callTool(context.Background(), "device_info", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.StructuredContent == nil {
+		t.Fatal("device_info should return structuredContent")
+	}
+}
+
 func TestDeviceList_ReturnsConfiguredDevices(t *testing.T) {
 	cfg := &config.Config{
 		Auth: []config.AuthConfig{
@@ -102,11 +116,7 @@ func TestDeviceList_ReturnsConfiguredDevices(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) == 0 {
 		t.Fatal("expected at least one device")
 	}
@@ -126,10 +136,7 @@ func TestDeviceList_SourceFieldOnConfigEntries(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(toolResultText(t, result)), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	for _, d := range devices {
 		if d["source"] != "config" {
 			t.Errorf("expected source=config, got %v (device: %v)", d["source"], d)
@@ -153,10 +160,7 @@ func TestDeviceList_ScanTrue_IncludesScanResults(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result")
 	}
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(toolResultText(t, result)), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(devices))
 	}
@@ -165,6 +169,26 @@ func TestDeviceList_ScanTrue_IncludesScanResults(t *testing.T) {
 	}
 	if devices[0]["type"] != "lan" {
 		t.Errorf("expected type=lan, got %v", devices[0]["type"])
+	}
+}
+
+func TestDeviceList_MaxBytesTruncates(t *testing.T) {
+	auth := make([]config.AuthConfig, 0, 50)
+	for i := 0; i < 50; i++ {
+		auth = append(auth, config.AuthConfig{CloudGRPC: "some-long-device-hostname-for-padding.local:50051"})
+	}
+	srv := New(&config.Config{Auth: auth}, nil)
+
+	result, err := srv.callTool(context.Background(), "device_list", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
 	}
 }
 

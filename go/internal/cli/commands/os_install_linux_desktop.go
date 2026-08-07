@@ -22,7 +22,14 @@ import (
 
 const (
 	linuxDesktopValue    = "linux-desktop"
+	headlessMacValue     = "headless-mac"
 	linuxDesktopAgentURL = "https://install.wendy.dev/agent.sh"
+
+	// Machine labels woven into the install instructions. The agent.sh command
+	// is identical for both — it auto-detects the platform (uname -s) and does
+	// the right thing — so only the surrounding prose differs.
+	linuxDesktopMachineLabel = "Linux machine"
+	headlessMacMachineLabel  = "Mac"
 )
 
 // linuxDesktopCmdStyle renders the copyable install command in bold sky (the
@@ -32,19 +39,22 @@ const (
 var linuxDesktopCmdStyle = lipgloss.NewStyle().Foreground(tui.Sky500).Bold(true)
 
 // renderLinuxDesktopInstructions returns the text printed when the user picks
-// "Linux Desktop". With an empty token it prints the plain (unenrolled) docs
-// command; with a token it prints the pre-enrollment one-liner.
-func renderLinuxDesktopInstructions(token, cloudHost, orgName string, expiresAt time.Time) string {
+// "Linux Desktop" or "Headless Mac". machineLabel names the target machine in
+// the prose (e.g. "Linux machine" or "Mac"); the agent.sh command itself is
+// identical, since the script auto-detects the platform. With an empty token
+// it prints the plain (unenrolled) docs command; with a token it prints the
+// pre-enrollment one-liner.
+func renderLinuxDesktopInstructions(token, cloudHost, orgName, machineLabel string, expiresAt time.Time) string {
 	var b strings.Builder
 	if token == "" {
-		fmt.Fprintf(&b, "%s\n\n", tui.Header("Install wendy-agent on your Linux machine:"))
+		fmt.Fprintf(&b, "%s\n\n", tui.Header("Install wendy-agent on your "+machineLabel+":"))
 		fmt.Fprintf(&b, "  %s\n\n", linuxDesktopCmdStyle.Render(linuxDesktopCommand("", "")))
 		fmt.Fprintf(&b, "The device is discovered over your local network — run %s.\n", tui.Command("wendy discover"))
 		fmt.Fprintf(&b, "To enroll it into an org later, run %s\n", tui.Command("wendy device enroll"))
 		fmt.Fprintf(&b, "%s\n", tui.Dim("(or re-run `wendy install` while logged in for a pre-enrollment token)."))
 		return b.String()
 	}
-	fmt.Fprintf(&b, "Install wendy-agent on your Linux machine; it will enroll into %s automatically.\n\n", tui.Device(orgName))
+	fmt.Fprintf(&b, "Install wendy-agent on your %s; it will enroll into %s automatically.\n\n", machineLabel, tui.Device(orgName))
 	fmt.Fprintf(&b, "  %s\n\n", linuxDesktopCmdStyle.Render(linuxDesktopCommand(token, cloudHost)))
 	fmt.Fprintf(&b, "This enrollment token expires at %s (about 1 hour). Run the command before then.\n", tui.Value(expiresAt.Format(time.RFC1123)))
 	fmt.Fprintf(&b, "After it boots, run %s to find the device.\n", tui.Command("wendy discover"))
@@ -86,11 +96,14 @@ var linuxDesktopTokenFn = createLinuxDesktopToken
 // without reading ~/.wendy/config.json from disk.
 var linuxDesktopConfigLoad = config.Load
 
-// installLinuxDesktop prints agent.sh install instructions for turning an
-// existing Linux machine into a managed Wendy device. When the user is logged
-// in and does not decline, it mints a short-lived enrollment token and prints
-// the pre-enrollment one-liner. It never writes a drive or downloads an image.
-func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName string) error {
+// installDesktop prints agent.sh install instructions for turning an
+// existing Linux machine or Mac into a managed Wendy device. machineLabel
+// names the target in the printed prose ("Linux machine" or "Mac"); the
+// agent.sh command is identical for both because the script auto-detects the
+// platform. When the user is logged in and does not decline, it mints a
+// short-lived enrollment token and prints the pre-enrollment one-liner. It
+// never writes a drive or downloads an image.
+func installDesktop(ctx context.Context, preOpts preEnrollOptions, deviceName, machineLabel string) error {
 	interactive := isInteractiveTerminal()
 
 	cfg, err := linuxDesktopConfigLoad()
@@ -155,7 +168,7 @@ func installLinuxDesktop(ctx context.Context, preOpts preEnrollOptions, deviceNa
 		}
 	}
 
-	fmt.Fprint(os.Stdout, renderLinuxDesktopInstructions(token, cloudHost, orgName, expiresAt))
+	fmt.Fprint(os.Stdout, renderLinuxDesktopInstructions(token, cloudHost, orgName, machineLabel, expiresAt))
 	copyLinuxDesktopCommand(token, cloudHost, interactive)
 	return nil
 }

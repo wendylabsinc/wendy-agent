@@ -27,6 +27,7 @@ The recommended path uses Homebrew:
 
 ```bash
 brew tap wendylabsinc/tap
+brew trust wendylabsinc/tap
 brew install --cask wendy-agent
 ```
 
@@ -35,6 +36,16 @@ For the nightly build:
 ```bash
 brew install --cask wendy-agent-nightly
 ```
+
+<Callout type="info">
+  `wendylabsinc/tap` is a third-party tap. Recent Homebrew versions ask you to
+  trust non-official taps before they will load a formula or cask — required
+  when `HOMEBREW_REQUIRE_TAP_TRUST` is set, and harmless otherwise. If you skip
+  the `brew trust` step and the install is blocked, run
+  `brew trust wendylabsinc/tap` (or `brew trust --cask wendylabsinc/tap/wendy-agent`)
+  and retry. `brew trust` is only available on newer Homebrew; on older versions
+  it is not needed and you can omit it.
+</Callout>
 
 Without Homebrew, download the `wendy-agent-macos-arm64` zip from the [Wendy releases page](https://github.com/wendylabsinc/wendy-agent/releases), unzip it, and move `WendyAgentMac.app` to `/Applications`:
 

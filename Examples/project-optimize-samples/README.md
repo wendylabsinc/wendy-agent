@@ -18,5 +18,6 @@ wendy project optimize --agentic  # emit the context bundle for an AI agent
 | `rust-debug-no-cache/` | arch-image (amd64-on-arm64 **error**), build-cache (cargo), release-debug (cargo debug build), arch-image (no `.dockerignore`, single-stage) |
 | `python-cuda-mismatch/` | cuda-ml (x86 `nvidia/cuda` base on arm64; CPU torch wheel with `gpu` entitlement), build-cache (pip), arch-image (no `.dockerignore`) |
 | `swift-debug-wendy-debug/` | release-debug (`swift build` missing `-c release`; `WENDY_DEBUG` declared but unused), build-cache (swift), arch-image (no `.dockerignore`, single-stage) |
+| `dockerfile-hygiene/` | apt-install (update/install split, missing `--no-install-recommends`), pip-flags (missing `--no-cache-dir`), node-ci (`npm install` despite a lockfile), add-copy (`ADD` for a plain local file), image-hygiene (`FROM :latest`, broad `COPY --from`, shell-form `CMD`), build-cache (pip, npm), arch-image (no `.dockerignore`) |
 
 Each `EXPECTED.txt` lists the findings that sample is designed to produce.

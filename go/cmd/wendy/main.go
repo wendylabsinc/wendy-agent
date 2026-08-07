@@ -22,17 +22,27 @@ import (
 func main() {
 	start := time.Now()
 	cmd := commands.NewRootCmd()
-	executed, err := cmd.ExecuteC()
+
+	// Reject an unknown subcommand before cobra can quietly answer it with the
+	// parent group's help page and a zero exit code. See UnknownSubcommandError.
+	var executed *cobra.Command
+	err := commands.UnknownSubcommandError(os.Args[1:])
+	if err == nil {
+		executed, err = cmd.ExecuteC()
+	}
 	trackCommand(executed, err, time.Since(start))
 	analytics.Close()
 
-	if err != nil {
-		if errors.Is(err, commands.ErrUserCancelled) || errors.Is(err, commands.ErrDefaultCleared) {
-			os.Exit(0)
-		}
+	exitCode := 0
+	if err != nil && !errors.Is(err, commands.ErrUserCancelled) && !errors.Is(err, commands.ErrDefaultCleared) {
 		fmt.Fprintln(os.Stderr, tui.ErrorMessage(formatError(err).Error()))
-		os.Exit(1)
+		exitCode = 1
 	}
+	// Windows: when this process owns its console window (UAC-relaunched or
+	// double-clicked), exiting would close the window and destroy the output
+	// above — hold it open until the user has read it.
+	commands.PauseBeforeExitIfSoleConsole()
+	os.Exit(exitCode)
 }
 
 // trackCommand emits a single analytics event describing the invocation.

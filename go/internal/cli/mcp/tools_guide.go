@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"path"
@@ -39,8 +40,10 @@ Cloud-enrolled devices:
 - telemetry_logs / telemetry_metrics / telemetry_traces
 - hardware_capabilities
 - os_update
-- filesync_sync
 - provisioning_start / provisioning_status
+
+Host↔device file sync happens automatically as part of ` + "`wendy run`" + `'s
+fast redeploy path — there is no standalone file-sync CLI command or MCP tool.
 
 ## Deploying a workload
 
@@ -50,6 +53,27 @@ Use the run tool to build and deploy a local project to a cloud-enrolled device:
 ## Disconnecting
 
 device_disconnect — closes the active connection and frees resources.
+
+## Entitlements
+
+Apps declare the device capabilities they need (gpu, network, persistence,
+camera, bluetooth, etc.) in their project's wendy.json. The device only
+grants what's declared there — if a container needs a capability that isn't
+entitled, the operation fails (or the container exits) with error_code
+ENTITLEMENT_DENIED, and container_list surfaces it in termination_reason for
+stopped containers.
+
+## Result shape & error codes
+
+Tools that return data include a machine-readable structuredContent object
+alongside human-readable text. List-shaped tools nest their rows under a
+single key — devices (device_list, cloud_discover, bluetooth_scan),
+containers, stats, capabilities, networks (wifi_list, wifi_known_networks),
+batches (telemetry_*) — never as a bare array. Errors include an error_code you can branch
+on — e.g. NOT_CONNECTED, DEVICE_UNREACHABLE, ENTITLEMENT_DENIED,
+INVALID_ARGUMENT, NOT_FOUND, MULTIPLE_SESSIONS, UNSUPPORTED, TIMEOUT,
+INTERNAL. Tool annotations mark read-only vs destructive vs mutating
+operations and whether a tool reaches beyond the connected device (open-world).
 
 ## Documentation
 
@@ -71,6 +95,28 @@ func (s *mcpServer) registerGuideResource(srv *server.MCPServer) {
 func (s *mcpServer) handleGuideResource(_ context.Context, _ mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
 	return []mcpgo.ResourceContents{
 		mcpgo.TextResourceContents{URI: "wendy://guide", MIMEType: "text/plain", Text: guideText},
+	}, nil
+}
+
+// registerDiagnosticsResource registers wendy://diagnostics, which reports
+// container-MCP proxy failures that would otherwise only appear on stderr.
+func (s *mcpServer) registerDiagnosticsResource(srv *server.MCPServer) {
+	srv.AddResource(
+		mcpgo.NewResource("wendy://diagnostics", "Wendy MCP Diagnostics",
+			mcpgo.WithResourceDescription("Container-MCP proxy failures recorded during this session (app name, stage, error, time), as JSON."),
+			mcpgo.WithMIMEType("application/json"),
+		),
+		s.handleDiagnosticsResource,
+	)
+}
+
+func (s *mcpServer) handleDiagnosticsResource(_ context.Context, _ mcpgo.ReadResourceRequest) ([]mcpgo.ResourceContents, error) {
+	data, err := json.Marshal(s.proxyDiagnostics())
+	if err != nil {
+		return nil, err
+	}
+	return []mcpgo.ResourceContents{
+		mcpgo.TextResourceContents{URI: "wendy://diagnostics", MIMEType: "application/json", Text: string(data)},
 	}, nil
 }
 

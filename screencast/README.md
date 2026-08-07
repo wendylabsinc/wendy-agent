@@ -58,6 +58,34 @@ with an explicit advisory-URL allowlist for currently known low/moderate Slidev
 editor advisories, dependency sanity checks, and script validation for changes
 under `screencast/`.
 
+## Wendy brand
+
+The renderer applies Wendy's default light presentation theme to every
+`slide.md` automatically. Slides use cream paper, slate ink, Geist for headlines
+and body copy, Geist Mono for code, and the official slate wordmark. Terminal
+recordings use the complementary dark slate treatment. The font packages and
+logo files are kept local so rendering does not depend on a network connection.
+
+Follow the canonical guidance at <https://wendy.dev/brand>:
+
+- Write headings and body copy in sentence case. Use uppercase only for short
+  mono labels.
+- Keep slide backgrounds cream (`#F1EEE7`), quiet code surfaces sand
+  (`#E6E2D8`), and primary text slate (`#171C23`). Dark terminal footage uses
+  slate rather than pure black.
+- Use seafoam ink (`#2A7050`) for links on light slides. Reserve seafoam fill
+  (`#9FE2BF`) for key calls to action; it is not a decorative highlight color.
+- Use slate marks on light slides and cream marks on dark terminal surfaces. Do
+  not recolor, stretch, rotate, or add effects to the marks under
+  `support/`.
+- Use Geist Mono for terminal recordings when it is installed. The fallback
+  remains the platform monospace so tapes still render on a clean machine.
+
+The global style lives in `style.css`. Keep scene Markdown focused on content;
+do not repeat brand CSS in individual slides. Preserve dark terminals and
+captured application footage as authored rather than forcing the light slide
+palette onto them.
+
 `render-slide` uses Slidev under the hood to render one `slide.md` at a time.
 There is no aggregate deck and no timeline file.
 
@@ -160,7 +188,7 @@ output/screencast.mp4
 ```
 
 Agents should prefer passing an explicit output path named as a dasherized slug
-of the title in `script.md`; for example `# Wendy File Sync` should use:
+of the title in `script.md`; for example `# Wendy file sync` should use:
 
 ```sh
 scripts/stitch scenes/* --output output/wendy-file-sync.mp4
@@ -180,7 +208,7 @@ narration and `### Show (<role>)` for visual direction. Common show roles are
 `slide`, `terminal`, `UI`, `screen recording`, `code`, and `diagram`.
 
 ````md
-# Feature Name
+# Feature name
 
 Audience: Edge app developers.
 Goal: Explain the feature and the workflow it enables.
@@ -200,7 +228,7 @@ A simple diagram or slide idea goes here.
 
 ---
 
-## 02 Developer Flow
+## 02 Developer flow
 
 ### Say
 
@@ -230,16 +258,26 @@ Override with environment variables:
 SCREENCAST_WIDTH=1440 SCREENCAST_HEIGHT=900 SCREENCAST_FPS=10 scripts/stitch scenes/* --output output/feature-name.mp4
 ```
 
-For VHS clips, use:
+For VHS clips, use the same dark brand treatment. VHS resolves fonts installed
+on the host, so install Geist Mono from the link in the brand guide for exact
+typography; otherwise the declared stack falls back to monospace.
 
 ```tape
 Set Shell zsh
 Set Width 1440
 Set Height 900
 Set FontSize 20
-Set FontFamily "JetBrains Mono, JetBrainsMono, JetBrainsMono Nerd Font, JetBrainsMono Nerd Font Mono, monospace"
+Set FontFamily "Geist Mono, monospace"
+Set Theme { "name": "Wendy Dark", "black": "#171C23", "red": "#F1EEE7", "green": "#9FE2BF", "yellow": "#E6E2D8", "blue": "#CBCBCB", "magenta": "#DEDEDE", "cyan": "#86D3A8", "white": "#F1EEE7", "brightBlack": "#5B5A56", "brightRed": "#F1EEE7", "brightGreen": "#9FE2BF", "brightYellow": "#E6E2D8", "brightBlue": "#CBCBCB", "brightMagenta": "#DEDEDE", "brightCyan": "#9FE2BF", "brightWhite": "#F1EEE7", "background": "#171C23", "foreground": "#F1EEE7", "selection": "#242B35", "cursor": "#9FE2BF" }
 Set Framerate 10
 Set CursorBlink false
+
+Hide
+Type "export PS1='$ '"
+Enter
+Type "clear"
+Enter
+Show
 ```
 
 ## Visual source priority
@@ -329,7 +367,7 @@ folder and append `.mp4` to the source name:
 
 ```sh
 ffmpeg -i /path/to/screen-recording.mov \
-  -vf 'scale=1440:900:force_original_aspect_ratio=decrease,pad=1440:900:(ow-iw)/2:(oh-ih)/2:color=black,fps=10,format=yuv420p' \
+  -vf 'scale=1440:900:force_original_aspect_ratio=decrease,pad=1440:900:(ow-iw)/2:(oh-ih)/2:color=0x171C23,fps=10,format=yuv420p' \
   -an scenes/04-ui/screen-recording.mov.mp4
 ```
 

@@ -18,15 +18,18 @@ import (
 	"strings"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 )
 
-// USB identifiers for Jetsons, mirrored from package rcm (which is not built on
-// Windows). Recovery mode is 0955:7023 (Orin) / 7026 (Thor); the initrd-flash
-// ADB gadget re-enumerates as 0955:7100.
+// USB identifiers for Jetsons. The chip-family PID sets (each T234 module SKU
+// has its own recovery PID) live in package rcm, whose identity types compile
+// on every OS. Recovery mode is 0955:70xx; the initrd-flash ADB gadget
+// re-enumerates as 0955:7100.
 const (
 	VendorNVIDIA  = 0x0955
-	ProductOrin   = 0x7023
-	ProductThor   = 0x7026
+	ProductOrin   = rcm.ProductOrinAGX32
+	ProductThor   = rcm.ProductThor
 	ProductGadget = 0x7100
 )
 
@@ -59,23 +62,48 @@ type Device struct {
 }
 
 // IsRecovery reports whether the device is a Jetson in RCM recovery mode.
-func (d Device) IsRecovery() bool { return d.PID == ProductOrin || d.PID == ProductThor }
+func (d Device) IsRecovery() bool { return d.IsT234() || d.IsThor() }
 
 // IsThor reports whether the device is a T264 (AGX Thor) in recovery mode.
 func (d Device) IsThor() bool { return d.PID == ProductThor }
 
+// IsT234 reports whether the device is a T234 (Orin family) module in
+// recovery mode — any of the per-SKU recovery PIDs.
+func (d Device) IsT234() bool { return rcm.IsT234RecoveryPID(d.PID) }
+
+// IsOrinAGX reports whether the device is an AGX Orin module in recovery mode.
+func (d Device) IsOrinAGX() bool {
+	return d.PID == rcm.ProductOrinAGX32 || d.PID == rcm.ProductOrinAGX64
+}
+
+// IsOrinNano reports whether the device is an Orin Nano module in recovery mode.
+func (d Device) IsOrinNano() bool {
+	return d.PID == rcm.ProductOrinNano8 || d.PID == rcm.ProductOrinNano4
+}
+
 // IsGadget reports whether the device is the initrd-flash ADB flashing gadget.
 func (d Device) IsGadget() bool { return d.PID == ProductGadget }
+
+// RecoveryDevice converts d to the platform-neutral rcm identity used by the
+// shared install flow: the location path becomes the PathKey, the USB serial
+// (the bootROM reports the chip ECID there) becomes the ECID, and the PnP
+// instance ID rides along as the exact devnode handle for the stage-1 open.
+func (d Device) RecoveryDevice() rcm.RecoveryDevice {
+	return rcm.RecoveryDevice{PathKey: d.LocationPath, Product: d.PID, ECID: d.Serial, Instance: d.InstanceID}
+}
 
 // Describe returns a one-line human label for pickers and logs.
 func (d Device) Describe() string {
 	var kind string
-	switch d.PID {
-	case ProductThor:
+	switch {
+	case d.PID == ProductThor:
 		kind = "AGX Thor (T264) recovery"
-	case ProductOrin:
+	case d.IsT234():
 		kind = "Orin (T234) recovery"
-	case ProductGadget:
+		if name, ok := rcm.T234ModuleName(d.PID); ok {
+			kind = name + " (T234) recovery"
+		}
+	case d.PID == ProductGadget:
 		kind = "initrd-flash gadget"
 	default:
 		kind = fmt.Sprintf("NVIDIA 0955:%04x", d.PID)
@@ -125,7 +153,7 @@ func ListDevices() ([]Device, error) {
 		if err != nil {
 			continue
 		}
-		vid, pid, ok := parseVIDPID(instanceID)
+		vid, pid, ok := ParseVIDPID(instanceID)
 		if !ok || vid != VendorNVIDIA {
 			continue
 		}
@@ -134,7 +162,7 @@ func ListDevices() ([]Device, error) {
 			InstanceID: instanceID,
 			VID:        vid,
 			PID:        pid,
-			Serial:     instanceSerial(instanceID),
+			Serial:     InstanceSerial(instanceID),
 			devInst:    info.DevInst,
 		}
 
@@ -149,7 +177,7 @@ func ListDevices() ([]Device, error) {
 		// Best-effort: a missing path just yields an empty PathKey. This is stable
 		// across the RCM→gadget re-enumeration at the same physical port.
 		if v, err := set.DeviceRegistryProperty(info, windows.SPDRP_LOCATION_PATHS); err == nil {
-			d.LocationPath = firstString(v)
+			d.LocationPath = FirstString(v)
 		}
 
 		out = append(out, d)
@@ -157,9 +185,10 @@ func ListDevices() ([]Device, error) {
 	return out, nil
 }
 
-// parseVIDPID extracts VID and PID from a hardware/instance ID containing
-// "VID_XXXX&PID_YYYY" (case-insensitive hex).
-func parseVIDPID(id string) (vid, pid uint16, ok bool) {
+// ParseVIDPID extracts VID and PID from a hardware/instance ID containing
+// "VID_XXXX&PID_YYYY" (case-insensitive hex). Exported for package t234's
+// gadget-disk discovery, so both packages parse PnP IDs identically.
+func ParseVIDPID(id string) (vid, pid uint16, ok bool) {
 	up := strings.ToUpper(id)
 	v, okv := hexField(up, "VID_")
 	p, okp := hexField(up, "PID_")
@@ -182,11 +211,13 @@ func hexField(s, prefix string) (uint16, bool) {
 	return uint16(n), true
 }
 
-// instanceSerial returns the trailing instance element (after the last backslash),
+// InstanceSerial returns the trailing instance element (after the last backslash),
 // which is the device serial for devices that report one. A device with no USB
 // serial gets a Windows-generated id prefixed with "&" — we return it as-is; the
-// caller uses LocationPath for stable identity, not this.
-func instanceSerial(instanceID string) string {
+// caller uses LocationPath for stable identity, not this. Exported for package
+// t234, whose ReleaseUSB must extract the serial exactly the way it was
+// reported here.
+func InstanceSerial(instanceID string) string {
 	i := strings.LastIndex(instanceID, `\`)
 	if i < 0 || i+1 >= len(instanceID) {
 		return ""
@@ -194,9 +225,11 @@ func instanceSerial(instanceID string) string {
 	return instanceID[i+1:]
 }
 
-// firstString normalizes the interface{} returned by DeviceProperty for a
+// FirstString normalizes the interface{} returned by DeviceProperty for a
 // REG_MULTI_SZ (string slice) or REG_SZ (string) property to its first string.
-func firstString(v interface{}) string {
+// Exported for package t234; location paths compared across the two packages
+// must be normalized the same way.
+func FirstString(v interface{}) string {
 	switch t := v.(type) {
 	case []string:
 		if len(t) > 0 {

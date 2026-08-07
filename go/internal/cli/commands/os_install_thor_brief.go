@@ -85,12 +85,15 @@ func thorWindowsDriverNote() string {
 // confirmThorReady prints a titled recovery-mode briefing and asks the user to
 // confirm the target Thor is connected and in recovery mode before scanning.
 // Returns ErrUserCancelled if the user declines or cancels.
-func confirmThorReady(version string) error {
+func confirmThorReady(version string, force bool) error {
 	fmt.Println()
 	fmt.Println(tui.Header("Flashing WendyOS " + version))
 	fmt.Println(thorRecoveryBriefingBox())
 	if note := thorWindowsDriverNote(); note != "" {
 		fmt.Println(note)
+	}
+	if force {
+		return nil
 	}
 	fmt.Println()
 	ok, err := tui.Confirm("Is the target Thor connected and in recovery mode?")

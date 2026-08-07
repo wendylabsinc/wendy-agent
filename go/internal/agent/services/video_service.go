@@ -18,12 +18,14 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
+	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -32,6 +34,8 @@ const (
 	v4l2BufTypeVideoCapture = 1
 	v4l2MemoryMmap          = 1
 	v4l2PixFmtH264          = 0x34363248 // 'H264' little-endian FourCC
+	v4l2PixFmtYUYV          = 0x56595559 // 'YUYV'
+	v4l2PixFmtMJPEG         = 0x47504A4D // 'MJPG'
 	v4l2FieldNone           = 1
 
 	v4l2CapVideoCapture = 0x00000001
@@ -47,6 +51,27 @@ const (
 	vidiocStreamon  = 0x40045612
 	vidiocStreamoff = 0x40045613
 	vidiocSExtCtrls = 0xC0205648 // _IOWR('V', 72, struct v4l2_ext_controls), 32 bytes
+	// _IOWR('V', 74, struct v4l2_frmsizeenum): 4+4+4 + 24 (stepwise union) + 8 = 44 bytes.
+	vidiocEnumFramesizes = 0xC02C564A
+
+	v4l2FrmsizeTypeDiscrete = 1
+
+	// Upper bound when picking a default resolution. The hub re-encodes and fans
+	// out to every subscriber, so an unbounded "pick the biggest" would turn a
+	// 4K webcam into a CPU and bandwidth problem for viewers that never asked
+	// for it.
+	//
+	// 720p, not 1080p: both codec halves of the default path can land on a CPU,
+	// and 1080p is over the line on real fleet hardware. Encode: a camera
+	// without onboard H.264 falls back to x264enc, measured at ~5 fps for
+	// 1080p on a Jetson AGX-class host vs full rate at 720p. Decode: the
+	// Orin Nano has no NVDEC, and software avdec_h264 measured ~5.7 fps at
+	// 1080p on it. Callers that want more than 720p can request it
+	// explicitly; this bound only decides what "no preference" means.
+	// Raising it conditionally when a hardware encoder was actually
+	// selected is a possible follow-up.
+	defaultMaxDefaultWidth  = 1280
+	defaultMaxDefaultHeight = 720
 
 	// Encoder control IDs and class. V4L2_CID_CODEC_BASE = V4L2_CTRL_CLASS_CODEC
 	// (0x00990000) | 0x900; the keyframe controls are fixed offsets from it.
@@ -71,6 +96,102 @@ type v4l2Format struct {
 	Quantization uint32
 	XferFunc     uint32
 	_            [156]byte
+}
+
+// v4l2FrmSizeEnum matches struct v4l2_frmsizeenum (44 bytes). Only the discrete
+// branch of the union is read; Union covers the larger stepwise variant so the
+// struct size matches the ioctl's expectation.
+type v4l2FrmSizeEnum struct {
+	Index       uint32
+	PixelFormat uint32
+	Type        uint32
+	Width       uint32 // discrete.width
+	Height      uint32 // discrete.height
+	_           [16]byte
+	_           [8]byte
+}
+
+// bestDefaultFrameSize returns the largest discrete frame size the device
+// advertises for pixfmt, capped at 720p, or (0,0) if enumeration yields
+// nothing usable (stepwise-only devices, or drivers without the ioctl).
+//
+// Why this exists: VIDIOC_S_FMT with width=height=0 does NOT mean "device
+// default". V4L2 requires drivers to adjust invalid values to the nearest
+// supported ones, and UVC resolves 0x0 to its SMALLEST frame size — 352x288 on
+// a common Arducam module, versus the 640x480+ the same camera offers. A
+// caller asking for "no preference" wants the device's best sensible mode, not
+// its worst, so enumerate and choose rather than letting the driver clamp.
+func bestDefaultFrameSize(fd int, pixfmt uint32) (uint32, uint32) {
+	var bestW, bestH uint32
+	for index := uint32(0); index < 64; index++ {
+		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
+		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
+			uintptr(unsafe.Pointer(&fse))); errno != 0 {
+			break // EINVAL marks the end of the list; anything else is unusable too
+		}
+		if fse.Type != v4l2FrmsizeTypeDiscrete {
+			break // stepwise/continuous: no discrete list to choose from
+		}
+		if fse.Width > defaultMaxDefaultWidth || fse.Height > defaultMaxDefaultHeight {
+			continue
+		}
+		if uint64(fse.Width)*uint64(fse.Height) > uint64(bestW)*uint64(bestH) {
+			bestW, bestH = fse.Width, fse.Height
+		}
+	}
+	return bestW, bestH
+}
+
+// bestDefaultFrameSizeForDevice opens path just long enough to ask what the
+// camera can do, and returns the largest discrete size across the pixel formats
+// the GStreamer path can negotiate. (0,0) when the device cannot be opened or
+// advertises nothing discrete, in which case the caller leaves caps unset and
+// gets the old behaviour.
+//
+// This exists because most USB webcams have no onboard H.264, so
+// streamV4L2Native returns nativeH264NotSupported and the GStreamer path runs
+// instead — where omitting width/height from the caps lets the source negotiate
+// its first (smallest) mode, the same 352x288 trap the native path had.
+func bestDefaultFrameSizeForDevice(path string) (uint32, uint32) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return 0, 0
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	var bestW, bestH uint32
+	for _, pixfmt := range []uint32{v4l2PixFmtYUYV, v4l2PixFmtMJPEG} {
+		w, h := bestDefaultFrameSize(fd, pixfmt)
+		if uint64(w)*uint64(h) > uint64(bestW)*uint64(bestH) {
+			bestW, bestH = w, h
+		}
+	}
+	return bestW, bestH
+}
+
+// deviceSupportsMJPEGSize reports whether the device advertises MJPEG output at
+// exactly width x height. Behind a var so pipeline-construction tests can fake
+// camera capabilities without a real V4L2 device (same spirit as gstFallbackDirs).
+var deviceSupportsMJPEGSize = func(path string, width, height uint32) bool {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd) //nolint:errcheck
+	for index := uint32(0); index < 64; index++ {
+		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: v4l2PixFmtMJPEG}
+		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
+			uintptr(unsafe.Pointer(&fse))); errno != 0 {
+			return false
+		}
+		if fse.Type != v4l2FrmsizeTypeDiscrete {
+			return false
+		}
+		if fse.Width == width && fse.Height == height {
+			return true
+		}
+	}
+	return false
 }
 
 // v4l2ReqBuffers matches struct v4l2_requestbuffers (20 bytes).
@@ -254,6 +375,40 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	return true
 }
 
+// videoSourceKind distinguishes a local V4L2 node from a network camera.
+type videoSourceKind int
+
+const (
+	sourceV4L2 videoSourceKind = iota
+	sourceIP
+)
+
+// videoSource is what a device ID resolves to. Introducing it removes the
+// assumption, previously baked into a fmt.Sprintf in StreamVideo, that every
+// device ID names a /dev/videoN node.
+type videoSource struct {
+	kind   videoSourceKind
+	key    string // hub map key: "/dev/video0" or "ip:200"
+	path   string // V4L2 node path; empty for a network camera
+	camera ipcam.Camera
+}
+
+// ipHubKeyPrefix marks a hub key as belonging to a network camera. Hub keys are
+// opaque strings, so the two kinds share one map.
+const ipHubKeyPrefix = "ip:"
+
+// reasonIPCameraNoCredentials is the ErrorInfo reason for a network camera with
+// no stored login. The command-line interface turns it into a camera login hint,
+// the same way TEGRA_FIRMWARE_MISMATCH becomes an os install hint.
+const reasonIPCameraNoCredentials = "IP_CAMERA_NO_CREDENTIALS"
+
+// State paths for network cameras, under the agent's existing state directory.
+// Declared as vars so tests can point them at a temporary directory.
+var (
+	ipcamRegistryPath   = "/var/lib/wendy/cameras.json"
+	ipcamCredentialPath = "/var/lib/wendy/camera-credentials.json"
+)
+
 // VideoService implements agentpb.WendyVideoServiceServer.
 type VideoService struct {
 	agentpb.UnimplementedWendyVideoServiceServer
@@ -262,12 +417,24 @@ type VideoService struct {
 	readDeviceName  func(base string) (string, error)
 	hasVideoCapture func(path string) bool
 
+	// Network camera state. registry and credentials are nil-safe throughout: a
+	// device that has never seen a network camera behaves exactly as before.
+	registry    *ipcam.Registry
+	credentials *ipcam.CredentialStore
+	discoverer  *ipcam.Discoverer
+	links       *ipcam.LinkManager
+
+	// runGStreamer is the injection seam for the network capture subprocess.
+	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
+
 	// CSI/ribbon-camera seams (injectable for tests). classifyTransport maps a
 	// /dev/videoN base to its transport (USB/CSI/Unknown); enumerateLibcamera
 	// lists libcamera-visible cameras; isJetson selects the Argus capture path.
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 	isJetson           func() bool
+	readTegraRelease   func() ([]byte, error)
+	dumpBootSlots      func(context.Context) ([]byte, error)
 
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
@@ -281,7 +448,7 @@ type VideoService struct {
 // Call Shutdown to cancel all active producers and wait for them to exit.
 func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svcCtx, cancel := context.WithCancel(ctx)
-	return &VideoService{
+	svc := &VideoService{
 		logger: logger,
 		ctx:    svcCtx,
 		cancel: cancel,
@@ -309,7 +476,67 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
 		isJetson:           func() bool { return board.Detect().IsJetson() },
+		readTegraRelease:   func() ([]byte, error) { return os.ReadFile("/etc/nv_tegra_release") },
+		dumpBootSlots: func(ctx context.Context) ([]byte, error) {
+			return exec.CommandContext(ctx, "nvbootctrl", "dump-slots-info").CombinedOutput()
+		},
+		registry:    ipcam.NewRegistry(ipcamRegistryPath),
+		credentials: ipcam.NewCredentialStore(ipcamCredentialPath),
 	}
+
+	// Load persisted network cameras. A failure here must not stop the video
+	// service: local cameras still work without it.
+	if err := svc.registry.Load(); err != nil {
+		logger.Warn("loading network camera registry failed", zap.Error(err))
+	}
+	if err := svc.credentials.Load(); err != nil {
+		logger.Warn("loading network camera credentials failed", zap.Error(err))
+	}
+	svc.discoverer = ipcam.NewDiscoverer(svc.registry, logger)
+	svc.links = ipcam.NewLinkManager(svc.registry, logger)
+	svc.runGStreamer = svc.gstreamerFrames
+	return svc
+}
+
+// discoveryInterval is how often the agent re-probes for network cameras. It is
+// deliberately unhurried: a round is one multicast probe plus an ARP read, and
+// cameras do not come and go quickly.
+const discoveryInterval = 60 * time.Second
+
+// StartDiscovery runs discovery rounds and camera-link management until the
+// service context is cancelled. Call once at agent start.
+//
+// The link manager is what makes a directly-cabled camera work: such a camera
+// holds no address at all, because its segment has no DHCP server, so it never
+// answers a discovery probe. See ipcam.LinkGuard for the conditions under which
+// the agent is willing to be that server.
+func (s *VideoService) StartDiscovery() {
+	if s.links != nil {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.links.Run(s.ctx)
+		}()
+	}
+	if s.discoverer == nil {
+		return
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(discoveryInterval)
+		defer ticker.Stop()
+		for {
+			if _, err := s.discoverer.Once(s.ctx); err != nil {
+				s.logger.Debug("camera discovery round failed", zap.Error(err))
+			}
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 // Shutdown cancels all active producer goroutines and waits for them to exit.
@@ -318,7 +545,9 @@ func (s *VideoService) Shutdown() {
 	s.wg.Wait()
 }
 
-func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDevice, error) {
+// listCameras enumerates every camera the device can offer: local V4L2 nodes
+// first, then registered network cameras.
+func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice, error) {
 	paths, err := s.globDevices()
 	if err != nil {
 		return nil, err
@@ -373,15 +602,146 @@ func (s *VideoService) listV4L2Devices(ctx context.Context) ([]*agentpb.VideoDev
 			devices[csiDeviceIdxs[0]].LibcameraId = id
 		}
 	}
+	devices = append(devices, s.listIPCameras()...)
 	return devices, nil
 }
 
+// listIPCameras renders registered network cameras as VideoDevices. Path stays
+// empty until a loopback node exists, so the listing never names a node the
+// caller cannot open.
+func (s *VideoService) listIPCameras() []*agentpb.VideoDevice {
+	if s.registry == nil {
+		return nil
+	}
+	cameras := s.registry.List()
+	out := make([]*agentpb.VideoDevice, 0, len(cameras))
+	for _, c := range cameras {
+		name := c.Model
+		if name == "" {
+			name = "network camera"
+		}
+		out = append(out, &agentpb.VideoDevice{
+			Id:             c.ID,
+			Name:           name,
+			Transport:      agentpb.VideoTransport_VIDEO_TRANSPORT_IP,
+			Address:        c.Address,
+			Model:          c.Model,
+			Mac:            c.MAC,
+			HasCredentials: s.credentials != nil && s.credentials.Has(c.MAC),
+			Online:         c.Online,
+		})
+	}
+	return out
+}
+
 func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
-	devices, err := s.listV4L2Devices(ctx)
+	devices, err := s.listCameras(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to enumerate video devices: %v", err)
 	}
 	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
+}
+
+// resolveSource maps a device ID onto the thing it names. IDs in the network
+// camera band resolve through the registry; everything else is a V4L2 node.
+func (s *VideoService) resolveSource(devID uint32) (videoSource, error) {
+	if devID >= ipcam.IDBandStart && devID <= ipcam.IDBandEnd {
+		if s.registry == nil {
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		cam, ok := s.registry.Get(devID)
+		if !ok {
+			// An unregistered ID in the band must not fall through to opening
+			// /dev/video<id>, which could be an unrelated node.
+			return videoSource{}, status.Errorf(codes.NotFound, "camera %d not found", devID)
+		}
+		return videoSource{
+			kind:   sourceIP,
+			key:    fmt.Sprintf("%s%d", ipHubKeyPrefix, devID),
+			camera: cam,
+		}, nil
+	}
+	path := fmt.Sprintf("/dev/video%d", devID)
+	return videoSource{kind: sourceV4L2, key: path, path: path}, nil
+}
+
+// SetCameraCredentials stores the login for a network camera. The secret is
+// write-only: no RPC returns it.
+func (s *VideoService) SetCameraCredentials(_ context.Context, req *agentpb.SetCameraCredentialsRequest) (*agentpb.SetCameraCredentialsResponse, error) {
+	if s.registry == nil || s.credentials == nil {
+		return nil, status.Error(codes.Unavailable, "network camera support unavailable")
+	}
+	cam, ok := s.registry.Get(req.GetDeviceId())
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "camera %d not found", req.GetDeviceId())
+	}
+	if req.GetUsername() == "" {
+		return nil, status.Error(codes.InvalidArgument, "username is required")
+	}
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{
+		Username: req.GetUsername(),
+		Password: req.GetPassword(),
+	}); err != nil {
+		return nil, status.Errorf(codes.Internal, "storing credentials: %v", err)
+	}
+	return &agentpb.SetCameraCredentialsResponse{}, nil
+}
+
+// ForgetCamera removes a network camera and its stored credentials.
+func (s *VideoService) ForgetCamera(_ context.Context, req *agentpb.ForgetCameraRequest) (*agentpb.ForgetCameraResponse, error) {
+	if s.registry == nil {
+		return nil, status.Error(codes.Unavailable, "network camera support unavailable")
+	}
+	cam, ok := s.registry.Get(req.GetDeviceId())
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "camera %d not found", req.GetDeviceId())
+	}
+	// Credentials go first: a camera left registered without them is recoverable
+	// with camera login, whereas an orphaned credential is invisible.
+	if s.credentials != nil {
+		if err := s.credentials.Delete(cam.MAC); err != nil {
+			return nil, status.Errorf(codes.Internal, "removing credentials: %v", err)
+		}
+	}
+	if !s.registry.Forget(req.GetDeviceId()) {
+		return nil, status.Errorf(codes.Internal, "removing camera %d failed", req.GetDeviceId())
+	}
+	return &agentpb.ForgetCameraResponse{}, nil
+}
+
+// RefreshCameras runs one discovery round and returns the full camera listing.
+func (s *VideoService) RefreshCameras(ctx context.Context, _ *agentpb.RefreshCamerasRequest) (*agentpb.RefreshCamerasResponse, error) {
+	if s.discoverer != nil {
+		if _, err := s.discoverer.Once(ctx); err != nil {
+			// A failed probe still leaves previously discovered cameras listable.
+			s.logger.Warn("camera discovery failed", zap.Error(err))
+		}
+	}
+	devices, err := s.listCameras(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "listing cameras: %v", err)
+	}
+	return &agentpb.RefreshCamerasResponse{Devices: devices}, nil
+}
+
+// ipCameraCredentials returns the stored login, or a FailedPrecondition carrying
+// reasonIPCameraNoCredentials so the client can print the fix.
+func (s *VideoService) ipCameraCredentials(cam ipcam.Camera) (ipcam.Credential, error) {
+	if s.credentials != nil {
+		if cred, ok := s.credentials.Get(cam.MAC); ok {
+			return cred, nil
+		}
+	}
+	st := status.New(codes.FailedPrecondition,
+		fmt.Sprintf("camera %d has no stored credentials", cam.ID))
+	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
+		Reason:   reasonIPCameraNoCredentials,
+		Metadata: map[string]string{"device_id": fmt.Sprintf("%d", cam.ID)},
+	})
+	if err != nil {
+		return ipcam.Credential{}, st.Err()
+	}
+	return ipcam.Credential{}, detailed.Err()
 }
 
 // maxHubRetries is the maximum number of times getOrCreateHub will retry after
@@ -500,21 +860,27 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 		return h.broadcast(&videoFrame{data: data, tsNs: tsNs, codec: codec})
 	}
 
-	transport, _ := s.classifyTransport(filepath.Base(path))
-	libcameraID := s.lookupLibcameraID(ctx, transport)
-
-	// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
-	// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-	// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+	// The hub key carries the source kind: network cameras key on "ip:<id>" and
+	// have no device node to classify.
 	var err error
-	if transport == camera.TransportCSI {
-		s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
-		err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+	if strings.HasPrefix(path, ipHubKeyPrefix) {
+		err = s.runIPProducer(ctx, broadcast, path, req)
 	} else {
-		err = s.streamV4L2Native(ctx, broadcast, path, req)
-		if _, ok := err.(nativeH264NotSupported); ok {
-			s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+		transport, _ := s.classifyTransport(filepath.Base(path))
+		libcameraID := s.lookupLibcameraID(ctx, transport)
+
+		// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
+		// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
+		// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+		if transport == camera.TransportCSI {
+			s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
 			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+		} else {
+			err = s.streamV4L2Native(ctx, broadcast, path, req)
+			if _, ok := err.(nativeH264NotSupported); ok {
+				s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+				err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+			}
 		}
 	}
 	if err != nil && ctx.Err() == nil {
@@ -590,10 +956,28 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	if devID > maxVideoDeviceID {
 		return status.Errorf(codes.InvalidArgument, "device ID out of range")
 	}
+	src, err := s.resolveSource(devID)
+	if err != nil {
+		return err
+	}
+
+	if src.kind == sourceIP {
+		// A network camera sends whatever format it is configured for, so the
+		// V4L2 resolution allowlist does not apply. Width instead selects which
+		// of the camera's streams to open.
+		return s.streamIPCamera(stream, src, req)
+	}
+
 	if err := validateStreamParams(req); err != nil {
 		return err
 	}
-	path := fmt.Sprintf("/dev/video%d", devID)
+	path := src.path
+	transport, _ := s.classifyTransport(filepath.Base(path))
+	if transport == camera.TransportCSI && s.isJetson() {
+		if err := s.preflightTegraCSI(ctx); err != nil {
+			return err
+		}
+	}
 
 	// Lstat validates the path before any open: the node must be a character
 	// device with V4L2 major number 81 and must not be a symlink. This catches
@@ -622,6 +1006,14 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 	defer h.unsubscribe(id)
 
+	return s.pumpFrames(stream, h, ch)
+}
+
+// pumpFrames forwards hub frames to a gRPC stream until the stream or the
+// producer ends. Local and network cameras share it, so subscriber teardown and
+// terminal-error reporting behave identically for both.
+func (s *VideoService) pumpFrames(stream grpc.ServerStreamingServer[agentpb.VideoFrame], h *deviceHub, ch chan *videoFrame) error {
+	ctx := stream.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -654,6 +1046,68 @@ func (s *VideoService) StreamVideo(req *agentpb.StreamVideoRequest, stream grpc.
 	}
 }
 
+// streamIPCamera bridges a network camera into the same hub fan-out used by local
+// cameras, so subscriber accounting, teardown and the client-side keyframe buffer
+// are all shared.
+func (s *VideoService) streamIPCamera(stream grpc.ServerStreamingServer[agentpb.VideoFrame], src videoSource, req *agentpb.StreamVideoRequest) error {
+	// Fail before creating a hub when the camera has no login or no known
+	// address, so the caller gets the actionable error rather than a producer
+	// that dies immediately afterwards.
+	if err := s.preflightIPCamera(src.camera); err != nil {
+		return err
+	}
+
+	h, id, ch, err := s.getOrCreateHub(stream.Context(), src.key, req)
+	if err != nil {
+		return err
+	}
+	defer h.unsubscribe(id)
+	return s.pumpFrames(stream, h, ch)
+}
+
+// preflightIPCamera checks the two conditions that would otherwise surface as a
+// producer dying the instant it starts: no stored login, and no known address.
+func (s *VideoService) preflightIPCamera(cam ipcam.Camera) error {
+	cred, err := s.ipCameraCredentials(cam)
+	if err != nil {
+		return err
+	}
+	if _, err := ipcam.StreamURL(cam, cred, ipcam.StreamAuto); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(cam))
+	}
+	return nil
+}
+
+// runIPProducer resolves the camera behind a hub key and streams it.
+//
+// The requested width selects the stream. That is safe despite a hub being
+// shared, because getOrCreateHub already refuses a subscriber whose stream
+// parameters differ from the running hub's.
+func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, key string, req *agentpb.StreamVideoRequest) error {
+	devID, err := strconv.ParseUint(strings.TrimPrefix(key, ipHubKeyPrefix), 10, 32)
+	if err != nil {
+		return status.Errorf(codes.Internal, "malformed camera key %q", key)
+	}
+	src, err := s.resolveSource(uint32(devID))
+	if err != nil {
+		return err
+	}
+	cred, err := s.ipCameraCredentials(src.camera)
+	if err != nil {
+		return err
+	}
+	streamURL, err := ipcam.StreamURL(src.camera, cred, ipcam.ChooseStream(req.GetWidth()))
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(src.camera))
+	}
+	s.logger.Info("streaming network camera",
+		zap.Uint32("id", uint32(devID)),
+		zap.String("url", ipcam.RedactURL(streamURL)))
+	return s.runGStreamer(ctx, ipcam.PipelineArgs(streamURL), func(chunk []byte) {
+		broadcast(chunk, uint64(time.Now().UnixNano()), agentpb.VideoCodec_VIDEO_CODEC_H264)
+	})
+}
+
 // streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
 // allocates mmap buffers, and streams frames until ctx is cancelled or an error occurs.
 // Each captured frame is delivered via the broadcast callback; if the callback returns
@@ -670,11 +1124,23 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	// Configure H.264 output format.
 	var vfmt v4l2Format
 	vfmt.Type = v4l2BufTypeVideoCapture
-	if req.GetWidth() > 0 {
-		vfmt.Width = req.GetWidth()
-	}
-	if req.GetHeight() > 0 {
-		vfmt.Height = req.GetHeight()
+	vfmt.Width = req.GetWidth()
+	vfmt.Height = req.GetHeight()
+	// "No preference" must not become "smallest mode the driver has" — see
+	// bestDefaultFrameSize. Only fills in what the caller left unset, so an
+	// explicit request is still honoured verbatim.
+	if vfmt.Width == 0 || vfmt.Height == 0 {
+		if w, h := bestDefaultFrameSize(fd, v4l2PixFmtH264); w > 0 && h > 0 {
+			if vfmt.Width == 0 {
+				vfmt.Width = w
+			}
+			if vfmt.Height == 0 {
+				vfmt.Height = h
+			}
+			s.logger.Info("selected default capture size",
+				zap.String("device", path), zap.Uint32("width", vfmt.Width),
+				zap.Uint32("height", vfmt.Height))
+		}
 	}
 	vfmt.PixelFormat = v4l2PixFmtH264
 	vfmt.Field = v4l2FieldNone
@@ -876,6 +1342,9 @@ type limitedBuffer struct {
 	limit int
 }
 
+// maxStderrBytes caps how much subprocess stderr is retained for diagnostics.
+const maxStderrBytes = 64 * 1024
+
 func (l *limitedBuffer) Write(p []byte) (int, error) {
 	remaining := l.limit - l.buf.Len()
 	if remaining <= 0 {
@@ -965,7 +1434,6 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		}
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	const maxStderrBytes = 64 * 1024
 	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
 	cmd.Stderr = stderrBuf
 
@@ -1062,6 +1530,26 @@ func findGStreamerEncoder(inspectPath string) (gstEncoderResult, error) {
 	return findGStreamerEncoderFromSet(available)
 }
 
+// Encoders whose element registers even when the hardware is absent: Thor has no NVENC and
+// ships /dev/v4l2-nvenc as a /dev/null stub, so it loads and then fails to open.
+var encoderDeviceNodes = map[string]string{
+	"nvv4l2h264enc": "/dev/v4l2-nvenc",
+}
+
+// A stub such as /dev/null opens fine but rejects VIDIOC_QUERYCAP with ENOTTY. O_RDWR matches
+// how the encoder element opens it; no O_NOFOLLOW, since a platform may symlink the node and
+// the paths above are hardcoded. Indirected for tests.
+var v4l2NodeUsable = func(path string) bool {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(fd) //nolint:errcheck
+	var caps v4l2Capability
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQueryCap, uintptr(unsafe.Pointer(&caps)))
+	return errno == 0
+}
+
 // findGStreamerEncoderFromSet performs encoder selection against a precomputed
 // element availability map. When available is nil (e.g. gst-inspect listing
 // failed), it falls back to attempting x264enc.
@@ -1070,7 +1558,25 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 		return gstEncoderResult{element: "x264enc", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 	}
 
-	hasElem := func(name string) bool { return available[name] }
+	// An element needing a V4L2 node counts as available only if that node really works.
+	// Probed at most once per element: hasElem is consulted from several fallback paths, and
+	// reopening a real encoder node each time is wasteful.
+	probed := make(map[string]bool)
+	hasElem := func(name string) bool {
+		if !available[name] {
+			return false
+		}
+		node, gated := encoderDeviceNodes[name]
+		if !gated {
+			return true
+		}
+		if usable, seen := probed[name]; seen {
+			return usable
+		}
+		usable := v4l2NodeUsable(node)
+		probed[name] = usable
+		return usable
+	}
 	h264Parse := hasElem("h264parse")
 
 	h264Encoders := []string{
@@ -1096,7 +1602,7 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 		}
 		for name := range available {
 			lower := strings.ToLower(name)
-			if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
+			if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") && hasElem(name) {
 				return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264, hasH264Parse: true}, nil
 			}
 		}
@@ -1119,7 +1625,7 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 	}
 	for name := range available {
 		lower := strings.ToLower(name)
-		if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") {
+		if strings.Contains(lower, "h264") && strings.Contains(lower, "enc") && hasElem(name) {
 			return gstEncoderResult{element: name, codec: agentpb.VideoCodec_VIDEO_CODEC_H264}, nil
 		}
 	}
@@ -1210,18 +1716,48 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	if strings.HasPrefix(src, "libcamerasrc") {
 		capsParts = append(capsParts, "format=NV12")
 	}
-	if req.GetWidth() > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("width=%d", req.GetWidth()))
+	// Same "default must not mean smallest" rule as the native path: with no
+	// width/height in the caps the source negotiates its first mode, which on UVC
+	// is the smallest. Ask the device what it has and pin the best.
+	capW, capH := req.GetWidth(), req.GetHeight()
+	if (capW == 0 || capH == 0) && !strings.HasPrefix(src, "libcamerasrc") {
+		if bw, bh := bestDefaultFrameSizeForDevice(devicePath); bw > 0 && bh > 0 {
+			if capW == 0 {
+				capW = bw
+			}
+			if capH == 0 {
+				capH = bh
+			}
+		}
 	}
-	if req.GetHeight() > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("height=%d", req.GetHeight()))
+	if capW > 0 {
+		capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
+	}
+	if capH > 0 {
+		capsParts = append(capsParts, fmt.Sprintf("height=%d", capH))
 	}
 	if req.GetFramerate() > 0 {
 		capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
 	}
 
+	// Prefer compressed (MJPEG) capture from USB cameras when the device offers
+	// it at the chosen size and jpegdec is available to unpack it. Raw capture
+	// is bottlenecked by USB bandwidth, and UVC descriptors cap raw modes at
+	// frame rates as low as 5 fps for 720p/1080p — the SAME camera delivers
+	// 30 fps over MJPEG (measured on a Brio 101: 5 fps raw at both 1080p and
+	// 720p). jpegdec is cheap relative to the H.264 encode that follows. The
+	// leaky queue sits on the compressed side so backlog is dropped before,
+	// not after, the decode work is spent.
+	useMJPEG := !strings.HasPrefix(src, "libcamerasrc") &&
+		capW > 0 && capH > 0 &&
+		available["jpegdec"] &&
+		deviceSupportsMJPEGSize(devicePath, capW, capH)
+
 	var pipeline string
-	if len(capsParts) > 0 {
+	if useMJPEG {
+		caps := "image/jpeg," + strings.Join(capsParts, ",")
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! jpegdec ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+	} else if len(capsParts) > 0 {
 		caps := "video/x-raw," + strings.Join(capsParts, ",")
 		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
 	} else {
@@ -1239,6 +1775,8 @@ func transportToProto(t camera.Transport) agentpb.VideoTransport {
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_USB
 	case camera.TransportCSI:
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_CSI
+	case camera.TransportIP:
+		return agentpb.VideoTransport_VIDEO_TRANSPORT_IP
 	default:
 		return agentpb.VideoTransport_VIDEO_TRANSPORT_UNKNOWN
 	}
@@ -1442,8 +1980,10 @@ func encoderSegment(encoder string, hasH264Parse bool, gop int) string {
 	var enc string
 	switch encoder {
 	case "nvv4l2h264enc":
-		// Jetson L4T hardware encoder; NV12 is its preferred input format.
-		enc = "videoconvert ! video/x-raw,format=NV12 ! nvv4l2h264enc" + kf
+		// Jetson L4T hardware encoder: NV12 only in NVMM memory. videoconvert emits system
+		// memory, so nvvidconv must move the frames across or the pipeline never links.
+		enc = "videoconvert ! video/x-raw,format=NV12 ! nvvidconv ! " +
+			"video/x-raw(memory:NVMM),format=NV12 ! nvv4l2h264enc" + kf
 	case "v4l2h264enc":
 		// The Raspberry Pi bcm2835-codec rejects frames ("Failed to process
 		// frame") unless the output H.264 level is pinned — a bare or

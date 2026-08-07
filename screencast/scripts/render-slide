@@ -112,8 +112,22 @@ async function captureSlideStill(cdp, slidevBaseURL, output) {
   }
   await sleep(300);
   await cdp.send('Runtime.evaluate', { expression: 'document.fonts && document.fonts.ready', awaitPromise: true }).catch(() => {});
-  const shot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
-  await writeFile(output, Buffer.from(shot.data, 'base64'));
+
+  const minimumBytes = Math.max(1024, Math.floor(width * height * 0.01));
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+    const image = Buffer.from(shot.data, 'base64');
+    if (image.length >= minimumBytes) {
+      await writeFile(output, image);
+      return;
+    }
+    if (attempt < 5) {
+      console.warn(`warning: blank slide capture; retrying (${attempt}/5)`);
+      await cdp.send('Page.reload', { ignoreCache: false });
+      await sleep(500);
+    }
+  }
+  throw new Error('slide capture remained blank after 5 attempts');
 }
 
 function renderStillVideo(png, output) {
@@ -135,7 +149,7 @@ async function main() {
   const userDataDir = join(workdir, 'chrome-profile');
   await mkdir(userDataDir, { recursive: true });
   const body = (await readFile(source, 'utf8')).trimEnd();
-  await writeFile(deckPath, `---\ntheme: default\ncolorSchema: dark\nclass: text-left\ndrawings:\n  persist: false\ntransition: fade-out\nmdc: true\n---\n\n${body}\n`);
+  await writeFile(deckPath, `---\ntheme: default\ncolorSchema: light\naspectRatio: ${width}/${height}\ncanvasWidth: ${width}\nclass: text-left\ndrawings:\n  persist: false\ntransition: fade-out\nmdc: true\n---\n\n${body}\n`);
 
   const slidevPort = Number(process.env.SLIDEV_PORT ?? 3030);
   const chromePort = 9222 + Math.floor(Math.random() * 1000);
@@ -143,7 +157,7 @@ async function main() {
   const slidev = spawn('npx', ['slidev', deckPath, '--port', String(slidevPort)], { cwd: screencastRoot, stdio: ['ignore', 'inherit', 'inherit'] });
   const chrome = spawn(chromePath, [
     '--headless=new', `--remote-debugging-port=${chromePort}`, `--user-data-dir=${userDataDir}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+    '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
     '--force-color-profile=srgb', `--window-size=${width},${height}`, 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
   chrome.stderr.on('data', (chunk) => {

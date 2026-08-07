@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
+	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -33,6 +34,26 @@ type AgentService struct {
 	installer          *AgentInstaller
 	isWendyOSHost      func() bool
 	osUpdateStateDir   string
+
+	// verifier checks the update binary's signature before install. Defaults
+	// to sigverify.DefaultVerifier (disabled until a real pinned key is
+	// embedded); settable within-package so tests can inject an enabled
+	// verifier without changing the exported constructor signature. See
+	// AgentUpdateService (the v2 sibling handler) for the same pattern.
+	verifier *sigverify.Verifier
+
+	// execPathResolver resolves the agent's own executable path and mode.
+	// Defaults to resolveExecPath (which resolves os.Executable()); settable
+	// within-package so tests can redirect commitBinaryUpdate's rename target
+	// away from the running test binary.
+	execPathResolver func() (string, os.FileMode, error)
+
+	// restartFn is invoked once the binary is committed to schedule the
+	// process exit that lets systemd restart into the new binary. Defaults
+	// to scheduleAgentRestartExit (a real os.Exit(0) after a grace period);
+	// settable within-package so tests exercising a successful install don't
+	// kill the test process.
+	restartFn func()
 }
 
 func NewAgentService(
@@ -50,6 +71,9 @@ func NewAgentService(
 		installer:          installer,
 		isWendyOSHost:      defaultIsWendyOSHost,
 		osUpdateStateDir:   oshealth.DefaultStateDir,
+		verifier:           sigverify.DefaultVerifier,
+		execPathResolver:   resolveExecPath,
+		restartFn:          scheduleAgentRestartExit,
 	}
 }
 
@@ -173,12 +197,16 @@ func detectGPUInfo() gpuInfo {
 
 var tegraReleaseRe = regexp.MustCompile(`R(\d+)\s+\([^)]+\),\s+REVISION:\s+([\d.]+)`)
 
-// Falls back to "L4T {version}" when no mapping is found.
+// Falls back to "L4T-{version}" when no mapping is found.
 func detectJetPackVersion() string {
 	data, err := os.ReadFile("/etc/nv_tegra_release")
 	if err != nil {
 		return ""
 	}
+	return jetPackVersionFromTegraRelease(data)
+}
+
+func jetPackVersionFromTegraRelease(data []byte) string {
 	m := tegraReleaseRe.FindSubmatch(data)
 	if len(m) < 3 {
 		return ""
@@ -186,7 +214,19 @@ func detectJetPackVersion() string {
 	major := string(m[1])
 	revision := string(m[2]) // e.g. "4.4"
 
-	// Use major.minor for the table key (e.g. "36.4").
+	// Some JetPack releases share an L4T major.minor family, so prefer the
+	// complete L4T version before falling back to the family mapping.
+	l4tVersion := major + "." + revision
+	jetpackExact := map[string]string{
+		"36.4.4": "6.2.1",
+		"36.4.3": "6.2",
+		"36.4.0": "6.1",
+	}
+	if jp, ok := jetpackExact[l4tVersion]; ok {
+		return jp
+	}
+
+	// Use major.minor for releases where the patch version is not significant.
 	minor := strings.SplitN(revision, ".", 2)[0]
 	key := major + "." + minor
 
@@ -194,7 +234,6 @@ func detectJetPackVersion() string {
 	// https://developer.nvidia.com/embedded/jetpack-archive
 	jetpack := map[string]string{
 		"39.2": "7.2",
-		"36.4": "6.1",
 		"36.3": "6.0",
 		"36.2": "6.0",
 		"35.5": "5.1.3",
@@ -214,7 +253,7 @@ func detectJetPackVersion() string {
 	if jp, ok := jetpack[key]; ok {
 		return jp
 	}
-	return "L4T-" + major + "." + revision
+	return "L4T-" + l4tVersion
 }
 
 var cudaVersionFileRe = regexp.MustCompile(`(?i)CUDA[^0-9]*([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
@@ -426,7 +465,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 	s.logger.Info("UpdateAgent stream started")
 
-	execPath, originalPerm, err := resolveExecPath()
+	execPath, originalPerm, err := s.execPathResolver()
 	if err != nil {
 		return err
 	}
@@ -469,11 +508,27 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 
 		if ctrl := msg.GetControl(); ctrl != nil {
 			if ctrl.GetUpdate() != nil {
-				computedHash := hex.EncodeToString(hasher.Sum(nil))
+				digest := hasher.Sum(nil)
+				computedHash := hex.EncodeToString(digest)
 				expectedHash := ctrl.GetUpdate().GetSha256()
 				if expectedHash != "" && computedHash != expectedHash {
 					return status.Errorf(codes.DataLoss,
 						"SHA256 mismatch: expected %s, got %s", expectedHash, computedHash)
+				}
+
+				// Verify the binary's signature over its SHA256 digest before
+				// installing. When the verifier is disabled (no pinned key
+				// embedded yet), Verify is a fail-safe no-op and install
+				// proceeds exactly as before this check existed.
+				if err := s.verifier.Verify(digest, ctrl.GetUpdate().GetSignature()); err != nil {
+					switch {
+					case errors.Is(err, sigverify.ErrUnsigned):
+						return status.Error(codes.FailedPrecondition, "agent update binary is unsigned; refusing install")
+					case errors.Is(err, sigverify.ErrBadSignature):
+						return status.Error(codes.DataLoss, "agent update binary signature verification failed; refusing install")
+					default:
+						return status.Errorf(codes.Internal, "agent update binary signature verification error: %v", err)
+					}
 				}
 
 				if _, err := commitBinaryUpdate(tmpFile, tmpPath, execPath, computedHash, originalPerm, s.logger); err != nil {
@@ -492,7 +547,7 @@ func (s *AgentService) UpdateAgent(stream grpc.BidiStreamingServer[agentpb.Updat
 							Updated: &agentpb.UpdateAgentResponse_Updated{},
 						},
 					})
-				}, scheduleAgentRestartExit)
+				}, s.restartFn)
 			}
 		}
 	}

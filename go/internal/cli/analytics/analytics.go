@@ -1,4 +1,4 @@
-// Package analytics provides anonymous usage tracking via cloud.wendy.sh.
+// Package analytics provides anonymous usage tracking via cloud.wendy.dev.
 package analytics
 
 import (

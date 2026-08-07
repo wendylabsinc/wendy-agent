@@ -133,6 +133,24 @@ func TestFlashpackCached(t *testing.T) {
 	}
 }
 
+func TestOfflineThorVersion(t *testing.T) {
+	cases := []struct {
+		version string
+		pr      int
+		want    string
+	}{
+		{"0.17.0", 0, "0.17.0"}, // explicit version wins
+		{"0.17.0", 5, "0.17.0"}, // ...even alongside --pr
+		{"", 189, "pr-189"},     // --pr resolves to the conventional tag
+		{"", 0, ""},             // bare latest/nightly needs the manifest
+	}
+	for _, c := range cases {
+		if got := offlineThorVersion(c.version, c.pr); got != c.want {
+			t.Errorf("offlineThorVersion(%q, %d) = %q, want %q", c.version, c.pr, got, c.want)
+		}
+	}
+}
+
 func TestThorFlashpackSpaceNeeded(t *testing.T) {
 	dir := t.TempDir()
 	const version = "0.16.1"

@@ -13,12 +13,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/liteclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 )
 
 const (
@@ -31,26 +33,23 @@ const (
 	microWendySwiftTarget = "wasm32-unknown-wasip1"
 )
 
-// microWendyBuildContext is stored in BuiltApp.Context for WASM builds.
+// microWendyBuildContext is stored in BuiltApp.Context.
 type microWendyBuildContext struct {
-	WASMPath string
+	AppPath string
+	AppType liteclient.AppType
 }
 
 // MicroWendyProvider builds Swift packages to WASM and serves them to ESP32 devices.
 type MicroWendyProvider struct{}
 
 func (p *MicroWendyProvider) Key() string         { return "wendy-lite" }
-func (p *MicroWendyProvider) DisplayName() string { return "Micro Wendy (WASM)" }
+func (p *MicroWendyProvider) DisplayName() string { return "Wendy Lite" }
 
 func (p *MicroWendyProvider) IsAvailable(ctx context.Context) bool {
-	cmd := exec.CommandContext(ctx, "swiftly", "--version")
-	return cmd.Run() == nil
+	return true
 }
 
 func (p *MicroWendyProvider) CheckRequirements(ctx context.Context) error {
-	if !p.IsAvailable(ctx) {
-		return fmt.Errorf("swiftly is not installed or not in PATH")
-	}
 	return nil
 }
 
@@ -65,47 +64,134 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 
 	var devices []models.ExternalDevice
 	for _, svc := range services {
-		displayName := svc.InstanceName
-		if displayName == "" {
-			displayName = svc.Hostname
-		}
-		devices = append(devices, models.ExternalDevice{
-			ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
-			DisplayName: displayName,
-			ProviderKey: p.Key(),
-			ConnectionInfo: map[string]string{
-				"type":     "LAN",
-				"name":     svc.TXTRecords["name"],
-				"hostname": svc.Hostname,
-				"ip":       svc.IPAddress,
-				"port":     fmt.Sprintf("%d", svc.Port),
-				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
-			},
-			IsWendyDevice:   true,
-			CPUArchitecture: "wasm32",
-		})
+		devices = append(devices, p.mdnsExternalDevice(svc))
 	}
-
 	for _, dev := range sd.Devices() {
-		devices = append(devices, models.ExternalDevice{
-			ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
-			DisplayName: dev.DisplayName,
-			ProviderKey: p.Key(),
-			ConnectionInfo: map[string]string{
-				"type":       "USB",
-				"name":       dev.Name,
-				"serialPort": dev.Port,
-			},
-			IsWendyDevice:   true,
-			CPUArchitecture: "wasm32",
-		})
+		devices = append(devices, p.serialExternalDevice(dev))
 	}
 
 	return devices, nil
 }
 
+// mdnsExternalDevice maps a resolved _wendy-lite._tcp mDNS service to an
+// ExternalDevice.
+func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) models.ExternalDevice {
+	displayName := svc.InstanceName
+	if displayName == "" {
+		displayName = svc.Hostname
+	}
+	return models.ExternalDevice{
+		ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
+		DisplayName: displayName,
+		ProviderKey: p.Key(),
+		ConnectionInfo: map[string]string{
+			"type":     "LAN",
+			"name":     svc.TXTRecords["name"],
+			"hostname": svc.Hostname,
+			"ip":       svc.IPAddress,
+			"port":     fmt.Sprintf("%d", svc.Port),
+			"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
+		},
+		IsWendyDevice: true,
+	}
+}
+
+// serialExternalDevice maps a serial-port Wendy Lite device to an ExternalDevice.
+func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) models.ExternalDevice {
+	return models.ExternalDevice{
+		ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
+		DisplayName: dev.DisplayName,
+		ProviderKey: p.Key(),
+		ConnectionInfo: map[string]string{
+			"type":       "USB",
+			"name":       dev.Name,
+			"serialPort": dev.Port,
+		},
+		IsWendyDevice: true,
+	}
+}
+
+// DiscoverDevicesContinuous streams wendy-lite devices as they are found:
+// mDNS services via continuous browsing and serial devices via the background
+// serial scanner. Continuous mDNS browsing is only available on macOS; on
+// other platforms this returns an error and callers fall back to polling
+// DiscoverDevices.
+func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
+	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
+	if err != nil {
+		return nil, err
+	}
+
+	sd := discovery.GetSerialDiscovery()
+	sd.StartScan(3 * time.Second)
+
+	// Coalesce serial snapshots into a capacity-1 channel: the listener must
+	// never block (it runs under SerialDiscovery's notify lock), and only the
+	// latest snapshot matters. notify() serializes listener calls, so the
+	// drain-then-send below never races with itself.
+	serialUpdates := make(chan []discovery.SerialDevice, 1)
+	listenerID := sd.AddListener(func(devices []discovery.SerialDevice) {
+		select {
+		case serialUpdates <- devices:
+		default:
+			select {
+			case <-serialUpdates:
+			default:
+			}
+			serialUpdates <- devices
+		}
+	})
+
+	ch := make(chan models.ExternalDevice, 16)
+	go func() {
+		defer close(ch)
+		defer sd.RemoveListener(listenerID)
+		defer sd.StopScan()
+
+		send := func(dev models.ExternalDevice) bool {
+			select {
+			case ch <- dev:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
+		// Emit serial devices already known before the listener registered.
+		for _, dev := range sd.Devices() {
+			if !send(p.serialExternalDevice(dev)) {
+				return
+			}
+		}
+
+		for {
+			select {
+			case svc, ok := <-svcCh:
+				if !ok {
+					// Browse stream died; closing ch lets the consumer fall
+					// back to polling.
+					return
+				}
+				if !send(p.mdnsExternalDevice(svc)) {
+					return
+				}
+			case snap := <-serialUpdates:
+				for _, dev := range snap {
+					if !send(p.serialExternalDevice(dev)) {
+						return
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
 func (p *MicroWendyProvider) SupportedBuildTypes() []string {
-	return []string{"swift"}
+	return []string{"swift", "esp-idf"}
 }
 
 func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
@@ -113,7 +199,24 @@ func (p *MicroWendyProvider) CanBuild(projectPath string) bool {
 	return err == nil
 }
 
-func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error) {
+	switch projectType {
+	case "swift":
+		return p.buildSwift(ctx, device, projectPath, product, debug)
+	case "esp-idf":
+		return p.buildEspIdf(ctx, device, projectPath, product)
+	default:
+		return nil, fmt.Errorf("wendy-lite provider: unsupported project type %q", projectType)
+	}
+}
+
+// buildSwift compiles a Swift package to WASM for the embedded WASI target.
+func (p *MicroWendyProvider) buildSwift(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error) {
+	swiftlyTestCmd := exec.CommandContext(ctx, "swiftly", "--version")
+	if swiftlyTestCmd.Run() != nil {
+		return nil, fmt.Errorf("swiftly is not installed or not in PATH")
+	}
+
 	if err := swifttoolchain.EnsureSwiftVersion(ctx, os.Stdout, os.Stderr); err != nil {
 		return nil, err
 	}
@@ -170,7 +273,92 @@ func (p *MicroWendyProvider) Build(ctx context.Context, device models.ExternalDe
 		ProviderKey: p.Key(),
 		Device:      device,
 		AppName:     product,
-		Context:     &microWendyBuildContext{WASMPath: wasmPath},
+		Context:     &microWendyBuildContext{AppPath: wasmPath, AppType: liteclient.AppTypeWasm},
+	}, nil
+}
+
+// boardToTarget returns the IDF target (SoC name, e.g. "esp32c6") firmware
+// must be built for to run on the given board. A board and a target are
+// different concepts: the device reports "esp32c6" meaning "generic esp32c6
+// board", not the SoC name — they merely coincide for the boards supported
+// today, so the mapping is the identity for now. A real lookup goes here once
+// board names diverge from SoC names.
+func boardToTarget(board string) string {
+	return board
+}
+
+// espIdfBinaryPath returns the path of the firmware binary an ESP-IDF build
+// produces in projectPath's build folder. The binary is named after the CMake
+// project() name, falling back to product when no project() declaration is
+// found. It returns an error if the binary does not exist.
+func espIdfBinaryPath(projectPath, product string) (string, error) {
+	binName := espidftoolchain.ProjectName(projectPath)
+	if binName == "" {
+		binName = product
+	}
+	binPath := filepath.Join(projectPath, "build", binName+".bin")
+	if _, err := os.Stat(binPath); err != nil {
+		return "", fmt.Errorf("expected ESP-IDF app binary at %s: %w", binPath, err)
+	}
+	return binPath, nil
+}
+
+// buildEspIdf builds an ESP-IDF project with idf.py (via eim) and picks up
+// the firmware binary from the project's build folder. The binary is named
+// after the CMake project() name, which may differ from the app ID.
+func (p *MicroWendyProvider) buildEspIdf(ctx context.Context, device models.ExternalDevice, projectPath, product string) (*BuiltApp, error) {
+	// get device info
+	di, err := p.GetDeviceInfo(ctx, device)
+	if err != nil {
+		return nil, fmt.Errorf("getting device info: %w", err)
+	}
+
+	// check device capability
+	if !di.NativeAppSupport {
+		return nil, fmt.Errorf("device %s does not support native apps", device.DisplayName)
+	}
+
+	// ensures the ESP-IDF toolchain is available, install it if not
+	if err := espidftoolchain.EnsureVersion(ctx); err != nil {
+		return nil, err
+	}
+
+	// check if the project has been configured for the right target
+	target := boardToTarget(di.DeviceType)
+	if strings.ContainsAny(target, " \t\r\n") {
+		return nil, fmt.Errorf("invalid device target %q", target)
+	}
+	configuredTarget := espidftoolchain.ProjectTarget(projectPath)
+	if target != "" && target != configuredTarget {
+		cmd := espidftoolchain.IdfCommandContext(ctx, "set-target", target)
+		cmd.Dir = projectPath
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("idf.py set-target %s: %w", target, err)
+		}
+	}
+
+	// build the project
+	cmd := espidftoolchain.IdfCommandContext(ctx, "build")
+	cmd.Dir = projectPath
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("idf.py build: %w", err)
+	}
+
+	// verify the presence of the output bin file
+	binPath, err := espIdfBinaryPath(projectPath, product)
+	if err != nil {
+		return nil, err
+	}
+
+	return &BuiltApp{
+		ProviderKey: p.Key(),
+		Device:      device,
+		AppName:     product,
+		Context:     &microWendyBuildContext{AppPath: binPath, AppType: liteclient.AppTypeNative},
 	}, nil
 }
 
@@ -182,73 +370,22 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		return fmt.Errorf("wendy-lite provider: invalid build context")
 	}
 
-	client := liteclient.NewWendyLiteClient()
-	if app.Device.ConnectionInfo["type"] == "USB" {
-		serialPort := app.Device.ConnectionInfo["serialPort"]
-		if serialPort == "" {
-			return fmt.Errorf("wendy-lite provider: missing serial port in connection info")
-		}
-		if err := client.ConnectToSerial(serialPort); err != nil {
-			return fmt.Errorf("connect to device via serial: %w", err)
-		}
-	} else if app.Device.ConnectionInfo["type"] == "LAN" {
-		ip := app.Device.ConnectionInfo["ip"]
-		port := app.Device.ConnectionInfo["port"]
-		if ip == "" || port == "" {
-			return fmt.Errorf("wendy-lite provider: missing IP or port in connection info")
-		}
-		addr := net.JoinHostPort(ip, port)
-		if app.Device.ConnectionInfo["mtls"] == "true" {
-			certInfos, err := loadAllCLICerts()
-			if err != nil {
-				return fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
-			}
-			var connectErrs []error
-			connected := false
-			for _, certInfo := range certInfos {
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
-				if err != nil {
-					return fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
-				}
-				rootCAs := x509.NewCertPool()
-				if certInfo.PemCertificateChain != "" {
-					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
-				}
-				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
-					connectErrs = append(connectErrs, err)
-				} else {
-					connected = true
-					break
-				}
-			}
-			if !connected {
-				var b strings.Builder
-				fmt.Fprintf(&b, "Wendy Lite connection error")
-				for i, e := range connectErrs {
-					if i == 0 {
-						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
-					} else {
-						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
-					}
-				}
-				return errors.New(b.String())
-			}
-		} else {
-			if err := client.ConnectInsecure(addr); err != nil {
-				return fmt.Errorf("connect to device: %w", err)
-			}
-		}
-	} else {
-		return fmt.Errorf("wendy-lite provider: unsupported connection type: %s", app.Device.ConnectionInfo["type"])
+	client, err := p.connectClient(app.Device)
+	if err != nil {
+		return err
 	}
-	defer client.Close()
+	// Closure, not a bound method: the native path below replaces client with
+	// a post-reboot connection that this defer must close instead.
+	defer func() { client.Close() }()
 
-	if err := client.StopApp(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+	if bc.AppType == liteclient.AppTypeWasm {
+		if err := client.StopApp(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: app stop: %v\n", err)
+		}
 	}
 
 	if detach {
-		if err := client.PushApp(bc.WASMPath, nil); err != nil {
+		if err := client.PushApp(bc.AppPath, bc.AppType, nil); err != nil {
 			return fmt.Errorf("push app: %w", err)
 		}
 	} else {
@@ -256,7 +393,7 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 		pushProg := tui.NewProgress("Pushing app...")
 		pp := tui.NewProgressProgram(pushProg)
 		go func() {
-			pushErr := client.PushApp(bc.WASMPath, func(written, total uint32) {
+			pushErr := client.PushApp(bc.AppPath, bc.AppType, func(written, total uint32) {
 				var pct float64
 				if total > 0 {
 					pct = float64(written) / float64(total)
@@ -279,6 +416,74 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 	}
 
 	fmt.Println()
+	if bc.AppType == liteclient.AppTypeNative {
+		// A native app is a full firmware image that only runs after a reboot.
+		// The device drops the connection while restarting, so reconnect
+		// before starting the app.
+		fmt.Println("Rebooting device...")
+		if err := client.ResetTargetDevice(true, 30*time.Second); err != nil {
+			return fmt.Errorf("device reset: %w", err)
+		}
+		if err := client.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
+		}
+
+		fmt.Println("Waiting for device to come back...")
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		deadline := time.Now().Add(60 * time.Second)
+		for {
+			newClient, err := p.connectClient(app.Device)
+			if err == nil {
+				client = newClient
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("reconnect to device after reboot: %w", err)
+			}
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	var consoleDetach func(abrupt bool) error
+	var forwardDone chan struct{}
+	if !detach {
+		consoleCh, cd, err := client.ConsoleAttach(true, true)
+		if err != nil {
+			return fmt.Errorf("console attach: %w", err)
+		}
+		consoleDetach = cd
+
+		// Console events and command responses share one ordered stream,
+		// so console chunks must be drained whenever a command response is
+		// outstanding — otherwise a backed-up console pipeline stalls the
+		// read loop and the StartApp response below never arrives. Forward
+		// from the moment of attach. The deferred receive keeps Run from
+		// closing output while the forwarder may still send to it; it runs
+		// after the deferred detach, which is what closes consoleCh.
+		forwardDone = make(chan struct{})
+		defer func() { <-forwardDone }()
+		defer consoleDetach(false)
+		go func() {
+			defer close(forwardDone)
+			for chunk := range consoleCh {
+				typ := RunOutputStdout
+				if chunk.Stderr {
+					typ = RunOutputStderr
+				}
+				output <- RunOutput{Type: typ, Data: chunk.Data}
+			}
+		}()
+	}
+
 	fmt.Println("Starting app...")
 	if err := client.StartApp(); err != nil {
 		return fmt.Errorf("app start: %w", err)
@@ -286,11 +491,157 @@ func (p *MicroWendyProvider) Run(ctx context.Context, app *BuiltApp, detach bool
 
 	output <- RunOutput{Type: RunOutputStarted}
 
-	return nil
+	if forwardDone == nil {
+		return nil
+	}
+	select {
+	case <-forwardDone:
+		// Device detached on its own or connection lost.
+		return consoleDetach(false)
+	case <-ctx.Done():
+		// The run was cancelled from our side: the user hit Ctrl-C or the
+		// caller gave up on the whole operation. Waiting for a detach ack
+		// could hang without deadline exactly when cancellation is most
+		// likely (device wedged, network gone), so send the detach without
+		// waiting for the ack — giving the device a chance to stop streaming
+		// right away — then close the connection so everything else fails
+		// fast. If the detach never arrives, the rolling attach lease makes
+		// the device stop streaming on its own.
+		if err := consoleDetach(true); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: console detach: %v\n", err)
+		}
+		if err := client.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: close: %v\n", err)
+		}
+		return nil
+	}
 }
 
 func (p *MicroWendyProvider) Stop(_ context.Context, app *BuiltApp) error {
 	return nil
+}
+
+func (p *MicroWendyProvider) GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error) {
+	client, err := p.connectClient(device)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	di, err := client.GetDeviceInfo(3 * time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &ProviderDeviceInfo{
+		// On wendy-lite, OS version and agent version are the same.
+		AgentVersion:     di.OSVersion,
+		OS:               di.OS,
+		OSVersion:        di.OSVersion,
+		CPUArchitecture:  di.CPUArchitecture,
+		DeviceType:       di.Board,
+		WasmAppSupport:   di.WasmAppSupport,
+		NativeAppSupport: di.NativeAppSupport,
+	}, nil
+}
+
+func (p *MicroWendyProvider) WifiConnect(_ context.Context, device models.ExternalDevice, ssid, password string) error {
+	return p.pushWifiConf(device, &litepb.WendyConfWifi{
+		Networks: []*litepb.WendyConfWifiNetwork{{Ssid: ssid, Password: password}},
+	})
+}
+
+func (p *MicroWendyProvider) WifiDisconnect(_ context.Context, device models.ExternalDevice) error {
+	return p.pushWifiConf(device, &litepb.WendyConfWifi{})
+}
+
+// pushWifiConf stops the app, pushes a conf updating only the wifi root field,
+// and reboots the device so the new configuration takes effect.
+func (p *MicroWendyProvider) pushWifiConf(device models.ExternalDevice, wifi *litepb.WendyConfWifi) error {
+	fmt.Println("Connecting to the device...")
+	client, err := p.connectClient(device)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	client.StopApp() // silently ignore errors, the app may not be running
+
+	fmt.Println("Configuring the device...")
+	conf := &litepb.WendyConf{Wifi: wifi}
+	if err := client.PushConf(conf, liteclient.ConfPushModeUpdate, nil); err != nil {
+		return fmt.Errorf("push conf: %w", err)
+	}
+
+	fmt.Println("Rebooting the device...")
+	if err := client.ResetTargetDevice(true, 0); err != nil {
+		return fmt.Errorf("device reset: %w", err)
+	}
+	return nil
+}
+
+// connectClient opens a WendyLiteClient connection to the device over serial
+// or LAN (with mTLS when advertised). The caller must Close the client.
+func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*liteclient.WendyLiteClient, error) {
+	client := liteclient.NewWendyLiteClient()
+	if device.ConnectionInfo["type"] == "USB" {
+		serialPort := device.ConnectionInfo["serialPort"]
+		if serialPort == "" {
+			return nil, fmt.Errorf("wendy-lite provider: missing serial port in connection info")
+		}
+		if err := client.ConnectToSerial(serialPort); err != nil {
+			return nil, fmt.Errorf("connect to device via serial: %w", err)
+		}
+	} else if device.ConnectionInfo["type"] == "LAN" {
+		ip := device.ConnectionInfo["ip"]
+		port := device.ConnectionInfo["port"]
+		if ip == "" || port == "" {
+			return nil, fmt.Errorf("wendy-lite provider: missing IP or port in connection info")
+		}
+		addr := net.JoinHostPort(ip, port)
+		if device.ConnectionInfo["mtls"] == "true" {
+			certInfos, err := loadAllCLICerts()
+			if err != nil {
+				return nil, fmt.Errorf("wendy-lite provider: loading mTLS certs: %w", err)
+			}
+			var connectErrs []error
+			connected := false
+			for _, certInfo := range certInfos {
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				if err != nil {
+					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
+				}
+				rootCAs := x509.NewCertPool()
+				if certInfo.PemCertificateChain != "" {
+					rootCAs.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain))
+				}
+				if err := client.ConnectWithMutualAuthentication(addr, cert, *rootCAs); err != nil {
+					connectErrs = append(connectErrs, err)
+				} else {
+					connected = true
+					break
+				}
+			}
+			if !connected {
+				var b strings.Builder
+				fmt.Fprintf(&b, "Wendy Lite connection error")
+				for i, e := range connectErrs {
+					if i == 0 {
+						fmt.Fprintf(&b, ": identity %d: %v", i+1, e)
+					} else {
+						fmt.Fprintf(&b, "; identity %d: %v", i+1, e)
+					}
+				}
+				return nil, errors.New(b.String())
+			}
+		} else {
+			if err := client.ConnectInsecure(addr); err != nil {
+				return nil, fmt.Errorf("connect to device: %w", err)
+			}
+		}
+	} else {
+		return nil, fmt.Errorf("wendy-lite provider: unsupported connection type: %s", device.ConnectionInfo["type"])
+	}
+	return client, nil
 }
 
 func loadAllCLICerts() ([]config.CertificateInfo, error) {

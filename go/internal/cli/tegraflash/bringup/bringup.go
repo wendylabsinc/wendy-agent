@@ -45,9 +45,15 @@ type Options struct {
 	// MemBCT is the membct filename to use; empty means DefaultMemBCT. The correct
 	// one is selected by the on-board RAMCODE (RAMCODE/2); membct_6 fits RAMCODE 12.
 	MemBCT string
+	// Blob is the manifest-provided mb2/UEFI/initrd payload filename. Empty uses
+	// the legacy Thor filename.
+	Blob string
 	// DevicePath, when set, pins which Jetson in recovery mode to flash (a PathKey
 	// from rcm.ListRecoveryDevices). Empty flashes the first device found.
 	DevicePath string
+	// ExpectedProduct pins the selected Jetson family across the re-open. This
+	// prevents a different Jetson on the same host from satisfying the wait.
+	ExpectedProduct uint16
 	// SendOrder is the bootROM image filenames to send, in order. Empty uses the
 	// built-in default (bct_br → mb1 → psc_bl1 → bct_mb1). Driving this from the
 	// flashpack manifest lets a future BSP reorder the chain without a code change.
@@ -86,13 +92,17 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
-	blob, err := read(opts.Dir, FileBlob)
+	blobName := opts.Blob
+	if blobName == "" {
+		blobName = FileBlob
+	}
+	blob, err := read(opts.Dir, blobName)
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintln(out, "Waiting for Jetson in USB recovery mode...")
-	dev, err := rcm.WaitForDeviceAt(opts.DevicePath)
+	dev, err := rcm.WaitForDeviceAt(opts.DevicePath, opts.ExpectedProduct)
 	if err != nil {
 		return fmt.Errorf("waiting for device: %w", err)
 	}

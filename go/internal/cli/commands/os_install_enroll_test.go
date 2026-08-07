@@ -55,7 +55,7 @@ func stubEnrollPrompts(t *testing.T) {
 func twoSessionConfig() *config.Config {
 	return &config.Config{Auth: []config.AuthConfig{
 		{
-			CloudDashboard: "https://cloud.wendy.sh",
+			CloudDashboard: "https://cloud.wendy.dev",
 			CloudGRPC:      "prod.example.com:443",
 			Certificates:   []config.CertificateInfo{{OrganizationID: 7}},
 		},

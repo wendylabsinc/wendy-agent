@@ -46,14 +46,16 @@ func (m OrgMode) String() string {
 }
 
 // ParseOrgMode maps the WENDY_MTLS_ORG_ENFORCEMENT env value to a mode.
-// An empty string yields (OrgModeGrace, true) — grace is the default. The values
-// "grace", "strict", and "off" (case-insensitive, surrounding whitespace trimmed)
-// yield the corresponding mode and true. Any other value yields (OrgModeGrace,
-// false) so the caller can warn and fall back to grace.
+// An empty string yields (OrgModeStrict, true) — strict is the secure default:
+// a client cert with no org identity is rejected. The values "grace", "strict",
+// and "off" (case-insensitive, surrounding whitespace trimmed) yield the
+// corresponding mode and true. Any other value yields (OrgModeStrict, false) so
+// the caller can warn and still fail safe (reject no-org certs) rather than
+// silently downgrading enforcement.
 func ParseOrgMode(s string) (OrgMode, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "":
-		return OrgModeGrace, true
+		return OrgModeStrict, true
 	case "grace":
 		return OrgModeGrace, true
 	case "strict":
@@ -61,7 +63,7 @@ func ParseOrgMode(s string) (OrgMode, bool) {
 	case "off":
 		return OrgModeOff, true
 	default:
-		return OrgModeGrace, false
+		return OrgModeStrict, false
 	}
 }
 

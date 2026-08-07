@@ -18,14 +18,34 @@ That builds the two-service compose project, ships it to the device, and
 starts both containers. First boot pulls `itzg/minecraft-server` (~600 MB)
 and generates a world (60–120 s).
 
-Once you see `Done (Xs)! For help, type "help"` in the stream, open the
-admin UI in a browser on the same LAN:
+Once you see `Done (Xs)! For help, type "help"` in the stream, the world is
+up. `wendy run` also opens the admin UI in your browser automatically as
+soon as it's reachable:
 
 ```
 http://<jetson-ip>:8080
 ```
 
+If it doesn't open on its own (e.g. no display on this machine), visit that
+URL manually. See [Why the browser opens](#why-the-browser-opens) below.
+
 Connect a Minecraft Java client to `<jetson-ip>:25565`.
+
+## Why the browser opens
+
+The companion `wendy.json` (which sits right next to `docker-compose.yml` in
+this directory, so `wendy run` picks it up automatically) declares a
+top-level `readiness` (a TCP probe against port 8080, with a 180 s timeout to
+cover first-boot world generation) and `hooks.postStart.openURL` pointing at
+`http://${WENDY_HOSTNAME}:8080`. Since this is a two-service compose
+project, that top-level pair is an app-level fallback: it fires once after
+both `minecraft` and `webui` have started, rather than being tied to either
+service individually — which is why `wendy run` waits for the web UI and
+then opens it for you.
+
+To scope a readiness probe or hook to one service instead, declare it under
+`services.webui` in `wendy.json` or `x-wendy` on the `webui` service in
+`docker-compose.yml` — see [Readiness probes and postStart hooks](../../docs/apps/compose.md#readiness-probes-and-poststart-hooks).
 
 ## What you get
 

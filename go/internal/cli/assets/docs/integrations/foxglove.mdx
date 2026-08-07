@@ -1,39 +1,14 @@
 ---
 title: Wendy for Foxglove
-description: Bridge a WendyOS device's live ROS 2 topics into Foxglove Studio for real-time visualization, over the CLI's existing secure connection.
+description: Stream a WendyOS device's live ROS 2 topics into Foxglove Studio for real-time visualization, with a single command and nothing to install on the device by hand.
 ---
 
-<Callout type="warning">
-**Coming soon.** Wendy for Foxglove is in active development
-([PR #1165](https://github.com/wendylabsinc/WendyOS/pull/1165)) and not yet
-available in a released CLI. This page previews how it will work. Commands and
-flags may change before release.
-</Callout>
-
 Wendy for Foxglove turns a device's live ROS 2 graph into something you can *see*.
-The CLI hosts a [Foxglove WebSocket Protocol](https://foxglove.dev/) server on your
-machine and bridges it to the device's ROS 2 topics, so you can drop a Raw Message
-panel, plot a signal, or watch a camera feed update in real time — without
-installing anything on the device.
-
-## How it will work
-
-The server runs on your machine (default `127.0.0.1:8765`) and reaches the
-device's ROS 2 system over the existing mutually-authenticated gRPC connection.
-Your data never leaves your machine to a third party.
-
-```
-Foxglove Studio ──ws──► wendy CLI (host) ──gRPC (mTLS)──► wendy-agent ──exec──► ros2 sidecar
- (foxglove.websocket.v1)  foxglove server      ROS2Service          ros2 CLI  (shares app DDS domain)
-```
-
-The CLI discovers the device's ROS 2 topics, advertises them to Foxglove with the
-right encoding and schema, and forwards messages as they arrive — building on the
-same sidecar mechanism as [Wendy for ROS 2](/docs/integrations/ros2).
-
-## Usage (preview)
-
-Start the bridge against your default device:
+One command deploys the standard `foxglove_bridge` node to the device, joins it to
+the device's ROS 2 graph, and forwards its WebSocket port to your machine. Every
+topic in the selected domain, including hidden ROS topics, is exposed to Foxglove,
+so you can drop a Raw Message panel, plot a signal, or watch a camera feed update
+in real time.
 
 ```bash
 wendy device foxglove serve
@@ -48,25 +23,95 @@ ws://localhost:8765
 
 Discovered topics appear as channels you can add to any panel.
 
-Planned flags for `wendy device foxglove serve`:
+## How it works
+
+`wendy device foxglove serve` runs three steps for you:
+
+1. **Generates a bridge app.** The CLI writes a temporary app: a Dockerfile based
+   on `ros:<distro>` with the distro's `foxglove_bridge` package installed, and a
+   `wendy.json` with a `frameworks.ros2` block (your `--domain`, `--rmw`, and
+   `--distro`), host-scoped DDS discovery, and a host-network entitlement. This
+   lets the bridge join the device's whole ROS 2 graph, including a robot's native
+   host ROS 2 (for example a Unitree Go2's onboard stack).
+2. **Deploys it.** The app ships through the normal `wendy run` pipeline: built
+   locally, pushed to the device, and started detached under the app ID
+   `sh.wendy.foxglovebridge`. Re-running the command first removes any previous
+   instance, so it is always safe to run again.
+3. **Forwards the port.** The bridge's WebSocket port (8765 inside the app) is
+   forwarded to your machine with `wendy cloud tunnel`, and the CLI prints the
+   `ws://localhost:<port>` URL to connect Foxglove Studio to.
+
+```
+Foxglove Studio --ws--> localhost:8765 --tunnel--> foxglove_bridge (device) --DDS--> your ROS 2 apps
+```
+
+## Prerequisites
+
+- The device must be enrolled with Wendy Cloud and you must be signed in, because
+  the port forward runs through the Wendy Cloud tunnel broker. See
+  [Wendy Cloud](/docs/cloud).
+- Docker on your development machine, so the CLI can build the bridge image.
+- A ROS 2 stack producing topics on the device (your own apps, or a robot's
+  native ROS 2 reachable over the host network).
+
+## Flags
 
 | Flag | Description |
 | --- | --- |
-| `--port` | WebSocket listen port (default `8765`). |
-| `--host` | Bind address (default `127.0.0.1`). |
-| `--domain` | `ROS_DOMAIN_ID` override (default: from the app's ROS 2 config). |
-| `--topic` | Restrict to specific topics; repeatable. Defaults to all topics. |
+| `--port` | Local port to forward the bridge's WebSocket to (default `8765`). |
+| `--domain` | `ROS_DOMAIN_ID` the device's ROS 2 uses (default `0`). |
+| `--rmw` | RMW implementation the device's ROS 2 uses (default `rmw_cyclonedds_cpp`). |
+| `--distro` | ROS 2 distro the bridge image is built from (default `humble`). |
+| `--interface` | CycloneDDS network interface to use on a multi-interface device. |
 
-## Scope at launch
+The global `--device` flag selects a device, as with every other command.
 
-The first release is **read-only** — visualize live topics. It's the first of a
-planned three phases:
+The bridge exposes every topic in the selected domain. ROS 2 domains are isolated
+graphs, so stop and restart `serve` with a different `--domain` when you want to
+inspect another graph.
 
-- **Available at launch** — subscribe to and visualize live ROS 2 topics.
-- **Later** — Foxglove parameters and service-call support.
-- **Later** — publishing from Foxglove back to the device's topics.
+The bridge uses the device's host network for ROS 2 discovery, but its WebSocket
+listener binds only to `127.0.0.1` on the device. Foxglove therefore reaches the
+bridge through Wendy's authenticated Cloud tunnel rather than by connecting
+directly to port `8765` on the device's management or robot LAN.
 
-## In the meantime
+<Callout type="warning">
+**Match the bridge to your app's domain.** An app whose `frameworks.ros2` omits
+`domainId` gets a stable auto-derived domain (a hash of its `appId`), not domain 0.
+The bridge always uses an explicit domain (`--domain`, default 0), so for apps
+using an auto-derived domain the bridge will not see their topics. The simplest
+setup: set an explicit `domainId` in your app's `wendy.json` and pass the same
+value with `--domain`.
+</Callout>
 
-You can already inspect, echo, and record the same ROS 2 data from the CLI today
-with [Wendy for ROS 2](/docs/integrations/ros2).
+For a robot whose ROS 2 runs on a non-default domain or middleware, match the
+bridge to it:
+
+```bash
+wendy device foxglove serve --domain 42 --rmw rmw_cyclonedds_cpp
+```
+
+On a multi-interface robot, pin CycloneDDS to the interface connected to the
+robot's native ROS 2 network. For example, a Unitree Go2 commonly uses its
+`192.168.123.x` interface:
+
+```bash
+wendy device foxglove serve --domain 0 --interface enP8p1s0
+```
+
+## Stopping and cleanup
+
+Press **Ctrl-C** to stop the port forward. The bridge app keeps running detached
+on the device. Run `serve` again at any time to redeploy and reconnect. To remove
+the bridge from the device entirely:
+
+```bash
+wendy device apps remove sh.wendy.foxglovebridge --force --cleanup
+```
+
+## Related
+
+- [Wendy for ROS 2](/docs/integrations/ros2) lets you inspect, echo, and record
+  the same ROS 2 data from the CLI.
+- [Multi-app deployments](/docs/guides/multi-app-deployments) shows how to deploy
+  the ROS 2 stack the bridge visualizes.

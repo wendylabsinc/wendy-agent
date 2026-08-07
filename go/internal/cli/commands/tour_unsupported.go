@@ -14,7 +14,7 @@ func newTourCmd() *cobra.Command {
 		Short: "Interactive guided setup tour for new users",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Println("The Wendy tour is available on macOS, Linux, and Windows.")
-			fmt.Println("Visit https://wendy.sh/docs to get started.")
+			fmt.Println("Visit https://docs.wendy.dev/latest to get started.")
 			return nil
 		},
 	}

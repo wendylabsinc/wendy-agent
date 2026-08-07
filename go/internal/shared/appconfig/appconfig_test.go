@@ -888,6 +888,105 @@ func TestValidate_ReadinessValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromFile_ServiceReadinessHooks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wendy.json")
+
+	content := `{
+		"appId": "com.example.app",
+		"services": {
+			"web": {
+				"context": "web",
+				"readiness": {
+					"tcpSocket": { "port": 3002 },
+					"timeoutSeconds": 15
+				},
+				"hooks": {
+					"postStart": {
+						"openURL": "http://${WENDY_HOSTNAME}:3000",
+						"agent": "echo ready"
+					}
+				}
+			}
+		}
+	}`
+
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing test file: %v", err)
+	}
+
+	cfg, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadFromFile() error = %v", err)
+	}
+
+	web := cfg.Services["web"]
+	if web == nil {
+		t.Fatal(`services["web"] is nil`)
+	}
+	if web.Readiness == nil || web.Readiness.TCPSocket == nil {
+		t.Fatal(`services["web"].Readiness.TCPSocket is nil`)
+	}
+	if web.Readiness.TCPSocket.Port != 3002 {
+		t.Errorf("Readiness.TCPSocket.Port = %d, want 3002", web.Readiness.TCPSocket.Port)
+	}
+	if web.Readiness.TimeoutSeconds != 15 {
+		t.Errorf("Readiness.TimeoutSeconds = %d, want 15", web.Readiness.TimeoutSeconds)
+	}
+	if web.Hooks == nil || web.Hooks.PostStart == nil {
+		t.Fatal(`services["web"].Hooks.PostStart is nil`)
+	}
+	if web.Hooks.PostStart.OpenURL != "http://${WENDY_HOSTNAME}:3000" {
+		t.Errorf("Hooks.PostStart.OpenURL = %q, want %q", web.Hooks.PostStart.OpenURL, "http://${WENDY_HOSTNAME}:3000")
+	}
+	if web.Hooks.PostStart.Agent != "echo ready" {
+		t.Errorf("Hooks.PostStart.Agent = %q, want %q", web.Hooks.PostStart.Agent, "echo ready")
+	}
+}
+
+func TestValidate_ServiceReadinessInvalidPort(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"web": {
+				Context: "web",
+				Readiness: &ReadinessConfig{
+					TCPSocket: &TCPSocketProbe{Port: 70000},
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected error for invalid service readiness port, got nil")
+	}
+	if !strings.Contains(err.Error(), `services["web"].readiness`) {
+		t.Errorf(`error %q does not mention services["web"].readiness`, err.Error())
+	}
+}
+
+func TestValidate_ServiceReadinessNegativeTimeout(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Services: map[string]*ServiceConfig{
+			"web": {
+				Context: "web",
+				Readiness: &ReadinessConfig{
+					TCPSocket:      &TCPSocketProbe{Port: 3000},
+					TimeoutSeconds: -5,
+				},
+			},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() expected error for negative service readiness timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), `services["web"].readiness`) {
+		t.Errorf(`error %q does not mention services["web"].readiness`, err.Error())
+	}
+}
+
 func TestRunArgs_RoundTripJSON(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1223,7 +1322,7 @@ func TestValidateJSON_UnknownROS2Keys(t *testing.T) {
 }
 
 func TestValidateJSON_CleanROS2_NoWarnings(t *testing.T) {
-	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble"}}}`)
+	data := []byte(`{"appId":"com.example.app","frameworks":{"ros2":{"domainId":0,"rmw":"cyclonedds","distro":"humble","discoveryScope":"host"}}}`)
 	if got := ValidateJSON(data); len(got) != 0 {
 		t.Errorf("clean ros2 config: got %d warnings, want 0: %v", len(got), got)
 	}
@@ -1687,6 +1786,61 @@ func TestLoadComposeCompanion_WithServices(t *testing.T) {
 	}
 }
 
+func TestLoadComposeCompanion_ServiceReadinessHooks(t *testing.T) {
+	dir := t.TempDir()
+	data := `{
+		"appId": "com.example.robot",
+		"services": {
+			"web": {
+				"readiness": { "tcpSocket": { "port": 8080 }, "timeoutSeconds": 20 },
+				"hooks": { "postStart": { "openURL": "http://localhost:8080" } }
+			}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, _, err := LoadComposeCompanion(dir)
+	if err != nil {
+		t.Fatalf("LoadComposeCompanion: %v", err)
+	}
+	web := cfg.Services["web"]
+	if web == nil {
+		t.Fatal("web service is nil")
+	}
+	if web.Readiness == nil || web.Readiness.TCPSocket == nil || web.Readiness.TCPSocket.Port != 8080 {
+		t.Errorf("web.Readiness mismatch: %+v", web.Readiness)
+	}
+	if web.Readiness.TimeoutSeconds != 20 {
+		t.Errorf("web.Readiness.TimeoutSeconds = %d, want 20", web.Readiness.TimeoutSeconds)
+	}
+	if web.Hooks == nil || web.Hooks.PostStart == nil || web.Hooks.PostStart.OpenURL != "http://localhost:8080" {
+		t.Errorf("web.Hooks mismatch: %+v", web.Hooks)
+	}
+}
+
+func TestLoadComposeCompanion_InvalidServiceReadinessFails(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{"zero port", `{"appId": "com.example.robot", "services": {"web": {"readiness": {"tcpSocket": {"port": 0}}}}}`},
+		{"port too high", `{"appId": "com.example.robot", "services": {"web": {"readiness": {"tcpSocket": {"port": 70000}}}}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "wendy.json"), []byte(tt.json), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := LoadComposeCompanion(dir); err == nil {
+				t.Fatal("expected error for invalid service readiness port")
+			}
+		})
+	}
+}
+
 func TestLoadComposeCompanion_InvalidEntitlement(t *testing.T) {
 	dir := t.TempDir()
 	data := `{
@@ -1853,6 +2007,91 @@ func TestValidateJSON_ServiceEntitlements(t *testing.T) {
 	})
 }
 
+func TestValidateJSON_ServiceHooksCLILegacyOpener(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"services": {
+			"web": {
+				"context": "web",
+				"hooks": {
+					"postStart": {
+						"cli": "open http://localhost:3000"
+					}
+				}
+			}
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) != 1 {
+		t.Fatalf("ValidateJSON() got %d warnings, want 1: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], `services["web"].hooks`) {
+		t.Errorf("warning %q does not carry the service prefix", warnings[0])
+	}
+
+	clean := []byte(`{
+		"appId": "com.example.app",
+		"hooks": { "postStart": { "openURL": "http://localhost:3000" } }
+	}`)
+	if warnings := ValidateJSON(clean); len(warnings) != 0 {
+		t.Errorf("ValidateJSON() expected no warnings for clean top-level config, got: %v", warnings)
+	}
+}
+
+func TestValidateJSON_TopLevelAgentHookOnMultiServiceWarns(t *testing.T) {
+	const warningSubstr = "top-level hooks.postStart.agent is ignored for multi-service apps"
+
+	t.Run("warns with services map and top-level agent hook", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "agent": "echo ready" } },
+			"services": {
+				"web": { "context": "web" }
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		found := false
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("expected warning about ignored top-level agent hook, got: %v", warnings)
+		}
+	})
+
+	t.Run("no warning without services map", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "agent": "echo ready" } }
+		}`)
+		warnings := ValidateJSON(data)
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				t.Fatalf("unexpected warning without services map: %q", w)
+			}
+		}
+	})
+
+	t.Run("no warning when top-level hook is openURL/cli only", func(t *testing.T) {
+		data := []byte(`{
+			"appId": "com.example.app",
+			"hooks": { "postStart": { "openURL": "http://localhost:3000", "cli": "echo hi" } },
+			"services": {
+				"web": { "context": "web" }
+			}
+		}`)
+		warnings := ValidateJSON(data)
+		for _, w := range warnings {
+			if strings.Contains(w, warningSubstr) {
+				t.Fatalf("unexpected warning for openURL/cli-only top-level hook: %q", w)
+			}
+		}
+	})
+}
+
 func TestValidate_ROS2_RejectsBadDomainID(t *testing.T) {
 	bad := 500
 	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &bad}}}
@@ -1868,9 +2107,16 @@ func TestValidate_ROS2_RejectsUnknownRMW(t *testing.T) {
 	}
 }
 
+func TestValidate_ROS2_RejectsUnknownDiscoveryScope(t *testing.T) {
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DiscoveryScope: "global"}}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for unknown discoveryScope, got nil")
+	}
+}
+
 func TestValidate_ROS2_AcceptsValid(t *testing.T) {
 	id := 42
-	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble"}}}
+	cfg := &AppConfig{AppID: "com.example.app", Frameworks: &FrameworksConfig{ROS2: &ROS2Config{DomainID: &id, RMW: "cyclonedds", Distro: "humble", DiscoveryScope: "host"}}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid ros2 config rejected: %v", err)
 	}
@@ -1898,6 +2144,25 @@ func TestValidate_ROS2_PerServiceUnknownRMW(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected error for unknown per-service rmw, got nil")
+	}
+}
+
+func TestNotificationsEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{{Type: EntitlementNotifications}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"notifications"}]}`)); len(warnings) != 0 {
+		t.Fatalf("got warnings for notifications entitlement: %v", warnings)
+	}
+}
+
+func TestNotificationsEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{AppID: "test", Entitlements: []Entitlement{
+		{Type: EntitlementNotifications}, {Type: EntitlementNotifications},
+	}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for duplicate notifications entitlement")
 	}
 }
 
@@ -1942,5 +2207,138 @@ func TestValidateJSON_BuildEntitlementRejectsExtraKeys(t *testing.T) {
 	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"build","bogus":1}]}`))
 	if len(warnings) == 0 {
 		t.Fatal("expected a warning for an unknown key on the build entitlement")
+	}
+}
+
+// TestAppConfig_TopLevelEnv covers WDY-2040: a single-container app declares
+// env at the top level, which is the only place it can.
+func TestAppConfig_TopLevelEnv(t *testing.T) {
+	cfg, err := LoadFromBytes([]byte(`{
+		"appId": "envapp",
+		"env": {"OTEL_LOGS_EXPORTER": "console", "TOKEN": "${HOST_TOKEN}"}
+	}`))
+	if err != nil {
+		t.Fatalf("LoadFromBytes: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got, want := cfg.Env["OTEL_LOGS_EXPORTER"], "console"; got != want {
+		t.Errorf("env[OTEL_LOGS_EXPORTER] = %q, want %q", got, want)
+	}
+	if got, want := cfg.Env["TOKEN"], "${HOST_TOKEN}"; got != want {
+		t.Errorf("env[TOKEN] = %q, want %q (host expansion happens at deploy time)", got, want)
+	}
+}
+
+func TestValidateEnv_RejectsMalformedKeys(t *testing.T) {
+	for _, key := range []string{"BAD-KEY", "1LEADING", "has space", "WITH.DOT", ""} {
+		cfg := &AppConfig{AppID: "envapp", Env: map[string]string{key: "1"}}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() accepted env key %q, want an error", key)
+		}
+	}
+
+	for _, key := range []string{"OK", "_UNDERSCORE", "MIXED_case9"} {
+		cfg := &AppConfig{AppID: "envapp", Env: map[string]string{key: "1"}}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate() rejected env key %q: %v", key, err)
+		}
+	}
+}
+
+func TestValidateEnv_RejectsMalformedServiceKeys(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "envapp",
+		Services: map[string]*ServiceConfig{
+			"api": {Context: ".", Env: map[string]string{"BAD-KEY": "1"}},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted a malformed service env key, want an error")
+	}
+	if !strings.Contains(err.Error(), `services["api"].env`) {
+		t.Errorf("error %q does not name the offending service env", err)
+	}
+}
+
+// TestValidateJSON_UnknownTopLevelKey covers WDY-2040: keys the config does not
+// decode are discarded by encoding/json, so they are reported as warnings.
+func TestValidateJSON_UnknownTopLevelKey(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"$schema": "https://wendy.dev/schemas/wendy.json",
+		"env": {"OK": "1"},
+		"enviroment": {"OK": "1"},
+		"local": {"darwin-arm64": "python3 app.py"}
+	}`))
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+	// The warning also lists the allowed keys, so check the flagged half only.
+	flagged, _, _ := strings.Cut(warnings[0], "Allowed keys are:")
+	for _, want := range []string{"enviroment", "local"} {
+		if !strings.Contains(flagged, want) {
+			t.Errorf("warning %q does not mention %q", warnings[0], want)
+		}
+	}
+	for _, unwanted := range []string{"appId", "$schema", "env,"} {
+		if strings.Contains(flagged, unwanted) {
+			t.Errorf("warning %q flags known key %s", warnings[0], unwanted)
+		}
+	}
+}
+
+func TestValidateJSON_UnknownServiceKey(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"services": {"api": {"context": ".", "environment": {"OK": "1"}}}
+	}`))
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", warnings)
+	}
+	if !strings.Contains(warnings[0], "environment") || !strings.Contains(warnings[0], `services["api"]`) {
+		t.Errorf("warning %q does not name the service and key", warnings[0])
+	}
+}
+
+// A fleet manifest has its own keys and its own validation; ValidateJSON must
+// not report them as unknown.
+func TestValidateJSON_FleetManifestKeysNotFlagged(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "fleet",
+		"components": {"cam": {"path": "./cam", "tags": ["camera-*"]}}
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+}
+
+func TestValidateJSON_KnownKeysProduceNoWarnings(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{
+		"appId": "app",
+		"version": "0.1.0",
+		"platform": "linux",
+		"language": "swift",
+		"xcode": {"scheme": "App"},
+		"run": {"args": ["--flag"]},
+		"entitlements": [{"type": "network", "mode": "host"}],
+		"readiness": {"tcpSocket": {"port": 8080}},
+		"hooks": {"postStart": {"openURL": "http://localhost:8080"}},
+		"python": {"sourceRoot": "src"},
+		"debug": false,
+		"files": [{"path": "assets"}],
+		"brewfile": "Brewfile.wendy",
+		"isolation": "shared-ipc",
+		"frameworks": {"ros2": {"distro": "humble"}},
+		"resources": {"cpus": 1},
+		"env": {"OK": "1"},
+		"services": {"api": {"context": ".", "env": {"OK": "1"}}}
+	}`))
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
 	}
 }

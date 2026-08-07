@@ -3,9 +3,6 @@
 The public WendyOS documentation site is built with Fumadocs and Next.js, then
 published as a static export to `https://docs.wendy.dev`.
 
-`https://docs.wendy.sh` redirects to the equivalent `https://docs.wendy.dev`
-URL.
-
 ## URLs
 
 | Purpose | URL |
@@ -109,10 +106,26 @@ Required GitHub environment variables:
 
 Static files are served from the public `wendy-docs-public` Cloud Storage bucket
 through the global external HTTP(S) load balancer for `docs.wendy.dev`. The load
-balancer terminates HTTPS, redirects `docs.wendy.sh` to `docs.wendy.dev`, and
-adds security response headers for the public docs host.
+balancer terminates HTTPS and adds security response headers for the public
+docs host.
 
 Branch-preview objects under `branch-*` are cleaned up by CI after 30 days.
+
+### Vanity redirects
+
+Short marketing paths are served as static redirect pages uploaded to the
+bucket root by the `Deploy vanity redirects` step in
+`.github/workflows/fumadocs.yml` (main-branch pushes and release deploys only):
+
+| Path | Target |
+|---|---|
+| `/pi` | `/latest/installation/wendyos-raspberry-pi-5/` |
+| `/thor` | `/latest/installation/wendyos-nvidia-jetson-agx-thor/` |
+| `/jetson`, `/jetson-orin`, `/jetson-orin-nano` | `/latest/installation/wendyos-nvidia-jetson-orin-nano/` |
+
+Add new entries to the `REDIRECTS` map in that workflow step. Slugs must not
+collide with deploy path prefixes (`latest`, `latest-nightly`, `release-*`,
+`branch-*`).
 
 ## Release Notifications
 

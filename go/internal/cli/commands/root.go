@@ -3,6 +3,7 @@ package commands
 
 import (
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
@@ -31,10 +32,11 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip heavy init for commands that don't need device/cloud setup.
-			// __usb-setup runs as root under sudo; skipping init avoids doing
-			// config/analytics writes (and an update check) as root.
+			// __usb-setup and __t234-write run as root under sudo; skipping init
+			// avoids config/analytics writes (and an update check) as root, and
+			// keeps the first-run banner out of the helper's captured output.
 			switch cmd.Name() {
-			case "__ble-check", "__usb-setup", "open-browser":
+			case "__ble-check", "__usb-setup", "__t234-write", "open-browser":
 				return nil
 			}
 
@@ -121,8 +123,6 @@ func NewRootCmd() *cobra.Command {
 	initCmd.GroupID = "develop"
 	runCmd := newRunCmd()
 	runCmd.GroupID = "develop"
-	appCmd := newAppCmd()
-	appCmd.GroupID = "develop"
 	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
 	// group is hidden). A fresh command instance is used because a cobra
 	// command can only be attached to one parent.
@@ -211,7 +211,6 @@ func NewRootCmd() *cobra.Command {
 		// Develop & Deploy
 		initCmd,
 		runCmd,
-		appCmd,
 		installCmd,
 		// Manage
 		projectCmd,
@@ -225,6 +224,7 @@ func NewRootCmd() *cobra.Command {
 		// Hidden
 		bleCheckCmd,
 		bmapWriteCmd,
+		newT234WriteCmd(),
 		newUSBSetupHiddenCmd(),
 		watchCmd,
 		buildCmd,
@@ -242,8 +242,40 @@ func NewRootCmd() *cobra.Command {
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
 
+	rejectStrayArguments(root)
+
 	root.Version = version.Version
 	return root
+}
+
+// rejectStrayArguments gives every command that takes no positional arguments a
+// NoArgs validator, so a stray word is reported instead of silently dropped.
+//
+// Without a validator cobra defaults to accepting anything, which means
+// `wendy device wifi connect MyNetwork` discards "MyNetwork" and proceeds as if
+// no network had been named -- the SSID is supplied with --ssid. Around ninety
+// commands were in that state; none of them had opted into it deliberately.
+//
+// A command is only treated as argument-free when its Use string declares no
+// placeholder. Anything documenting a positional, such as "logs [app]" or
+// "record [topics...]", already states its own contract and is left alone, as is
+// any command that already sets Args.
+func rejectStrayArguments(cmd *cobra.Command) {
+	for _, child := range cmd.Commands() {
+		rejectStrayArguments(child)
+	}
+	if !cmd.Runnable() || cmd.Args != nil {
+		return
+	}
+	for _, token := range strings.Fields(cmd.Use)[1:] {
+		if token == "[flags]" {
+			continue
+		}
+		if strings.HasPrefix(token, "<") || strings.HasPrefix(token, "[") {
+			return
+		}
+	}
+	cmd.Args = cobra.NoArgs
 }
 
 // nextStepHint returns a one-line suggestion for the next command to run after

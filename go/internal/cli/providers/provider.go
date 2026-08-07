@@ -31,11 +31,25 @@ type DeviceProvider interface {
 	// CanBuild reports whether this provider can build the project at projectPath.
 	CanBuild(projectPath string) bool
 	// Build compiles the project for the given device and returns a BuiltApp handle.
-	Build(ctx context.Context, device models.ExternalDevice, projectPath, product string, debug bool) (*BuiltApp, error)
+	Build(ctx context.Context, device models.ExternalDevice, projectPath, projectType, product string, debug bool) (*BuiltApp, error)
 	// Run starts the built application, streaming output to the channel until done.
 	Run(ctx context.Context, app *BuiltApp, detach bool, output chan<- RunOutput) error
 	// Stop terminates a running application.
 	Stop(ctx context.Context, app *BuiltApp) error
+	// GetDeviceInfo queries the device for identifying information.
+	// Providers that cannot report device info return (nil, nil).
+	GetDeviceInfo(ctx context.Context, device models.ExternalDevice) (*ProviderDeviceInfo, error)
+}
+
+// ProviderDeviceInfo describes a device as reported by its provider.
+type ProviderDeviceInfo struct {
+	AgentVersion     string
+	OS               string
+	OSVersion        string
+	CPUArchitecture  string // e.g. "riscv" for wendy-lite ESP32 boards
+	DeviceType       string // e.g. the board name for wendy-lite
+	WasmAppSupport   bool
+	NativeAppSupport bool
 }
 
 // BuiltApp is the result of a successful Build. The opaque Context field
@@ -110,6 +124,16 @@ type ImageBuilder interface {
 	BuildFromImage(device models.ExternalDevice, product, imageName string) *BuiltApp
 }
 
+// ContinuousDiscoverer is optionally implemented by providers that can stream
+// discovered devices as they appear, instead of being polled via DiscoverDevices.
+type ContinuousDiscoverer interface {
+	// DiscoverDevicesContinuous starts continuous discovery and returns a
+	// channel that receives each device as it is found. The channel stays
+	// open until ctx is cancelled (or the stream fails), then is closed.
+	// Implementations may re-send a device; consumers deduplicate.
+	DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error)
+}
+
 // TypedBuilder is optionally implemented by providers that can disambiguate
 // between multiple buildable markers in the same project using the caller's
 // resolved build type (e.g. "docker" vs "compose"). When the build type is
@@ -132,6 +156,13 @@ type ContainerManager interface {
 	StartContainer(ctx context.Context, name string) error
 	StopContainer(ctx context.Context, name string) error
 	RemoveContainer(ctx context.Context, name string) error
+}
+
+// WifiManager is optionally implemented by providers that can manage the
+// WiFi connection of their devices.
+type WifiManager interface {
+	WifiConnect(ctx context.Context, device models.ExternalDevice, ssid, password string) error
+	WifiDisconnect(ctx context.Context, device models.ExternalDevice) error
 }
 
 // ContainerInfo describes a container managed by a provider.

@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"testing"
 
@@ -120,16 +121,57 @@ func TestWiFiList_ReturnsNetworks(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var networks []map[string]any
-	if err := json.Unmarshal([]byte(text), &networks); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	networks := listPayload(t, result, "networks")
 	if len(networks) != 1 {
 		t.Fatalf("expected 1 network, got %d", len(networks))
 	}
 	if networks[0]["ssid"] != "MyNetwork" {
 		t.Errorf("ssid = %v, want MyNetwork", networks[0]["ssid"])
+	}
+}
+
+func TestWiFiList_HasStructuredContent(t *testing.T) {
+	fake := &fakeWiFiBluetoothServer{
+		wifiNetworks: []*agentpb.ListWiFiNetworksResponse_WiFiNetwork{
+			{Ssid: "MyNetwork", IsConnected: true},
+		},
+	}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "wifi_list", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if _, ok := structuredMap(t, result)["networks"]; !ok {
+		t.Error("wifi_list envelope is missing the networks key")
+	}
+}
+
+func TestWiFiList_MaxBytesTruncates(t *testing.T) {
+	networks := make([]*agentpb.ListWiFiNetworksResponse_WiFiNetwork, 0, 200)
+	for i := 0; i < 200; i++ {
+		networks = append(networks, &agentpb.ListWiFiNetworksResponse_WiFiNetwork{Ssid: "some-padding-ssid-value"})
+	}
+	fake := &fakeWiFiBluetoothServer{wifiNetworks: networks}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "wifi_list", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
 	}
 }
 
@@ -225,11 +267,7 @@ func TestWiFiKnownNetworks_ReturnsNetworks(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var networks []map[string]any
-	if err := json.Unmarshal([]byte(text), &networks); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	networks := listPayload(t, result, "networks")
 	if len(networks) != 1 || networks[0]["ssid"] != "HomeNet" {
 		t.Errorf("unexpected networks: %v", networks)
 	}
@@ -263,16 +301,60 @@ func TestBluetoothScan_ReturnsPeripherals(t *testing.T) {
 	if result.IsError {
 		t.Fatalf("unexpected error result: %v", result.Content)
 	}
-	text := result.Content[0].(mcpgo.TextContent).Text
-	var devices []map[string]any
-	if err := json.Unmarshal([]byte(text), &devices); err != nil {
-		t.Fatalf("invalid JSON: %v\ntext: %s", err, text)
-	}
+	devices := listPayload(t, result, "devices")
 	if len(devices) != 1 {
 		t.Fatalf("expected 1 device, got %d", len(devices))
 	}
 	if devices[0]["name"] != "HeadPhones" {
 		t.Errorf("name = %v, want HeadPhones", devices[0]["name"])
+	}
+}
+
+func TestBluetoothScan_HasStructuredContent(t *testing.T) {
+	fake := &fakeWiFiBluetoothServer{
+		btPeripherals: []*agentpb.DiscoveredBluetoothPeripheral{
+			{Name: "HeadPhones", Address: "AA:BB:CC:DD:EE:FF", Rssi: -60},
+		},
+	}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "bluetooth_scan", map[string]any{"timeout_seconds": 2})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("unexpected error result: %v", result.Content)
+	}
+	if _, ok := structuredMap(t, result)["devices"]; !ok {
+		t.Error("bluetooth_scan envelope is missing the devices key")
+	}
+}
+
+func TestBluetoothScan_MaxBytesTruncates(t *testing.T) {
+	peripherals := make([]*agentpb.DiscoveredBluetoothPeripheral, 0, 200)
+	for i := 0; i < 200; i++ {
+		peripherals = append(peripherals, &agentpb.DiscoveredBluetoothPeripheral{
+			Name:    "some-padding-peripheral-name",
+			Address: fmt.Sprintf("AA:BB:CC:DD:EE:%02X", i%256),
+		})
+	}
+	fake := &fakeWiFiBluetoothServer{btPeripherals: peripherals}
+	conn := startFakeAgentWiFiServer(t, fake)
+	srv := New(&config.Config{}, nil)
+	srv.SetConn(conn)
+
+	result, err := srv.callTool(context.Background(), "bluetooth_scan", map[string]any{"timeout_seconds": 2, "max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
 	}
 }
 

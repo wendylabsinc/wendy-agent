@@ -133,6 +133,12 @@ func TestReachableAppURL(t *testing.T) {
 			want:      "http://[2001:db8::1]:3001",
 		},
 		{
+			name:     "IPv6 address is bracketed in a hook URL template",
+			hookURL:  "http://${WENDY_HOSTNAME}:3001/dashboard",
+			deviceIP: "2001:db8::1",
+			want:     "http://[2001:db8::1]:3001/dashboard",
+		},
+		{
 			name:     "no hook URL and no readiness port yields nothing",
 			deviceIP: "192.168.1.42",
 			want:     "",
@@ -140,10 +146,30 @@ func TestReachableAppURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reachableAppURL(tc.hookURL, tc.appID, tc.deviceIP, tc.readiness)
+			got := reachableAppURL(tc.hookURL, tc.appID, "", tc.deviceIP, tc.readiness)
 			if got != tc.want {
 				t.Errorf("reachableAppURL() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestURLSafeHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want string
+	}{
+		{"device.local", "device.local"},      // hostname untouched
+		{"192.168.0.159", "192.168.0.159"},    // IPv4 untouched
+		{"2001:db8::1", "[2001:db8::1]"},      // IPv6 bracketed
+		{"fe80::1%en0", "[fe80::1%25en0]"},    // zone percent-escaped (RFC 6874)
+		{"::ffff:192.168.0.1", "192.168.0.1"}, // IPv4-mapped unmapped to plain IPv4
+		{"[2001:db8::1]", "[2001:db8::1]"},    // already bracketed passes through
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := urlSafeHost(tc.host); got != tc.want {
+			t.Errorf("urlSafeHost(%q) = %q, want %q", tc.host, got, tc.want)
+		}
 	}
 }

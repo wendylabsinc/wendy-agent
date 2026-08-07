@@ -16,6 +16,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -59,7 +60,7 @@ type thorDevice struct {
 // the device, then run download → stage-1 RCM boot → stage-2 partition flash as a
 // BuildKit-style step list. Stage-2 is the shared Go engine (flashengine) on all
 // platforms.
-func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	// Thor's USB recovery access is an in-process libusb handle, so the whole
 	// process must be root on macOS/Linux — caching the sudo timestamp is not
 	// enough. Elevate up front, before the briefing, so a missing-permission
@@ -75,9 +76,15 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		return fmt.Errorf("resolving cache dir: %w", err)
 	}
 
-	plan, err := planThorFlashpack(cacheDir, version, nightly)
+	plan, err := planThorFlashpack(cacheDir, version, nightly, prNumber)
 	if err != nil {
 		return err
+	}
+	if plan.offline {
+		fmt.Println(tui.WarningMessage(fmt.Sprintf("Offline — using cached WendyOS %s; cannot confirm it is the latest build.", plan.version)))
+	}
+	if plan.refreshed {
+		fmt.Println(tui.Dim(fmt.Sprintf("Cached WendyOS %s is outdated; downloading the current build.", plan.version)))
 	}
 
 	// Fail fast on a full disk, before the user starts cabling the Thor.
@@ -104,7 +111,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 
 	// Brief the user (Windows briefing includes the one-time WinUSB driver note),
 	// then confirm before touching USB.
-	if err := confirmThorReady(plan.version); err != nil {
+	if err := confirmThorReady(plan.version, force); err != nil {
 		return err
 	}
 
@@ -154,7 +161,16 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		}
 	}
 
-	var fp *flashpack.Flashpack
+	var (
+		fp             *flashpack.Flashpack
+		runWorkspace   string
+		runConfigImage string
+	)
+	defer func() {
+		if runWorkspace != "" {
+			_ = os.RemoveAll(runWorkspace)
+		}
+	}()
 	steps := []flashStep{
 		{id: stepDownload, label: "Download flashpack", run: func(out io.Writer, detail func(string)) (bool, error) {
 			resolved, cached, err := downloadAndExtractFlashpack(cacheDir, plan, detail)
@@ -162,7 +178,13 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 			return cached, err
 		}},
 		{id: stepProvision, label: "Write config partition", run: func(out io.Writer, detail func(string)) (bool, error) {
-			return false, injectConfigPartition(fp, creds, name, provJSON, out, detail)
+			sourceImages := filepath.Join(fp.FlashWorkspaceDir(), "flash-images")
+			var err error
+			runWorkspace, runConfigImage, err = prepareMutableWorkspace(sourceImages, filepath.Join(sourceImages, "config-partition.fat32.img"))
+			if err != nil {
+				return false, err
+			}
+			return false, injectConfigPartition(runConfigImage, creds, name, provJSON, out, detail)
 		}},
 		{id: stepStage1, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
 			return false, thorStageOne(fp, dev, out)
@@ -181,7 +203,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 				// under) an in-flight USB transfer.
 				defer closer()
 				return false, flashengine.Run(flashCtx, transport, flashengine.Options{
-					FlashImagesDir: filepath.Join(fp.FlashWorkspaceDir(), "flash-images"),
+					FlashImagesDir: runWorkspace,
 					NvddLocalPath:  filepath.Join(fp.BundleDir(), "unified_flash", "tools", "flashtools", "flash", "nvdd"),
 					Out:            out,
 					// USB-push progress, e.g. "38% · 6.9/18.1 GiB". Tracks
@@ -243,7 +265,7 @@ func (w fatWriter) WriteFile(name string, data []byte, _ os.FileMode) error {
 // wendy.conf, provisioning.json, clock_floor — so first boot applies them via the
 // identical on-device path. Runs before stage-2, so a failure aborts with nothing
 // written to the Thor.
-func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
+func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceName string, provJSON []byte, out io.Writer, detail func(string)) error {
 	// Freshen the agent like a disk install, but best-effort: resolveAgentBinary is
 	// the only network step here, so an offline re-flash of a cached flashpack still
 	// provisions wifi/enrollment, falling back to the agent baked into the image.
@@ -255,7 +277,6 @@ func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCreden
 		detail("agent " + agentVer)
 	}
 
-	img := filepath.Join(fp.FlashWorkspaceDir(), "flash-images", "config-partition.fat32.img")
 	d, err := diskfs.Open(img)
 	if err != nil {
 		return fmt.Errorf("opening config image: %w", err)
@@ -272,26 +293,53 @@ func injectConfigPartition(fp *flashpack.Flashpack, creds []wendyconf.WifiCreden
 
 // thorFlashPlan is the resolved flashpack to install and whether it is cached.
 type thorFlashPlan struct {
-	version string
-	cached  bool
-	info    *thorFlashpackInfo
+	version   string
+	cached    bool
+	offline   bool // resolved from cache without reaching the manifest (unverifiable)
+	refreshed bool // a stale cached copy was purged; a fresh download will run
+	info      *thorFlashpackInfo
 }
 
-func planThorFlashpack(cacheDir, version string, nightly bool) (thorFlashPlan, error) {
-	if version != "" && flashpackCached(cacheDir, version) {
-		return thorFlashPlan{version: version, cached: true}, nil
-	}
-	info, err := getThorFlashpackInfo(version, nightly)
+// planThorFlashpack decides whether to reuse the cache or download. It always
+// tries the manifest first so it can compare the published checksum against the
+// cached copy's provenance stamp: a --pr build keeps a stable "pr-N" version tag
+// across re-pushes, so an existence-only cache check would silently flash an
+// outdated build. On a checksum change it purges and re-downloads; when the
+// manifest is unreachable it falls back to a nameable cached copy so an offline
+// bench flash isn't blocked.
+func planThorFlashpack(cacheDir, version string, nightly bool, pr int) (thorFlashPlan, error) {
+	info, err := getThorFlashpackInfo(version, nightly, pr)
 	if err != nil {
+		if v := offlineThorVersion(version, pr); v != "" && flashpackCached(cacheDir, v) {
+			return thorFlashPlan{version: v, cached: true, offline: true}, nil
+		}
 		if version != "" {
 			return thorFlashPlan{}, fmt.Errorf("flashpack %s not in cache and manifest lookup failed: %w", version, err)
 		}
 		return thorFlashPlan{}, err
 	}
 	if flashpackCached(cacheDir, info.Version) {
+		extracted := filepath.Join(cacheDir, flashpack.FlashpackName(info.Version))
+		if flashpack.StampStale(extracted, info.Checksum) {
+			flashpack.Purge(extracted, flashpack.TarballCachePath(cacheDir, info.Version))
+			return thorFlashPlan{version: info.Version, refreshed: true, info: info}, nil
+		}
 		return thorFlashPlan{version: info.Version, cached: true}, nil
 	}
 	return thorFlashPlan{version: info.Version, info: info}, nil
+}
+
+// offlineThorVersion names the cached flashpack to try when the manifest can't be
+// reached: the explicit --version, or a PR's conventional "pr-N" tag. Empty when
+// neither applies (a bare latest/nightly needs the manifest to resolve a tag).
+func offlineThorVersion(version string, pr int) string {
+	if version != "" {
+		return version
+	}
+	if pr > 0 {
+		return fmt.Sprintf("pr-%d", pr)
+	}
+	return ""
 }
 
 func flashpackCached(cacheDir, version string) bool {
@@ -363,6 +411,11 @@ func downloadAndExtractFlashpack(cacheDir string, plan thorFlashPlan, detail fun
 			os.Remove(tmp)
 			return nil, false, fmt.Errorf("caching flashpack: %w", err)
 		}
+		// Record provenance next to the (soon-to-be) extracted tree so a later
+		// resolve can detect an upstream re-publish under the same version tag.
+		// Best-effort: a missing stamp is grandfathered as current, so a write
+		// failure forfeits only the staleness check, never the flash.
+		_ = flashpack.WriteStamp(filepath.Join(cacheDir, flashpack.FlashpackName(plan.version)), plan.info.Checksum)
 	}
 	detail("extracting")
 	fp, err := flashpack.Resolve(cacheDir, plan.version)
@@ -400,7 +453,7 @@ type flashStep struct {
 
 func runFlashSteps(title string, steps []flashStep, cancelWork func(), logW io.Writer) (int, error) {
 	if !isInteractiveTerminal() {
-		return runFlashStepsPlain(title, steps, logW)
+		return runFlashStepsPlain(title, steps, cancelWork, logW)
 	}
 	m := tui.NewStepsModel(title)
 	prog := tui.NewProgressProgram(m)
@@ -459,7 +512,7 @@ func runFlashSteps(title string, steps []flashStep, cancelWork func(), logW io.W
 	return res.failedID, res.err
 }
 
-func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, error) {
+func runFlashStepsPlain(title string, steps []flashStep, cancelWork func(), logW io.Writer) (int, error) {
 	fmt.Println(title)
 	for _, s := range steps {
 		fmt.Printf("==> %s\n", s.label)
@@ -469,7 +522,7 @@ func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, e
 		// idle-output timeouts from killing the process mid-write.
 		done := make(chan struct{})
 		go stepHeartbeat(out, s.label, done)
-		cached, err := s.run(out, func(string) {})
+		cached, err := runFlashStepPlain(s, out, cancelWork)
 		close(done)
 		if err != nil {
 			return s.id, err
@@ -479,6 +532,46 @@ func runFlashStepsPlain(title string, steps []flashStep, logW io.Writer) (int, e
 		}
 	}
 	return -1, nil
+}
+
+func runFlashStepPlain(step flashStep, out io.Writer, cancelWork func()) (bool, error) {
+	if step.abortWarning == "" {
+		return step.run(out, func(string) {})
+	}
+	type result struct {
+		cached bool
+		err    error
+	}
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt)
+	defer signal.Stop(signals)
+	resultC := make(chan result, 1)
+	go func() {
+		cached, err := step.run(out, func(string) {})
+		resultC <- result{cached: cached, err: err}
+	}()
+
+	var armedAt time.Time
+	const abortWindow = 3 * time.Second
+	for {
+		select {
+		case res := <-resultC:
+			return res.cached, res.err
+		case <-signals:
+			if armedAt.IsZero() || time.Since(armedAt) > abortWindow {
+				armedAt = time.Now()
+				fmt.Fprintln(os.Stderr, "\n"+step.abortWarning)
+				continue
+			}
+			cancelWork()
+			select {
+			case <-resultC:
+			case <-time.After(10 * time.Second):
+				fmt.Fprintln(os.Stderr, "warning: the flash worker didn't stop within 10s; temp files may be left behind")
+			}
+			return false, tui.ErrCancelled
+		}
+	}
 }
 
 // stepHeartbeat prints a periodic "still in progress" line until done is closed.
@@ -524,13 +617,32 @@ func byteProgress(written, total int64) string {
 	return fmt.Sprintf("%d%% · %.1f/%.1f GiB", pct, float64(written)/gib, float64(total)/gib)
 }
 
-// waitForThorRecovery handles an empty recovery scan: the user already confirmed
-// the Thor is in recovery mode, so this usually means cabling or the button
-// sequence needs another try. Explain what to check once, then rescan passively
-// every 1.5s under a spinner until a Jetson appears — no keypress needed — or
-// the user quits with q/ctrl+c. Always returns ≥1 device on success. Generic so
-// both the gousb (rcm.RecoveryDevice) and WinUSB (winusb.Device) scans share it.
-func waitForThorRecovery[T any](scan func() ([]T, error)) ([]T, error) {
+// recoveryWaitHints carries the device-specific text shown while waiting for a
+// Jetson to appear in USB recovery mode, so the shared wait UI names the right
+// board and cabling/buttons instead of hardcoding Thor.
+type recoveryWaitHints struct {
+	label       string // e.g. "Thor" or "Jetson AGX Orin"
+	cablingLine string // body of the "USB-C cable is in ..." bullet
+	buttonLine  string // body of the "recovery button sequence: ..." bullet
+}
+
+// thorRecoveryHints is the wait-UI text for a Jetson AGX Thor.
+func thorRecoveryHints() recoveryWaitHints {
+	return recoveryWaitHints{
+		label:       "Thor",
+		cablingLine: "the USB-C cable is in the " + briefPort.Render("port next to the HDMI port"),
+		buttonLine:  "the recovery button sequence: hold " + briefKey.Render("Force Recovery") + " (middle), tap " + briefKey.Render("Reset") + " (right), release",
+	}
+}
+
+// waitForRecovery handles an empty recovery scan: the user already confirmed the
+// board is in recovery mode, so this usually means cabling or the button
+// sequence needs another try. Explain what to check once (device-specific via
+// hints), then rescan passively every 1.5s under a spinner until a Jetson
+// appears — no keypress needed — or the user quits with q/ctrl+c. Always returns
+// ≥1 device on success. Generic so both the gousb (rcm.RecoveryDevice) and
+// WinUSB (winusb.Device) scans share it.
+func waitForRecovery[T any](hints recoveryWaitHints, scan func() ([]T, error)) ([]T, error) {
 	if !isInteractiveTerminal() {
 		return nil, fmt.Errorf("no Jetson found in USB recovery mode")
 	}
@@ -538,11 +650,11 @@ func waitForThorRecovery[T any](scan func() ([]T, error)) ([]T, error) {
 	fmt.Println()
 	fmt.Println(tui.WarningMessage("No Jetson in USB recovery mode yet — it will be picked up automatically once it appears."))
 	fmt.Println("  While this keeps scanning, double-check:")
-	fmt.Println("   • the USB-C cable is in the " + briefPort.Render("port next to the HDMI port"))
-	fmt.Println("   • the recovery button sequence: hold " + briefKey.Render("Force Recovery") + " (middle), tap " + briefKey.Render("Reset") + " (right), release")
+	fmt.Println("   • " + hints.cablingLine)
+	fmt.Println("   • " + hints.buttonLine)
 	fmt.Println()
 
-	p := tui.NewProgressProgram(tui.NewSpinner("Waiting for the Thor to appear... (press q to quit)"))
+	p := tui.NewProgressProgram(tui.NewSpinner("Waiting for the " + hints.label + " to appear... (press q to quit)"))
 	stop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(1500 * time.Millisecond)

@@ -124,6 +124,13 @@ message RunContainerLayersRequest {
     // path so the assembled image preserves the original runtime config; when
     // empty the agent synthesises a minimal config (legacy behaviour).
     bytes image_config = 9;
+
+    bytes image_signature = 10;  // Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
+
+    // Additional environment variables to inject. Format: "KEY=VALUE".
+    // Same semantics as CreateContainerRequest.env, which this path forwards to.
+    // Agents predating this field ignore it and start the container without it.
+    repeated string env = 11;
 }
 
 message CreateContainerRequest {

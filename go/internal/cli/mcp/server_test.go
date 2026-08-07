@@ -2,9 +2,11 @@ package mcp
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 )
 
@@ -43,5 +45,37 @@ func TestGuideResource_ReturnsText(t *testing.T) {
 	}
 	if len(tc.Text) < 100 {
 		t.Errorf("expected guide text to be at least 100 chars, got %d", len(tc.Text))
+	}
+	if !strings.Contains(tc.Text, "error_code") {
+		t.Errorf("expected guide text to mention error_code, got %q", tc.Text)
+	}
+}
+
+// TestDeadTools_NotRegistered locks in the removal of dead/duplicate tools:
+// it registers the same tool set Start() does and asserts each is absent
+// from the server's tool list. filesync_sync was removed as unused; cloud_run
+// and cloud_device_connect were removed as pure aliases of run and
+// cloud_connect (same handler, same schema) that only added tool-selection
+// noise for callers.
+func TestDeadTools_NotRegistered(t *testing.T) {
+	srv := server.NewMCPServer("t", "0")
+	s := New(&config.Config{}, nil)
+	s.registerStatusTools(srv)
+	s.registerDeviceTools(srv)
+	s.registerContainerTools(srv)
+	s.registerTelemetryTools(srv)
+	s.registerWiFiTools(srv)
+	s.registerBluetoothTools(srv)
+	s.registerHardwareTools(srv)
+	s.registerProvisioningTools(srv)
+	s.registerOSTools(srv)
+	s.registerCloudTools(srv)
+	s.registerContainerMCPTools(context.Background(), srv) // no active connection; no-op
+
+	tools := srv.ListTools()
+	for _, name := range []string{"filesync_sync", "cloud_run", "cloud_device_connect"} {
+		if _, ok := tools[name]; ok {
+			t.Fatalf("%s should not be registered", name)
+		}
 	}
 }
