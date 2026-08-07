@@ -471,8 +471,12 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     func reconcileApps() async {
         guard !self.isStopping else { return }
 
-        let backendStates = await self.managedContainerStates()
+        // Survivors first, then the container listing: terminating a survivor
+        // can block for seconds, and a listing taken before that wait could
+        // report a container as running that has exited by the time it is read,
+        // adopting a dead container.
         await self.terminateNativeSurvivors()
+        let backendStates = await self.managedContainerStates()
 
         let candidates = self.appsByID.values
             .sorted { $0.info.id < $1.info.id }
@@ -762,14 +766,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.appsByID[id] = app
     }
 
-    private func clearPersistedPIDs() {
-        for id in Array(self.appsByID.keys) {
-            self.appsByID[id]?.persistedPID = nil
-        }
-    }
-
     /// Terminates every identified native survivor before reconcile starts
-    /// anything, then forgets the persisted pids.
+    /// anything, forgetting each persisted pid as it is considered.
     ///
     /// Deliberately covers ALL native apps, not just the ones about to be
     /// relaunched: a `--no-restart` app that was running when the agent died is
@@ -777,17 +775,18 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     /// `wendy device start` would then launch a second copy that nothing can
     /// see. After this pass, "running" means "the agent launched it".
     private func terminateNativeSurvivors() async {
-        // The persisted pids have served their purpose once this pass has
-        // looked at them; a later reconcile (a provisioning transition rebuilds
-        // this service) must not reconsider them.
-        defer { self.clearPersistedPIDs() }
-
         for id in self.appsByID.keys.sorted() {
+            // Bail out, but leave the pids of the apps not yet looked at in
+            // place: they are the only record of those survivors, so discarding
+            // them here would make the processes unreclaimable.
             guard !self.isStopping else { return }
             guard let app = self.appsByID[id], app.native != nil, app.persistedPID != nil else {
                 continue
             }
             await self.terminateNativeSurvivorIfAny(app)
+            // Cleared per app, as it is considered: this pid has served its
+            // purpose and a later reconcile must not reconsider it.
+            self.appsByID[id]?.persistedPID = nil
         }
     }
 
@@ -1516,6 +1515,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                     ]
                 )
             }
+            // Claim the launch token BEFORE the pull, not after: the pull is the
+            // longest await in this path (minutes for a cold image) and the actor
+            // is free throughout it. Until the token is stored the app looks
+            // plainly stopped, so `isLaunchInFlight` is false and a supervisor
+            // tick would happily start a second copy underneath this one — both
+            // racing `createAndStart`, whose delete-then-run would pull the
+            // container out from under whichever launch loses `markAppRunning`'s
+            // token check. Both catch arms below undo this via `cancelAppLaunch`.
+            self.prepareAppForLaunch(id: appName, launchToken: launchToken)
             do {
                 // Pull first, then create+start. Both shell out to the Linux
                 // runtime CLI, which throws a plain `Error` (e.g. a nonzero exit
@@ -1523,7 +1531,6 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // sees the actionable message — an un-wrapped error surfaces as
                 // gRPC's opaque "Service method threw an unknown error." instead.
                 try await linuxBackend.pull(image: imageRef)
-                self.prepareAppForLaunch(id: appName, launchToken: launchToken)
                 (process, stdoutPipe, stderrPipe) = try await linuxBackend.createAndStart(
                     appName: appName,
                     imageName: imageRef,

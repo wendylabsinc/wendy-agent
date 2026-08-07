@@ -15,6 +15,14 @@ actor StubLinuxBackend: LinuxContainerBackend {
     private(set) var removed: [String] = []
     private var processes: [String: Foundation.Process] = [:]
 
+    /// Which pull (1-based) should hang until `releaseBlockedPull()`. Used to
+    /// hold a launch open inside `pull` — the longest await in the container
+    /// launch path — so a test can run a supervisor tick in that window.
+    /// Deliberately blocks only that one pull, so a second (buggy) launch
+    /// proceeds and the test fails on the duplicate rather than deadlocking.
+    private var blockedPullNumber: Int?
+    private var blockedPullContinuation: CheckedContinuation<Void, Never>?
+
     init(listing: [LinuxContainerInfo] = []) {
         self.listing = listing
     }
@@ -23,7 +31,25 @@ actor StubLinuxBackend: LinuxContainerBackend {
         self.listing = listing
     }
 
-    func pull(image: String) async throws { self.pulled.append(image) }
+    func blockPull(number: Int) {
+        self.blockedPullNumber = number
+    }
+
+    func releaseBlockedPull() {
+        self.blockedPullNumber = nil
+        self.blockedPullContinuation?.resume()
+        self.blockedPullContinuation = nil
+    }
+
+    func pullCount() -> Int { self.pulled.count }
+
+    func pull(image: String) async throws {
+        self.pulled.append(image)
+        guard self.pulled.count == self.blockedPullNumber else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            self.blockedPullContinuation = continuation
+        }
+    }
 
     func createAndStart(
         appName: String,
@@ -336,6 +362,122 @@ struct ContainerServiceSupervisorTests {
         #expect(await service.failureCount(forAppID: appID) == 1)
     }
 
+    @Test("a tick during a container pull does not start a second copy")
+    func supervisorSkipsAppLaunchingThroughAPull() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "svc-pull-window"
+        let backend = StubLinuxBackend()
+        // Hold the launch inside `pull`: token claimed, not yet running. This is
+        // the longest await in the container launch path and the actor is free
+        // throughout it, so a tick lands here on any real deploy whose pull
+        // outlasts one interval.
+        await backend.blockPull(number: 1)
+
+        // No floor, so nothing but the in-flight-launch guard can hold the tick
+        // back — a fresh StartContainer never stamps `lastRestart`.
+        let service = makeService(appsBase: appsBase, backend: backend, restartFloor: .zero)
+        try await createLinuxApp(service: service, appID: appID)
+
+        let starter = Task { try await startNativeApp(service: service, appID: appID) }
+        try await waitForSupervisor("the pull to begin") {
+            await backend.pullCount() >= 1
+        }
+
+        await service.superviseApps()
+
+        await backend.releaseBlockedPull()
+        try await starter.value
+        #expect(await service.appInfo(forAppID: appID)?.status == .running)
+
+        // Exactly one launch: the tick must not have pulled or started again.
+        #expect(await backend.startedApps() == [appID])
+        #expect(await backend.pullCount() == 1)
+
+        await service.stopAllApps()
+        await backend.terminateAll()
+    }
+
+    @Test("supervisor ticks never signal a persisted pid")
+    func supervisorTickNeverSignalsPersistedPIDs() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "sh.wendy.tests.TickNoSignal"
+        try writeSupervisorSleepScript(appsBase: appsBase, appID: appID, name: "sleep.sh")
+
+        let service = makeService(appsBase: appsBase)
+        try await createNativeApp(service: service, appID: appID, cmd: "sleep.sh")
+        let persistedPID = try await simulateDisorderlyExit(service: service, appID: appID)
+
+        // Survivor termination belongs to reconcile alone. This is what makes it
+        // safe for a warm restart to supervise without reconciling.
+        let binaryPath = "\(appsBase)/\(appID)/sleep.sh"
+        let pids = PIDStub(paths: [persistedPID: binaryPath])
+        let restarted = makeService(appsBase: appsBase, restartFloor: .zero, pids: pids)
+
+        await restarted.superviseApps()
+
+        #expect(pids.sentSignals().isEmpty)
+        await restarted.stopAllApps()
+    }
+
+    @Test("the supervisor task reconciles on a cold start and not on a warm one")
+    func supervisorTaskReconcilesOnlyOnColdStart() async throws {
+        // A provisioning transition rebuilds the ContainerService over the same
+        // state directory while the previous one's app processes are still
+        // running, so its `info.json` pids are NOT survivors. Reconciling there
+        // would SIGTERM every running native app.
+        let warmBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(warmBase) }
+        let coldBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(coldBase) }
+
+        let appID = "sh.wendy.tests.ColdVsWarm"
+        try writeSupervisorSleepScript(appsBase: warmBase, appID: appID, name: "sleep.sh")
+        try writeSupervisorSleepScript(appsBase: coldBase, appID: appID, name: "sleep.sh")
+
+        let warmPIDs = try await stageSurvivor(appsBase: warmBase, appID: appID)
+        let coldPIDs = try await stageSurvivor(appsBase: coldBase, appID: appID)
+
+        // A long interval keeps the periodic tick out of the way; only the
+        // reconcile pass can act within the test.
+        let warmService = makeService(
+            appsBase: warmBase,
+            supervisorInterval: .seconds(600),
+            pids: warmPIDs
+        )
+        let warmTask = WendyAgent.makeAppSupervisorTask(
+            containerService: warmService,
+            reconcile: false
+        )
+        defer { warmTask.cancel() }
+
+        let coldService = makeService(
+            appsBase: coldBase,
+            supervisorInterval: .seconds(600),
+            pids: coldPIDs
+        )
+        let coldTask = WendyAgent.makeAppSupervisorTask(
+            containerService: coldService,
+            reconcile: true
+        )
+        defer { coldTask.cancel() }
+
+        // The cold task reconciles: survivor terminated, app brought back.
+        try await waitForSupervisor("the cold start to reconcile") {
+            await coldService.appInfo(forAppID: appID)?.status == .running
+        }
+        #expect(coldPIDs.sentSignals().map(\.signal) == [SIGTERM])
+
+        // The warm task supervises only: it left the running app alone.
+        #expect(warmPIDs.sentSignals().isEmpty)
+        #expect(await warmService.appInfo(forAppID: appID)?.status == .stopped)
+
+        await coldService.stopAllApps()
+    }
+
     @Test("supervisor does not restart an ON_FAILURE app that exited cleanly")
     func supervisorSkipsCleanExitUnderOnFailure() async throws {
         let appsBase = try makeSupervisorTempDir()
@@ -601,6 +743,7 @@ struct ContainerServiceSupervisorTests {
 private func makeService(
     appsBase: String,
     backend: (any LinuxContainerBackend)? = nil,
+    supervisorInterval: Duration = .seconds(15),
     restartFloor: Duration = .seconds(10),
     pids: PIDStub? = nil
 ) -> ContainerService {
@@ -619,10 +762,21 @@ private func makeService(
         executablePath: "/usr/bin/false",
         appsBase: URL(fileURLWithPath: appsBase),
         linuxBackend: backend,
+        supervisorInterval: supervisorInterval,
         restartFloor: restartFloor,
         pidExecutablePath: lookup,
         sendSignal: send
     )
+}
+
+/// Registers a native app in `appsBase`, leaves behind the `info.json` a
+/// disorderly agent exit would (status running + pid), and returns a `PIDStub`
+/// that reports that pid as still running the app's binary.
+private func stageSurvivor(appsBase: String, appID: String) async throws -> PIDStub {
+    let service = makeService(appsBase: appsBase)
+    try await createNativeApp(service: service, appID: appID, cmd: "sleep.sh")
+    let pid = try await simulateDisorderlyExit(service: service, appID: appID)
+    return PIDStub(paths: [pid: "\(appsBase)/\(appID)/sleep.sh"])
 }
 
 private func createNativeApp(

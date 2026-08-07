@@ -75,7 +75,9 @@ public actor WendyAgent {
             self.runIdentifier &+= 1
             self.handlingUnexpectedRuntimeExit = false
             self.startMonitorTask(runIdentifier: self.runIdentifier)
-            self.startAppSupervisor()
+            // Cold start: apps recorded as running are leftovers from a previous
+            // agent process, so reconcile them.
+            self.startAppSupervisor(reconcile: true)
 
             self.updateStatus(.running)
             self.logger.info(
@@ -692,7 +694,10 @@ public actor WendyAgent {
         self.runIdentifier &+= 1
         self.handlingUnexpectedRuntimeExit = false
         self.startMonitorTask(runIdentifier: self.runIdentifier)
-        self.startAppSupervisor()
+        // Warm restart: the apps this switch's new ContainerService just loaded
+        // as stopped are still running under the process handles the previous
+        // one held, so supervise from here on but do NOT reconcile.
+        self.startAppSupervisor(reconcile: false)
 
         self.logger.info(
             "Main server switched",
@@ -815,13 +820,25 @@ public actor WendyAgent {
         self.monitorTask = nil
     }
 
-    /// Starts app reconcile + crash supervision against the current
-    /// `ContainerService`. Safe to call repeatedly: any previous supervisor is
-    /// cancelled first.
-    private func startAppSupervisor() {
+    /// Starts crash supervision against the current `ContainerService`, with an
+    /// optional one-shot reconcile pass first. Safe to call repeatedly: any
+    /// previous supervisor is cancelled first.
+    ///
+    /// `reconcile` must be true only on a cold start. Reconcile assumes nothing
+    /// else is running the apps: it terminates native processes recorded in
+    /// `info.json` as survivors of a disorderly exit. On a warm restart — a
+    /// provisioning transition, which rebuilds the `ContainerService` over the
+    /// same state directory while the previous one's app processes are still
+    /// very much alive — those pids are not survivors, and reconciling would
+    /// SIGTERM every running native app: a downtime blip for `unless-stopped`
+    /// apps, and permanent death for `--no-restart` ones.
+    private func startAppSupervisor(reconcile: Bool) {
         guard let containerService = self.containerService else { return }
         self.cancelAppSupervisorTask()
-        self.appSupervisorTask = Self.makeAppSupervisorTask(containerService: containerService)
+        self.appSupervisorTask = Self.makeAppSupervisorTask(
+            containerService: containerService,
+            reconcile: reconcile
+        )
     }
 
     @discardableResult
@@ -838,8 +855,11 @@ public actor WendyAgent {
         await self.cancelAppSupervisorTask()?.value
     }
 
-    nonisolated private static func makeAppSupervisorTask(
-        containerService: ContainerService
+    /// Internal rather than private so the cold/warm-start distinction can be
+    /// exercised directly, without standing up a whole agent.
+    nonisolated static func makeAppSupervisorTask(
+        containerService: ContainerService,
+        reconcile: Bool
     ) -> Task<Void, Never> {
         let interval = containerService.supervisorInterval
         return Task.detached {
@@ -847,7 +867,9 @@ public actor WendyAgent {
             // `start()`: bringing apps back takes seconds (a Linux image pull,
             // far longer), and the gRPC server has to be answering RPCs the
             // moment it is listening.
-            await containerService.reconcileApps()
+            if reconcile {
+                await containerService.reconcileApps()
+            }
 
             while !Task.isCancelled {
                 do {
