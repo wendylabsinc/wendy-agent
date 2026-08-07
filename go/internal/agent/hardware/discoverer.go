@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -282,19 +282,14 @@ func (d *SystemHardwareDiscoverer) discoverCamera(ctx context.Context) []*agentp
 	return caps
 }
 
-// discoverAudio enumerates audio devices from the PipeWire graph.
-//
-// Reading /proc/asound/cards would only find sound cards, so a paired
-// Bluetooth speaker — which has no card — never appeared here. PipeWire's ALSA
-// monitor exposes every card as a node, so this covers the cards too.
+// discoverAudio enumerates audio devices from the PipeWire graph, which covers
+// sound cards and the Bluetooth endpoints that have none.
 func (d *SystemHardwareDiscoverer) discoverAudio(ctx context.Context) []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
 	nodes, defaults, err := audio.ListNodes(ctx)
 	if err != nil {
 		d.logger.Debug("Audio discovery skipped", zap.Error(err))
 		return nil
 	}
-
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 
 	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
 	for _, n := range nodes {
@@ -303,7 +298,7 @@ func (d *SystemHardwareDiscoverer) discoverAudio(ctx context.Context) []*agentpb
 			direction = "sink"
 		}
 		props := map[string]string{
-			"node_id":   fmt.Sprintf("%d", n.ID),
+			"node_id":   strconv.FormatUint(uint64(n.ID), 10),
 			"direction": direction,
 		}
 		if defaults.IsDefault(n) {
@@ -311,8 +306,7 @@ func (d *SystemHardwareDiscoverer) discoverAudio(ctx context.Context) []*agentpb
 		}
 		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
 			Category: "audio",
-			// The node name, not a /dev path: Bluetooth endpoints have none,
-			// and the name is what identifies a node across the audio stack.
+			// The node name, not a /dev path: Bluetooth endpoints have none.
 			DevicePath:  n.Name,
 			Description: n.Description,
 			Properties:  props,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.uber.org/zap"
@@ -68,15 +69,19 @@ const graphFixture = `[
 
 // stubGraph points the audio package at a fixture and records every wpctl call.
 // It returns the recorded calls, which the caller reads after the exercise.
+// Volume reads run concurrently, so the recorder is guarded.
 func stubGraph(t *testing.T, dump string, wpctl func(args ...string) ([]byte, error)) *[]string {
 	t.Helper()
 	origDump, origWpctl := audio.DumpRun, audio.WpctlRun
 	t.Cleanup(func() { audio.DumpRun, audio.WpctlRun = origDump, origWpctl })
 
+	var mu sync.Mutex
 	var calls []string
 	audio.DumpRun = func(context.Context) ([]byte, error) { return []byte(dump), nil }
 	audio.WpctlRun = func(_ context.Context, args ...string) ([]byte, error) {
+		mu.Lock()
 		calls = append(calls, strings.Join(args, " "))
+		mu.Unlock()
 		if wpctl == nil {
 			return nil, nil
 		}
@@ -250,7 +255,9 @@ func TestSetAudioVolume(t *testing.T) {
 	if got != 35 {
 		t.Errorf("volume = %d, want 35", got)
 	}
-	if want := "[set-volume 43 0.35 get-volume 43]"; fmt.Sprint(*calls) != want {
+	// The unmute is part of setting a volume: the reported volume does not
+	// reflect mute, so a muted node would report a volume while staying silent.
+	if want := "[set-volume 43 0.35 set-mute 43 0 get-volume 43]"; fmt.Sprint(*calls) != want {
 		t.Errorf("wpctl calls = %v, want %s", *calls, want)
 	}
 }
@@ -351,8 +358,10 @@ func TestCaptureTargetFallsBackToAnySource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("captureTarget(0) error = %v", err)
 	}
-	if got != "251" && got != "88" {
-		t.Errorf("captureTarget(0) = %q, want one of the sources' serials", got)
+	// The lowest node id wins, so an unspecified device records from the same
+	// microphone every time rather than following pw-dump's graph order.
+	if got != "251" {
+		t.Errorf("captureTarget(0) = %q, want the lowest-id source's serial 251", got)
 	}
 }
 

@@ -68,6 +68,24 @@ const dumpFixture = `[
       "media.class": "Audio/Sink",
       "node.description": "nameless node is skipped"
     } }
+  },
+  {
+    "id": 72,
+    "type": "PipeWire:Interface:Node",
+    "info": { "props": {
+      "media.class": "Audio/Source/Virtual",
+      "node.name": "auto_null.monitor",
+      "node.description": "Monitor of Dummy Output"
+    } }
+  },
+  {
+    "id": 73,
+    "type": "PipeWire:Interface:Device",
+    "info": { "props": {
+      "media.class": "Audio/Sink",
+      "node.name": "alsa_card.platform-fef00700.hdmi",
+      "node.description": "Device object, not addressable by wpctl"
+    } }
   }
 ]`
 
@@ -119,6 +137,22 @@ func TestParseDump(t *testing.T) {
 	if _, ok := FindNode(nodes, 71); ok {
 		t.Error("node without node.name was listed")
 	}
+	// A monitor is a loopback of a sink, so selecting it as the default input
+	// records the machine's own output instead of a microphone.
+	if _, ok := FindNode(nodes, 72); ok {
+		t.Error("Audio/Source/Virtual monitor was listed as an audio device")
+	}
+	// Device objects share the id space with nodes but wpctl cannot target them.
+	if _, ok := FindNode(nodes, 73); ok {
+		t.Error("PipeWire:Interface:Device was listed as an audio device")
+	}
+
+	// Sorted by object id, so a listing does not reshuffle as the graph does.
+	for i := 1; i < len(nodes); i++ {
+		if nodes[i-1].ID >= nodes[i].ID {
+			t.Errorf("nodes are not sorted by id: %d before %d", nodes[i-1].ID, nodes[i].ID)
+		}
+	}
 
 	if defaults.SinkName != "bluez_output.78_2B_64_76_F3_CE.1" {
 		t.Errorf("default sink = %q", defaults.SinkName)
@@ -163,10 +197,15 @@ func TestParseVolume(t *testing.T) {
 		// Muting does not change the underlying volume, so it is ignored.
 		{"muted", "Volume: 0.43 [MUTED]\n", 43, true},
 		{"rounds", "Volume: 0.335\n", 34, true},
+		// PipeWire allows boosting past unity; the API tops out at 100.
+		{"boosted", "Volume: 1.40\n", 100, true},
 		// wpctl can be asked about a node that has no volume at all.
 		{"no volume line", "Node 43 has no volume\n", 0, false},
 		{"empty", "", 0, false},
 		{"garbage", "Volume: banana\n", 0, false},
+		// ParseFloat accepts these, but they have no percentage.
+		{"infinite", "Volume: inf\n", 0, false},
+		{"not a number", "Volume: NaN\n", 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"os/exec"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,10 +22,8 @@ import (
 )
 
 // AudioService implements agentpb.WendyAudioServiceServer on top of PipeWire.
-//
-// Device IDs are PipeWire node IDs, as the proto has always specified. They are
-// what wpctl accepts directly, and they cover Bluetooth endpoints, which have no
-// ALSA card and so cannot be named by a card/device pair at all.
+// Device IDs are PipeWire node IDs, which wpctl accepts directly and which name
+// Bluetooth endpoints as well as sound cards.
 type AudioService struct {
 	agentpb.UnimplementedWendyAudioServiceServer
 	logger *zap.Logger
@@ -67,26 +64,38 @@ func (s *AudioService) ListAudioDevices(ctx context.Context, req *agentpb.ListAu
 			IsDefault:   defaults.IsDefault(n),
 		})
 	}
-	// pw-dump emits graph order, which shifts as devices come and go. Sort so
-	// repeated listings are stable.
-	sort.Slice(devices, func(i, j int) bool { return devices[i].GetId() < devices[j].GetId() })
-
 	return &agentpb.ListAudioDevicesResponse{Devices: devices}, nil
 }
 
-// nodeVolumes reports each device's volume as a percentage. Devices whose volume
-// cannot be read are simply absent from the map.
+// volumeQueryConcurrency bounds the wpctl processes nodeVolumes has in flight.
+const volumeQueryConcurrency = 8
+
+// nodeVolumes reports each device's volume as a percentage; devices whose
+// volume cannot be read are absent from the map. Each read is a wpctl process,
+// so an unresponsive node cannot serialise the whole listing behind it.
 func (s *AudioService) nodeVolumes(ctx context.Context, devices []*agentpb.AudioDevice) map[uint32]*uint32 {
 	volumes := make(map[uint32]*uint32, len(devices))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, volumeQueryConcurrency)
 	for _, device := range devices {
-		volume, ok := audio.NodeVolume(ctx, device.GetId())
-		if !ok {
-			s.logger.Debug("Volume unavailable", zap.Uint32("node_id", device.GetId()))
-			continue
-		}
-		v := volume
-		volumes[device.GetId()] = &v
+		id := device.GetId()
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			volume, ok := audio.NodeVolume(ctx, id)
+			if !ok {
+				s.logger.Debug("Volume unavailable", zap.Uint32("node_id", id))
+				return
+			}
+			mu.Lock()
+			volumes[id] = &volume
+			mu.Unlock()
+		}()
 	}
+	wg.Wait()
 	return volumes
 }
 
@@ -112,8 +121,8 @@ func (s *AudioService) setAudioVolume(ctx context.Context, deviceID, volumePerce
 		return 0, err
 	}
 
-	// Report what the graph actually holds: PipeWire clamps and quantises, and a
-	// device with a hardware mixer may land on a nearby step.
+	// PipeWire clamps and quantises, and a hardware mixer may land on a nearby
+	// step, so report what the graph holds.
 	actual := volumePercent
 	if v, ok := audio.NodeVolume(ctx, deviceID); ok {
 		actual = v
@@ -194,8 +203,7 @@ func captureTarget(ctx context.Context, deviceID uint32) (string, error) {
 }
 
 // targetArg renders a node as a --target value. pw-record takes an object
-// serial, not the object ID that identifies a device everywhere else; the node
-// name is the fallback when a serial is somehow absent.
+// serial, not the object ID used everywhere else, and falls back to the name.
 func targetArg(n audio.Node) string {
 	if n.Serial != 0 {
 		return fmt.Sprintf("%d", n.Serial)
@@ -245,8 +253,8 @@ func startCapture(ctx context.Context, target string, sampleRate, channels uint3
 }
 
 // Err reaps the process and returns anything it printed. Reading the buffer
-// before the process is reaped would race with the child's own writes, so
-// callers must reach stderr only through here.
+// before the reap would race with the child's writes, so stderr is only
+// reachable through here.
 func (c *capture) Err() string {
 	c.reaped.Do(func() { _ = c.cmd.Wait() })
 	return strings.TrimSpace(c.stderr.String())
@@ -313,6 +321,14 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 	}
 }
 
+// Bounds on the capture format. The lower rate bound also keeps the 10ms chunk
+// below from rounding to zero samples.
+const (
+	minSampleRate = 8000
+	maxSampleRate = 192000
+	maxChannels   = 8
+)
+
 // StreamAudio streams raw PCM audio data from a microphone.
 func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.ServerStreamingServer[agentpb.AudioChunk]) error {
 	ctx := stream.Context()
@@ -321,9 +337,17 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	if sampleRate == 0 {
 		sampleRate = 48000
 	}
+	if sampleRate < minSampleRate || sampleRate > maxSampleRate {
+		return status.Errorf(codes.InvalidArgument,
+			"sample rate must be between %d and %d, got %d", minSampleRate, maxSampleRate, sampleRate)
+	}
 	channels := req.GetChannels()
 	if channels == 0 {
 		channels = 1
+	}
+	if channels > maxChannels {
+		return status.Errorf(codes.InvalidArgument,
+			"channels must be between 1 and %d, got %d", maxChannels, channels)
 	}
 
 	target, err := captureTarget(ctx, req.GetDeviceId())
@@ -331,8 +355,7 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 		return err
 	}
 
-	// A 10ms graph latency matches the chunk size below, so a chunk is ready
-	// about as often as one is sent.
+	// A 10ms graph latency matches the chunk size below.
 	rec, err := startCapture(ctx, target, sampleRate, channels, "10ms")
 	if err != nil {
 		return err

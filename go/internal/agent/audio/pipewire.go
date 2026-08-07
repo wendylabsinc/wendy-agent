@@ -1,10 +1,8 @@
 // Package audio talks to the PipeWire graph on the device.
 //
-// PipeWire is the only audio stack the agent uses. Its ALSA monitor enumerates
-// every sound card and exposes each as a node, so listing PipeWire covers
-// everything ALSA would and adds what ALSA cannot represent — most importantly
-// Bluetooth sinks and sources, which have no card behind them and are therefore
-// invisible to aplay, arecord and amixer.
+// Every sink and source is a PipeWire node, including sound cards (via its ALSA
+// monitor) and Bluetooth endpoints, which have no card and so are invisible to
+// aplay, arecord and amixer.
 //
 // The agent runs as root while PipeWire runs in the wendy user's session, so
 // every helper here points the client tools at that session's runtime
@@ -15,16 +13,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // SocketGlob locates the per-user PipeWire socket. Behind a var so tests can
 // redirect it into a tempdir.
 var SocketGlob = "/run/user/*/pipewire-0"
+
+// queryTimeout bounds a single pw-dump or wpctl invocation, so a wedged
+// PipeWire cannot hold an RPC open indefinitely.
+const queryTimeout = 5 * time.Second
 
 // Node is a PipeWire sink or source.
 type Node struct {
@@ -67,10 +72,9 @@ func RuntimeDir() string {
 	return ""
 }
 
-// Command builds a command pointed at the user session. It returns an error
-// rather than falling back to the system-wide instance: that instance has no
-// session manager, so it reports an empty graph, and silently listing nothing
-// is worse than saying audio is unavailable.
+// Command builds a command pointed at the user session, or errors when no
+// session is up. The system-wide instance is never used: it has no session
+// manager, so its graph is empty.
 func Command(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	dir := RuntimeDir()
 	if dir == "" {
@@ -87,6 +91,8 @@ func Command(ctx context.Context, name string, args ...string) (*exec.Cmd, error
 // DumpRun returns the raw pw-dump output. Behind a var so tests can supply a
 // fixture instead of running PipeWire.
 var DumpRun = func(ctx context.Context) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
 	cmd, err := Command(ctx, "pw-dump")
 	if err != nil {
 		return nil, err
@@ -96,6 +102,8 @@ var DumpRun = func(ctx context.Context) ([]byte, error) {
 
 // WpctlRun runs wpctl against the user session. Behind a var for tests.
 var WpctlRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
 	cmd, err := Command(ctx, "wpctl", args...)
 	if err != nil {
 		return nil, err
@@ -170,6 +178,12 @@ func parseDump(data []byte) ([]Node, Defaults, error) {
 			continue
 		}
 
+		// Only Node objects are addressable by wpctl and pw-record; Device and
+		// Port objects share the id space and can carry a media.class.
+		if o.Type != "PipeWire:Interface:Node" {
+			continue
+		}
+
 		// Exactly "Audio/Sink" or "Audio/Source". Monitor and virtual nodes
 		// carry a further suffix and are not devices anyone chose to install.
 		class := propString(o.Info.Props, "media.class")
@@ -192,6 +206,8 @@ func parseDump(data []byte) ([]Node, Defaults, error) {
 			IsSink:      class == "Audio/Sink",
 		})
 	}
+	// pw-dump emits graph order, which shifts as devices come and go.
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes, defaults, nil
 }
 
@@ -228,12 +244,11 @@ func parseVolume(output string) (uint32, bool) {
 			continue
 		}
 		v, err := strconv.ParseFloat(fields[0], 64)
-		if err != nil {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 			continue
 		}
-		if v < 0 {
-			v = 0
-		}
+		// wpctl reports a fraction that exceeds 1.0 on a boosted node.
+		v = math.Min(math.Max(v, 0), 1)
 		return uint32(v*100 + 0.5), true
 	}
 	return 0, false
@@ -248,15 +263,20 @@ func NodeVolume(ctx context.Context, id uint32) (uint32, bool) {
 	return parseVolume(string(out))
 }
 
-// SetNodeVolume sets a node's volume from a percentage. wpctl takes a fraction.
+// SetNodeVolume sets a node's volume from a percentage and unmutes it. Mute is
+// a separate flag that the reported volume does not reflect.
 func SetNodeVolume(ctx context.Context, id, percent uint32) error {
 	if percent > 100 {
 		percent = 100
 	}
+	idArg := strconv.FormatUint(uint64(id), 10)
 	arg := strconv.FormatFloat(float64(percent)/100, 'f', 2, 64)
-	out, err := WpctlRun(ctx, "set-volume", strconv.FormatUint(uint64(id), 10), arg)
+	out, err := WpctlRun(ctx, "set-volume", idArg, arg)
 	if err != nil {
 		return fmt.Errorf("wpctl set-volume: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := WpctlRun(ctx, "set-mute", idArg, "0"); err != nil {
+		return fmt.Errorf("wpctl set-mute: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
