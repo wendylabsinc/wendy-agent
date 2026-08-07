@@ -163,14 +163,15 @@ def train_member(env=None, workers: int | None = None) -> dict:
     return result
 
 
-def serve_result(result: dict, port: int, host: str = "0.0.0.0"):
+def serve_result(result: dict, port: int, host: str = "0.0.0.0",
+                 token: str | None = None):
     """Serve ``result`` as JSON on ``GET /result``; returns the server."""
     body = json.dumps(result).encode()
 
     def handler(_request_body: bytes) -> tuple[int, bytes, str]:
         return 200, body, "application/json"
 
-    return serve({("GET", "/result"): handler}, port, host=host)
+    return serve({("GET", "/result"): handler}, port, host=host, token=token)
 
 
 def main() -> None:
@@ -180,7 +181,7 @@ def main() -> None:
     workers = int(env.get("WT_WORKERS", "0")) or None
     result = train_member(env=env, workers=workers)
     port = int(env.get("MESH_PORT", "8080"))
-    server = serve_result(result, port)
+    server = serve_result(result, port, token=env.get("WT_FLEET_TOKEN"))
     print(
         f"[sweep] member {result['sweep_index']} finished, serving /result on "
         f"port {server.server_address[1]}: " + json.dumps(result),

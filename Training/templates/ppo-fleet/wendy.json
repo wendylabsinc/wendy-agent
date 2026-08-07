@@ -37,7 +37,8 @@
                 "PPO_LEARNER": "${PPO_LEARNER}",
                 "WT_COORDINATOR": "${WT_COORDINATOR}",
                 "WT_NODE_INDEX": "${WT_NODE_INDEX}",
-                "WT_NODE_COUNT": "${WT_NODE_COUNT}"
+                "WT_NODE_COUNT": "${WT_NODE_COUNT}",
+                "WT_FLEET_TOKEN": "${WT_FLEET_TOKEN}"
             }
         }
     }

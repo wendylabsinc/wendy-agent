@@ -302,11 +302,13 @@ class Learner:
 class Actor:
     """Pulls weights, collects one rollout per version, posts it back."""
 
-    def __init__(self, cfg, learner: str, env: Mapping[str, str] | None = None, seed: int = 0):
+    def __init__(self, cfg, learner: str, env: Mapping[str, str] | None = None, seed: int = 0,
+                 token: str | None = None):
         nets.torch_module()  # fail fast with the actionable message
         env = os.environ if env is None else env
         self.cfg = cfg
         self.learner = learner
+        self._token = token
         self.steps = int(env.get("PPO_STEPS", cfg.ppo.steps))
         self.env = cartpole.CartPole(seed=seed)
         self.obs = self.env.reset(seed=seed)
@@ -321,7 +323,7 @@ class Actor:
 
     def pull_weights(self) -> None:
         """Fetch current weights; build networks from the metadata architecture."""
-        blob = mesh.http_get(f"http://{self.learner}/weights")
+        blob = mesh.http_get(f"http://{self.learner}/weights", token=self._token)
         arrays, meta = wire.decode(blob)
         hidden = [int(h) for h in meta["architecture"]]
         if self.policy is None or hidden != self.hidden:
@@ -403,7 +405,9 @@ class Actor:
         """One pull-collect-post cycle; returns the learner's JSON reply."""
         self.pull_weights()
         arrays, meta = self.collect()
-        body = mesh.http_post(f"http://{self.learner}/rollout", wire.encode(arrays, meta))
+        body = mesh.http_post(
+            f"http://{self.learner}/rollout", wire.encode(arrays, meta), token=self._token
+        )
         reply = json.loads(body)
         if reply.get("accepted"):
             # Episode returns already counted by the learner; a rejected post
@@ -476,7 +480,9 @@ def main() -> None:
     if role == "learner":
         run = Run(fleet.ckpt_dir, run_id=fleet.run_id, keep_last=int(cfg.run.keep_last))
         learner = Learner(cfg, run, env=env)
-        server = serve(learner.routes(), port=fleet.port)
+        server = serve(
+            learner.routes(), port=fleet.port, token=env.get("WT_FLEET_TOKEN")
+        )
         print(f"[ppo-fleet] learner serving on port {server.server_address[1]}", flush=True)
         learner.run_updates(int(cfg.ppo.total_versions))
         print(f"[ppo-fleet] training complete at version {learner.version}", flush=True)
@@ -484,7 +490,10 @@ def main() -> None:
             time.sleep(60)
     else:
         seed = int(fleet.self_id) if fleet.self_id.isdigit() else os.getpid()
-        actor = Actor(cfg, learner_target(env), env=env, seed=seed)
+        actor = Actor(
+            cfg, learner_target(env), env=env, seed=seed,
+            token=env.get("WT_FLEET_TOKEN"),
+        )
         actor.run_forever()
 
 

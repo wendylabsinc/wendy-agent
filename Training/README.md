@@ -148,6 +148,21 @@ device spark-3011.local (asset 334, role worker)
   env MESH_SELF=334
 ```
 
+### Trust boundary
+
+The fleet endpoints move model parameters and accept contributions that steer
+the update, so they are never left open on a network by default: `fleet.py up`
+generates a `WT_FLEET_TOKEN` per fleet (cached next to `fleet.toml`, masked in
+`render` output), every template's endpoints reject requests without the
+bearer header, and every client attaches it. Set your own token in `[env]` to
+override, or unset it only for same-machine experiments. The token
+authenticates peers; it does not encrypt traffic. Treat the device network as
+the trust boundary and use the mesh transport once available, since host mode
+(`lan`) removes the container's network namespace isolation: the container
+shares every host interface, which is precisely why it is a fallback rather
+than the default, and why `render` prints the rewritten entitlement before
+anything runs.
+
 ## The layers
 
 Nothing above a layer is required by anything below it. What remains when each
@@ -175,6 +190,7 @@ layer is peeled off:
 | `WT_COORDINATOR` | the coordinating node as `host:port`, emitted by the launcher | unset |
 | `WT_NODE_INDEX` | this node's rank by ascending asset identifier, coordinator first | unset |
 | `WT_NODE_COUNT` | number of nodes in the fleet | unset |
+| `WT_FLEET_TOKEN` | shared bearer token; when set, every fleet endpoint requires `Authorization: Bearer <token>` | unset |
 
 A bare asset identifier in `MESH_PEERS` expands to
 `device-<id>.cloud.wendy.dev:<MESH_PORT>`, matching the conventions of

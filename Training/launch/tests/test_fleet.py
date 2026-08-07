@@ -481,3 +481,43 @@ def test_lan_peers_are_ip_addresses_not_mdns_names(tmp_path):
         for entry in device.env["MESH_PEERS"].split(","):
             host = entry.rsplit(":", 1)[0]
             assert host in FAKE_ADDRESSES.values()
+
+
+def test_fleet_token_generated_persisted_and_masked(tmp_path, capsys):
+    """Every fleet gets a shared bearer token by default (security review, HIGH).
+
+    Generated once, cached in the state file so repeated invocations agree,
+    delivered to every device, never printed in the clear.
+    """
+
+    template_dir = make_template(tmp_path, "es-like")
+    config_path = write_fleet_toml(tmp_path, str(template_dir))
+    plan = load_plan(config_path, FakeRunner())
+    tokens = {d.env["WT_FLEET_TOKEN"] for d in plan.devices}
+    assert len(tokens) == 1
+    token = tokens.pop()
+    assert len(token) == 32 and all(c in "0123456789abcdef" for c in token)
+
+    # Second plan from the same fleet file reuses the cached token.
+    again = load_plan(config_path, FakeRunner())
+    assert {d.env["WT_FLEET_TOKEN"] for d in again.devices} == {token}
+
+    # An explicit token in [env] wins and is not overwritten.
+    explicit_dir = tmp_path / "explicit"
+    explicit_dir.mkdir()
+    explicit_path = write_fleet_toml(
+        explicit_dir, str(template_dir),
+        extra='WT_FLEET_TOKEN = "operator-chosen"',
+    )
+    explicit = load_plan(explicit_path, FakeRunner())
+    assert {d.env["WT_FLEET_TOKEN"] for d in explicit.devices} == {"operator-chosen"}
+
+    # render masks the value.
+    exit_code = fleet.main(
+        ["render", "--config", str(config_path), "--stage-dir", str(tmp_path / "stage")],
+        runner=FakeRunner(),
+    )
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert token not in out
+    assert "WT_FLEET_TOKEN=<masked" in out

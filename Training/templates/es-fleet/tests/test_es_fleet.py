@@ -446,3 +446,47 @@ def test_loopback_worker_needs_no_network_at_all(monkeypatch, tmp_path):
     assert status["generation"] == 2
     assert status["n_contributed"] == 6, "every pair must arrive without HTTP"
     assert status["mean_return"] is not None
+
+
+def test_fleet_token_locks_out_unauthenticated_contributions(tmp_path):
+    """A poster without the fleet token cannot steer the update.
+
+    Security review finding: the training endpoints move parameters and
+    accept gradient contributions. With WT_FLEET_TOKEN set, requests without
+    the bearer header get 401; tokenless posts contribute nothing, while a
+    tokened worker trains normally.
+    """
+
+    import urllib.error
+    import urllib.request
+
+    cfg = train.load_settings(
+        {"ES_POP": "4", "ES_GEN_TIMEOUT_S": "5", "ES_MAX_GENERATIONS": "1"}
+    )
+    run = Run(tmp_path, run_id="token-lockout")
+    coordinator = train.Coordinator(
+        cfg, run, n_nodes=1, port=0, loopback=False, token="fleet-secret"
+    )
+    coordinator.start()
+    try:
+        base = f"http://127.0.0.1:{coordinator.port}"
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(f"{base}/params", timeout=5)
+        assert excinfo.value.code == 401, "parameters must not leak without the token"
+
+        stop = threading.Event()
+        worker = threading.Thread(
+            target=train.worker_loop,
+            args=(f"127.0.0.1:{coordinator.port}", 0, 1),
+            kwargs={"stop": stop, "token": "fleet-secret"},
+            daemon=True,
+        )
+        worker.start()
+        try:
+            coordinator.train(max_generations=1)
+        finally:
+            stop.set()
+        status = json.loads(coordinator._handle_status(b"")[1])
+        assert status["n_contributed"] == 4, "the tokened worker must train normally"
+    finally:
+        coordinator.stop()

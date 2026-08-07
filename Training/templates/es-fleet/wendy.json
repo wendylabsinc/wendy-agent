@@ -44,7 +44,8 @@
                 "ES_WORKER_COUNT": "${ES_WORKER_COUNT}",
                 "WT_COORDINATOR": "${WT_COORDINATOR}",
                 "WT_NODE_INDEX": "${WT_NODE_INDEX}",
-                "WT_NODE_COUNT": "${WT_NODE_COUNT}"
+                "WT_NODE_COUNT": "${WT_NODE_COUNT}",
+                "WT_FLEET_TOKEN": "${WT_FLEET_TOKEN}"
             }
         }
     }

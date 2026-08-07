@@ -97,3 +97,11 @@ repository or, for the mesh overlay, a documented upstream handoff. None of
 the four were visible to the unit suites, and two were only reachable after
 the previous one was fixed. That sequencing is the argument for keeping these
 scripts runnable.
+
+## Addendum, security review follow-up (same day)
+
+After the AI security review, fleet authentication was added and re-verified
+on the same three devices: a 10 generation es-fleet run over the lan
+transport with a launcher-generated `WT_FLEET_TOKEN` completed with the full
+population contributed (`n_contributed` 24 of 24), while an unauthenticated
+`GET /status` from the operator's machine received 401 throughout the run.

@@ -172,10 +172,12 @@ class Coordinator:
         host: str = "0.0.0.0",
         port: int = mesh.DEFAULT_MESH_PORT,
         loopback: bool = True,
+        token: str | None = None,
     ):
         if n_nodes < 1:
             raise ValueError(f"n_nodes must be at least 1, got {n_nodes}")
         self.run = run
+        self._token = token
         self.population = int(cfg.es.pop)
         self.sigma = float(cfg.es.sigma)
         self.lr = float(cfg.es.lr)
@@ -247,7 +249,9 @@ class Coordinator:
             ("POST", "/returns"): self._handle_returns,
             ("GET", "/status"): self._handle_status,
         }
-        self._server = serve(routes, self._port_requested, host=self._host)
+        self._server = serve(
+            routes, self._port_requested, host=self._host, token=self._token
+        )
         self.port = self._server.server_address[1]
         if self._loopback:
             self._loopback_thread = threading.Thread(
@@ -443,6 +447,7 @@ def worker_loop(
     poll_interval: float = 0.05,
     get=None,
     post=None,
+    token: str | None = None,
 ) -> None:
     """Pull parameters, evaluate this worker's slice, post returns; repeat.
 
@@ -461,10 +466,14 @@ def worker_loop(
         stop = threading.Event()
     if get is None:
         def get():
-            return mesh.http_get(f"http://{coordinator}/params", timeout=5.0, retries=2)
+            return mesh.http_get(
+                f"http://{coordinator}/params", timeout=5.0, retries=2, token=token
+            )
     if post is None:
         def post(body):
-            return mesh.http_post(f"http://{coordinator}/returns", body, retries=3)
+            return mesh.http_post(
+                f"http://{coordinator}/returns", body, retries=3, token=token
+            )
     last_generation = None
     while not stop.is_set():
         try:
@@ -633,7 +642,10 @@ def main() -> None:
     if fleet.role == "coordinator":
         _, _, count = resolve_topology(env)
         run = Run(fleet.ckpt_dir, fleet.run_id)
-        coordinator = Coordinator(cfg, run, n_nodes=count, port=fleet.port)
+        coordinator = Coordinator(
+            cfg, run, n_nodes=count, port=fleet.port,
+            token=env.get("WT_FLEET_TOKEN"),
+        )
         if coordinator.resumed:
             adam_t = (
                 int(coordinator.adam_state["t"])
@@ -666,7 +678,7 @@ def main() -> None:
             f"worker index={index} count={count} coordinator={coordinator_target}",
             flush=True,
         )
-        worker_loop(coordinator_target, index, count)
+        worker_loop(coordinator_target, index, count, token=env.get("WT_FLEET_TOKEN"))
 
 
 if __name__ == "__main__":

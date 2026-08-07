@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
 from wendytrain.mesh import http_get
 
 
-def fetch_result(target: str, timeout: float = 5.0) -> dict:
+def fetch_result(target: str, timeout: float = 5.0, token: str | None = None) -> dict:
     """Fetch one member's result; raises on any transport or decode error."""
-    return json.loads(http_get(f"http://{target}/result", timeout=timeout, retries=1).decode())
+    return json.loads(
+        http_get(f"http://{target}/result", timeout=timeout, retries=1, token=token).decode()
+    )
 
 
 def sort_rows(rows: list[dict]) -> list[dict]:
@@ -44,6 +47,7 @@ def collect(
     targets: list[str],
     timeout_s: float = 300.0,
     poll_interval_s: float = 2.0,
+    token: str | None = None,
 ) -> list[dict]:
     """Poll every target until all respond or the deadline passes."""
     results: dict[str, dict] = {}
@@ -53,7 +57,7 @@ def collect(
             if target in results:
                 continue
             try:
-                payload = fetch_result(target)
+                payload = fetch_result(target, token=token)
             except Exception:
                 continue
             results[target] = {"target": target, "status": "ok", **payload}
@@ -80,9 +84,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout-s", type=float, default=300.0)
     parser.add_argument("--poll-interval-s", type=float, default=2.0)
     parser.add_argument("--out", default="results.json")
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("WT_FLEET_TOKEN", "") or None,
+        help="fleet bearer token; defaults to WT_FLEET_TOKEN",
+    )
     args = parser.parse_args(argv)
 
-    rows = collect(args.targets, timeout_s=args.timeout_s, poll_interval_s=args.poll_interval_s)
+    rows = collect(
+        args.targets, timeout_s=args.timeout_s,
+        poll_interval_s=args.poll_interval_s, token=args.token,
+    )
     path = write_results(rows, args.out)
     unreachable = sum(1 for row in rows if row["status"] != "ok")
     print(f"[collect] wrote {path} ({len(rows)} rows, {unreachable} unreachable)")

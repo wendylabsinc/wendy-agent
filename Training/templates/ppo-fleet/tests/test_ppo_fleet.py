@@ -212,3 +212,26 @@ def test_learner_target_accepts_the_launchers_generic_coordinator():
     assert train.learner_target(env) == "spark-48fd.local:8080"
     env["PPO_LEARNER"] = "elsewhere:9"
     assert train.learner_target(env) == "elsewhere:9"
+
+
+def test_state_dict_deserialization_refuses_arbitrary_pickles():
+    """torch.load must stay weights_only; a pickled object must not load.
+
+    Security review finding: optimizer state travels between peers as an
+    opaque blob. weights_only=True is the mitigation that turns a malicious
+    pickle from code execution into an exception; this pins it.
+    """
+
+    import io
+    import pickle
+
+    class Sneaky:
+        def __reduce__(self):
+            return (print, ("this must never execute",))
+
+    blob = io.BytesIO()
+    pickle.dump({"state": Sneaky()}, blob)
+    with pytest.raises(Exception):
+        nets.deserialize_state_dict(blob.getvalue())
+    source = (TEMPLATE_DIR / "nets.py").read_text()
+    assert "weights_only=True" in source

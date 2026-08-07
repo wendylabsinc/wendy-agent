@@ -154,12 +154,23 @@ def _request_with_retries(request: urllib.request.Request, timeout: float, retri
     raise last_error
 
 
-def http_get(url: str, timeout: float = 5.0, retries: int = 5) -> bytes:
+def _with_token(request, token: str | None):
+    """Attach the fleet bearer token when one is in force; see serve()."""
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    return request
+
+
+def http_get(url: str, timeout: float = 5.0, retries: int = 5,
+             token: str | None = None) -> bytes:
     """HTTP GET with exponential backoff; returns the response body."""
-    return _request_with_retries(urllib.request.Request(url), timeout, retries)
+    return _request_with_retries(
+        _with_token(urllib.request.Request(url), token), timeout, retries
+    )
 
 
-def http_post(url: str, body: bytes, timeout: float = 10.0, retries: int = 5) -> bytes:
+def http_post(url: str, body: bytes, timeout: float = 10.0, retries: int = 5,
+              token: str | None = None) -> bytes:
     """HTTP POST of raw bytes with exponential backoff; returns the response body."""
-    request = urllib.request.Request(url, data=body, method="POST")
+    request = _with_token(urllib.request.Request(url, data=body, method="POST"), token)
     return _request_with_retries(request, timeout, retries)

@@ -12,7 +12,7 @@ COPY . /app/
 # Install the vendored library, then remove its source directory so the
 # bare wendytrain/ folder cannot shadow the installed package when Python
 # adds /app to sys.path.
-RUN pip install --no-cache-dir /app/wendytrain && rm -rf /app/wendytrain
+RUN pip install --no-cache-dir numpy==2.5.1 /app/wendytrain && rm -rf /app/wendytrain
 
 # Wendy injects debugpy for Python apps, so keep the container command a
 # direct Python invocation instead of wrapping it in a shell script.

@@ -254,15 +254,55 @@ def default_resolver(host: str) -> str:
     return infos[0][4][0]
 
 
+def _is_private_address(address: str) -> bool:
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(address).is_private
+    except ValueError:
+        return False
+
+
+def _ensure_fleet_token(config: FleetConfig) -> None:
+    """Give every fleet a shared bearer token unless the user set one.
+
+    The training endpoints move model parameters and accept contributions
+    that steer the update (security review, HIGH). The token is generated
+    once per fleet, cached in the state file next to fleet.toml so status
+    and collect keep working across invocations, delivered to every device
+    as WT_FLEET_TOKEN, and masked in printed plans.
+    """
+    if config.env.get("WT_FLEET_TOKEN"):
+        return
+    state_path = config.config_dir / STATE_FILE
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    token = state.get("fleet_token")
+    if not token:
+        import secrets
+
+        token = secrets.token_hex(16)
+        state["fleet_token"] = token
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
+    config.env["WT_FLEET_TOKEN"] = token
+
+
 def plan_fleet(config: FleetConfig, runner=default_runner,
                resolver=None) -> FleetPlan:
     """Resolve ids, derive roles, and compute the per-device environment."""
     if resolver is None:
         resolver = default_resolver  # looked up at call time, so tests can patch it
     resolve_asset_ids(config, runner)
+    _ensure_fleet_token(config)
     addresses: dict[str, str] = {}
     if config.transport == "lan":
         addresses = {d.host: resolver(d.host) for d in config.devices}
+        for host, address in addresses.items():
+            if not _is_private_address(address):
+                print(
+                    f"warning: {host} resolved to {address}, which is not a "
+                    "private address; check the resolution before trusting it",
+                    file=sys.stderr,
+                )
     peers_raw = ",".join(str(d.asset_id) for d in config.devices)
     roles: dict[str, str] = {}
     for device in config.devices:
@@ -443,7 +483,10 @@ def _print_plan(config: FleetConfig, plan: FleetPlan, staged_dir: Path) -> None:
         print()
         print(f"device {device.host} (asset {device.asset_id}, role {device.role})")
         for key in sorted(device.env):
-            print(f"  env {key}={device.env[key]}")
+            value = device.env[key]
+            if key == "WT_FLEET_TOKEN":
+                value = f"<masked, {len(value)} hex chars>"
+            print(f"  env {key}={value}")
         print(f"  command: {' '.join(deploy_command(device.host, staged_dir))}")
 
 
@@ -482,8 +525,12 @@ def cmd_status(args, runner, fetch=http_get) -> int:
         for route in ("/status", "/healthz"):
             try:
                 body = fetch(f"http://{device.host}:{port}{route}",
-                             timeout=3.0, retries=1)
-                summary = " ".join(body.decode(errors="replace").split())[:120]
+                             timeout=3.0, retries=1,
+                             token=config.env.get("WT_FLEET_TOKEN"))
+                text = body.decode(errors="replace")
+                # The body comes from a network service; keep it printable.
+                text = "".join(c for c in text if c.isprintable() or c == " ")
+                summary = " ".join(text.split())[:120]
                 break
             except Exception:
                 continue

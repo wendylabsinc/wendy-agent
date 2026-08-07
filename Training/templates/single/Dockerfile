@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY . /app/
 
-RUN pip install --no-cache-dir numpy /app/wendytrain && rm -rf /app/wendytrain
+RUN pip install --no-cache-dir numpy==2.5.1 /app/wendytrain && rm -rf /app/wendytrain
 
 # The image bakes the template's configuration file; deploy-time
 # WT_<SECTION>__<KEY> variables override individual keys, and a deploy-time
