@@ -726,7 +726,11 @@ public actor WendyAgent {
                 try await registry.run()
             } catch {
                 Self.logRegistryListenerStopped(
-                    logger, listener: "pull", port: LocalRegistryRef.pullPort, error: error)
+                    logger,
+                    listener: "pull",
+                    port: LocalRegistryRef.pullPort,
+                    error: error
+                )
             }
         }
     }
@@ -766,7 +770,11 @@ public actor WendyAgent {
                 try await registry.run()
             } catch {
                 Self.logRegistryListenerStopped(
-                    logger, listener: "push", port: LocalRegistryRef.pushPort, error: error)
+                    logger,
+                    listener: "push",
+                    port: LocalRegistryRef.pushPort,
+                    error: error
+                )
             }
         }
     }
@@ -782,7 +790,10 @@ public actor WendyAgent {
     }
 
     private static func logRegistryListenerStopped(
-        _ logger: Logger, listener: String, port: Int, error: any Error
+        _ logger: Logger,
+        listener: String,
+        port: Int,
+        error: any Error
     ) {
         if error is CancellationError { return }
         var metadata: Logger.Metadata = [
