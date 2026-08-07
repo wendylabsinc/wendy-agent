@@ -101,3 +101,38 @@ func reachableAppURL(hookURL, appID, serviceName, deviceIP string, readiness *ap
 	}
 	return ""
 }
+
+// httpEntitlementPort returns the port declared by an `http` entitlement, if
+// the app has one.
+func httpEntitlementPort(entitlements []appconfig.Entitlement) (int, bool) {
+	for _, e := range entitlements {
+		if e.Type == appconfig.EntitlementHTTP && e.Port > 0 {
+			return e.Port, true
+		}
+	}
+	return 0, false
+}
+
+// effectiveReadiness returns appCfg.Readiness unchanged when it already
+// declares a TCP probe. Otherwise, when the app declares an `http`
+// entitlement, it synthesizes a readiness probe on that port (preserving any
+// explicit timeoutSeconds) so `wendy run` waits for the declared HTTP port to
+// come up before announcing or opening it — an `http` entitlement gets this
+// gating without a separate readiness.tcpSocket config.
+func effectiveReadiness(appCfg *appconfig.AppConfig) *appconfig.ReadinessConfig {
+	if appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil {
+		return appCfg.Readiness
+	}
+	port, ok := httpEntitlementPort(appCfg.Entitlements)
+	if !ok {
+		return appCfg.Readiness
+	}
+	timeout := 0
+	if appCfg.Readiness != nil {
+		timeout = appCfg.Readiness.TimeoutSeconds
+	}
+	return &appconfig.ReadinessConfig{
+		TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+		TimeoutSeconds: timeout,
+	}
+}

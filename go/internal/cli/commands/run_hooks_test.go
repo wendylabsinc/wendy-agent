@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"testing"
@@ -380,5 +381,113 @@ func TestContextWithPostStartAgentHookEmpty(t *testing.T) {
 	ctx := contextWithPostStartAgentHook(context.Background(), &appconfig.AppConfig{AppID: "test"})
 	if _, ok := metadata.FromOutgoingContext(ctx); ok {
 		t.Fatal("expected no outgoing metadata for empty agent hook")
+	}
+}
+
+func TestEffectiveReadiness_ExplicitReadinessWins(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		Readiness:    &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: 1234}},
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}},
+	}
+	got := effectiveReadiness(appCfg)
+	if got.TCPSocket.Port != 1234 {
+		t.Errorf("effectiveReadiness().TCPSocket.Port = %d, want explicit 1234", got.TCPSocket.Port)
+	}
+}
+
+func TestEffectiveReadiness_SynthesizedFromHTTPEntitlement(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}},
+	}
+	got := effectiveReadiness(appCfg)
+	if got == nil || got.TCPSocket == nil || got.TCPSocket.Port != 8080 {
+		t.Fatalf("effectiveReadiness() = %+v, want synthesized TCPSocket on port 8080", got)
+	}
+}
+
+func TestEffectiveReadiness_NoHTTPEntitlementNoReadiness(t *testing.T) {
+	appCfg := &appconfig.AppConfig{}
+	got := effectiveReadiness(appCfg)
+	if got != nil {
+		t.Errorf("effectiveReadiness() = %+v, want nil", got)
+	}
+}
+
+// TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement verifies the "wendy run
+// also opens this page after launch" behavior: an app declaring only an http
+// entitlement (no readiness config, no postStart hook) gets its port polled
+// for readiness and then opened automatically.
+func TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:        "http-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host: "127.0.0.1",
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"127.0.0.1"}}},
+		}},
+	}
+
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	want := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if opened != want {
+		t.Errorf("opened = %q, want %q", opened, want)
+	}
+}
+
+// TestRunPostStartIfReady_ExplicitHookNotOverriddenByHTTPEntitlement verifies
+// that an app declaring both an http entitlement AND an explicit
+// hooks.postStart.openURL keeps the explicit URL — the entitlement only fills
+// in when nothing is configured.
+func TestRunPostStartIfReady_ExplicitHookNotOverriddenByHTTPEntitlement(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:        "http-app-explicit",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
+		Hooks: &appconfig.HooksConfig{
+			PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:9999/custom"},
+		},
+	}
+	// The explicit openURL hook makes announceReachableURL query the agent
+	// regardless of the http entitlement (same as pre-existing hook-only
+	// tests above); AgentService must be non-nil or that call panics.
+	conn := &grpcclient.AgentConnection{
+		Host:         "127.0.0.1",
+		AgentService: &fakeAgentVersionClient{err: errors.New("agent unreachable")},
+	}
+
+	runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	if opened != "http://127.0.0.1:9999/custom" {
+		t.Errorf("opened = %q, want the explicit hook URL unchanged", opened)
 	}
 }
