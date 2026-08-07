@@ -2,15 +2,16 @@
 package hardware
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -44,7 +45,7 @@ func (d *SystemHardwareDiscoverer) Discover(ctx context.Context, categoryFilter 
 		{"spi", d.discoverSPI},
 		{"gpio", d.discoverGPIO},
 		{"camera", func() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability { return d.discoverCamera(ctx) }},
-		{"audio", d.discoverAudio},
+		{"audio", func() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability { return d.discoverAudio(ctx) }},
 		{"network", d.discoverNetwork},
 		{"storage", d.discoverStorage},
 	}
@@ -281,41 +282,40 @@ func (d *SystemHardwareDiscoverer) discoverCamera(ctx context.Context) []*agentp
 	return caps
 }
 
-// discoverAudio enumerates audio devices from /proc/asound or PipeWire.
-func (d *SystemHardwareDiscoverer) discoverAudio() []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
-	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
-
-	f, err := os.Open("/proc/asound/cards")
+// discoverAudio enumerates audio devices from the PipeWire graph.
+//
+// Reading /proc/asound/cards would only find sound cards, so a paired
+// Bluetooth speaker — which has no card — never appeared here. PipeWire's ALSA
+// monitor exposes every card as a node, so this covers the cards too.
+func (d *SystemHardwareDiscoverer) discoverAudio(ctx context.Context) []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability {
+	nodes, defaults, err := audio.ListNodes(ctx)
 	if err != nil {
+		d.logger.Debug("Audio discovery skipped", zap.Error(err))
 		return nil
 	}
-	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		// Lines look like: " 0 [tegrahda       ]: tegra-hda - NVIDIA Tegra HDA"
-		if len(line) == 0 || line[0] < '0' || line[0] > '9' {
-			// Skip description lines (second line of each card).
-			continue
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+
+	var caps []*agentpb.ListHardwareCapabilitiesResponse_HardwareCapability
+	for _, n := range nodes {
+		direction := "source"
+		if n.IsSink {
+			direction = "sink"
 		}
-
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) < 2 {
-			continue
+		props := map[string]string{
+			"node_id":   fmt.Sprintf("%d", n.ID),
+			"direction": direction,
 		}
-
-		name := strings.TrimSpace(parts[1])
-		cardParts := strings.Fields(parts[0])
-		cardNum := "0"
-		if len(cardParts) > 0 {
-			cardNum = cardParts[0]
+		if defaults.IsDefault(n) {
+			props["default"] = "true"
 		}
-
 		caps = append(caps, &agentpb.ListHardwareCapabilitiesResponse_HardwareCapability{
-			Category:    "audio",
-			DevicePath:  fmt.Sprintf("/dev/snd/controlC%s", cardNum),
-			Description: name,
+			Category: "audio",
+			// The node name, not a /dev path: Bluetooth endpoints have none,
+			// and the name is what identifies a node across the audio stack.
+			DevicePath:  n.Name,
+			Description: n.Description,
+			Properties:  props,
 		})
 	}
 
