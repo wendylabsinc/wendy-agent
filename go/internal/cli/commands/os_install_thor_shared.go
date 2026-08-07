@@ -271,7 +271,7 @@ func injectConfigPartition(img string, creds []wendyconf.WifiCredential, deviceN
 	// still provisions wifi/enrollment, falling back to the agent baked into the
 	// image.
 	detail("downloading agent")
-	agentBinary, agentVer, _, err := resolveAgentArtifact("", "arm64", false)
+	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		fmt.Fprintf(out, "warning: could not download wendy-agent (%v); using the agent baked into the image\n", err)
 	} else {

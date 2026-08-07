@@ -2461,7 +2461,10 @@ func isZipArchive(data []byte) bool {
 	return len(data) >= 4 && data[0] == 'P' && data[1] == 'K' && data[2] == 0x03 && data[3] == 0x04
 }
 
-// isELFBinary reports whether data begins with the ELF magic (0x7f 'E' 'L' 'F').
+// isELFBinary reports whether data begins with the ELF magic (0x7f 'E' 'L'
+// 'F'). This only sniffs the container format, not architecture — amd64 and
+// arm64 ELF binaries both match. Architecture is validated separately by
+// checkELFArchitecture.
 func isELFBinary(data []byte) bool {
 	return len(data) >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F'
 }

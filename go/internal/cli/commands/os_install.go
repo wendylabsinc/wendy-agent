@@ -2359,7 +2359,7 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 // provisionConfigPartition downloads the latest stable arm64 wendy-agent binary
 func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
 	fmt.Printf("Downloading wendy-agent for device...\n")
-	agentBinary, agentVer, _, err := resolveAgentArtifact("", "arm64", false)
+	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		return fmt.Errorf("resolving agent binary: %w", err)
 	}
