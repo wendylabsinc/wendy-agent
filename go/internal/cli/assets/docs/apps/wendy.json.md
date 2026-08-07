@@ -400,6 +400,18 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 > Design tools to return focused, paginated, or summarized output to avoid
 > hitting this limit.
 
+### `http`
+
+Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
+
+```json
+{ "type": "http", "port": 8080 }
+```
+
+> **Networking:** Browser reachability currently requires `{ "type": "network", "mode": "host" }`. Bridge mode provides outbound NAT only and does not publish host/LAN ports. A `network.ports` mapping in mesh mode serves mesh-peer traffic; it does not make the URL reachable from the developer's browser.
+
+If the app configures an explicit hostname-templated `hooks.postStart.openURL`, that URL wins for display and browser opening. Otherwise the HTTP entitlement port wins, followed by `readiness.tcpSocket.port`. An explicit readiness TCP port remains the probe target, so an app can probe port `9000` while advertising and opening its HTTP UI on port `8080`.
+
 ### `display`
 
 Present to a locally-attached monitor as a Wayland client (GPU-accelerated) — the app or shell draws directly to the screen, no web browser involved.

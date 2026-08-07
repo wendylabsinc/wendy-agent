@@ -1903,12 +1903,19 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         request: ServerRequest<Wendy_Agent_Services_V1_ListContainersRequest>,
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse> {
+        // Capture entitlement-derived ports and running state while still on
+        // the actor: appsByID is actor-isolated state, but the
+        // StreamingServerResponse closure below is not guaranteed to run on
+        // the actor's executor.
         let containers = self.appsByID.values
             .sorted { $0.info.id < $1.info.id }
             .map { app -> AppContainer in
                 var container = AppContainer()
                 container.appName = app.info.id
                 container.runningState = Self.runningState(for: app)
+                let (http, mcp) = self.entitlementPorts(forAppID: app.info.id)
+                container.httpPort = http
+                container.mcpPort = mcp
                 return container
             }
 
@@ -1921,6 +1928,39 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return Metadata()
         }
+    }
+
+    /// Reads the http/mcp entitlement ports declared in the app's retained
+    /// wendy.json config, if it has one (native/file-sync apps have no
+    /// `.container` metadata and no entitlements, so both are 0 for them).
+    private func entitlementPorts(forAppID appID: String) -> (http: UInt32, mcp: UInt32) {
+        guard let entitlements = appsByID[appID]?.container?.appConfig?.entitlements else {
+            return (0, 0)
+        }
+        var http: UInt32 = 0
+        var mcp: UInt32 = 0
+        for entitlement in entitlements {
+            // Ports are validated 1-65535 on the Go/CLI side, but wendy.json is
+            // decoded independently here with no range check on `port` (an
+            // arbitrary Int). UInt32(port), unlike Go's uint32(port), traps on
+            // out-of-range input instead of wrapping — so a value outside
+            // 1-65535 must be treated the same as port <= 0 (silently skipped),
+            // not converted, or listContainers crashes every time it's called
+            // for as long as the bad config is persisted.
+            guard let port = entitlement.port, port > 0, port <= 65535 else { continue }
+            switch entitlement.type {
+            case "http" where http == 0:
+                http = UInt32(port)
+            case "mcp" where mcp == 0:
+                mcp = UInt32(port)
+            default:
+                break
+            }
+            if http != 0 && mcp != 0 {
+                break
+            }
+        }
+        return (http, mcp)
     }
 
     /// A down app the supervisor has already restarted at least once and will

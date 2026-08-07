@@ -87,24 +87,26 @@ Any service in the `services` map may declare its own `readiness` probe and `hoo
 }
 ```
 
-Only a service that declares `readiness` or `hooks` runs the readiness→postStart sequence; `db`, `cache`, and `api` above are unaffected.
+Only a service that declares `readiness`, `hooks`, or a service-level `http` entitlement runs the readiness→postStart sequence; `db`, `cache`, and `api` above are unaffected.
 
 ### Scoping
 
 - `readiness` gates only the declaring service's own `postStart` hook — it never delays other services' startup order (`dependsOn` ordering is a separate mechanism).
+- A service-level `http` entitlement waits, announces, and opens only for that service. A top-level `http` entitlement remains in every container's create configuration but runs as an app-level action once, after every service starts. If both scopes declare HTTP, both actions run at their respective scopes.
+- An explicit `readiness.tcpSocket.port` remains the probe target even when the same scope declares HTTP. The displayed/opened URL prefers an explicit hostname-templated `openURL`, then the HTTP port, then the readiness port; probing `9000` while opening `8080` is supported.
 - `hooks.postStart.agent` (a command run on the device) is delivered only to the declaring service's own container start call; it never runs in any other service's container.
 - Hook commands may reference `${WENDY_HOSTNAME}` (the device host), `${WENDY_APP_ID}`, and `${WENDY_SERVICE_NAME}` — the declaring service's name, empty for single-container apps and for the app-level fallback below. Windows-style `%VAR%` forms are accepted too.
 
 ### App-level fallback
 
-A top-level `readiness`/`hooks` in `wendy.json` acts as an app-level fallback: it fires once after every service has started, rather than gating any single service. Both the fallback and a service's own `readiness`/`hooks` fire if both are declared. Two exceptions:
+A top-level `readiness`/`hooks` or `http` entitlement in `wendy.json` acts as an app-level fallback: it fires once after every service has started, rather than gating any single service. Both the fallback and a service's own lifecycle configuration fire if both are declared. Two exceptions:
 
 - A top-level `hooks.postStart.agent` is ignored for multi-service apps — there is no app-level container to run it in. `wendy run` warns about this when it loads `wendy.json`; declare it under `services.<name>.hooks` instead.
 - The fallback is skipped when `wendy run --service` selects a subset of services, since "every service has started" can't be guaranteed on a partial run.
 
 ### Attached vs. detached
 
-In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode, readiness is waited sequentially in dependency order after every service has started; hooks outlive the CLI once it exits, and a readiness failure only prints a warning — it never fails the command.
+In attached mode, each service's readiness→postStart sequence fires asynchronously right after that service's start is acknowledged, so a slow or failing probe never delays starting the next service. Ctrl-C cancels any in-flight readiness wait and kills `cli` hook child processes. If the run ends on its own — every service's log stream closes — while a hook (per-service or the app-level fallback) is still waiting on readiness, that hook is suppressed rather than fired, so `wendy run` never opens a browser onto a stack that has already exited. In detached mode, readiness is waited sequentially in dependency order after every service has started and hooks outlive the CLI once it exits. In either mode, a non-cancellation readiness timeout warns but does not fail the command: explicitly configured multi-service `postStart` hooks still run, while `App reachable` and any HTTP-entitlement-synthesized browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
 
 ## How `wendy run` handles multi-service projects
 

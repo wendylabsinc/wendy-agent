@@ -907,6 +907,45 @@ services:
 	})
 }
 
+func TestComposeServiceLifecycleConfigs_ScopesHTTP(t *testing.T) {
+	composeCfg := &composeConfig{Services: map[string]composeService{
+		"minecraft": {Image: "alpine"},
+		"webui":     {Image: "alpine"},
+	}}
+	companion := &appconfig.AppConfig{
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}},
+		Readiness:    &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"webui": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 9090}}},
+		},
+	}
+
+	createCfgs, warnings, err := buildComposeServiceConfigs("proj", composeCfg, companion)
+	if err != nil {
+		t.Fatalf("buildComposeServiceConfigs: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	lifecycleCfgs := composeServiceLifecycleConfigs(createCfgs, companion)
+	for _, name := range []string{"minecraft", "webui"} {
+		if port, ok := httpEntitlementPort(createCfgs[name].Entitlements); !ok || port != 8080 {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited top-level 8080", name, port, ok)
+		}
+	}
+	if lifecycleCfgs["minecraft"] != nil {
+		t.Errorf("minecraft lifecycle config = %+v, want nil", lifecycleCfgs["minecraft"])
+	}
+	if port, ok := httpEntitlementPort(lifecycleCfgs["webui"].Entitlements); !ok || port != 9090 {
+		t.Errorf("webui lifecycle HTTP = %d, %v; want service-declared 9090", port, ok)
+	}
+	appLifecycle := appLevelLifecycleConfig(companion.AppID, companion)
+	if readiness := effectiveReadiness(appLifecycle); readiness == nil || readiness.TCPSocket == nil || readiness.TCPSocket.Port != 8080 || readiness.TimeoutSeconds != 180 {
+		t.Errorf("effective app lifecycle readiness = %+v, want port 8080 and timeoutSeconds 180", readiness)
+	}
+}
+
 func TestApplyComposeCompanion_LifecycleOverride(t *testing.T) {
 	xWendyAppCfg := func() *appconfig.AppConfig {
 		return &appconfig.AppConfig{

@@ -49,4 +49,7 @@ message AppContainer {
     // order.
     int32 exit_code = 11;            // process exit code of the last run; -1 = task never started.
     string termination_reason = 12;  // exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
+    // wendy.json `http` entitlement's declared port, if any. Static/declared —
+    // mirrors mcp_port; 0 when the app declares no `http` entitlement.
+    uint32 http_port = 13;
 }
