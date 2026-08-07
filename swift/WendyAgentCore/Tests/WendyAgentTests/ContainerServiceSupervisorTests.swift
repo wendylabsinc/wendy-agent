@@ -450,6 +450,52 @@ struct ContainerServiceSupervisorTests {
         await backend.terminateAll()
     }
 
+    @Test(
+        "beginStopping during an in-flight tick's pull stops that tick from launching the next app"
+    )
+    func beginStoppingDuringInFlightPullStopsSameTickFromLaunchingNextApp() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        // Sorted so `appA` is the candidate `superviseApps`' `keys.sorted()`
+        // loop reaches first (and blocks in), and `appB` is the next candidate
+        // in that SAME tick.
+        let appA = "svc-quiesce-a"
+        let appB = "svc-quiesce-b"
+        let backend = StubLinuxBackend()
+        // Blocks the first pull call the backend sees, i.e. appA's.
+        await backend.blockPull(number: 1)
+
+        let service = makeService(appsBase: appsBase, backend: backend, restartFloor: .zero)
+        try await createLinuxApp(service: service, appID: appA)
+        try await createLinuxApp(service: service, appID: appB)
+
+        let tick = Task { await service.superviseApps() }
+        try await waitForSupervisor("appA's pull to begin") {
+            await backend.pullCount() >= 1
+        }
+
+        // This is the ContainerService-level guarantee the fixed
+        // `handleUnexpectedRuntimeExit` (WendyAgent.swift) now relies on:
+        // mark the service stopping while a tick is mid-flight, exactly like
+        // `stop()` already did before this fix extended the same ordering to
+        // the unexpected-runtime-exit path.
+        await service.beginStopping()
+
+        await backend.releaseBlockedPull()
+        await tick.value
+
+        // appA's already-in-flight launch cannot be cancelled — a pull is not
+        // cancellation-aware — so it is allowed to finish, but the same tick's
+        // loop must not go on to start appB once it observes `isStopping`.
+        #expect(await backend.pullCount() == 1)
+        #expect(await backend.startedApps() == [appA])
+        #expect(await service.appInfo(forAppID: appB)?.status == .stopped)
+
+        await service.stopAllApps()
+        await backend.terminateAll()
+    }
+
     @Test("supervisor ticks never signal a persisted pid")
     func supervisorTickNeverSignalsPersistedPIDs() async throws {
         let appsBase = try makeSupervisorTempDir()
@@ -729,6 +775,29 @@ struct ContainerServiceSupervisorTests {
 
         #expect(await service.appInfo(forAppID: appID)?.status == .stopped)
         #expect(await service.failureCount(forAppID: appID) == 0)
+    }
+
+    @Test("startAppUnattended refuses to launch once the agent has begun stopping")
+    func startAppUnattendedRefusesToLaunchAfterBeginStopping() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        // Calls `startAppUnattended` directly, bypassing the `isStopping`
+        // guards already at the top of `superviseApps`/`reconcileApps`
+        // (covered by `supervisorIsInertWhileStopping` and
+        // `reconcileIsInertWhileStopping`), to isolate the guard added inside
+        // `startAppUnattended` itself.
+        let appID = "svc-unattended-stopping"
+        let backend = StubLinuxBackend()
+        let service = makeService(appsBase: appsBase, backend: backend)
+        try await createLinuxApp(service: service, appID: appID)
+
+        await service.beginStopping()
+        await service.startAppUnattendedForTesting(id: appID)
+
+        #expect(await backend.pullCount() == 0)
+        #expect(await backend.startedApps().isEmpty)
+        #expect(await service.appInfo(forAppID: appID)?.status == .stopped)
     }
 
     @Test("reconcile does nothing once the agent has begun stopping")

@@ -606,6 +606,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     /// Starts an app with nobody streaming its RPC response. The pipes still
     /// have to be consumed, so the output is drained into telemetry.
     private func startAppUnattended(id: String) async {
+        // Re-checked immediately before the launch (rather than relying solely
+        // on callers' own `isStopping` guards) so a tick that was already past
+        // its own check when shutdown began cannot start a brand-new launch.
+        // This cannot cancel a launch already inside `launchApp` — a container
+        // pull is not cancellation-aware — but it closes the window for any
+        // launch that has not yet begun.
+        guard !self.isStopping else { return }
+
         do {
             let launched = try await self.launchApp(appName: id)
             self.drainUnattendedOutput(appName: id, launched: launched)
@@ -618,6 +626,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 ]
             )
         }
+    }
+
+    /// Exposes `startAppUnattended` so a test can exercise its `isStopping`
+    /// guard directly, bypassing the (already independently tested) guards in
+    /// `superviseApps`/`reconcileApps` that normally sit in front of it.
+    func startAppUnattendedForTesting(id: String) async {
+        await self.startAppUnattended(id: id)
     }
 
     /// Consumes an unattended launch's stdout/stderr. Without this the app

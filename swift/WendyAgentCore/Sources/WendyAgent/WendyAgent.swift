@@ -998,6 +998,16 @@ public actor WendyAgent {
             )
         }
 
+        // Order matters, mirroring `stop()` (WendyAgent.swift:107-113): mark the
+        // service as stopping so no further supervisor tick does any work, then
+        // cancel the supervisor and wait for a tick that is already in flight,
+        // before tearing anything else down. Without this a tick already inside
+        // `superviseApps` could keep launching apps into a `ContainerService`
+        // that is about to be dropped, and a subsequent `start()` in the same
+        // process would race its cold reconcile against those launches.
+        await self.containerService?.beginStopping()
+        await self.stopAppSupervisor()
+
         await self.stopBonjour()
         await self.stopOTelServer()
         await self.stopMainServer()
