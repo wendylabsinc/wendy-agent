@@ -221,8 +221,7 @@ Check the four status badges before touching the controls:
 
 - **motion: ok** means the app can reach Unitree's motion service.
 - **cam: live** means the page is receiving the front camera at `/dev/video4`.
-- **battery** shows the value reported by the G1 firmware. Some firmware does
-  not report a battery percentage to PC2 and shows `0%`.
+- **battery** shows the percentage reported by the G1 battery controller.
 - **fsm** shows the G1 locomotion state. The page does not send velocity
   commands until it has a recent `801 (walk-ready)` readback.
 
