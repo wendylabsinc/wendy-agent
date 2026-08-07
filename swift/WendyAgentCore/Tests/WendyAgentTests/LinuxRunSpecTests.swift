@@ -57,4 +57,32 @@ import Testing
     @Test func managedNameIsPrefixed() {
         #expect(managedContainerName(for: "myapp") == "wendy-myapp")
     }
+
+    @Test func httpEntitlementProducesNoSpecAndNoWarning() {
+        var warnings: [String] = []
+        let ents = [
+            WendyEntitlement(type: "http", mode: nil, name: nil, path: nil, ports: nil, port: 8080)
+        ]
+        let specs = LinuxRunSpecBuilder.specs(
+            from: ents,
+            appName: "app",
+            warn: { warnings.append($0) }
+        )
+        #expect(specs.isEmpty)
+        #expect(warnings.isEmpty)
+    }
+
+    @Test func mcpEntitlementProducesNoSpecAndNoWarning() {
+        var warnings: [String] = []
+        let ents = [
+            WendyEntitlement(type: "mcp", mode: nil, name: nil, path: nil, ports: nil, port: 3000)
+        ]
+        let specs = LinuxRunSpecBuilder.specs(
+            from: ents,
+            appName: "app",
+            warn: { warnings.append($0) }
+        )
+        #expect(specs.isEmpty)
+        #expect(warnings.isEmpty)
+    }
 }
