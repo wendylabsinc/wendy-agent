@@ -570,16 +570,21 @@ func composeServiceLifecycleConfigs(svcCfgs map[string]*appconfig.AppConfig, com
 }
 
 // deduplicateEntitlements returns a copy of ents with duplicates removed.
-// Two entitlements are considered duplicates when their type, name, and mode
-// are equal; the first occurrence is kept. This covers the common cases:
+// Two entitlements are considered duplicates when their type and complete
+// canonical annotation value are equal; the first occurrence is kept. This
+// covers the common cases without collapsing parameterized same-type grants:
 //   - GPU declared in both shared and per-service sections
 //   - Network mode declared in both compose (network_mode:host) and companion
-//   - Persist volumes declared multiple times with the same name
+//   - Persist volumes declared multiple times with the same name and path
+//
+// Device, GPIO, allowlist, port, and every other entitlement parameter is part
+// of EntitlementAnnotationValue, so (for example) ttyUSB0 and ttyUSB1 remain
+// two serial entitlements.
 func deduplicateEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
 	seen := make(map[string]bool, len(ents))
 	out := make([]appconfig.Entitlement, 0, len(ents))
 	for _, e := range ents {
-		key := string(e.Type) + "\x00" + e.Name + "\x00" + e.Mode
+		key := e.Type + "\x00" + appconfig.EntitlementAnnotationValue(e)
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, e)

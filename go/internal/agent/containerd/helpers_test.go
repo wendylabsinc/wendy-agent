@@ -561,6 +561,8 @@ func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
 		{Type: appconfig.EntitlementNetwork, Mode: "host"},
 		{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"},
 		{Type: appconfig.EntitlementPersist, Name: "logs", Path: "/logs"},
+		{Type: appconfig.EntitlementSerial, Device: "ttyUSB0"},
+		{Type: appconfig.EntitlementSerial, Device: "ttyUSB1"},
 		{Type: appconfig.EntitlementGPU},
 	}
 
@@ -589,6 +591,10 @@ func TestParseEntitlementsFromAnnotations_RoundTrip(t *testing.T) {
 	}
 	if len(byType[appconfig.EntitlementGPU]) != 1 {
 		t.Errorf("gpu entitlement round-trip failed: %+v", byType[appconfig.EntitlementGPU])
+	}
+	serial := byType[appconfig.EntitlementSerial]
+	if len(serial) != 2 || serial[0].Device != "ttyUSB0" || serial[1].Device != "ttyUSB1" {
+		t.Errorf("serial entitlement round-trip failed: %+v", serial)
 	}
 }
 
