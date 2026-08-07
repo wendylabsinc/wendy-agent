@@ -1129,7 +1129,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	env = append(env, req.GetEnv()...)
 	env = appendFallbackEnv(env)
 	env = append(env, wendyEnv...)
-	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
+	ros2Env, err := buildROS2Env(appCfg, appID, serviceName)
+	if err != nil {
+		// Fail the create rather than start a ROS 2 container with no
+		// ROS_DOMAIN_ID, which silently lands it on the global default domain 0.
+		return fmt.Errorf("resolving ROS 2 environment for %q: %w", appID, err)
+	}
+	env = append(env, ros2Env...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -2199,20 +2205,30 @@ const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false<
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
 // service-level config for multi-service apps). The injected set is
-// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and
-// ROS_LOCALHOST_ONLY (WDY-884).
-func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []string {
+// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and both
+// discovery-scope variables (WDY-884).
+//
+// Returns an error rather than nil for an invalid config. It used to return nil,
+// which meant the container started with *no* ROS 2 environment at all — so
+// ROS_DOMAIN_ID fell back to 0, the global default domain everything else is on.
+// A validation gap upstream therefore produced maximum exposure instead of a
+// failure, which is the wrong direction for a mechanism whose job is isolation.
+func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]string, error) {
 	ros2 := appCfg.ResolveROS2ConfigForService(serviceName)
 	if ros2 == nil {
-		return nil
+		return nil, nil
 	}
 	domainID := ros2.ResolvedDomainID(appID)
 	if domainID < 0 {
-		return nil // invalid explicit domain ID; caller should have validated at config parse time
+		return nil, fmt.Errorf("frameworks.ros2.domainId is outside [%d,%d]; refusing to start "+
+			"the container without ROS_DOMAIN_ID isolation (it would default to domain 0)",
+			appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 	}
 	discoveryScope := ros2.ResolvedDiscoveryScope()
 	if discoveryScope == "" {
-		return nil // invalid scope; caller should have validated at config parse time
+		return nil, fmt.Errorf("frameworks.ros2.discoveryScope %q is not %q or %q; refusing to "+
+			"start the container with an undefined DDS discovery scope",
+			ros2.DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
@@ -2226,12 +2242,19 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 	}
 	// Services are app-local by default. Host-scoped tools such as Foxglove
 	// explicitly opt in to discovering ROS 2 participants on the device network.
+	//
+	// Both variables are set, not just ROS_LOCALHOST_ONLY. That one has been
+	// deprecated since Iron in favour of ROS_AUTOMATIC_DISCOVERY_RANGE, and
+	// ROS2Config.Distro explicitly advertises "jazzy" — so on the newer distros we
+	// claim to support, the sole mechanism enforcing app-local isolation was at
+	// best deprecated. For an app carrying `network: host` it is the only thing
+	// between that app and every other DDS participant on the device.
 	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
-		env = append(env, "ROS_LOCALHOST_ONLY=0")
+		env = append(env, "ROS_LOCALHOST_ONLY=0", "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET")
 	} else {
-		env = append(env, "ROS_LOCALHOST_ONLY=1")
+		env = append(env, "ROS_LOCALHOST_ONLY=1", "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
 	}
-	return env
+	return env, nil
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
