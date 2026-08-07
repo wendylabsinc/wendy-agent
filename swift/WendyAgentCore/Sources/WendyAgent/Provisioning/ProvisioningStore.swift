@@ -131,6 +131,7 @@ struct ProvisioningStore {
             keyBackingValue = nil
         case .secureEnclave:
             // No key file: the key never leaves the Secure Enclave.
+            try? FileManager.default.removeItem(at: self.keyPath)
             try self.writeFile(self.certPath, contents: certPEM, permissions: 0o644)
             try self.writeFile(self.caPath, contents: chainPEM, permissions: 0o644)
             try self.writeFile(self.markerPath, contents: "", permissions: 0o644)
