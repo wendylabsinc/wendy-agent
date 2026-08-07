@@ -8,23 +8,28 @@ struct LocalRegistryRefTests {
     func rewritesLocalPushRefs() {
         #expect(
             LocalRegistryRef.rewriteForLocalPull("localhost:5555/app:latest")
-                == "127.0.0.1:5556/app:latest")
+                == "127.0.0.1:5556/app:latest"
+        )
         #expect(
             LocalRegistryRef.rewriteForLocalPull("127.0.0.1:5555/app:latest")
-                == "127.0.0.1:5556/app:latest")
+                == "127.0.0.1:5556/app:latest"
+        )
         #expect(
             LocalRegistryRef.rewriteForLocalPull("[::1]:5555/app:latest")
-                == "127.0.0.1:5556/app:latest")
+                == "127.0.0.1:5556/app:latest"
+        )
     }
 
     @Test("tags and digest suffixes after the authority are preserved")
     func preservesSuffixes() {
         #expect(
             LocalRegistryRef.rewriteForLocalPull("localhost:5555/app@sha256:abc123")
-                == "127.0.0.1:5556/app@sha256:abc123")
+                == "127.0.0.1:5556/app@sha256:abc123"
+        )
         #expect(
             LocalRegistryRef.rewriteForLocalPull("localhost:5555/nested/repo:v1")
-                == "127.0.0.1:5556/nested/repo:v1")
+                == "127.0.0.1:5556/nested/repo:v1"
+        )
     }
 
     @Test("non-local references pass through unchanged")
