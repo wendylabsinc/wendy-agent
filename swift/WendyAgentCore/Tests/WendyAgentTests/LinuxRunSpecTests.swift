@@ -5,7 +5,7 @@ import Testing
 @Suite struct LinuxRunSpecTests {
     @Test func mapsNetworkNone() {
         let ents = [
-            WendyEntitlement(type: "network", mode: "none", name: nil, path: nil, ports: nil)
+            WendyEntitlement(type: "network", mode: "none", name: nil, path: nil, ports: nil, port: nil)
         ]
         let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { _ in })
         #expect(specs == [.networkNone])
@@ -18,7 +18,8 @@ import Testing
                 mode: nil,
                 name: nil,
                 path: nil,
-                ports: [WendyPortMapping(host: 8080, container: 80)]
+                ports: [WendyPortMapping(host: 8080, container: 80)],
+                port: nil
             )
         ]
         let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { _ in })
@@ -32,7 +33,8 @@ import Testing
                 mode: nil,
                 name: "data",
                 path: "/var/data",
-                ports: nil
+                ports: nil,
+                port: nil
             )
         ]
         let specs = LinuxRunSpecBuilder.specs(from: ents, appName: "app", warn: { _ in })
@@ -41,7 +43,7 @@ import Testing
 
     @Test func warnsOnHardwareEntitlementAndEmitsNoSpec() {
         var warnings: [String] = []
-        let ents = [WendyEntitlement(type: "gpu", mode: nil, name: nil, path: nil, ports: nil)]
+        let ents = [WendyEntitlement(type: "gpu", mode: nil, name: nil, path: nil, ports: nil, port: nil)]
         let specs = LinuxRunSpecBuilder.specs(
             from: ents,
             appName: "app",
