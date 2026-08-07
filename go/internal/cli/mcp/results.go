@@ -113,31 +113,64 @@ const defaultProxyMaxBytes = 100000
 // capProxiedResult enforces maxBytes on a *mcpgo.CallToolResult returned by a
 // proxied container MCP tool. If the serialized result fits under the cap it
 // is returned unchanged (same pointer); otherwise its content is replaced
-// with a truncation envelope in the same spirit as okResultBounded's, so
-// callers get the same truncation signal for proxied tools as for wendy's
-// own bounded ones. IsError is preserved so error results still surface as
-// errors, just with bounded content. maxBytes <= 0 disables the cap. A nil
-// result is passed through untouched.
+// with the most informative truncation envelope that itself fits under the
+// cap. IsError is preserved so error results still surface as errors, just
+// with bounded content. maxBytes <= 0 disables the cap. A nil result is passed
+// through untouched.
+//
+// The MCP result wire format has an unavoidable minimum size (the content
+// array plus isError for errors). If maxBytes is below that floor, the smallest
+// valid result is returned even though no valid CallToolResult can fit.
 func capProxiedResult(result *mcpgo.CallToolResult, maxBytes int) *mcpgo.CallToolResult {
 	if result == nil || maxBytes <= 0 {
 		return result
 	}
-	b, err := json.Marshal(result)
-	if err != nil || len(b) <= maxBytes {
-		// If we can't even measure it, don't fail the call over a bounding
-		// concern — pass it through as-is.
+	if !proxiedResultExceedsMaxBytes(result, maxBytes) {
 		return result
 	}
-	env := map[string]any{
-		"truncated": true,
-		"max_bytes": maxBytes,
-		"bytes":     len(b),
-		"note":      "proxied container tool output exceeded max_bytes; ask the app's tool for a narrower result",
+
+	// Try progressively smaller envelopes so low test/configuration limits do
+	// not make the truncation response larger than the payload ceiling.
+	envelopes := []map[string]any{
+		{
+			"truncated": true,
+			"max_bytes": maxBytes,
+			"note":      "proxied container tool output exceeded max_bytes; ask the app's tool for a narrower result",
+		},
+		{"truncated": true, "max_bytes": maxBytes},
+		{"truncated": true},
 	}
-	eb, _ := json.MarshalIndent(env, "", "  ")
-	return &mcpgo.CallToolResult{
-		Content:           []mcpgo.Content{mcpgo.NewTextContent(string(eb))},
-		StructuredContent: env,
-		IsError:           result.IsError,
+	for _, env := range envelopes {
+		text, _ := json.Marshal(env)
+		bounded := &mcpgo.CallToolResult{
+			Content:           []mcpgo.Content{mcpgo.NewTextContent(string(text))},
+			StructuredContent: env,
+			IsError:           result.IsError,
+		}
+		if proxiedResultFitsMaxBytes(bounded, maxBytes) {
+			return bounded
+		}
 	}
+
+	// Structured content duplicates its text fallback on the wire. Drop it
+	// before dropping the truncation signal altogether.
+	bounded := &mcpgo.CallToolResult{
+		Content: []mcpgo.Content{mcpgo.NewTextContent("truncated")},
+		IsError: result.IsError,
+	}
+	if proxiedResultFitsMaxBytes(bounded, maxBytes) {
+		return bounded
+	}
+
+	// This is the smallest protocol-valid result. It is only over budget when
+	// maxBytes is below the MCP wire-format floor described above.
+	return &mcpgo.CallToolResult{Content: []mcpgo.Content{}, IsError: result.IsError}
+}
+
+// proxiedResultFitsMaxBytes only marshals already-bounded replacement
+// candidates. The untrusted original is measured by the allocation-bounded
+// sizer in proxied_result_size.go.
+func proxiedResultFitsMaxBytes(result *mcpgo.CallToolResult, maxBytes int) bool {
+	b, err := json.Marshal(result)
+	return err == nil && len(b) <= maxBytes
 }

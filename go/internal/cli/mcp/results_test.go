@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -156,6 +157,92 @@ func TestCapProxiedResult_TruncatesOversize(t *testing.T) {
 	}
 	if !strings.Contains(toolResultText(t, r), "truncated") {
 		t.Error("expected a truncation note in the text fallback")
+	}
+}
+
+func TestCapProxiedResult_TruncationResultFitsSmallCaps(t *testing.T) {
+	for _, maxBytes := range []int{32, 64, 100, 200} {
+		t.Run(fmt.Sprint(maxBytes), func(t *testing.T) {
+			big := mcpgo.NewToolResultText(strings.Repeat("a", 1000))
+			r := capProxiedResult(big, maxBytes)
+			b, err := json.Marshal(r)
+			if err != nil {
+				t.Fatalf("marshal bounded result: %v", err)
+			}
+			if len(b) > maxBytes {
+				t.Fatalf("bounded result is %d bytes, want <= %d: %s", len(b), maxBytes, b)
+			}
+		})
+	}
+}
+
+func TestProxiedResultSizerMatchesWireJSON(t *testing.T) {
+	priority := 0.5
+	results := []*mcpgo.CallToolResult{
+		mcpgo.NewToolResultText("hello"),
+		mcpgo.NewToolResultText("<escaped> \"text\"\n\u2028"),
+		mcpgo.NewToolResultStructured(
+			map[string]any{"nested": []any{"value", float64(42), float64(1e-9), float32(1e21), true, nil}},
+			`{"nested":["value",42,1e-9,1e21,true,null]}`,
+		),
+		mcpgo.NewToolResultError("failed"),
+		{
+			Result: mcpgo.Result{Meta: &mcpgo.Meta{
+				ProgressToken: "progress-1",
+				AdditionalFields: map[string]any{
+					"source": "container",
+				},
+			}},
+			Content: []mcpgo.Content{
+				mcpgo.TextContent{
+					Annotated: mcpgo.Annotated{Annotations: &mcpgo.Annotations{
+						Audience: []mcpgo.Role{mcpgo.RoleUser},
+						Priority: &priority,
+					}},
+					Type: "text",
+					Text: "annotated",
+				},
+				mcpgo.ImageContent{Type: "image", Data: "aGVsbG8=", MIMEType: "image/png"},
+				mcpgo.AudioContent{Type: "audio", Data: "aGVsbG8=", MIMEType: "audio/wav"},
+				mcpgo.ResourceLink{Type: "resource_link", URI: "https://example.com", Name: "example"},
+				mcpgo.EmbeddedResource{
+					Type: "resource",
+					Resource: mcpgo.TextResourceContents{
+						URI:      "file:///tmp/example.txt",
+						MIMEType: "text/plain",
+						Text:     "resource text",
+					},
+				},
+				mcpgo.ToolUseContent{
+					Type:  "tool_use",
+					ID:    "tool-1",
+					Name:  "example",
+					Input: map[string]any{"value": "input"},
+				},
+				mcpgo.ToolResultContent{
+					Type:      "tool_result",
+					ToolUseID: "tool-1",
+					Content:   []mcpgo.Content{mcpgo.NewTextContent("nested")},
+				},
+			},
+			StructuredContent: map[string]any{"ok": true},
+			IsError:           true,
+		},
+	}
+
+	for i, result := range results {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			b, err := json.Marshal(result)
+			if err != nil {
+				t.Fatalf("marshal result: %v", err)
+			}
+			if proxiedResultExceedsMaxBytes(result, len(b)) {
+				t.Fatalf("exact-size result reported over limit: size=%d", len(b))
+			}
+			if !proxiedResultExceedsMaxBytes(result, len(b)-1) {
+				t.Fatalf("result not reported over one-byte-short limit: size=%d", len(b))
+			}
+		})
 	}
 }
 
