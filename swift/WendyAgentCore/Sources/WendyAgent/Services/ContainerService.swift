@@ -1181,9 +1181,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             // for as long as the bad config is persisted.
             guard let port = entitlement.port, port > 0, port <= 65535 else { continue }
             switch entitlement.type {
-            case "http": http = UInt32(port)
-            case "mcp": mcp = UInt32(port)
-            default: break
+            case "http" where http == 0:
+                http = UInt32(port)
+            case "mcp" where mcp == 0:
+                mcp = UInt32(port)
+            default:
+                break
+            }
+            if http != 0 && mcp != 0 {
+                break
             }
         }
         return (http, mcp)
