@@ -80,6 +80,138 @@ func TestSendAgentUpdateNilSignatureLeavesFieldEmpty(t *testing.T) {
 	}
 }
 
+func TestIsZipArchive(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"zip local-file-header magic", []byte{'P', 'K', 0x03, 0x04, 0x14, 0x00}, true},
+		{"ELF is not a zip", makeELFHeader(183), false},
+		{"empty data", nil, false},
+		{"too short for magic", []byte{'P', 'K'}, false},
+		{"zip central-directory-only magic is not a local-file-header", []byte{'P', 'K', 0x05, 0x06}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isZipArchive(tc.data); got != tc.want {
+				t.Errorf("isZipArchive(%v) = %v, want %v", tc.data, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckLocalAgentArtifact(t *testing.T) {
+	zipData := []byte{'P', 'K', 0x03, 0x04, 0x14, 0x00, 0x00, 0x00}
+	arm64ELF := makeELFHeader(183)
+	amd64ELF := makeELFHeader(62)
+	randomBytes := []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05}
+	shellScript := []byte("#!/bin/sh\necho hi\n")
+
+	tests := []struct {
+		name         string
+		data         []byte
+		deviceOS     string
+		deviceArch   string
+		wantErr      bool
+		wantContains []string
+	}{
+		{
+			name:     "zip on darwin is accepted",
+			data:     zipData,
+			deviceOS: "darwin",
+			wantErr:  false,
+		},
+		{
+			name:         "linux ELF on darwin is rejected with build guidance",
+			data:         arm64ELF,
+			deviceOS:     "darwin",
+			deviceArch:   "arm64",
+			wantErr:      true,
+			wantContains: []string{"macOS", "Build.sh"},
+		},
+		{
+			name:         "random bytes on darwin are rejected",
+			data:         randomBytes,
+			deviceOS:     "darwin",
+			wantErr:      true,
+			wantContains: []string{"macOS"},
+		},
+		{
+			name:         "zip on a Linux device names the reported OS",
+			data:         zipData,
+			deviceOS:     "ubuntu",
+			wantErr:      true,
+			wantContains: []string{"macOS agent zip", "ubuntu"},
+		},
+		{
+			name:         "zip on an unknown-OS device falls back to linux",
+			data:         zipData,
+			deviceOS:     "",
+			wantErr:      true,
+			wantContains: []string{"linux"},
+		},
+		{
+			name:       "matching ELF arch on a Linux device is accepted",
+			data:       arm64ELF,
+			deviceOS:   "wendyos",
+			deviceArch: "arm64",
+			wantErr:    false,
+		},
+		{
+			name:       "mismatched ELF arch still delegates to checkELFArchitecture",
+			data:       amd64ELF,
+			deviceOS:   "",
+			deviceArch: "arm64",
+			wantErr:    true,
+		},
+		{
+			name:       "non-ELF script is leniently accepted on Linux",
+			data:       shellScript,
+			deviceOS:   "wendyos",
+			deviceArch: "arm64",
+			wantErr:    false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkLocalAgentArtifact(tc.data, tc.deviceOS, tc.deviceArch)
+			if tc.wantErr && err == nil {
+				t.Fatal("checkLocalAgentArtifact() = nil, want error")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("checkLocalAgentArtifact() = %v, want nil", err)
+			}
+			for _, want := range tc.wantContains {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("checkLocalAgentArtifact() error = %v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAgentRestartTimeoutFor(t *testing.T) {
+	tests := []struct {
+		name   string
+		osName string
+		want   time.Duration
+	}{
+		{"darwin gets the extended timeout", "darwin", 60 * time.Second},
+		{"darwin case-insensitive", "Darwin", 60 * time.Second},
+		{"linux gets the default timeout", "linux", defaultAgentRestartTimeout},
+		{"wendyos os-release id gets the default timeout", "wendyos", defaultAgentRestartTimeout},
+		{"empty os gets the default timeout", "", defaultAgentRestartTimeout},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentRestartTimeoutFor(tc.osName); got != tc.want {
+				t.Errorf("agentRestartTimeoutFor(%q) = %v, want %v", tc.osName, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestShouldReapplyBinary(t *testing.T) {
 	tests := []struct {
 		name           string
