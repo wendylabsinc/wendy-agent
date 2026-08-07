@@ -34,15 +34,27 @@ type serviceHookRunner struct {
 // never call reap since there is nothing left to wait on (openURL is
 // synchronous, and cli hooks deliberately keep running).
 //
-// A nil cfg, or a cfg that declares neither Readiness nor Hooks, is a no-op:
-// most services in a multi-service app don't opt into per-service lifecycle
-// hooks, so runOne must not dial, warn, or print anything for them.
+// A nil cfg, or a cfg that declares neither Readiness/Hooks nor an `http`
+// entitlement, is a no-op: most services in a multi-service app don't opt
+// into per-service lifecycle hooks, so runOne must not dial, warn, or print
+// anything for them. Readiness and the postStart hook are both computed via
+// effectiveReadiness/synthesizedOpenURLHook (the same helpers run.go's
+// single-container path uses) rather than reading cfg.Readiness/cfg.Hooks
+// directly: a service that declares only an `http` entitlement — no explicit
+// readiness.tcpSocket — must still get an actual readiness wait and an
+// auto-opened browser tab, not just the announceReachableURL text that
+// already (via effectiveReadiness) assumes readiness was probed.
 func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.AppConfig) {
-	if cfg == nil || (cfg.Readiness == nil && cfg.Hooks == nil) {
+	if cfg == nil {
+		return
+	}
+	readiness := effectiveReadiness(cfg)
+	hooks := synthesizedOpenURLHook(cfg)
+	if readiness == nil && hooks == nil {
 		return
 	}
 
-	if err := waitForReadiness(ctx, cfg.Readiness, r.conn.Host); err != nil {
+	if err := waitForReadiness(ctx, readiness, r.conn.Host); err != nil {
 		if ctx.Err() != nil {
 			// Canceled (e.g. Ctrl+C, or the run ending) — stay silent and skip
 			// the hook entirely; this is not a readiness failure to report.
@@ -61,7 +73,14 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 
 	announceReachableURL(ctx, r.conn, cfg)
 
-	cmd := startPostStartHook(hookCtx, cfg, r.conn.Host, cfg.ServiceName)
+	effectiveCfg := cfg
+	if hooks != cfg.Hooks {
+		clone := *cfg
+		clone.Hooks = hooks
+		effectiveCfg = &clone
+	}
+
+	cmd := startPostStartHook(hookCtx, effectiveCfg, r.conn.Host, cfg.ServiceName)
 	if cmd != nil {
 		r.mu.Lock()
 		r.cmds = append(r.cmds, cmd)
@@ -120,6 +139,17 @@ func (r *serviceHookRunner) reap() {
 // fallback that fires once after ALL services have started. Returns nil when
 // the config declares neither. Its hooks.postStart.agent is never sent to the
 // agent (there is no app-level container); ValidateJSON already warns.
+//
+// Deliberately does NOT carry top.Entitlements: both callers
+// (multiServiceCreateConfig for the services-map path, applyComposeCompanion
+// for the compose path) already fold top's app-level entitlements into EVERY
+// per-service AppConfig, so a top-level `http` entitlement already gets its
+// own readiness wait + auto-open once per service via runOne's
+// effectiveReadiness/synthesizedOpenURLHook. Attaching the same entitlements
+// here too would make this group-level fallback synthesize a second,
+// redundant readiness probe/auto-open for a port that isn't actually this
+// synthetic config's own — there is no single app-level container it belongs
+// to. Left as a narrower, known gap; see final-review-fix-report.md.
 func appLevelLifecycleConfig(appID string, top *appconfig.AppConfig) *appconfig.AppConfig {
 	if top == nil || (top.Readiness == nil && top.Hooks == nil) {
 		return nil

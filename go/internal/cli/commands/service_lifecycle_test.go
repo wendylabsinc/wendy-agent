@@ -106,6 +106,103 @@ func TestServiceHookRunner_NoOpWithoutLifecycleConfig(t *testing.T) {
 	})
 }
 
+// TestServiceHookRunner_HTTPEntitlementOnly is the final-review-fix regression
+// test for the cross-cutting compose/multi-service gap: a service that
+// declares only an `http` entitlement (no explicit readiness.tcpSocket, no
+// explicit hooks) must get the same auto-open behavior as the single-container
+// `wendy run` path — runOne must actually wait on the declared port (not skip
+// straight to announceReachableURL, which would falsely claim the app is
+// reachable), and it must auto-open a browser tab at that port.
+func TestServiceHookRunner_HTTPEntitlementOnly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start listener: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
+
+	calls := swapBrowserOpen(t)
+	containerFake := &lifecycleFakeContainerClient{}
+	conn := newLifecycleTestConn("127.0.0.1", containerFake)
+	r := &serviceHookRunner{conn: conn}
+
+	cfg := &appconfig.AppConfig{
+		AppID:       "app",
+		ServiceName: "web",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementHTTP, Port: port},
+		},
+	}
+
+	r.runOne(context.Background(), context.Background(), cfg)
+
+	if len(*calls) != 1 {
+		t.Fatalf("browserOpen calls = %v, want exactly 1 (http entitlement must auto-open)", *calls)
+	}
+	want := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if (*calls)[0] != want {
+		t.Errorf("openURL = %q, want %q", (*calls)[0], want)
+	}
+	// A passing readiness probe never warns; if runOne skipped the wait (using
+	// raw cfg.Readiness instead of effectiveReadiness) it would still reach
+	// announceReachableURL/openURL without ever having probed the port, and
+	// ListContainers would stay uncalled either way — so the real guard against
+	// "wait was skipped" is the elapsed-time variant below. This assertion just
+	// locks in that a live port never triggers the warning path.
+	if containerFake.listContainersCalls != 0 {
+		t.Errorf("ListContainers called despite the port being open (unexpected warning path)")
+	}
+}
+
+// TestServiceHookRunner_HTTPEntitlementOnly_ActuallyWaits proves runOne waits
+// on the http-entitlement-derived port rather than skipping the readiness
+// probe entirely (which the pre-fix code did, since it read raw cfg.Readiness
+// — always nil for an http-only service — instead of effectiveReadiness).
+// The port starts closed and only opens after a delay; a skipped wait would
+// return (and fire the hook) almost immediately instead of after the delay.
+func TestServiceHookRunner_HTTPEntitlementOnly_ActuallyWaits(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve a port: %v", err)
+	}
+	port := testPort(t, ln)
+	ln.Close() // closed for now; reopened below after a delay
+
+	const delay = 700 * time.Millisecond
+	go func() {
+		time.Sleep(delay)
+		l, lerr := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if lerr == nil {
+			defer l.Close()
+			time.Sleep(2 * time.Second) // stay open long enough for the dial to succeed
+		}
+	}()
+
+	calls := swapBrowserOpen(t)
+	containerFake := &lifecycleFakeContainerClient{}
+	conn := newLifecycleTestConn("127.0.0.1", containerFake)
+	r := &serviceHookRunner{conn: conn}
+
+	cfg := &appconfig.AppConfig{
+		AppID:       "app",
+		ServiceName: "web",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementHTTP, Port: port},
+		},
+	}
+
+	start := time.Now()
+	r.runOne(context.Background(), context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if elapsed < delay/2 {
+		t.Errorf("runOne returned after %v, want it to have actually waited (~%v) for the http entitlement's port instead of skipping the readiness probe", elapsed, delay)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("browserOpen calls = %v, want exactly 1", *calls)
+	}
+}
+
 // TestServiceHookRunner_FiresAfterReadiness verifies the happy path: readiness
 // passes against a real listener, announceReachableURL runs without error, and
 // the postStart openURL hook fires with both WENDY_HOSTNAME (the connection's
