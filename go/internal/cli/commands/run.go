@@ -1447,7 +1447,7 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, wrapped
 	}
 
-	board, err := pickWendyLiteBoard()
+	board, err := pickWendyLiteBoard("")
 	if err != nil {
 		if errors.Is(err, ErrUserCancelled) {
 			return nil, wrapped
@@ -1486,26 +1486,6 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, fmt.Errorf("provider build: %w", err)
 	}
 	return app, nil
-}
-
-// pickWendyLiteBoard asks which Wendy Lite variant to install, offering the
-// catalog boards and returns the picked board name. Returns
-// ErrUserCancelled when the user quits the picker.
-func pickWendyLiteBoard() (string, error) {
-	variants, err := WendyLiteVariants()
-	if err != nil {
-		return "", err
-	}
-	items := make([]tui.PickerItem, 0, len(variants))
-	for _, v := range variants {
-		items = append(items, tui.PickerItem{
-			Name:    v.DisplayName,
-			SortKey: strings.ToLower(v.DisplayName),
-			Value:   v.Board,
-		})
-	}
-	fmt.Println()
-	return pickFromItems("Select your board model", items)
 }
 
 // waitForDeviceReady polls the provider until the device answers again after

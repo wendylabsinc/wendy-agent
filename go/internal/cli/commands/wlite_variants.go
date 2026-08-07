@@ -9,51 +9,123 @@ import (
 // wendyLiteCatalogJSON is copied verbatim from wendy-lite/catalog.json.
 // To update the variant list, paste the current file content between the
 // backticks — nothing else to touch.
-const wendyLiteCatalogJSON = `{
-    "version": 1,
+const wendyLiteCatalogJSON = `
+{
+    "version": 2,
+    "binaries": [
+        {
+            "name": "esp32c5",
+            "target": "esp32c5",
+            "board_cfg": "esp32c5_generic",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "esp32c6",
+            "target": "esp32c6",
+            "board_cfg": "esp32c6_generic",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "esp32c6_native",
+            "target": "esp32c6",
+            "board_cfg": "esp32c6_generic_native",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "esp32p4_waveshare_lcd_4b",
+            "target": "esp32p4",
+            "board_cfg": "waveshare_lcd_4b",
+            "flash_size": "32MB"
+        },
+        {
+            "name": "esp32p4_dfr1172_firebeetle",
+            "target": "esp32p4",
+            "board_cfg": "dfr1172_firebeetle",
+            "flash_size": "16MB"
+        },
+        {
+            "name": "esp32s3_seeed_xiao_native",
+            "target": "esp32s3",
+            "board_cfg": "seeed_xiao_esp32s3_native",
+            "flash_size": "8MB"
+        },
+        {
+            "name": "esp32s3_m5_stamp_s3_native",
+            "target": "esp32s3",
+            "board_cfg": "m5_stamp_s3_native",
+            "flash_size": "8MB"
+        }
+    ],
+    "targets": [
+        {
+            "name": "esp32c5",
+            "display_name": "ESP32-C5"
+        },
+        {
+            "name": "esp32c6",
+            "display_name": "ESP32-C6"
+        },
+        {
+            "name": "esp32p4",
+            "display_name": "ESP32-P4"
+        },
+        {
+            "name": "esp32s3",
+            "display_name": "ESP32-S3"
+        }
+    ],
     "boards": [
         {
             "name": "esp32c5_generic",
             "display_name": "Generic ESP32-C5 board, 4MB flash",
-            "binary": "wendy_mcu_esp32c5"
+            "binary": "esp32c5",
+            "target": "esp32c5"
         },
         {
             "name": "esp32c6_generic",
             "display_name": "Generic ESP32-C6 board, 4MB flash",
-            "binary": "wendy_mcu_esp32c6"
+            "binary": "esp32c6",
+            "target": "esp32c6"
         },
         {
             "name": "esp32c6_generic_native",
             "display_name": "Generic ESP32-C6 board, 4MB flash, native app support",
-            "binary": "wendy_mcu_esp32c6_native"
+            "binary": "esp32c6_native",
+            "target": "esp32c6"
         },
         {
             "name": "esp32p4_waveshare_lcd_4b",
             "display_name": "Waveshare ESP32-P4-WIFI6-Touch-LCD-4B, 32MB flash",
-            "binary": "wendy_mcu_esp32p4_waveshare_lcd_4b"
+            "binary": "esp32p4_waveshare_lcd_4b",
+            "target": "esp32p4"
         },
         {
             "name": "esp32p4_dfr1172_firebeetle",
             "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash",
-            "binary": "wendy_mcu_esp32p4_dfr1172_firebeetle"
+            "binary": "esp32p4_dfr1172_firebeetle",
+            "target": "esp32p4"
         },
         {
             "name": "esp32s3_seeed_xiao_native",
             "display_name": "Seeed Studio XIAO ESP32S3, 8MB flash, 8MB PSRAM, native app support",
-            "binary": "wendy_mcu_esp32s3_seeed_xiao_native"
+            "binary": "esp32s3_seeed_xiao_native",
+            "target": "esp32s3"
         },
         {
             "name": "esp32s3_m5_stamp_s3_native",
             "display_name": "M5Stack StampS3, 8MB flash, native app support",
-            "binary": "wendy_mcu_esp32s3_m5_stamp_s3_native"
+            "binary": "esp32s3_m5_stamp_s3_native",
+            "target": "esp32s3"
         }
     ]
-}`
+}
+`
 
-// WendyLiteVariant is one installable Wendy Lite flavor: a board paired with
-// the firmware binary built for it.
-type WendyLiteVariant struct {
+// WendyLiteBoard is one installable Wendy Lite flavor: a board paired with
+// the firmware binary built for it and the ESP32 target chip it runs on.
+type WendyLiteBoard struct {
 	Board       string
+	Target      string
 	DisplayName string
 	Version     string
 }
@@ -63,6 +135,7 @@ type wendyLiteCatalogBoard struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 	Binary      string `json:"binary"`
+	Target      string `json:"target"`
 }
 
 // wendyLiteCatalogBoards parses the embedded catalog and returns its boards
@@ -77,24 +150,68 @@ func wendyLiteCatalogBoards() ([]wendyLiteCatalogBoard, error) {
 	return catalog.Boards, nil
 }
 
-// WendyLiteVariants returns the Wendy Lite variants from the embedded
-// catalog, in catalog order. The catalog carries no version information yet,
-// so Version is always "(latest)".
-func WendyLiteVariants() ([]WendyLiteVariant, error) {
-	boards, err := wendyLiteCatalogBoards()
+// WendyLiteBoards returns the Wendy Lite boards from the embedded catalog, in
+// catalog order. The catalog carries no version information yet, so Version
+// is always "(latest)".
+func WendyLiteBoards() ([]WendyLiteBoard, error) {
+	catalogBoards, err := wendyLiteCatalogBoards()
 	if err != nil {
 		return nil, err
 	}
 
-	variants := make([]WendyLiteVariant, 0, len(boards))
-	for _, b := range boards {
-		variants = append(variants, WendyLiteVariant{
+	boards := make([]WendyLiteBoard, 0, len(catalogBoards))
+	for _, b := range catalogBoards {
+		boards = append(boards, WendyLiteBoard{
 			Board:       b.Name,
+			Target:      b.Target,
 			DisplayName: b.DisplayName,
 			Version:     "(latest)",
 		})
 	}
-	return variants, nil
+	return boards, nil
+}
+
+// WendyLiteTarget is one ESP32 chip family the Wendy Lite catalog builds
+// firmware for (e.g. "esp32c6").
+type WendyLiteTarget struct {
+	Name        string
+	DisplayName string
+}
+
+// wendyLiteCatalogTarget is one entry of the embedded catalog's targets array.
+type wendyLiteCatalogTarget struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+}
+
+// wendyLiteCatalogTargets parses the embedded catalog and returns its targets
+// in catalog order.
+func wendyLiteCatalogTargets() ([]wendyLiteCatalogTarget, error) {
+	var catalog struct {
+		Targets []wendyLiteCatalogTarget `json:"targets"`
+	}
+	if err := json.Unmarshal([]byte(wendyLiteCatalogJSON), &catalog); err != nil {
+		return nil, fmt.Errorf("parsing embedded Wendy Lite catalog: %w", err)
+	}
+	return catalog.Targets, nil
+}
+
+// WendyLiteTargets returns the ESP32 chip targets from the embedded catalog,
+// in catalog order.
+func WendyLiteTargets() ([]WendyLiteTarget, error) {
+	catalogTargets, err := wendyLiteCatalogTargets()
+	if err != nil {
+		return nil, err
+	}
+
+	targets := make([]WendyLiteTarget, 0, len(catalogTargets))
+	for _, t := range catalogTargets {
+		targets = append(targets, WendyLiteTarget{
+			Name:        t.Name,
+			DisplayName: t.DisplayName,
+		})
+	}
+	return targets, nil
 }
 
 // WendyLiteFirmwareID returns the firmware ID for a catalog board: its binary

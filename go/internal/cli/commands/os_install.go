@@ -271,6 +271,30 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
+// pickWendyLiteBoard asks which Wendy Lite board to install. When target is
+// non-empty, only boards for that ESP32 target are offered; an empty target
+// lists every catalog board. Returns ErrUserCancelled when the user quits
+// the picker.
+func pickWendyLiteBoard(target string) (string, error) {
+	boards, err := WendyLiteBoards()
+	if err != nil {
+		return "", err
+	}
+	items := make([]tui.PickerItem, 0, len(boards))
+	for _, v := range boards {
+		if target != "" && v.Target != target {
+			continue
+		}
+		items = append(items, tui.PickerItem{
+			Name:    v.DisplayName,
+			SortKey: strings.ToLower(v.DisplayName),
+			Value:   v.Board,
+		})
+	}
+	fmt.Println()
+	return pickFromItems("Select your board model", items)
+}
+
 func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
@@ -353,22 +377,26 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// ignores prNumber, so offering ESP32 here would silently install release
 	// firmware instead of a PR build.
 	if flagDeviceType == "" && prNumber == 0 {
-		variants, err := WendyLiteVariants()
+		boards, err := WendyLiteBoards()
 		if err == nil {
-			for _, v := range variants {
-				key := "wlite." + v.Board
-				deviceMap[key] = pickerDevice{
+			for _, v := range boards {
+				deviceMap["wlite_"+v.Board] = pickerDevice{
 					Name:       v.DisplayName,
 					Version:    v.Version,
 					IsESP32:    true,
 					ESP32Board: v.Board,
 				}
+			}
+		}
+
+		targets, err := WendyLiteTargets()
+		if err == nil {
+			for _, t := range targets {
 				items = append(items, tui.PickerItem{
-					Name:      v.DisplayName,
-					FullWidth: true,
-					Section:   "Wendy Lite",
-					SortKey:   "1_lite_" + strings.ToLower(v.DisplayName),
-					Value:     key,
+					Name:    t.DisplayName,
+					Section: "Wendy Lite",
+					SortKey: "1_lite_" + strings.ToLower(t.DisplayName),
+					Value:   "wlite_target_" + t.Name,
 				})
 			}
 		}
@@ -420,6 +448,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		selected, err = pickFromItems("Select a device", items)
 		if err != nil {
 			return err
+		}
+
+		if target, ok := strings.CutPrefix(selected, "wlite_target_"); ok {
+			board, err := pickWendyLiteBoard(target)
+			if err != nil {
+				return err
+			}
+			selected = "wlite_" + board
 		}
 	}
 

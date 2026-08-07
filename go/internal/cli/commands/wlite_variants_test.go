@@ -4,32 +4,56 @@ import "testing"
 
 // The embedded catalog is maintained by pasting wendy-lite/catalog.json over
 // the string literal, so this guards against a botched paste: it must parse,
-// list at least one board, and every variant must be fully populated.
-func TestWendyLiteVariants(t *testing.T) {
-	variants, err := WendyLiteVariants()
+// list at least one board, and every board must be fully populated.
+func TestWendyLiteBoards(t *testing.T) {
+	boards, err := WendyLiteBoards()
 	if err != nil {
-		t.Fatalf("WendyLiteVariants() error: %v", err)
+		t.Fatalf("WendyLiteBoards() error: %v", err)
 	}
-	if len(variants) == 0 {
-		t.Fatal("WendyLiteVariants() returned no variants")
+	if len(boards) == 0 {
+		t.Fatal("WendyLiteBoards() returned no boards")
 	}
 
 	seen := make(map[string]bool)
-	for _, v := range variants {
-		if v.Board == "" || v.DisplayName == "" {
-			t.Errorf("variant %+v has an empty field", v)
+	for _, b := range boards {
+		if b.Board == "" || b.Target == "" || b.DisplayName == "" {
+			t.Errorf("board %+v has an empty field", b)
 		}
-		if v.Version != "(latest)" {
-			t.Errorf("variant %s: Version = %q, want %q", v.Board, v.Version, "(latest)")
+		if b.Version != "(latest)" {
+			t.Errorf("board %s: Version = %q, want %q", b.Board, b.Version, "(latest)")
 		}
-		if seen[v.Board] {
-			t.Errorf("duplicate board %q", v.Board)
+		if seen[b.Board] {
+			t.Errorf("duplicate board %q", b.Board)
 		}
-		seen[v.Board] = true
+		seen[b.Board] = true
 	}
 
 	if !seen["esp32c6_generic"] {
 		t.Error("expected board esp32c6_generic in the catalog")
+	}
+}
+
+// TestWendyLiteTargets guards the same embedded-catalog paste as
+// TestWendyLiteBoards, but for the catalog's targets array.
+func TestWendyLiteTargets(t *testing.T) {
+	targets, err := WendyLiteTargets()
+	if err != nil {
+		t.Fatalf("WendyLiteTargets() error: %v", err)
+	}
+	if len(targets) == 0 {
+		t.Fatal("WendyLiteTargets() returned no targets")
+	}
+
+	seen := make(map[string]bool)
+	for _, tg := range targets {
+		if tg.Name == "" || tg.DisplayName == "" {
+			t.Errorf("target %+v has an empty field", tg)
+		}
+		seen[tg.Name] = true
+	}
+
+	if !seen["esp32c6"] {
+		t.Error("expected target esp32c6 in the catalog")
 	}
 }
 
