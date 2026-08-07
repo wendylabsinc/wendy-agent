@@ -605,13 +605,13 @@ func applyAudio(spec *Spec) {
 		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
 	}
 
-	// Find the PipeWire socket. Prefer a user session socket
-	// (/run/user/<uid>/pipewire-0) over the system one: WendyOS runs
-	// WirePlumber inside the wendy user's session, and only the instance
-	// with a session manager has any devices in its graph. The system
-	// pipewire.service always has a socket but no WirePlumber, so
-	// preferring it hands containers an empty graph — no sinks, no
-	// Bluetooth, and a silent fallback to raw ALSA on /dev/snd.
+	// Only a user session socket (/run/user/<uid>/pipewire-0) is mounted.
+	// WirePlumber runs inside the wendy user's session, and an instance
+	// without a session manager has an empty graph — no sinks, no Bluetooth,
+	// and no pulse/native beside it. Handing a container that socket gives it
+	// something that looks like audio and plays nothing, so no socket is
+	// mounted instead and the container is left with /dev/snd and the audio
+	// group, which is all such a host can honestly offer.
 	var pipewireSocketSource string
 	userSockets, _ := filepath.Glob(pipewireUserSocketGlob)
 	for _, s := range userSockets {
@@ -619,9 +619,6 @@ func applyAudio(spec *Spec) {
 			pipewireSocketSource = s
 			break
 		}
-	}
-	if pipewireSocketSource == "" && isSocket(pipewireSystemSocket) {
-		pipewireSocketSource = pipewireSystemSocket
 	}
 
 	if pipewireSocketSource != "" {
@@ -682,13 +679,9 @@ var udevRuntimeDir = "/run/udev"
 // redirect into a tempdir.
 var driGlobs = []string{"/dev/dri/*"}
 
-// pipewireUserSocketGlob and pipewireSystemSocket locate the PipeWire socket
-// the audio entitlement mounts, user session first. Behind vars so tests can
-// redirect into a tempdir.
-var (
-	pipewireUserSocketGlob = "/run/user/*/pipewire-0"
-	pipewireSystemSocket   = "/run/pipewire/pipewire-0"
-)
+// pipewireUserSocketGlob locates the PipeWire socket the audio entitlement
+// mounts. Behind a var so tests can redirect it into a tempdir.
+var pipewireUserSocketGlob = "/run/user/*/pipewire-0"
 
 // lookupRenderGID resolves the host "render" group GID, which owns
 // /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when

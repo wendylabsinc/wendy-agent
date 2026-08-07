@@ -44,8 +44,7 @@ def is_socket(path):
 
 # /dev/snd is bind-mounted unconditionally by the entitlement.
 if os.path.isdir("/dev/snd"):
-    nodes = sorted(os.listdir("/dev/snd"))
-    print(f"OK  /dev/snd present ({len(nodes)} node(s))")
+    print(f"OK  /dev/snd present ({len(os.listdir('/dev/snd'))} node(s))")
 else:
     failures.append("/dev/snd is not present; the ALSA bind mount is missing")
 
