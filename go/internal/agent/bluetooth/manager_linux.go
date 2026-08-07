@@ -791,6 +791,14 @@ func (m *BlueZManager) ReconnectTrusted(ctx context.Context) {
 		return
 	}
 
+	// Claimed once bluetoothd has answered with a device list, and before the
+	// already-connected check below: a boot whose peripherals are all up has
+	// still used its attempt, and not recording that would let a later agent
+	// restart walk the list and undo a deliberate disconnect.
+	if !claimBootReconnect(m.logger) {
+		return
+	}
+
 	// A direction is "filled" once something is connected in it, whether we
 	// did it or the peripheral paged us mid-walk.
 	filled := map[string]bool{}
@@ -820,12 +828,6 @@ func (m *BlueZManager) ReconnectTrusted(ctx context.Context) {
 	// manager to claim its transport, and WirePlumber starts minutes after
 	// bluetoothd.
 	if !waitForAudioSession(ctx) {
-		return
-	}
-
-	// Claimed here, not on entry: everything above is cheap and repeatable, so
-	// an agent restart before this point still gets an attempt.
-	if !claimBootReconnect(m.logger) {
 		return
 	}
 
