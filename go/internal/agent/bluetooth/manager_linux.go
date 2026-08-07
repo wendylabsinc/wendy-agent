@@ -7,13 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -455,20 +456,31 @@ func stringsProp(props map[string]dbus.Variant, key string) []string {
 	return nil
 }
 
-// audioProfileUUID picks the A2DP profile to connect for an audio peripheral,
-// or "" when the device offers neither and a whole-device Connect is right.
+// deviceUUIDs reads a device's live UUIDs property, falling back to cached when
+// the read fails or returns nothing.
+func deviceUUIDs(ctx context.Context, device dbus.BusObject, cached []string) []string {
+	call := device.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, deviceIface, "UUIDs")
+	if call.Err != nil {
+		return cached
+	}
+	var v dbus.Variant
+	if call.Store(&v) != nil {
+		return cached
+	}
+	uuids, _ := v.Value().([]string)
+	if len(uuids) == 0 {
+		return cached
+	}
+	return uuids
+}
+
+// audioProfileUUID returns the A2DP profile to connect for an audio peripheral,
+// or "" for one that offers neither role. Sink wins when both are offered; a
+// device advertising only a source role is a microphone.
 //
-// Device1.Connect() connects every profile the peripheral supports. A speaker
-// that also implements A2DP Source — the Bose SoundLink range, among others —
-// then wins the race to our sink endpoint, and WirePlumber settles on the
-// audio-gateway profile: the card reports bluez5.profile "off", no sink node
-// appears, and a2dp-sink is absent from EnumProfile entirely, so there is
-// nothing to select afterwards either. Naming the profile removes the race.
-//
-// Sink is preferred because it is the common case (speakers, headphones,
-// headsets). A device that is purely a source — a wireless microphone — has no
-// sink role to advertise, so the fallback selects it without needing to
-// inspect the class of device.
+// Device1.Connect() connects every profile a peripheral supports, which lets a
+// speaker that also implements A2DP Source claim our sink endpoint and strand
+// WirePlumber on audio-gateway. Naming the profile pins the direction.
 func audioProfileUUID(uuids []string) string {
 	var hasSource bool
 	for _, u := range uuids {
@@ -650,12 +662,11 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		}
 	}
 
-	// Connect the audio profile by name where one applies, so the peripheral
-	// cannot pick the direction for us. Falls back to a whole-device Connect
-	// for non-audio peripherals, and also when ConnectProfile fails, so a
-	// device that advertises a profile it cannot actually service still gets
-	// the previous behaviour rather than no connection at all.
-	profile := audioProfileUUID(stringsProp(props, "UUIDs"))
+	// Connect the audio profile by name so the peripheral cannot pick the
+	// direction, falling back to a whole-device Connect for non-audio
+	// peripherals and for one that cannot service the profile it advertises.
+	// UUIDs are re-read because BlueZ populates them from SDP during pairing.
+	profile := audioProfileUUID(deviceUUIDs(ctx, device, stringsProp(props, "UUIDs")))
 	connectErr := m.retryConnect(ctx, connectRetryDelay, func() error {
 		if profile != "" {
 			err := device.CallWithContext(ctx, deviceIface+".ConnectProfile", 0, profile).Err
@@ -752,30 +763,15 @@ type trustedAudioPeripheral struct {
 	profile string
 }
 
-// ReconnectTrusted restores connections to trusted audio peripherals after the
-// agent restarts.
+// ReconnectTrusted connects trusted audio peripherals once per boot: at most
+// one output and one input, lowest BlueZ object path first.
 //
-// Nothing else does this. BlueZ's policy plugin only reconnects in response to
-// a link supervision timeout, and has no startup path at all — verified in
-// plugins/policy.c and on hardware, where a reboot leaves a paired speaker
-// "Trusted: yes, Connected: no" indefinitely. Peripherals reconnect themselves
-// when *they* power on, which covers the speaker-switched-on case, but a device
-// that was already powered when the host went away has no reason to page us.
-// For an installed appliance rebooting unattended, that is the common case.
-//
-// At most one output (speaker, headset) and one input (microphone) are
-// connected: a second sink cannot be the default and doubles radio contention.
-// Which device wins among several of the same direction is arbitrary — the
-// list order BlueZ happens to return — on the grounds that multiple bonded
-// peripherals of one kind is rare and an operator can remove the ones they do
-// not want.
+// BlueZ's policy plugin reconnects only after a link supervision timeout and
+// has no startup path (plugins/policy.c), so after a reboot a paired speaker
+// stays Trusted with Connected false until the peripheral itself pages us.
 func (m *BlueZManager) ReconnectTrusted(ctx context.Context) {
-	// Once per boot, not once per agent start. The agent restarts for
-	// upgrades and crash recovery on machines that stay powered for weeks;
-	// re-running the walk each time would page the radio repeatedly and would
-	// undo a deliberate `wendy device bluetooth disconnect`. The marker lives
-	// on tmpfs, so a real reboot clears it and nothing else has to.
-	if !claimBootReconnect(m.logger) {
+	if bootReconnectClaimed() {
+		m.logger.Debug("Bluetooth boot reconnect already attempted this boot")
 		return
 	}
 
@@ -820,11 +816,16 @@ func (m *BlueZManager) ReconnectTrusted(ctx context.Context) {
 		return
 	}
 
-	// Only now wait for the audio session: WirePlumber runs in the wendy
-	// user's session and does not start until well after bluetoothd — around
-	// two minutes into boot on a Raspberry Pi 4 — and a peripheral connected
-	// before it is running has no session manager to claim the transport.
+	// A peripheral connected before WirePlumber is running has no session
+	// manager to claim its transport, and WirePlumber starts minutes after
+	// bluetoothd.
 	if !waitForAudioSession(ctx) {
+		return
+	}
+
+	// Claimed here, not on entry: everything above is cheap and repeatable, so
+	// an agent restart before this point still gets an attempt.
+	if !claimBootReconnect(m.logger) {
 		return
 	}
 
@@ -892,6 +893,8 @@ func (m *BlueZManager) trustedAudioPeripherals(ctx context.Context, conn *dbus.C
 		address, _ := stringProp(props, "Address")
 		out = append(out, trustedAudioPeripheral{path: path, address: address, profile: profile})
 	}
+	// managed is a map, so its range order is randomised per process.
+	sort.Slice(out, func(i, j int) bool { return out[i].path < out[j].path })
 	return out, nil
 }
 
@@ -909,21 +912,17 @@ func (m *BlueZManager) deviceConnected(ctx context.Context, conn *dbus.Conn, pat
 	return b
 }
 
-// audioSessionGlob matches the PipeWire socket of a per-user session. Behind a
-// var so tests can redirect it into a tempdir.
-var audioSessionGlob = "/run/user/*/pipewire-0"
-
 // audioSessionTimeout bounds the wait; past it the reconnect proceeds anyway
 // rather than being lost entirely on a board with no working audio stack.
 var audioSessionTimeout = 4 * time.Minute
 
-// waitForAudioSession blocks until a user PipeWire socket appears. It reports
-// false only when ctx is cancelled — a timeout still returns true so the
-// reconnect is attempted rather than silently skipped.
+// waitForAudioSession blocks until the user session's PipeWire socket appears.
+// It reports false only when ctx is cancelled — a timeout still returns true so
+// the reconnect is attempted rather than silently skipped.
 func waitForAudioSession(ctx context.Context) bool {
 	deadline := time.Now().Add(audioSessionTimeout)
 	for {
-		if matches, _ := filepath.Glob(audioSessionGlob); len(matches) > 0 {
+		if audio.RuntimeDir() != "" {
 			return true
 		}
 		if time.Now().After(deadline) {
@@ -942,13 +941,17 @@ func waitForAudioSession(ctx context.Context) bool {
 // restarts, which is exactly the lifetime wanted. Behind a var for tests.
 var bootReconnectMarker = "/run/wendy-agent-bt-reconnect"
 
+// bootReconnectClaimed reports whether the boot-time reconnect has already been
+// attempted, without claiming it.
+func bootReconnectClaimed() bool {
+	_, err := os.Stat(bootReconnectMarker)
+	return err == nil
+}
+
 // claimBootReconnect reports whether this process should perform the boot-time
-// reconnect, claiming it if so. The marker is written up front rather than on
-// completion: a crash-looping agent must not walk the device list on every
-// restart, and a peripheral that is simply switched off will page us itself
-// when it comes back, so there is nothing to gain from retrying.
+// reconnect, claiming it if so. Exactly one process per boot wins.
 func claimBootReconnect(logger *zap.Logger) bool {
-	if _, err := os.Stat(bootReconnectMarker); err == nil {
+	if bootReconnectClaimed() {
 		logger.Debug("Bluetooth boot reconnect already attempted this boot")
 		return false
 	}

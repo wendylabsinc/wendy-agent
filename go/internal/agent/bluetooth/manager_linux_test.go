@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 )
 
 // deviceProps builds an org.bluez.Device1 property map for tests.
@@ -621,25 +624,46 @@ func TestClaimBootReconnectUnwritable(t *testing.T) {
 
 func TestWaitForAudioSession(t *testing.T) {
 	dir := t.TempDir()
-	origGlob, origTimeout := audioSessionGlob, audioSessionTimeout
-	t.Cleanup(func() { audioSessionGlob, audioSessionTimeout = origGlob, origTimeout })
-	audioSessionGlob = filepath.Join(dir, "user-*", "pipewire-0")
+	origGlob, origTimeout := audio.SocketGlob, audioSessionTimeout
+	t.Cleanup(func() { audio.SocketGlob, audioSessionTimeout = origGlob, origTimeout })
+	audio.SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
 
-	// Present already: returns immediately, which is the agent-restart case on
-	// a machine whose audio has been up for weeks.
+	// A plain file is not a session; only a listening socket is.
 	if err := os.MkdirAll(filepath.Join(dir, "user-1000"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "user-1000", "pipewire-0"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	stale, cancelStale := context.WithCancel(context.Background())
+	cancelStale()
+	if waitForAudioSession(stale) {
+		t.Error("a regular file must not count as a session")
+	}
+
+	// Present already: returns immediately, which is the agent-restart case on
+	// a machine whose audio has been up for weeks.
+	socketDir, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDir) })
+	if err := os.MkdirAll(filepath.Join(socketDir, "user-1000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", filepath.Join(socketDir, "user-1000", "pipewire-0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	audio.SocketGlob = filepath.Join(socketDir, "user-*", "pipewire-0")
 	if !waitForAudioSession(context.Background()) {
 		t.Error("should report ready when the socket already exists")
 	}
 
 	// Cancellation is the only false: a timeout still proceeds, so a board
 	// with no working audio stack still attempts the reconnect.
-	audioSessionGlob = filepath.Join(dir, "never-*", "pipewire-0")
+	audio.SocketGlob = filepath.Join(dir, "never-*", "pipewire-0")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if waitForAudioSession(ctx) {
