@@ -24,8 +24,10 @@ const (
 	audioGroupGID uint32 = 29
 	// videoGroupGID is the standard video group GID.
 	videoGroupGID uint32 = 44
-	// inputGroupGID is the standard input group GID (for /dev/input devices).
-	inputGroupGID uint32 = 105
+	// inputGroupFallbackGID is used when the host input group cannot be resolved.
+	// Debian/Ubuntu commonly use 105; WendyOS deliberately uses 19, so normal
+	// operation must resolve the host group instead of assuming this value.
+	inputGroupFallbackGID uint32 = 105
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
@@ -692,6 +694,21 @@ var lookupRenderGID = func() (uint32, bool) {
 	return uint32(gid), true
 }
 
+// lookupInputGID resolves the host group that owns /dev/input. It is behind a
+// var so tests can cover WendyOS's GID 19 and the legacy fallback without
+// depending on the developer machine's group database.
+var lookupInputGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("input")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
 // AdminAgentSocketHostPath is the host wendy-agent local control socket exposed
 // to containers granted the admin entitlement. It is the single source of truth
 // for the host socket location — the agent's local listener (main.go) uses it
@@ -1224,10 +1241,18 @@ func applySPI(spec *Spec) {
 	})
 }
 
-// applyInput adds HID input device access (barcode scanners, keyboards, etc.).
+// applyInput adds Linux input access (game controllers, scanners, keyboards,
+// etc.).
 func applyInput(spec *Spec) {
-	// Add input group for /dev/input device permissions.
-	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGroupGID)
+	// Add the host's input group for /dev/input permissions. Group IDs are an
+	// image policy detail rather than a portable ABI: WendyOS uses 19 while
+	// Debian/Ubuntu commonly use 105. The supplemental group is what lets a
+	// non-root OCI process open the recursively mounted event nodes.
+	inputGID := inputGroupFallbackGID
+	if gid, ok := lookupInputGID(); ok {
+		inputGID = gid
+	}
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGID)
 
 	// Mount /dev/input for HID event devices.
 	spec.Mounts = append(spec.Mounts, Mount{

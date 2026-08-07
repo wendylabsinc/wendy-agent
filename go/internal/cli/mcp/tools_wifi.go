@@ -12,6 +12,7 @@ import (
 func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 	listOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List available WiFi networks visible to the connected device"),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	listOpts = append(listOpts, readOnly()...)
 	listOpts = append(listOpts, openWorld()...)
@@ -55,7 +56,7 @@ func (s *mcpServer) registerWiFiTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("wifi_known_networks", knownOpts...), s.handleWiFiKnownNetworks)
 }
 
-func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+func (s *mcpServer) handleWiFiList(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	conn := s.GetConn()
 	if conn == nil {
 		return errNotConnected(), nil
@@ -76,7 +77,7 @@ func (s *mcpServer) handleWiFiList(ctx context.Context, _ mcpgo.CallToolRequest)
 			"priority":     n.GetPriority(),
 		})
 	}
-	return okList("networks", networks), nil
+	return okListBounded("networks", networks, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleWiFiConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

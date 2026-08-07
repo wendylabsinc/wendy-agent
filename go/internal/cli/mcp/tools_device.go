@@ -15,6 +15,7 @@ func (s *mcpServer) registerDeviceTools(srv *server.MCPServer) {
 	listOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("List wendy devices from config and known addresses. Pass scan=true to also run a live 3-second mDNS scan for devices on the local network."),
 		mcpgo.WithBoolean("scan", mcpgo.Description("If true, run a live mDNS scan (3 s) in addition to returning configured devices")),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	listOpts = append(listOpts, readOnly()...)
 	listOpts = append(listOpts, openWorld()...)
@@ -98,7 +99,7 @@ func (s *mcpServer) handleDeviceList(ctx context.Context, req mcpgo.CallToolRequ
 		}
 	}
 
-	return okList("devices", devices), nil
+	return okListBounded("devices", devices, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleDeviceConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

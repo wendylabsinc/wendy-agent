@@ -26,7 +26,9 @@ struct `'wendy cloud run'` {
                 #expect(result.stdout.contains("--user-args"))
                 #expect(result.stdout.contains("--prefix"))
                 #expect(result.stdout.contains("--device"))
-                #expect(result.stderr.contains("Command \"run\" is deprecated, use 'wendy run' instead"))
+                #expect(
+                    result.stderr.contains("Command \"run\" is deprecated, use 'wendy run' instead")
+                )
             }
         }
     }

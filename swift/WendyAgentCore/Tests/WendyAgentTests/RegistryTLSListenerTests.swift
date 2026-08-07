@@ -63,6 +63,33 @@ struct RegistryTLSListenerTests {
         _ = try? await task.value
     }
 
+    /// Starts a listener on a port this test just released. `runService()`
+    /// can return before the old listening socket is closed: Hummingbird
+    /// tears the server down via two racing paths (structured cancellation
+    /// of the accept loop, which awaits the close, and an unstructured
+    /// graceful-shutdown task, which nothing awaits), so when the second
+    /// path wins the port frees up a beat after `stop(_:)` returns. Retry
+    /// EADDRINUSE briefly instead of flaking.
+    private static func startListenerOnReleasedPort(
+        _ makeRegistry: () throws -> AgentImageRegistry
+    ) async throws -> (port: Int, task: Task<Void, any Error>) {
+        for _ in 0..<49 {
+            do {
+                return try await Self.startListener(try makeRegistry())
+            } catch let error where Self.isAddressInUse(error) {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        return try await Self.startListener(try makeRegistry())
+    }
+
+    private static func isAddressInUse(_ error: any Error) -> Bool {
+        let description = String(describing: error).lowercased()
+        return description.contains("address already in use")
+            || description.contains("errno: 48")
+            || description.contains("errno: 98")
+    }
+
     private static func tlsListener(
         port: Int,
         deviceOrg: Int32,
@@ -79,7 +106,8 @@ struct RegistryTLSListenerTests {
                 tls: RegistryTLS.Configuration(
                     certPEM: device.certPEM,
                     chainPEM: ca.pem,
-                    keyPEM: device.keyPEM,
+                    keyBacking: .softwarePEM(device.keyPEM),
+                    seKey: nil,
                     deviceOrg: deviceOrg,
                     orgMode: .grace
                 ),
@@ -267,9 +295,9 @@ struct RegistryTLSListenerTests {
         // Provisioning transition: tear down, rebind the SAME port with TLS.
         await Self.stop(plainTask)
         let ca = try TestPKI.makeCA()
-        let (tlsPort, tlsTask) = try await Self.startListener(
+        let (tlsPort, tlsTask) = try await Self.startListenerOnReleasedPort {
             try Self.tlsListener(port: port, deviceOrg: 1, ca: ca)
-        )
+        }
         #expect(tlsPort == port)
 
         let client = try TestPKI.makeIdentity(commonName: "wendy/user/tester", ca: ca)

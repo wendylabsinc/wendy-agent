@@ -150,3 +150,15 @@ func TestStateIcon_CrashLoopingDistinctFromStopped(t *testing.T) {
 		t.Fatalf("crash-looping icon %q should contain ↻", crash)
 	}
 }
+
+func TestHTTPPortColumn_Zero(t *testing.T) {
+	if got := httpPortColumn(0); got != "" {
+		t.Errorf("httpPortColumn(0) = %q, want empty string", got)
+	}
+}
+
+func TestHTTPPortColumn_NonZero(t *testing.T) {
+	if got := httpPortColumn(8080); got != ":8080" {
+		t.Errorf("httpPortColumn(8080) = %q, want %q", got, ":8080")
+	}
+}

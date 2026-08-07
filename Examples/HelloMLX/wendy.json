@@ -3,6 +3,10 @@
   "platform": "linux",
   "version": "1.0.0",
   "language": "swift",
+  "entitlements": [
+    { "type": "network", "mode": "host" },
+    { "type": "http", "port": 8080 }
+  ],
   "run": {
     "args": [
       "--model-path",

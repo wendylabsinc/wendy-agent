@@ -69,7 +69,7 @@ A "network" type entitlement can have the following values:
 
 ## Input
 
-The input entitlement allows the container to access HID input devices such as barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
+The input entitlement allows the container to access Linux input devices such as game controllers, barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
 
 ```json
 {
@@ -79,22 +79,37 @@ The input entitlement allows the container to access HID input devices such as b
 
 The container receives:
 - A bind mount of `/dev/input/` (including `by-id/` symlinks for stable device identification)
-- Membership in the `input` group (GID 105) for device permissions
+- Membership in the host's `input` group for device permissions
 - A cgroup device rule allowing access to input devices (major 13)
 
 ### Device discovery
 
-Event device numbers (`/dev/input/event0`, `event1`, etc.) are assigned dynamically and can change across reboots. Use the stable symlinks under `/dev/input/by-id/` to identify devices reliably:
+Event device numbers (`/dev/input/event0`, `event1`, etc.) are assigned dynamically and can change across reboots. Use a stable symlink basename under `/dev/input/by-id/` where one exists, or the evdev device's `uniq` identity, to identify devices reliably:
 
 ```
 /dev/input/by-id/usb-USBKey_Chip_USBKey_Module_202730041341-event-kbd
 ```
 
+### Bluetooth game controllers
+
+BlueZ on WendyOS owns pairing, trust, and reconnect. Pair and trust the pad on
+the device first (both behaviors are enabled by default):
+
+```sh
+wendy device bluetooth connect <address>
+```
+
+Then declare `{ "type": "input" }` on the service that reads the controller
+and select it by `/dev/input/by-id` basename or evdev `uniq`. No controller API,
+mapping service, or raw `usb` entitlement is required for standard Linux
+gamepad event codes. The same input entitlement also covers a controller used
+over wired USB.
+
 ### When to use input vs USB
 
 | Entitlement | Access | Use case |
 |-------------|--------|----------|
-| `input` | `/dev/input/` (Linux input subsystem) | Reading HID events — barcode scanners, keyboards, game controllers |
+| `input` | `/dev/input/` (Linux input subsystem) | Reading input events — game controllers, barcode scanners, keyboards |
 | `usb` | `/dev/bus/usb` (raw USB) | Low-level USB communication — custom protocols, firmware updates, libusb |
 
 Most USB HID devices (scanners, keyboards) should use `input`. You only need `usb` if your app talks raw USB protocols.

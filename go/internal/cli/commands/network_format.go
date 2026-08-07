@@ -87,17 +87,57 @@ func urlSafeHost(host string) string {
 // When the app configures a postStart openURL that references the device
 // hostname, that template is reused verbatim (scheme, port, and path) with the
 // IP swapped in, so the printed URL matches what the browser hook opens.
-// Otherwise, if readiness defines a TCP port, an http URL on that port is
-// assumed. Returns "" when no reachable URL can be derived.
-func reachableAppURL(hookURL, appID, serviceName, deviceIP string, readiness *appconfig.ReadinessConfig) string {
+// Otherwise, an HTTP entitlement's presentation port is preferred over the
+// readiness TCP port. This keeps the URL users see/open independent from the
+// port the CLI probes (for example, probe an admin port on 9000 but present
+// the public UI on 8080). Returns "" when no reachable URL can be derived.
+func reachableAppURL(hookURL, appID, serviceName, deviceIP string, httpPort int, readiness *appconfig.ReadinessConfig) string {
 	if deviceIP == "" {
 		return ""
 	}
 	if hookURL != "" && strings.Contains(hookURL, "WENDY_HOSTNAME") {
 		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID, serviceName)
 	}
+	if httpPort != 0 {
+		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(httpPort))
+	}
 	if readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0 {
 		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(readiness.TCPSocket.Port))
 	}
 	return ""
+}
+
+// httpEntitlementPort returns the port declared by an `http` entitlement, if
+// the app has one.
+func httpEntitlementPort(entitlements []appconfig.Entitlement) (int, bool) {
+	for _, e := range entitlements {
+		if e.Type == appconfig.EntitlementHTTP && e.Port > 0 {
+			return e.Port, true
+		}
+	}
+	return 0, false
+}
+
+// effectiveReadiness returns appCfg.Readiness unchanged when it already
+// declares a TCP probe. Otherwise, when the app declares an `http`
+// entitlement, it synthesizes a readiness probe on that port (preserving any
+// explicit timeoutSeconds) so `wendy run` waits for the declared HTTP port to
+// come up before announcing or opening it — an `http` entitlement gets this
+// gating without a separate readiness.tcpSocket config.
+func effectiveReadiness(appCfg *appconfig.AppConfig) *appconfig.ReadinessConfig {
+	if appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil {
+		return appCfg.Readiness
+	}
+	port, ok := httpEntitlementPort(appCfg.Entitlements)
+	if !ok {
+		return appCfg.Readiness
+	}
+	timeout := 0
+	if appCfg.Readiness != nil {
+		timeout = appCfg.Readiness.TimeoutSeconds
+	}
+	return &appconfig.ReadinessConfig{
+		TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
+		TimeoutSeconds: timeout,
+	}
 }

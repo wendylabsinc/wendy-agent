@@ -2,6 +2,7 @@ package appconfig
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -163,6 +164,7 @@ func TestEntitlementAnnotationRoundTrip(t *testing.T) {
 		{Type: EntitlementGPIO, Pins: []int{17, 18, 27}},
 		{Type: EntitlementMCP, Port: 8080},
 		{Type: EntitlementI2C, Device: "i2c-1"},
+		{Type: EntitlementSerial, Device: "ttyUSB0"},
 		{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
 	}
 
@@ -171,6 +173,27 @@ func TestEntitlementAnnotationRoundTrip(t *testing.T) {
 		got := ParseEntitlementAnnotation(want.Type, value)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("round-trip %+v: encoded %q, decoded %+v", want, value, got)
+		}
+	}
+}
+
+func TestBuildEntitlementAnnotationsIndexesDistinctSerialDevices(t *testing.T) {
+	want := []Entitlement{
+		{Type: EntitlementSerial, Device: "ttyUSB0"},
+		{Type: EntitlementSerial, Device: "ttyUSB1"},
+	}
+	annotations := BuildEntitlementAnnotations(want)
+	if len(annotations) != 2 {
+		t.Fatalf("got %d annotations, want 2: %v", len(annotations), annotations)
+	}
+	for i, entitlement := range want {
+		key := EntitlementAnnotationKeyPrefix + EntitlementSerial + "." + strconv.Itoa(i)
+		value, ok := annotations[key]
+		if !ok {
+			t.Fatalf("missing indexed annotation %q in %v", key, annotations)
+		}
+		if got := ParseEntitlementAnnotation(EntitlementSerial, value); !reflect.DeepEqual(got, entitlement) {
+			t.Errorf("%s round-trip = %+v, want %+v", key, got, entitlement)
 		}
 	}
 }

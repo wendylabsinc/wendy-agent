@@ -1912,7 +1912,9 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
 		hookURL = appCfg.Hooks.PostStart.OpenURL
 	}
-	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
+	readiness := effectiveReadiness(appCfg)
+	httpPort, hasHTTPPort := httpEntitlementPort(appCfg.Entitlements)
+	hasPort := hasHTTPPort || (readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0)
 	if hookURL == "" && !hasPort {
 		return ""
 	}
@@ -1922,12 +1924,37 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 	ip := bestReachableIP(resp.GetNetworkInterfaces())
-	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, appCfg.Readiness)
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, httpPort, readiness)
 	if url == "" {
 		return ""
 	}
 	cliLogln("App reachable at %s", tui.Value(url))
 	return ip
+}
+
+// synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
+// configures an explicit openURL. Otherwise, when the app declares an `http`
+// entitlement, it returns a copied HooksConfig whose postStart opens that port
+// automatically while preserving any explicit cli/agent actions.
+func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig {
+	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil && appCfg.Hooks.PostStart.OpenURL != "" {
+		return appCfg.Hooks
+	}
+	port, ok := httpEntitlementPort(appCfg.Entitlements)
+	if !ok {
+		return appCfg.Hooks
+	}
+	hooks := &appconfig.HooksConfig{}
+	if appCfg.Hooks != nil {
+		*hooks = *appCfg.Hooks
+	}
+	postStart := &appconfig.HookCommand{}
+	if hooks.PostStart != nil {
+		*postStart = *hooks.PostStart
+	}
+	postStart.OpenURL = fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)
+	hooks.PostStart = postStart
+	return hooks
 }
 
 // runPostStartIfReady gates `wendy run`'s post-start side effects on the
@@ -1940,7 +1967,8 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 // context.Background() so the hook outlives the CLI. Returns the hook's cmd
 // for the caller to reap, nil when no CLI hook ran.
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
-	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+	readiness := effectiveReadiness(appCfg)
+	if err := waitForReadiness(ctx, readiness, conn.Host); err != nil {
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -1961,7 +1989,13 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		// so the URL it opens matches the "App reachable at" line.
 		hookHost = ip
 	}
-	return startPostStartHook(hookCtx, appCfg, hookHost, appCfg.ServiceName)
+	effectiveCfg := appCfg
+	if hooks := synthesizedOpenURLHook(appCfg); hooks != appCfg.Hooks {
+		clone := *appCfg
+		clone.Hooks = hooks
+		effectiveCfg = &clone
+	}
+	return startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
 }
 
 // startPostStartHook fires the postStart hook actions for appCfg. serviceName

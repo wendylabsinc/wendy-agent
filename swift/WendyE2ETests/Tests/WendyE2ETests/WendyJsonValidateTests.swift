@@ -145,11 +145,13 @@ struct `'wendy json validate'` {
     @Test
     func `does not mutate the project file`() async throws {
         try await self.scenario.run(authenticated: false) { cli, _ in
-            let projectJSON = "{\"appId\":\"sh.wendy.readonly\",\"entitlements\":[{\"type\":\"persist\",\"name\":\"data\"}]}\n"
+            let projectJSON =
+                "{\"appId\":\"sh.wendy.readonly\",\"entitlements\":[{\"type\":\"persist\",\"name\":\"data\"}]}\n"
 
             try await cli.sh(
                 posix: "printf '%s' '\(projectJSON)' > wendy.json",
-                power: "Set-Content -NoNewline -LiteralPath 'wendy.json' -Value '\(projectJSON.replacingOccurrences(of: "'", with: "''"))'"
+                power:
+                    "Set-Content -NoNewline -LiteralPath 'wendy.json' -Value '\(projectJSON.replacingOccurrences(of: "'", with: "''"))'"
             )
 
             try await cli.sh("wendy --json=false json validate") { result in

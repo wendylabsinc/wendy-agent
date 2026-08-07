@@ -103,6 +103,26 @@ wendy-agent (on device)
 container MCP server (127.0.0.1:3000)
 ```
 
+### Result size cap
+
+`wendy mcp serve` applies the same 100,000-byte output cap to proxied
+container tool results that Wendy's built-in tools use. If a container tool's
+JSON result exceeds this limit, the proxy replaces its content with a
+truncation envelope:
+
+```json
+{
+  "truncated": true,
+  "max_bytes": 100000,
+  "note": "proxied container tool output exceeded max_bytes; ask the app's tool for a narrower result"
+}
+```
+
+The `isError` flag is preserved through truncation, so an error result still
+surfaces as an error with bounded content. To avoid truncation, design tools
+to return focused, paginated, or summarized output instead of raw file, log,
+or model-output dumps.
+
 The wendy agent's `StreamMCP` RPC proxies raw bytes between the gRPC stream and the container's TCP port. The agent verifies that:
 
 - The container has an `mcp` entitlement (non-zero `sh.wendy/mcp.port` label).

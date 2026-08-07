@@ -9,15 +9,10 @@
     },
     {
       "type": "audio"
+    },
+    {
+      "type": "http",
+      "port": 3004
     }
-  ],
-  "readiness": {
-    "tcpSocket": { "port": 3004 },
-    "timeoutSeconds": 30
-  },
-  "hooks": {
-    "postStart": {
-      "cli": "wendy utils open-browser http://${WENDY_HOSTNAME}:3004"
-    }
-  }
+  ]
 }
