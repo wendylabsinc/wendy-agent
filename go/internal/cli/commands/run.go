@@ -1668,10 +1668,19 @@ func expandServiceEnv(appCfg *appconfig.AppConfig, svc *appconfig.ServiceConfig)
 	return sortedEnvEntries(merged)
 }
 
+// serviceDeployEnv is one service's create-time env: its wendy.json env
+// (expandServiceEnv) plus injected env appended last, so injected keys win.
+// Injected env comes from --env and from fleet deploys that give each device a
+// different identity; the single-container paths already append opts.env the
+// same way, and the per-service path must not be the one place it goes missing.
+func serviceDeployEnv(appCfg *appconfig.AppConfig, svc *appconfig.ServiceConfig, extra []string) []string {
+	return append(expandServiceEnv(appCfg, svc), extra...)
+}
+
 // resolveServiceEnv is the whole-app env for deploy paths that build one
 // CreateContainerRequest rather than one per service: the app-level env plus
 // every service's env merged over it (see multibuild.go for the per-service
-// path, which calls expandServiceEnv directly).
+// path, which calls serviceDeployEnv).
 func resolveServiceEnv(appCfg *appconfig.AppConfig) []string {
 	if appCfg == nil {
 		return nil
