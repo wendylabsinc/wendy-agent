@@ -12,9 +12,17 @@
 
 - Mirror the `mcp` entitlement's shape and behavior everywhere: a single `port` field, static/declared-only (no liveness check), at most one per app.
 - Do not modify `network.ports`, `GetContainerPorts`, or any other existing port mechanism.
-- Do not touch `go/internal/shared/appconfig/wendy.schema.json` / `wendy-fleet.schema.json` — confirmed during research that `mcp` itself is not present in that JSON Schema's entitlement `oneOf` list either, so omitting `http` too matches existing (if imperfect) precedent rather than being a new gap.
+- Add `http` to the embedded public `go/internal/shared/appconfig/wendy.schema.json`. Do not change `wendy-fleet.schema.json`, which has no app entitlements.
 - Do not touch the interactive `apps list` dashboard (`runAppsDashboard`) — only the static/JSON output path.
 - Never hand-edit generated protobuf files (`*.pb.go`, `*.pb.swift`, `*.grpc.swift`) — always regenerate via the existing scripts.
+
+## Final-review lifecycle corrections
+
+- Keep full inherited entitlements in every multi-service container create payload, but build separate CLI-private lifecycle configs. Service lifecycle configs include only service-declared HTTP; top-level HTTP/readiness/hooks (including `timeoutSeconds`) run once after all services start.
+- Preserve `wendy run --service` behavior by omitting app-level lifecycle actions on subset runs. If both app and service scopes declare HTTP, execute both at their respective scopes.
+- Gate automatic success side effects on readiness. A timeout remains non-fatal and explicitly configured multi-service hooks still execute, but `App reachable` and a synthesized HTTP browser open are suppressed. Cancellation suppresses the warning, announcement, and hook.
+- Keep explicit `readiness.tcpSocket.port` as the probe. Choose presentation in this order: hostname-templated explicit `openURL`, HTTP entitlement port, readiness TCP port.
+- Browser reachability currently requires host networking. Bridge mode supplies outbound NAT only; mesh mappings serve mesh-peer traffic, not host-browser ingress.
 
 ---
 
@@ -78,6 +86,8 @@ git commit -m "proto: add AppContainer.http_port field"
 **Files:**
 - Modify: `go/internal/shared/appconfig/appconfig.go:33-343, 379-453`
 - Modify: `go/internal/shared/appconfig/appconfig_test.go` (append near the existing MCP tests, ~line 420, ~503-525, ~1330-1385, ~1595-1690)
+- Modify: `go/internal/shared/appconfig/wendy.schema.json`
+- Modify: `go/internal/shared/appconfig/schema_test.go`
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -143,6 +153,8 @@ Directly after the existing `mcpCount` block (~line 445-453), add the same patte
 ```
 
 - [ ] **Step 6: Write the failing tests**
+
+Before the Go validation tests, add the public schema's strict `http` entitlement branch: require `type` and `port`, make `port` an integer from 1 through 65535, and set `additionalProperties: false`. Add a structural test that locates that branch and verifies its required fields, bounds, and strictness. Do not modify the fleet schema.
 
 Append to `go/internal/shared/appconfig/appconfig_test.go`, near the existing MCP test functions:
 
@@ -509,6 +521,8 @@ git commit -m "containerd: populate AppContainer.HttpPort in ListContainers"
 ---
 
 ### Task 5: `wendy run` — readiness default + auto-open from `http` entitlement
+
+Final behavior note: an explicit readiness TCP port remains the probe even when HTTP is declared. Announcement/opening prefers a hostname-templated explicit `openURL`, then the HTTP port, then the readiness port. The multi-service paths use separately scoped lifecycle configs and suppress automatic success side effects after a failed readiness probe.
 
 **Files:**
 - Modify: `go/internal/cli/commands/network_format.go` (add helpers near `bestReachableIP`/`reachableAppURL`)
@@ -932,7 +946,9 @@ git commit -m "cli: show declared http port in wendy device apps"
 ### Task 7: Docs — document the `http` entitlement
 
 **Files:**
-- Modify: `go/internal/cli/assets/docs/content/docs/advanced/apps/wendy.json.md` (near the existing `### mcp` section, ~line 332-350)
+- Modify: `go/internal/cli/assets/docs/apps/wendy.json.md` (near the existing `### mcp` section)
+- Modify: `go/internal/cli/assets/docs/apps/wendy-services.md`
+- Modify: `go/internal/cli/assets/docs/apps/compose.md`
 
 **Interfaces:** none (documentation only).
 
@@ -949,18 +965,20 @@ Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContai
 { "type": "http", "port": 8080 }
 ```
 
-> **Note:** The `http` entitlement is typically combined with `{ "type": "network", "mode": "host" }` (or an explicit `bridge` port forward) so the declared port is actually reachable from outside the container. If the app also configures an explicit `hooks.postStart.openURL`, that explicit hook wins over the entitlement's automatic one.
+> **Networking:** Browser reachability currently requires `{ "type": "network", "mode": "host" }`. Bridge mode provides outbound NAT only and does not publish host/LAN ports. Mesh port mappings serve mesh-peer traffic rather than developer-browser ingress.
 ```
+
+Also document app-level versus service-level HTTP lifecycle scope, subset-run behavior, readiness-failure suppression, and the case where readiness probes `9000` while HTTP presents `8080`.
 
 - [ ] **Step 2: Spot-check rendering**
 
-Run: `grep -n "^### \`http\`" go/internal/cli/assets/docs/content/docs/advanced/apps/wendy.json.md`
+Run: `grep -n "^### \`http\`" go/internal/cli/assets/docs/apps/wendy.json.md`
 Expected: one match, immediately after the `mcp` section.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add go/internal/cli/assets/docs/content/docs/advanced/apps/wendy.json.md
+git add go/internal/cli/assets/docs/apps/wendy.json.md go/internal/cli/assets/docs/apps/wendy-services.md go/internal/cli/assets/docs/apps/compose.md
 git commit -m "docs: document the http entitlement"
 ```
 

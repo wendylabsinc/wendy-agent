@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -413,6 +414,32 @@ func TestEffectiveReadiness_NoHTTPEntitlementNoReadiness(t *testing.T) {
 	}
 }
 
+func TestSynthesizedOpenURLHook_PreservesExplicitCommands(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}},
+		Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{
+			CLI:   "echo cli",
+			Agent: "echo agent",
+		}},
+	}
+	got := synthesizedOpenURLHook(appCfg)
+	if got == appCfg.Hooks {
+		t.Fatal("synthesizedOpenURLHook returned the original hooks pointer; want a non-mutating copy")
+	}
+	if got == nil || got.PostStart == nil {
+		t.Fatalf("synthesizedOpenURLHook = %+v, want postStart", got)
+	}
+	if got.PostStart.OpenURL != "http://${WENDY_HOSTNAME}:8080" {
+		t.Errorf("OpenURL = %q, want synthesized HTTP URL", got.PostStart.OpenURL)
+	}
+	if got.PostStart.CLI != "echo cli" || got.PostStart.Agent != "echo agent" {
+		t.Errorf("explicit commands were not preserved: %+v", got.PostStart)
+	}
+	if appCfg.Hooks.PostStart.OpenURL != "" {
+		t.Errorf("input hooks mutated: %+v", appCfg.Hooks.PostStart)
+	}
+}
+
 // TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement verifies the "wendy run
 // also opens this page after launch" behavior: an app declaring only an http
 // entitlement (no readiness config, no postStart hook) gets its port polled
@@ -448,6 +475,60 @@ func TestRunPostStartIfReady_AutoOpensFromHTTPEntitlement(t *testing.T) {
 	want := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if opened != want {
 		t.Errorf("opened = %q, want %q", opened, want)
+	}
+}
+
+func TestRunPostStartIfReady_ProbesReadinessPortButPresentsHTTPPort(t *testing.T) {
+	readinessListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start readiness listener: %v", err)
+	}
+	defer readinessListener.Close()
+	readinessPort := testPort(t, readinessListener)
+
+	httpListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve HTTP port: %v", err)
+	}
+	httpPort := testPort(t, httpListener)
+	httpListener.Close() // closed: probing this instead would time out
+
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	var opened string
+	browserOpen = func(url string) error {
+		opened = url
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID:        "separate-ports",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: httpPort}},
+		Readiness: &appconfig.ReadinessConfig{
+			TCPSocket:      &appconfig.TCPSocketProbe{Port: readinessPort},
+			TimeoutSeconds: 1,
+		},
+	}
+	conn := &grpcclient.AgentConnection{
+		Host: "127.0.0.1",
+		AgentService: &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+			NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "lo", IpAddresses: []string{"127.0.0.1"}}},
+		}},
+	}
+
+	start := time.Now()
+	out := captureStdout(t, func() {
+		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
+	})
+	if elapsed := time.Since(start); elapsed >= time.Second {
+		t.Errorf("run took %v; explicit readiness port should pass immediately instead of probing the closed HTTP port", elapsed)
+	}
+	want := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
+	if opened != want {
+		t.Errorf("opened = %q, want HTTP entitlement URL %q", opened, want)
+	}
+	if !strings.Contains(out, want) {
+		t.Errorf("announcement does not use HTTP entitlement port; output:\n%s", out)
 	}
 }
 

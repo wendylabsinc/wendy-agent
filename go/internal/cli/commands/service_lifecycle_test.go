@@ -251,10 +251,14 @@ func TestServiceHookRunner_FiresAfterReadiness(t *testing.T) {
 	}
 }
 
-// TestServiceHookRunner_ReadinessTimeoutStillFiresHook mirrors the
-// single-container contract: a readiness probe that times out (as opposed to
-// being canceled) only warns — it does not suppress the postStart hook.
-func TestServiceHookRunner_ReadinessTimeoutStillFiresHook(t *testing.T) {
+// TestServiceHookRunner_ReadinessTimeoutSuppressesAutomaticHTTPSideEffects
+// verifies that a timed-out HTTP readiness gate warns without claiming success
+// or opening a synthesized browser URL, while an explicitly configured hook
+// retains the established multi-service non-fatal behavior and still runs.
+func TestServiceHookRunner_ReadinessTimeoutSuppressesAutomaticHTTPSideEffects(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("host-side postStart cli hook uses `touch`, unavailable on Windows")
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to find free port: %v", err)
@@ -263,6 +267,7 @@ func TestServiceHookRunner_ReadinessTimeoutStillFiresHook(t *testing.T) {
 	ln.Close() // nothing listens on this port for the rest of the test
 
 	calls := swapBrowserOpen(t)
+	sentinel := filepath.Join(t.TempDir(), "explicit-cli-ran")
 	containerFake := &lifecycleFakeContainerClient{}
 	conn := newLifecycleTestConn("127.0.0.1", containerFake)
 	r := &serviceHookRunner{conn: conn}
@@ -270,27 +275,38 @@ func TestServiceHookRunner_ReadinessTimeoutStillFiresHook(t *testing.T) {
 	cfg := &appconfig.AppConfig{
 		AppID:       "app",
 		ServiceName: "worker",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementHTTP, Port: port},
+		},
 		Readiness: &appconfig.ReadinessConfig{
-			TCPSocket:      &appconfig.TCPSocketProbe{Port: port},
 			TimeoutSeconds: 1,
 		},
 		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{OpenURL: "http://localhost:9"},
+			PostStart: &appconfig.HookCommand{CLI: fmt.Sprintf("touch %q", sentinel)},
 		},
 	}
 
 	start := time.Now()
-	r.runOne(context.Background(), context.Background(), cfg)
+	out := captureStdout(t, func() {
+		r.runOne(context.Background(), context.Background(), cfg)
+	})
 	elapsed := time.Since(start)
 
 	if elapsed < 500*time.Millisecond {
 		t.Errorf("runOne returned in %v, expected to wait out the ~1s readiness timeout", elapsed)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("browserOpen calls = %v, want exactly 1 (hook must still fire)", *calls)
+	if len(*calls) != 0 {
+		t.Fatalf("browserOpen calls = %v, want none after readiness timeout", *calls)
 	}
+	waitForFile(t, sentinel, 5*time.Second)
 	if containerFake.listContainersCalls == 0 {
 		t.Errorf("ListContainers never called; expected warnReadiness's exit-detail lookup to run")
+	}
+	if !strings.Contains(out, "Warning:") {
+		t.Errorf("readiness warning missing; output:\n%s", out)
+	}
+	if strings.Contains(out, "App reachable at") {
+		t.Errorf("success announcement printed after readiness timeout; output:\n%s", out)
 	}
 }
 
@@ -490,6 +506,17 @@ func TestAppLevelLifecycleConfig(t *testing.T) {
 			t.Error("appLevelLifecycleConfig() = nil, want populated config when only Hooks is set")
 		}
 	})
+
+	t.Run("only top-level HTTP set", func(t *testing.T) {
+		top := &appconfig.AppConfig{AppID: "app", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}}}
+		got := appLevelLifecycleConfig("app", top)
+		if got == nil {
+			t.Fatal("appLevelLifecycleConfig() = nil, want HTTP-derived lifecycle config")
+		}
+		if port, ok := httpEntitlementPort(got.Entitlements); !ok || port != 8080 {
+			t.Errorf("HTTP entitlement = %d, %v; want 8080", port, ok)
+		}
+	})
 }
 
 // --- startAndStreamServices lifecycle-hook fakes (WDY-1271) ---
@@ -679,7 +706,7 @@ func runFourServicesOnlyFrontend(t *testing.T, detach bool) {
 	}
 
 	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
-		func(string) error { return nil }, svcCfgs, nil)
+		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
 	}
@@ -823,7 +850,7 @@ func TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop(t *testing.T)
 	}
 
 	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: false},
-		func(string) error { return nil }, svcCfgs, nil)
+		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices: %v", err)
 	}
@@ -848,11 +875,10 @@ func TestStartAndStreamServices_Attached_HookDoesNotBlockStartLoop(t *testing.T)
 	}
 }
 
-// TestStartAndStreamServices_AppLevelFallback verifies that when no service
-// declares lifecycle config but the group does (appLevelCfg), the fallback fires
-// exactly once, only after every service has started, with ${WENDY_HOSTNAME}
-// expanded to the connection host — and that the app-level agent hook is never
-// attached to any StartContainer context.
+// TestStartAndStreamServices_AppLevelFallback is a WendyMC-shaped regression:
+// top-level HTTP stays inherited in both create configs, is absent from both
+// private service lifecycle configs, and fires exactly once after both services
+// start in attached and detached modes. The top-level timeout is preserved.
 func TestStartAndStreamServices_AppLevelFallback(t *testing.T) {
 	t.Run("detached", func(t *testing.T) { runAppLevelFallback(t, true) })
 	t.Run("attached", func(t *testing.T) { runAppLevelFallback(t, false) })
@@ -867,19 +893,31 @@ func runAppLevelFallback(t *testing.T, detach bool) {
 	defer ln.Close()
 	port := testPort(t, ln)
 
-	svcCfgs := map[string]*appconfig.AppConfig{
-		"db":    {AppID: "app", ServiceName: "db"},
-		"cache": {AppID: "app", ServiceName: "cache"},
-		"api":   {AppID: "app", ServiceName: "api"},
-		"web":   {AppID: "app", ServiceName: "web"},
-	}
-	ordered := []string{"db", "cache", "api", "web"}
-	appLevelCfg := &appconfig.AppConfig{
-		AppID:     "app",
-		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
-		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)},
+	appCfg := &appconfig.AppConfig{
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
+		Readiness:    &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"minecraft": {Context: "./minecraft"},
+			"webui":     {Context: "./webui"},
 		},
+	}
+	ordered := []string{"minecraft", "webui"}
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(ordered))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(ordered))
+	for _, name := range ordered {
+		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, appCfg.Services[name])
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, appCfg.Services[name])
+		if gotPort, ok := httpEntitlementPort(svcCfgs[name].Entitlements); !ok || gotPort != port {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited %d", name, gotPort, ok, port)
+		}
+		if svcLifecycleCfgs[name] != nil {
+			t.Errorf("%s private lifecycle config = %+v, want nil", name, svcLifecycleCfgs[name])
+		}
+	}
+	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+	if appLevelCfg == nil || appLevelCfg.Readiness == nil || appLevelCfg.Readiness.TimeoutSeconds != 180 {
+		t.Fatalf("app-level lifecycle config = %+v, want timeoutSeconds 180", appLevelCfg)
 	}
 
 	fake := &hookSvcContainerClient{}
@@ -924,7 +962,7 @@ func runAppLevelFallback(t *testing.T, detach bool) {
 	}
 
 	err = startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
-		func(string) error { return nil }, svcCfgs, appLevelCfg)
+		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg)
 	if err != nil {
 		t.Fatalf("startAndStreamServices(detach=%v): %v", detach, err)
 	}
@@ -950,6 +988,67 @@ func runAppLevelFallback(t *testing.T, detach bool) {
 		}
 		if hasAgentHookMetadata(t, ctxN) {
 			t.Errorf("app_%s StartContainer context carries agent-hook metadata; app-level agent hooks must never be sent", name)
+		}
+	}
+}
+
+func TestStartAndStreamServices_ServiceAndAppHTTPBothFire(t *testing.T) {
+	appListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for app HTTP: %v", err)
+	}
+	defer appListener.Close()
+	appPort := testPort(t, appListener)
+
+	serviceListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for service HTTP: %v", err)
+	}
+	defer serviceListener.Close()
+	servicePort := testPort(t, serviceListener)
+
+	appCfg := &appconfig.AppConfig{
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: appPort}},
+		Services: map[string]*appconfig.ServiceConfig{
+			"minecraft": {Context: "./minecraft"},
+			"webui": {
+				Context:      "./webui",
+				Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: servicePort}},
+			},
+		},
+	}
+	ordered := []string{"minecraft", "webui"}
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(ordered))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(ordered))
+	for _, name := range ordered {
+		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, appCfg.Services[name])
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, appCfg.Services[name])
+	}
+	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+
+	browserCalls := swapBrowserOpen(t)
+	fake := &hookSvcContainerClient{}
+	conn := &grpcclient.AgentConnection{
+		Host:             "127.0.0.1",
+		AgentService:     &lifecycleFakeAgentClient{},
+		ContainerService: fake,
+	}
+	if err := startAndStreamServices(context.Background(), conn, appCfg.AppID, ordered, runOptions{detach: true},
+		func(string) error { return nil }, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
+		t.Fatalf("startAndStreamServices: %v", err)
+	}
+
+	want := []string{
+		fmt.Sprintf("http://127.0.0.1:%d", servicePort),
+		fmt.Sprintf("http://127.0.0.1:%d", appPort),
+	}
+	if len(*browserCalls) != len(want) {
+		t.Fatalf("browserOpen calls = %v, want service-level then app-level %v", *browserCalls, want)
+	}
+	for i := range want {
+		if (*browserCalls)[i] != want[i] {
+			t.Errorf("browserOpen call %d = %q, want %q", i, (*browserCalls)[i], want[i])
 		}
 	}
 }
@@ -984,7 +1083,7 @@ func TestStartAndStreamServices_Detached_ReadinessTimeoutNonFatal(t *testing.T) 
 	conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
 
 	err = startAndStreamServices(context.Background(), conn, "app", []string{"solo"}, runOptions{detach: true},
-		func(string) error { return nil }, svcCfgs, nil)
+		func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 	if err != nil {
 		t.Fatalf("startAndStreamServices returned %v, want nil (readiness timeout must be non-fatal)", err)
 	}
@@ -1006,7 +1105,7 @@ func TestStartAndStreamServices_NilAppLevelCfg(t *testing.T) {
 		fake := &hookSvcContainerClient{}
 		conn := &grpcclient.AgentConnection{Host: "127.0.0.1", AgentService: &lifecycleFakeAgentClient{}, ContainerService: fake}
 		err := startAndStreamServices(context.Background(), conn, "app", ordered, runOptions{detach: detach},
-			func(string) error { return nil }, svcCfgs, nil)
+			func(string) error { return nil }, svcCfgs, svcCfgs, nil)
 		if err != nil {
 			t.Fatalf("startAndStreamServices(detach=%v) = %v, want nil", detach, err)
 		}

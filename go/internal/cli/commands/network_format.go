@@ -87,14 +87,19 @@ func urlSafeHost(host string) string {
 // When the app configures a postStart openURL that references the device
 // hostname, that template is reused verbatim (scheme, port, and path) with the
 // IP swapped in, so the printed URL matches what the browser hook opens.
-// Otherwise, if readiness defines a TCP port, an http URL on that port is
-// assumed. Returns "" when no reachable URL can be derived.
-func reachableAppURL(hookURL, appID, serviceName, deviceIP string, readiness *appconfig.ReadinessConfig) string {
+// Otherwise, an HTTP entitlement's presentation port is preferred over the
+// readiness TCP port. This keeps the URL users see/open independent from the
+// port the CLI probes (for example, probe an admin port on 9000 but present
+// the public UI on 8080). Returns "" when no reachable URL can be derived.
+func reachableAppURL(hookURL, appID, serviceName, deviceIP string, httpPort int, readiness *appconfig.ReadinessConfig) string {
 	if deviceIP == "" {
 		return ""
 	}
 	if hookURL != "" && strings.Contains(hookURL, "WENDY_HOSTNAME") {
 		return expandHookEnv(hookURL, urlSafeHost(deviceIP), appID, serviceName)
+	}
+	if httpPort != 0 {
+		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(httpPort))
 	}
 	if readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0 {
 		return "http://" + net.JoinHostPort(deviceIP, strconv.Itoa(readiness.TCPSocket.Port))

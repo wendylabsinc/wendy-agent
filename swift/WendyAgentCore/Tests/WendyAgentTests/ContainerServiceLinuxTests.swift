@@ -167,8 +167,22 @@ actor FakeLinuxBackend: LinuxContainerBackend {
             appId: "svc-ports",
             platform: "linux/arm64",
             entitlements: [
-                WendyEntitlement(type: "http", mode: nil, name: nil, path: nil, ports: nil, port: 8080),
-                WendyEntitlement(type: "mcp", mode: nil, name: nil, path: nil, ports: nil, port: 3000),
+                WendyEntitlement(
+                    type: "http",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 8080
+                ),
+                WendyEntitlement(
+                    type: "mcp",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 3000
+                ),
             ],
             brewfile: nil
         )
@@ -184,7 +198,10 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         )
 
         let listResponse = try await service.listContainers(
-            request: ServerRequest(metadata: [:], message: Wendy_Agent_Services_V1_ListContainersRequest()),
+            request: ServerRequest(
+                metadata: [:],
+                message: Wendy_Agent_Services_V1_ListContainersRequest()
+            ),
             context: makeServerContext(method: "ListContainers")
         )
         let contents = try listResponse.accepted.get()
@@ -217,8 +234,22 @@ actor FakeLinuxBackend: LinuxContainerBackend {
             appId: "svc-bad-port",
             platform: "linux/arm64",
             entitlements: [
-                WendyEntitlement(type: "http", mode: nil, name: nil, path: nil, ports: nil, port: 5_000_000_000),
-                WendyEntitlement(type: "mcp", mode: nil, name: nil, path: nil, ports: nil, port: 65536),
+                WendyEntitlement(
+                    type: "http",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 5_000_000_000
+                ),
+                WendyEntitlement(
+                    type: "mcp",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 65536
+                ),
             ],
             brewfile: nil
         )
@@ -236,7 +267,10 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         // Must not crash (UInt32(port) trapping was the bug); the call
         // completing at all is the primary assertion.
         let listResponse = try await service.listContainers(
-            request: ServerRequest(metadata: [:], message: Wendy_Agent_Services_V1_ListContainersRequest()),
+            request: ServerRequest(
+                metadata: [:],
+                message: Wendy_Agent_Services_V1_ListContainersRequest()
+            ),
             context: makeServerContext(method: "ListContainers")
         )
         let contents = try listResponse.accepted.get()

@@ -1913,7 +1913,8 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		hookURL = appCfg.Hooks.PostStart.OpenURL
 	}
 	readiness := effectiveReadiness(appCfg)
-	hasPort := readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0
+	httpPort, hasHTTPPort := httpEntitlementPort(appCfg.Entitlements)
+	hasPort := hasHTTPPort || (readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0)
 	if hookURL == "" && !hasPort {
 		return ""
 	}
@@ -1923,7 +1924,7 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 	ip := bestReachableIP(resp.GetNetworkInterfaces())
-	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, readiness)
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, httpPort, readiness)
 	if url == "" {
 		return ""
 	}
@@ -1932,27 +1933,28 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 }
 
 // synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
-// configures an explicit postStart action (openURL, cli, or agent). Otherwise,
-// when the app declares an `http` entitlement, it returns a synthetic
-// HooksConfig whose postStart opens that port automatically in the browser —
-// an `http` entitlement needs no separate hooks.postStart config to get
-// `wendy run`'s auto-open behavior.
+// configures an explicit openURL. Otherwise, when the app declares an `http`
+// entitlement, it returns a copied HooksConfig whose postStart opens that port
+// automatically while preserving any explicit cli/agent actions.
 func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig {
-	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
-		p := appCfg.Hooks.PostStart
-		if p.OpenURL != "" || p.CLI != "" || p.Agent != "" {
-			return appCfg.Hooks
-		}
+	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil && appCfg.Hooks.PostStart.OpenURL != "" {
+		return appCfg.Hooks
 	}
 	port, ok := httpEntitlementPort(appCfg.Entitlements)
 	if !ok {
 		return appCfg.Hooks
 	}
-	return &appconfig.HooksConfig{
-		PostStart: &appconfig.HookCommand{
-			OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port),
-		},
+	hooks := &appconfig.HooksConfig{}
+	if appCfg.Hooks != nil {
+		*hooks = *appCfg.Hooks
 	}
+	postStart := &appconfig.HookCommand{}
+	if hooks.PostStart != nil {
+		*postStart = *hooks.PostStart
+	}
+	postStart.OpenURL = fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)
+	hooks.PostStart = postStart
+	return hooks
 }
 
 // runPostStartIfReady gates `wendy run`'s post-start side effects on the
