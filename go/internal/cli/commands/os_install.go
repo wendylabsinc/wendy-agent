@@ -340,6 +340,29 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
 	}
 
+	// Fetch Wendy Lite boards and targets.
+	wliteBoards, err := WendyLiteBoards()
+	if err != nil {
+		log.Printf("WARNING: could not fetch Wendy Lite board catalog: %v", err)
+	}
+	wliteTargets, err := WendyLiteTargets()
+	if err != nil {
+		log.Printf("WARNING: could not fetch Wendy Lite target catalog: %v", err)
+	}
+	// Drop targets with no board in the catalog so the picker never offers a
+	// target that leads to an empty second picker.
+	boardTargets := make(map[string]bool, len(wliteBoards))
+	for _, b := range wliteBoards {
+		boardTargets[b.Target] = true
+	}
+	var targetsWithBoards []WendyLiteTarget
+	for _, t := range wliteTargets {
+		if boardTargets[t.Name] {
+			targetsWithBoards = append(targetsWithBoards, t)
+		}
+	}
+	wliteTargets = targetsWithBoards
+
 	// Build picker items.
 	var items []tui.PickerItem
 	deviceMap := make(map[string]pickerDevice)
@@ -377,28 +400,22 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// ignores prNumber, so offering ESP32 here would silently install release
 	// firmware instead of a PR build.
 	if flagDeviceType == "" && prNumber == 0 {
-		boards, err := WendyLiteBoards()
-		if err == nil {
-			for _, v := range boards {
-				deviceMap["wlite_"+v.Board] = pickerDevice{
-					Name:       v.DisplayName,
-					Version:    v.Version,
-					IsESP32:    true,
-					ESP32Board: v.Board,
-				}
+		for _, v := range wliteBoards {
+			deviceMap["wlite_"+v.Board] = pickerDevice{
+				Name:       v.DisplayName,
+				Version:    v.Version,
+				IsESP32:    true,
+				ESP32Board: v.Board,
 			}
 		}
 
-		targets, err := WendyLiteTargets()
-		if err == nil {
-			for _, t := range targets {
-				items = append(items, tui.PickerItem{
-					Name:    t.DisplayName,
-					Section: "Wendy Lite",
-					SortKey: "1_lite_" + strings.ToLower(t.DisplayName),
-					Value:   "wlite_target_" + t.Name,
-				})
-			}
+		for _, t := range wliteTargets {
+			items = append(items, tui.PickerItem{
+				Name:    t.DisplayName,
+				Section: "Wendy Lite",
+				SortKey: "1_lite_" + strings.ToLower(t.DisplayName),
+				Value:   "wlite_target_" + t.Name,
+			})
 		}
 
 		items = append(items, tui.PickerItem{
