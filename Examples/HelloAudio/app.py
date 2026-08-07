@@ -3,11 +3,14 @@
 HelloAudio — plays a WAV file through the device speaker.
 
 Serves a minimal web page with a "Play" button and a POST /play endpoint
-that shells out to `aplay` (ALSA) to play assets/sleigh-bells.wav on
-whatever playback device the OS picks by default.
+that plays assets/sleigh-bells.wav via `pw-play` (PipeWire), falling back
+to `aplay` (ALSA) if PipeWire isn't available. PipeWire is preferred
+because it routes through the host's WirePlumber session graph, which can
+reach devices — like a paired Bluetooth speaker — that raw ALSA can't.
 """
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,8 +27,12 @@ _sound_file = _app_dir / "assets" / "sleigh-bells.wav"
 
 
 def _play() -> None:
-    subprocess.Popen(["aplay", str(_sound_file)])
-    logger.info("Playing %s", _sound_file.name)
+    if shutil.which("pw-play"):
+        subprocess.Popen(["pw-play", str(_sound_file)])
+        logger.info("Playing %s via pw-play", _sound_file.name)
+    else:
+        subprocess.Popen(["aplay", str(_sound_file)])
+        logger.info("Playing %s via aplay", _sound_file.name)
 
 
 @app.on_event("startup")
@@ -42,8 +49,8 @@ async def play_sound():
         _play()
         return JSONResponse(content={"status": "playing", "file": _sound_file.name})
     except FileNotFoundError:
-        logger.error("aplay not found")
-        return JSONResponse(content={"error": "aplay not found on this device"}, status_code=500)
+        logger.error("no audio player (pw-play/aplay) found")
+        return JSONResponse(content={"error": "no audio player found on this device"}, status_code=500)
     except Exception as e:
         logger.error("Failed to play sound: %s", e)
         return JSONResponse(content={"error": str(e)}, status_code=500)
