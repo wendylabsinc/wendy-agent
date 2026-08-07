@@ -154,6 +154,49 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         #expect(await service.appInfo(forAppID: "svc") == nil)
     }
 
+    @Test func listContainersReportsHTTPAndMCPPortsFromEntitlements() async throws {
+        let backend = FakeLinuxBackend()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/true",
+            stateDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("cs-\(UUID().uuidString)"),
+            linuxBackend: backend
+        )
+        let config = WendyAppConfig(
+            appId: "svc-ports",
+            platform: "linux/arm64",
+            entitlements: [
+                WendyEntitlement(type: "http", mode: nil, name: nil, path: nil, ports: nil, port: 8080),
+                WendyEntitlement(type: "mcp", mode: nil, name: nil, path: nil, ports: nil, port: 3000),
+            ],
+            brewfile: nil
+        )
+        let configData = try JSONEncoder().encode(config)
+
+        var createReq = Wendy_Agent_Services_V1_CreateContainerRequest()
+        createReq.appName = "svc-ports"
+        createReq.imageName = "localhost:5555/svc-ports:latest"
+        createReq.appConfig = configData
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: createReq),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        let listResponse = try await service.listContainers(
+            request: ServerRequest(metadata: [:], message: Wendy_Agent_Services_V1_ListContainersRequest()),
+            context: makeServerContext(method: "ListContainers")
+        )
+        let contents = try listResponse.accepted.get()
+        let writer = CollectingWriter<Wendy_Agent_Services_V1_ListContainersResponse>()
+        _ = try await contents.producer(RPCWriter(wrapping: writer))
+        let containers = writer.snapshot().compactMap(\.container)
+
+        let svc = try #require(containers.first { $0.appName == "svc-ports" })
+        #expect(svc.httpPort == 8080)
+        #expect(svc.mcpPort == 3000)
+    }
+
     @Test func createContainerFailsPreconditionWithoutABackend() async throws {
         let service = ContainerService(
             broadcaster: TelemetryBroadcaster(),

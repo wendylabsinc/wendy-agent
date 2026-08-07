@@ -1135,11 +1135,23 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         context: ServerContext
     ) async throws -> StreamingServerResponse<Wendy_Agent_Services_V1_ListContainersResponse> {
         let apps = self.currentAppInfos()
+        // Capture entitlement-derived ports while still on the actor: appsByID
+        // is actor-isolated state, but the StreamingServerResponse closure below
+        // is not guaranteed to run on the actor's executor.
+        let ports: [String: (http: UInt32, mcp: UInt32)] = Dictionary(
+            uniqueKeysWithValues: apps.map { app in
+                (app.id, self.entitlementPorts(forAppID: app.id))
+            }
+        )
         return StreamingServerResponse { writer in
             for app in apps {
                 var container = AppContainer()
                 container.appName = app.id
                 container.runningState = app.status == .running ? .running : .stopped
+                if let (http, mcp) = ports[app.id] {
+                    container.httpPort = http
+                    container.mcpPort = mcp
+                }
 
                 var response = Wendy_Agent_Services_V1_ListContainersResponse()
                 response.container = container
@@ -1148,6 +1160,26 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
 
             return Metadata()
         }
+    }
+
+    /// Reads the http/mcp entitlement ports declared in the app's retained
+    /// wendy.json config, if it has one (native/file-sync apps have no
+    /// `.container` metadata and no entitlements, so both are 0 for them).
+    private func entitlementPorts(forAppID appID: String) -> (http: UInt32, mcp: UInt32) {
+        guard let entitlements = appsByID[appID]?.container?.appConfig?.entitlements else {
+            return (0, 0)
+        }
+        var http: UInt32 = 0
+        var mcp: UInt32 = 0
+        for entitlement in entitlements {
+            guard let port = entitlement.port, port > 0 else { continue }
+            switch entitlement.type {
+            case "http": http = UInt32(port)
+            case "mcp": mcp = UInt32(port)
+            default: break
+            }
+        }
+        return (http, mcp)
     }
 
     func listContainerStats(
