@@ -393,6 +393,16 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 > **Note:** The `mcp` entitlement is typically combined with `{ "type": "network", "mode": "host" }` so that the agent can reach the container's MCP port over loopback.
 
+### `http`
+
+Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required.
+
+```json
+{ "type": "http", "port": 8080 }
+```
+
+> **Note:** The `http` entitlement is typically combined with `{ "type": "network", "mode": "host" }` (or an explicit `bridge` port forward) so the declared port is actually reachable from outside the container. If the app also configures an explicit `hooks.postStart.openURL`, that explicit hook wins over the entitlement's automatic one.
+
 ### `display`
 
 Present to a locally-attached monitor as a Wayland client (GPU-accelerated) — the app or shell draws directly to the screen, no web browser involved.
