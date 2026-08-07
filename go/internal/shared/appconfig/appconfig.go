@@ -60,6 +60,10 @@ const (
 	// (container→host escape surface); grant only to fully-trusted first-party
 	// apps. See entitlements.md for the blast radius.
 	EntitlementBuild = "build"
+	// EntitlementHTTP grants no additional container privileges by itself; it
+	// declares the app's primary HTTP port so clients (wendy run, remote
+	// management apps) can discover and open it. See entitlements.md.
+	EntitlementHTTP = "http"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -82,6 +86,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
+	EntitlementHTTP,
 }
 
 var deprecatedEntitlementReplacements = map[string]string{
@@ -108,6 +113,7 @@ var allowedKeys = map[string][]string{
 	EntitlementNotifications: {"type"},
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
+	EntitlementHTTP:          {"type", "port"},
 }
 
 // Platform constants identify the target hardware family.
@@ -335,7 +341,7 @@ type Entitlement struct {
 	Device    string        `json:"device,omitempty"`    // I2C, Serial
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
-	Port      int           `json:"port,omitempty"`      // MCP
+	Port      int           `json:"port,omitempty"`      // MCP, HTTP
 	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
 	// The agent derives the gateway from the bridge subnet separately; this
 	// field only carries the service CIDR policy.
@@ -439,6 +445,10 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("%s[%d]: mcp port must be between 1 and 65535, got %d", prefix, i, e.Port)
 			}
+		case EntitlementHTTP:
+			if e.Port < 1 || e.Port > 65535 {
+				return fmt.Errorf("%s[%d]: http port must be between 1 and 65535, got %d", prefix, i, e.Port)
+			}
 		}
 	}
 
@@ -450,6 +460,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if mcpCount > 1 {
 		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	httpCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementHTTP {
+			httpCount++
+		}
+	}
+	if httpCount > 1 {
+		return fmt.Errorf("at most one http entitlement is allowed in %s, found %d", prefix, httpCount)
 	}
 
 	displayCount := 0
