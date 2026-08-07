@@ -478,6 +478,114 @@ struct ContainerServiceSupervisorTests {
         await coldService.stopAllApps()
     }
 
+    @Test("a real tick on a warm restart adopts a live native app instead of relaunching it")
+    func warmRestartTickAdoptsLiveNativeApp() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "sh.wendy.tests.WarmAdopt"
+        try writeSupervisorSleepScript(appsBase: appsBase, appID: appID, name: "sleep.sh")
+
+        // The service that owns the running process, standing in for the one a
+        // provisioning switch discards. Its app is left running on purpose.
+        let owner = makeService(appsBase: appsBase)
+        try await createNativeApp(service: owner, appID: appID, cmd: "sleep.sh")
+        try await startNativeApp(service: owner, appID: appID)
+        let livePID = try #require(await owner.appInfo(forAppID: appID)?.pid)
+        defer { Task { await owner.stopAllApps() } }
+
+        // The warm rebuild: a fresh service over the same state directory,
+        // loading the live pid as `persistedPID`. Ticks fast so a real one
+        // fires — the previous test pinned the interval at 600 s and so never
+        // exercised the loop where this bug lives.
+        let pids = PIDStub(paths: [livePID: "\(appsBase)/\(appID)/sleep.sh"])
+        let warm = makeService(
+            appsBase: appsBase,
+            supervisorInterval: .milliseconds(50),
+            restartFloor: .zero,
+            pids: pids
+        )
+        #expect(await warm.appInfo(forAppID: appID)?.status == .stopped)
+
+        let supervisor = WendyAgent.makeAppSupervisorTask(
+            containerService: warm,
+            reconcile: false
+        )
+        defer { supervisor.cancel() }
+
+        try await waitForSupervisor("the warm service to adopt the live app") {
+            await warm.appInfo(forAppID: appID)?.status == .running
+        }
+
+        // Let several more ticks run: adoption has to be stable, not a
+        // one-shot that a later tick undoes into a relaunch.
+        try await Task.sleep(for: .milliseconds(300))
+
+        // Adopted, not relaunched: same pid, and nothing was signalled — that
+        // process belongs to the other service.
+        #expect(await warm.appInfo(forAppID: appID)?.pid == livePID)
+        #expect(pids.sentSignals().isEmpty)
+        #expect(await owner.appInfo(forAppID: appID)?.pid == livePID)
+    }
+
+    @Test("an adopted native app can be stopped by pid")
+    func adoptedNativeAppCanBeStopped() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "sh.wendy.tests.StopAdoptedNative"
+        try writeSupervisorSleepScript(appsBase: appsBase, appID: appID, name: "sleep.sh")
+
+        let service = makeService(appsBase: appsBase)
+        try await createNativeApp(service: service, appID: appID, cmd: "sleep.sh")
+        let persistedPID = try await simulateDisorderlyExit(service: service, appID: appID)
+
+        let pids = PIDStub(paths: [persistedPID: "\(appsBase)/\(appID)/sleep.sh"])
+        let warm = makeService(appsBase: appsBase, restartFloor: .zero, pids: pids)
+
+        await warm.superviseApps()
+        #expect(await warm.appInfo(forAppID: appID)?.status == .running)
+        #expect(await warm.appInfo(forAppID: appID)?.pid == persistedPID)
+
+        try await stopNativeApp(service: warm, appID: appID)
+
+        #expect(pids.sentSignals().map(\.pid) == [persistedPID])
+        #expect(pids.sentSignals().map(\.signal) == [SIGTERM])
+        #expect(await warm.appInfo(forAppID: appID)?.status == .stopped)
+    }
+
+    @Test("a persisted pid whose executable does not match is neither adopted nor signalled")
+    func supervisorDoesNotAdoptAnUnrelatedPID() async throws {
+        let appsBase = try makeSupervisorTempDir()
+        defer { cleanupSupervisorPath(appsBase) }
+
+        let appID = "sh.wendy.tests.NoAdoptUnrelated"
+        try writeSupervisorSleepScript(appsBase: appsBase, appID: appID, name: "sleep.sh")
+
+        // `.no` policy isolates the adoption decision: the restart loop can't
+        // relaunch the app, so the status afterwards reflects only whether it
+        // was adopted.
+        var policy = RestartPolicy()
+        policy.mode = .no
+        let service = makeService(appsBase: appsBase)
+        try await createNativeApp(
+            service: service,
+            appID: appID,
+            cmd: "sleep.sh",
+            restartPolicy: policy
+        )
+        let persistedPID = try await simulateDisorderlyExit(service: service, appID: appID)
+
+        // The kernel handed the number to something else entirely.
+        let pids = PIDStub(paths: [persistedPID: "/usr/bin/some-unrelated-tool"])
+        let warm = makeService(appsBase: appsBase, restartFloor: .zero, pids: pids)
+
+        await warm.superviseApps()
+
+        #expect(await warm.appInfo(forAppID: appID)?.status == .stopped)
+        #expect(pids.sentSignals().isEmpty)
+    }
+
     @Test("supervisor does not restart an ON_FAILURE app that exited cleanly")
     func supervisorSkipsCleanExitUnderOnFailure() async throws {
         let appsBase = try makeSupervisorTempDir()

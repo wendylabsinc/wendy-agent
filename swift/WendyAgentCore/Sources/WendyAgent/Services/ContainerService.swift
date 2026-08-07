@@ -400,16 +400,20 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         guard let process = app.process, let launchToken = app.launchToken else {
-            // An adopted container: it outlived the agent process that launched
-            // it (an update or a crash), so there is no attached process to
-            // terminate. Stop it by name through the backend instead — without
-            // this an adopted container could never be stopped at all.
-            guard app.info.kind == .container, app.container != nil, let linuxBackend else {
-                return false
+            // An adopted app: this service didn't launch it, so there is no
+            // attached process to terminate. Without these two paths an adopted
+            // app could never be stopped at all.
+            if app.container != nil, let linuxBackend {
+                // The backend owns a container's lifecycle; stop it by name.
+                try await linuxBackend.stop(appName: id)
+                await self.markAppStopped(id: id)
+                return true
             }
-            try await linuxBackend.stop(appName: id)
-            await self.markAppStopped(id: id)
-            return true
+            if app.native != nil, let pid = app.info.pid {
+                await self.stopAdoptedNativeApp(id: id, pid: pid, app: app)
+                return true
+            }
+            return false
         }
 
         if !process.isRunning {
@@ -508,7 +512,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 if Self.isRunning(backendStates?[managedContainerName(for: id)]) {
                     // Still running from the previous agent process: adopt it
                     // rather than bouncing a healthy container.
-                    await self.adoptRunningContainer(id: id)
+                    await self.adoptRunningApp(id: id, pid: nil)
                     continue
                 }
             }
@@ -531,10 +535,13 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     func superviseApps() async {
         guard !self.isStopping else { return }
 
+        // Observed state first, for both app kinds: an adopted app has no
+        // attached process, so nothing else notices when it starts or stops.
+        // Skipping this is how the restart loop below ends up launching a
+        // second copy of something that is already running.
         let backendStates = await self.managedContainerStates()
-        // Observed container state first: an adopted container has no attached
-        // process, so nothing else notices when it exits.
         await self.syncAdoptedContainerStates(backendStates: backendStates)
+        await self.syncAdoptedNativeStates()
 
         let now = Date()
         for id in self.appsByID.keys.sorted() {
@@ -712,7 +719,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 // backend can still report its container as running for a
                 // moment after `stop` returns.
                 if !app.stoppedByUser {
-                    await self.adoptRunningContainer(id: id)
+                    await self.adoptRunningApp(id: id, pid: nil)
                 }
             default:
                 break
@@ -720,18 +727,117 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
     }
 
-    /// Marks a container app running without a `Foundation.Process`: the
-    /// container outlived the agent process that launched it (an update or a
-    /// crash), so there is no handle to attach. `stopTrackedAppIfRunning` knows
-    /// how to stop these by name through the backend.
-    private func adoptRunningContainer(id: String) async {
+    /// The native counterpart of `syncAdoptedContainerStates`, and the reason a
+    /// warm restart can supervise without reconciling.
+    ///
+    /// A container app's truth lives outside this service (the backend's
+    /// listing), so a rebuilt `ContainerService` re-derives it every tick. A
+    /// native app's truth is a pid, and after a warm rebuild — a provisioning
+    /// transition builds a fresh service over the same state directory — the
+    /// process is still very much alive and owned by the *previous* in-process
+    /// service, which holds the real `Process` handle and termination handler.
+    /// Without this pass the new service would see a stopped app with a policy
+    /// that restarts it and launch a second copy of the same binary one tick
+    /// later — deterministically, on every provisioning toggle.
+    ///
+    /// So: adopt rather than restart, and never signal — the other service owns
+    /// that process. This is the deliberate opposite of `reconcileApps`, which
+    /// terminates the survivor and relaunches: on a *cold* start nobody owns it,
+    /// and relaunching is what gives the agent a handle, a termination handler
+    /// and log streaming.
+    ///
+    /// Identity is the same test the survivor path uses — alive AND executing
+    /// this app's binary — so a recycled pid is never adopted.
+    private func syncAdoptedNativeStates() async {
+        for id in self.appsByID.keys.sorted() {
+            guard let app = self.appsByID[id],
+                app.native != nil,
+                app.process == nil,
+                !Self.isLaunchInFlight(app)
+            else {
+                continue
+            }
+
+            switch app.info.status {
+            case .running:
+                // Adopted on an earlier tick: with no handle, the pid is the
+                // only liveness signal there is, so re-check it every tick.
+                guard let pid = app.info.pid, self.isPIDRunningApp(pid, app: app) else {
+                    await self.markAppStopped(id: id)
+                    continue
+                }
+            case .stopped:
+                // Only a pid loaded from `info.json` can identify an app this
+                // service never launched. Consumed on the first tick that looks
+                // at it, adopted or not.
+                guard let pid = app.persistedPID else { continue }
+                self.appsByID[id]?.persistedPID = nil
+                // Unlike the container case there is no `stoppedByUser` guard:
+                // a live pid running this exact binary is definitive evidence,
+                // where a backend listing can lag a stop by a moment.
+                if self.isPIDRunningApp(pid, app: app) {
+                    await self.adoptRunningApp(id: id, pid: pid)
+                }
+            }
+        }
+    }
+
+    /// Stops an adopted native app by pid, in the same SIGTERM-then-SIGKILL
+    /// shape the process-handle path uses. The identity test is re-run first, so
+    /// a pid that has already exited (and possibly been recycled) is marked
+    /// stopped without anything being signalled.
+    private func stopAdoptedNativeApp(id: String, pid: Int32, app: WendyApp) async {
+        guard let binaryPath = Self.nativeBinaryPath(app), self.isPIDRunningApp(pid, app: app)
+        else {
+            await self.markAppStopped(id: id)
+            return
+        }
+
+        self.sendSignal(pid, SIGTERM)
+        if !(await self.waitForPIDToExit(pid, matching: binaryPath, timeout: self.nativeStopTimeout))
+        {
+            self.logger.warning(
+                "Adopted native app did not exit after SIGTERM, force killing",
+                metadata: ["app_name": "\(id)", "pid": "\(pid)"]
+            )
+            self.sendSignal(pid, SIGKILL)
+            _ = await self.waitForPIDToExit(pid, matching: binaryPath, timeout: .seconds(1))
+        }
+
+        await self.markAppStopped(id: id)
+    }
+
+    /// Whether `pid` is alive AND currently executing this app's binary. The
+    /// single identity test shared by adoption, survivor termination and
+    /// stopping an adopted app — deliberately strict, so a number the kernel
+    /// recycled is never mistaken for the app.
+    private func isPIDRunningApp(_ pid: Int32, app: WendyApp) -> Bool {
+        guard pid > 0, let binaryPath = Self.nativeBinaryPath(app) else { return false }
+        guard let actualPath = self.pidExecutablePath(pid) else { return false }
+        return Self.pathsMatch(actualPath, binaryPath)
+    }
+
+    nonisolated private static func nativeBinaryPath(_ app: WendyApp) -> String? {
+        guard let native = app.native else { return nil }
+        return "\(native.directory)/\(native.binaryName)"
+    }
+
+    /// Marks an app running without a `Foundation.Process`: it is alive but
+    /// this service didn't launch it, so there is no handle to attach. A
+    /// container outlived the agent process that started it; a native app is
+    /// still owned by a previous in-process `ContainerService` (see
+    /// `syncAdoptedNativeStates`). `pid` is the native app's process id, and
+    /// `nil` for containers, whose lifecycle the backend owns.
+    ///
+    /// `stopTrackedAppIfRunning` knows how to stop both shapes.
+    private func adoptRunningApp(id: String, pid: Int32?) async {
         guard var app = self.appsByID[id] else { return }
 
         let runningInfo = WendyAppInfo(
             id: app.info.id,
             kind: app.info.kind,
             status: .running,
-            pid: nil
+            pid: pid
         )
         guard app.info != runningInfo || app.process != nil || app.launchToken != nil else {
             return
@@ -746,7 +852,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             try self.saveApps()
         } catch {
             self.logger.error(
-                "Failed to persist adopted container state",
+                "Failed to persist adopted app state",
                 metadata: [
                     "app_name": "\(id)",
                     "error": "\(String(describing: error))",
@@ -755,7 +861,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         await self.publishApps()
-        self.logger.info("Adopted already-running container", metadata: ["app_name": "\(id)"])
+        self.logger.info(
+            "Adopted already-running app",
+            metadata: [
+                "app_name": "\(id)",
+                "kind": "\(app.info.kind.rawValue)",
+                "pid": "\(pid.map(String.init) ?? "n/a")",
+            ]
+        )
     }
 
     /// Stamps the restart floor without counting a failure — reconcile's start
@@ -805,24 +918,35 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     /// pid's executable is the interpreter), are not recognized as survivors and
     /// are left alone: starting a second copy is a far cheaper mistake than
     /// killing an unrelated process that merely reused the pid.
+    ///
+    /// Terminating is right here and wrong in `syncAdoptedNativeStates`, which
+    /// adopts instead, because of who owns the process: reconcile runs on a
+    /// cold start, where the previous agent is gone and nobody owns the
+    /// survivor, so relaunching is what gets the agent a handle, a termination
+    /// handler and log streaming. A warm rebuild's "survivor" is still owned by
+    /// a live `ContainerService` in this same process.
     private func terminateNativeSurvivorIfAny(_ app: WendyApp) async {
-        guard let pid = app.persistedPID, pid > 0, let native = app.native else { return }
+        guard let pid = app.persistedPID, pid > 0,
+            let binaryPath = Self.nativeBinaryPath(app)
+        else {
+            return
+        }
         // Pid reuse cuts both ways: if an RPC has already relaunched this app
         // and the kernel handed it the same number, the "survivor" is the copy
         // the agent is currently running. Never signal that one.
         guard app.info.pid != pid else { return }
 
-        let binaryPath = "\(native.directory)/\(native.binaryName)"
-        guard let survivorPath = self.pidExecutablePath(pid) else { return }
-        guard Self.pathsMatch(survivorPath, binaryPath) else {
-            self.logger.info(
-                "Ignoring persisted pid: it no longer belongs to this app",
-                metadata: [
-                    "app_name": "\(app.info.id)",
-                    "pid": "\(pid)",
-                    "executable": "\(survivorPath)",
-                ]
-            )
+        guard self.isPIDRunningApp(pid, app: app) else {
+            if let survivorPath = self.pidExecutablePath(pid) {
+                self.logger.info(
+                    "Ignoring persisted pid: it no longer belongs to this app",
+                    metadata: [
+                        "app_name": "\(app.info.id)",
+                        "pid": "\(pid)",
+                        "executable": "\(survivorPath)",
+                    ]
+                )
+            }
             return
         }
 
@@ -887,7 +1011,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             // fall back to lexical normalization.
             return URL(fileURLWithPath: path).standardizedFileURL.path
         }
-        return String(cString: buffer)
+        return Self.string(fromNulTerminated: buffer)
     }
 
     /// The executable path of a live pid, or `nil` when the pid is not alive or
@@ -898,7 +1022,15 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         var buffer = [CChar](repeating: 0, count: Int(PATH_MAX) * 4)
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0 else { return nil }
-        return String(cString: buffer)
+        return Self.string(fromNulTerminated: buffer)
+    }
+
+    /// Decodes a C string an OS call filled into a `[CChar]` buffer.
+    /// `String(cString:)`'s array overload is deprecated, so truncate at the NUL
+    /// and decode explicitly.
+    nonisolated private static func string(fromNulTerminated buffer: [CChar]) -> String {
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     nonisolated private static func seconds(_ duration: Duration) -> TimeInterval {
