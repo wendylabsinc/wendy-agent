@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -2084,5 +2085,22 @@ func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
 		if d.Allow && d.Major != nil && *d.Major == 8 {
 			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
 		}
+	}
+}
+
+func TestApplyEntitlements_HTTPIsNoOp(t *testing.T) {
+	base := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test-app",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementHTTP, Port: 8080},
+		},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+	if !reflect.DeepEqual(base, spec) {
+		t.Errorf("http entitlement mutated the OCI spec; want no-op.\nbase: %+v\nspec: %+v", base, spec)
 	}
 }

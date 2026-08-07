@@ -442,6 +442,36 @@ func TestWendyLabels_OmitsWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestWendyLabels_WithHTTPPort(t *testing.T) {
+	ents := []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}}
+	labels := wendyLabels("app", "", "1.0", nil, ents, "", nil)
+	if v, ok := labels[labelKeyHTTPPort]; !ok {
+		t.Error("missing http port label")
+	} else if v != "8080" {
+		t.Errorf("http port label = %q; want %q", v, "8080")
+	}
+}
+
+func TestWendyLabels_WithoutHTTPEntitlementOmitsLabel(t *testing.T) {
+	labels := wendyLabels("app", "", "1.0", nil, nil, "", nil)
+	if v, ok := labels[labelKeyHTTPPort]; ok {
+		t.Errorf("should not have http port label when no http entitlement declared, got %q", v)
+	}
+}
+
+// TestWendyLabels_WithMCPPort closes a pre-existing test gap: wendyLabels has
+// written labelKeyMCPPort since the mcp entitlement shipped, but nothing
+// asserted it. Added here because this task touches the same loop shape.
+func TestWendyLabels_WithMCPPort(t *testing.T) {
+	ents := []appconfig.Entitlement{{Type: appconfig.EntitlementMCP, Port: 3000}}
+	labels := wendyLabels("app", "", "1.0", nil, ents, "", nil)
+	if v, ok := labels[labelKeyMCPPort]; !ok {
+		t.Error("missing mcp port label")
+	} else if v != "3000" {
+		t.Errorf("mcp port label = %q; want %q", v, "3000")
+	}
+}
+
 func TestParseDependsOn(t *testing.T) {
 	cases := []struct {
 		in   string
