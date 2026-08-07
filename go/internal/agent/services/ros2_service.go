@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -211,22 +212,57 @@ func (s *ROS2Service) ListTopics(ctx context.Context, req *agentpbv2.ListROS2Top
 			continue
 		}
 		any = true
-		for _, t := range parseROS2TopicList(out) {
+		topics := parseROS2TopicList(out)
+		for _, t := range topics {
 			t.Rmw = sc.rmw
-			if req.GetIncludeCounts() {
-				if info, ierr := s.runIn(ctx, sc, "topic", "info", t.GetName()); ierr == nil {
-					_, pubs, subs := parseROS2TopicInfo(info)
-					t.PublisherCount = pubs
-					t.SubscriberCount = subs
-				}
-			}
-			resp.Topics = append(resp.Topics, t)
 		}
+		if req.GetIncludeCounts() {
+			s.fillROS2TopicCounts(ctx, sc, topics)
+		}
+		resp.Topics = append(resp.Topics, topics...)
 	}
 	if !any && lastErr != nil {
 		return nil, lastErr
 	}
 	return resp, nil
+}
+
+// ros2TopicInfoConcurrency bounds how many `ros2 topic info` execs
+// fillROS2TopicCounts runs at once. Each exec pays a fixed cost (container
+// exec dispatch + sourcing setup.bash + a fresh rclpy process doing DDS
+// discovery, roughly ~1s), so fetching counts one topic at a time turns
+// `--all` into a multi-minute wait on devices with many topics. Kept well
+// under the containerd client's per-sidecar cap (ros2MaxConcurrentExecs=16)
+// so this fan-out can't starve other concurrent ROS 2 RPCs on the sidecar.
+const ros2TopicInfoConcurrency = 8
+
+// fillROS2TopicCounts fetches publisher/subscriber counts for each topic
+// concurrently and fills them in in place. A topic whose `topic info` exec
+// fails is left with zero counts, matching the prior sequential behavior.
+func (s *ROS2Service) fillROS2TopicCounts(ctx context.Context, sc ros2SC, topics []*agentpbv2.ROS2Topic) {
+	sem := make(chan struct{}, ros2TopicInfoConcurrency)
+	var wg sync.WaitGroup
+LOOP:
+	for _, t := range topics {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break LOOP
+		}
+		wg.Add(1)
+		go func(t *agentpbv2.ROS2Topic) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			info, ierr := s.runIn(ctx, sc, "topic", "info", t.GetName())
+			if ierr != nil {
+				return
+			}
+			_, pubs, subs := parseROS2TopicInfo(info)
+			t.PublisherCount = pubs
+			t.SubscriberCount = subs
+		}(t)
+	}
+	wg.Wait()
 }
 
 func (s *ROS2Service) GetTopicInfo(ctx context.Context, req *agentpbv2.GetROS2TopicInfoRequest) (*agentpbv2.GetROS2TopicInfoResponse, error) {

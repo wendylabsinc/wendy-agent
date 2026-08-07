@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -591,37 +590,20 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	cacheDir := filepath.Join(userCache, "wendy", "buildx")
+	// Shared base cache dir (empty key): the chunk-diff fast path builds exactly
+	// one image per invocation and holds the cross-process build lock, so nothing
+	// else exports into this dir concurrently. Per-service isolation is only
+	// needed where builds actually run in parallel (the multibuild path, WDY-1711)
+	// — should this path ever go multi-service, it must pass a cache key too.
+	cacheDir := buildxLocalCacheDir(userCache, "")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
-	}
-
 	// Mirror the clean DOCKER_CONFIG setup from buildAndPushImage (non-Windows).
-	var cleanDockerConfigDir string
-	if runtime.GOOS != "windows" {
-		origDockerConfig := os.Getenv("DOCKER_CONFIG")
-		if origDockerConfig == "" {
-			origDockerConfig = filepath.Join(home, ".docker")
-		}
-		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
-		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
-			return fmt.Errorf("creating clean docker config directory: %w", err)
-		}
-		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
-		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
-			return fmt.Errorf("writing clean docker config: %w", err)
-		}
-		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-			dst := filepath.Join(cleanDockerConfigDir, subdir)
-			if _, err := os.Lstat(dst); err != nil {
-				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
-			}
-		}
+	cleanDockerConfigDir, err := ensureCleanDockerConfig()
+	if err != nil {
+		return err
 	}
 
 	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
@@ -669,14 +651,8 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	if cleanDockerConfigDir != "" {
-		baseEnv := make([]string, 0, len(os.Environ()))
-		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
-				baseEnv = append(baseEnv, e)
-			}
-		}
-		cmd.Env = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
+	if env := dockerConfigEnv(cleanDockerConfigDir); env != nil {
+		cmd.Env = env
 	}
 
 	if err := cmd.Run(); err != nil {
