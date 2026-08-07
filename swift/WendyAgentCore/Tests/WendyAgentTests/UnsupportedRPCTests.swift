@@ -27,21 +27,6 @@ struct UnsupportedRPCTests {
                 }
             ),
             (
-                "UpdateAgent",
-                "Updating the agent is currently not supported by Wendy Agent for Mac.",
-                {
-                    _ = try await service.updateAgent(
-                        request: makeStreamingRequest(
-                            Wendy_Agent_Services_V1_UpdateAgentRequest()
-                        ),
-                        context: makeServerContext(
-                            service: "wendy.agent.services.v1.WendyAgentService",
-                            method: "UpdateAgent"
-                        )
-                    )
-                }
-            ),
-            (
                 "UpdateOS",
                 "This setup cannot be updated with wendy os update. Use this machine’s normal OS update tools instead. To use WendyOS OTA updates, install WendyOS on supported hardware with wendy os install.",
                 {

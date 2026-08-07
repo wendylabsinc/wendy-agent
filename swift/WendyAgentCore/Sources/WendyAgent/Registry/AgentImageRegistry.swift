@@ -297,7 +297,8 @@ struct AgentImageRegistry: Sendable {
                     metadata: [
                         "listener": "\(label)",
                         "scheme": "\(scheme)",
-                        "address": "\(channel.localAddress.map(String.init(describing:)) ?? "unknown")",
+                        "address":
+                            "\(channel.localAddress.map(String.init(describing:)) ?? "unknown")",
                     ]
                 )
                 await onServerRunning(channel)

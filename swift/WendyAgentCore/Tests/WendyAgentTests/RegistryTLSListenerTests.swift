@@ -63,7 +63,38 @@ struct RegistryTLSListenerTests {
         _ = try? await task.value
     }
 
-    private static func tlsListener(port: Int, deviceOrg: Int32, ca: TestPKI.CA) throws
+    /// Starts a listener on a port this test just released. `runService()`
+    /// can return before the old listening socket is closed: Hummingbird
+    /// tears the server down via two racing paths (structured cancellation
+    /// of the accept loop, which awaits the close, and an unstructured
+    /// graceful-shutdown task, which nothing awaits), so when the second
+    /// path wins the port frees up a beat after `stop(_:)` returns. Retry
+    /// EADDRINUSE briefly instead of flaking.
+    private static func startListenerOnReleasedPort(
+        _ makeRegistry: () throws -> AgentImageRegistry
+    ) async throws -> (port: Int, task: Task<Void, any Error>) {
+        for _ in 0..<49 {
+            do {
+                return try await Self.startListener(try makeRegistry())
+            } catch let error where Self.isAddressInUse(error) {
+                try await Task.sleep(nanoseconds: 20_000_000)
+            }
+        }
+        return try await Self.startListener(try makeRegistry())
+    }
+
+    private static func isAddressInUse(_ error: any Error) -> Bool {
+        let description = String(describing: error).lowercased()
+        return description.contains("address already in use")
+            || description.contains("errno: 48")
+            || description.contains("errno: 98")
+    }
+
+    private static func tlsListener(
+        port: Int,
+        deviceOrg: Int32,
+        ca: TestPKI.CA
+    ) throws
         -> AgentImageRegistry
     {
         let device = try TestPKI.makeDeviceIdentity(org: deviceOrg, asset: 1, ca: ca)
@@ -145,7 +176,8 @@ struct RegistryTLSListenerTests {
 
     /// Sends `GET /v2` over TLS (optionally with a client identity) and
     /// returns the raw response, or "" when the server rejected the handshake.
-    private static func tlsGET(port: Int, clientIdentity: TestPKI.Identity?) async throws -> String {
+    private static func tlsGET(port: Int, clientIdentity: TestPKI.Identity?) async throws -> String
+    {
         var tls = TLSConfiguration.makeClientConfiguration()
         // The device cert carries no SAN for 127.0.0.1; server trust is not
         // under test here (the CLI skips it too — buildkit `insecure = true`).
@@ -154,12 +186,14 @@ struct RegistryTLSListenerTests {
             let certs = try NIOSSLCertificate.fromPEMBytes(Array(clientIdentity.certPEM.utf8))
             tls.certificateChain = certs.map { .certificate($0) }
             tls.privateKey = .privateKey(
-                try NIOSSLPrivateKey(bytes: Array(clientIdentity.keyPEM.utf8), format: .pem))
+                try NIOSSLPrivateKey(bytes: Array(clientIdentity.keyPEM.utf8), format: .pem)
+            )
         }
         let context = try NIOSSLContext(configuration: tls)
         return try await Self.send(port: port) { channel in
             try channel.pipeline.syncOperations.addHandler(
-                try NIOSSLClientHandler(context: context, serverHostname: nil))
+                try NIOSSLClientHandler(context: context, serverHostname: nil)
+            )
         }
     }
 
@@ -179,7 +213,8 @@ struct RegistryTLSListenerTests {
                 channel.eventLoop.makeCompletedFuture {
                     try configure(channel)
                     try channel.pipeline.syncOperations.addHandler(
-                        ResponseCollector(promise: promise))
+                        ResponseCollector(promise: promise)
+                    )
                 }
             }
         do {
@@ -193,7 +228,9 @@ struct RegistryTLSListenerTests {
     @Test("a client certificate from the device CA is accepted")
     func acceptsTrustedClientCert() async throws {
         let ca = try TestPKI.makeCA()
-        let (port, task) = try await Self.startListener(try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca))
+        let (port, task) = try await Self.startListener(
+            try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca)
+        )
 
         let client = try TestPKI.makeIdentity(commonName: "wendy/user/tester", ca: ca)
         let response = try await Self.tlsGET(port: port, clientIdentity: client)
@@ -204,7 +241,9 @@ struct RegistryTLSListenerTests {
     @Test("a handshake without a client certificate is rejected")
     func rejectsMissingClientCert() async throws {
         let ca = try TestPKI.makeCA()
-        let (port, task) = try await Self.startListener(try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca))
+        let (port, task) = try await Self.startListener(
+            try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca)
+        )
 
         let response = try await Self.tlsGET(port: port, clientIdentity: nil)
         #expect(!response.contains("200 OK"))
@@ -215,7 +254,9 @@ struct RegistryTLSListenerTests {
     func rejectsUntrustedClientCert() async throws {
         let ca = try TestPKI.makeCA()
         let otherCA = try TestPKI.makeCA(commonName: "Impostor CA")
-        let (port, task) = try await Self.startListener(try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca))
+        let (port, task) = try await Self.startListener(
+            try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca)
+        )
 
         let impostor = try TestPKI.makeIdentity(commonName: "wendy/user/impostor", ca: otherCA)
         let response = try await Self.tlsGET(port: port, clientIdentity: impostor)
@@ -226,7 +267,9 @@ struct RegistryTLSListenerTests {
     @Test("plain HTTP against the TLS listener fails fast")
     func rejectsPlainHTTP() async throws {
         let ca = try TestPKI.makeCA()
-        let (port, task) = try await Self.startListener(try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca))
+        let (port, task) = try await Self.startListener(
+            try Self.tlsListener(port: 0, deviceOrg: 1, ca: ca)
+        )
 
         let response = try await Self.plainGET(port: port)
         #expect(!response.contains("200 OK"))
@@ -238,7 +281,12 @@ struct RegistryTLSListenerTests {
         let plain = AgentImageRegistry(
             store: Self.makeStore(),
             configuration: .init(
-                host: "127.0.0.1", port: 0, tls: nil, routes: .pushAndPull, label: "test-push")
+                host: "127.0.0.1",
+                port: 0,
+                tls: nil,
+                routes: .pushAndPull,
+                label: "test-push"
+            )
         )
         let (port, plainTask) = try await Self.startListener(plain)
         #expect(try await Self.plainGET(port: port).contains("200 OK"))
@@ -246,8 +294,9 @@ struct RegistryTLSListenerTests {
         // Provisioning transition: tear down, rebind the SAME port with TLS.
         await Self.stop(plainTask)
         let ca = try TestPKI.makeCA()
-        let (tlsPort, tlsTask) = try await Self.startListener(
-            try Self.tlsListener(port: port, deviceOrg: 1, ca: ca))
+        let (tlsPort, tlsTask) = try await Self.startListenerOnReleasedPort {
+            try Self.tlsListener(port: port, deviceOrg: 1, ca: ca)
+        }
         #expect(tlsPort == port)
 
         let client = try TestPKI.makeIdentity(commonName: "wendy/user/tester", ca: ca)
@@ -261,14 +310,24 @@ struct RegistryTLSListenerTests {
         let first = AgentImageRegistry(
             store: Self.makeStore(),
             configuration: .init(
-                host: "127.0.0.1", port: 0, tls: nil, routes: .pullOnly, label: "first")
+                host: "127.0.0.1",
+                port: 0,
+                tls: nil,
+                routes: .pullOnly,
+                label: "first"
+            )
         )
         let (port, firstTask) = try await Self.startListener(first)
 
         let second = AgentImageRegistry(
             store: Self.makeStore(),
             configuration: .init(
-                host: "127.0.0.1", port: port, tls: nil, routes: .pullOnly, label: "second")
+                host: "127.0.0.1",
+                port: port,
+                tls: nil,
+                routes: .pullOnly,
+                label: "second"
+            )
         )
         await #expect(throws: (any Error).self) {
             _ = try await Self.startListener(second)

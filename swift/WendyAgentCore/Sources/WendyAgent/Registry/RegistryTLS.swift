@@ -73,7 +73,9 @@ enum RegistryTLS {
         let key = try NIOSSLPrivateKey(bytes: Array(config.keyPEM.utf8), format: .pem)
 
         var tls = TLSConfiguration.makeServerConfiguration(
-            certificateChain: ([leaf] + leafCerts.dropFirst() + chainCerts).map { .certificate($0) },
+            certificateChain: ([leaf] + leafCerts.dropFirst() + chainCerts).map {
+                .certificate($0)
+            },
             privateKey: .privateKey(key)
         )
         tls.minimumTLSVersion = .tlsv12
