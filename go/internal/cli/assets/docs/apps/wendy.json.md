@@ -393,6 +393,13 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 > **Note:** The `mcp` entitlement is typically combined with `{ "type": "network", "mode": "host" }` so that the agent can reach the container's MCP port over loopback.
 
+> **Result size cap:** `wendy mcp serve` enforces a 100,000-byte ceiling on
+> results returned by container MCP tools, matching the default used by
+> Wendy's built-in tools. Oversized results are replaced with a truncation
+> envelope such as `{"truncated":true,"max_bytes":100000,"note":"…"}`.
+> Design tools to return focused, paginated, or summarized output to avoid
+> hitting this limit.
+
 ### `http`
 
 Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required.

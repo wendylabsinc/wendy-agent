@@ -61,7 +61,7 @@ func TestListV4L2Devices_TwoDevices(t *testing.T) {
 		},
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestListV4L2Devices_ExcludesNonCameraDrivers(t *testing.T) {
 		return camera.TransportCSI, drv
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestListV4L2Devices_NoDevices(t *testing.T) {
 		nil,
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestListV4L2Devices_SysfsReadFailFallsBackToPath(t *testing.T) {
 		func(base string) (string, error) { return "", fmt.Errorf("no sysfs") },
 	)
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestListV4L2Devices_GlobError(t *testing.T) {
 		nil,
 	)
 
-	_, err := svc.listV4L2Devices(context.Background())
+	_, err := svc.listCameras(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -868,7 +868,7 @@ func TestListV4L2Devices_UsbAndCsiMix(t *testing.T) {
 		return camera.TransportUnknown, ""
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -893,7 +893,7 @@ func TestListV4L2Devices_CsiPopulatesLibcameraID(t *testing.T) {
 		return map[string]string{"/base/soc/i2c/cam@1a": "Sensor"}, nil
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestListV4L2Devices_AmbiguousLibcameraLeavesIDEmpty(t *testing.T) {
 		return map[string]string{"/cam1": "A", "/cam2": "B"}, nil
 	}
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -931,9 +931,9 @@ func TestListV4L2Devices_LibcameraUnavailable_NoError(t *testing.T) {
 	svc.classifyTransport = func(string) (camera.Transport, string) { return camera.TransportCSI, "tegra-capture-vi" }
 	svc.enumerateLibcamera = func(context.Context) (map[string]string, error) { return nil, fmt.Errorf("no cam binary") }
 
-	devices, err := svc.listV4L2Devices(context.Background())
+	devices, err := svc.listCameras(context.Background())
 	if err != nil {
-		t.Fatalf("listV4L2Devices must not fail when libcamera enumeration errors: %v", err)
+		t.Fatalf("listCameras must not fail when libcamera enumeration errors: %v", err)
 	}
 	if devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_CSI {
 		t.Errorf("transport still must be classified: %+v", devices[0])

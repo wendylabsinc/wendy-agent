@@ -249,7 +249,14 @@ func (s *mcpServer) connectContainerMCPTools(ctx context.Context, srv *server.MC
 			inner := mcpgo.CallToolRequest{}
 			inner.Params.Name = originalName
 			inner.Params.Arguments = req.Params.Arguments
-			return mcpCli.CallTool(ctx, inner)
+			result, err := mcpCli.CallTool(ctx, inner)
+			if err != nil {
+				return result, err
+			}
+			// Container-supplied tools are not held to the same output
+			// discipline as wendy's own tools; cap the result the same way
+			// okResultBounded/okTextBounded cap native ones (see results.go).
+			return capProxiedResult(result, defaultProxyMaxBytes), nil
 		})
 	}
 	return closeProxy
