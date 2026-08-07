@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -732,4 +733,232 @@ func (m *BlueZManager) Forget(ctx context.Context, address string) error {
 
 	m.logger.Info("Forgot Bluetooth device", zap.String("address", address))
 	return nil
+}
+
+// Reconnection pacing. Attempts are deliberately unhurried: a peripheral that
+// is switched off never answers, and paging costs radio time the Pi's shared
+// antenna also needs for Wi-Fi.
+var (
+	reconnectPasses         = 3
+	reconnectAttemptTimeout = 15 * time.Second
+	reconnectSpacing        = 20 * time.Second
+)
+
+// trustedAudioPeripheral is a bonded, trusted device that offers an A2DP
+// profile, with the direction we would connect it in.
+type trustedAudioPeripheral struct {
+	path    dbus.ObjectPath
+	address string
+	profile string
+}
+
+// ReconnectTrusted restores connections to trusted audio peripherals after the
+// agent restarts.
+//
+// Nothing else does this. BlueZ's policy plugin only reconnects in response to
+// a link supervision timeout, and has no startup path at all — verified in
+// plugins/policy.c and on hardware, where a reboot leaves a paired speaker
+// "Trusted: yes, Connected: no" indefinitely. Peripherals reconnect themselves
+// when *they* power on, which covers the speaker-switched-on case, but a device
+// that was already powered when the host went away has no reason to page us.
+// For an installed appliance rebooting unattended, that is the common case.
+//
+// At most one output (speaker, headset) and one input (microphone) are
+// connected: a second sink cannot be the default and doubles radio contention.
+// Which device wins among several of the same direction is arbitrary — the
+// list order BlueZ happens to return — on the grounds that multiple bonded
+// peripherals of one kind is rare and an operator can remove the ones they do
+// not want.
+func (m *BlueZManager) ReconnectTrusted(ctx context.Context) {
+	// Once per boot, not once per agent start. The agent restarts for
+	// upgrades and crash recovery on machines that stay powered for weeks;
+	// re-running the walk each time would page the radio repeatedly and would
+	// undo a deliberate `wendy device bluetooth disconnect`. The marker lives
+	// on tmpfs, so a real reboot clears it and nothing else has to.
+	if !claimBootReconnect(m.logger) {
+		return
+	}
+
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		m.logger.Warn("Bluetooth reconnect: cannot reach system bus", zap.Error(err))
+		return
+	}
+	defer conn.Close()
+
+	candidates, err := m.trustedAudioPeripherals(ctx, conn)
+	if err != nil {
+		m.logger.Warn("Bluetooth reconnect: cannot enumerate devices", zap.Error(err))
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	// A direction is "filled" once something is connected in it, whether we
+	// did it or the peripheral paged us mid-walk.
+	filled := map[string]bool{}
+	wanted := map[string]bool{}
+	for _, c := range candidates {
+		wanted[c.profile] = true
+	}
+	complete := func() bool {
+		for p := range wanted {
+			if !filled[p] {
+				return false
+			}
+		}
+		return true
+	}
+
+	for _, c := range candidates {
+		if m.deviceConnected(ctx, conn, c.path) {
+			filled[c.profile] = true
+		}
+	}
+	if complete() {
+		return
+	}
+
+	// Only now wait for the audio session: WirePlumber runs in the wendy
+	// user's session and does not start until well after bluetoothd — around
+	// two minutes into boot on a Raspberry Pi 4 — and a peripheral connected
+	// before it is running has no session manager to claim the transport.
+	if !waitForAudioSession(ctx) {
+		return
+	}
+
+	for pass := 0; pass < reconnectPasses && ctx.Err() == nil; pass++ {
+		for _, c := range candidates {
+			if ctx.Err() != nil {
+				return
+			}
+			// Re-read rather than trusting the enumeration: the peripheral may
+			// have connected itself since, which fills the slot without us.
+			if filled[c.profile] || m.deviceConnected(ctx, conn, c.path) {
+				filled[c.profile] = true
+				continue
+			}
+
+			attemptCtx, cancel := context.WithTimeout(ctx, reconnectAttemptTimeout)
+			callErr := conn.Object(bluezService, c.path).
+				CallWithContext(attemptCtx, deviceIface+".ConnectProfile", 0, c.profile).Err
+			cancel()
+
+			if callErr == nil {
+				filled[c.profile] = true
+				m.logger.Info("Reconnected trusted Bluetooth peripheral",
+					zap.String("address", c.address), zap.String("profile", c.profile))
+				continue
+			}
+			// Expected whenever the peripheral is switched off or out of
+			// range, which is most of the time. Not worth a warning.
+			m.logger.Debug("Bluetooth reconnect attempt failed",
+				zap.String("address", c.address), zap.Int("pass", pass+1), zap.Error(callErr))
+
+			if complete() {
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(reconnectSpacing):
+			}
+		}
+		if complete() {
+			return
+		}
+	}
+}
+
+// trustedAudioPeripherals lists bonded, trusted devices that advertise an A2DP
+// profile, tagged with the direction to connect them in. The UUIDs BlueZ
+// caches for a bonded device survive disconnection, so this needs no radio.
+func (m *BlueZManager) trustedAudioPeripherals(ctx context.Context, conn *dbus.Conn) ([]trustedAudioPeripheral, error) {
+	managed, err := getManagedObjects(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	var out []trustedAudioPeripheral
+	for path, ifaces := range managed {
+		props, ok := ifaces[deviceIface]
+		if !ok || !boolProp(props, "Paired") || !boolProp(props, "Trusted") {
+			continue
+		}
+		profile := audioProfileUUID(stringsProp(props, "UUIDs"))
+		if profile == "" {
+			continue
+		}
+		address, _ := stringProp(props, "Address")
+		out = append(out, trustedAudioPeripheral{path: path, address: address, profile: profile})
+	}
+	return out, nil
+}
+
+func (m *BlueZManager) deviceConnected(ctx context.Context, conn *dbus.Conn, path dbus.ObjectPath) bool {
+	call := conn.Object(bluezService, path).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0,
+		deviceIface, "Connected")
+	if call.Err != nil {
+		return false
+	}
+	var v dbus.Variant
+	if call.Store(&v) != nil {
+		return false
+	}
+	b, _ := v.Value().(bool)
+	return b
+}
+
+// audioSessionGlob matches the PipeWire socket of a per-user session. Behind a
+// var so tests can redirect it into a tempdir.
+var audioSessionGlob = "/run/user/*/pipewire-0"
+
+// audioSessionTimeout bounds the wait; past it the reconnect proceeds anyway
+// rather than being lost entirely on a board with no working audio stack.
+var audioSessionTimeout = 4 * time.Minute
+
+// waitForAudioSession blocks until a user PipeWire socket appears. It reports
+// false only when ctx is cancelled — a timeout still returns true so the
+// reconnect is attempted rather than silently skipped.
+func waitForAudioSession(ctx context.Context) bool {
+	deadline := time.Now().Add(audioSessionTimeout)
+	for {
+		if matches, _ := filepath.Glob(audioSessionGlob); len(matches) > 0 {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// bootReconnectMarker records that the boot-time reconnect has been attempted.
+// /run is tmpfs, so it disappears on reboot and persists across agent
+// restarts, which is exactly the lifetime wanted. Behind a var for tests.
+var bootReconnectMarker = "/run/wendy-agent-bt-reconnect"
+
+// claimBootReconnect reports whether this process should perform the boot-time
+// reconnect, claiming it if so. The marker is written up front rather than on
+// completion: a crash-looping agent must not walk the device list on every
+// restart, and a peripheral that is simply switched off will page us itself
+// when it comes back, so there is nothing to gain from retrying.
+func claimBootReconnect(logger *zap.Logger) bool {
+	if _, err := os.Stat(bootReconnectMarker); err == nil {
+		logger.Debug("Bluetooth boot reconnect already attempted this boot")
+		return false
+	}
+	f, err := os.OpenFile(bootReconnectMarker, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		// Another process claimed it, or /run is not writable. Either way,
+		// not ours to do.
+		logger.Debug("Bluetooth boot reconnect not claimed", zap.Error(err))
+		return false
+	}
+	f.Close()
+	return true
 }

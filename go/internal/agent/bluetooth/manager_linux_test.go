@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -573,5 +575,79 @@ func TestStringsProp(t *testing.T) {
 	}
 	if got := stringsProp(props, "Missing"); got != nil {
 		t.Errorf("stringsProp on missing key = %v, want nil", got)
+	}
+}
+
+func TestClaimBootReconnect(t *testing.T) {
+	dir := t.TempDir()
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	bootReconnectMarker = filepath.Join(dir, "marker")
+
+	logger := zap.NewNop()
+	// The agent restarts for upgrades and crash recovery on machines that stay
+	// powered for weeks. Only the first start after a boot may walk the device
+	// list; later ones must be no-ops so the radio is not paged repeatedly and
+	// a deliberate disconnect is not undone.
+	if !claimBootReconnect(logger) {
+		t.Fatal("first claim should succeed")
+	}
+	for i := range 3 {
+		if claimBootReconnect(logger) {
+			t.Errorf("claim %d after the first should fail", i+2)
+		}
+	}
+
+	// /run is tmpfs, so a real reboot clears the marker and the next start
+	// claims it again.
+	if err := os.Remove(bootReconnectMarker); err != nil {
+		t.Fatal(err)
+	}
+	if !claimBootReconnect(logger) {
+		t.Error("claim after reboot (marker cleared) should succeed")
+	}
+}
+
+func TestClaimBootReconnectUnwritable(t *testing.T) {
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	// An unwritable location must not panic or claim; the reconnect is simply
+	// skipped rather than taking down agent startup.
+	bootReconnectMarker = filepath.Join(t.TempDir(), "no-such-dir", "marker")
+	if claimBootReconnect(zap.NewNop()) {
+		t.Error("claim should fail when the marker cannot be created")
+	}
+}
+
+func TestWaitForAudioSession(t *testing.T) {
+	dir := t.TempDir()
+	origGlob, origTimeout := audioSessionGlob, audioSessionTimeout
+	t.Cleanup(func() { audioSessionGlob, audioSessionTimeout = origGlob, origTimeout })
+	audioSessionGlob = filepath.Join(dir, "user-*", "pipewire-0")
+
+	// Present already: returns immediately, which is the agent-restart case on
+	// a machine whose audio has been up for weeks.
+	if err := os.MkdirAll(filepath.Join(dir, "user-1000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user-1000", "pipewire-0"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForAudioSession(context.Background()) {
+		t.Error("should report ready when the socket already exists")
+	}
+
+	// Cancellation is the only false: a timeout still proceeds, so a board
+	// with no working audio stack still attempts the reconnect.
+	audioSessionGlob = filepath.Join(dir, "never-*", "pipewire-0")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForAudioSession(ctx) {
+		t.Error("cancelled context should report not-ready")
+	}
+
+	audioSessionTimeout = 0
+	if !waitForAudioSession(context.Background()) {
+		t.Error("timeout should proceed anyway rather than skip the reconnect")
 	}
 }
