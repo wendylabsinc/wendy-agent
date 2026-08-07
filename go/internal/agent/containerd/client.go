@@ -3500,6 +3500,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		version      string
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
+		httpPort     uint32
 		services     []serviceEntry
 		exitCode     int32
 		exitReason   string // "" until an exit label is seen for this app
@@ -3529,6 +3530,13 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
+		var httpPort uint32
+		if portStr, ok := info.Labels[labelKeyHTTPPort]; ok && portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 32); err == nil {
+				httpPort = uint32(p)
+			}
+		}
+
 		// labelKeyAppID is always set by wendyLabels; fall back to container ID
 		// for containers created before this label was introduced.
 		appID := info.Labels[labelKeyAppID]
@@ -3551,6 +3559,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
+				httpPort:     httpPort,
 				services:     []serviceEntry{svc},
 			}
 			if hasExit {
@@ -3563,6 +3572,9 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			if httpPort != 0 && e.httpPort == 0 {
+				e.httpPort = httpPort
 			}
 			// Keep the first exit reason seen for the app (multi-service apps
 			// aggregate; a single stopped service's cause is better than none).
@@ -3607,6 +3619,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
+			HttpPort:     e.httpPort,
 			Services:     services,
 		}
 		// Exit diagnostics are only meaningful for a stopped app; a running app
