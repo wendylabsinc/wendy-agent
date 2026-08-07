@@ -148,6 +148,10 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         self.appsByID[id]?.launchToken
     }
 
+    func lastExitCode(forAppID id: String) -> Int32? {
+        self.appsByID[id]?.lastExitCode
+    }
+
     func beginStopping() {
         self.isStopping = true
     }
@@ -186,7 +190,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         id: String,
         kind: WendyAppInfo.Kind,
         native: WendyApp.NativeMetadata? = nil,
-        container: WendyApp.ContainerMetadata? = nil
+        container: WendyApp.ContainerMetadata? = nil,
+        restartPolicy: PersistedRestartPolicy = .default
     ) async throws {
         self.appsByID[id] = WendyApp(
             info: WendyAppInfo(
@@ -197,6 +202,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             ),
             native: native,
             container: container,
+            restartPolicy: restartPolicy,
             process: nil,
             launchToken: nil
         )
@@ -214,6 +220,24 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         )
         app.process = nil
         app.launchToken = launchToken
+        self.appsByID[id] = app
+    }
+
+    /// Applies `StartContainer`'s side effects on stored app state: an
+    /// explicit start is user intent, so it always clears `stoppedByUser` and
+    /// resets the crash-loop counter, and adopts the request's restart
+    /// policy only when the request actually carries one (an unset policy
+    /// must not clobber a previously stored one).
+    private func prepareAppForUserStart(
+        id: String,
+        requestedPolicy: PersistedRestartPolicy?
+    ) {
+        guard var app = self.appsByID[id] else { return }
+        if let requestedPolicy {
+            app.restartPolicy = requestedPolicy
+        }
+        app.stoppedByUser = false
+        app.failureCount = 0
         self.appsByID[id] = app
     }
 
@@ -243,7 +267,7 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         await self.publishApps()
     }
 
-    private func markAppStopped(id: String) async {
+    private func markAppStopped(id: String, exitCode: Int32? = nil) async {
         guard var app = self.appsByID[id] else { return }
 
         let stoppedInfo = WendyAppInfo(
@@ -252,13 +276,19 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             status: .stopped,
             pid: nil
         )
-        guard app.info != stoppedInfo || app.process != nil || app.launchToken != nil else {
+        guard
+            app.info != stoppedInfo || app.process != nil || app.launchToken != nil
+                || (exitCode != nil && app.lastExitCode != exitCode)
+        else {
             return
         }
 
         app.info = stoppedInfo
         app.process = nil
         app.launchToken = nil
+        if let exitCode {
+            app.lastExitCode = exitCode
+        }
         self.appsByID[id] = app
 
         do {
@@ -276,9 +306,31 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         await self.publishApps()
     }
 
-    func handleAppTermination(id: String, launchToken: UUID) async {
+    /// Durably records that the user (not agent shutdown) asked this app to
+    /// stop. Only the `StopContainer` RPC calls this — `stopApp`/
+    /// `stopAllApps` (the shutdown path) must not, since quitting or
+    /// self-updating the agent isn't user intent to keep the app stopped.
+    private func markStoppedByUser(id: String) async {
+        guard var app = self.appsByID[id], !app.stoppedByUser else { return }
+        app.stoppedByUser = true
+        self.appsByID[id] = app
+
+        do {
+            try self.saveApps()
+        } catch {
+            self.logger.error(
+                "Failed to persist user-stop flag",
+                metadata: [
+                    "app_name": "\(id)",
+                    "error": "\(String(describing: error))",
+                ]
+            )
+        }
+    }
+
+    func handleAppTermination(id: String, launchToken: UUID, exitCode: Int32? = nil) async {
         guard let app = self.appsByID[id], app.launchToken == launchToken else { return }
-        await self.markAppStopped(id: id)
+        await self.markAppStopped(id: id, exitCode: exitCode)
     }
 
     private func makeTerminationHandler(
@@ -286,9 +338,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         launchToken: UUID
     ) -> @Sendable (Foundation.Process) -> Void {
         let service = self
-        return { _ in
+        return { process in
+            let exitCode = process.terminationStatus
             Task {
-                await service.handleAppTermination(id: id, launchToken: launchToken)
+                await service.handleAppTermination(
+                    id: id,
+                    launchToken: launchToken,
+                    exitCode: exitCode
+                )
             }
         }
     }
@@ -304,7 +361,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         if !process.isRunning {
-            await self.handleAppTermination(id: id, launchToken: launchToken)
+            await self.handleAppTermination(
+                id: id,
+                launchToken: launchToken,
+                exitCode: process.terminationStatus
+            )
             return true
         }
 
@@ -333,7 +394,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         }
 
         await exitTask.value
-        await self.handleAppTermination(id: id, launchToken: launchToken)
+        await self.handleAppTermination(
+            id: id,
+            launchToken: launchToken,
+            exitCode: process.terminationStatus
+        )
         return true
     }
 
@@ -739,7 +804,8 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             try await self.registerApp(
                 id: appName,
                 kind: .container,
-                container: WendyApp.ContainerMetadata(imageName: imageName, appConfig: appConfig)
+                container: WendyApp.ContainerMetadata(imageName: imageName, appConfig: appConfig),
+                restartPolicy: PersistedRestartPolicy(from: request.message.restartPolicy)
             )
             logger.info(
                 "Registered Linux container app",
@@ -852,7 +918,12 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
             appName: appName,
             appDirectory: nativeLaunchInfo.directory
         )
-        try await self.registerApp(id: appName, kind: .native, native: nativeLaunchInfo)
+        try await self.registerApp(
+            id: appName,
+            kind: .native,
+            native: nativeLaunchInfo,
+            restartPolicy: PersistedRestartPolicy(from: request.message.restartPolicy)
+        )
         return ServerResponse(message: Wendy_Agent_Services_V1_CreateContainerResponse())
     }
 
@@ -872,6 +943,16 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
                 message: "No registered app found for \(appName). Call CreateContainer first."
             )
         }
+
+        // A request without a policy must not clobber a previously stored
+        // one (e.g. `wendy device start` with no --restart flag). Starting is
+        // explicit user intent, so it always clears the durable stop flag and
+        // gives the app a clean slate for the crash-loop counter.
+        self.prepareAppForUserStart(
+            id: appName,
+            requestedPolicy: request.message.hasRestartPolicy
+                ? PersistedRestartPolicy(from: request.message.restartPolicy) : nil
+        )
 
         if let container = app.container {
             guard let linuxBackend else {
@@ -1094,6 +1175,11 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
     ) async throws -> ServerResponse<Wendy_Agent_Services_V1_StopContainerResponse> {
         let appName = request.message.appName
         logger.info("StopContainer called", metadata: ["app_name": "\(appName)"])
+
+        // Record user intent before attempting the stop (not inside the
+        // shared stop helper, which agent shutdown also uses and must not
+        // mark as a user-initiated stop).
+        await self.markStoppedByUser(id: appName)
 
         let didStop = try await self.stopTrackedAppIfRunning(id: appName)
         if didStop {
