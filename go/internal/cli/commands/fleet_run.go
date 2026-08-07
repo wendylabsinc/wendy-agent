@@ -177,7 +177,7 @@ func deployToTargets(ctx context.Context, targets []fleetTarget, cwd string, app
 		res := fleetRunResult{Device: target.Name}
 		fmt.Printf("\n── %s ──\n", target.Name)
 
-		if derr := deployToTarget(ctx, target, cwd, appCfg, opts); derr != nil {
+		if derr := deployToTargetFn(ctx, target, cwd, appCfg, opts); derr != nil {
 			res.Error = derr.Error()
 			failures++
 			results = append(results, res)
@@ -193,6 +193,11 @@ func deployToTargets(ctx context.Context, targets []fleetTarget, cwd string, app
 	}
 	return results, failures
 }
+
+// deployToTargetFn is the per-device deploy action. It is a package variable so
+// fleet tests can record what each device would receive without standing up an
+// agent; see the osLookupHostFn precedent in helpers.go.
+var deployToTargetFn = deployToTarget
 
 // deployToTarget connects to one target and runs the standard agent deploy
 // pipeline against it.
