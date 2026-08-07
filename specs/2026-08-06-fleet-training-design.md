@@ -175,3 +175,37 @@ review (resume that never loads, per-set rank normalization, architecture
 inference, silent partial generations, four rsync copies of the library). The G1
 examples can later be rebased onto `wendytrain` if their author wants, but
 nothing here depends on that.
+
+## Addendum: the launcher became a Command Line Interface subcommand
+
+Written 2026-08-07, after the first version of this feature shipped its layer 4
+as `Training/launch/fleet.py`.
+
+The launcher proved the mechanics that matter: deterministic roles, staged build
+contexts, the two transports, a shared token, and a plan you can audit before
+anything runs. What it got wrong was where those mechanics live. It recomputed
+device targeting that the Command Line Interface already owns, since
+`wendy fleet run --group` resolves a group over cloud asset tags or a local
+network name pattern and fans a deploy out across it, and it delivered
+per-device environment by riding this machine's process environment through each
+template's `${VAR}` passthrough.
+
+`wendy fleet train` reuses that group resolution and the per-device deploy
+unchanged, and adds only what training genuinely needs: ranks and roles derived
+from asset identifiers, per-device identity injected through the create-time
+environment channel the fleet manifest path already uses, a generated bearer
+token, and per-device sweep parameters. Layers 0 through 3 are untouched, and
+the layer 0 environment contract is identical, which is why no template changed.
+
+Three platform defects surfaced on the way and were fixed rather than worked
+around: the multi-service deploy path dropped injected environment entirely, so
+no service container could have received a per-device identity; fleet targets
+discarded the asset identifier that discovery had already parsed; and the peer
+address shipped to devices was the agent dial address rather than a host another
+device can reach.
+
+Two things did not change. The local-network transport still exists because the
+mesh overlay remains unreliable on this fleet, and it is still the fallback
+rather than the default. The verification record in
+`Training/tests/integration/checklist.md` keeps both runs: the original through
+the launcher, and the re-run through the subcommand.

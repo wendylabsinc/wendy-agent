@@ -337,3 +337,20 @@ Constraints: use only `spark-3011.local` (334), `spark-48fd.local` (211), `spark
 - Spec coverage: one or multiple devices (Tasks 9, 11, 12, 13, 15); mesh communication (Tasks 5, 11, 12); one click via wendy.json plus env (Tasks 11-13); established config formats and templates (Tasks 3, 9-13); seasoned-engineer freedom and peel-back layering (byo template, layer model, Task 14); documentation (Task 14); no vendor or framework specificity (global constraints; framework notes in Task 14). Covered.
 - Known decision point deferred to Task 13 deliberately: whether `wendy.json` build contexts may reference parent directories. The launcher's staged-context rule works either way; if parent contexts are supported the staging step becomes a no-op optimization. The Task 13 agent must check `go/` build-context handling in this repository and use the simpler mechanism if it exists.
 - Type consistency: `wire.encode/decode`, `Run.save_checkpoint/load_latest`, `derive_role`, `worker_slice`, `es.gradient` signatures are referenced identically across Tasks 8-13.
+
+## Addendum: Task 13 and Task 15 superseded, 2026-08-07
+
+The checkboxed history above records what was executed and stays as written.
+Two parts were later replaced.
+
+Task 13's launcher half became `wendy fleet train` in Go, for the reasons in the
+design document's addendum. Its byo template survives unchanged. Task 15's
+integration scripts were re-executed through the new subcommand, and the
+verification record carries both runs.
+
+This plan's own Self-Review flagged the decision point that the pivot resolves:
+it told the Task 13 implementer to check how the Command Line Interface handles
+build contexts and to use the simpler mechanism if one existed. The check was
+done and answered narrowly, that parent-directory contexts are rejected, without
+asking the broader question of what else the Command Line Interface already did.
+It already did the fan-out.
