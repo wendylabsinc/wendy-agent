@@ -58,11 +58,13 @@ finds the checkpoints under `/data/checkpoints`.
 
 ## Deploying
 
-The fleet launcher (`Training/launch/fleet.py`) stages a build context
-containing this directory, the pip-installable `wendytrain` tree at
-`wendytrain/`, and `cartpole.py` from `templates/single/`, then drives the
-`wendy` Command Line Interface (CLI) per device with the mesh variables
-computed for you. The Dockerfile only ever copies from that staged context;
+`wendy fleet train up --group <group> --template es-fleet` stages a build
+context containing this directory, the pip-installable `wendytrain` tree at
+`wendytrain/`, and `cartpole.py` from `templates/single/`, then deploys to
+every device in the group with the mesh variables computed for each one. The
+template travels inside the `wendy` Command Line Interface (CLI) binary, so no
+checkout of this repository is needed to deploy it. The Dockerfile only ever
+copies from that staged context;
 parent-directory contexts are rejected by the CLI. Devices with a Graphics Processing Unit (GPU)
 can add `{"type": "gpu"}` to the service entitlements; nothing in the template
 requires one.

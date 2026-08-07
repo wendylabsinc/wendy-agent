@@ -72,13 +72,17 @@ The standard `WT_RUN_ID`, `WT_CKPT_DIR`, `MESH_*` contract applies; see the
 
 ## Deploying
 
-Use the fleet launcher, which stages the build context (this directory plus
+Use `wendy fleet train`, which stages the build context (this directory plus
 `wendytrain/` plus `cartpole.py` from `templates/single/`) and computes the
 per-device environment:
 
-    python Training/launch/fleet.py up --config fleet.toml
+    wendy fleet train up --group <group> --template ppo-fleet
 
-with `template = "ppo-fleet"` in `fleet.toml`. The `wendy.json` here declares
+Rank 0, the lowest asset identifier, is sent `WT_ROLE=coordinator`, which this
+template maps to the learner; every other device gets `worker`, which maps to
+an actor. Pin a specific device with `--role <device>=learner`, which counts
+as coordinating, so no second coordinator is assigned. The `wendy.json` here
+declares
 the mesh entitlement (serviceCIDR 10.99.0.0/16, port 8080) and a persist
 volume `wt-ppo-ckpt` at `/data/checkpoints`, so checkpoints outlive the
 container.

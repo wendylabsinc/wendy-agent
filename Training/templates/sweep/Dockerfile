@@ -1,9 +1,9 @@
-# Build context: staged by the fleet launcher (Training/launch/fleet.py). The
-# launcher copies this template's files, the single template's train.py as
-# single_train.py, the shared cartpole.py, and the pip-installable wendytrain
-# library into one flat temporary directory and builds from there, because the
-# wendy Command Line Interface rejects build contexts that reach into parent
-# directories. Everything below therefore copies from the context root only.
+# Build context: staged by 'wendy fleet train'. The command copies this
+# template's files, the single template's train.py as single_train.py, the
+# shared cartpole.py, and the pip-installable wendytrain library into one flat
+# temporary directory and builds from there, because the wendy Command Line
+# Interface rejects build contexts that reach into parent directories.
+# Everything below therefore copies from the context root only.
 FROM python:3.12-slim
 
 WORKDIR /app

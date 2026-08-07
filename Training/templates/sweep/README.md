@@ -18,8 +18,9 @@ already works on one device.
 
 ## How a member picks its work
 
-The fleet launcher bakes the whole sweep into `WT_SWEEP_PARAMS`, a JSON list
-of parameter dictionaries, and gives each device its own `WT_SWEEP_INDEX`:
+`wendy fleet train up --sweep` bakes the whole sweep into `WT_SWEEP_PARAMS`, a
+JSON list of parameter dictionaries, and gives each device its own
+`WT_SWEEP_INDEX`:
 
 ```
 WT_SWEEP_PARAMS='[{"seed": 1}, {"seed": 2}, {"es.lr": 0.05}]'
@@ -45,11 +46,24 @@ Each member trains to completion, then serves its result on
  "best_mean_return": 355.7, "sweep_index": 1, "params": {"seed": 2}}
 ```
 
-From any machine that can reach the members:
+The endpoint requires the fleet bearer token, so `collect.py` needs it too. It
+reads `--token`, or `WT_FLEET_TOKEN` from the environment. `wendy fleet train`
+generates the token at deploy time and saves it under the configuration
+directory, at `~/.wendy/train/<group>__<appId>.json`, with both name parts
+lowercased and every character outside letters, digits, hyphen, and dot
+replaced by an underscore. For group `spark-*` and this template that is
+`~/.wendy/train/spark-___sh.wendy.training.sweep.json`. From any machine that
+can reach the members:
 
 ```sh
+export WT_FLEET_TOKEN=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['token'])" \
+  ~/.wendy/train/spark-___sh.wendy.training.sweep.json)
 python collect.py device-a.local:8080 device-b.local:8080 device-c.local:8080
 ```
+
+`jq -r .token ~/.wendy/train/spark-___sh.wendy.training.sweep.json` reads the
+same field. The file is written owner-readable only, because the token is what
+keeps the training endpoints closed.
 
 `collect.py` polls until every member responds or `--timeout-s` (default 300)
 passes, writes `results.json` sorted by final mean return, and prints the
@@ -62,10 +76,12 @@ notice.
 The Dockerfile expects a staged build context: this template's files, the
 single template's `train.py` staged as `single_train.py`, the shared
 `cartpole.py`, and the pip-installable `wendytrain` project in a `wendytrain/`
-subdirectory. The fleet launcher (`Training/launch/fleet.py`) prepares that
-staging directory, computes each device's `WT_SWEEP_INDEX`, and drives the
-`wendy` Command Line Interface (CLI); the CLI rejects build contexts that
-reach into parent directories, which is why staging exists. To stage by hand:
+subdirectory. `wendy fleet train up --group <group> --template sweep --sweep
+<params.json>` prepares that staging directory and gives each device its own
+`WT_SWEEP_INDEX` from the parameter array, which must hold exactly one object
+per device. The `wendy` Command Line Interface (CLI) rejects build contexts
+that reach into parent directories, which is why staging exists. To stage by
+hand:
 
 ```sh
 STAGE=$(mktemp -d)

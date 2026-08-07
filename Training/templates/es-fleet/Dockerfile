@@ -1,4 +1,4 @@
-# Built from a staged context assembled by the fleet launcher: this template's
+# Built from a staged context assembled by 'wendy fleet train': this template's
 # files, the pip-installable wendytrain tree staged at wendytrain/, and
 # cartpole.py staged in from templates/single/. Everything is copied with a
 # plain COPY because the wendy Command Line Interface rejects parent-directory

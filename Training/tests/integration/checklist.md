@@ -105,3 +105,80 @@ on the same three devices: a 10 generation es-fleet run over the lan
 transport with a launcher-generated `WT_FLEET_TOKEN` completed with the full
 population contributed (`n_contributed` 24 of 24), while an unauthenticated
 `GET /status` from the operator's machine received 401 throughout the run.
+
+# Re-verification through `wendy fleet train`, 2026-08-07
+
+The Python launcher was replaced by a Command Line Interface subcommand, so all
+three proofs were re-executed end to end through it. Binary built from this
+worktree at commit 0d5e817e0 (`cd go && CC=/usr/bin/clang make build`;
+the CC prefix is needed on this Mac, where a swiftly clang shim breaks cgo).
+Same three Sparks, same live workloads left running throughout.
+
+Device targeting used `--lan --group 'spark-*'`, gated by a dry run that
+resolved exactly spark-3011, spark-48fd and spark-edeb before anything was
+deployed. A cloud group would be the precise alternative if the local network
+ever grows a fourth Spark.
+
+## Two defects the dry run caught before any deploy
+
+Both would have reached hardware under the old launcher, and the second is a
+repeat of finding 4 above.
+
+1. `MESH_PEERS=spark-edeb.local:50051:8080`, a doubled port: fleetTarget.Address
+   is the agent dial address including the agent's own port, and the plan
+   appended the fleet port to it. Fixed by carrying PeerHost, the bare host
+   another device should dial, separately from the address this machine dials.
+2. Multicast names still reached the plan when discovery reported no address
+   for a device. The command now resolves every peer host to an address before
+   planning and refuses to deploy a device it cannot resolve, rather than
+   letting it fail inside a container with "Name or service not known".
+
+## Proof 1: kill and resume, spark-edeb
+
+`wendy fleet train up --lan --group spark-edeb --template single`. Stopped
+mid-run with `wendy fleet train stop`, which reported stopping exactly
+`sh.wendy.training.single` and nothing else. On restart:
+
+```
+[single] resumed iteration=4680 adam_t=4680
+[single] finished: {"run_id": "fleettrain-resume", "iterations": 6000,
+"final_mean_return": 499.95, "best_mean_return": 499.99}
+```
+
+## Proof 2: three-device es-fleet, lan transport
+
+`wendy fleet train up --lan --group 'spark-*' --template es-fleet --transport lan`
+with population 24 over 40 generations. Final coordinator status:
+
+```
+{"generation": 40, "population": 24, "n_contributed": 24, "mean_return": 273.7,
+ "best_return": 499.99, "stale_posts": 0, "pending_contributions": 0, "done": true}
+```
+
+24 of 24 contributions arithmetically requires all three devices. The token came
+from the state file the deploy persisted; an unauthenticated GET of the same
+endpoint returned 401 throughout.
+
+`wendy fleet train status` authenticated with that saved token and reported the
+coordinator's line. The two workers report unreachable, which is accurate rather
+than a fault: in this template only the coordinator serves HTTP.
+
+## Proof 3: three-seed sweep
+
+`--template sweep --sweep '[{"run.seed":11},{"run.seed":22},{"run.seed":33}]'`,
+one seed per device. `collect.py`, authenticated with the same persisted token,
+gathered three distinct runs with zero unreachable
+(`results/sweep-2026-08-07-fleet-train.json`): seeds 22, 11, 33 at mean returns
+499.99, 498.29, 496.85.
+
+## Non-interference
+
+Container lists on all three devices afterwards differ from the baseline only by
+stopped `sh.wendy.training.*` entries. Every pre-existing long-running workload
+was still running: a Claude container and a YOLO run on spark-3011, a wakeword
+trainer on spark-48fd, a YOLO run on spark-edeb. One container not ours,
+`wendy-console-edge-detector`, appeared on spark-3011 during the session; it was
+deployed by someone else and was not touched.
+
+Mesh transport was not exercised: finding 1 above still stands until the fleet's
+agents converge.

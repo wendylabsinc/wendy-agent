@@ -1,4 +1,4 @@
-# Built from the staged context assembled by the fleet launcher: this
+# Built from the staged context assembled by 'wendy fleet train': this
 # template directory, plus wendytrain/ (the library package), plus
 # cartpole.py from templates/single. No parent-directory contexts.
 FROM python:3.12-slim

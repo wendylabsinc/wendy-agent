@@ -5,8 +5,9 @@ declaration lives in `wendy.json` plus environment variables; every convenience
 on top is layered so an experienced Machine Learning (ML) engineer can peel
 back anything unwanted, down to a bare container with a documented contract.
 The pieces are `wendytrain` (a core library whose only dependency is NumPy),
-five ready-to-run templates, and a fleet launcher that computes each device's
-role and drives the `wendy` Command Line Interface (CLI).
+five ready-to-run templates, and `wendy fleet train`, a Command Line Interface
+(CLI) subcommand that resolves a device group, computes each device's role and
+peer list, and deploys to all of them.
 
 | Directory | What it is |
 |---|---|
@@ -16,152 +17,271 @@ role and drives the `wendy` Command Line Interface (CLI).
 | `templates/es-fleet/` | Coordinator plus workers, mirrored-sampling ES. |
 | `templates/ppo-fleet/` | Learner plus actors, Proximal Policy Optimization (PPO); the one template that uses PyTorch. |
 | `templates/byo/` | Bring your own: the bare layer-0 contract, no library required. |
-| `launch/` | `fleet.py`, the one-command launcher, and `fleet.toml.example`. |
 
 Each template's `README.md` documents its endpoints, configuration keys, and
 tests; this file documents what they share.
 
+The templates and the library are compiled into the `wendy` binary, so
+`--template es-fleet` works from any directory with no checkout of this
+repository. This tree is the source those embedded copies are built from, and
+the escape hatch for local iteration is `--template ./path/to/my-project`,
+which accepts any directory holding a `wendy.json`.
+
 ## Quickstart: one device
 
-The launcher needs the library importable (`python3 -m pip install -e
-Training/wendytrain` pulls NumPy). Then, from the repository root:
+A group of one is still a group, so the same subcommand covers the
+single-device case. Nothing needs installing: the template and the library
+travel inside the binary. Audit the plan first, which changes nothing:
 
 ```sh
-cd Training/launch
-cp fleet.toml.example fleet.toml   # set template = "single", devices = ["<your-device>.local"]
-python3 fleet.py up
+wendy fleet train up --group spark-edeb --lan --template single --dry-run --env WT_RUN_ID=demo-1
 ```
 
-`up` stages a self-contained build context, then runs
-`wendy --device <host> run --detach -y --prefix <staged-dir>` for the device.
-Follow the run with `python3 fleet.py logs`. Checkpoints land on the device
-under the persist volume at `/data/checkpoints`, so a container restart resumes
-the run instead of restarting it.
+```
+template:  single (embedded)
+app id:    sh.wendy.training.single
+group:     spark-edeb
+transport: mesh
+staging:   skipped (--dry-run; pass --stage-dir to stage)
+
+device spark-edeb (asset 283, role coordinator, rank 0)
+  env MESH_PEERS=283
+  env MESH_SELF=283
+  env WT_COORDINATOR=device-283.cloud.wendy.dev:8080
+  env WT_FLEET_TOKEN=<masked, 32 hex chars>
+  env WT_NODE_COUNT=1
+  env WT_NODE_INDEX=0
+  env WT_ROLE=coordinator
+  env WT_RUN_ID=demo-1
+
+note: the WT_FLEET_TOKEN above was generated for this render and was not saved; a real deploy generates and persists one
+
+nothing was deployed; re-run without --dry-run to deploy
+```
+
+Drop `--dry-run` to deploy. The command stages a self-contained build context,
+builds it, and creates the container with the environment shown above.
+Checkpoints land on the device under the persist volume at
+`/data/checkpoints`, so a container restart resumes the run instead of
+restarting it. A successful deploy prints the command that follows the run,
+`wendy --device <name> device logs <appId>`.
+
+Installing the library locally (`python3 -m pip install -e
+Training/wendytrain`, which pulls NumPy) is only needed to run the Python test
+suites or to iterate on a template outside a container.
 
 ## Quickstart: a fleet
 
-Point `fleet.toml` at a multi-device template and list the devices. Asset
-identifiers are resolved once through `wendy cloud device list --json` and
-cached in `.fleet-state.json`; they can also be pinned per device:
+A group is either a cloud device tag, or, with `--lan`, a name pattern matched
+against the devices discovered over multicast Domain Name System (mDNS). No
+device list is written down anywhere: the group is resolved fresh on every
+invocation, and each device's asset identifier comes from the same resolution.
 
-```toml
-[fleet]
-template = "es-fleet"
-devices = [
-  { host = "spark-3011.local", asset_id = 334 },
-  { host = "spark-48fd.local", asset_id = 211 },
-  { host = "spark-edeb.local", asset_id = 283 },
-]
+Audit first. `--dry-run` prints exactly what a deploy would do and executes
+nothing, writes nothing, and stages nothing. Real output for a three-device
+group, verbatim:
 
-[env]
-WT_RUN_ID = "demo-1"
-ES_POP = "64"
+```sh
+wendy fleet train up --group 'spark-*' --lan --template es-fleet --dry-run \
+  --env WT_RUN_ID=demo-1 --env ES_POP=64
 ```
 
-Audit first. `render` prints exactly what `up` would do, including the staged
-context and the full per-device environment, and executes nothing. Output of
-`python3 fleet.py render` against the file above, exactly as printed apart
-from long absolute paths shortened to `...`:
-
 ```
-template:  es-fleet (.../Training/templates/es-fleet)
+template:  es-fleet (embedded)
 app id:    sh.wendy.training.es-fleet
+group:     spark-*
 transport: mesh
-staged:    .../T/wendy-fleet-es-fleet-qx6ojals (stage-manifest.json written)
+staging:   skipped (--dry-run; pass --stage-dir to stage)
 
-device spark-3011.local (asset 334, role worker)
+device spark-48fd (asset 211, role coordinator, rank 0)
   env ES_POP=64
-  env MESH_PEERS=334,211,283
-  env MESH_SELF=334
-  env WT_ROLE=worker
-  env WT_RUN_ID=demo-1
-  command: wendy --device spark-3011.local run --detach -y --prefix .../T/wendy-fleet-es-fleet-qx6ojals
-
-device spark-48fd.local (asset 211, role coordinator)
-  env ES_POP=64
-  env MESH_PEERS=334,211,283
+  env MESH_PEERS=211,283,334
   env MESH_SELF=211
+  env WT_COORDINATOR=device-211.cloud.wendy.dev:8080
+  env WT_FLEET_TOKEN=<masked, 32 hex chars>
+  env WT_NODE_COUNT=3
+  env WT_NODE_INDEX=0
   env WT_ROLE=coordinator
   env WT_RUN_ID=demo-1
-  command: wendy --device spark-48fd.local run --detach -y --prefix .../T/wendy-fleet-es-fleet-qx6ojals
 
-device spark-edeb.local (asset 283, role worker)
+device spark-edeb (asset 283, role worker, rank 1)
   env ES_POP=64
-  env MESH_PEERS=334,211,283
+  env MESH_PEERS=211,283,334
   env MESH_SELF=283
+  env WT_COORDINATOR=device-211.cloud.wendy.dev:8080
+  env WT_FLEET_TOKEN=<masked, 32 hex chars>
+  env WT_NODE_COUNT=3
+  env WT_NODE_INDEX=1
   env WT_ROLE=worker
   env WT_RUN_ID=demo-1
-  command: wendy --device spark-edeb.local run --detach -y --prefix .../T/wendy-fleet-es-fleet-qx6ojals
 
-nothing was executed; `up` runs the commands above in order
+device spark-3011 (asset 334, role worker, rank 2)
+  env ES_POP=64
+  env MESH_PEERS=211,283,334
+  env MESH_SELF=334
+  env WT_COORDINATOR=device-211.cloud.wendy.dev:8080
+  env WT_FLEET_TOKEN=<masked, 32 hex chars>
+  env WT_NODE_COUNT=3
+  env WT_NODE_INDEX=2
+  env WT_ROLE=worker
+  env WT_RUN_ID=demo-1
+
+note: the WT_FLEET_TOKEN above was generated for this render and was not saved; a real deploy generates and persists one
+
+nothing was deployed; re-run without --dry-run to deploy
 ```
 
-The lowest asset identifier became the coordinator with no human assignment.
+The lowest asset identifier became the coordinator with no human assignment,
+and rank follows ascending asset identifier, which is stable across reboots,
+renames, and address changes. Override with `--role spark-edeb=coordinator`;
+exactly one device must end up coordinating, or the command refuses to deploy.
 When the plan reads right:
 
 ```sh
-python3 fleet.py up        # deploy to every device, in order
-python3 fleet.py status    # poll each device's /status or /healthz
-python3 fleet.py logs      # stream one device's logs (default: the coordinator)
-python3 fleet.py down      # stop this template's app id on every device, nothing else
+wendy fleet train up     --group 'spark-*' --lan --template es-fleet   # deploy to every device
+wendy fleet train status --group 'spark-*' --lan                       # poll each device's /status or /healthz
+wendy fleet train stop   --group 'spark-*' --lan                       # stop this template's app id, nothing else
 ```
 
-`down` matches containers by the template's `appId` from `wendy.json` exactly
-(plus its `appId_service` variants) and never touches anything else running on
-the device.
+`status` and `stop` find the application identifier from the state the deploy
+saved for that group; pass `--template` to name it explicitly. `stop` matches
+containers by the template's `appId` from `wendy.json` exactly (plus its
+`appId_service` variants) and never touches anything else running on the
+device.
 
-### Staging, or why the launcher builds a temporary directory
+`up` carries enough flags that typing them all becomes a chore, so it also
+accepts `--config <file.json>` mirroring them, with any flag you actually type
+overriding the file key by key:
+
+```json
+{
+  "group": "spark-*",
+  "lan": true,
+  "template": "es-fleet",
+  "transport": "lan",
+  "env": { "WT_RUN_ID": "demo-1", "ES_POP": "64" },
+  "roles": { "spark-edeb": "coordinator" }
+}
+```
+
+An unknown key in that file is an error rather than a silent no-op.
+
+### Staging, or why a temporary build context appears
 
 The repository keeps exactly one copy of `wendytrain`, and the CLI rejects
-build contexts that reach into parent directories. So `up` and `render` stage a
-flat build context in a temporary directory: the template's files, the
+build contexts that reach into parent directories. So a deploy stages a flat
+build context in a temporary directory: the template's files, the
 pip-installable library tree at `wendytrain/`, `cartpole.py` from
 `templates/single/` when the template references it (and the single trainer as
 `single_train.py` for the sweep template), plus a `stage-manifest.json`
-recording the Secure Hash Algorithm 256 (SHA-256) checksum of every staged
-file. Template Dockerfiles copy
-only from that context; vendoring is a launch-time build step verified by
-checksums, never a committed copy.
+recording the Secure Hash Algorithm 256 (SHA-256) checksum and byte count of
+every staged file. Development artefacts are dropped on the way in: `tests/`,
+`__pycache__`, `.pytest_cache`, `.venv`, `.git`, and anything ending `.pyc` or
+`.egg-info`. Template Dockerfiles copy only from that context; vendoring is a
+deploy-time build step verified by checksums, never a committed copy.
+
+Pass `--stage-dir <dir>` to put the context somewhere you can inspect it, which
+also works under `--dry-run` and is the one thing that makes a dry run write to
+disk. Staging the `sweep` template that way produces `Dockerfile`, `README.md`,
+`cartpole.py`, `collect.py`, `single_train.py`, `train.py`, `wendy.json`,
+`wendytrain/`, and the manifest covering all eighteen files.
 
 ### Transports: mesh and lan
 
-`fleet.toml` accepts `transport = "mesh"` (the default) or `"lan"`. Mesh sends
-`MESH_PEERS` as asset identifiers resolved over the mesh overlay, which is the
-intended path. The `lan` (Local Area Network) transport exists because the
-mesh overlay was found unreliable on a fleet with mixed agent versions during
-development; it is the audited fallback, not the recommendation. With
-`transport = "lan"` the launcher rewrites the staged `wendy.json`'s network
-entitlement to `{"type": "network", "mode": "host"}` and renders `MESH_PEERS`
-as `hostname:port` entries excluding the device itself (hostname entries
-cannot be self-skipped by asset identifier). `render` shows the rewrite before
-anything runs; an excerpt from the same fleet file with `transport = "lan"`,
-paths shortened as above:
+`--transport mesh` is the default; `--transport lan` is the alternative and
+requires `--lan`, because peers are then addressed by the address local
+discovery found and cloud targets carry none. Mesh sends `MESH_PEERS` as asset
+identifiers resolved over the mesh overlay, which is the intended path. The
+`lan` (Local Area Network) transport exists because the mesh overlay was found
+unreliable on a fleet with mixed agent versions during development; it is the
+audited fallback, not the recommendation. Under it the network entitlement
+becomes `{"type": "network", "mode": "host"}` and `MESH_PEERS` becomes
+`address:port` entries excluding the device itself, since address entries
+cannot be self-skipped by asset identifier. Each peer is resolved to a routable
+address before the plan is built, because a container has no multicast resolver
+and a `.local` name inside one goes nowhere; a device that will not resolve
+stops the deploy instead of failing later inside a container, and an address
+outside the private ranges is called out in the plan.
+
+That entitlement rewrite happens in memory on the parsed configuration, never
+on the staged file. The staged `wendy.json` keeps the mesh entitlement it has
+in this tree, so the stage manifest's checksums always match the source and an
+operator can still prove which context a device built. `--dry-run` prints the
+rewrite anyway, so the change is visible before anything is deployed. The
+header and first device of the real output, verbatim, for the same three
+devices:
+
+```sh
+wendy fleet train up --group 'spark-*' --lan --template es-fleet --transport lan --dry-run \
+  --env WT_RUN_ID=demo-1 --env ES_POP=64
+```
 
 ```
+template:  es-fleet (embedded)
+app id:    sh.wendy.training.es-fleet
+group:     spark-*
 transport: lan
-staged:    .../T/wendy-fleet-es-fleet-2minjign (stage-manifest.json written)
+staging:   skipped (--dry-run; pass --stage-dir to stage)
 network entitlement rewritten to: {"type": "network", "mode": "host"}
 
-device spark-3011.local (asset 334, role worker)
+device spark-48fd (asset 211, role coordinator, rank 0)
   env ES_POP=64
-  env MESH_PEERS=spark-48fd.local:8080,spark-edeb.local:8080
-  env MESH_SELF=334
+  env MESH_PEERS=192.168.0.132:8080,192.168.0.24:8080
+  env MESH_SELF=211
+  env WT_COORDINATOR=192.168.0.46:8080
+  env WT_FLEET_TOKEN=<masked, 32 hex chars>
+  env WT_NODE_COUNT=3
+  env WT_NODE_INDEX=0
+  env WT_ROLE=coordinator
+  env WT_RUN_ID=demo-1
+```
+
+The `single` template declares no network entitlement, so there is nothing to
+rewrite and `--transport lan` with it fails immediately rather than deploying
+something that cannot talk:
+
+```
+✗ transport lan needs a network entitlement to rewrite, but sh.wendy.training.single declares none; add {"type": "network", "mode": "host"} to its wendy.json, or use the mesh transport
 ```
 
 ### Trust boundary
 
 The fleet endpoints move model parameters and accept contributions that steer
-the update, so they are never left open on a network by default: `fleet.py up`
-generates a `WT_FLEET_TOKEN` per fleet (cached next to `fleet.toml`, masked in
-`render` output), every template's endpoints reject requests without the
-bearer header, and every client attaches it. Set your own token in `[env]` to
-override, or unset it only for same-machine experiments. The token
-authenticates peers; it does not encrypt traffic. Treat the device network as
-the trust boundary and use the mesh transport once available, since host mode
-(`lan`) removes the container's network namespace isolation: the container
-shares every host interface, which is precisely why it is a fallback rather
-than the default, and why `render` prints the rewritten entitlement before
-anything runs.
+the update, so they are never left open on a network by default: `up`
+generates a 32 character hexadecimal `WT_FLEET_TOKEN` per fleet, every
+template's endpoints reject requests without the bearer header, and every
+client attaches it. Pass `--token <hex>` or `--env WT_FLEET_TOKEN=<hex>` to
+supply your own; either wins over the generated one and is then persisted like
+it. Rendered plans mask the value as `<masked, 32 hex chars>`, so a plan is
+safe to paste into an issue.
+
+The token a deploy settles on is saved at
+`~/.wendy/train/<group>__<appId>.json`, owner-readable only, with the
+directory created 0700 and the file 0600. A later deploy of the same template
+to the same group reuses what it finds there, so a redeploy does not lock you
+out of a fleet that is still running. Both name parts are lowercased and
+every character outside letters, digits, hyphen, and dot becomes an
+underscore, so group `spark-*` with the sweep template lands at
+`~/.wendy/train/spark-___sh.wendy.training.sweep.json`. That file is what makes
+`status` and `stop` work with nothing but `--group`, and it is where an
+operator reads the token from when a tool outside the CLI needs it, such as the
+sweep template's `collect.py`:
+
+```sh
+python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['token'])" \
+  ~/.wendy/train/spark-___sh.wendy.training.sweep.json
+```
+
+`jq -r .token ~/.wendy/train/spark-___sh.wendy.training.sweep.json` does the
+same. A `--dry-run` never writes this file; it renders a token invented for
+that render alone and says so, so do not copy a token out of a dry run.
+
+The token authenticates peers; it does not encrypt traffic. Treat the device
+network as the trust boundary and use the mesh transport once available, since
+host mode (`lan`) removes the container's network namespace isolation: the
+container shares every host interface, which is precisely why it is a fallback
+rather than the default, and why `--dry-run` prints the rewritten entitlement
+before anything runs.
 
 ## The layers
 
@@ -170,7 +290,7 @@ layer is peeled off:
 
 | Peel off | What you lose | What you keep |
 |---|---|---|
-| Layer 4, the launcher (`launch/fleet.py`) | Computed roles, peer lists, staging, one-command deploys | Everything else; export `MESH_*` and `WT_*` yourself and run `wendy run` per device |
+| Layer 4, the subcommand (`wendy fleet train`) | Computed roles, peer lists, staging, one-command deploys | Everything else; export `MESH_*` and `WT_*` yourself and run `wendy run` per device |
 | Layer 3, the templates | A working training loop to copy | The library and the contract; write your own container against `wendytrain` |
 | Layer 2, the algorithm math (`wendytrain.es`, `.optim`, `.rl`) | ES gradient, Adam, GAE | Runs, configuration, mesh roles, wire codec, manifests, the HTTP helper; bring your own math |
 | Layer 1, the library (`wendytrain`) | Everything above | The layer-0 contract alone: entitlements plus environment variables, readable from any language (this is exactly the `byo` template) |
@@ -187,7 +307,7 @@ layer is peeled off:
 | `WT_RUN_ID` | stable run identifier, names the checkpoint directory | `default` |
 | `WT_CKPT_DIR` | checkpoint root (a persist entitlement path) | `/data/checkpoints` |
 | `WT_CONFIG` | path to a configuration file baked into the image | unset |
-| `WT_COORDINATOR` | the coordinating node as `host:port`, emitted by the launcher | unset |
+| `WT_COORDINATOR` | the coordinating node as `host:port`, emitted by `wendy fleet train` | unset |
 | `WT_NODE_INDEX` | this node's rank by ascending asset identifier, coordinator first | unset |
 | `WT_NODE_COUNT` | number of nodes in the fleet | unset |
 | `WT_FLEET_TOKEN` | shared bearer token; when set, every fleet endpoint requires `Authorization: Bearer <token>` | unset |
@@ -199,10 +319,12 @@ lowest numeric asset identifier among `MESH_PEERS` plus `MESH_SELF` is the
 coordinator (the `ppo-fleet` template maps coordinator to learner and worker
 to actor); every other node is a worker. The rule never guesses: when
 `MESH_SELF` or any peer entry is not a numeric asset identifier, role
-derivation raises and asks for `WT_ROLE` to be set explicitly. For fleets
-addressed by hostname (the lan transport) the launcher always emits the
-generic topology trio `WT_COORDINATOR`, `WT_NODE_INDEX`, and `WT_NODE_COUNT`,
-which the multi-device templates honor after their own explicit variables:
+derivation raises and asks for `WT_ROLE` to be set explicitly. That last case
+is exactly what a hostname-addressed fleet looks like, which is why
+`wendy fleet train` emits the generic topology trio `WT_COORDINATOR`,
+`WT_NODE_INDEX`, and `WT_NODE_COUNT` on both transports rather than only on
+`lan`, alongside an explicit `WT_ROLE` so nothing has to be derived at all.
+The multi-device templates honor the trio after their own explicit variables:
 `es-fleet` prefers `ES_COORDINATOR` (`host:port`), `ES_WORKER_INDEX`, and
 `ES_WORKER_COUNT`, and `ppo-fleet` prefers `PPO_LEARNER`; all documented in
 the template `README.md` files. Numeric derivation from `MESH_PEERS` remains
@@ -213,8 +335,20 @@ enumerates the `${VAR}` list it forwards (open a template's `wendy.json` for
 the exact set). An unset variable arrives in the container as an empty string;
 consumers of the contract must treat empty as unset before parsing, the way
 `es-fleet`'s entry point drops empty values so every default applies as
-documented. Anything a template does not enumerate can still reach the
-container at deploy time with `wendy run --env KEY=VALUE`.
+documented.
+
+The enumerated list is not the whole story any more. `wendy fleet train`
+injects the per-device variables at container create, and a value injected
+there overrides the same key from `wendy.json`. So `MESH_SELF`, `MESH_PEERS`,
+`WT_ROLE`, `WT_COORDINATOR`, `WT_NODE_INDEX`, `WT_NODE_COUNT`,
+`WT_FLEET_TOKEN`, and the sweep template's `WT_SWEEP_INDEX` and
+`WT_SWEEP_PARAMS` arrive whether or not a template lists them, as does
+anything you add with `--env KEY=VALUE`. The enumerated list still matters for
+two things: a plain `wendy run` of a template outside `fleet train`, and the
+defaults a template wants baked into the image. Keys prefixed `WENDY_`, `LD_`,
+or `DYLD_` are rejected before the deploy starts, because the agent refuses
+them at container create; the training contract uses the `WT_` prefix for
+exactly that reason.
 
 Configuration is layered, later wins: defaults in code, then the file named by
 `WT_CONFIG` (Tom's Obvious Minimal Language (TOML) via the standard library;
@@ -244,8 +378,8 @@ evaluated 60 episodes per generation. If the workload fits one accelerator,
 `single` on that device wins; a fleet of modest devices does not outrun it.
 The usually best first use of extra devices is a parameter sweep, because N
 independent runs of something that already works need no coordination and
-waste nothing on communication. The launcher accepts any template against any
-device list; the table is guidance, nothing is locked.
+waste nothing on communication. `wendy fleet train` accepts any template
+against any group; the table is guidance, nothing is locked.
 
 ## Framework notes
 
@@ -357,9 +491,10 @@ behavior.
 
 ## Hardware notes
 
-Any WendyOS device qualifies; nothing in the library or launcher is specific
-to a device type. The Sparks named in the examples are the test hardware,
-nothing more. The templates declare their needs as `wendy.json` entitlements:
+Any WendyOS device qualifies; nothing in the library or in `wendy fleet train`
+is specific to a device type. The Sparks named in the examples are the test
+hardware, nothing more. The templates declare their needs as `wendy.json`
+entitlements:
 
 | Entitlement | Purpose | Used by |
 |---|---|---|
@@ -380,15 +515,27 @@ With NumPy, pytest, torch, and the library installed
 repository root:
 
 ```sh
-python3 -m pytest Training/wendytrain/tests -q          # 89 passed
-python3 -m pytest Training/templates/single/tests -q    # 16 passed
+python3 -m pytest Training/wendytrain/tests -q          # 91 passed
+python3 -m pytest Training/templates/single/tests -q    # 17 passed
 python3 -m pytest Training/templates/sweep/tests -q     # 17 passed
-python3 -m pytest Training/templates/es-fleet/tests -q  # 13 passed
-python3 -m pytest Training/templates/ppo-fleet/tests -q # 6 passed
-python3 -m pytest Training/launch/tests -q              # 23 passed
+python3 -m pytest Training/templates/es-fleet/tests -q  # 16 passed
+python3 -m pytest Training/templates/ppo-fleet/tests -q # 8 passed
 ```
 
-The counts are from the suites as of this writing. The `ppo-fleet` suite
-skips itself with an explanatory message when torch is not installed; every
-other suite needs only NumPy. No test touches a device, Docker, or the
+The deploy side is Go and lives with the rest of the CLI, so it runs from
+`go/`:
+
+```sh
+cd go && CC=/usr/bin/clang go test ./internal/cli/commands/ -run Train -count=1
+```
+
+That covers ranking, role assignment, peer lists on both transports, sweep
+parameters, staging and its checksums, the local-network entitlement rewrite,
+token handling, and the container matching `stop` uses: 33 tests, none of
+which touches a device or the network. The `CC` prefix is needed wherever a
+Swift toolchain shim has taken over `clang`, which breaks cgo.
+
+The Python counts are from the suites as of this writing. The `ppo-fleet`
+suite skips itself with an explanatory message when torch is not installed;
+every other suite needs only NumPy. No test touches a device, Docker, or the
 network beyond the loopback interface.

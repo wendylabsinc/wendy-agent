@@ -67,10 +67,10 @@ deployment.
 ## Building and deploying
 
 The Dockerfile expects a staged build context: this template's files plus the
-pip-installable `wendytrain` project in a `wendytrain/` subdirectory. The
-fleet launcher (`Training/launch/fleet.py`) prepares that staging directory
-and drives the `wendy` Command Line Interface (CLI); building this directory
-directly with Docker fails at `pip install ./wendytrain`, by design, because
+pip-installable `wendytrain` project in a `wendytrain/` subdirectory.
+`wendy fleet train up --group <group> --template single` prepares that staging
+directory and deploys from it; building this directory directly with Docker
+fails at `pip install ./wendytrain`, by design, because
 the CLI rejects build contexts that reach into parent directories and the
 repository keeps exactly one copy of the library. To stage by hand:
 
