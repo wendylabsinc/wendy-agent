@@ -19,6 +19,11 @@ import (
 const (
 	adapterIface = "org.bluez.Adapter1"
 	deviceIface  = "org.bluez.Device1"
+	// A2DP profile UUIDs, named from the remote device's point of view:
+	// a2dpSinkUUID is advertised by devices that receive audio (speakers,
+	// headsets), a2dpSourceUUID by devices that send it (phones, microphones).
+	a2dpSinkUUID   = "0000110b-0000-1000-8000-00805f9b34fb"
+	a2dpSourceUUID = "0000110a-0000-1000-8000-00805f9b34fb"
 	// scanDuration is how long discovery runs before results are collected.
 	scanDuration = 8 * time.Second
 	// quickScanDuration is how long to wait before sending an early, partial
@@ -441,6 +446,44 @@ func boolProp(props map[string]dbus.Variant, key string) bool {
 	return false
 }
 
+func stringsProp(props map[string]dbus.Variant, key string) []string {
+	if v, ok := props[key]; ok {
+		s, _ := v.Value().([]string)
+		return s
+	}
+	return nil
+}
+
+// audioProfileUUID picks the A2DP profile to connect for an audio peripheral,
+// or "" when the device offers neither and a whole-device Connect is right.
+//
+// Device1.Connect() connects every profile the peripheral supports. A speaker
+// that also implements A2DP Source — the Bose SoundLink range, among others —
+// then wins the race to our sink endpoint, and WirePlumber settles on the
+// audio-gateway profile: the card reports bluez5.profile "off", no sink node
+// appears, and a2dp-sink is absent from EnumProfile entirely, so there is
+// nothing to select afterwards either. Naming the profile removes the race.
+//
+// Sink is preferred because it is the common case (speakers, headphones,
+// headsets). A device that is purely a source — a wireless microphone — has no
+// sink role to advertise, so the fallback selects it without needing to
+// inspect the class of device.
+func audioProfileUUID(uuids []string) string {
+	var hasSource bool
+	for _, u := range uuids {
+		switch strings.ToLower(u) {
+		case a2dpSinkUUID:
+			return a2dpSinkUUID
+		case a2dpSourceUUID:
+			hasSource = true
+		}
+	}
+	if hasSource {
+		return a2dpSourceUUID
+	}
+	return ""
+}
+
 // isAlreadyExists reports whether a BlueZ D-Bus error indicates the operation
 // was a no-op because the resource already exists (e.g. pairing a device that
 // is already paired). Such errors are safe to treat as success.
@@ -606,7 +649,21 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 		}
 	}
 
+	// Connect the audio profile by name where one applies, so the peripheral
+	// cannot pick the direction for us. Falls back to a whole-device Connect
+	// for non-audio peripherals, and also when ConnectProfile fails, so a
+	// device that advertises a profile it cannot actually service still gets
+	// the previous behaviour rather than no connection at all.
+	profile := audioProfileUUID(stringsProp(props, "UUIDs"))
 	connectErr := m.retryConnect(ctx, connectRetryDelay, func() error {
+		if profile != "" {
+			err := device.CallWithContext(ctx, deviceIface+".ConnectProfile", 0, profile).Err
+			if err == nil {
+				return nil
+			}
+			m.logger.Warn("Connecting audio profile failed; falling back to whole-device connect",
+				zap.String("address", address), zap.String("profile", profile), zap.Error(err))
+		}
 		return device.CallWithContext(ctx, deviceIface+".Connect", 0).Err
 	})
 	if connectErr != nil {

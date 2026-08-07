@@ -523,3 +523,55 @@ func TestIsDefaultAlias(t *testing.T) {
 		}
 	}
 }
+
+func TestAudioProfileUUID(t *testing.T) {
+	const (
+		hfp  = "0000111e-0000-1000-8000-00805f9b34fb"
+		avrc = "0000110e-0000-1000-8000-00805f9b34fb"
+	)
+	tests := []struct {
+		name  string
+		uuids []string
+		want  string
+	}{
+		// Speakers and headsets advertise a sink; that is the direction we want
+		// even when they also advertise a source, which is what made a Bose
+		// SoundLink claim our sink endpoint and land on the audio-gateway profile.
+		{"sink only", []string{a2dpSinkUUID, avrc}, a2dpSinkUUID},
+		{"sink and source", []string{a2dpSourceUUID, a2dpSinkUUID, hfp}, a2dpSinkUUID},
+		{"sink and source, source listed first", []string{a2dpSourceUUID, a2dpSinkUUID}, a2dpSinkUUID},
+		// A microphone has no sink role to offer, so the fallback picks it up
+		// without needing to inspect the class of device.
+		{"source only", []string{a2dpSourceUUID, avrc}, a2dpSourceUUID},
+		// Non-audio peripherals fall back to a whole-device Connect.
+		{"no audio profiles", []string{avrc, hfp}, ""},
+		{"empty", nil, ""},
+		// BlueZ reports lowercase, but the property is not guaranteed to be.
+		{"uppercase", []string{strings.ToUpper(a2dpSinkUUID)}, a2dpSinkUUID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := audioProfileUUID(tt.uuids); got != tt.want {
+				t.Errorf("audioProfileUUID(%v) = %q, want %q", tt.uuids, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStringsProp(t *testing.T) {
+	props := map[string]dbus.Variant{
+		"UUIDs":  dbus.MakeVariant([]string{a2dpSinkUUID}),
+		"Paired": dbus.MakeVariant(true),
+	}
+	if got := stringsProp(props, "UUIDs"); len(got) != 1 || got[0] != a2dpSinkUUID {
+		t.Errorf("stringsProp(UUIDs) = %v", got)
+	}
+	// Wrong type and missing key both yield nil rather than panicking: BlueZ
+	// omits UUIDs entirely for a device it has only seen advertising.
+	if got := stringsProp(props, "Paired"); got != nil {
+		t.Errorf("stringsProp on non-slice = %v, want nil", got)
+	}
+	if got := stringsProp(props, "Missing"); got != nil {
+		t.Errorf("stringsProp on missing key = %v, want nil", got)
+	}
+}
