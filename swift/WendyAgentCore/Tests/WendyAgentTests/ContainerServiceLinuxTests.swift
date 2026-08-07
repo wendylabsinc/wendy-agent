@@ -197,6 +197,58 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         #expect(svc.mcpPort == 3000)
     }
 
+    // Final-review-fix regression test: `entitlement.port` is an arbitrary Int
+    // decoded straight from wendy.json, with no range check on the Swift
+    // side. `UInt32(port)` traps (crashes the process) on out-of-range input,
+    // unlike Go's `uint32(port)` which silently wraps — so a wendy.json with
+    // e.g. "port": 5000000000 must not crash listContainers; it must be
+    // treated the same as an absent/non-positive port (0), matching the Go
+    // side's 1-65535 validation range.
+    @Test func listContainersTreatsOutOfRangePortAsAbsent() async throws {
+        let backend = FakeLinuxBackend()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/true",
+            stateDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("cs-\(UUID().uuidString)"),
+            linuxBackend: backend
+        )
+        let config = WendyAppConfig(
+            appId: "svc-bad-port",
+            platform: "linux/arm64",
+            entitlements: [
+                WendyEntitlement(type: "http", mode: nil, name: nil, path: nil, ports: nil, port: 5_000_000_000),
+                WendyEntitlement(type: "mcp", mode: nil, name: nil, path: nil, ports: nil, port: 65536),
+            ],
+            brewfile: nil
+        )
+        let configData = try JSONEncoder().encode(config)
+
+        var createReq = Wendy_Agent_Services_V1_CreateContainerRequest()
+        createReq.appName = "svc-bad-port"
+        createReq.imageName = "localhost:5555/svc-bad-port:latest"
+        createReq.appConfig = configData
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: createReq),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        // Must not crash (UInt32(port) trapping was the bug); the call
+        // completing at all is the primary assertion.
+        let listResponse = try await service.listContainers(
+            request: ServerRequest(metadata: [:], message: Wendy_Agent_Services_V1_ListContainersRequest()),
+            context: makeServerContext(method: "ListContainers")
+        )
+        let contents = try listResponse.accepted.get()
+        let writer = CollectingWriter<Wendy_Agent_Services_V1_ListContainersResponse>()
+        _ = try await contents.producer(RPCWriter(wrapping: writer))
+        let containers = writer.snapshot().compactMap(\.container)
+
+        let svc = try #require(containers.first { $0.appName == "svc-bad-port" })
+        #expect(svc.httpPort == 0)
+        #expect(svc.mcpPort == 0)
+    }
+
     @Test func createContainerFailsPreconditionWithoutABackend() async throws {
         let service = ContainerService(
             broadcaster: TelemetryBroadcaster(),

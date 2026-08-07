@@ -1172,7 +1172,14 @@ actor ContainerService: Wendy_Agent_Services_V1_WendyContainerService.ServicePro
         var http: UInt32 = 0
         var mcp: UInt32 = 0
         for entitlement in entitlements {
-            guard let port = entitlement.port, port > 0 else { continue }
+            // Ports are validated 1-65535 on the Go/CLI side, but wendy.json is
+            // decoded independently here with no range check on `port` (an
+            // arbitrary Int). UInt32(port), unlike Go's uint32(port), traps on
+            // out-of-range input instead of wrapping — so a value outside
+            // 1-65535 must be treated the same as port <= 0 (silently skipped),
+            // not converted, or listContainers crashes every time it's called
+            // for as long as the bad config is persisted.
+            guard let port = entitlement.port, port > 0, port <= 65535 else { continue }
             switch entitlement.type {
             case "http": http = UInt32(port)
             case "mcp": mcp = UInt32(port)
