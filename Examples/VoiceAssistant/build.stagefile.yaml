@@ -1,0 +1,21 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+    install:
+      apt:
+        packages: [alsa-utils, ca-certificates]
+      pip:
+        requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [app.py]
+    # The Dockerfile this replaced declared no USER, so the container ran as
+    # root and ALSA reached the audio devices that way. Declaring root keeps
+    # that: the compiler's default is a distroless-style non-root UID, which
+    # would silently change audio device access.
+    user: root
+    cmd: [python, app.py]
