@@ -39,17 +39,27 @@ drop from ~2.2s to single-digit/low-tens of milliseconds on LAN.
 - Persisting agent-side ticket keys across restarts (weakens forward secrecy
   for key-management convenience; an agent restart costing one full handshake
   per device is acceptable).
+- Secret-Service (Linux) / DPAPI (Windows) ticket-store backends — the
+  `sessionStore` interface leaves room for them, but the `0600` file default
+  matches those platforms' existing key-storage posture for now.
+- Moving the client certificate/private key out of `~/.wendy/config.json`
+  into platform secret stores — worth doing for consistency someday, but a
+  separate change with its own migration concerns.
 - Proto or RPC changes (there are none).
 
 ## Design
 
 ### 1. Client session cache — new package `go/internal/cli/tlscache`
 
-Implements `tls.ClientSessionCache`, disk-backed under
-`~/.wendy/tls-sessions/` (via `config.ConfigDir()`).
+Implements `tls.ClientSessionCache` on top of a small `sessionStore`
+interface (`Get(key) []byte`, `Put(key, blob)`, `Delete(key)`), with
+platform-appropriate backends. A session ticket is a bearer resumption
+secret — possession lets the holder connect as the original client identity
+for up to 7 days — so it goes into the platform secret store where one
+exists.
 
 - **Keying:** each `ConnectWithTLSAndPins` call constructs a cache instance
-  bound to a precomputed disk key
+  bound to a precomputed store key
   `SHA256(host:port | SHA256(client leaf cert DER))`. The `sessionKey` string
   Go passes to `Get`/`Put` (remote address) is ignored. Keying by client cert
   is a **correctness requirement**: the ticket embeds the client identity
@@ -58,16 +68,42 @@ Implements `tls.ClientSessionCache`, disk-backed under
 - **Serialization:** `ClientSessionState.ResumptionState()` →
   `SessionState.Bytes()` on `Put`; `tls.ParseSessionState` +
   `tls.NewResumptionState` on `Get` (Go 1.21+ APIs; module is on Go 1.26).
-- **Files:** `<hex(diskKey)>.tlssession`, mode `0600`, directory `0700`.
-  Atomic writes (temp file + rename); concurrent CLI processes are
-  last-writer-wins, which is safe. Opportunistic pruning of files older than
-  7 days (Go's `maxSessionTicketLifetime`) on `Put`.
-- **Failure behavior:** any read/parse/IO error returns "no session" (and
-  best-effort deletes the bad file). The worst case is always a full
+- **macOS backend (default on darwin): Keychain**, via
+  `/usr/bin/security add-generic-password -U` / `find-generic-password -w` /
+  `delete-generic-password` — the same subprocess pattern
+  `wifi_scan_darwin.go` already uses. Service name `wendy-tls-session`,
+  account = hex store key, data = base64 session blob. Items are created so
+  that our own reads never trigger a Keychain prompt (no `-A`
+  any-application grant; exact ACL flags verified on a real Mac during
+  implementation — a prompting hot path would be a regression, and any
+  prompt-or-denied read is treated as a cache miss). The Secure Enclave
+  itself is not applicable: it protects asymmetric keys, not arbitrary
+  secrets; the Keychain is the right primitive for a ticket blob. The
+  `security` subprocess costs ~30–80ms on `Get` — noise next to the ~2.2s
+  it saves, and the file backend is an env-var flip away if it ever matters.
+- **Linux/Windows backend (default): file**,
+  `~/.wendy/tls-sessions/<hex(storeKey)>.tlssession`, mode `0600`, directory
+  `0700`, atomic temp-file + rename writes (concurrent CLI processes are
+  last-writer-wins, which is safe), opportunistic pruning of files older
+  than 7 days (Go's `maxSessionTicketLifetime`) on `Put`. Rationale: the
+  client's ML-DSA private key already lives unencrypted in
+  `~/.wendy/config.json`, so a `0600` ticket file adds no new exposure class
+  on these platforms; a Secret-Service (D-Bus) or DPAPI backend can slot
+  into the same interface later without touching callers.
+- **Override:** `WENDY_TLS_SESSION_STORE=keychain|file|off` forces a backend
+  or disables ticket caching entirely (`off` is also the right setting for
+  CI).
+- **Async `Put`:** Go invokes `Put` while processing the server's
+  post-handshake `NewSessionTicket` message; a blocking Keychain write there
+  would stall the connection's read loop. `Put` snapshots the blob and
+  persists on a background goroutine. If the process exits first, the ticket
+  is lost and the next connect does a full handshake — harmless.
+- **Failure behavior:** any read/parse/store error returns "no session" (and
+  best-effort deletes the bad entry). The worst case is always a full
   handshake — i.e. today's behavior. Cache errors are never surfaced.
 - **Self-refresh:** Go's TLS 1.3 server issues a fresh ticket on every
-  connection, including resumed ones, so the file is rewritten on each
-  connect and never goes stale while in regular use.
+  connection, including resumed ones, so the stored blob is rewritten on
+  each connect and never goes stale while in regular use.
 
 ### 2. Client wiring — `go/internal/cli/grpcclient/client.go`
 
@@ -119,7 +155,9 @@ in-memory is sufficient there and reconnects benefit for free.
 
 | Failure | Outcome |
 | --- | --- |
-| No/corrupt/unreadable session file | Full handshake (today's path) |
+| No/corrupt/unreadable session entry | Full handshake (today's path) |
+| Keychain read prompts, is denied, or `security` fails | Treated as cache miss → full handshake |
+| Process exits before async `Put` persists | Ticket lost → full handshake next time |
 | Agent restarted (ticket keys rotated) | Ticket undecryptable → full handshake |
 | Client cert window lapsed inside ticket | Server declines → full handshake → normal cert errors if genuinely expired |
 | Ticket from wrong client cert | Never offered (disk key includes cert fingerprint) |
@@ -128,10 +166,15 @@ in-memory is sufficient there and reconnects benefit for free.
 
 ## Testing
 
-**Unit (`tlscache`):** Put/Get round-trip across two cache instances
-(simulates separate CLI processes); cert-fingerprint keying isolation (cert A's
-ticket invisible when bound to cert B); corrupt file → nil + file removed;
-pruning of >7-day files; `0600`/`0700` permissions; atomic write.
+**Unit (`tlscache`):** cache logic tested against an in-memory fake
+`sessionStore`: Put/Get round-trip across two cache instances (simulates
+separate CLI processes); cert-fingerprint keying isolation (cert A's ticket
+invisible when bound to cert B); corrupt blob → nil + entry deleted; async
+`Put` completion. File backend: pruning of >7-day files, `0600`/`0700`
+permissions, atomic write. Keychain backend: unit-tested against a faked
+`security` runner (argument construction, miss/denial handling); real
+Keychain behavior — including **zero prompts on the hot path** — is part of
+the on-device/manual verification gate below.
 
 **Integration (in-process TLS client + `mtls.NewTLSConfig` server over a real
 listener, plus a gRPC-level pass using `mtls.NewServer`):**
