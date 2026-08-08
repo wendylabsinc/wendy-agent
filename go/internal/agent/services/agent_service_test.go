@@ -159,6 +159,21 @@ func TestGetAgentVersion(t *testing.T) {
 	}
 }
 
+func TestGetAgentVersionReportsHostname(t *testing.T) {
+	s := &AgentService{}
+	resp, err := s.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion: %v", err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skipf("os.Hostname unavailable: %v", err)
+	}
+	if resp.GetHostname() != host {
+		t.Fatalf("Hostname = %q, want %q", resp.GetHostname(), host)
+	}
+}
+
 func TestReadWendyOSVersionFromPrefersCurrentPath(t *testing.T) {
 	dir := t.TempDir()
 	current := filepath.Join(dir, "etc", "wendyos", "version.txt")
