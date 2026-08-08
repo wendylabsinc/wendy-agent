@@ -766,3 +766,31 @@ func TestReadOCILayoutLayersPlatformSelection(t *testing.T) {
 		t.Fatalf("selected wrong platform layer: got %q want %q", got, armLayer)
 	}
 }
+
+func TestPickOCIDescriptorPrefersNewestPlatformMatch(t *testing.T) {
+	arm := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "arm64", OS: "linux"}
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:aaaa", Platform: arm},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:bbbb", Platform: arm},
+	}
+	got := pickOCIDescriptor(descs, "linux", "arm64")
+	if got == nil || got.Digest != "sha256:bbbb" {
+		t.Fatalf("want newest (last) match sha256:bbbb, got %+v", got)
+	}
+}
+
+func TestPickOCIDescriptorFallbackPrefersNewest(t *testing.T) {
+	// No platform info at all: the fallback loop must also prefer the last
+	// image-manifest entry (buildx appends newest last).
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:aaaa"},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:bbbb"},
+	}
+	got := pickOCIDescriptor(descs, "linux", "arm64")
+	if got == nil || got.Digest != "sha256:bbbb" {
+		t.Fatalf("want newest (last) fallback sha256:bbbb, got %+v", got)
+	}
+}

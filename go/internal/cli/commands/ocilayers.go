@@ -154,16 +154,22 @@ func resolveOCIImageManifest(descs []ociDescriptor, getBlob func(hex string) ([]
 }
 
 // pickOCIDescriptor chooses the best descriptor for the target platform:
-// an exact os/arch match if present, otherwise the first image manifest or
-// image index (skipping attestation/unknown entries).
+// the NEWEST exact os/arch match if present, otherwise the newest image
+// manifest or image index (skipping attestation/unknown entries).
+//
+// Newest means LAST in slice order: buildx's tar=false dir export APPENDS
+// each build's manifest to index.json, so several entries can match the
+// platform and the current build is always the final one. Resolving the
+// first match shipped the layout dir's first-ever build forever (stale
+// deps bug, on-device pass 2026-08-08).
 func pickOCIDescriptor(descs []ociDescriptor, wantOS, wantArch string) *ociDescriptor {
-	for i := range descs {
+	for i := len(descs) - 1; i >= 0; i-- {
 		d := &descs[i]
 		if d.Platform != nil && d.Platform.OS == wantOS && d.Platform.Architecture == wantArch {
 			return d
 		}
 	}
-	for i := range descs {
+	for i := len(descs) - 1; i >= 0; i-- {
 		d := &descs[i]
 		if isOCIImageManifestMediaType(d.MediaType) || isOCIImageIndexMediaType(d.MediaType) {
 			return d
