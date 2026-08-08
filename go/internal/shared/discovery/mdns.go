@@ -2,16 +2,72 @@ package discovery
 
 import (
 	"net"
+	"strconv"
 	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // MDNSService represents a generic mDNS service entry discovered on the network.
 type MDNSService struct {
-	InstanceName string
-	Hostname     string
-	IPAddress    string
-	Port         int
-	TXTRecords   map[string]string
+	InstanceName  string
+	Hostname      string
+	IPAddress     string
+	Port          int
+	TXTRecords    map[string]string
+	InterfaceName string // OS interface the answer arrived on ("" if unknown)
+}
+
+// lanDeviceFromService converts a resolved mDNS service entry into a
+// models.LANDevice, applying the TXT-record precedence shared by every
+// platform's LAN discovery backend (darwin dnssdResolve, linux
+// parseAvahiResolveLine / hashicorp-mdns fallback): "displayname" wins over
+// the hostname with ".local" trimmed; the device ID prefers "wendyosdevice"
+// then "id" then falls back to the resolved display name; mTLS is signaled
+// by tls=="true"; assetid/orgid are accepted only when they parse as
+// positive integers (0 or unparseable stays the zero value, meaning
+// unknown/unprovisioned); and "name" becomes the friendly mesh name.
+func lanDeviceFromService(svc MDNSService) models.LANDevice {
+	displayName := strings.TrimSuffix(svc.Hostname, ".local")
+	if dn, ok := svc.TXTRecords["displayname"]; ok {
+		displayName = dn
+	}
+
+	id := ""
+	if v, ok := svc.TXTRecords["wendyosdevice"]; ok {
+		id = v
+	} else if v, ok := svc.TXTRecords["id"]; ok {
+		id = v
+	}
+	if id == "" {
+		id = displayName
+	}
+
+	dev := models.LANDevice{
+		ID:               id,
+		DisplayName:      displayName,
+		Hostname:         svc.Hostname,
+		IPAddress:        svc.IPAddress,
+		Port:             svc.Port,
+		IsMTLS:           svc.TXTRecords["tls"] == "true",
+		InterfaceType:    string(models.InterfaceLAN),
+		IsWendyDevice:    true,
+		NetworkInterface: svc.InterfaceName,
+	}
+	if v, ok := svc.TXTRecords["assetid"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
+			dev.AssetID = int32(n)
+		}
+	}
+	if v, ok := svc.TXTRecords["orgid"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n > 0 {
+			dev.OrgID = int32(n)
+		}
+	}
+	if v, ok := svc.TXTRecords["name"]; ok {
+		dev.MeshName = v
+	}
+	return dev
 }
 
 // parseTXTRecord decodes a DNS-SD TXT record from its wire format: a sequence
