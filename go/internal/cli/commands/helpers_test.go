@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -1658,6 +1659,38 @@ func TestIsCertRejectionError(t *testing.T) {
 				t.Errorf("isCertRejectionError(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRotateCertsForOrg(t *testing.T) {
+	certs := []config.CertificateInfo{
+		{OrganizationID: 1}, {OrganizationID: 2}, {OrganizationID: 3}, {OrganizationID: 2},
+	}
+	orgs := func(cs []config.CertificateInfo) []int {
+		out := make([]int, len(cs))
+		for i, c := range cs {
+			out[i] = c.OrganizationID
+		}
+		return out
+	}
+	cases := []struct {
+		name  string
+		orgID int32
+		want  []int
+	}{
+		{"match moves first, stable within groups", 2, []int{2, 2, 1, 3}},
+		{"zero org = unchanged", 0, []int{1, 2, 3, 2}},
+		{"no match = unchanged", 9, []int{1, 2, 3, 2}},
+	}
+	for _, tc := range cases {
+		got := orgs(rotateCertsForOrg(certs, tc.orgID))
+		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Input slice must not be mutated.
+	if fmt.Sprint(orgs(certs)) != fmt.Sprint([]int{1, 2, 3, 2}) {
+		t.Error("rotateCertsForOrg mutated its input")
 	}
 }
 
