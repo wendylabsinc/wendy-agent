@@ -176,8 +176,11 @@ func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[strin
 	io.WriteString(h, fmt.Sprintf("dockerfile %d\n", len(dfData)))
 	h.Write(dfData)
 
-	// Hash the build context, honoring .dockerignore.
-	ignore := loadDockerIgnore(cwd)
+	// Hash the build context, honoring the ignore file the build itself uses:
+	// BuildKit gives <dockerfile>.dockerignore precedence over .dockerignore
+	// (the Stagefile flow derives a deny-all allowlist there), so the walk must
+	// follow the same file or it hashes paths the build can never see.
+	ignore := loadDockerIgnoreForBuild(cwd, dfPath)
 	var files []string
 	err = filepath.WalkDir(cwd, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -236,8 +239,25 @@ type dockerIgnore struct {
 }
 
 func loadDockerIgnore(cwd string) *dockerIgnore {
+	return loadDockerIgnoreFile(filepath.Join(cwd, ".dockerignore"))
+}
+
+// loadDockerIgnoreForBuild picks the ignore file BuildKit would use for this
+// dockerfile: <dockerfile>.dockerignore when present, else the context's
+// .dockerignore.
+func loadDockerIgnoreForBuild(cwd, dockerfilePath string) *dockerIgnore {
+	if dockerfilePath != "" {
+		perDockerfile := dockerfilePath + ".dockerignore"
+		if fi, err := os.Stat(perDockerfile); err == nil && fi.Mode().IsRegular() {
+			return loadDockerIgnoreFile(perDockerfile)
+		}
+	}
+	return loadDockerIgnore(cwd)
+}
+
+func loadDockerIgnoreFile(path string) *dockerIgnore {
 	di := &dockerIgnore{}
-	f, err := os.Open(filepath.Join(cwd, ".dockerignore"))
+	f, err := os.Open(path)
 	if err != nil {
 		return di
 	}
@@ -273,8 +293,16 @@ func loadDockerIgnore(cwd string) *dockerIgnore {
 // keeps the matcher safe — it can only over-hash, never under-detect a change.
 func (di *dockerIgnore) matches(rel string) bool {
 	clean := strings.TrimSuffix(rel, "/")
+	isDir := strings.HasSuffix(rel, "/")
 	for _, neg := range di.negations {
 		if matchIgnorePattern(neg, clean) {
+			return false
+		}
+		// A directory with a re-included descendant must stay walkable: with
+		// "*" + "!src/app.py", skipping src/ wholesale would hide the allowlisted
+		// file's changes (the unsafe direction — a missed change, not an extra
+		// rebuild).
+		if isDir && strings.HasPrefix(neg, clean+"/") {
 			return false
 		}
 	}
