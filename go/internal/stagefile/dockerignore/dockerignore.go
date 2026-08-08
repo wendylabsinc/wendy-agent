@@ -38,6 +38,11 @@ func LocalPaths(f *spec.File) []string {
 				add("package.json")
 				add(spec.NpmLockfile(s.Install.Npm.Manager))
 			}
+			if s.Install.Uv != nil {
+				for _, p := range spec.UvLocalFiles {
+					add(p)
+				}
+			}
 		}
 	}
 	return paths
