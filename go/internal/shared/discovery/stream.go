@@ -86,6 +86,94 @@ func StreamLAN(ctx context.Context, opts StreamOptions) <-chan LANEvent {
 	return out
 }
 
+// collectSettle is how long CollectLAN waits after the most recent confirmed
+// device event before concluding a batch scan has settled. It is a var, not
+// a const, so tests can shrink it; production never reassigns it.
+var collectSettle = 500 * time.Millisecond
+
+// CollectLAN runs one LAN discovery session to completion and returns the
+// confirmed devices it found — LANFound/LANUpdated only. A cache entry whose
+// probe never confirms it (offline, unreachable) never leaks into the
+// result. Devices merge by cache key; when a device is reported more than
+// once (e.g. a probe superseding an mDNS-only sighting), the later event
+// wins.
+//
+// The scan concludes as soon as it safely can: once every cached entry's
+// initial probe has concluded and collectSettle has passed with no further
+// confirmation, or once timeout elapses — whichever comes first.
+func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) ([]models.LANDevice, error) {
+	sessionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	out := make(chan LANEvent, streamEventBuffer)
+	probesDone := make(chan struct{})
+	go func() {
+		defer close(out)
+		runLANStream(sessionCtx, opts, out, probesDone)
+	}()
+
+	devices := make(map[string]models.LANDevice)
+	probesDoneCh := probesDone
+	probesDoneClosed := false
+
+	var settleTimer *time.Timer
+	var settleC <-chan time.Time
+	armSettle := func() {
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
+		settleTimer = time.NewTimer(collectSettle)
+		settleC = settleTimer.C
+	}
+	defer func() {
+		if settleTimer != nil {
+			settleTimer.Stop()
+		}
+	}()
+
+	overall := time.NewTimer(timeout)
+	defer overall.Stop()
+
+	// conclude tears the session down and waits for it to fully finish before
+	// collecting the result, so a caller never observes a session still
+	// touching the cache or the seam vars it just used.
+	conclude := func(err error) ([]models.LANDevice, error) {
+		cancel()
+		for range out {
+		}
+		result := make([]models.LANDevice, 0, len(devices))
+		for _, dev := range devices {
+			result = append(result, dev)
+		}
+		return result, err
+	}
+
+	for {
+		select {
+		case ev, ok := <-out:
+			if !ok {
+				return conclude(nil)
+			}
+			if ev.Kind == LANFound || ev.Kind == LANUpdated {
+				devices[discoverycache.Key(ev.Device.ID, ev.Device.DisplayName)] = ev.Device
+				if probesDoneClosed {
+					armSettle()
+				}
+			}
+		case <-probesDoneCh:
+			probesDoneClosed = true
+			probesDoneCh = nil
+			armSettle()
+		case <-settleC:
+			return conclude(nil)
+		case <-overall.C:
+			return conclude(nil)
+		case <-ctx.Done():
+			return conclude(ctx.Err())
+		}
+	}
+}
+
 // lanDeviceState is the engine's bookkeeping for one device identity. It is
 // owned exclusively by runLANStream's goroutine, so it carries no locks.
 type lanDeviceState struct {

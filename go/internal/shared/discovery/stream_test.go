@@ -757,3 +757,73 @@ func TestRunLANStreamClosesProbesDone(t *testing.T) {
 		t.Fatal("probesDone must close once every cached entry's initial probe concluded")
 	}
 }
+
+func TestCollectLANSettlesEarly(t *testing.T) {
+	shrinkDuration(t, &collectSettle, 50*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json") // no seed: empty cache
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	go func() {
+		fb.emit(t, wendyService("dev-20", "orin", "orin.local", "10.0.0.20", 50051))
+		fb.emit(t, wendyService("dev-21", "nano", "nano.local", "10.0.0.21", 50051))
+	}()
+
+	start := time.Now()
+	got, err := CollectLAN(context.Background(), StreamOptions{UseCache: true}, 5*time.Second)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("CollectLAN error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 confirmed devices, got %+v", got)
+	}
+	if elapsed > time.Second {
+		t.Fatalf("CollectLAN took %v to settle, want well under 1s", elapsed)
+	}
+}
+
+func TestCollectLANConfirmedOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path, discoverycache.Entry{ID: "dev-22", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.22", Port: 50051})
+
+	fb := newFakeBackend() // stays silent: nothing on the network
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	got, err := CollectLAN(context.Background(), StreamOptions{UseCache: true, Prober: failingProber(errors.New("dial tcp: connection refused"))}, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("CollectLAN error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("cached-unconfirmed device leaked into batch output: %+v", got)
+	}
+}
+
+func TestCollectLANWaitsForCachedProbes(t *testing.T) {
+	shrinkDuration(t, &collectSettle, 20*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path, discoverycache.Entry{ID: "dev-23", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.23", Port: 50051})
+
+	fb := newFakeBackend() // stays silent: the probed cache row must still surface
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	prober := func(ctx context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		select {
+		case <-time.After(80 * time.Millisecond):
+		case <-ctx.Done():
+			return models.LANDevice{}, ctx.Err()
+		}
+		dev.AgentVersion = "9.9.9"
+		return dev, nil
+	}
+
+	got, err := CollectLAN(context.Background(), StreamOptions{UseCache: true, Prober: prober}, 5*time.Second)
+	if err != nil {
+		t.Fatalf("CollectLAN error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "dev-23" || got[0].AgentVersion != "9.9.9" {
+		t.Fatalf("settle must wait for the cached probe to conclude before returning: %+v", got)
+	}
+}
