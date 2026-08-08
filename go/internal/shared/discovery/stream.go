@@ -64,14 +64,13 @@ var (
 // simply blocks once the buffer fills.
 const streamEventBuffer = 32
 
-// mdnsStreamBackend is the placeholder LAN stream backend: it produces no
-// sightings and returns when ctx ends. Tasks 5-7 replace it with the
-// per-platform implementations (darwin DNSSD, linux Avahi/D-Bus, windows
-// hashicorp-mdns); it is deliberately build-tag-free so every GOOS compiles
-// until then.
-func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSService)) error {
-	<-ctx.Done()
-	return nil
+// newLANAnnotator returns a func applied to each live-sighted device before
+// it is emitted, refining fields mDNS itself cannot supply (network interface
+// display name, USB link speed). The default is a no-op; per-platform files
+// override it in an init() — safe against init ordering because this default
+// is a var initializer, which Go runs before any package's init() functions.
+var newLANAnnotator = func(ctx context.Context) func(*models.LANDevice) {
+	return func(*models.LANDevice) {}
 }
 
 // StreamLAN emits fresh cache entries immediately (when opts.UseCache), then
@@ -211,9 +210,10 @@ type lanStream struct {
 	opts StreamOptions
 	out  chan<- LANEvent
 
-	states map[string]*lanDeviceState
-	cache  *discoverycache.Cache // nil when unavailable or not requested
-	dirty  bool
+	states   map[string]*lanDeviceState
+	cache    *discoverycache.Cache // nil when unavailable or not requested
+	dirty    bool
+	annotate func(*models.LANDevice) // platform refinement, applied to live sightings
 
 	emissions chan MDNSService
 	results   chan lanProbeResult
@@ -245,6 +245,7 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 		sem:           make(chan struct{}, probeWorkers),
 		pendingProbes: make(map[string]bool),
 		probesDone:    probesDone,
+		annotate:      newLANAnnotator(ctx),
 	}
 	defer s.finish()
 
@@ -358,6 +359,7 @@ func (s *lanStream) runBackend() {
 // handleSighting folds one live mDNS answer into the session.
 func (s *lanStream) handleSighting(svc MDNSService) {
 	dev := lanDeviceFromService(svc)
+	s.annotate(&dev)
 	key := discoverycache.Key(dev.ID, dev.DisplayName)
 	now := time.Now()
 

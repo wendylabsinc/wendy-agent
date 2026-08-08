@@ -86,3 +86,92 @@ func TestBrowseMDNSServicesContinuousStreamsLateArrival(t *testing.T) {
 		t.Fatal("stream did not close after ctx cancellation")
 	}
 }
+
+// TestMDNSStreamBackend is the property the streaming LAN engine (stream.go's
+// lanBackendFn seam) depends on: every browse "Add" gets resolved and emitted
+// promptly, in parallel, rather than one at a time inside the browse callback
+// (the bug this backend exists to fix — see mdnsStreamBackend's doc comment).
+// Three instances are registered concurrently; if resolves were serialized in
+// the callback, the third would only arrive after two resolve timeouts' worth
+// of head-of-line blocking, which the arrival-time assertion below would
+// catch.
+func TestMDNSStreamBackend(t *testing.T) {
+	const serviceType = "_wendy-backendtest._tcp"
+	pid := os.Getpid()
+	want := map[string]string{"displayname": "Backend Test", "tls": "true"}
+
+	const n = 3
+	instances := make([]string, n)
+	wantPorts := make(map[string]int, n)
+	for i := range instances {
+		instance := fmt.Sprintf("wendy-backendtest-%d-%d", pid, i)
+		port := 51240 + i
+		stop, err := dnssdRegister(instance, serviceType, uint16(port), want)
+		if err != nil {
+			t.Skipf("cannot register an mDNS service (is mDNSResponder reachable?): %v", err)
+		}
+		t.Cleanup(stop)
+		instances[i] = instance
+		wantPorts[instance] = port
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type arrival struct {
+		svc MDNSService
+		at  time.Duration
+	}
+	emitted := make(chan arrival, 16)
+	start := time.Now()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- mdnsStreamBackend(ctx, serviceType, func(svc MDNSService) {
+			emitted <- arrival{svc: svc, at: time.Since(start)}
+		})
+	}()
+
+	got := make(map[string]arrival, n)
+	for len(got) < n {
+		select {
+		case a := <-emitted:
+			got[a.svc.InstanceName] = a
+		case err := <-done:
+			t.Fatalf("mdnsStreamBackend returned before all %d instances arrived (got %d): %v", n, len(got), err)
+		case <-time.After(4 * time.Second):
+			t.Fatalf("timed out waiting for all %d instances; got %d of them", n, len(got))
+		}
+	}
+
+	// Cancelling must make the backend return promptly, with its resolver
+	// pool fully drained — no goroutine may outlive the call.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("mdnsStreamBackend returned %v, want nil after ctx cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("mdnsStreamBackend did not return after ctx cancellation")
+	}
+
+	for _, inst := range instances {
+		a, ok := got[inst]
+		if !ok {
+			t.Errorf("instance %q never emitted", inst)
+			continue
+		}
+		if a.svc.Port != wantPorts[inst] {
+			t.Errorf("instance %q: Port = %d, want %d", inst, a.svc.Port, wantPorts[inst])
+		}
+		for k, v := range want {
+			if a.svc.TXTRecords[k] != v {
+				t.Errorf("instance %q: TXT[%q] = %q, want %q", inst, k, a.svc.TXTRecords[k], v)
+			}
+		}
+		if a.at >= 3*time.Second {
+			t.Errorf("instance %q arrived after %v, want < 3s (not waiting for ctx end)", inst, a.at)
+		}
+	}
+}

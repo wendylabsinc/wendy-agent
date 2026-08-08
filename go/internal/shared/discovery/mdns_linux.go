@@ -38,6 +38,15 @@ func BrowseMDNSServicesContinuous(_ context.Context, _ string) (<-chan MDNSServi
 	return nil, fmt.Errorf("continuous mDNS browsing: %w", errors.ErrUnsupported)
 }
 
+// mdnsStreamBackend is the placeholder Linux implementation of the
+// lanBackendFn seam (stream.go): it produces no sightings and returns once
+// ctx ends, satisfying that seam's contract. Tasks 6/7 replace it with an
+// Avahi/D-Bus implementation.
+func mdnsStreamBackend(ctx context.Context, _ string, _ func(MDNSService)) error {
+	<-ctx.Done()
+	return nil
+}
+
 // browseMDNSAvahi uses avahi-browse to discover services.
 func browseMDNSAvahi(ctx context.Context, serviceType string, timeout time.Duration) ([]MDNSService, error) {
 	browseCtx, cancel := context.WithTimeout(ctx, timeout)

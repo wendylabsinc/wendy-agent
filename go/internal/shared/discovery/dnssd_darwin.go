@@ -39,6 +39,11 @@ import (
 // soon as the socket is readable.
 const dnssdPollInterval = 100 * time.Millisecond
 
+// dnssdResolveTimeout bounds a single instance resolve on the streaming LAN
+// backend (mdnsStreamBackend). It is a var, not a const, so tests can shrink
+// it.
+var dnssdResolveTimeout = 1 * time.Second
+
 // dnssdSession carries the callbacks for one DNSServiceRef. It is reached from
 // C by an integer handle: cgo forbids passing Go pointers into C and holding
 // them there.

@@ -14,6 +14,22 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
+// init overrides stream.go's no-op newLANAnnotator default with the darwin
+// refinement: interface display names and link speeds, the same calls
+// discoverLAN makes below (darwinInterfaceDisplayNameMap once per session,
+// then per-device darwinCachedInterfaceLinkSpeed/setLANNetworkInterface).
+// Safe against init-ordering: stream.go's default is a var initializer, and
+// Go runs all of a program's var initializers before any package's init().
+func init() {
+	newLANAnnotator = func(ctx context.Context) func(*models.LANDevice) {
+		interfaceDisplayNames := darwinInterfaceDisplayNameMap(ctx)
+		linkSpeeds := make(map[string]string)
+		return func(dev *models.LANDevice) {
+			setLANNetworkInterface(dev, dev.NetworkInterface, interfaceDisplayNames[dev.NetworkInterface], darwinCachedInterfaceLinkSpeed(ctx, dev.NetworkInterface, linkSpeeds))
+		}
+	}
+}
+
 // discoverLAN browses for WendyOS devices through mDNSResponder.
 // This works across all network interfaces including USB host-mode connections,
 // unlike raw multicast libraries which miss interfaces the system resolver covers.
