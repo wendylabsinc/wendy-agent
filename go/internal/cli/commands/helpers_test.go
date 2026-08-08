@@ -954,6 +954,11 @@ func TestConnectWithAutoTLSDiagnostics_CacheMissUsesOSResolver(t *testing.T) {
 // A stale cached IP that fails to answer must never make an otherwise
 // reachable device look unreachable (spec §4): the fast path must re-resolve
 // via the same mDNS-browse fallback the cache-miss path uses and retry once.
+// (The cache self-heal that a successful retry enables is a
+// connectAgentAtAddressWithProvisionedHint-layer concern — see
+// TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntry
+// — since connectWithAutoTLSDiagnostics's own "success" isn't proof of life
+// for a plaintext connect and must never write the cache itself.)
 func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
@@ -1003,15 +1008,379 @@ func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 	if conn.Host != realHost {
 		t.Fatalf("dialed host = %q, want re-resolved mDNS IP %q", conn.Host, realHost)
 	}
+}
 
-	// The successful retry should have self-healed the stale entry.
+// Regression: connectWithAutoTLSDiagnostics's own "success" is not proof of
+// life for a plaintext connection (grpc.NewClient is lazy — see
+// cacheFastPathReachable's doc), so it must never write to the device cache
+// itself. Writing here unconditionally is exactly what previously caused
+// polling loops like waitForAgentRestart/pollDeviceOnline (which call the
+// lower-level connectWithAutoTLS/connectWithAutoTLSDiagnostics directly, not
+// connectAgentAtAddressWithProvisionedHint) to phantom-refresh a DOWN
+// device's cache entry on every iteration.
+func TestConnectWithAutoTLSDiagnostics_DoesNotWriteCacheDirectly(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup := deviceCacheLoadFn, osLookupHostFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	realAddr := startPlaintextVersionAgent(t)
+	realHost, realPort, err := net.SplitHostPort(realAddr)
+	if err != nil {
+		t.Fatalf("split real address: %v", err)
+	}
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{realHost}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:"+realPort)
+	if err != nil {
+		t.Fatalf("connectWithAutoTLSDiagnostics: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := os.Stat(cachePath); err == nil {
+		t.Fatal("connectWithAutoTLSDiagnostics must not write the device cache itself")
+	}
+}
+
+// A proven cert rejection (a real TLS handshake happened; the cached address
+// answered) must not be retried — retrying can't fix a cert mismatch, and
+// could only replace this proven diagnostic with a weaker or misleading
+// result from a re-resolved address.
+func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		dialAgentLadderFn = origLadder
+		cacheFastPathReachableFn = origReachable
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	calls := 0
+	rejectionErr := newTLSHandshakeRejectedError(errors.New("cert rejected"))
+	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		return nil, nil, rejectionErr
+	}
+	cacheFastPathReachableFn = func(context.Context, *grpcclient.AgentConnection, error) bool { return false }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051")
+	if !errors.Is(err, errTLSHandshakeRejected) {
+		t.Fatalf("err = %v, want the original handshake-rejected error preserved unretried", err)
+	}
+	if calls != 1 {
+		t.Fatalf("dialAgentLadderFn called %d times, want 1 (a proven cert rejection must not be retried)", calls)
+	}
+}
+
+// A cross-org mismatch is the other rejection-class outcome (see
+// isHandshakeRejectionClass) and must equally skip the retry.
+func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+	stubOrgNameResolver(t, nil)
+
+	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		dialAgentLadderFn = origLadder
+		cacheFastPathReachableFn = origReachable
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	calls := 0
+	certs := []config.CertificateInfo{{OrganizationID: 3}}
+	orgErr := chooseRejectionError(context.Background(), 42, certs, errors.New("boom"))
+	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		return nil, nil, orgErr
+	}
+	cacheFastPathReachableFn = func(context.Context, *grpcclient.AgentConnection, error) bool { return false }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var mismatch orgMismatchDeviceError
+	_, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051")
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("err = %v (%T), want an orgMismatchDeviceError preserved unretried", err, err)
+	}
+	if calls != 1 {
+		t.Fatalf("dialAgentLadderFn called %d times, want 1 (an org mismatch must not be retried)", calls)
+	}
+}
+
+// Re-resolving to the SAME address the cache already gave us is pure
+// double-ladder latency with no chance of a different outcome — it must be
+// skipped.
+func TestConnectWithAutoTLSDiagnostics_SameAddressRetrySkipped(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup, origLadder, origReachable := deviceCacheLoadFn, osLookupHostFn, dialAgentLadderFn, cacheFastPathReachableFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+		dialAgentLadderFn = origLadder
+		cacheFastPathReachableFn = origReachable
+	}()
+
+	const staleIP = "127.0.0.2"
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: staleIP, Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// Re-resolution via the OS resolver yields the EXACT same (stale) IP —
+	// no new information for a retry to find.
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{staleIP}, nil
+	}
+
+	calls := 0
+	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		return nil, nil, errors.New("connection refused")
+	}
+	cacheFastPathReachableFn = func(context.Context, *grpcclient.AgentConnection, error) bool { return false }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051"); err == nil {
+		t.Fatal("expected the unresolved failure to surface")
+	}
+	if calls != 1 {
+		t.Fatalf("dialAgentLadderFn called %d times, want 1 (re-resolving to the same address must not redial)", calls)
+	}
+}
+
+// An already-expired context leaves no budget for a retry that can only fail
+// the same way; it must be skipped rather than attempted.
+func TestConnectWithAutoTLSDiagnostics_SkipsRetryWhenContextExpired(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		dialAgentLadderFn = origLadder
+		cacheFastPathReachableFn = origReachable
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "127.0.0.2", Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	calls := 0
+	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+		calls++
+		return nil, nil, errors.New("connection refused")
+	}
+	cacheFastPathReachableFn = func(context.Context, *grpcclient.AgentConnection, error) bool { return false }
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	if _, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:50051"); err == nil {
+		t.Fatal("expected an error when the cached IP fails under an already-expired context")
+	}
+	if calls != 1 {
+		t.Fatalf("dialAgentLadderFn called %d times, want 1 (retry must be skipped once ctx is expired)", calls)
+	}
+}
+
+// cacheFastPathReachable's own probe must be bounded by whatever's left of
+// the caller's deadline, not the full agentPlaintextProbeTimeout — otherwise
+// it can starve a subsequent retry (or the caller's own error handling) of
+// the time budget the caller thought it had.
+func TestCacheFastPathReachable_BoundsProbeByRemainingDeadline(t *testing.T) {
+	realAddr := startPlaintextVersionAgent(t)
+	conn, err := grpcclient.Connect(context.Background(), realAddr)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	start := time.Now()
+	reachable := cacheFastPathReachable(ctx, conn, nil)
+	elapsed := time.Since(start)
+
+	if reachable {
+		t.Fatal("expected unreachable against an already-expired context")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("cacheFastPathReachable took %v against an already-expired context, want near-instant", elapsed)
+	}
+}
+
+func TestIsHandshakeRejectionClass(t *testing.T) {
+	if isHandshakeRejectionClass(nil) {
+		t.Error("nil error must not be a rejection class")
+	}
+	if isHandshakeRejectionClass(errors.New("connection refused")) {
+		t.Error("a plain connectivity error must not be a rejection class")
+	}
+	if !isHandshakeRejectionClass(newTLSHandshakeRejectedError(errors.New("boom"))) {
+		t.Error("a tlsHandshakeRejectedError must be a rejection class")
+	}
+
+	stubOrgNameResolver(t, nil)
+	certs := []config.CertificateInfo{{OrganizationID: 3}}
+	orgErr := chooseRejectionError(context.Background(), 42, certs, errors.New("boom"))
+	if !isHandshakeRejectionClass(orgErr) {
+		t.Error("an org-mismatch error must be a rejection class")
+	}
+}
+
+func TestIsMDNSShapedHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"orin", true},
+		{"orin.local", true},
+		{"Orin.LOCAL.", true},
+		{"localhost", false},
+		{"LocalHost", false},
+		{"device.example.com", false}, // FQDN — never advertised over mDNS
+		{"my-tunnel.wendy.example", false},
+	}
+	for _, c := range cases {
+		if got := isMDNSShapedHost(c.host); got != c.want {
+			t.Errorf("isMDNSShapedHost(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+}
+
+// Critical-path regression: a connect-success write must land under the SAME
+// identity a discovery scan already established for this device (its TXT-
+// id-derived ID/DisplayName), not mint a second row keyed by the hostname —
+// end-to-end through connectAgentAtAddressWithProvisionedHint, the sole
+// caller of cacheConnectSuccess.
+func TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntry(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup, origBrowse := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+		lanBrowseFn = origBrowse
+	}()
+
+	realAddr := startPlaintextVersionAgent(t)
+	realHost, realPort, err := net.SplitHostPort(realAddr)
+	if err != nil {
+		t.Fatalf("split real address: %v", err)
+	}
+
+	const staleIP = "127.0.0.2"
+	const discoveryID = "3f9b2c10-91b4-4a52-9c11-000000000001"
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: discoveryID, DisplayName: "Orin Nano", Hostname: "orin.local",
+		IP: staleIP, Port: 50051, AgentVersion: "1.4.0", OS: "wendyos",
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return nil, errors.New("no such host")
+	}
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return []models.LANDevice{{Hostname: "orin.local", IPAddress: realHost}}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, "orin.local:"+realPort, func() bool { return false })
+	if err != nil {
+		t.Fatalf("connectAgentAtAddressWithProvisionedHint: %v", err)
+	}
+	defer conn.Close()
+
 	reloaded, err := discoverycache.LoadFrom(cachePath)
 	if err != nil {
 		t.Fatalf("reload cache: %v", err)
 	}
 	fresh := reloaded.Fresh(time.Now())
-	if len(fresh) != 1 || fresh[0].IP != realHost {
-		t.Fatalf("cache after retry = %+v, want a single fresh entry with IP %q", fresh, realHost)
+	if len(fresh) != 1 {
+		t.Fatalf("cache after connect = %+v, want exactly 1 entry (no duplicate key)", fresh)
+	}
+	e := fresh[0]
+	if e.ID != discoveryID || e.DisplayName != "Orin Nano" {
+		t.Errorf("identity = {ID:%q DisplayName:%q}, want the original discovery identity {ID:%q DisplayName:%q} preserved",
+			e.ID, e.DisplayName, discoveryID, "Orin Nano")
+	}
+	if e.IP != realHost {
+		t.Errorf("IP = %q, want self-healed to %q", e.IP, realHost)
+	}
+	if e.AgentVersion != "1.4.0" || e.OS != "wendyos" {
+		t.Errorf("connect-only write wiped probed fields: AgentVersion=%q OS=%q", e.AgentVersion, e.OS)
+	}
+}
+
+// Regression for the phantom-fresh bug: a connect whose plaintext dial is
+// lazily "successful" but whose real post-connect probe fails (device
+// actually down) must not touch the device cache at all.
+func TestConnectAgentAtAddressWithProvisionedHint_FailedProbeDoesNotWriteCache(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup := deviceCacheLoadFn, osLookupHostFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	failingAddr := startFailingPlaintextAgent(t)
+	failingHost, failingPort, err := net.SplitHostPort(failingAddr)
+	if err != nil {
+		t.Fatalf("split failing address: %v", err)
+	}
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return []string{failingHost}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := connectAgentAtAddressWithProvisionedHint(ctx, "orin.local:"+failingPort, func() bool { return false }); err == nil {
+		t.Fatal("expected the failed post-connect probe to surface as an error")
+	}
+
+	if _, err := os.Stat(cachePath); err == nil {
+		t.Fatal("expected no cache file written after a failed post-connect probe")
 	}
 }
 
@@ -1094,6 +1463,10 @@ func TestCacheConnectSuccess_UpsertsFreshEntry(t *testing.T) {
 	if normalizeMDNSHost(e.Hostname) != "orin" {
 		t.Errorf("Hostname = %q, does not normalize to %q", e.Hostname, "orin")
 	}
+	// No existing entry to reuse an identity from: mint one from the host.
+	if e.ID != "orin" || e.DisplayName != "orin" {
+		t.Errorf("ID/DisplayName = %q/%q, want host-derived %q/%q", e.ID, e.DisplayName, "orin", "orin")
+	}
 }
 
 func TestCacheConnectSuccess_SkipsLiteralIPHost(t *testing.T) {
@@ -1110,6 +1483,46 @@ func TestCacheConnectSuccess_SkipsLiteralIPHost(t *testing.T) {
 	}
 }
 
+// Critical: when resolution fails entirely, dialAgentLadder's plaintext
+// fallback can fall through to grpcclient.Connect with the raw, unresolved
+// hostname, leaving conn.Host set to a NAME rather than an IP. Storing that
+// in the IP field would poison the next cachedDeviceIP lookup with exactly
+// the ".local" resolution gap issue #1155 exists to work around.
+func TestCacheConnectSuccess_RejectsNonIPDialedHost(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "orin.local"})
+
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("expected no cache file written when the dialed host is a name, not an IP")
+	}
+}
+
+// FQDNs/tunnel relays and "localhost" are never advertised over mDNS —
+// minting a fabricated device-cache identity for them would be actively
+// wrong, not merely useless.
+func TestCacheConnectSuccess_SkipsNonMDNSShapedHost(t *testing.T) {
+	for _, host := range []string{"localhost", "device.example.com"} {
+		t.Run(host, func(t *testing.T) {
+			orig := deviceCacheLoadFn
+			defer func() { deviceCacheLoadFn = orig }()
+
+			path := filepath.Join(t.TempDir(), "devices.json")
+			deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+			cacheConnectSuccess(host+":50051", &grpcclient.AgentConnection{Host: "10.0.0.9"})
+
+			if _, err := os.Stat(path); err == nil {
+				t.Fatalf("expected no cache file written for non-mDNS-shaped host %q", host)
+			}
+		})
+	}
+}
+
 // A cache-write failure (here: the load seam itself erroring) must never be
 // allowed to surface — cacheConnectSuccess is best-effort and must not panic
 // or otherwise disrupt an already-successful connect.
@@ -1121,17 +1534,22 @@ func TestCacheConnectSuccess_IgnoresLoadError(t *testing.T) {
 	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "10.0.0.9"})
 }
 
-// Task 3's decision on record: partial-state writers (like this connect-only
-// sighting, which carries no probed AgentVersion/OS) must Upsert, not
-// Replace, so they never wipe those fields from a fuller entry a discovery
-// scan already wrote under the same key.
-func TestCacheConnectSuccess_PreservesProbedFieldsViaUpsert(t *testing.T) {
+// Critical fix: cacheConnectSuccess must write under an EXISTING fresh
+// entry's identity (its discovery-assigned TXT-id ID/DisplayName) when one
+// matches this hostname, not mint a second row under a host-derived key —
+// otherwise the same physical device shows up twice and cachedDeviceIP's
+// next lookup can nondeterministically return the stale row for the rest of
+// the TTL. Also covers Task 3's decision on record: this connect-only write
+// (no probed AgentVersion/OS) must Upsert, not Replace, so it never wipes
+// those fields.
+func TestCacheConnectSuccess_ReusesExistingDiscoveryIdentity(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
 
+	const discoveryID = "3f9b2c10-91b4-4a52-9c11-000000000001"
 	path := filepath.Join(t.TempDir(), "devices.json")
 	seedDeviceCache(t, path, discoverycache.Entry{
-		ID: "orin", DisplayName: "orin", Hostname: "orin.local",
+		ID: discoveryID, DisplayName: "Orin Nano", Hostname: "orin.local",
 		IP: "10.0.0.5", Port: 50051, AgentVersion: "1.2.3", OS: "wendyos",
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
@@ -1144,9 +1562,13 @@ func TestCacheConnectSuccess_PreservesProbedFieldsViaUpsert(t *testing.T) {
 	}
 	fresh := reloaded.Fresh(time.Now())
 	if len(fresh) != 1 {
-		t.Fatalf("got %d entries, want 1 (connect-only write must merge under the same key)", len(fresh))
+		t.Fatalf("got %d entries, want exactly 1 (no duplicate key for the same device)", len(fresh))
 	}
 	e := fresh[0]
+	if e.ID != discoveryID || e.DisplayName != "Orin Nano" {
+		t.Errorf("identity = {ID:%q DisplayName:%q}, want the existing discovery identity {ID:%q DisplayName:%q} reused",
+			e.ID, e.DisplayName, discoveryID, "Orin Nano")
+	}
 	if e.IP != "10.0.0.6" {
 		t.Errorf("IP = %q, want refreshed %q", e.IP, "10.0.0.6")
 	}

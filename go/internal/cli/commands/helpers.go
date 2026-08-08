@@ -927,6 +927,15 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 			return nil, probeErr
 		}
 	}
+	// This is the choke point's only real proof-of-life exit: conn.IsMTLS
+	// means dialAgentLadder already verified it with a live probe, and the
+	// plaintext branch just passed its own probe above. connectWithAutoTLSDiagnostics
+	// itself can't make this call — a lazy plaintext grpc.NewClient "succeeds"
+	// whether or not anything is listening — so the device-cache warm-up write
+	// lives here instead, where a down device (e.g. mid-restart polling loops
+	// like waitForAgentRestart, which calls the lower-level connectWithAutoTLS
+	// and never reaches this function) can't phantom-refresh its cache entry.
+	cacheConnectSuccess(addr, conn)
 	return conn, nil
 }
 
@@ -1238,9 +1247,25 @@ func normalizeMDNSHost(host string) string {
 // deviceCacheLoadFn is a seam over discoverycache.Load for tests.
 var deviceCacheLoadFn = discoverycache.Load
 
-// cachedDeviceIP returns the cached IP for host when a fresh (within
-// discoverycache.TTL) device-cache entry's hostname matches host
-// (normalizeMDNSHost equality), else "". This is the device-cache fast path's
+// cachedDeviceEntry returns the fresh (within discoverycache.TTL) device-
+// cache entry, if any, whose Hostname matches host (normalizeMDNSHost
+// equality). Shared by cachedDeviceIP's lookup and cacheConnectSuccess's
+// write path so a connect-success write always lands under a real device's
+// existing identity — a discovery scan's TXT-id-derived ID/DisplayName —
+// instead of minting a second row under a host-derived key for the same
+// physical device.
+func cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache.Entry, bool) {
+	want := normalizeMDNSHost(host)
+	for _, e := range cache.Fresh(time.Now()) {
+		if normalizeMDNSHost(e.Hostname) == want {
+			return e, true
+		}
+	}
+	return discoverycache.Entry{}, false
+}
+
+// cachedDeviceIP returns the cached IP for host when a fresh device-cache
+// entry's hostname matches, else "". This is the device-cache fast path's
 // lookup: a hit here lets connectWithAutoTLSDiagnostics skip resolveAddrOnce
 // (and the OS-resolver/mDNS-browse work it can do) entirely.
 func cachedDeviceIP(host string) string {
@@ -1248,13 +1273,29 @@ func cachedDeviceIP(host string) string {
 	if err != nil || cache == nil {
 		return ""
 	}
-	want := normalizeMDNSHost(host)
-	for _, e := range cache.Fresh(time.Now()) {
-		if e.IP != "" && normalizeMDNSHost(e.Hostname) == want {
-			return e.IP
-		}
+	if e, ok := cachedDeviceEntry(cache, host); ok {
+		return e.IP
 	}
 	return ""
+}
+
+// isMDNSShapedHost reports whether host is a plausible mDNS device name: a
+// bare hostname (no dot) other than the reserved loopback name "localhost",
+// or one already carrying the ".local" suffix. Real FQDNs and tunnel/relay
+// hostnames (dotted, non-".local") are excluded — those are never advertised
+// over mDNS, so minting a fabricated device-cache identity for them would be
+// actively wrong rather than merely useless. "localhost" is excluded
+// separately since it's never a real device; without this a dev pointed at a
+// local agent by that name would get a nonsense "localhost.local" entry.
+func isMDNSShapedHost(host string) bool {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if h == "localhost" {
+		return false
+	}
+	if strings.HasSuffix(h, ".local") {
+		return true
+	}
+	return !strings.Contains(h, ".")
 }
 
 // mdnsLocalHint returns guidance for ".local" mDNS resolution failures. The
@@ -1288,11 +1329,12 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 // path. That cached IP can be stale (the device moved, rebooted onto a new
 // DHCP lease, etc.), so a fast-path dial that doesn't actually answer is never
 // treated as "device unreachable" (spec §4): it re-resolves exactly as the
-// cache-miss path would and retries the whole ladder once. Every path that
-// ends in a live connection best-effort upserts the device cache with the IP
-// that actually answered, so a plain `wendy run`/`device info` against a
-// DNS/mDNS name keeps the cache warm for the next connect's fast path — with
-// no discovery/picker UI ever involved.
+// cache-miss path would and retries the whole ladder once — unless the retry
+// can't possibly help (see the guards inline below), in which case the
+// original attempt's result is kept. The device-cache write for a confirmed-
+// live connection does NOT happen here — a lazy plaintext "success" from this
+// function proves nothing (see cacheFastPathReachable's doc); it happens at
+// connectAgentAtAddressWithProvisionedHint's real post-connect proof of life.
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
 	// An admin-entitled on-device container reaches the agent over its local
 	// unix socket (bind-mounted by the `admin` entitlement) with no mTLS. When
@@ -1314,32 +1356,65 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	}
 
-	conn, mtlsErr, err := dialAgentLadder(ctx, plaintextAddr)
-	if fromCache && !cacheFastPathReachable(ctx, conn, err) {
-		if conn != nil {
-			conn.Close()
+	conn, mtlsErr, err := dialAgentLadderFn(ctx, plaintextAddr)
+	if fromCache && !cacheFastPathReachableFn(ctx, conn, err) {
+		switch {
+		case ctx.Err() != nil:
+			// No budget left for a retry that can only fail the same way —
+			// leave the caller's own context-deadline handling to report it.
+		case isHandshakeRejectionClass(err):
+			// The cached IP answered — a real TLS handshake happened and was
+			// rejected (cross-org cert, clock skew, etc.). That proves the
+			// address wasn't stale, so retrying can't fix anything; it could
+			// only replace this proven, actionable diagnostic with a weaker
+			// or even misleading result from a re-resolved (possibly
+			// different) address. Keep pass 1's result as-is.
+		default:
+			if retryAddr := resolveAddrOnce(ctx, originalAddr); retryAddr != plaintextAddr {
+				// Re-resolve exactly as the cache-miss path would (OS
+				// resolver, then mDNS browse) and retry the identical ladder
+				// once — a stale cache entry must never make a reachable
+				// device look unreachable. Re-resolving to the SAME address
+				// would just redial the ladder for no new information, so
+				// that case is skipped above.
+				if conn != nil {
+					conn.Close()
+				}
+				conn, mtlsErr, err = dialAgentLadderFn(ctx, retryAddr)
+			}
 		}
-		// The cached IP didn't answer. Re-resolve exactly as the cache-miss
-		// path would (OS resolver, then mDNS browse) and retry the identical
-		// ladder once — a stale cache entry must never make a reachable
-		// device look unreachable.
-		retryAddr := resolveAddrOnce(ctx, originalAddr)
-		conn, mtlsErr, err = dialAgentLadder(ctx, retryAddr)
-	}
-	if err == nil {
-		cacheConnectSuccess(originalAddr, conn)
 	}
 	return conn, mtlsErr, err
 }
 
+// isHandshakeRejectionClass reports whether err is the mTLS-rejection
+// diagnostic dialAgentLadder's org-mismatch branch can return
+// (chooseRejectionError): a genuine cross-org mismatch, or the generic
+// handshake-rejected error. Both prove the dialed device actually answered
+// the TLS handshake — it wasn't stale or unreachable, its certificate just
+// didn't match — so connectWithAutoTLSDiagnostics's stale-cache retry must
+// not run for either.
+func isHandshakeRejectionClass(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errTLSHandshakeRejected) {
+		return true
+	}
+	var mismatch orgMismatchDeviceError
+	return errors.As(err, &mismatch)
+}
+
 // cacheFastPathReachable reports whether conn — the device-cache fast path's
-// dial result — actually answers. A successful mTLS connection was already
-// verified by a real network probe inside dialAgentLadder (GetAgentVersion
-// against mtlsProbeTimeout); a plaintext gRPC connection is lazy (grpc.
-// NewClient never dials until the first RPC), so without an explicit probe
-// here a stale cached IP would sail through as a false "success" and only
-// fail later, deep inside a command, instead of triggering the stale-cache
-// retry above.
+// dial result — actually answers, bounding its own probe by whatever is left
+// of ctx's deadline so it can never eat time a subsequent stale-cache retry
+// needs (callers typically wrap the whole connect in a 3-5s context). A
+// successful mTLS connection was already verified by a real network probe
+// inside dialAgentLadder (GetAgentVersion against mtlsProbeTimeout); a
+// plaintext gRPC connection is lazy (grpc.NewClient never dials until the
+// first RPC), so without an explicit probe here a stale cached IP would sail
+// through as a false "success" and only fail later, deep inside a command,
+// instead of triggering the stale-cache retry above.
 func cacheFastPathReachable(ctx context.Context, conn *grpcclient.AgentConnection, err error) bool {
 	if err != nil || conn == nil {
 		return false
@@ -1347,28 +1422,56 @@ func cacheFastPathReachable(ctx context.Context, conn *grpcclient.AgentConnectio
 	if conn.IsMTLS {
 		return true
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, agentPlaintextProbeTimeout)
+	probeTimeout := agentPlaintextProbeTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < probeTimeout {
+			probeTimeout = remaining
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 	return probeErr == nil
 }
 
+// cacheFastPathReachableFn is a seam over cacheFastPathReachable for tests
+// that need to drive connectWithAutoTLSDiagnostics's retry decision directly
+// (e.g. proving the retry is skipped for a given error class) without a real
+// network probe.
+var cacheFastPathReachableFn = cacheFastPathReachable
+
 // cacheConnectSuccess best-effort upserts the device cache with the IP that
 // conn actually dialed for originalAddr's host, so subsequent connects to the
-// same DNS/mDNS name hit cachedDeviceIP's fast path. Only DNS/mDNS-name hosts
-// are cached — a literal-IP host has nothing to learn. Cache-write errors are
-// ignored: this must never fail an otherwise-successful connect. It upserts
-// rather than replaces (discoverycache.Cache.Upsert's non-zero-wins merge) so
-// this connect-only sighting — it carries no AgentVersion/OS probe data —
-// never wipes those fields from a fuller entry a discovery scan already wrote
-// under the same key.
+// same DNS/mDNS name hit cachedDeviceIP's fast path. Guards, in order:
+//   - only DNS/mDNS-name hosts — a literal-IP host has nothing to learn;
+//   - only hosts shaped like a real mDNS device name (isMDNSShapedHost) —
+//     FQDNs/tunnel relays and "localhost" are never advertised over mDNS, so
+//     minting a fabricated identity for them would be actively wrong;
+//   - only when conn actually dialed a literal IP — when resolution failed
+//     entirely, the raw hostname can fall all the way through to
+//     grpcclient.Connect unchanged, and storing a NAME in the IP field would
+//     poison the next cachedDeviceIP lookup with exactly the ".local"
+//     resolution gap issue #1155 exists to work around.
+//
+// Callers must only invoke this once liveness is actually confirmed (a real
+// probe, not a lazy plaintext "connect") — see
+// connectAgentAtAddressWithProvisionedHint, the sole caller.
+//
+// When an existing fresh entry already matches this hostname (by
+// normalizeMDNSHost equality — e.g. a discovery scan's TXT-id-keyed row),
+// this refreshes only that entry's IP/Port/LastSeen under its existing ID/
+// DisplayName, via Upsert's non-zero-wins merge — never minting a second row
+// under a different key for the same physical device, and never wiping the
+// existing entry's probed AgentVersion/OS fields (this connect-only sighting
+// carries none). Cache-write errors are ignored: this must never fail an
+// otherwise-successful connect.
 func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) {
-	if conn == nil || conn.Host == "" {
+	if conn == nil || conn.Host == "" || net.ParseIP(conn.Host) == nil {
 		return
 	}
 	host, portStr, err := net.SplitHostPort(originalAddr)
-	if err != nil || net.ParseIP(host) != nil {
-		return // not a host:port, or a literal-IP host: nothing to learn
+	if err != nil || net.ParseIP(host) != nil || !isMDNSShapedHost(host) {
+		return
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
@@ -1378,15 +1481,19 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 	if err != nil || cache == nil {
 		return
 	}
-	norm := normalizeMDNSHost(host)
+	entry := discoverycache.Entry{
+		Hostname: cacheHostnameForStorage(host),
+		IP:       conn.Host,
+		Port:     port,
+	}
+	if existing, ok := cachedDeviceEntry(cache, host); ok {
+		entry.ID, entry.DisplayName = existing.ID, existing.DisplayName
+	} else {
+		norm := normalizeMDNSHost(host)
+		entry.ID, entry.DisplayName = norm, norm
+	}
 	now := time.Now()
-	cache.Upsert(discoverycache.Entry{
-		ID:          norm,
-		DisplayName: norm,
-		Hostname:    cacheHostnameForStorage(host),
-		IP:          conn.Host,
-		Port:        port,
-	}, now)
+	cache.Upsert(entry, now)
 	_ = cache.Flush(now)
 }
 
@@ -1395,7 +1502,8 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 // sighting stores (see discoverycache.EntryFromDevice). normalizeMDNSHost
 // equality means cachedDeviceIP's match doesn't actually depend on this, but
 // keeping the stored form consistent avoids a confusing on-disk mix of "orin"
-// and "orin.local" for the same device.
+// and "orin.local" for the same device. Only called after isMDNSShapedHost
+// has already ruled out "localhost" and non-".local" dotted hosts.
 func cacheHostnameForStorage(host string) string {
 	if !strings.Contains(host, ".") {
 		return host + ".local"
@@ -1407,8 +1515,9 @@ func cacheHostnameForStorage(host string) string {
 // (plaintextAddr's port, then port+1 — see the mtlsAddrs comment below),
 // falling back to a plaintext connection when none succeed. addr must already
 // be resolved to a literal IP:port; this function does no name resolution of
-// its own. It is the shared ladder connectWithAutoTLSDiagnostics's device-
-// cache fast path dials on both its first attempt and its stale-cache retry.
+// its own. connectWithAutoTLSDiagnostics calls it for every connect —
+// resolved-address and device-cache fast path alike, including the fast
+// path's stale-cache retry — so all three share this exact same ladder.
 func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	allCerts := loadAllCLICerts()
@@ -1498,6 +1607,11 @@ func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.Age
 	conn, err := grpcclient.Connect(ctx, plaintextAddr)
 	return conn, lastMTLSErr, err
 }
+
+// dialAgentLadderFn is a seam over dialAgentLadder for tests that need to
+// count or fake ladder invocations directly (e.g. proving a stale-cache
+// retry did or didn't redial) without standing up a real mTLS cert chain.
+var dialAgentLadderFn = dialAgentLadder
 
 // isCertRejectionError reports whether a gRPC probe error is a server-sent TLS
 // alert rejecting the client certificate, as distinct from the client failing to
