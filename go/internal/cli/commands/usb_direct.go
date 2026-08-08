@@ -12,10 +12,15 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// usbDirectProbeBudget bounds one well-known-address probe. A dead candidate
+// usbDirectProbeBudget bounds well-known-address probing. A dead candidate
 // fails within one NDP neighbor-resolution timeout (~3s); a live agent answers
 // the TCP SYN immediately but its ML-DSA mTLS handshake can take several
 // seconds on Jetson-class hardware (see mtlsProbeTimeout), hence the headroom.
+//
+// Its scope differs by caller: batch-wide in probeUSBDirectDevices, which
+// probes every candidate concurrently under one deadline so discovery never
+// stalls longer than this; per-candidate in usbDirectFallback, which walks
+// candidates in sequence and must give each its own full handshake window.
 const usbDirectProbeBudget = 8 * time.Second
 
 // usbDirectCandidatesFn is a seam for tests.
@@ -91,6 +96,14 @@ func anyAgentPortAnswers(ctx context.Context, addrForPort func(port int) string)
 // (or with no agent listening) simply never answer; the caller's mDNS path
 // still covers those. Identity comes from GetAgentVersion instead of mDNS TXT
 // records, so no multicast needs to work on the link.
+//
+// Each candidate is dialed at the PLAINTEXT port and handed to the shared
+// auto-TLS path, so on a provisioned device the first attempt is mTLS against
+// the plaintext port — which no longer listens once provisioning completes, so
+// it is refused immediately — before the same handshake is retried at port+1
+// where it succeeds. That wasted round trip is deliberate: reusing
+// connectWithAutoTLS keeps cert selection, pinning and the plaintext fallback
+// in one place, and the failed attempt costs a refused TCP connect over USB.
 func probeUSBDirectDevices(ctx context.Context) []models.LANDevice {
 	candidates := usbDirectCandidatesFn()
 	if len(candidates) == 0 {
