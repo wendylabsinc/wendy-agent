@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,7 +13,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestIsImageBuildFailure verifies the classification used by the chunk-diff
@@ -108,6 +112,13 @@ func writeOCITar(t *testing.T, path string, entries map[string][]byte) {
 // compute the DiffID in the config (for uncompressed layers it equals blobData).
 func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType string, diffIDBytes []byte) {
 	t.Helper()
+	writeOCITar(t, path, minimalOCILayoutEntries(t, blobData, mediaType, diffIDBytes))
+}
+
+// minimalOCILayoutEntries builds the entry map (name → data) for a minimal
+// single-layer OCI layout, shared by the tar and directory fixture writers.
+func minimalOCILayoutEntries(t *testing.T, blobData []byte, mediaType string, diffIDBytes []byte) map[string][]byte {
+	t.Helper()
 
 	diffID := "sha256:" + sha256Hex(diffIDBytes)
 	layerDigest := "sha256:" + sha256Hex(blobData)
@@ -153,14 +164,303 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 		t.Fatal(err)
 	}
 
-	entries := map[string][]byte{
+	return map[string][]byte{
 		"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`),
 		"index.json": indexBytes,
 		"blobs/sha256/" + sha256Hex(manifestBytes): manifestBytes,
 		"blobs/sha256/" + sha256Hex(configBytes):   configBytes,
 		"blobs/sha256/" + sha256Hex(blobData):      blobData,
 	}
-	writeOCITar(t, path, entries)
+}
+
+// writeOCILayoutDir materializes entries (same shape writeOCITar takes) as an
+// OCI layout directory: "index.json" and "blobs/sha256/<hex>" become files.
+func writeOCILayoutDir(t *testing.T, dir string, entries map[string][]byte) {
+	t.Helper()
+	for name, data := range entries {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The layout-dir reader must return file-backed layers pointing at the blob
+// files themselves (offset 0, whole file), with DiffID and config populated
+// exactly like the tar reader.
+func TestReadOCILayoutDirLayers(t *testing.T) {
+	dir := t.TempDir()
+
+	raw := bytes.Repeat([]byte("wendy-layout-dir-payload-"), 4000)
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressed := gz.Bytes()
+
+	writeOCILayoutDir(t, dir, minimalOCILayoutEntries(t, compressed, "application/vnd.oci.image.layer.v1.tar+gzip", raw))
+
+	layers, imageConfig, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("want 1 layer, got %d", len(layers))
+	}
+	l := layers[0]
+
+	wantPath := filepath.Join(dir, "blobs", "sha256", sha256Hex(compressed))
+	if l.TarPath != wantPath {
+		t.Fatalf("layer path = %q, want %q", l.TarPath, wantPath)
+	}
+	if l.Offset != 0 {
+		t.Fatalf("layer offset = %d, want 0", l.Offset)
+	}
+	if l.Size != int64(len(compressed)) {
+		t.Fatalf("layer size = %d, want %d", l.Size, len(compressed))
+	}
+	if want := "sha256:" + sha256Hex(raw); l.DiffID != want {
+		t.Fatalf("diffID = %q, want %q", l.DiffID, want)
+	}
+
+	got, err := l.decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("decompressed bytes do not match original raw tar")
+	}
+	if !bytes.Contains(imageConfig, []byte(`"WorkingDir":"/app"`)) {
+		t.Fatal("image config not round-tripped")
+	}
+}
+
+// A blob file whose size disagrees with the manifest descriptor is a partial
+// write (e.g. a killed export); the reader must fail loudly so the caller can
+// self-heal by wiping the directory.
+func TestReadOCILayoutDirLayersSizeMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	raw := []byte("layer-tar-bytes-for-truncation")
+	entries := minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw)
+	writeOCILayoutDir(t, dir, entries)
+
+	blobPath := filepath.Join(dir, "blobs", "sha256", sha256Hex(raw))
+	if err := os.Truncate(blobPath, int64(len(raw)-5)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err == nil {
+		t.Fatal("want error for truncated layer blob, got nil")
+	}
+	if !strings.Contains(err.Error(), sha256Hex(raw)) {
+		t.Fatalf("error should name the bad blob digest, got: %v", err)
+	}
+}
+
+func TestReadOCILayoutDirLayersMissingIndex(t *testing.T) {
+	_, _, err := readOCILayoutDirLayers(t.TempDir(), "linux/arm64")
+	if err == nil {
+		t.Fatal("want error for missing index.json, got nil")
+	}
+}
+
+// Descriptor sizes are required by the OCI spec; without one the partial-write
+// check would be silently skipped, so the reader must refuse.
+func TestReadOCILayoutDirLayersRequiresDescriptorSize(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte("sizeless-layer-tar")
+	layerDigest := "sha256:" + sha256Hex(raw)
+	config := []byte(`{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":["` + layerDigest + `"]}}`)
+	configDigest := "sha256:" + sha256Hex(config)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"` + configDigest + `","size":` + fmt.Sprint(len(config)) + `},` +
+		`"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"` + layerDigest + `"}]}`)
+	manifestDigest := sha256Hex(manifest)
+	index := []byte(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + manifestDigest + `","size":` + fmt.Sprint(len(manifest)) + `}]}`)
+	writeOCILayoutDir(t, dir, map[string][]byte{
+		"oci-layout":                        []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json":                        index,
+		"blobs/sha256/" + manifestDigest:    manifest,
+		"blobs/sha256/" + sha256Hex(config): config,
+		"blobs/sha256/" + sha256Hex(raw):    raw,
+	})
+
+	_, _, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err == nil || !strings.Contains(err.Error(), "no size") {
+		t.Fatalf("want a no-size error, got %v", err)
+	}
+}
+
+// The persistent cache must not be world-readable: the layout parent dir is
+// created 0700 and the lock file 0600.
+func TestLockOCILayoutDirPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	parent := filepath.Join(t.TempDir(), "ocilayout")
+	dir := filepath.Join(parent, "app-linux_arm64")
+	release, err := lockOCILayoutDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if fi, err := os.Stat(parent); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("layout parent perm = %v (err %v), want 0700", fi.Mode().Perm(), err)
+	}
+	if fi, err := os.Stat(dir + ".lock"); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("lock file perm = %v (err %v), want 0600", fi.Mode().Perm(), err)
+	}
+}
+
+// GC must keep every blob reachable from index.json (all index entries, nested
+// indexes and attestation manifests included) and delete only orphans left
+// behind by superseded builds.
+func TestGCOCILayoutDir(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte("gc-test-layer-tar")
+	entries := minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw)
+	orphan := []byte("orphaned-blob-from-a-previous-build")
+	entries["blobs/sha256/"+sha256Hex(orphan)] = orphan
+	writeOCILayoutDir(t, dir, entries)
+
+	if err := gcOCILayoutDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", sha256Hex(orphan))); !os.IsNotExist(err) {
+		t.Fatal("orphan blob should have been deleted")
+	}
+	for name := range minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw) {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("referenced entry %q should survive GC: %v", name, err)
+		}
+	}
+}
+
+func TestGCOCILayoutDirMissingDirIsNoop(t *testing.T) {
+	if err := gcOCILayoutDir(filepath.Join(t.TempDir(), "nope")); err != nil {
+		t.Fatalf("missing dir should be a no-op, got %v", err)
+	}
+}
+
+// The per-app layout lock must exclude a second acquirer until released. The
+// lock file lives NEXT TO the directory so self-heal's RemoveAll(dir) can
+// never delete a held lock.
+func TestLockOCILayoutDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "app-layout")
+	release, err := lockOCILayoutDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir + ".lock"); err != nil {
+		t.Fatalf("lock file should sit next to the dir: %v", err)
+	}
+
+	acquired := make(chan struct{})
+	go func() {
+		r2, err := lockOCILayoutDir(context.Background(), dir)
+		if err != nil {
+			t.Error(err)
+			close(acquired)
+			return
+		}
+		close(acquired)
+		r2()
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second acquire should block while the lock is held")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-acquired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second acquire never succeeded after release")
+	}
+}
+
+// The export-mode dispatcher: docker buildx gets the persistent layout dir;
+// backends that can only emit tars (apple-container, on-device buildctl) and
+// the escape-hatch env keep the legacy temp tar.
+func TestChunkExportPlan(t *testing.T) {
+	t.Setenv("WENDY_CHUNK_EXPORT", "")
+	if got := chunkExportPlan(""); got != "dir" {
+		t.Fatalf("default builder: got %q, want dir", got)
+	}
+	if got := chunkExportPlan("docker"); got != "dir" {
+		t.Fatalf("docker builder: got %q, want dir", got)
+	}
+	if got := chunkExportPlan("apple-container"); got != "tar" {
+		t.Fatalf("apple-container builder: got %q, want tar", got)
+	}
+	if got := chunkExportPlan("buildkit"); got != "tar" {
+		t.Fatalf("buildkit builder: got %q, want tar", got)
+	}
+	if got := chunkExportPlan("no-such-builder"); got != "tar" {
+		t.Fatalf("invalid builder: got %q, want tar (error surfaces on the tar path)", got)
+	}
+	t.Setenv("WENDY_CHUNK_EXPORT", "tar")
+	if got := chunkExportPlan("docker"); got != "tar" {
+		t.Fatalf("env override: got %q, want tar", got)
+	}
+}
+
+func TestChunkLayoutDir(t *testing.T) {
+	got := chunkLayoutDir("/cache", "Com.Wendylabs.Examples.App", "linux/arm64")
+	want := filepath.Join("/cache", "wendy", "ocilayout", "com.wendylabs.examples.app-linux_arm64")
+	if got != want {
+		t.Fatalf("chunkLayoutDir = %q, want %q", got, want)
+	}
+}
+
+func TestBuildxOCIExportArgs(t *testing.T) {
+	t.Run("dir mode, no cache index, sorted build args", func(t *testing.T) {
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "/c/buildx", "/dest/layout", true,
+			map[string]string{"ZED": "2", "ALPHA": "1"}, false)
+		want := []string{
+			"buildx", "build",
+			"--builder", "wendy-oci",
+			"--platform", "linux/arm64",
+			"--progress", "plain",
+			"-f", "/proj/Dockerfile",
+			"--cache-to", "type=local,dest=/c/buildx",
+			"--build-arg", "ALPHA=1",
+			"--build-arg", "ZED=2",
+			"--output", "type=oci,dest=/dest/layout,tar=false",
+			".",
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("args mismatch:\n got  %q\n want %q", got, want)
+		}
+	})
+	t.Run("tar mode with cache index, no dockerfile", func(t *testing.T) {
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/buildx", "/tmp/image.tar", false, nil, true)
+		want := []string{
+			"buildx", "build",
+			"--builder", "wendy-oci",
+			"--platform", "linux/arm64",
+			"--progress", "plain",
+			"--cache-from", "type=local,src=/c/buildx",
+			"--cache-to", "type=local,dest=/c/buildx",
+			"--output", "type=oci,dest=/tmp/image.tar",
+			".",
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("args mismatch:\n got  %q\n want %q", got, want)
+		}
+	})
 }
 
 // readOCILayoutLayers must reference layer blobs by their byte range in the
