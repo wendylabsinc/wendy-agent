@@ -113,6 +113,12 @@ func NewServer(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBeforeFl
 	return grpc.NewServer(opts...), nil
 }
 
+// meshSessionCache lets agent→agent mesh dials resume TLS sessions. One
+// process-wide cache: mesh TLS configs are constructed per dial, so a
+// per-config cache would never produce a hit, and the agent presents a single
+// client identity so cross-identity ticket reuse cannot arise.
+var meshSessionCache = tls.NewLRUClientSessionCache(64)
+
 // NewClientTLSConfig returns a TLS config for one agent dialing another
 // agent's mTLS port (mesh LAN path): it presents this device's asset
 // certificate and verifies the peer's chain with the same custom verifier the
@@ -134,6 +140,7 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 		MinVersion:            base.MinVersion,
 		InsecureSkipVerify:    true, // verification is NOT disabled: VerifyPeerCertificate below performs the full (ML-DSA-aware) chain check
 		VerifyPeerCertificate: base.VerifyPeerCertificate,
+		ClientSessionCache:    meshSessionCache,
 	}, nil
 }
 

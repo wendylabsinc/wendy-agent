@@ -78,3 +78,21 @@ func TestResumableClientWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestNewClientTLSConfigSharesSessionCache(t *testing.T) {
+	pki := newResumptionPKI(t)
+	a, err := NewClientTLSConfig(pki.serverCertPEM, pki.caPEM, pki.serverKeyPEM, nil)
+	if err != nil {
+		t.Fatalf("NewClientTLSConfig: %v", err)
+	}
+	b, err := NewClientTLSConfig(pki.serverCertPEM, pki.caPEM, pki.serverKeyPEM, nil)
+	if err != nil {
+		t.Fatalf("NewClientTLSConfig: %v", err)
+	}
+	if a.ClientSessionCache == nil {
+		t.Fatal("ClientSessionCache not set on mesh client config")
+	}
+	if a.ClientSessionCache != b.ClientSessionCache {
+		t.Error("mesh client configs do not share one session cache; per-config caches never hit (configs are built per dial)")
+	}
+}
