@@ -191,20 +191,27 @@ func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins ce
 	}
 	// Always-on wrapper — not gated behind WENDY_TLS_DEBUG, which only nests
 	// as an inner logging layer above (verifyConn already includes it when
-	// set). Marks the cache when THIS connection resumed, before delegating
-	// to the inner verifier, so a subsequent Put for the fresh ticket Go
-	// issues even on a resumed connection does not overwrite the ticket from
-	// the last full handshake (see tlscache.Cache.MarkResumed's doc — without
-	// this, clients would chain tickets forever and never re-run the full
-	// ML-DSA verification). VerifyConnection runs synchronously inside the
-	// handshake, strictly BEFORE crypto/tls processes the server's
-	// post-handshake NewSessionTicket message (that happens lazily on a later
-	// Read), so marking always happens-before the Put it needs to affect —
-	// no race between the two.
+	// set). Records THIS connection's resumption outcome on every handshake
+	// (not just resumed ones), before delegating to the inner verifier, so a
+	// subsequent Put for the fresh ticket Go issues even on a resumed
+	// connection does not overwrite the ticket from the last full handshake
+	// (see tlscache.Cache.SetResumed's doc — without this, clients would
+	// chain tickets forever and never re-run the full ML-DSA verification).
+	// Calling SetResumed unconditionally (rather than only when DidResume is
+	// true) matters because a single *Cache is reused by a grpc.ClientConn
+	// across its internal reconnect handshakes: a later legitimate FULL
+	// handshake on that same connection must clear a stale resumed=true from
+	// an earlier handshake, or its fresh ticket would never persist.
+	// VerifyConnection runs synchronously inside the handshake, strictly
+	// BEFORE crypto/tls processes the server's post-handshake
+	// NewSessionTicket message (that happens lazily on a later Read), and
+	// gRPC dials/handshakes a ClientConn's transports sequentially, so
+	// marking always happens-before the Put it needs to affect for that
+	// handshake — no race between the two.
 	innerVerify := verifyConn
 	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-		if cache != nil && cs.DidResume {
-			cache.MarkResumed()
+		if cache != nil {
+			cache.SetResumed(cs.DidResume)
 		}
 		return innerVerify(cs)
 	}

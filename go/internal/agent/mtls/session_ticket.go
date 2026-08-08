@@ -34,7 +34,7 @@ const ticketMetaPrefix = "wendy-mtls/1:"
 // how old the original handshake was. The actual bound is enforced
 // CLIENT-side (go/internal/cli/tlscache.Cache): the client keeps only the
 // ticket from its last FULL handshake and discards tickets minted on resumed
-// connections (Cache.MarkResumed/Put). Combined with Go's own
+// connections (Cache.SetResumed/Put). Combined with Go's own
 // maxSessionTicketLifetime (7 days) check on both this server and the client,
 // that forces a full handshake — and therefore a full ML-DSA re-verification
 // — at least once a week, even for a client that connects every day. The

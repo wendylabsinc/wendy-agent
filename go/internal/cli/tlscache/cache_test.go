@@ -173,16 +173,16 @@ func TestCachePutNilEvicts(t *testing.T) {
 	}
 }
 
-// TestMarkResumedSkipsOverwriteOnPut is the regression test for the ticket-
-// chaining finding: without MarkResumed, Put overwrites the stored ticket on
-// every connection — including resumed ones — because Go's TLS 1.3 server
-// reissues a fresh ticket even on a resumed handshake. A client that kept
-// doing that could chain tickets forever and never re-run the full ML-DSA
-// verification the design's ≤7-day trust bound depends on. The fix: once
-// MarkResumed is called (simulating the always-on VerifyConnection wrapper in
-// grpcclient.newAgentTLSConfig observing DidResume), Put must keep the ticket
-// from the last FULL handshake instead of overwriting it.
-func TestMarkResumedSkipsOverwriteOnPut(t *testing.T) {
+// TestSetResumedSkipsOverwriteOnPut is the regression test for the ticket-
+// chaining finding: without SetResumed(true), Put overwrites the stored
+// ticket on every connection — including resumed ones — because Go's TLS 1.3
+// server reissues a fresh ticket even on a resumed handshake. A client that
+// kept doing that could chain tickets forever and never re-run the full
+// ML-DSA verification the design's ≤7-day trust bound depends on. The fix:
+// once SetResumed(true) is called (simulating the always-on VerifyConnection
+// wrapper in grpcclient.newAgentTLSConfig observing DidResume), Put must keep
+// the ticket from the last FULL handshake instead of overwriting it.
+func TestSetResumedSkipsOverwriteOnPut(t *testing.T) {
 	addr, srvResumed := startTLSServer(t)
 	store := newMemStore()
 	c := newCache("cache-test", []byte("client-leaf-der"), store)
@@ -202,7 +202,7 @@ func TestMarkResumedSkipsOverwriteOnPut(t *testing.T) {
 
 	// Simulate the always-on VerifyConnection wrapper having observed
 	// DidResume on the connection that is about to call Put.
-	c.MarkResumed()
+	c.SetResumed(true)
 
 	// Second connection: the ticket persisted above is still valid, so this
 	// resumes at the TLS layer, and the server (per Go's TLS 1.3 behavior)
@@ -210,29 +210,97 @@ func TestMarkResumedSkipsOverwriteOnPut(t *testing.T) {
 	// exercising the actual code path Put must guard, not a fabricated
 	// ClientSessionState.
 	if resumed := dialWithCache(t, addr, c); !resumed {
-		t.Fatal("second connection did not resume — can't exercise MarkResumed's effect on a resumed-connection Put")
+		t.Fatal("second connection did not resume — can't exercise SetResumed's effect on a resumed-connection Put")
 	}
 	<-srvResumed
 	c.Flush()
 
 	if got := store.get(c.storeKey); !bytes.Equal(got, wantUnchanged) {
-		t.Error("Put overwrote the full-handshake ticket after MarkResumed; stored blob changed on a resumed connection")
+		t.Error("Put overwrote the full-handshake ticket after SetResumed(true); stored blob changed on a resumed connection")
 	}
 }
 
 // TestCachePutNilEvictsEvenWhenMarkedResumed covers the other half of
-// MarkResumed's contract: eviction (Put(nil)) must always run regardless of
+// SetResumed's contract: eviction (Put(nil)) must always run regardless of
 // the resumed flag — crypto/tls uses Put(nil) to drop sessions it has
 // determined are broken, and skipping that would leave a bad ticket cached.
 func TestCachePutNilEvictsEvenWhenMarkedResumed(t *testing.T) {
 	store := newMemStore()
 	c := newCache("cache-test", []byte("cert"), store)
 	store.put(c.storeKey, []byte("whatever"))
-	c.MarkResumed()
+	c.SetResumed(true)
 	c.Put("ignored", nil)
 	c.Flush()
 	if store.get(c.storeKey) != nil {
-		t.Error("Put(nil) did not evict the stored session even though MarkResumed had been called")
+		t.Error("Put(nil) did not evict the stored session even though SetResumed(true) had been called")
+	}
+}
+
+// TestSetResumedFalseAllowsPutAfterLaterFullHandshake is the regression test
+// for the sticky-flag finding: MarkResumed used to only ever set resumed
+// true, so a grpc.ClientConn's shared *Cache — reused across the ClientConn's
+// internal reconnect handshakes — would never persist a ticket from a LATER
+// legitimate full handshake once any earlier handshake on that connection had
+// resumed. The fix is SetResumed(bool): the always-on VerifyConnection
+// wrapper now calls it on every handshake with cs.DidResume, so a later full
+// handshake (DidResume=false) clears the flag and Put persists again.
+//
+// This drives the scenario with real dials plus one direct SetResumed(false)
+// standing in for the wrapper's call on a later full handshake (there is no
+// grpc.ClientConn here to force a real third TLS 1.3 dial to skip
+// resumption on a still-valid ticket): dial 1 is a full handshake and
+// persists; SetResumed(true) simulates the wrapper observing the resumed
+// dial 2 would produce; the store entry is then evicted out-of-band (as if
+// the ticket expired or the server rotated its STEK) so dial 3 is forced to
+// be a full handshake; SetResumed(false) simulates the wrapper observing
+// that dial 3's DidResume; and Put's subsequent persist of dial 3's fresh
+// ticket must succeed. Verified to fail against the old sticky MarkResumed
+// semantics (permanent regression-test doc note; see the residual-fix report
+// for the negative-verification run).
+func TestSetResumedFalseAllowsPutAfterLaterFullHandshake(t *testing.T) {
+	addr, srvResumed := startTLSServer(t)
+	store := newMemStore()
+	c := newCache("cache-test", []byte("client-leaf-der"), store)
+
+	// Dial 1: full handshake, persists a ticket.
+	if resumed := dialWithCache(t, addr, c); resumed {
+		t.Fatal("first connection unexpectedly resumed")
+	}
+	<-srvResumed
+	c.Flush()
+	if store.get(c.storeKey) == nil {
+		t.Fatal("first full handshake did not persist a session")
+	}
+
+	// Simulate the always-on VerifyConnection wrapper observing a resumed
+	// handshake on this same Cache (as would happen on a grpc.ClientConn
+	// internal reconnect that resumes).
+	c.SetResumed(true)
+
+	// The ticket persisted above is evicted out-of-band here (standing in for
+	// expiry/STEK rotation) so the next dial is forced into a full handshake
+	// without needing a second real server or clock manipulation.
+	store.delete(c.storeKey)
+	c.wg.Wait() // no pending async work from the delete above; keeps ordering explicit
+
+	// Simulate the wrapper observing dial 3's full handshake — this is the
+	// exact call that must reset the sticky flag from the resumed dial 2
+	// simulated above.
+	c.SetResumed(false)
+
+	// Dial 3: the store entry is gone, so this must be a full handshake, and
+	// its fresh ticket must persist — this is the case the old sticky
+	// MarkResumed (set-only-true, never reset) got wrong: once any handshake
+	// on this Cache had resumed, no later full handshake's ticket would ever
+	// be saved again.
+	if resumed := dialWithCache(t, addr, c); resumed {
+		t.Fatal("third connection unexpectedly resumed — test setup did not force a full handshake")
+	}
+	<-srvResumed
+	c.Flush()
+
+	if store.get(c.storeKey) == nil {
+		t.Error("later full handshake's ticket was not persisted after an earlier resumed handshake on the same Cache — SetResumed did not reset")
 	}
 }
 

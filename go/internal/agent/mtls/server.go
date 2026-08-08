@@ -227,7 +227,7 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 	// With this fix in place, every resumed mesh connection re-verifies the
 	// full chain + identity pin, so a client that let session tickets chain
 	// indefinitely across resumptions (extending trust well past a single
-	// handshake's ML-DSA verification — see tlscache.Cache.MarkResumed's doc
+	// handshake's ML-DSA verification — see tlscache.Cache.SetResumed's doc
 	// for why the CLI↔agent path guards against exactly that) is harmless
 	// here: the in-memory meshSessionCache needs no equivalent guard.
 	base.VerifyConnection = func(cs tls.ConnectionState) error {
