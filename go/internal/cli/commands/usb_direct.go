@@ -20,6 +20,19 @@ const usbDirectProbeBudget = 8 * time.Second
 // usbDirectCandidatesFn is a seam for tests.
 var usbDirectCandidatesFn = discovery.USBDirectCandidates
 
+// advertisedAgentPort returns the port a discovered LANDevice must carry for
+// the connection convention lanAgentAddresses implements: a provisioned device
+// advertises its mTLS port, from which lanAgentAddresses subtracts
+// agentMTLSPortOffset to recover the plaintext port connectWithAutoTLS dials.
+// Storing the plaintext port on an IsMTLS device would make that subtraction
+// undershoot and every later connection attempt miss the agent entirely.
+func advertisedAgentPort(isMTLS bool) int {
+	if isMTLS {
+		return defaultAgentPort + agentMTLSPortOffset
+	}
+	return defaultAgentPort
+}
+
 // probeUSBDirectDevices dials the well-known USB link-local address on every
 // USB-backed host interface in parallel and returns a LANDevice for each Wendy
 // agent that answers. Devices on WendyOS images without the well-known address
@@ -48,7 +61,7 @@ func probeUSBDirectDevices(ctx context.Context) []models.LANDevice {
 			dev := models.LANDevice{
 				DisplayName:      hostname,
 				IPAddress:        discovery.WellKnownUSBAddr + "%" + cand.Zone,
-				Port:             defaultAgentPort,
+				Port:             advertisedAgentPort(isMTLS),
 				IsMTLS:           isMTLS,
 				InterfaceType:    string(models.InterfaceLAN),
 				NetworkInterface: cand.Interface,

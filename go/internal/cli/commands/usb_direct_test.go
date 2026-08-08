@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -38,11 +39,40 @@ func TestProbeUSBDirectDevicesBuildsLANDevice(t *testing.T) {
 		t.Fatalf("got %d devices, want 1", len(devs))
 	}
 	d := devs[0]
+	// Port is the ADVERTISED mTLS port (50052), matching what an mDNS-resolved
+	// provisioned device carries — see TestProbedUSBDeviceDialsPlaintextPort.
 	if d.Hostname != "wendy-orin.local" || d.DisplayName != "wendy-orin" ||
-		d.IPAddress != "fe80::5741:1%enx001122334455" || d.Port != 50051 ||
+		d.IPAddress != "fe80::5741:1%enx001122334455" || d.Port != 50052 ||
 		!d.IsMTLS || d.USB == "" || d.NetworkInterface != "enx001122334455" ||
 		!d.IsWendyDevice || d.AgentVersion != "1.2.3" || d.InterfaceType != string(models.InterfaceLAN) {
 		t.Fatalf("unexpected device: %+v", d)
+	}
+}
+
+// A probe-built device is fed straight into the picker and the connect path, so
+// its Port must survive the mTLS→plaintext offset math in lanAgentAddresses and
+// land back on the port the probe actually reached the agent on.
+func TestProbedUSBDeviceDialsPlaintextPort(t *testing.T) {
+	for _, isMTLS := range []bool{true, false} {
+		withUSBDirectStubs(t,
+			[]discovery.USBDirectCandidate{{Interface: "enxa", Zone: "enxa"}},
+			func(context.Context, string) (bool, *agentpb.GetAgentVersionResponse, error) {
+				return isMTLS, &agentpb.GetAgentVersionResponse{Hostname: "wendy-orin"}, nil
+			})
+
+		devs := probeUSBDirectDevices(context.Background())
+		if len(devs) != 1 {
+			t.Fatalf("isMTLS=%v: got %d devices, want 1", isMTLS, len(devs))
+		}
+		got := lanAgentAddresses(devs[0])
+		if len(got) != 2 {
+			t.Fatalf("isMTLS=%v: lanAgentAddresses() = %v, want the link-local and .local addresses", isMTLS, got)
+		}
+		for _, addr := range got {
+			if !strings.HasSuffix(addr, ":50051") {
+				t.Fatalf("isMTLS=%v: address %q must dial the plaintext port 50051", isMTLS, addr)
+			}
+		}
 	}
 }
 
