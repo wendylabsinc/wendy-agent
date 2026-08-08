@@ -106,6 +106,20 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
+// cacheRun renders a RUN backed by a BuildKit cache mount at dir.
+//
+// Every cache mount goes through here so none can be emitted without a sharing
+// mode. BuildKit treats an unqualified cache mount as sharing=shared, meaning
+// concurrent builds may use the same directory at once — and Wendy builds up to
+// four services concurrently, on top of BuildKit's own parallel execution of
+// independent stages within a single Dockerfile. Package managers survive that
+// (they lock internally), but the waiting then happens invisibly inside cargo
+// or npm. sharing=locked moves the queueing to the mount, where BuildKit
+// reports it as part of the build graph.
+func cacheRun(dir, cmd string) string {
+	return fmt.Sprintf("RUN --mount=type=cache,sharing=locked,target=%s %s", dir, cmd)
+}
+
 func aptInstallLines(a *spec.AptInstall) []string {
 	parts := []string{"apt-get", "update", "&&", "apt-get", "install", "-y"}
 	if !a.Recommends {
@@ -146,7 +160,7 @@ func pipInstallLines(p *spec.PipInstall) []string {
 	for _, pkg := range p.Packages {
 		parts = append(parts, shellQuote(pkg))
 	}
-	lines = append(lines, "RUN --mount=type=cache,target=/root/.cache/pip "+strings.Join(parts, " "))
+	lines = append(lines, cacheRun("/root/.cache/pip", strings.Join(parts, " ")))
 	return lines
 }
 
@@ -166,7 +180,7 @@ func npmInstallLines(n *spec.NpmInstall) []string {
 	}
 	return []string{
 		fmt.Sprintf("COPY package.json %s ./", spec.NpmLockfile(n.Manager)),
-		fmt.Sprintf("RUN --mount=type=cache,target=%s %s", cacheDir, cmd),
+		cacheRun(cacheDir, cmd),
 	}
 }
 
@@ -204,15 +218,15 @@ func buildLines(b *spec.Build) ([]string, error) {
 		if profile == "release" {
 			cmd += " --release"
 		}
-		return []string{"RUN --mount=type=cache,target=/root/.cargo " + cmd}, nil
+		return []string{cacheRun("/root/.cargo", cmd)}, nil
 	case "go":
-		return []string{"RUN --mount=type=cache,target=/root/.cache/go-build go build ./..."}, nil
+		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
 		cmd := "swift build"
 		if profile == "release" {
 			cmd += " -c release"
 		}
-		return []string{"RUN --mount=type=cache,target=/root/.swiftpm " + cmd}, nil
+		return []string{cacheRun("/root/.swiftpm", cmd)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported build.lang %q (supported: rust, go, swift)", b.Lang)
 	}
