@@ -2798,36 +2798,6 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 	}
 }
 
-// muxLANDevices merges two LAN device streams into one. Each producer owns and
-// closes its own input channel: a producer must never send into a channel it
-// does not own, because the owner's close turns an in-flight send into a panic.
-// The merged channel closes once both inputs have.
-func muxLANDevices(a, b <-chan models.LANDevice) <-chan models.LANDevice {
-	out := make(chan models.LANDevice, 16)
-	go func() {
-		defer close(out)
-		// A closed input is nil-ed out so its always-ready receive stops
-		// starving the other one; the loop ends when both are nil.
-		for a != nil || b != nil {
-			select {
-			case dev, ok := <-a:
-				if !ok {
-					a = nil
-					continue
-				}
-				out <- dev
-			case dev, ok := <-b:
-				if !ok {
-					b = nil
-					continue
-				}
-				out <- dev
-			}
-		}
-	}()
-	return out
-}
-
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // LAN discovery runs continuously so devices that come online after the
@@ -2870,27 +2840,6 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// Cancel continuous discovery when the picker exits.
 	discoverCtx, discoverCancel := context.WithCancel(ctx)
 
-	// Continuous LAN discovery — devices appear as they're found.
-	lanCh := make(chan models.LANDevice, 16)
-	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
-
-	// USB well-known-address probe: a USB-attached device appears in the
-	// picker even when mDNS is broken on this host. The picker's MergeItem
-	// dedupes it against the mDNS entry for the same device. It feeds its own
-	// channel — lanCh belongs to DiscoverLANContinuous, which closes it when the
-	// browse stream ends, and that can happen while probe sends are in flight.
-	usbCh := make(chan models.LANDevice, 16)
-	go func() {
-		defer close(usbCh)
-		for _, dev := range probeUSBDirectDevices(discoverCtx) {
-			select {
-			case usbCh <- dev:
-			case <-discoverCtx.Done():
-				return
-			}
-		}
-	}()
-	deviceCh := muxLANDevices(lanCh, usbCh)
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
 		// While the probe is still in flight the Agent/OS columns show a
@@ -2931,32 +2880,29 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// a nil Prober a cached row can never be confirmed offline.
 	events := lanStreamFn(discoverCtx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
 	go func() {
-		for rawDev := range deviceCh {
-			// Show the device immediately with a "connecting" spinner, then
-			// resolve its version/OS and update the row in place.
-			sendLANItem(rawDev, false, tui.ProbePending)
-			resolved, isMTLS, err := resolveLANVersion(discoverCtx, rawDev)
-			if err == nil {
-				sendLANItem(resolved, !isMTLS, tui.ProbeOK)
-				continue
+		// ev.Supersedes needs no handling here: picker rows dedup by hostname
+		// (deviceDedupKey/HostKey), so a superseded connect-minted row and the
+		// TXT-id row that replaces it are already the same row.
+		for ev := range events {
+			probe, insecure := lanRowState(ev)
+			sendLANItem(ev.Device, insecure, probe)
+		}
+	}()
+
+	// USB well-known-address probe: a USB-attached device appears in the picker
+	// even when mDNS is broken on this host — precisely the case the stream
+	// above cannot cover, since it only ever learns of devices that announce
+	// themselves. The picker's MergeItem dedupes the row against the mDNS entry
+	// for the same device.
+	go func() {
+		// probeUSBDirectDevices returns only candidates whose agent already
+		// answered GetAgentVersion, so these rows arrive fully resolved: no
+		// pending spinner, no re-probe, and IsMTLS is the connection it made.
+		for _, dev := range probeUSBDirectDevices(discoverCtx) {
+			if discoverCtx.Err() != nil {
+				return
 			}
-			// Version probe failed on first attempt: mark the row failed (red
-			// triangle) and retry in the background so the version appears once
-			// the device becomes responsive, without requiring rediscovery.
-			sendLANItem(rawDev, false, tui.ProbeFailed)
-			go func(d models.LANDevice) {
-				for attempt := 0; attempt < 5; attempt++ {
-					select {
-					case <-discoverCtx.Done():
-						return
-					case <-time.After(2 * time.Second):
-					}
-					if updated, isMTLS, retryErr := resolveLANVersion(discoverCtx, d); retryErr == nil {
-						sendLANItem(updated, !isMTLS, tui.ProbeOK)
-						return
-					}
-				}
-			}(rawDev)
+			sendLANItem(dev, !dev.IsMTLS, tui.ProbeOK)
 		}
 	}()
 
