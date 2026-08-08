@@ -146,6 +146,15 @@ func (c *Cache) Upsert(e Entry, now time.Time) {
 	c.dirty[key] = true
 }
 
+// Merge returns stored with incoming's non-zero fields applied on top — the
+// same rule Upsert uses to fold a new sighting into a stored entry. Exported
+// for the streaming discovery engine, which keeps its in-memory view of a
+// device identical to what a later Flush will persist. LastSeen is not
+// touched; callers stamp it via Upsert.
+func Merge(stored, incoming Entry) Entry {
+	return mergeEntry(stored, incoming)
+}
+
 // mergeEntry applies incoming's non-zero fields on top of stored, leaving
 // stored's value wherever incoming carries the zero value for that field.
 func mergeEntry(stored, incoming Entry) Entry {
