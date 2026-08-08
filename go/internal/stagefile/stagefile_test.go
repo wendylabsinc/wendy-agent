@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/lock"
@@ -104,5 +105,51 @@ func TestCompileFileReturnsErrorWhenSourceMissing(t *testing.T) {
 	dir := t.TempDir()
 	if _, _, err := compileFile(dir, "", func(string) (string, error) { return "", nil }); err == nil {
 		t.Fatal("expected an error when build.stagefile.yaml is missing, got nil")
+	}
+}
+
+// TestCompileFileResolvesASharedBaseImageOncePerProcess covers the compose
+// case: every service in a project typically shares one base image, each
+// service compiles its own Stagefile, and those compiles now run concurrently —
+// so without a process-wide memo they all issue the same registry lookup at the
+// same time. Two unpinned projects on one base must cost one lookup.
+//
+// The ref is unique to this test because the memo deliberately outlives a
+// single compile; a shared ref would let another test's lookup satisfy this one
+// and the assertion would pass for the wrong reason.
+func TestCompileFileResolvesASharedBaseImageOncePerProcess(t *testing.T) {
+	const ref = "example.invalid/shared-base:once"
+
+	var calls atomic.Int32
+	restore := baseResolver
+	baseResolver = func(got string) (string, error) {
+		if got != ref {
+			return "", fmt.Errorf("unexpected ref %q", got)
+		}
+		calls.Add(1)
+		return "sha256:shared", nil
+	}
+	t.Cleanup(func() { baseResolver = restore })
+
+	source := "version: 1\nstages:\n  - name: app\n    from: " + ref + "\n"
+	dirs := []string{t.TempDir(), t.TempDir()}
+	for _, dir := range dirs {
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, dir := range dirs {
+		dockerfile, _, err := CompileFile(dir, "")
+		if err != nil {
+			t.Fatalf("CompileFile(%s): %v", dir, err)
+		}
+		if !strings.Contains(dockerfile, "sha256:shared") {
+			t.Fatalf("CompileFile(%s) did not pin the resolved digest:\n%s", dir, dockerfile)
+		}
+	}
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("registry resolver called %d times for one shared base image across %d projects, want 1", got, len(dirs))
 	}
 }

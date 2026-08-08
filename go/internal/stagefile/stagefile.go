@@ -18,13 +18,33 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
+// baseResolver is the underlying registry lookup every CompileFile ultimately
+// reaches. It is a package var purely so tests can exercise the memoization in
+// sharedResolver without touching a live registry.
+var baseResolver lock.Resolver = lock.CraneResolver
+
+// sharedResolver is the process-wide resolver CompileFile uses. Memoizing here
+// rather than per-call is what makes a compose project cheap: its services each
+// compile their own Stagefile, they typically share a base image, and those
+// compiles run concurrently — so without a shared memo they would all issue the
+// same registry lookup simultaneously. The indirection through baseResolver
+// keeps the memo established once while leaving the underlying lookup
+// swappable in tests.
+var sharedResolver = lock.Memoize(func(ref string) (string, error) {
+	return baseResolver(ref)
+})
+
 // CompileFile reads build.stagefile.yaml from dir, resolves any missing
 // lockfile image refs against a live registry (existing pins are never
 // touched — only an explicit re-lock changes them), writes/updates
 // build.stagefile.lock.yaml in dir, and returns the compiled Dockerfile
 // text and the derived .dockerignore text.
+//
+// Safe to call concurrently for different directories: the lockfile and both
+// generated files are written via temp-file + rename, and the registry lookups
+// behind sharedResolver are deduplicated across callers.
 func CompileFile(dir, platform string) (dockerfile, dockerignore string, err error) {
-	return compileFile(dir, platform, lock.CraneResolver)
+	return compileFile(dir, platform, sharedResolver)
 }
 
 // compileFile is the resolver-injectable implementation behind
