@@ -192,6 +192,118 @@ func TestBuildNativeCopyLayerDeterministic(t *testing.T) {
 	}
 }
 
+// nativeDepsHash must cover every build input EXCEPT the final stage's local
+// copy files: those are the app inputs whose changes the native path handles
+// without buildx.
+func TestNativeDepsHash(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python@sha256:abc\nCOPY requirements.txt requirements.txt\nRUN pip install -r requirements.txt\nCOPY main.py main.py\n")
+	writeFile(t, dir, "build.stagefile.lock.yaml", "version: 1\nimages:\n  python:3.11-slim: sha256:abc\n")
+	writeFile(t, dir, "requirements.txt", "mcp\n")
+	writeFile(t, dir, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name:    "app",
+		From:    "python:3.11-slim",
+		Install: &spec.Install{Pip: &spec.PipInstall{Requirements: "requirements.txt"}},
+		Copy:    []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}}},
+	}}}
+
+	hash := func(args map[string]string, platform string) string {
+		t.Helper()
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", platform, args, sf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash(nil, "linux/arm64")
+	if got := hash(nil, "linux/arm64"); got != base {
+		t.Fatal("deps hash not stable")
+	}
+	writeFile(t, dir, "main.py", "print('v2')\n")
+	if got := hash(nil, "linux/arm64"); got != base {
+		t.Fatal("deps hash must ignore final-stage copy files (app inputs)")
+	}
+	writeFile(t, dir, "requirements.txt", "mcp\nuvicorn\n")
+	afterReqs := hash(nil, "linux/arm64")
+	if afterReqs == base {
+		t.Fatal("deps hash unchanged after requirements.txt edit")
+	}
+	writeFile(t, dir, "Dockerfile.generated", "FROM python@sha256:def\n")
+	afterDF := hash(nil, "linux/arm64")
+	if afterDF == afterReqs {
+		t.Fatal("deps hash unchanged after Dockerfile.generated edit")
+	}
+	if got := hash(map[string]string{"K": "V"}, "linux/arm64"); got == afterDF {
+		t.Fatal("deps hash unchanged after build-arg change")
+	}
+	if got := hash(nil, "linux/amd64"); got == afterDF {
+		t.Fatal("deps hash unchanged after platform change")
+	}
+}
+
+// Local copies in NON-final stages feed deps layers and must be part of the
+// deps hash (only the final stage's local copies are app inputs).
+func TestNativeDepsHashIncludesNonFinalCopies(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM base\n")
+	writeFile(t, dir, "settings.conf", "cfg v1\n")
+	writeFile(t, dir, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{
+		{Name: "cfg", From: "python:3.11-slim", Copy: []spec.CopyEntry{{From: "local", Paths: []string{"settings.conf"}, Dest: "/etc/app/"}}},
+		{Name: "app", From: "python:3.11-slim", Copy: []spec.CopyEntry{
+			{From: "cfg", Paths: []string{"/etc/app"}, Dest: "/etc/app"},
+			{From: "local", Paths: []string{"main.py"}},
+		}},
+	}}
+
+	hash := func() string {
+		t.Helper()
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", nil, sf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "main.py", "print('v2')\n")
+	if got := hash(); got != base {
+		t.Fatal("final-stage copy file must not affect the deps hash")
+	}
+	writeFile(t, dir, "settings.conf", "cfg v2\n")
+	if got := hash(); got == base {
+		t.Fatal("non-final-stage copy file must affect the deps hash")
+	}
+}
+
+func TestNativeStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok := loadNativeState(dir); ok {
+		t.Fatal("missing state must load as not-ok")
+	}
+	want := nativeState{
+		DepsHash:        "sha256:aaa",
+		ManifestDigest:  "sha256:bbb",
+		AppLayerDigests: []string{"sha256:ccc"},
+	}
+	if err := saveNativeState(dir, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := loadNativeState(dir)
+	if !ok || got.DepsHash != want.DepsHash || got.ManifestDigest != want.ManifestDigest || len(got.AppLayerDigests) != 1 || got.AppLayerDigests[0] != "sha256:ccc" {
+		t.Fatalf("round-trip mismatch: %+v ok=%v", got, ok)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte("{corrupt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loadNativeState(dir); ok {
+		t.Fatal("corrupt state must load as not-ok")
+	}
+}
+
 func TestBuildNativeCopyLayerRejectsEscapes(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := buildNativeCopyLayer(dir, spec.CopyEntry{From: "local", Paths: []string{"../outside"}}, ""); err == nil {
