@@ -52,8 +52,12 @@ const (
 var tlsDebugWriter io.Writer = os.Stderr
 
 type AgentConnection struct {
-	Conn           *grpc.ClientConn
-	Host           string                  // hostname or IP of the connected agent
+	Conn *grpc.ClientConn
+	Host string // hostname or IP of the connected agent
+	// Addr is the full host:port this connection dialed — the endpoint that
+	// actually answered, mTLS port included. Empty for unix-socket and
+	// pre-built (NewFromConn) connections.
+	Addr           string
 	IsMTLS         bool                    // true when connected via mutual TLS
 	CertInfo       *config.CertificateInfo // cert used to establish mTLS; nil for plaintext
 	RegistryDialer func(context.Context, int) (net.Conn, error)
@@ -102,6 +106,7 @@ func Connect(ctx context.Context, address string) (*AgentConnection, error) {
 
 	ac := newAgentConnection(conn)
 	ac.Host = hostFromAddress(address)
+	ac.Addr = address
 	return ac, nil
 }
 
@@ -244,6 +249,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 
 	ac := newAgentConnection(conn)
 	ac.Host = hostFromAddress(address)
+	ac.Addr = address
 	ac.IsMTLS = true
 	ac.CertInfo = certInfo
 	ac.observedServerOrg = observedOrg

@@ -20,7 +20,7 @@ func logMDNSQueryErr(iface string, err error) {
 	if err == nil || os.Getenv("WENDY_MDNS_DEBUG") == "" {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "wendy: mDNS query on %s failed: %v\n", iface, err)
+	fmt.Fprintf(mdnsDebugOut, "wendy: mDNS query on %s failed: %v\n", iface, err)
 }
 
 const (
@@ -30,6 +30,20 @@ const (
 	// defaultTimeout is the default mDNS browse duration.
 	defaultTimeout = 5 * time.Second
 )
+
+// logMDNSBackend names the mDNS backend that a stream session actually ran on
+// when WENDY_MDNS_DEBUG is set — the answer to "which path is this platform
+// taking?", which was otherwise only observable when something failed.
+func logMDNSBackend(name string) {
+	if os.Getenv("WENDY_MDNS_DEBUG") == "" {
+		return
+	}
+	fmt.Fprintf(mdnsDebugOut, "wendy: mDNS backend: %s\n", name)
+}
+
+// mdnsDebugOut is where the WENDY_MDNS_DEBUG diagnostics above go. A var so
+// tests can capture them; production never reassigns it.
+var mdnsDebugOut io.Writer = os.Stderr
 
 // silentLogger is a no-op logger used to suppress hashicorp/mdns log output.
 var silentLogger = log.New(io.Discard, "", 0)
@@ -43,6 +57,12 @@ type DiscoveryOptions struct {
 	// Timeout is the maximum duration for the discovery scan.
 	// Zero uses the default timeout.
 	Timeout time.Duration
+
+	// LAN configures the streaming LAN scan CollectLAN runs (cache/prober).
+	// The zero value disables both: mDNS-only confirmation, no cache reads
+	// or writes — the same behavior Discover always had before it moved onto
+	// the streaming engine.
+	LAN StreamOptions
 }
 
 // Discover runs device discovery across the requested interface types concurrently
@@ -98,7 +118,7 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if devices, err := discoverLAN(ctx, timeout); err == nil {
+			if devices, err := CollectLAN(ctx, opts.LAN, timeout); err == nil {
 				mu.Lock()
 				collection.LANDevices = devices
 				mu.Unlock()
@@ -149,17 +169,10 @@ func DiscoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
-	return discoverLAN(ctx, timeout)
+	return CollectLAN(ctx, StreamOptions{}, timeout)
 }
 
 // DiscoverBluetooth discovers Wendy devices via Bluetooth.
 func DiscoverBluetooth(ctx context.Context, activeScan bool) ([]models.BluetoothDevice, error) {
 	return discoverBluetooth(ctx, activeScan)
-}
-
-// DiscoverLANContinuous discovers LAN devices via mDNS continuously,
-// sending each new device to ch as it's found. The scan runs until ctx
-// is cancelled. The channel is closed when discovery stops.
-func DiscoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
-	discoverLANContinuous(ctx, ch)
 }
