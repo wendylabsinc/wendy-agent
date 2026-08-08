@@ -7,6 +7,10 @@
         {
             "type": "network",
             "mode": "host"
+        },
+        {
+            "type": "http",
+            "port": 8080
         }
     ]
 }

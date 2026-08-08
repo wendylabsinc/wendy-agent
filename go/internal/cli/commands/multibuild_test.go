@@ -118,6 +118,54 @@ func TestMultiServiceCreateConfig_DoesNotInheritTopLevelHooks(t *testing.T) {
 	}
 }
 
+func TestMultiServiceLifecycleConfig_ScopesHTTPEntitlements(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		AppID: "sh.wendy.examples.wendymc",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host"},
+			{Type: appconfig.EntitlementHTTP, Port: 8080},
+		},
+		Readiness: &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"minecraft": {Context: "./minecraft"},
+			"webui":     {Context: "./webui"},
+		},
+	}
+
+	for _, name := range []string{"minecraft", "webui"} {
+		createCfg := multiServiceCreateConfig(appCfg, name, appCfg.Services[name])
+		if port, ok := httpEntitlementPort(createCfg.Entitlements); !ok || port != 8080 {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited 8080", name, port, ok)
+		}
+		if lifecycleCfg := multiServiceLifecycleConfig(appCfg.AppID, name, appCfg.Services[name]); lifecycleCfg != nil {
+			t.Errorf("%s lifecycle config = %+v, want nil (top-level HTTP must not execute per service)", name, lifecycleCfg)
+		}
+	}
+
+	appLifecycle := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+	if appLifecycle == nil {
+		t.Fatal("app-level HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(appLifecycle.Entitlements); !ok || port != 8080 {
+		t.Errorf("app-level lifecycle HTTP = %d, %v; want 8080", port, ok)
+	}
+	if appLifecycle.Readiness == nil || appLifecycle.Readiness.TimeoutSeconds != 180 {
+		t.Errorf("app-level readiness = %+v, want timeoutSeconds 180", appLifecycle.Readiness)
+	}
+	if readiness := effectiveReadiness(appLifecycle); readiness == nil || readiness.TCPSocket == nil || readiness.TCPSocket.Port != 8080 || readiness.TimeoutSeconds != 180 {
+		t.Errorf("effective app-level readiness = %+v, want port 8080 with timeoutSeconds 180", readiness)
+	}
+
+	appCfg.Services["webui"].Entitlements = []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 9090}}
+	serviceLifecycle := multiServiceLifecycleConfig(appCfg.AppID, "webui", appCfg.Services["webui"])
+	if serviceLifecycle == nil {
+		t.Fatal("service-local HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(serviceLifecycle.Entitlements); !ok || port != 9090 {
+		t.Errorf("service lifecycle HTTP = %d, %v; want service-declared 9090", port, ok)
+	}
+}
+
 func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 	appCfg := ros2ExampleAppConfig()
 	cfg := multiServiceCreateConfig(appCfg, "talker", appCfg.Services["talker"])

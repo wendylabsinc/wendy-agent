@@ -6,13 +6,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 )
 
 // deviceProps builds an org.bluez.Device1 property map for tests.
@@ -554,6 +558,40 @@ func TestIsHIDDevice(t *testing.T) {
 	}
 }
 
+func TestAudioProfileUUID(t *testing.T) {
+	const (
+		hfp  = "0000111e-0000-1000-8000-00805f9b34fb"
+		avrc = "0000110e-0000-1000-8000-00805f9b34fb"
+	)
+	tests := []struct {
+		name  string
+		uuids []string
+		want  string
+	}{
+		// Speakers and headsets advertise a sink; that is the direction we want
+		// even when they also advertise a source, which is what made a Bose
+		// SoundLink claim our sink endpoint and land on the audio-gateway profile.
+		{"sink only", []string{a2dpSinkUUID, avrc}, a2dpSinkUUID},
+		{"sink and source", []string{a2dpSourceUUID, a2dpSinkUUID, hfp}, a2dpSinkUUID},
+		{"sink and source, source listed first", []string{a2dpSourceUUID, a2dpSinkUUID}, a2dpSinkUUID},
+		// A microphone has no sink role to offer, so the fallback picks it up
+		// without needing to inspect the class of device.
+		{"source only", []string{a2dpSourceUUID, avrc}, a2dpSourceUUID},
+		// Non-audio peripherals fall back to a whole-device Connect.
+		{"no audio profiles", []string{avrc, hfp}, ""},
+		{"empty", nil, ""},
+		// BlueZ reports lowercase, but the property is not guaranteed to be.
+		{"uppercase", []string{strings.ToUpper(a2dpSinkUUID)}, a2dpSinkUUID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := audioProfileUUID(tt.uuids); got != tt.want {
+				t.Errorf("audioProfileUUID(%v) = %q, want %q", tt.uuids, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWaitForInputDevice(t *testing.T) {
 	root := t.TempDir()
 	restore := inputDeviceUniqGlob
@@ -588,5 +626,118 @@ func TestWaitForInputDevice(t *testing.T) {
 	cancel()
 	if waitForInputDevice(canceled, "bb:bb:bb:bb:bb:bb", time.Minute) {
 		t.Fatal("waitForInputDevice must report false on context cancellation")
+	}
+}
+
+func TestStringsProp(t *testing.T) {
+	props := map[string]dbus.Variant{
+		"UUIDs":  dbus.MakeVariant([]string{a2dpSinkUUID}),
+		"Paired": dbus.MakeVariant(true),
+	}
+	if got := stringsProp(props, "UUIDs"); len(got) != 1 || got[0] != a2dpSinkUUID {
+		t.Errorf("stringsProp(UUIDs) = %v", got)
+	}
+	// Wrong type and missing key both yield nil rather than panicking: BlueZ
+	// omits UUIDs entirely for a device it has only seen advertising.
+	if got := stringsProp(props, "Paired"); got != nil {
+		t.Errorf("stringsProp on non-slice = %v, want nil", got)
+	}
+	if got := stringsProp(props, "Missing"); got != nil {
+		t.Errorf("stringsProp on missing key = %v, want nil", got)
+	}
+}
+
+func TestClaimBootReconnect(t *testing.T) {
+	dir := t.TempDir()
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	bootReconnectMarker = filepath.Join(dir, "marker")
+
+	logger := zap.NewNop()
+	// The agent restarts for upgrades and crash recovery on machines that stay
+	// powered for weeks. Only the first start after a boot may walk the device
+	// list; later ones must be no-ops so the radio is not paged repeatedly and
+	// a deliberate disconnect is not undone.
+	if !claimBootReconnect(logger) {
+		t.Fatal("first claim should succeed")
+	}
+	for i := range 3 {
+		if claimBootReconnect(logger) {
+			t.Errorf("claim %d after the first should fail", i+2)
+		}
+	}
+
+	// /run is tmpfs, so a real reboot clears the marker and the next start
+	// claims it again.
+	if err := os.Remove(bootReconnectMarker); err != nil {
+		t.Fatal(err)
+	}
+	if !claimBootReconnect(logger) {
+		t.Error("claim after reboot (marker cleared) should succeed")
+	}
+}
+
+func TestClaimBootReconnectUnwritable(t *testing.T) {
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	// An unwritable location must not panic or claim; the reconnect is simply
+	// skipped rather than taking down agent startup.
+	bootReconnectMarker = filepath.Join(t.TempDir(), "no-such-dir", "marker")
+	if claimBootReconnect(zap.NewNop()) {
+		t.Error("claim should fail when the marker cannot be created")
+	}
+}
+
+func TestWaitForAudioSession(t *testing.T) {
+	dir := t.TempDir()
+	origGlob, origTimeout := audio.SocketGlob, audioSessionTimeout
+	t.Cleanup(func() { audio.SocketGlob, audioSessionTimeout = origGlob, origTimeout })
+	audio.SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
+
+	// A plain file is not a session; only a listening socket is.
+	if err := os.MkdirAll(filepath.Join(dir, "user-1000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "user-1000", "pipewire-0"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale, cancelStale := context.WithCancel(context.Background())
+	cancelStale()
+	if waitForAudioSession(stale) {
+		t.Error("a regular file must not count as a session")
+	}
+
+	// Present already: returns immediately, which is the agent-restart case on
+	// a machine whose audio has been up for weeks.
+	socketDir, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(socketDir) })
+	if err := os.MkdirAll(filepath.Join(socketDir, "user-1000"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("unix", filepath.Join(socketDir, "user-1000", "pipewire-0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	audio.SocketGlob = filepath.Join(socketDir, "user-*", "pipewire-0")
+	if !waitForAudioSession(context.Background()) {
+		t.Error("should report ready when the socket already exists")
+	}
+
+	// Cancellation is the only false: a timeout still proceeds, so a board
+	// with no working audio stack still attempts the reconnect.
+	audio.SocketGlob = filepath.Join(dir, "never-*", "pipewire-0")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForAudioSession(ctx) {
+		t.Error("cancelled context should report not-ready")
+	}
+
+	audioSessionTimeout = 0
+	if !waitForAudioSession(context.Background()) {
+		t.Error("timeout should proceed anyway rather than skip the reconnect")
 	}
 }

@@ -39,9 +39,12 @@ struct DockerCLITests {
         )
         defer { try? FileManager.default.removeItem(at: scriptURL.deletingLastPathComponent()) }
 
+        // The probe script exits immediately; the timeout is only a failsafe,
+        // so keep it well clear of the scheduling delays a loaded parallel test
+        // run adds (a 2 s budget here flaked).
         let docker = DockerCLI(
             executable: scriptURL.path,
-            startupCommandTimeout: .seconds(2)
+            startupCommandTimeout: .seconds(30)
         )
 
         let availability = await docker.checkAvailability()

@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,31 @@ var ros2BagNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // ros2BagChunkSize is the payload size for DownloadBag stream messages.
 const ros2BagChunkSize = 64 * 1024
+
+// Scanner token caps for the two streaming commands. Exceeding one is reported as
+// an error rather than an end-of-stream — see ros2ScanError.
+const (
+	// ros2EchoMaxMessageBytes bounds one `ros2 topic echo` YAML document. Large
+	// enough for a VGA Image or a modest PointCloud2; a full-res point cloud will
+	// exceed it, which is now an actionable error instead of silence.
+	ros2EchoMaxMessageBytes = 4 * 1024 * 1024
+	// ros2HzMaxLineBytes bounds one `ros2 topic hz` output line. The lines are
+	// tiny; the headroom is for a node that logs to stdout.
+	ros2HzMaxLineBytes = 1024 * 1024
+)
+
+// ros2ScanError turns a bufio.Scanner failure into a gRPC status. bufio.ErrTooLong
+// is the interesting case and gets ResourceExhausted with the cap named, because
+// the caller's only recourse is to echo a smaller topic (or use a field selector).
+func ros2ScanError(command, topic string, err error, cap int) error {
+	if errors.Is(err, bufio.ErrTooLong) {
+		return status.Errorf(codes.ResourceExhausted,
+			"ros2 %s %s: a single message exceeded the %d MiB streaming limit; "+
+				"echo a smaller topic or narrow it with a field selector",
+			command, topic, cap/(1024*1024))
+	}
+	return status.Errorf(codes.Internal, "ros2 %s %s: reading output: %v", command, topic, err)
+}
 
 // ROS2Service implements agentpbv2.ROS2ServiceServer by exec-ing `ros2`
 // commands inside the CLI sidecar managed by the ROS2Runtime (WDY-1332).
@@ -82,6 +108,12 @@ func (s *ROS2Service) resolveSidecars(ctx context.Context, override *int32) ([]r
 		}
 		out = append(out, ros2SC{name: sc.Name, rmw: sc.RMW, domainID: d})
 	}
+	// Sort by sidecar name so `scs[0]` — the fallback for commands that cannot be
+	// RMW-routed (raw Exec, `bag record -a`) — is actually deterministic. It used
+	// to inherit containerd's Containers() ordering, which containerd does not
+	// specify; in practice it is a bolt bucket walk, so the previous "first-running
+	// RMW deterministically wins" claim held by accident rather than by contract.
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out, nil
 }
 
@@ -134,10 +166,21 @@ func (s *ROS2Service) runMerged(ctx context.Context, scs []ros2SC, args ...strin
 // topic/node/service lives in exactly one RMW graph). This avoids running the
 // command in the wrong sidecar — where a node/service-targeted call (param get,
 // service call) would block on DDS discovery until timeout before failing.
-// Falls back to the first sidecar when ownership can't be determined; if the
-// same name exists in more than one RMW graph (genuinely ambiguous), the
-// first-running RMW deterministically wins.
+// Falls back to the first sidecar (lowest name — see resolveSidecars) when
+// ownership can't be determined; if the same name exists in more than one RMW
+// graph (genuinely ambiguous), the lowest-named sidecar wins.
+//
+// Short-circuits when there is only one sidecar. Routing costs one extra
+// `ros2 <kind> list` exec per sidecar, and an exec is ~1s (container exec
+// dispatch + sourcing setup.bash + a fresh rclpy process doing DDS discovery).
+// On the overwhelmingly common single-RMW device that was a 100% overhead tax on
+// every targeted call — GetParam, SetParam, CallService, GetTopicInfo, every
+// lifecycle/component/action call, EchoTopic, MonitorHz, RecordBag — to choose
+// between one candidate.
 func (s *ROS2Service) pickSidecarOwning(ctx context.Context, scs []ros2SC, listKind, target string) ros2SC {
+	if len(scs) == 1 {
+		return scs[0]
+	}
 	for _, sc := range scs {
 		out, err := s.runIn(ctx, sc, listKind, "list")
 		if err != nil {
@@ -186,7 +229,12 @@ func (s *ROS2Service) ListNodes(ctx context.Context, req *agentpbv2.ListROS2Node
 	for _, o := range outs {
 		for _, n := range parseROS2NodeList(o.out) {
 			n.Rmw = o.rmw
-			key := n.GetNamespace() + "/" + n.GetName() + "\x00" + o.rmw
+			// ros2NodeFQN, not manual concatenation: the hand-rolled version
+			// produced "//talker" for a root-namespace node while every other
+			// dedup site used ros2NodeFQN's "/talker". Harmless as long as it was
+			// only ever a map key, but two spellings of the same identity is how
+			// a real dedup bug gets introduced later.
+			key := ros2NodeFQN(n) + "\x00" + o.rmw
 			if seen[key] {
 				continue
 			}
@@ -429,31 +477,35 @@ func (s *ROS2Service) GetGraph(ctx context.Context, req *agentpbv2.GetROS2GraphR
 			continue
 		}
 		any = true
-		for _, node := range parseROS2NodeList(out) {
+		nodes := parseROS2NodeList(out)
+		for _, node := range nodes {
 			node.Rmw = sc.rmw
-			fqn := ros2NodeFQN(node)
-			nodeKey := fqn + "\x00" + sc.rmw
+			nodeKey := ros2NodeFQN(node) + "\x00" + sc.rmw
 			if !seenNodes[nodeKey] {
 				seenNodes[nodeKey] = true
 				resp.Nodes = append(resp.Nodes, node)
 			}
-			info, ierr := s.runIn(ctx, sc, "node", "info", fqn)
-			if ierr != nil {
+		}
+		// `node info` per node used to run serially. Each exec is ~1s (see
+		// ros2TopicInfoConcurrency), so a 40-node robot took 40s+ to answer one
+		// `wendy device ros2 graph`. Fan out with the same bound ListTopics uses,
+		// then fold results in listing order so the response stays deterministic.
+		for _, r := range s.fetchROS2NodeInfo(ctx, sc, nodes) {
+			if !r.ok {
 				continue // node may have exited between list and info
 			}
-			publishes, subscribes := parseROS2NodeInfo(info)
-			for _, topic := range publishes {
-				edgeKey := fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00pub"
+			for _, topic := range r.publishes {
+				edgeKey := r.fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00pub"
 				if !seenEdges[edgeKey] {
 					seenEdges[edgeKey] = true
-					resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+					resp.Publishes = append(resp.Publishes, &agentpbv2.GetROS2GraphResponse_Edge{Node: r.fqn, Topic: topic, Rmw: sc.rmw})
 				}
 			}
-			for _, topic := range subscribes {
-				edgeKey := fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00sub"
+			for _, topic := range r.subscribes {
+				edgeKey := r.fqn + "\x00" + topic + "\x00" + sc.rmw + "\x00sub"
 				if !seenEdges[edgeKey] {
 					seenEdges[edgeKey] = true
-					resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: fqn, Topic: topic, Rmw: sc.rmw})
+					resp.Subscribes = append(resp.Subscribes, &agentpbv2.GetROS2GraphResponse_Edge{Node: r.fqn, Topic: topic, Rmw: sc.rmw})
 				}
 			}
 		}
@@ -462,6 +514,45 @@ func (s *ROS2Service) GetGraph(ctx context.Context, req *agentpbv2.GetROS2GraphR
 		return nil, lastErr
 	}
 	return resp, nil
+}
+
+// ros2NodeInfoResult is one node's parsed `node info`, carrying its index so the
+// concurrent fan-out can be folded back in deterministic listing order.
+type ros2NodeInfoResult struct {
+	fqn        string
+	publishes  []string
+	subscribes []string
+	ok         bool
+}
+
+// fetchROS2NodeInfo runs `ros2 node info <fqn>` for every node concurrently,
+// bounded by ros2TopicInfoConcurrency, and returns results in `nodes` order.
+func (s *ROS2Service) fetchROS2NodeInfo(ctx context.Context, sc ros2SC, nodes []*agentpbv2.ROS2Node) []ros2NodeInfoResult {
+	results := make([]ros2NodeInfoResult, len(nodes))
+	sem := make(chan struct{}, ros2TopicInfoConcurrency)
+	var wg sync.WaitGroup
+LOOP:
+	for i, node := range nodes {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			break LOOP
+		}
+		wg.Add(1)
+		go func(i int, fqn string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i].fqn = fqn
+			info, ierr := s.runIn(ctx, sc, "node", "info", fqn)
+			if ierr != nil {
+				return
+			}
+			results[i].publishes, results[i].subscribes = parseROS2NodeInfo(info)
+			results[i].ok = true
+		}(i, ros2NodeFQN(node))
+	}
+	wg.Wait()
+	return results
 }
 
 func (s *ROS2Service) Doctor(ctx context.Context, req *agentpbv2.ROS2DoctorRequest) (*agentpbv2.ROS2DoctorResponse, error) {
@@ -533,11 +624,24 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 		execDone <- execErr
 	}()
 
+	// Release the exec goroutine and wait for it. Cancelling alone is NOT enough:
+	// the goroutine can be blocked mid-Write into pw, so the read end has to be
+	// drained and closed or <-execDone wedges forever (WDY-1698). Every exit path
+	// goes through here — including the scanner-error path, which previously did
+	// not and deadlocked the whole RPC (holding one of the sidecar's 16 exec slots
+	// indefinitely) whenever a message exceeded the token cap.
+	drainAndWait := func() error {
+		cancel()
+		go func() { _, _ = io.Copy(io.Discard, pr) }()
+		pr.CloseWithError(context.Canceled)
+		return <-execDone
+	}
+
 	// `ros2 topic echo` separates YAML documents with bare "---" lines.
 	var doc strings.Builder
 	sent := int32(0)
 	scanner := bufio.NewScanner(pr)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), ros2EchoMaxMessageBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.TrimSpace(line) != "---" {
@@ -549,28 +653,28 @@ func (s *ROS2Service) EchoTopic(req *agentpbv2.EchoROS2TopicRequest, stream grpc
 			continue
 		}
 		if serr := stream.Send(&agentpbv2.ROS2Message{Topic: req.GetTopic(), Yaml: doc.String()}); serr != nil {
-			cancel()
-			go func() { _, _ = io.Copy(io.Discard, pr) }()
-			pr.CloseWithError(context.Canceled)
-			<-execDone
+			_ = drainAndWait()
 			return serr
 		}
 		doc.Reset()
 		sent++
 		if req.GetCount() > 0 && sent >= req.GetCount() {
-			cancel()
-			// Drain anything the publisher writes after cancel so a goroutine
-			// blocked mid-Write into pw is released and <-execDone can't wedge
-			// (WDY-1698). CloseWithError alone races a write already in progress.
-			go func() { _, _ = io.Copy(io.Discard, pr) }()
-			pr.CloseWithError(context.Canceled)
-			<-execDone
+			_ = drainAndWait()
 			return nil
 		}
 	}
-	execErr := <-execDone
+	// scanner.Err() must be checked before treating loop exit as end-of-stream. A
+	// single YAML document over the token cap — a PointCloud2, an Image, an
+	// occupancy grid — ends Scan() with bufio.ErrTooLong while execErr stays nil,
+	// so this used to return nil and the client saw a clean EOF with no output and
+	// no error: silent truncation on exactly the topics echo exists to inspect.
+	scanErr := scanner.Err()
+	execErr := drainAndWait()
 	if ctx.Err() != nil {
 		return nil // client cancelled; not an error
+	}
+	if scanErr != nil {
+		return ros2ScanError("topic echo", req.GetTopic(), scanErr, ros2EchoMaxMessageBytes)
 	}
 	if execErr != nil {
 		return status.Errorf(codes.Internal, "ros2 topic echo: %v", execErr)
@@ -604,8 +708,20 @@ func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc
 		execDone <- execErr
 	}()
 
+	// Same teardown contract as EchoTopic: cancel, drain, close, then wait.
+	// Cancelling without draining left the exec goroutine blocked mid-Write.
+	drainAndWait := func() error {
+		cancel()
+		go func() { _, _ = io.Copy(io.Discard, pr) }()
+		pr.CloseWithError(context.Canceled)
+		return <-execDone
+	}
+
 	var avgLine string
 	scanner := bufio.NewScanner(pr)
+	// `ros2 topic hz` lines are short, but a node logging to stdout is not, and
+	// the default 64 KiB cap turned that into a silently-ended stream.
+	scanner.Buffer(make([]byte, 0, 64*1024), ros2HzMaxLineBytes)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, "average rate:") {
@@ -621,14 +737,17 @@ func (s *ROS2Service) MonitorHz(req *agentpbv2.MonitorROS2HzRequest, stream grpc
 			continue
 		}
 		if serr := stream.Send(sample); serr != nil {
-			cancel()
-			<-execDone
+			_ = drainAndWait()
 			return serr
 		}
 	}
-	execErr := <-execDone
+	scanErr := scanner.Err()
+	execErr := drainAndWait()
 	if ctx.Err() != nil {
 		return nil
+	}
+	if scanErr != nil {
+		return ros2ScanError("topic hz", req.GetTopic(), scanErr, ros2HzMaxLineBytes)
 	}
 	if execErr != nil {
 		return status.Errorf(codes.Internal, "ros2 topic hz: %v", execErr)
@@ -1215,11 +1334,17 @@ func (s *ROS2Service) UnloadComponent(ctx context.Context, req *agentpbv2.Unload
 }
 
 // validateROS2GraphName accepts ROS 2 graph names (topics, nodes, services):
-// slash-separated identifiers, optionally with a leading slash or ~. The
+// slash-separated identifiers, optionally with a leading slash or `~/`. The
 // character set excludes whitespace and shell metacharacters, providing
 // defence-in-depth on top of the sidecar's no-shell-interpretation exec
 // (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
-var ros2GraphNamePattern = regexp.MustCompile(`^~?/?[a-zA-Z0-9_][a-zA-Z0-9_/]*$`)
+//
+// Each segment must start with a letter or underscore (hidden topics start with
+// `_`) and may then contain letters, digits and underscores — which is ROS 2's
+// own rule. The previous pattern (`^~?/?[a-zA-Z0-9_][a-zA-Z0-9_/]*$`) let through
+// `//foo`, `/foo/` and `/1camera`: all illegal ROS 2 names that were forwarded to
+// the CLI and came back as an rclpy traceback rather than an InvalidArgument.
+var ros2GraphNamePattern = regexp.MustCompile(`^(~/|/)?[a-zA-Z_][a-zA-Z0-9_]*(/[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
 func validateROS2GraphName(name string) error {
 	if name == "" {
@@ -1232,8 +1357,11 @@ func validateROS2GraphName(name string) error {
 }
 
 // validateROS2ParamName accepts ROS 2 parameter names, which use dots as
-// hierarchy separators (e.g. "robot.wheel.radius").
-var ros2ParamNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_][a-zA-Z0-9_.]*$`)
+// hierarchy separators (e.g. "robot.wheel.radius"). Each dot-separated segment
+// follows the same identifier rule as a graph-name segment, so a leading digit,
+// a trailing dot, or an empty segment (`a..b`) is rejected rather than passed to
+// the CLI.
+var ros2ParamNamePattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
 func validateROS2ParamName(name string) error {
 	if name == "" {

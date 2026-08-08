@@ -24,8 +24,10 @@ const (
 	audioGroupGID uint32 = 29
 	// videoGroupGID is the standard video group GID.
 	videoGroupGID uint32 = 44
-	// inputGroupGID is the standard input group GID (for /dev/input devices).
-	inputGroupGID uint32 = 105
+	// inputGroupFallbackGID is used when the host input group cannot be resolved.
+	// Debian/Ubuntu commonly use 105; WendyOS deliberately uses 19, so normal
+	// operation must resolve the host group instead of assuming this value.
+	inputGroupFallbackGID uint32 = 105
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
@@ -595,27 +597,39 @@ func applyAudio(spec *Spec) {
 		Access: "rw",
 	})
 
-	// isSocket reports whether path is a Unix domain socket. Uses Lstat
-	// so symlinks are not followed — runc can't resolve symlink targets
-	// through bind mounts.
+	// isSocket reports whether path is a Unix domain socket owned by the
+	// expected "wendy" session UID. Uses Lstat so symlinks are not followed —
+	// runc can't resolve symlink targets through bind mounts, and a symlink
+	// swapped in after the glob must not be. The owner check matters because
+	// pipewireUserSocketGlob matches every UID under /run/user: without it,
+	// any local UID's session socket could be the one this root-run code
+	// bind-mounts into a container.
 	isSocket := func(path string) bool {
 		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
+		if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		uid, ok := pipewireUserUID()
+		if !ok {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		return ok && st.Uid == uid
 	}
 
-	// Find the PipeWire socket. Check the system path first, then probe
-	// for a user session socket (e.g. /run/user/1000/pipewire-0 on RPi OS
-	// where PipeWire runs as a user service).
+	// Only a user session socket (/run/user/<uid>/pipewire-0) is mounted.
+	// WirePlumber runs inside the wendy user's session, and an instance
+	// without a session manager has an empty graph — no sinks, no Bluetooth,
+	// and no pulse/native beside it. Handing a container that socket gives it
+	// something that looks like audio and plays nothing, so no socket is
+	// mounted instead and the container is left with /dev/snd and the audio
+	// group, which is all such a host can honestly offer.
 	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
+	userSockets, _ := filepath.Glob(pipewireUserSocketGlob)
+	for _, s := range userSockets {
+		if isSocket(s) {
+			pipewireSocketSource = s
+			break
 		}
 	}
 
@@ -677,11 +691,47 @@ var udevRuntimeDir = "/run/udev"
 // redirect into a tempdir.
 var driGlobs = []string{"/dev/dri/*"}
 
+// pipewireUserSocketGlob locates the PipeWire socket the audio entitlement
+// mounts. Behind a var so tests can redirect it into a tempdir.
+var pipewireUserSocketGlob = "/run/user/*/pipewire-0"
+
+// pipewireUserUID resolves the "wendy" user's UID, the only session whose
+// socket applyAudio will bind-mount into a container. Behind a var so tests
+// can stub it without requiring a real "wendy" account on the test host. See
+// the agent's own audio package for the equivalent used by its PipeWire
+// client.
+var pipewireUserUID = func() (uint32, bool) {
+	u, err := user.Lookup("wendy")
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(uid), true
+}
+
 // lookupRenderGID resolves the host "render" group GID, which owns
 // /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
 // the host has no render group (then only the video GID is added).
 var lookupRenderGID = func() (uint32, bool) {
 	g, err := user.LookupGroup("render")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+// lookupInputGID resolves the host group that owns /dev/input. It is behind a
+// var so tests can cover WendyOS's GID 19 and the legacy fallback without
+// depending on the developer machine's group database.
+var lookupInputGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("input")
 	if err != nil {
 		return 0, false
 	}
@@ -1224,10 +1274,18 @@ func applySPI(spec *Spec) {
 	})
 }
 
-// applyInput adds HID input device access (barcode scanners, keyboards, etc.).
+// applyInput adds Linux input access (game controllers, scanners, keyboards,
+// etc.).
 func applyInput(spec *Spec) {
-	// Add input group for /dev/input device permissions.
-	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGroupGID)
+	// Add the host's input group for /dev/input permissions. Group IDs are an
+	// image policy detail rather than a portable ABI: WendyOS uses 19 while
+	// Debian/Ubuntu commonly use 105. The supplemental group is what lets a
+	// non-root OCI process open the recursively mounted event nodes.
+	inputGID := inputGroupFallbackGID
+	if gid, ok := lookupInputGID(); ok {
+		inputGID = gid
+	}
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGID)
 
 	// Mount /dev/input for HID event devices.
 	spec.Mounts = append(spec.Mounts, Mount{

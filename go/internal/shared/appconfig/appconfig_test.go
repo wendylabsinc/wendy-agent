@@ -1383,6 +1383,89 @@ func TestMCPEntitlementPortOutOfRange(t *testing.T) {
 	}
 }
 
+func TestValidateJSON_HTTPNoWarnings(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"entitlements": [
+			{"type": "http", "port": 8080}
+		]
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) != 0 {
+		t.Errorf("ValidateJSON() got %d warnings for valid http entitlement, want 0", len(warnings))
+	}
+}
+
+func TestValidateJSON_HTTPUnknownKeys(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.app",
+		"entitlements": [
+			{"type": "http", "port": 8080, "typo": 1}
+		]
+	}`)
+
+	warnings := ValidateJSON(data)
+	if len(warnings) == 0 {
+		t.Fatal("ValidateJSON() expected warning for unknown key on http entitlement, got none")
+	}
+}
+
+func TestHTTPEntitlementValid(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementHTTP, Port: 8080},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestHTTPEntitlementPortRequired(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementHTTP, Port: 0},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for missing port")
+	}
+	if !strings.Contains(err.Error(), "port") {
+		t.Fatalf("expected error to mention port, got: %v", err)
+	}
+}
+
+func TestHTTPEntitlementDuplicateRejected(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementHTTP, Port: 8080},
+			{Type: EntitlementHTTP, Port: 9090},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate http entitlement")
+	}
+}
+
+func TestHTTPEntitlementPortOutOfRange(t *testing.T) {
+	cfg := &AppConfig{
+		AppID: "test",
+		Entitlements: []Entitlement{
+			{Type: EntitlementHTTP, Port: 99999},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for out-of-range port")
+	}
+}
+
 func TestDisplayEntitlementValid(t *testing.T) {
 	cfg := &AppConfig{
 		AppID:        "test",

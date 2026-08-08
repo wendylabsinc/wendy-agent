@@ -5,21 +5,30 @@ package wendy.agent.services.v1;
 service WendyVideoService {
     rpc ListVideoDevices(ListVideoDevicesRequest) returns (ListVideoDevicesResponse);
     rpc StreamVideo(StreamVideoRequest) returns (stream VideoFrame);
+    rpc SetCameraCredentials(SetCameraCredentialsRequest) returns (SetCameraCredentialsResponse);
+    rpc ForgetCamera(ForgetCameraRequest) returns (ForgetCameraResponse);
+    rpc RefreshCameras(RefreshCamerasRequest) returns (RefreshCamerasResponse);
 }
 
 message VideoDevice {
-    uint32 id              = 1; // numeric suffix of /dev/videoN
-    string name            = 2; // human-readable name from sysfs
-    string path            = 3; // e.g. "/dev/video0"
-    VideoTransport transport = 4; // physical interface (csi, usb, unknown)
+    uint32 id              = 1; // numeric suffix of /dev/videoN; network cameras use the reserved 200-255 band
+    string name            = 2; // human-readable name from sysfs, or the model for network cameras
+    string path            = 3; // e.g. "/dev/video0"; empty for a network camera with no loopback node
+    VideoTransport transport = 4; // interface (csi, usb, ip, unknown)
     string driver          = 5; // kernel driver name from sysfs (e.g. "uvcvideo", "tegra-capture-vi"); empty if unknown
     string libcamera_id    = 6; // libcamera camera-name; empty when libcamera enumeration unavailable or ambiguous
+    string address          = 7; // network camera address, e.g. "10.98.0.50"; empty for local cameras
+    string model            = 8; // model reported by discovery, e.g. "RLC-520A"
+    string mac              = 9; // stable identity for network cameras; empty for local cameras
+    bool has_credentials    = 10; // the agent holds a login for this camera
+    bool online             = 11; // the most recent probe reached this camera
 }
 
 enum VideoTransport {
     VIDEO_TRANSPORT_UNKNOWN = 0;
     VIDEO_TRANSPORT_USB     = 1;
     VIDEO_TRANSPORT_CSI     = 2;
+    VIDEO_TRANSPORT_IP      = 3;
 }
 
 message ListVideoDevicesRequest {}
@@ -30,9 +39,34 @@ message ListVideoDevicesResponse {
 
 message StreamVideoRequest {
     uint32 device_id  = 1; // numeric suffix N in /dev/videoN; 0 maps to /dev/video0
+    // For local cameras width/height/framerate configure capture. For network
+    // cameras the camera decides its own format, so width only selects which of
+    // its streams to open (sub or main) and height/framerate are ignored.
     uint32 width      = 2; // pixels; 0 = device default
     uint32 height     = 3; // pixels; 0 = device default
     uint32 framerate  = 4; // fps; 0 = device default
+}
+
+// Credentials for a network camera. Stored on the device, never returned by any
+// RPC: listings report only has_credentials.
+message SetCameraCredentialsRequest {
+    uint32 device_id = 1;
+    string username  = 2;
+    string password  = 3;
+}
+
+message SetCameraCredentialsResponse {}
+
+message ForgetCameraRequest {
+    uint32 device_id = 1;
+}
+
+message ForgetCameraResponse {}
+
+message RefreshCamerasRequest {}
+
+message RefreshCamerasResponse {
+    repeated VideoDevice devices = 1;
 }
 
 enum VideoCodec {

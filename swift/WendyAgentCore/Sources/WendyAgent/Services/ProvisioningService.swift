@@ -17,36 +17,62 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
     struct ProvisioningCerts: Sendable {
         var certPEM: String
         var chainPEM: String
-        var keyPEM: String
+        var keyBacking: ProvisioningStore.KeyBacking
+        var seKey: SEPrivateKey?
     }
 
     private let store: ProvisioningStore
     private let cloudClient: CloudCertificateClient
+    /// Overridable so tests can force the SE / software branch deterministically
+    /// regardless of the host's actual hardware. Defaults to the real check.
+    private let isSecureEnclaveAvailable: @Sendable () -> Bool
     private let logger = Logger(label: "sh.wendy.agent.provisioning")
 
     private var enrolled = false
     private var cloudHost = ""
     private var orgID: Int32 = 0
     private var assetID: Int32 = 0
-    private var keyPEM = ""
+    private var keyBacking: ProvisioningStore.KeyBacking = .softwarePEM("")
+    private var seKey: SEPrivateKey?
     private var certPEM = ""
     private var chainPEM = ""
 
     private var onProvisioned: (@Sendable (ProvisioningCerts) async -> Void)?
     private var onUnprovisioned: (@Sendable () async -> Void)?
 
-    init(configPath: URL, cloudClient: CloudCertificateClient = .live) {
+    init(
+        configPath: URL,
+        cloudClient: CloudCertificateClient = .live,
+        isSecureEnclaveAvailable: @Sendable @escaping () -> Bool = {
+            SecureEnclaveIdentity.isAvailable
+        }
+    ) {
         self.store = ProvisioningStore(configPath: configPath)
         self.cloudClient = cloudClient
-        if let loaded = self.store.load() {
-            self.enrolled = loaded.enrolled
-            self.cloudHost = loaded.cloudHost
-            self.orgID = loaded.orgID
-            self.assetID = loaded.assetID
-            self.keyPEM = loaded.keyPEM
-            self.certPEM = loaded.certPEM
-            self.chainPEM = loaded.chainPEM
+        self.isSecureEnclaveAvailable = isSecureEnclaveAvailable
+        guard let loaded = self.store.load() else { return }
+
+        if loaded.keyBacking == .secureEnclave {
+            // Fail closed: if the SE blob can't be reconstructed (e.g. the
+            // Keychain item vanished, or this isn't the Mac that created it),
+            // treat the device as unprovisioned rather than silently falling
+            // back to no key or a software one. Re-provisioning is required.
+            guard let identity = try? SecureEnclaveIdentity.load(store: KeychainStore()) else {
+                self.logger.error(
+                    "Provisioning state says secureEnclave but the Keychain blob could not be loaded; treating device as unprovisioned"
+                )
+                return
+            }
+            self.seKey = identity.nioCustomKey
         }
+
+        self.enrolled = loaded.enrolled
+        self.cloudHost = loaded.cloudHost
+        self.orgID = loaded.orgID
+        self.assetID = loaded.assetID
+        self.keyBacking = loaded.keyBacking
+        self.certPEM = loaded.certPEM
+        self.chainPEM = loaded.chainPEM
     }
 
     func setCallbacks(
@@ -71,7 +97,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         return ProvisioningCerts(
             certPEM: self.certPEM,
             chainPEM: self.chainPEM,
-            keyPEM: self.keyPEM
+            keyBacking: self.keyBacking,
+            seKey: self.seKey
         )
     }
 
@@ -97,16 +124,6 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             ]
         )
 
-        let keyPEM: String
-        do {
-            keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
-        } catch {
-            throw RPCError(
-                code: .internalError,
-                message: "failed to generate key pair: \(error)"
-            )
-        }
-
         let commonName = DeviceIdentity.commonName(
             organizationID: request.organizationID,
             assetID: request.assetID
@@ -115,15 +132,56 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             organizationID: request.organizationID,
             assetID: request.assetID
         )
+
+        // Prefer the Secure Enclave when this Mac has one: the key is
+        // generated and signs entirely inside the enclave and never exists as
+        // extractable key material. Falls back to a software PEM key
+        // otherwise (older Macs, or hardware without an SE).
+        let keyBacking: ProvisioningStore.KeyBacking
+        let seKey: SEPrivateKey?
         let csrPEM: String
-        do {
-            csrPEM = try DeviceIdentity.generateCSRPEM(
-                privateKeyPEM: keyPEM,
-                commonName: commonName,
-                identityURN: identityURN
-            )
-        } catch {
-            throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+        if self.isSecureEnclaveAvailable() {
+            let identity: SecureEnclaveIdentity
+            do {
+                identity = try SecureEnclaveIdentity.generate(store: KeychainStore())
+            } catch {
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate Secure Enclave key: \(error)"
+                )
+            }
+            do {
+                csrPEM = try DeviceIdentity.generateCSRPEM(
+                    identity: identity,
+                    commonName: commonName,
+                    identityURN: identityURN
+                )
+            } catch {
+                throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+            }
+            keyBacking = .secureEnclave
+            seKey = identity.nioCustomKey
+        } else {
+            let keyPEM: String
+            do {
+                keyPEM = try DeviceIdentity.generatePrivateKeyPEM()
+            } catch {
+                throw RPCError(
+                    code: .internalError,
+                    message: "failed to generate key pair: \(error)"
+                )
+            }
+            do {
+                csrPEM = try DeviceIdentity.generateCSRPEM(
+                    privateKeyPEM: keyPEM,
+                    commonName: commonName,
+                    identityURN: identityURN
+                )
+            } catch {
+                throw RPCError(code: .internalError, message: "failed to generate CSR: \(error)")
+            }
+            keyBacking = .softwarePEM(keyPEM)
+            seKey = nil
         }
 
         let issued = try await self.cloudClient.issue(
@@ -142,7 +200,7 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
                 cloudHost: request.cloudHost,
                 orgID: request.organizationID,
                 assetID: request.assetID,
-                keyPEM: keyPEM,
+                keyBacking: keyBacking,
                 certPEM: issued.certPEM,
                 chainPEM: issued.chainPEM
             )
@@ -161,7 +219,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudHost = request.cloudHost
         self.orgID = request.organizationID
         self.assetID = request.assetID
-        self.keyPEM = keyPEM
+        self.keyBacking = keyBacking
+        self.seKey = seKey
         self.certPEM = issued.certPEM
         self.chainPEM = issued.chainPEM
 
@@ -174,7 +233,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
             let certs = ProvisioningCerts(
                 certPEM: self.certPEM,
                 chainPEM: self.chainPEM,
-                keyPEM: self.keyPEM
+                keyBacking: self.keyBacking,
+                seKey: self.seKey
             )
             await cb(certs)
         }
@@ -229,7 +289,8 @@ actor ProvisioningService: Wendy_Agent_Services_V1_WendyProvisioningService.Simp
         self.cloudHost = ""
         self.orgID = 0
         self.assetID = 0
-        self.keyPEM = ""
+        self.keyBacking = .softwarePEM("")
+        self.seKey = nil
         self.certPEM = ""
         self.chainPEM = ""
 

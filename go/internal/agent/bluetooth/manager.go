@@ -20,6 +20,10 @@ type Manager interface {
 	Connect(ctx context.Context, address string, pair, trust bool) (paired bool, err error)
 	Disconnect(ctx context.Context, address string) error
 	Forget(ctx context.Context, address string) error
+	// ReconnectTrusted restores connections to trusted audio peripherals that
+	// were paired before the agent restarted. It blocks until it has filled
+	// what it can, so callers run it in the background.
+	ReconnectTrusted(ctx context.Context)
 }
 
 func NewManager(logger *zap.Logger) Manager {

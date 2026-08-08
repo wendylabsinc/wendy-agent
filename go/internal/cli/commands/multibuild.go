@@ -363,13 +363,14 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	// Build every per-service config once and reuse the same objects for both
-	// the create payload (createService) and lifecycle-hook firing
-	// (startAndStreamServices), so a service's readiness/hooks are carried in a
-	// single place (WDY-1271).
+	// Build the full per-service create configs and separate CLI-private
+	// lifecycle views. The latter preserve declaration scope so inherited
+	// top-level HTTP does not execute once per service.
 	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
 	for name, svc := range services {
 		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
 	}
 
 	// The app-level fallback fires the group's top-level readiness/hooks once,
@@ -430,7 +431,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
-	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, appLevelCfg); err != nil {
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		return err
 	}
 	// In --keep-going mode, exit non-zero after deploying the healthy subset so
@@ -746,6 +747,17 @@ func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *app
 	return cfg
 }
 
+// multiServiceLifecycleConfig builds the CLI-private lifecycle view for one
+// services-map entry. Unlike multiServiceCreateConfig, it intentionally sees
+// only HTTP entitlements declared by the service itself; inherited top-level
+// HTTP belongs to the app-level lifecycle config and must run only once.
+func multiServiceLifecycleConfig(appID, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	if svc == nil {
+		return nil
+	}
+	return lifecycleConfig(appID, name, svc.Readiness, svc.Hooks, svc.Entitlements)
+}
+
 // multiServiceContainerName returns the container name the agent derives for
 // a service: "{appId}_{serviceName}" (WDY-878). Start/stop calls must address
 // the same name the create path produced.
@@ -763,14 +775,14 @@ func multiServiceContainerName(appID, serviceName string) string {
 // the agent resolves a secondary's namespace join at container create time
 // against the primary's running task.
 //
-// svcCfgs supplies the per-service AppConfig for each name in ordered: it both
-// carries the agent-side postStart hook onto the StartContainer RPC (via
-// contextWithPostStartAgentHook) and drives the per-service readiness→announce
-// →postStart sequence. appLevelCfg, when non-nil, is the group-level fallback
-// fired once after every service has started. Hook firing is strictly
-// non-blocking with respect to the sequential create→start→Started-ack loop,
-// which is load-bearing for shared-namespace joins (WDY-1271).
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
+// svcCfgs supplies the full create/agent-hook config for each service, while
+// svcLifecycleCfgs supplies the private CLI lifecycle view whose entitlements
+// contain only service-declared HTTP. appLevelCfg, when non-nil, is the
+// group-level fallback fired once after every service has started. Hook firing
+// is strictly non-blocking with respect to the sequential
+// create→start→Started-ack loop, which is load-bearing for shared-namespace
+// joins (WDY-1271).
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -822,7 +834,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		// failures only warn (non-fatal), so we still return nil. No reap: there is
 		// nothing left to wait on once we detach.
 		for _, name := range ordered {
-			runner.runOne(runCtx, context.Background(), svcCfgs[name])
+			runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
 		}
 		runner.runOne(runCtx, context.Background(), appLevelCfg)
 		return nil
@@ -871,7 +883,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		// failing probe never delays creating/starting the next service — the
 		// sequential Started-ack ordering above is load-bearing for
 		// shared-ipc/shared-network joins and must not be disturbed (WDY-1271).
-		runner.startAsync(runCtx, svcCfgs[name])
+		runner.startAsync(runCtx, svcLifecycleCfgs[name])
 		wg.Add(1)
 		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()

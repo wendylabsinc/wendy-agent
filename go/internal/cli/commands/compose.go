@@ -550,17 +550,41 @@ func buildComposeServiceConfigs(projectName string, cfg *composeConfig, companio
 	return svcCfgs, warnings, nil
 }
 
+// composeServiceLifecycleConfigs builds CLI-private lifecycle views from the
+// fully merged Compose configs. Readiness/hooks may come from x-wendy or a
+// companion service override, but HTTP entitlements come only from the
+// matching companion services.<name> scope. Top-level companion HTTP remains
+// inherited in each create config while executing once via appLevelCfg.
+func composeServiceLifecycleConfigs(svcCfgs map[string]*appconfig.AppConfig, companion *appconfig.AppConfig) map[string]*appconfig.AppConfig {
+	lifecycleCfgs := make(map[string]*appconfig.AppConfig, len(svcCfgs))
+	for name, cfg := range svcCfgs {
+		var serviceEntitlements []appconfig.Entitlement
+		if companion != nil {
+			if svc := companion.Services[name]; svc != nil {
+				serviceEntitlements = svc.Entitlements
+			}
+		}
+		lifecycleCfgs[name] = lifecycleConfig(cfg.AppID, cfg.ServiceName, cfg.Readiness, cfg.Hooks, serviceEntitlements)
+	}
+	return lifecycleCfgs
+}
+
 // deduplicateEntitlements returns a copy of ents with duplicates removed.
-// Two entitlements are considered duplicates when their type, name, and mode
-// are equal; the first occurrence is kept. This covers the common cases:
+// Two entitlements are considered duplicates when their type and complete
+// canonical annotation value are equal; the first occurrence is kept. This
+// covers the common cases without collapsing parameterized same-type grants:
 //   - GPU declared in both shared and per-service sections
 //   - Network mode declared in both compose (network_mode:host) and companion
-//   - Persist volumes declared multiple times with the same name
+//   - Persist volumes declared multiple times with the same name and path
+//
+// Device, GPIO, allowlist, port, and every other entitlement parameter is part
+// of EntitlementAnnotationValue, so (for example) ttyUSB0 and ttyUSB1 remain
+// two serial entitlements.
 func deduplicateEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
 	seen := make(map[string]bool, len(ents))
 	out := make([]appconfig.Entitlement, 0, len(ents))
 	for _, e := range ents {
-		key := string(e.Type) + "\x00" + e.Name + "\x00" + e.Mode
+		key := e.Type + "\x00" + appconfig.EntitlementAnnotationValue(e)
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, e)
@@ -737,12 +761,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
 
-	// Synthesize every service's AppConfig once (compose fields + x-wendy
-	// lifecycle config + companion overrides) so the create/stop/detach/attach
-	// steps below all see the same config instead of recomputing it. Done
-	// BEFORE the image builds so an invalid x-wendy config (a hard error here)
-	// fails fast instead of costing a full multi-minute build; nothing in it
-	// depends on build outputs (projectName is the only input).
+	// Synthesize every service's full create config (compose fields + x-wendy
+	// lifecycle config + companion overrides), then derive separate CLI-private
+	// lifecycle views below. Done BEFORE the image builds so an invalid x-wendy
+	// config fails fast instead of costing a full multi-minute build.
 	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
 	if err != nil {
 		return err
@@ -750,11 +772,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	for _, w := range xWendyWarnings {
 		cliLogln("warning: %s", w)
 	}
+	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 
 	// App-level lifecycle fallback: only a companion wendy.json can declare
-	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
-	// by construction), and buildComposeServiceConfigs deliberately leaves them
-	// off the per-service configs. It fires once after ALL services have
+	// top-level HTTP/readiness/hooks for a compose project (x-wendy is
+	// per-service by construction). It fires once after ALL services have
 	// started; the compose path has no service-subset flag (unlike --service on
 	// the multi-service path), so that guarantee always holds here.
 	var appLevelCfg *appconfig.AppConfig
@@ -905,13 +927,13 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, appLevelCfg, projectName)
+		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName)
 	}
 
 	// Attached mode: stream output from all containers concurrently with
 	// color-coded, column-aligned service name prefixes.
 	stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
-	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutWriters, stderrWriters)
+	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutWriters, stderrWriters)
 }
 
 // composeStartDetached starts every compose service in dependency order,
@@ -921,7 +943,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 // agent-side postStart hook as gRPC metadata, and once every container is up
 // the per-service readiness→announce→postStart sequences run sequentially in
 // dependency order, then the app-level fallback (WDY-1271).
-func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
+func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
 	for _, name := range ordered {
 		appCfg := svcCfgs[name]
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -945,7 +967,7 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 	// nothing left to wait on once we detach.
 	runner := &serviceHookRunner{conn: conn}
 	for _, name := range ordered {
-		runner.runOne(runCtx, context.Background(), svcCfgs[name])
+		runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
 	}
 	runner.runOne(runCtx, context.Background(), appLevelCfg)
 	return nil
@@ -957,7 +979,7 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 // until every stream ends. Extracted from runComposeWithAgent so tests can
 // drive it with fake clients; the Ctrl+C handler (stop in reverse order, then
 // runCancel) stays with the caller and its ordering is unchanged.
-func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
+func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
 	runner := &serviceHookRunner{conn: conn}
 
 	var wg sync.WaitGroup
@@ -974,7 +996,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 		appCfg := svcCfgs[name]
 
 		wg.Add(1)
-		go func(serviceName, containerID string, svcCfg *appconfig.AppConfig) {
+		go func(serviceName, containerID string, svcCfg, lifecycleCfg *appconfig.AppConfig) {
 			defer wg.Done()
 			markStarted := sync.OnceFunc(startedWg.Done)
 			defer markStarted()
@@ -1057,7 +1079,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 					// slow or failing probe never stalls this log loop.
 					hookFired = true
 					markStarted()
-					runner.startAsync(runCtx, svcCfg)
+					runner.startAsync(runCtx, lifecycleCfg)
 				}
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
@@ -1066,7 +1088,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.ContainerName(), appCfg)
+		}(name, appCfg.ContainerName(), appCfg, svcLifecycleCfgs[name])
 	}
 
 	// App-level fallback: fires once after every service has reported Started

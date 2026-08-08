@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -323,5 +324,39 @@ func TestReadCamListBounded_SmallOutputPassesThrough(t *testing.T) {
 	}
 	if string(out) != sample {
 		t.Errorf("small output must pass through unchanged, got %q", out)
+	}
+}
+
+func TestTransportIPString(t *testing.T) {
+	if got := TransportIP.String(); got != "ip" {
+		t.Fatalf("TransportIP.String() = %q, want %q", got, "ip")
+	}
+}
+
+// TransportIP must sort after the existing values so persisted and wire values
+// of USB and CSI keep their meaning.
+func TestTransportIPDoesNotRenumberExisting(t *testing.T) {
+	if TransportUnknown != 0 || TransportUSB != 1 || TransportCSI != 2 {
+		t.Fatalf("existing transports renumbered: unknown=%d usb=%d csi=%d",
+			TransportUnknown, TransportUSB, TransportCSI)
+	}
+	if TransportIP != 3 {
+		t.Fatalf("TransportIP = %d, want 3", TransportIP)
+	}
+}
+
+// Classify is sysfs-driven, so it must never invent an IP transport: that comes
+// from the network camera registry, not from a device node.
+func TestClassifyNeverReturnsIP(t *testing.T) {
+	sysfsRoot = t.TempDir()
+	readDriverSymlink = func(string) (string, error) { return "", errors.New("no driver") }
+	statPath = func(string) error { return errors.New("no of_node") }
+	t.Cleanup(func() {
+		sysfsRoot = "/sys/class/video4linux"
+		readDriverSymlink = func(path string) (string, error) { return os.Readlink(path) }
+		statPath = func(path string) error { _, err := os.Stat(path); return err }
+	})
+	if transport, _ := Classify("video203"); transport == TransportIP {
+		t.Fatal("Classify returned TransportIP from sysfs")
 	}
 }

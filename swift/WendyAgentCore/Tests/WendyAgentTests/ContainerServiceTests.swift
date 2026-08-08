@@ -985,6 +985,277 @@ struct ContainerServiceTests {
             )
         )
     }
+
+    // MARK: - Restart policy & durable user-stop
+
+    @Test("createContainer records the requested restart policy")
+    func createContainerRecordsRequestedRestartPolicy() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.CreateRestartPolicy"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var request = Wendy_Agent_Services_V1_CreateContainerRequest()
+        request.appName = appID
+        request.imageName = ""
+        request.cmd = "sleep.sh"
+        var policy = RestartPolicy()
+        policy.mode = .onFailure
+        policy.onFailureMaxRetries = 4
+        request.restartPolicy = policy
+
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: request),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        let persistedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        let persistedApp = try #require(persistedApps.first { $0.info.id == appID })
+        #expect(
+            persistedApp.restartPolicy
+                == PersistedRestartPolicy(mode: .onFailure, onFailureMaxRetries: 4)
+        )
+    }
+
+    @Test("startContainer without a restart policy leaves a previously stored policy intact")
+    func startContainerWithoutPolicyLeavesStoredPolicyIntact() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StartKeepsPolicy"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        var createRequest = Wendy_Agent_Services_V1_CreateContainerRequest()
+        createRequest.appName = appID
+        createRequest.imageName = ""
+        createRequest.cmd = "sleep.sh"
+        var storedPolicy = RestartPolicy()
+        storedPolicy.mode = .onFailure
+        storedPolicy.onFailureMaxRetries = 9
+        createRequest.restartPolicy = storedPolicy
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: createRequest),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        // No restartPolicy set on this StartContainerRequest — the stored
+        // policy from create must survive untouched.
+        try await startApp(service: service, appID: appID)
+
+        let persistedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        let persistedApp = try #require(persistedApps.first { $0.info.id == appID })
+        #expect(
+            persistedApp.restartPolicy
+                == PersistedRestartPolicy(mode: .onFailure, onFailureMaxRetries: 9)
+        )
+
+        await service.stopApp(id: appID)
+    }
+
+    @Test("startContainer with a restart policy overwrites the stored one")
+    func startContainerWithPolicyOverwritesStoredPolicy() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StartOverwritesPolicy"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+
+        var startRequest = Wendy_Agent_Services_V1_StartContainerRequest()
+        startRequest.appName = appID
+        var policy = RestartPolicy()
+        policy.mode = .no
+        startRequest.restartPolicy = policy
+
+        _ = try await service.startContainer(
+            request: ServerRequest(metadata: [:], message: startRequest),
+            context: makeServerContext(method: "StartContainer")
+        )
+
+        let persistedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        let persistedApp = try #require(persistedApps.first { $0.info.id == appID })
+        #expect(
+            persistedApp.restartPolicy == PersistedRestartPolicy(mode: .no, onFailureMaxRetries: 0)
+        )
+
+        await service.stopApp(id: appID)
+    }
+
+    @Test("stopContainer marks stoppedByUser and it survives a save/load cycle")
+    func stopContainerMarksStoppedByUserAndPersists() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StopMarksUser"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        try await startApp(service: service, appID: appID)
+        try await stopApp(service: service, appID: appID)
+
+        let persistedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        let persistedApp = try #require(persistedApps.first { $0.info.id == appID })
+        #expect(persistedApp.stoppedByUser == true)
+
+        // Reload from disk (a fresh service instance re-reads info.json on
+        // init) to prove the flag survives a save/load cycle, not just the
+        // in-memory struct.
+        let restoredService = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+        let restoredApps = try readPersistedApps(at: await restoredService.infoFileURLForTesting())
+        let restoredApp = try #require(restoredApps.first { $0.info.id == appID })
+        #expect(restoredApp.stoppedByUser == true)
+    }
+
+    @Test("stopAllApps leaves stoppedByUser false")
+    func stopAllAppsLeavesStoppedByUserFalse() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.ShutdownNotUser"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        try await startApp(service: service, appID: appID)
+
+        try await waitUntil(description: "app is running before shutdown") {
+            await service.appInfo(forAppID: appID)?.status == .running
+        }
+
+        await service.stopAllApps()
+
+        let persistedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        let persistedApp = try #require(persistedApps.first { $0.info.id == appID })
+        #expect(persistedApp.stoppedByUser == false)
+    }
+
+    @Test("startContainer clears stoppedByUser")
+    func startContainerClearsStoppedByUser() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.StartClearsUserStop"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeSleepScript(to: appDirectory.appendingPathComponent("sleep.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "sleep.sh")
+        try await startApp(service: service, appID: appID)
+        try await stopApp(service: service, appID: appID)
+
+        let stoppedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        #expect(try #require(stoppedApps.first { $0.info.id == appID }).stoppedByUser == true)
+
+        try await startApp(service: service, appID: appID)
+
+        let restartedApps = try readPersistedApps(at: await service.infoFileURLForTesting())
+        #expect(try #require(restartedApps.first { $0.info.id == appID }).stoppedByUser == false)
+
+        await service.stopApp(id: appID)
+    }
+
+    @Test("termination records a clean exit code")
+    func terminationRecordsCleanExitCode() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.CleanExitCode"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeExitAfterDelayScript(to: appDirectory.appendingPathComponent("exit.sh"))
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "exit.sh")
+        try await startApp(service: service, appID: appID)
+
+        try await waitUntil(description: "app exits on its own") {
+            await service.appInfo(forAppID: appID)?.status == .stopped
+        }
+
+        #expect(await service.lastExitCode(forAppID: appID) == 0)
+    }
+
+    @Test("termination records a non-zero exit code")
+    func terminationRecordsCrashExitCode() async throws {
+        let appsBase = try makeTempDir()
+        defer { cleanup(appsBase) }
+
+        let appID = "sh.wendy.tests.CrashExitCode"
+        let appDirectory = URL(fileURLWithPath: appsBase).appendingPathComponent(appID)
+        try FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        try writeExitWithCodeScript(to: appDirectory.appendingPathComponent("crash.sh"), code: 7)
+
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/false",
+            appsBase: URL(fileURLWithPath: appsBase)
+        )
+
+        try await registerFileSyncApp(service: service, appID: appID, cmd: "crash.sh")
+        try await startApp(service: service, appID: appID)
+
+        try await waitUntil(description: "app crashes on its own") {
+            await service.appInfo(forAppID: appID)?.status == .stopped
+        }
+
+        #expect(await service.lastExitCode(forAppID: appID) == 7)
+    }
 }
 
 // MARK: - Helpers
@@ -1224,6 +1495,11 @@ private func writeExitAfterDelayScript(to url: URL) throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
 }
 
+private func writeExitWithCodeScript(to url: URL, code: Int) throws {
+    try "#!/bin/sh\nsleep 0.2\nexit \(code)\n".write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+}
+
 private func makeTempDir() throws -> String {
     let path =
         FileManager.default.temporaryDirectory
@@ -1283,7 +1559,10 @@ private func readPersistedApps(at url: URL) throws -> [WendyApp] {
 
 private func waitUntil(
     description: String,
-    timeout: Duration = .seconds(2),
+    // Generous on purpose: these waits are for a real child process to exit,
+    // and the whole package's tests run in parallel, so a 2 s budget goes
+    // flaky as soon as the machine is loaded.
+    timeout: Duration = .seconds(10),
     pollInterval: Duration = .milliseconds(20),
     condition: @escaping @Sendable () async -> Bool
 ) async throws {

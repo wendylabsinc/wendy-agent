@@ -17,7 +17,8 @@ enum RegistryTLS {
     struct Configuration: Sendable {
         var certPEM: String
         var chainPEM: String
-        var keyPEM: String
+        var keyBacking: ProvisioningStore.KeyBacking
+        var seKey: SEPrivateKey?
         var deviceOrg: Int32?
         var orgMode: ClientCertAuthorizer.OrgEnforcementMode
     }
@@ -48,7 +49,8 @@ enum RegistryTLS {
         return Configuration(
             certPEM: certs.certPEM,
             chainPEM: certs.chainPEM,
-            keyPEM: certs.keyPEM,
+            keyBacking: certs.keyBacking,
+            seKey: certs.seKey,
             deviceOrg: deviceOrg,
             orgMode: orgMode
         )
@@ -70,10 +72,21 @@ enum RegistryTLS {
         guard let leaf = leafCerts.first else {
             throw NIOSSLError.failedToLoadCertificate
         }
-        let key = try NIOSSLPrivateKey(bytes: Array(config.keyPEM.utf8), format: .pem)
+        let key: NIOSSLPrivateKey
+        switch config.keyBacking {
+        case .softwarePEM(let pem):
+            key = try NIOSSLPrivateKey(bytes: Array(pem.utf8), format: .pem)
+        case .secureEnclave:
+            guard let seKey = config.seKey else {
+                throw TLSKeySourceError.missingSecureEnclaveKey
+            }
+            key = NIOSSLPrivateKey(customPrivateKey: seKey)
+        }
 
         var tls = TLSConfiguration.makeServerConfiguration(
-            certificateChain: ([leaf] + leafCerts.dropFirst() + chainCerts).map { .certificate($0) },
+            certificateChain: ([leaf] + leafCerts.dropFirst() + chainCerts).map {
+                .certificate($0)
+            },
             privateKey: .privateKey(key)
         )
         tls.minimumTLSVersion = .tlsv12
