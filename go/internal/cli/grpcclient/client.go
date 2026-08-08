@@ -74,6 +74,27 @@ type AgentConnection struct {
 	// by callers after the first RPC returns; atomic makes that read race-free.
 	// nil for connections that never install the sink (plaintext / NewFromConn).
 	observedServerOrg *atomic.Int32
+	// observedServerIdentity holds the device's full Wendy identity (org +
+	// asset) from a server certificate this client actually VERIFIED — the
+	// OnVerifiedServerIdentity sink, which fires only after the chain and org
+	// checks pass. Same goroutine story as observedServerOrg above, hence the
+	// atomic; a pointer so "never fired" is distinguishable from a zero
+	// identity. nil for connections that never install the sink.
+	observedServerIdentity *atomic.Pointer[certs.WendyIdentity]
+}
+
+// verifiedIdentitySink returns the OnVerifiedServerIdentity callback that
+// records the device identity behind a verified server certificate. Identities
+// without an org are dropped: org 0 is not a real Wendy org, so storing one
+// would let ObservedServerIdentity report an identity no certificate asserted.
+func verifiedIdentitySink(dst *atomic.Pointer[certs.WendyIdentity]) func(certs.WendyIdentity) {
+	return func(id certs.WendyIdentity) {
+		if id.OrgID == 0 {
+			return
+		}
+		stored := id
+		dst.Store(&stored)
+	}
 }
 
 func Connect(ctx context.Context, address string) (*AgentConnection, error) {
@@ -149,6 +170,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 	observedOrg := new(atomic.Int32)
+	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
@@ -158,6 +180,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 				observedOrg.Store(id.OrgID)
 			}
 		},
+		OnVerifiedServerIdentity: verifiedIdentitySink(observedIdentity),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
@@ -191,6 +214,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	ac.IsMTLS = true
 	ac.CertInfo = certInfo
 	ac.observedServerOrg = observedOrg
+	ac.observedServerIdentity = observedIdentity
 	return ac, nil
 }
 
@@ -263,6 +287,26 @@ func (c *AgentConnection) ObservedServerOrg() (int32, bool) {
 	}
 	v := c.observedServerOrg.Load()
 	return v, v != 0
+}
+
+// ObservedServerIdentity returns the device's Wendy identity (org + entity, the
+// entity being "asset:<assetID>" for an agent) taken from a server certificate
+// this connection VERIFIED — chain-checked against the CLI's CA and matched to
+// the expected org. Returns (zero, false) for plaintext connections, certs
+// carrying no Wendy identity, and handshakes that never completed.
+//
+// Unlike ObservedServerOrg — captured pre-verification and therefore only safe
+// for diagnostics — this identity is what the peer proved, so it is the value
+// device pinning compares against (see enforceDevicePin).
+func (c *AgentConnection) ObservedServerIdentity() (certs.WendyIdentity, bool) {
+	if c.observedServerIdentity == nil {
+		return certs.WendyIdentity{}, false
+	}
+	id := c.observedServerIdentity.Load()
+	if id == nil {
+		return certs.WendyIdentity{}, false
+	}
+	return *id, true
 }
 
 func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
