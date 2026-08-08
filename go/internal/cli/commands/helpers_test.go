@@ -1667,6 +1667,39 @@ func TestCacheConnectSuccess_ReusesExistingDiscoveryIdentity(t *testing.T) {
 	}
 }
 
+func TestCacheConnectSuccessStoresActualEndpoint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seed, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	now := time.Now()
+	// Discovery stored the advertised mTLS port; a connect via the plaintext
+	// originalAddr port must NOT clobber it with 50051.
+	seed.Upsert(discoverycache.Entry{ID: "dev-1", Hostname: "orin.local", IP: "10.0.0.9", Port: 50052, MTLS: true}, now)
+	if err := seed.Flush(now); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	origLoad := deviceCacheLoadFn
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+	t.Cleanup(func() { deviceCacheLoadFn = origLoad })
+
+	conn := &grpcclient.AgentConnection{Host: "10.0.0.9", IsMTLS: true, Addr: "10.0.0.9:50052"}
+	cacheConnectSuccess("orin.local:50051", conn)
+
+	after, _ := discoverycache.LoadFrom(path)
+	e, ok := cachedDeviceEntry(after, "orin.local")
+	if !ok {
+		t.Fatal("entry missing after write-back")
+	}
+	if e.Port != 50052 {
+		t.Errorf("Port = %d after mTLS connect on 50052, want 50052 (originalAddr's 50051 must not clobber)", e.Port)
+	}
+	if !e.MTLS {
+		t.Error("MTLS flag lost on write-back")
+	}
+}
+
 func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
 	// A reachability timeout against an mTLS-advertised device should hint at
 	// both stale certs and a too-old CLI.
