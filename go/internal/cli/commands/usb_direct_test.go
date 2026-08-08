@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -137,11 +138,21 @@ func (f fakeVersionClient) GetAgentVersion(context.Context, *agentpb.GetAgentVer
 	return f.resp, f.err
 }
 
+// recordingCloser observes whether Close was called on it. Attaching one via
+// AgentConnection.ExtraClosers makes AgentConnection.Close() observable in
+// tests: with a nil Conn and no ExtraClosers, Close() silently no-ops, so a
+// bare fake connection can't prove a mismatched/errored fallback candidate
+// was actually closed.
+type recordingCloser struct{ closed bool }
+
+func (r *recordingCloser) Close() error { r.closed = true; return nil }
+
 func TestUSBDirectFallbackMatchesHostname(t *testing.T) {
 	withUSBDirectStubs(t,
 		[]discovery.USBDirectCandidate{{Interface: "enxa", Zone: "enxa"}},
 		getAgentVersionAtAddress) // unused by fallback; keep original semantics
 
+	rec := &recordingCloser{}
 	origConnect := usbDirectConnectFn
 	usbDirectConnectFn = func(_ context.Context, addr string) (*grpcclient.AgentConnection, error) {
 		if addr != "[fe80::5741:1%enxa]:50051" {
@@ -149,6 +160,7 @@ func TestUSBDirectFallbackMatchesHostname(t *testing.T) {
 		}
 		return &grpcclient.AgentConnection{
 			AgentService: fakeVersionClient{resp: &agentpb.GetAgentVersionResponse{Hostname: "wendy-orin"}},
+			ExtraClosers: []io.Closer{rec},
 		}, nil
 	}
 	t.Cleanup(func() { usbDirectConnectFn = origConnect })
@@ -156,6 +168,9 @@ func TestUSBDirectFallbackMatchesHostname(t *testing.T) {
 	conn, ok := usbDirectFallback(context.Background(), "wendy-orin.local")
 	if !ok || conn == nil {
 		t.Fatal("expected a matched connection")
+	}
+	if rec.closed {
+		t.Fatal("a matched connection must be returned live, not closed")
 	}
 }
 
@@ -168,14 +183,18 @@ func TestUSBDirectFallbackRejectsWrongOrUnknownHostname(t *testing.T) {
 			withUSBDirectStubs(t,
 				[]discovery.USBDirectCandidate{{Interface: "enxa", Zone: "enxa"}},
 				getAgentVersionAtAddress)
+			rec := &recordingCloser{}
 			origConnect := usbDirectConnectFn
 			usbDirectConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
-				return &grpcclient.AgentConnection{AgentService: fakeVersionClient{resp: resp}}, nil
+				return &grpcclient.AgentConnection{AgentService: fakeVersionClient{resp: resp}, ExtraClosers: []io.Closer{rec}}, nil
 			}
 			t.Cleanup(func() { usbDirectConnectFn = origConnect })
 
 			if _, ok := usbDirectFallback(context.Background(), "wendy-orin.local"); ok {
 				t.Fatal("must not connect to a device with a different or unknown hostname")
+			}
+			if !rec.closed {
+				t.Fatal("rejected connection must be closed")
 			}
 		})
 	}
