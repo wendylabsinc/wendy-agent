@@ -1257,3 +1257,63 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}
 	})
 }
+
+// The picker's mDNS stream and its USB probe each own their channel, and either
+// can finish first. muxLANDevices must keep draining the survivor after one
+// input closes, and must close its output exactly once both are done — the
+// alternative (the probe sending into the mDNS channel) panics as soon as
+// DiscoverLANContinuous closes it mid-send.
+func TestMuxLANDevicesSurvivesEitherInputClosingFirst(t *testing.T) {
+	tests := []struct {
+		name        string
+		closeFirst  int // index of the channel that closes before the other sends
+		lateDevices []string
+	}{
+		{name: "mdns closes first", closeFirst: 0, lateDevices: []string{"usb-a", "usb-b"}},
+		{name: "usb closes first", closeFirst: 1, lateDevices: []string{"mdns-a", "mdns-b"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chans := [2]chan models.LANDevice{
+				make(chan models.LANDevice, 1),
+				make(chan models.LANDevice, 1),
+			}
+			out := muxLANDevices(chans[0], chans[1])
+
+			close(chans[tt.closeFirst])
+			survivor := chans[1-tt.closeFirst]
+			go func() {
+				defer close(survivor)
+				for _, name := range tt.lateDevices {
+					survivor <- models.LANDevice{DisplayName: name}
+				}
+			}()
+
+			var got []string
+			for dev := range out {
+				got = append(got, dev.DisplayName)
+			}
+			if !reflect.DeepEqual(got, tt.lateDevices) {
+				t.Fatalf("merged devices = %v, want %v", got, tt.lateDevices)
+			}
+		})
+	}
+}
+
+func TestMuxLANDevicesMergesBothInputs(t *testing.T) {
+	a := make(chan models.LANDevice, 2)
+	b := make(chan models.LANDevice, 2)
+	a <- models.LANDevice{DisplayName: "mdns"}
+	b <- models.LANDevice{DisplayName: "usb"}
+	close(a)
+	close(b)
+
+	seen := map[string]bool{}
+	for dev := range muxLANDevices(a, b) {
+		seen[dev.DisplayName] = true
+	}
+	if !seen["mdns"] || !seen["usb"] || len(seen) != 2 {
+		t.Fatalf("merged devices = %v, want both mdns and usb", seen)
+	}
+}

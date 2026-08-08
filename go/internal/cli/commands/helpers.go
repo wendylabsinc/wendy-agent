@@ -2304,6 +2304,36 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 	}
 }
 
+// muxLANDevices merges two LAN device streams into one. Each producer owns and
+// closes its own input channel: a producer must never send into a channel it
+// does not own, because the owner's close turns an in-flight send into a panic.
+// The merged channel closes once both inputs have.
+func muxLANDevices(a, b <-chan models.LANDevice) <-chan models.LANDevice {
+	out := make(chan models.LANDevice, 16)
+	go func() {
+		defer close(out)
+		// A closed input is nil-ed out so its always-ready receive stops
+		// starving the other one; the loop ends when both are nil.
+		for a != nil || b != nil {
+			select {
+			case dev, ok := <-a:
+				if !ok {
+					a = nil
+					continue
+				}
+				out <- dev
+			case dev, ok := <-b:
+				if !ok {
+					b = nil
+					continue
+				}
+				out <- dev
+			}
+		}
+	}()
+	return out
+}
+
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // LAN discovery runs continuously so devices that come online after the
@@ -2352,16 +2382,21 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 
 	// USB well-known-address probe: a USB-attached device appears in the
 	// picker even when mDNS is broken on this host. The picker's MergeItem
-	// dedupes it against the mDNS entry for the same device.
+	// dedupes it against the mDNS entry for the same device. It feeds its own
+	// channel — lanCh belongs to DiscoverLANContinuous, which closes it when the
+	// browse stream ends, and that can happen while probe sends are in flight.
+	usbCh := make(chan models.LANDevice, 16)
 	go func() {
+		defer close(usbCh)
 		for _, dev := range probeUSBDirectDevices(discoverCtx) {
 			select {
-			case lanCh <- dev:
+			case usbCh <- dev:
 			case <-discoverCtx.Done():
 				return
 			}
 		}
 	}()
+	deviceCh := muxLANDevices(lanCh, usbCh)
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
 		// While the probe is still in flight the Agent/OS columns show a
@@ -2397,7 +2432,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		}}})
 	}
 	go func() {
-		for rawDev := range lanCh {
+		for rawDev := range deviceCh {
 			// Show the device immediately with a "connecting" spinner, then
 			// resolve its version/OS and update the row in place.
 			sendLANItem(rawDev, false, tui.ProbePending)
