@@ -194,7 +194,7 @@ func TestMDNSStreamResolveAndEmitFallback(t *testing.T) {
 		return MDNSService{}, errors.New("forced resolve failure")
 	}
 
-	t.Run("valid hostname label still emits a bare identity", func(t *testing.T) {
+	t.Run("valid hostname label emits a synthesized dialable identity", func(t *testing.T) {
 		var got []MDNSService
 		mdnsStreamResolveAndEmit(context.Background(), browseResult{
 			instanceName:  "valid-label",
@@ -205,9 +205,16 @@ func TestMDNSStreamResolveAndEmitFallback(t *testing.T) {
 			t.Fatalf("got %d emissions, want 1: %+v", len(got), got)
 		}
 		svc := got[0]
+		// Hostname/Port are what the pre-stream deviceFromBrowse fallback
+		// synthesized. Without them the row has no identity at all: the mapper
+		// derives ID/DisplayName from the hostname, so the device would reach
+		// the engine nameless, un-dialable, and keyed by "" in the cache.
 		if svc.InstanceName != "valid-label" || svc.InterfaceName != "en0" ||
-			svc.Hostname != "" || svc.Port != 0 || len(svc.TXTRecords) != 0 {
-			t.Errorf("emitted %+v, want bare {InstanceName: valid-label, InterfaceName: en0}", svc)
+			svc.Hostname != "valid-label.local" || svc.Port != defaultAgentPort || len(svc.TXTRecords) != 0 {
+			t.Errorf("emitted %+v, want {InstanceName+Hostname valid-label(.local), Port %d, InterfaceName en0}", svc, defaultAgentPort)
+		}
+		if dev := lanDeviceFromService(svc); dev.ID == "" || dev.DisplayName == "" || dev.Port == 0 {
+			t.Errorf("fallback sighting maps to an unusable device: %+v", dev)
 		}
 	})
 

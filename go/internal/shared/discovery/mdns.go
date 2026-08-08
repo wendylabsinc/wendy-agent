@@ -12,6 +12,11 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
+// defaultAgentPort is the port a WendyOS agent listens on. Used only when an
+// mDNS answer cannot be resolved and the device's identity has to be
+// synthesized from the browse result alone.
+const defaultAgentPort = 50051
+
 // MDNSService represents a generic mDNS service entry discovered on the network.
 type MDNSService struct {
 	InstanceName  string
@@ -30,10 +35,18 @@ type MDNSService struct {
 // by tls=="true"; assetid/orgid are accepted only when they parse as
 // positive integers (0 or unparseable stays the zero value, meaning
 // unknown/unprovisioned); and "name" becomes the friendly mesh name.
+//
+// A sighting that carries neither a hostname nor a usable displayname TXT
+// record falls back to the DNS-SD instance name for both the display name and
+// the id, so an unresolvable answer still yields a named row rather than an
+// empty identity (which every cache and dedup key would collapse together).
 func lanDeviceFromService(svc MDNSService) models.LANDevice {
 	displayName := strings.TrimSuffix(svc.Hostname, ".local")
 	if dn, ok := svc.TXTRecords["displayname"]; ok {
 		displayName = dn
+	}
+	if displayName == "" {
+		displayName = svc.InstanceName
 	}
 
 	id := ""
