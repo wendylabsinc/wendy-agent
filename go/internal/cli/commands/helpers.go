@@ -1572,6 +1572,15 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 	if err != nil {
 		return
 	}
+	// Prefer the endpoint the connection actually dialed (mTLS port when the
+	// ladder stepped to port+1) over originalAddr's port — otherwise a
+	// default-device connect (plaintext :50051 in originalAddr) would clobber
+	// discovery's advertised mTLS port in the cache on every command.
+	if _, connPortStr, splitErr := net.SplitHostPort(conn.Addr); splitErr == nil {
+		if connPort, convErr := strconv.Atoi(connPortStr); convErr == nil {
+			port = connPort
+		}
+	}
 	cache, err := deviceCacheLoadFn()
 	if err != nil || cache == nil {
 		return
@@ -1580,6 +1589,10 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 		Hostname: cacheHostnameForStorage(host),
 		IP:       conn.Host,
 		Port:     port,
+		MTLS:     conn.IsMTLS,
+	}
+	if org, ok := conn.ObservedServerOrg(); ok {
+		entry.OrgID = org
 	}
 	if existing, ok := cachedDeviceEntry(cache, host); ok {
 		entry.ID, entry.DisplayName = existing.ID, existing.DisplayName
