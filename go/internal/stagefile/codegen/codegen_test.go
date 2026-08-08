@@ -126,7 +126,7 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 func TestGenerateApkInstall(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "alpine:3.20", Install: &spec.Install{
-			Apk: &spec.AptInstall{Packages: []string{"curl"}},
+			Apk: &spec.ApkInstall{Packages: []string{"curl"}},
 		}},
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}
@@ -143,10 +143,10 @@ func TestGenerateApkInstall(t *testing.T) {
 	}
 }
 
-func TestGenerateApkInstallWithRecommends(t *testing.T) {
+func TestGenerateApkInstallWithCache(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "alpine:3.20", Install: &spec.Install{
-			Apk: &spec.AptInstall{Packages: []string{"curl"}, Recommends: true},
+			Apk: &spec.ApkInstall{Packages: []string{"curl"}, Cache: true},
 		}},
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}

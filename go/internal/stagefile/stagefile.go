@@ -63,11 +63,16 @@ func compileFile(dir, platform string, resolver lock.Resolver) (dockerfile, dock
 }
 
 // imageRefs collects every distinct from: value across f's stages, in
-// file order, without duplicates.
+// file order, without duplicates. Stages that opt out of digest pinning
+// (pin: false — local-only images with no registry digest) are skipped so
+// the resolver never tries to look them up.
 func imageRefs(f *spec.File) []string {
 	seen := map[string]bool{}
 	var refs []string
 	for _, s := range f.Stages {
+		if s.Pin != nil && !*s.Pin {
+			continue
+		}
 		if !seen[s.From] {
 			seen[s.From] = true
 			refs = append(refs, s.From)
