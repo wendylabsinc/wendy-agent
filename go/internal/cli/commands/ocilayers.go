@@ -375,6 +375,55 @@ func ociImageFromIndex(indexJSON []byte, getBlob func(hex string) ([]byte, error
 	return img, nil
 }
 
+// readOCILayoutDirLayers is readOCILayoutLayers' sibling for an OCI layout
+// DIRECTORY (buildx `--output type=oci,tar=false`): dir holds index.json plus
+// blobs/sha256/<hex> files. Layers come back file-backed against the blob
+// files themselves (offset 0, whole file). Each layer blob's on-disk size is
+// validated against the manifest descriptor so a partially-written blob (e.g.
+// a killed export) fails loudly instead of pushing garbage — callers respond
+// by wiping the directory and rebuilding.
+func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) {
+	indexJSON, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read OCI layout index: %w", err)
+	}
+	blobPath := func(hex string) string {
+		return filepath.Join(dir, "blobs", "sha256", hex)
+	}
+	getBlob := func(hex string) ([]byte, error) {
+		return os.ReadFile(blobPath(hex))
+	}
+
+	img, err := ociImageFromIndex(indexJSON, getBlob, platform)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	layers := make([]localLayer, 0, len(img.Layers))
+	for i, desc := range img.Layers {
+		layerHex, err := digestToHex(desc.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
+		}
+		fi, err := os.Stat(blobPath(layerHex))
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI layout dir: %w", i, desc.Digest, err)
+		}
+		if desc.Size > 0 && fi.Size() != desc.Size {
+			return nil, nil, fmt.Errorf("layer blob sha256:%s is %d bytes on disk but the manifest says %d (partial write?)", layerHex, fi.Size(), desc.Size)
+		}
+		layers = append(layers, localLayer{
+			Digest:    desc.Digest,
+			DiffID:    desc.DiffID,
+			MediaType: desc.MediaType,
+			TarPath:   blobPath(layerHex),
+			Offset:    0,
+			Size:      fi.Size(),
+		})
+	}
+	return layers, img.ImageConfig, nil
+}
+
 // blobLoc is a blob's byte range within an OCI-layout tar.
 type blobLoc struct {
 	off  int64

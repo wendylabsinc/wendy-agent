@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -108,6 +109,13 @@ func writeOCITar(t *testing.T, path string, entries map[string][]byte) {
 // compute the DiffID in the config (for uncompressed layers it equals blobData).
 func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType string, diffIDBytes []byte) {
 	t.Helper()
+	writeOCITar(t, path, minimalOCILayoutEntries(t, blobData, mediaType, diffIDBytes))
+}
+
+// minimalOCILayoutEntries builds the entry map (name → data) for a minimal
+// single-layer OCI layout, shared by the tar and directory fixture writers.
+func minimalOCILayoutEntries(t *testing.T, blobData []byte, mediaType string, diffIDBytes []byte) map[string][]byte {
+	t.Helper()
 
 	diffID := "sha256:" + sha256Hex(diffIDBytes)
 	layerDigest := "sha256:" + sha256Hex(blobData)
@@ -153,14 +161,113 @@ func writeMinimalOCILayout(t *testing.T, path string, blobData []byte, mediaType
 		t.Fatal(err)
 	}
 
-	entries := map[string][]byte{
+	return map[string][]byte{
 		"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`),
 		"index.json": indexBytes,
 		"blobs/sha256/" + sha256Hex(manifestBytes): manifestBytes,
 		"blobs/sha256/" + sha256Hex(configBytes):   configBytes,
 		"blobs/sha256/" + sha256Hex(blobData):      blobData,
 	}
-	writeOCITar(t, path, entries)
+}
+
+// writeOCILayoutDir materializes entries (same shape writeOCITar takes) as an
+// OCI layout directory: "index.json" and "blobs/sha256/<hex>" become files.
+func writeOCILayoutDir(t *testing.T, dir string, entries map[string][]byte) {
+	t.Helper()
+	for name, data := range entries {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The layout-dir reader must return file-backed layers pointing at the blob
+// files themselves (offset 0, whole file), with DiffID and config populated
+// exactly like the tar reader.
+func TestReadOCILayoutDirLayers(t *testing.T) {
+	dir := t.TempDir()
+
+	raw := bytes.Repeat([]byte("wendy-layout-dir-payload-"), 4000)
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	compressed := gz.Bytes()
+
+	writeOCILayoutDir(t, dir, minimalOCILayoutEntries(t, compressed, "application/vnd.oci.image.layer.v1.tar+gzip", raw))
+
+	layers, imageConfig, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 1 {
+		t.Fatalf("want 1 layer, got %d", len(layers))
+	}
+	l := layers[0]
+
+	wantPath := filepath.Join(dir, "blobs", "sha256", sha256Hex(compressed))
+	if l.TarPath != wantPath {
+		t.Fatalf("layer path = %q, want %q", l.TarPath, wantPath)
+	}
+	if l.Offset != 0 {
+		t.Fatalf("layer offset = %d, want 0", l.Offset)
+	}
+	if l.Size != int64(len(compressed)) {
+		t.Fatalf("layer size = %d, want %d", l.Size, len(compressed))
+	}
+	if want := "sha256:" + sha256Hex(raw); l.DiffID != want {
+		t.Fatalf("diffID = %q, want %q", l.DiffID, want)
+	}
+
+	got, err := l.decompress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, raw) {
+		t.Fatal("decompressed bytes do not match original raw tar")
+	}
+	if !bytes.Contains(imageConfig, []byte(`"WorkingDir":"/app"`)) {
+		t.Fatal("image config not round-tripped")
+	}
+}
+
+// A blob file whose size disagrees with the manifest descriptor is a partial
+// write (e.g. a killed export); the reader must fail loudly so the caller can
+// self-heal by wiping the directory.
+func TestReadOCILayoutDirLayersSizeMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	raw := []byte("layer-tar-bytes-for-truncation")
+	entries := minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw)
+	writeOCILayoutDir(t, dir, entries)
+
+	blobPath := filepath.Join(dir, "blobs", "sha256", sha256Hex(raw))
+	if err := os.Truncate(blobPath, int64(len(raw)-5)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err == nil {
+		t.Fatal("want error for truncated layer blob, got nil")
+	}
+	if !strings.Contains(err.Error(), sha256Hex(raw)) {
+		t.Fatalf("error should name the bad blob digest, got: %v", err)
+	}
+}
+
+func TestReadOCILayoutDirLayersMissingIndex(t *testing.T) {
+	_, _, err := readOCILayoutDirLayers(t.TempDir(), "linux/arm64")
+	if err == nil {
+		t.Fatal("want error for missing index.json, got nil")
+	}
 }
 
 // readOCILayoutLayers must reference layer blobs by their byte range in the
