@@ -146,13 +146,20 @@ func (c *Cache) Upsert(e Entry, now time.Time) {
 	c.dirty[key] = true
 }
 
-// Merge returns stored with incoming's non-zero fields applied on top — the
-// same rule Upsert uses to fold a new sighting into a stored entry. Exported
-// for the streaming discovery engine, which keeps its in-memory view of a
-// device identical to what a later Flush will persist. LastSeen is not
-// touched; callers stamp it via Upsert.
-func Merge(stored, incoming Entry) Entry {
-	return mergeEntry(stored, incoming)
+// Replace stores e verbatim under Key(e.ID, e.DisplayName), stamping
+// LastSeen=now and discarding whatever was there. It is for callers that hold
+// the device's complete current state — the streaming discovery engine, which
+// already carries a probe's findings forward itself. For them Upsert's
+// non-zero-wins merge would only resurrect values the device has since
+// dropped, such as an mTLS flag or an orgid it stopped advertising.
+func (c *Cache) Replace(e Entry, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e.LastSeen = now
+	key := Key(e.ID, e.DisplayName)
+	c.entries[key] = e
+	c.dirty[key] = true
 }
 
 // mergeEntry applies incoming's non-zero fields on top of stored, leaving
