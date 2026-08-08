@@ -69,14 +69,18 @@ const graphFixture = `[
 
 // stubGraph points the audio package at a fixture and records every wpctl call.
 // It returns the recorded calls, which the caller reads after the exercise.
-// Volume reads run concurrently, so the recorder is guarded.
+// Volume reads run concurrently, so the recorder is guarded. It also forces
+// audio.Available() to true: without this, every test here would run in the
+// sandbox's real "no PipeWire session" state and silently exercise the ALSA
+// fallback instead of the stubbed PipeWire graph.
 func stubGraph(t *testing.T, dump string, wpctl func(args ...string) ([]byte, error)) *[]string {
 	t.Helper()
-	origDump, origWpctl := audio.DumpRun, audio.WpctlRun
-	t.Cleanup(func() { audio.DumpRun, audio.WpctlRun = origDump, origWpctl })
+	origDump, origWpctl, origAvailable := audio.DumpRun, audio.WpctlRun, audio.Available
+	t.Cleanup(func() { audio.DumpRun, audio.WpctlRun, audio.Available = origDump, origWpctl, origAvailable })
 
 	var mu sync.Mutex
 	var calls []string
+	audio.Available = func() bool { return true }
 	audio.DumpRun = func(context.Context) ([]byte, error) { return []byte(dump), nil }
 	audio.WpctlRun = func(_ context.Context, args ...string) ([]byte, error) {
 		mu.Lock()
@@ -164,11 +168,15 @@ func TestListAudioDevicesTypeFilter(t *testing.T) {
 	}
 }
 
-func TestListAudioDevicesNoSession(t *testing.T) {
+func TestListAudioDevicesQueryFailure(t *testing.T) {
+	// A session is up but querying it failed outright (e.g. pw-dump wedged or
+	// emitted garbage). This must still surface as a failure, not silently
+	// fall back to ALSA and hide a real PipeWire problem.
+	stubGraph(t, "", nil)
 	orig := audio.DumpRun
 	t.Cleanup(func() { audio.DumpRun = orig })
 	audio.DumpRun = func(context.Context) ([]byte, error) {
-		return nil, fmt.Errorf("no PipeWire session found")
+		return nil, fmt.Errorf("pw-dump: exit status 1")
 	}
 
 	_, err := testAudioService().ListAudioDevices(context.Background(), &agentpb.ListAudioDevicesRequest{})
@@ -176,6 +184,34 @@ func TestListAudioDevicesNoSession(t *testing.T) {
 	// "this device has no speakers".
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("error = %v, want codes.Internal", err)
+	}
+}
+
+func TestListAudioDevicesFallsBackToALSAWithNoSession(t *testing.T) {
+	origAvailable, origAplay, origArecord := audio.Available, audio.AplayListRun, audio.ArecordListRun
+	t.Cleanup(func() {
+		audio.Available, audio.AplayListRun, audio.ArecordListRun = origAvailable, origAplay, origArecord
+	})
+	audio.Available = func() bool { return false }
+	audio.AplayListRun = func(context.Context) ([]byte, error) {
+		return []byte("card 0: vc4hdmi0 [vc4-hdmi-0], device 0: MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]\n"), nil
+	}
+	audio.ArecordListRun = func(context.Context) ([]byte, error) { return []byte(""), nil }
+
+	resp, err := testAudioService().ListAudioDevices(context.Background(), &agentpb.ListAudioDevicesRequest{})
+	if err != nil {
+		t.Fatalf("ListAudioDevices() error = %v", err)
+	}
+	if len(resp.GetDevices()) != 1 {
+		t.Fatalf("got %d devices, want the 1 ALSA card; got %+v", len(resp.GetDevices()), resp.GetDevices())
+	}
+	device := resp.GetDevices()[0]
+	// ALSA has no default-device concept, so this must never be claimed true.
+	if device.GetIsDefault() {
+		t.Error("ALSA fallback device reported as default, but ALSA has no such concept")
+	}
+	if device.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
+		t.Errorf("device type = %v, want OUTPUT", device.GetType())
 	}
 }
 
@@ -326,13 +362,13 @@ func TestCaptureTarget(t *testing.T) {
 	ctx := context.Background()
 
 	// pw-record takes an object serial, not the object ID used everywhere else.
-	if got, err := captureTarget(ctx, 55); err != nil || got != "88" {
-		t.Errorf("captureTarget(55) = %q, %v; want the USB mic's serial 88", got, err)
+	if got, err := captureTarget(ctx, 55); err != nil || got.pwTarget != "88" {
+		t.Errorf("captureTarget(55) = %+v, %v; want the USB mic's serial 88", got, err)
 	}
 
 	// Unspecified means the default source.
-	if got, err := captureTarget(ctx, 0); err != nil || got != "251" {
-		t.Errorf("captureTarget(0) = %q, %v; want the default source's serial 251", got, err)
+	if got, err := captureTarget(ctx, 0); err != nil || got.pwTarget != "251" {
+		t.Errorf("captureTarget(0) = %+v, %v; want the default source's serial 251", got, err)
 	}
 
 	// Recording from a speaker is not a thing; say so rather than letting
@@ -360,8 +396,8 @@ func TestCaptureTargetFallsBackToAnySource(t *testing.T) {
 	}
 	// The lowest node id wins, so an unspecified device records from the same
 	// microphone every time rather than following pw-dump's graph order.
-	if got != "251" {
-		t.Errorf("captureTarget(0) = %q, want the lowest-id source's serial 251", got)
+	if got.pwTarget != "251" {
+		t.Errorf("captureTarget(0) = %+v, want the lowest-id source's serial 251", got)
 	}
 }
 
