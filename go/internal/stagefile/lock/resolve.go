@@ -39,12 +39,12 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 }
 
 // CraneResolver is a Resolver backed by a real registry lookup. It is
-// intentionally not covered by an automated test — see Task 10's manual
-// verification step — so the test suite never depends on network access.
+// intentionally not covered by an automated test so the suite never depends
+// on network access; tests inject a fake Resolver instead.
 func CraneResolver(ref string) (string, error) {
 	digest, err := crane.Digest(ref)
 	if err != nil {
 		return "", fmt.Errorf("crane digest %q: %w", ref, err)
 	}
-	return "sha256:" + digest[len("sha256:"):], nil
+	return digest, nil
 }
