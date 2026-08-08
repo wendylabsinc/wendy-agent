@@ -181,8 +181,7 @@ func TestMDNSStreamBackend(t *testing.T) {
 
 // TestMDNSStreamResolveAndEmitFallback pins mdnsStreamResolveAndEmit's
 // isValidHostnameLabel gate on a failed resolve, in both directions: a name
-// that can stand in as a hostname label still surfaces a bare identity
-// (mirroring deviceFromBrowse's fallback at discovery_darwin.go:139), so a
+// that can stand in as a hostname label still surfaces a bare identity, so a
 // device with no TXT records or a transient resolve failure is not silently
 // dropped from the stream — but a name that cannot (e.g. one containing a
 // space) is skipped rather than emitting a misleading dialable-looking

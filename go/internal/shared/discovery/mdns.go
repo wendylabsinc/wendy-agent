@@ -24,8 +24,7 @@ type MDNSService struct {
 
 // lanDeviceFromService converts a resolved mDNS service entry into a
 // models.LANDevice, applying the TXT-record precedence shared by every
-// platform's LAN discovery backend (darwin dnssdResolve, linux
-// parseAvahiResolveLine / hashicorp-mdns fallback): "displayname" wins over
+// platform's LAN discovery backend: "displayname" wins over
 // the hostname with ".local" trimmed; the device ID prefers "wendyosdevice"
 // then "id" then falls back to the resolved display name; mTLS is signaled
 // by tls=="true"; assetid/orgid are accepted only when they parse as
@@ -129,10 +128,7 @@ func preferIPv4Addr(addrs []string) string {
 // browseSettle is how long BrowseMDNSServices waits after the most recently
 // discovered service before concluding the network has gone quiet, so a
 // populated network does not pay the full timeout. A var, not a const, so
-// tests can shrink it. Moved here from darwin's dnssdBrowseSettle (formerly
-// discovery_darwin.go), which this generic implementation replaces; darwin's
-// own dnssdBrowse (still used by the surviving discoverLAN batch path) now
-// reads this shared value too.
+// tests can shrink it.
 var browseSettle = 500 * time.Millisecond
 
 // browseBackendFn is the seam BrowseMDNSServices and BrowseMDNSServicesContinuous
@@ -221,12 +217,11 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 			if !seen[key] {
 				seen[key] = true
 				services = append(services, svc)
-				// Only a newly discovered service pushes settle back out —
-				// mirroring darwin's dnssdBrowse precedent. mdnsStreamBackend
-				// deliberately does not dedup (a multi-homed device or an
-				// ordinary re-announcement re-fires Add), so re-arming on
-				// every emission would let repeats alone stall this out to
-				// the full timeout, defeating the early exit.
+				// Only a newly discovered service pushes settle back out.
+				// mdnsStreamBackend deliberately does not dedup (a multi-homed
+				// device or an ordinary re-announcement re-fires Add), so
+				// re-arming on every emission would let repeats alone stall
+				// this out to the full timeout, defeating the early exit.
 				if settleTimer != nil {
 					settleTimer.Stop()
 				}
