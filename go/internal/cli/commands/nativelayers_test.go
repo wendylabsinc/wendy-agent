@@ -356,10 +356,10 @@ func writeTwoLayerLayoutDir(t *testing.T, dir string, depsTar, appTar []byte, wo
 	manifestDigest := sha256Hex(manifest)
 	index := []byte(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + manifestDigest + `","size":` + fmt.Sprint(len(manifest)) + `,"platform":{"os":"linux","architecture":"arm64"}}]}`)
 	writeOCILayoutDir(t, dir, map[string][]byte{
-		"oci-layout":                        []byte(`{"imageLayoutVersion":"1.0.0"}`),
-		"index.json":                        index,
-		"blobs/sha256/" + manifestDigest:    manifest,
-		"blobs/sha256/" + sha256Hex(config): config,
+		"oci-layout":                         []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json":                         index,
+		"blobs/sha256/" + manifestDigest:     manifest,
+		"blobs/sha256/" + sha256Hex(config):  config,
 		"blobs/sha256/" + sha256Hex(depsTar): depsTar,
 		"blobs/sha256/" + sha256Hex(appTar):  appTar,
 	})
@@ -500,6 +500,68 @@ func TestTryNativeRebuildRefusesExternalManifestChange(t *testing.T) {
 	if ok {
 		t.Fatal("native rebuild must refuse when the manifest changed externally")
 	}
+}
+
+func TestNativeBuildEligibility(t *testing.T) {
+	t.Setenv("WENDY_NATIVE_LAYERS", "")
+
+	eligibleYAML := "version: 1\nstages:\n  - name: app\n    from: python:3.11-slim\n    install:\n      pip:\n        requirements: requirements.txt\n    copy:\n      - from: local\n        paths: [main.py]\n    entrypoint:\n      exec: [python, main.py]\n"
+
+	t.Run("eligible python project", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", eligibleYAML)
+		sf, ok := nativeBuildEligibility(dir, "Dockerfile.generated")
+		if !ok || sf == nil {
+			t.Fatal("python-style stagefile project should be eligible")
+		}
+	})
+
+	t.Run("plain dockerfile name is ineligible", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", eligibleYAML)
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile"); ok {
+			t.Fatal("non-generated dockerfile must be ineligible")
+		}
+	})
+
+	t.Run("no stagefile is ineligible", func(t *testing.T) {
+		if _, ok := nativeBuildEligibility(t.TempDir(), "Dockerfile.generated"); ok {
+			t.Fatal("missing stagefile must be ineligible")
+		}
+	})
+
+	t.Run("final-stage build.lang is ineligible", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", "version: 1\nstages:\n  - name: app\n    from: rust:1\n    copy:\n      - from: local\n        paths: [src]\n    build:\n      lang: rust\n")
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); ok {
+			t.Fatal("a compiling final stage must be ineligible")
+		}
+	})
+
+	t.Run("no local copies is ineligible", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", "version: 1\nstages:\n  - name: builder\n    from: golang:1\n    copy:\n      - from: local\n        paths: [main.go]\n  - name: app\n    from: debian:12\n    copy:\n      - from: builder\n        paths: [/out]\n        dest: /out\n")
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); ok {
+			t.Fatal("a final stage without local copies must be ineligible")
+		}
+	})
+
+	t.Run("local copy before a stage copy is ineligible", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", "version: 1\nstages:\n  - name: builder\n    from: golang:1\n    copy:\n      - from: local\n        paths: [main.go]\n  - name: app\n    from: debian:12\n    copy:\n      - from: local\n        paths: [main.go]\n      - from: builder\n        paths: [/out]\n        dest: /out\n")
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); ok {
+			t.Fatal("local copies must be the final layers to be eligible")
+		}
+	})
+
+	t.Run("env kill switch", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "build.stagefile.yaml", eligibleYAML)
+		t.Setenv("WENDY_NATIVE_LAYERS", "off")
+		if _, ok := nativeBuildEligibility(dir, "Dockerfile.generated"); ok {
+			t.Fatal("WENDY_NATIVE_LAYERS=off must disable the native path")
+		}
+	})
 }
 
 func TestBuildNativeCopyLayerRejectsEscapes(t *testing.T) {

@@ -222,6 +222,53 @@ func saveNativeState(dir string, s nativeState) error {
 	return os.Rename(tmp.Name(), filepath.Join(dir, nativeStateName))
 }
 
+// nativeLayersEnv disables the native fast path when set to "off" (escape
+// hatch; the buildx path then always runs).
+const nativeLayersEnv = "WENDY_NATIVE_LAYERS"
+
+// nativeBuildEligibility decides whether this build may use the native
+// app-layer path. All must hold: the resolved dockerfile is the compiled
+// Stagefile output, the Stagefile parses, the final stage does not compile
+// (`build:`), it has at least one `from: local` copy, and every local copy
+// comes after all cross-stage copies — the local copies must be the image's
+// LAST layers for the adoption mapping to hold.
+func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
+	if os.Getenv(nativeLayersEnv) == "off" {
+		return nil, false
+	}
+	if filepath.Base(dockerfile) != generatedDockerfileName {
+		return nil, false
+	}
+	data, err := os.ReadFile(filepath.Join(cwd, stagefileSourceName))
+	if err != nil {
+		return nil, false
+	}
+	sf, err := spec.Parse(data)
+	if err != nil || len(sf.Stages) == 0 {
+		return nil, false
+	}
+	final := sf.Stages[len(sf.Stages)-1]
+	if final.Build != nil {
+		return nil, false
+	}
+	locals := 0
+	for _, c := range final.Copy {
+		if c.From == "local" {
+			locals++
+			continue
+		}
+		if locals > 0 {
+			// A cross-stage copy after a local one breaks the "local copies are
+			// the last layers" invariant.
+			return nil, false
+		}
+	}
+	if locals == 0 {
+		return nil, false
+	}
+	return sf, true
+}
+
 // ociManifest captures the standard OCI image-manifest fields the splice
 // mutates. Annotations are preserved; anything nonstandard would be dropped,
 // which buildx-produced image manifests don't carry.
