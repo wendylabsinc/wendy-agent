@@ -39,10 +39,14 @@ keep separate policy knobs.
 
 Credential items: service **`wendy-credentials`**, account
 `<kind>-<sha16>` where `kind ∈ {key, token}` and `sha16` is the first 16 hex
-chars of `SHA256(cloudGRPC|orgID|userID)` (for tokens: `SHA256(cloudGRPC)` —
-one token per auth entry). Deterministic accounts mean re-login overwrites
-the same item. Writes ride stdin via `security -i` (never argv), mirroring
-PR #1612.
+chars of `SHA256(cloudGRPC|orgID|userID)` for keys, and `SHA256(cloudGRPC|orgID)`
+for tokens. Tokens are keyed by org as well as endpoint because `AddAuth`
+deliberately keeps one auth entry per `(cloudGRPC, orgID)` pair — several
+orgs can share one endpoint (e.g. multiple orgs on the production cloud) —
+so a per-endpoint-only account would let a second org's token overwrite the
+first org's Keychain item on save. Deterministic accounts mean re-login for
+the same identity overwrites the same item. Writes ride stdin via
+`security -i` (never argv), mirroring PR #1612.
 
 Honest posture (same as the ticket store): the item ACL trusts
 `/usr/bin/security`, so any same-user process reads it promptlessly — the

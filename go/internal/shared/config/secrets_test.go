@@ -130,9 +130,17 @@ func TestAccountDerivationDeterministic(t *testing.T) {
 	if !strings.HasPrefix(a1, "key-") || len(a1) != len("key-")+16 {
 		t.Errorf("account %q not key-<hex16>", a1)
 	}
-	tk := tokenAccount("grpc.wendy.com:443")
-	if !strings.HasPrefix(tk, "token-") || len(tk) != len("token-")+16 {
-		t.Errorf("token account %q not token-<hex16>", tk)
+	tk1 := tokenAccount("grpc.wendy.com:443", 7)
+	tk2 := tokenAccount("grpc.wendy.com:443", 7)
+	tkOther := tokenAccount("grpc.wendy.com:443", 8)
+	if tk1 != tk2 {
+		t.Errorf("same (endpoint, org) → different token accounts: %q vs %q", tk1, tk2)
+	}
+	if tk1 == tkOther {
+		t.Error("different org on the same endpoint → same token account")
+	}
+	if !strings.HasPrefix(tk1, "token-") || len(tk1) != len("token-")+16 {
+		t.Errorf("token account %q not token-<hex16>", tk1)
 	}
 }
 
@@ -276,6 +284,63 @@ func TestSaveFileModeKeepsRefOnFailedRead(t *testing.T) {
 	loaded, _ := Load()
 	if loaded.Auth[0].APIKey != ref {
 		t.Errorf("unresolvable ref was rewritten to %q; must keep the reference", loaded.Auth[0].APIKey)
+	}
+}
+
+// TestSaveTokenAccountPerOrgOnSharedEndpoint is a regression test for a
+// Keychain account collision: AddAuth deliberately keeps one auth entry per
+// (cloudGRPC, orgID) pair so several orgs on the same cloud endpoint each
+// get their own entry. tokenAccount must key on org too, or dehydrating the
+// second org's token would Put it under the same account as the first,
+// destroying the first org's stored token even though both references
+// still look distinct on disk.
+func TestSaveTokenAccountPerOrgOnSharedEndpoint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{
+		{
+			CloudGRPC:    "grpc.wendy.com:443",
+			APIKey:       "tok-org-a",
+			Certificates: []CertificateInfo{{OrganizationID: 1}},
+		},
+		{
+			CloudGRPC:    "grpc.wendy.com:443",
+			APIKey:       "tok-org-b",
+			Certificates: []CertificateInfo{{OrganizationID: 2}},
+		},
+	}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !isRef(loaded.Auth[0].APIKey) || !isRef(loaded.Auth[1].APIKey) {
+		t.Fatalf("expected both APIKeys to be dehydrated refs, got %q and %q", loaded.Auth[0].APIKey, loaded.Auth[1].APIKey)
+	}
+	if loaded.Auth[0].APIKey == loaded.Auth[1].APIKey {
+		t.Fatalf("both orgs on the shared endpoint got the same keychain reference: %q", loaded.Auth[0].APIKey)
+	}
+
+	// Clear the in-process memoization cache dehydrate() seeded, so these
+	// resolutions must come from the fake store itself — proving each org's
+	// Keychain item independently holds its own token, not a shared one.
+	resetSecretCacheForTest()
+	tokA, err := loaded.Auth[0].BearerToken()
+	if err != nil || tokA != "tok-org-a" {
+		t.Errorf("org A BearerToken = %q, %v, want %q", tokA, err, "tok-org-a")
+	}
+	tokB, err := loaded.Auth[1].BearerToken()
+	if err != nil || tokB != "tok-org-b" {
+		t.Errorf("org B BearerToken = %q, %v, want %q", tokB, err, "tok-org-b")
 	}
 }
 

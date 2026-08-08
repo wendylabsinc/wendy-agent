@@ -93,8 +93,14 @@ func keyAccount(cloudGRPC string, orgID int, userID string) string {
 	return "key-" + hex.EncodeToString(sum[:8])
 }
 
-func tokenAccount(cloudGRPC string) string {
-	sum := sha256.Sum256([]byte(cloudGRPC))
+// tokenAccount derives the deterministic Keychain account for a cloud API
+// token. It includes orgID because AddAuth deliberately keeps one auth
+// entry per (cloudGRPC, orgID) pair — several orgs can share one endpoint
+// (e.g. multiple orgs on the production cloud) — so the account must be
+// per-org too, or a second org's token would overwrite the first's Keychain
+// item while both entries' references kept pointing at the same account.
+func tokenAccount(cloudGRPC string, orgID int) string {
+	sum := sha256.Sum256([]byte(cloudGRPC + "|" + strconv.Itoa(orgID)))
 	return "token-" + hex.EncodeToString(sum[:8])
 }
 
@@ -135,17 +141,20 @@ func dehydrateEnabled() bool {
 }
 
 // clone deep-copies a Config via JSON round-trip so Save can rewrite secret
-// fields without mutating the caller's struct.
-func (c *Config) clone() *Config {
+// fields without mutating the caller's struct. An error here must not fall
+// back to returning c itself — that would silently hand Save the caller's
+// live struct and violate the never-mutate contract on the very path that
+// handles secrets.
+func (c *Config) clone() (*Config, error) {
 	data, err := json.Marshal(c)
 	if err != nil {
-		return c // marshaling plain structs cannot realistically fail; degrade to in-place
+		return nil, err
 	}
 	var out Config
 	if err := json.Unmarshal(data, &out); err != nil {
-		return c
+		return nil, err
 	}
-	return &out
+	return &out, nil
 }
 
 // dehydrate pushes every inline secret into the credential store and
@@ -159,7 +168,7 @@ func dehydrate(cfg *Config) {
 	for i := range cfg.Auth {
 		a := &cfg.Auth[i]
 		if a.APIKey != "" && !isRef(a.APIKey) {
-			acct := tokenAccount(a.CloudGRPC)
+			acct := tokenAccount(a.CloudGRPC, authEntryOrgID(*a))
 			if store.Put(acct, []byte(a.APIKey)) == nil {
 				cacheSecret(refPrefixV1+acct, a.APIKey)
 				a.APIKey = refPrefixV1 + acct

@@ -183,14 +183,19 @@ func Load() (*Config, error) {
 
 // Save writes the configuration to ~/.wendy/config.json. On platforms with
 // a credential store, inline secrets are moved into it and the file holds
-// only references (see secrets.go); the caller's cfg is never mutated.
+// only references (see secrets.go); the caller's cfg is never mutated. If
+// cfg cannot be cloned, Save fails rather than falling back to mutating the
+// caller's struct in place.
 func Save(cfg *Config) error {
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
 
-	out := cfg.clone()
+	out, err := cfg.clone()
+	if err != nil {
+		return fmt.Errorf("cloning config: %w", err)
+	}
 	if dehydrateEnabled() {
 		dehydrate(out)
 	} else {
