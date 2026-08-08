@@ -606,12 +606,34 @@ behind `//go:build buildkit_integration` and skip when no address resolves. Stat
 in the file's doc comment how to run it, because a gated test nobody knows how to
 run is a test that does not exist.
 
-For each `Examples/*/build.stagefile.yaml` plus both `testdata` fixtures: build
-via the Dockerfile backend to an OCI layout, build via the LLB backend to an OCI
-layout, then compare the layer diff-IDs and the image config (entrypoint, user).
-Compare unpacked content, not layer digests — timestamps and layer boundaries
-legitimately differ between the two paths, and asserting on them would produce a
-test that fails for reasons nobody can act on.
+Drive this from real `Examples/*/build.stagefile.yaml` builds, whose lockfiles
+carry real digests. Do **not** reuse the unit-test fixtures: `llbgen` validates
+image refs and rejects their synthetic `sha256:abc123`, which `codegen` accepts.
+
+**What to compare, decided during task 3 rather than left to the implementer:**
+
+- **Compare:** `rootfs.diff_ids`; the `config` object field by field (`Env`,
+  `Entrypoint`, `Cmd`, `User`, `WorkingDir`, `Labels`, `ExposedPorts`,
+  `Volumes`, `Healthcheck`, `StopSignal`); and top-level `os`/`architecture`/
+  `variant`.
+- **Exclude:** `history`, `created`, and the image/config digests.
+
+`created` is excluded because the exporter backfills build time, so the two runs
+legitimately differ. The digests are excluded because they are functions of the
+fields already compared — asserting on them adds no coverage and converts any
+excluded-field difference into an opaque "image ID differs".
+
+`history` is excluded on a considered judgment, not for convenience. The
+op→instruction mapping exists only during Dockerfile lowering and cannot be
+recovered from a marshalled `llb.Definition`. `llbgen` could synthesize a history
+slice — it walks the graph and knows each recipe's command — but exact
+`created_by` parity means reproducing BuildKit's own instruction-text formatting
+(the `# buildkit` suffix, `|N ARG=` prefixes, the
+`Comment: "buildkit.dockerfile.v0"`) and re-verifying it on every BuildKit bump,
+for a field nothing reads at build time. Partial parity would be worse than
+none: it would look authoritative while differing in ways no one audits. The
+consequence to accept knowingly is that `docker history` output differs between
+the two backends.
 
 - [ ] **Step 1: Write the test**
 - [ ] **Step 2: Run it with the tag against a live daemon; record the result**
