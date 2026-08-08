@@ -413,3 +413,24 @@ func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
 	}
 	secretsPlatformDefault = origDefault
 }
+
+func TestDeleteStoredSecrets(t *testing.T) {
+	store := newFakeStore()
+	store.m["token-aaaa"] = []byte("tok")
+	store.m["key-bbbb"] = []byte("pem")
+	useFakeStore(t, store)
+	cfg := &Config{Auth: []AuthConfig{{
+		APIKey: refPrefixV1 + "token-aaaa",
+		Certificates: []CertificateInfo{
+			{PemPrivateKey: refPrefixV1 + "key-bbbb"},
+			{PemPrivateKey: "-----BEGIN PRIVATE KEY-----\ninline"}, // inline: nothing to delete
+		},
+	}}}
+	DeleteStoredSecrets(cfg)
+	if len(store.m) != 0 {
+		t.Errorf("store still holds %d items after DeleteStoredSecrets", len(store.m))
+	}
+	if got := len(store.deletes); got != 2 {
+		t.Errorf("deletes = %d, want 2 (refs only, not the inline value)", got)
+	}
+}

@@ -419,6 +419,10 @@ func newAuthLogoutCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
+			// Discard the Keychain items the entries reference before
+			// dropping the references themselves.
+			config.DeleteStoredSecrets(cfg)
+
 			cfg.Auth = nil
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)

@@ -259,3 +259,33 @@ func countInlineSecrets(cfg *Config) int {
 	}
 	return n
 }
+
+// DeleteStoredSecrets removes every Keychain item this config references —
+// called when credentials are being discarded (logout). Best-effort: an
+// orphaned item is inert once nothing references it, but tidy-up is cheap.
+func DeleteStoredSecrets(cfg *Config) {
+	store := newCredentialStore()
+	if store == nil {
+		return
+	}
+	deleteRef := func(ref string) {
+		account, ok := strings.CutPrefix(ref, refPrefixV1)
+		if !ok {
+			return
+		}
+		store.Delete(account)
+		secretMu.Lock()
+		delete(secretCache, ref)
+		secretMu.Unlock()
+	}
+	for _, a := range cfg.Auth {
+		if isRef(a.APIKey) {
+			deleteRef(a.APIKey)
+		}
+		for _, c := range a.Certificates {
+			if isRef(c.PemPrivateKey) {
+				deleteRef(c.PemPrivateKey)
+			}
+		}
+	}
+}
