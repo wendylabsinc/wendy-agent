@@ -505,7 +505,21 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 
 func buildComposeProject(dir string) error {
 	cliLogln("Building Compose services...")
-	cmd := exec.Command("docker", "compose", "build")
+	args := []string{"compose"}
+	overridePath, cleanup, err := composeStagefileOverride(dir)
+	if err != nil {
+		return err
+	}
+	if overridePath != "" {
+		defer cleanup()
+		_, cfgName, err := parseComposeFile(dir)
+		if err != nil {
+			return err
+		}
+		args = append(args, "-f", cfgName, "-f", overridePath)
+	}
+	args = append(args, "build")
+	cmd := exec.Command("docker", args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

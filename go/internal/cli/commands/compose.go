@@ -124,6 +124,16 @@ func parseComposeFile(dir string) (*composeConfig, string, error) {
 	return nil, "", fmt.Errorf("no docker-compose file found in %s", dir)
 }
 
+// defaultComposeBuildFile mirrors single-service build-file precedence for a
+// compose service that doesn't name a dockerfile explicitly: a Stagefile in
+// the build context wins over the conventional "Dockerfile".
+func defaultComposeBuildFile(ctxDir string) string {
+	if _, err := os.Stat(filepath.Join(ctxDir, stagefileSourceName)); err == nil {
+		return stagefileSourceName
+	}
+	return "Dockerfile"
+}
+
 // composeBuildContext returns the build context dir and Dockerfile for a service.
 // Returns ("", "", nil) when the service uses a pre-built image.
 func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerfile string, buildArgs map[string]string, err error) {
@@ -135,7 +145,7 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 	case yaml.ScalarNode:
 		// build: ./path
 		ctxDir = filepath.Join(projectDir, svc.Build.Value)
-		return ctxDir, "Dockerfile", nil, nil
+		return ctxDir, defaultComposeBuildFile(ctxDir), nil, nil
 
 	case yaml.MappingNode:
 		var bc composeBuildConfig
@@ -146,7 +156,7 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		if bc.Context != "" {
 			ctxDir = filepath.Join(projectDir, bc.Context)
 		}
-		df := "Dockerfile"
+		df := defaultComposeBuildFile(ctxDir)
 		if bc.Dockerfile != "" {
 			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
 				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
@@ -160,6 +170,61 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 	}
 
 	return "", "", nil, fmt.Errorf("unsupported build directive (yaml kind %d); expected a path string or a mapping", svc.Build.Kind)
+}
+
+// composeStagefileOverride compiles every compose service whose build context
+// carries a Stagefile and writes a docker-compose override file pointing those
+// services at their compiled Dockerfile.generated — `docker compose build`
+// itself knows nothing about build.stagefile.yaml. Returns "" when no service
+// uses a Stagefile. The caller must invoke cleanup (when non-nil) after the
+// compose build finishes.
+func composeStagefileOverride(dir string) (path string, cleanup func(), err error) {
+	cfg, _, err := parseComposeFile(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	overrides := map[string]any{}
+	for name, svc := range cfg.Services {
+		ctxDir, dockerfile, _, err := composeBuildContext(svc, dir)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", name, err)
+		}
+		if ctxDir == "" || dockerfile != stagefileSourceName {
+			continue
+		}
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", name, err)
+		}
+		ctxRel, err := filepath.Rel(dir, ctxDir)
+		if err != nil {
+			ctxRel = ctxDir
+		}
+		overrides[name] = map[string]any{
+			"build": map[string]string{"context": ctxRel, "dockerfile": compiled},
+		}
+	}
+	if len(overrides) == 0 {
+		return "", nil, nil
+	}
+	data, err := yaml.Marshal(map[string]any{"services": overrides})
+	if err != nil {
+		return "", nil, fmt.Errorf("marshaling compose override: %w", err)
+	}
+	f, err := os.CreateTemp("", "wendy-compose-stagefile-*.yml")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating compose override: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", nil, fmt.Errorf("writing compose override: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", nil, fmt.Errorf("closing compose override: %w", err)
+	}
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
 }
 
 // composeCommand returns the command for a service as a slice. Sequence form
@@ -799,6 +864,12 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		if ctxDir == "" {
 			continue // uses pre-built image
+		}
+		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
+		// same way the single-service path does — docker build itself knows
+		// nothing about build.stagefile.yaml.
+		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile); err != nil {
+			return fmt.Errorf("service %s: %w", name, err)
 		}
 
 		allBuildArgs := map[string]string{
