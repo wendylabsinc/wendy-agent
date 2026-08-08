@@ -92,6 +92,22 @@ func TestMergeUSBDirectDevices(t *testing.T) {
 	}
 }
 
+func TestShouldProbeUSBDirect(t *testing.T) {
+	cases := []struct {
+		types []models.InterfaceType
+		want  bool
+	}{
+		{nil, true}, // "all types"
+		{[]models.InterfaceType{models.InterfaceLAN}, true},
+		{[]models.InterfaceType{models.InterfaceBluetooth}, false},
+	}
+	for _, c := range cases {
+		if got := shouldProbeUSBDirect(discovery.DiscoveryOptions{Types: c.types}); got != c.want {
+			t.Fatalf("shouldProbeUSBDirect(%v) = %v, want %v", c.types, got, c.want)
+		}
+	}
+}
+
 func TestResolveAddrOnceSkipsResolutionForZonedIPLiteral(t *testing.T) {
 	origLookup := osLookupHostFn
 	osLookupHostFn = func(context.Context, string) ([]string, error) {

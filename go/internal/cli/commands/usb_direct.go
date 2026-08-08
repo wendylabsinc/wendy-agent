@@ -78,6 +78,41 @@ func probeUSBDirectDevices(ctx context.Context) []models.LANDevice {
 	return out
 }
 
+// shouldProbeUSBDirect mirrors Discover's type filter: the probe produces
+// LAN-type devices, so it runs whenever LAN discovery would.
+func shouldProbeUSBDirect(opts discovery.DiscoveryOptions) bool {
+	if len(opts.Types) == 0 {
+		return true
+	}
+	for _, t := range opts.Types {
+		if t == models.InterfaceLAN {
+			return true
+		}
+	}
+	return false
+}
+
+// discoverWithUSBDirect runs standard discovery and the USB well-known-address
+// probe concurrently, then merges the probe results into the LAN device list.
+// Drop-in replacement for discovery.Discover at command call sites.
+func discoverWithUSBDirect(ctx context.Context, opts discovery.DiscoveryOptions) (*models.DevicesCollection, error) {
+	var probed []models.LANDevice
+	var wg sync.WaitGroup
+	if shouldProbeUSBDirect(opts) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			probed = probeUSBDirectDevices(ctx)
+		}()
+	}
+	collection, err := discovery.Discover(ctx, opts)
+	wg.Wait()
+	if err == nil && len(probed) > 0 {
+		collection.LANDevices = mergeUSBDirectDevices(collection.LANDevices, probed)
+	}
+	return collection, err
+}
+
 // mergeUSBDirectDevices folds direct-probe results into an mDNS-discovered LAN
 // device list. A probed device whose hostname matches an existing entry
 // enriches it in place (USB annotation, interface); identity fields and the

@@ -2345,6 +2345,19 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// Continuous LAN discovery — devices appear as they're found.
 	lanCh := make(chan models.LANDevice, 16)
 	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
+
+	// USB well-known-address probe: a USB-attached device appears in the
+	// picker even when mDNS is broken on this host. The picker's MergeItem
+	// dedupes it against the mDNS entry for the same device.
+	go func() {
+		for _, dev := range probeUSBDirectDevices(discoverCtx) {
+			select {
+			case lanCh <- dev:
+			case <-discoverCtx.Done():
+				return
+			}
+		}
+	}()
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
 		// While the probe is still in flight the Agent/OS columns show a
