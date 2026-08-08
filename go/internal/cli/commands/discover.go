@@ -267,9 +267,17 @@ type discoverDeviceInfo struct {
 }
 
 type discoverTableItem struct {
-	picker        tui.PickerItem
-	info          discoverDeviceInfo
-	lanName       string
+	picker  tui.PickerItem
+	info    discoverDeviceInfo
+	lanName string
+	// lanKey is discoverycache.Key(ID, DisplayName) for this row's LAN
+	// device — the same identity upsertLANDevice merges rows by. It is the
+	// map key into m.probe, kept distinct from lanName (which stays a plain
+	// display name for the 'u'-key update lookup in lanDeviceAddr) so a
+	// DisplayName change or a DisplayName collision between two different
+	// device IDs can never orphan or cross-wire a probe state. Empty for
+	// non-LAN rows.
+	lanKey        string
 	defaultDevice string
 }
 
@@ -509,7 +517,11 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, delayThen(delay, m.scanEthernet())
 	case lanEventMsg:
 		m.upsertLANDevice(msg.ev.Device)
-		key := strings.ToLower(msg.ev.Device.DisplayName)
+		// Keyed by the same identity upsertLANDevice merges rows by (TXT
+		// device ID, falling back to display name) — not the display name
+		// alone, which can collide across devices or change out from under a
+		// single device, either of which would orphan/cross-wire this state.
+		key := discoverycache.Key(msg.ev.Device.ID, msg.ev.Device.DisplayName)
 		switch msg.ev.Kind {
 		case discovery.LANCached:
 			m.probe[key] = tui.ProbePending
@@ -699,11 +711,10 @@ func (m *discoverModel) refreshTable() {
 	// while connecting) so the Agent/OS columns animate / show the error glyph.
 	frame := m.spinner.View()
 	for i := range m.tableItems {
-		name := m.tableItems[i].lanName
-		if name == "" {
+		if m.tableItems[i].lanName == "" {
 			continue
 		}
-		st := m.probe[strings.ToLower(name)]
+		st := m.probe[m.tableItems[i].lanKey]
 		m.tableItems[i].picker.Probe = st
 		if st == tui.ProbePending {
 			m.tableItems[i].picker.ProbeFrame = frame
@@ -1133,8 +1144,10 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 		address := d.Address()
 		defaultDevice := d.DisplayName
 		lanName := ""
+		lanKey := ""
 		if d.LAN != nil {
 			lanName = d.LAN.DisplayName
+			lanKey = discoverycache.Key(d.LAN.ID, d.LAN.DisplayName)
 			address = preferredLANAddress(*d.LAN)
 			defaultDevice = firstNonEmpty(d.LAN.Hostname, d.LAN.IPAddress, d.LAN.DisplayName)
 		}
@@ -1163,6 +1176,7 @@ func discoverTableItems(collection *models.DevicesCollection) []discoverTableIte
 				Provisioned: provisioned,
 			},
 			lanName:       lanName,
+			lanKey:        lanKey,
 			defaultDevice: defaultDevice,
 		})
 	}

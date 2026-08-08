@@ -7,8 +7,17 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
+
+// probeKey mirrors the identity m.probe is keyed by in the discover model:
+// discoverycache.Key(ID, DisplayName) — the same identity upsertLANDevice
+// merges rows by — not the display name alone, which can collide across
+// devices or change out from under a single device.
+func probeKey(dev models.LANDevice) string {
+	return discoverycache.Key(dev.ID, dev.DisplayName)
+}
 
 // lanCachedEvent builds a lanEventMsg for a device that just appeared from
 // the on-disk cache (unverified this session). ch is left nil: none of these
@@ -121,8 +130,8 @@ func TestDiscoverStream_CachedThenProbedUpdatesInPlace(t *testing.T) {
 	if got := len(dm.collection.LANDevices); got != 1 {
 		t.Fatalf("LANDevices = %d after cached event; want 1", got)
 	}
-	if dm.probe["alpha"] != tui.ProbePending {
-		t.Fatalf("probe state = %v; want ProbePending", dm.probe["alpha"])
+	if dm.probe[probeKey(dev)] != tui.ProbePending {
+		t.Fatalf("probe state = %v; want ProbePending", dm.probe[probeKey(dev)])
 	}
 	if cell := discoverAgentCell(t, dm); cell == "" {
 		t.Fatal("pending device Agent cell should show a spinner frame, got blank")
@@ -140,8 +149,8 @@ func TestDiscoverStream_CachedThenProbedUpdatesInPlace(t *testing.T) {
 	if got := len(dm.collection.LANDevices); got != 1 {
 		t.Fatalf("LANDevices = %d after probed update; want 1 (no duplicate row)", got)
 	}
-	if dm.probe["alpha"] != tui.ProbeOK {
-		t.Fatalf("probe state = %v; want ProbeOK", dm.probe["alpha"])
+	if dm.probe[probeKey(probedDev)] != tui.ProbeOK {
+		t.Fatalf("probe state = %v; want ProbeOK", dm.probe[probeKey(probedDev)])
 	}
 	if cell := discoverAgentCell(t, dm); cell != "0.10.4" {
 		t.Fatalf("resolved Agent cell = %q; want 0.10.4", cell)
@@ -156,8 +165,8 @@ func TestDiscoverStream_CachedThenProbedUpdatesInPlace(t *testing.T) {
 	if got := len(dm.collection.LANDevices); got != 1 {
 		t.Fatalf("LANDevices = %d after offline event; want 1 (row stays listed)", got)
 	}
-	if dm.probe["alpha"] != tui.ProbeOffline {
-		t.Fatalf("probe state = %v; want ProbeOffline", dm.probe["alpha"])
+	if dm.probe[probeKey(probedDev)] != tui.ProbeOffline {
+		t.Fatalf("probe state = %v; want ProbeOffline", dm.probe[probeKey(probedDev)])
 	}
 	if cell := discoverAgentCell(t, dm); cell != "offline" {
 		t.Fatalf("offline Agent cell = %q; want %q", cell, "offline")
@@ -187,8 +196,8 @@ func TestDiscoverStream_UpdatedEventAlsoUpdatesInPlace(t *testing.T) {
 	if dm.collection.LANDevices[0].IPAddress != "10.0.0.9" {
 		t.Fatalf("IPAddress = %q; want the updated address", dm.collection.LANDevices[0].IPAddress)
 	}
-	if dm.probe["gamma"] != tui.ProbeOK {
-		t.Fatalf("probe state = %v; want ProbeOK", dm.probe["gamma"])
+	if dm.probe[probeKey(dev)] != tui.ProbeOK {
+		t.Fatalf("probe state = %v; want ProbeOK", dm.probe[probeKey(dev)])
 	}
 }
 
@@ -203,10 +212,77 @@ func TestDiscoverStream_UnprobedFoundShowsPending(t *testing.T) {
 	updated, _ := m.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANFound, Device: dev, Probed: false}})
 	dm := updated.(discoverModel)
 
-	if dm.probe["delta"] != tui.ProbePending {
-		t.Fatalf("probe state = %v; want ProbePending", dm.probe["delta"])
+	if dm.probe[probeKey(dev)] != tui.ProbePending {
+		t.Fatalf("probe state = %v; want ProbePending", dm.probe[probeKey(dev)])
 	}
 	if cell := discoverAgentCell(t, dm); cell == "" {
 		t.Fatal("unprobed device Agent cell should show a spinner frame, got blank")
+	}
+}
+
+// TestDiscoverStream_SharedDisplayNameKeepsIndependentProbeStates covers the
+// bug this rekey fixes: two distinct devices (different TXT IDs) that
+// happen to advertise the same DisplayName must render as two rows with
+// independent probe states — one going ProbeOK must never paint onto the
+// other, and neither can orphan the other's map entry.
+func TestDiscoverStream_SharedDisplayNameKeepsIndependentProbeStates(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
+
+	devA := models.LANDevice{ID: "dev-a", DisplayName: "wendy", IPAddress: "10.0.0.10", Port: defaultAgentPort}
+	devB := models.LANDevice{ID: "dev-b", DisplayName: "wendy", IPAddress: "10.0.0.11", Port: defaultAgentPort}
+
+	updated, _ := m.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANFound, Device: devA, Probed: false}})
+	dm := updated.(discoverModel)
+	updated, _ = dm.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANFound, Device: devB, Probed: false}})
+	dm = updated.(discoverModel)
+
+	if got := len(dm.collection.LANDevices); got != 2 {
+		t.Fatalf("LANDevices = %d; want 2 distinct rows for distinct IDs sharing a DisplayName", got)
+	}
+
+	// devA's probe resolves; devB must stay pending, independently.
+	probedA := devA
+	probedA.AgentVersion = "1.2.3"
+	updated, _ = dm.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANUpdated, Device: probedA, Probed: true}})
+	dm = updated.(discoverModel)
+
+	if dm.probe[probeKey(probedA)] != tui.ProbeOK {
+		t.Fatalf("devA probe state = %v; want ProbeOK", dm.probe[probeKey(probedA)])
+	}
+	if dm.probe[probeKey(devB)] != tui.ProbePending {
+		t.Fatalf("devB probe state = %v; want ProbePending (unaffected by devA's probe)", dm.probe[probeKey(devB)])
+	}
+	if got := len(dm.collection.LANDevices); got != 2 {
+		t.Fatalf("LANDevices = %d after devA's probe; want 2 (still two independent rows)", got)
+	}
+
+	// Confirm the table actually renders two distinct rows, not one row that
+	// silently absorbed the other's state.
+	agentIdx := -1
+	for i, c := range dm.table.Columns() {
+		if c.Title == "Agent" {
+			agentIdx = i
+		}
+	}
+	if agentIdx < 0 {
+		t.Fatalf("no Agent column; columns=%v", dm.table.Columns())
+	}
+	rows := dm.table.Rows()
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d; want 2", len(rows))
+	}
+	var sawResolved, sawPending bool
+	for _, row := range rows {
+		switch row[agentIdx] {
+		case "1.2.3":
+			sawResolved = true
+		case "":
+			t.Fatalf("pending row Agent cell should show a spinner frame, got blank: %v", row)
+		default:
+			sawPending = true
+		}
+	}
+	if !sawResolved || !sawPending {
+		t.Fatalf("expected one resolved row and one still-pending row, got rows=%v", rows)
 	}
 }
