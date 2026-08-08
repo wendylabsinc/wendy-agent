@@ -54,6 +54,12 @@ const stagefileLockName = "build.stagefile.lock.yaml"
 // one name so they can't drift.
 const generatedDockerfileName = "Dockerfile.generated"
 
+// generatedDockerignoreName is the ignore file BuildKit pairs with
+// generatedDockerfileName (per-Dockerfile <name>.dockerignore precedence),
+// letting the Stagefile compiler's derived allowlist apply without touching a
+// user-authored .dockerignore.
+const generatedDockerignoreName = generatedDockerfileName + ".dockerignore"
+
 // writeGeneratedFile writes data to path only when the current content
 // differs, via a same-directory temp file + rename. The rename keeps
 // concurrent readers (parallel service builds sharing a context dir, buildx
@@ -321,6 +327,13 @@ func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
 		return false
 	}
+	// Never a user-authored build file — it's the internal artifact
+	// prepareDockerBuildFile writes and deliberately never deletes, so no
+	// detection path (project-type, build options, provider fallback) may
+	// treat it as a rival candidate on later runs.
+	if name == generatedDockerfileName {
+		return false
+	}
 	return validDockerfileNameRe.MatchString(name)
 }
 
@@ -535,6 +548,26 @@ func prepareDockerBuildFile(dir, dockerfile string) (string, error) {
 	return applySafeOptimizeFixes(dir, dockerfile)
 }
 
+// hasContainerBuildFile reports whether dir holds any docker build source
+// (Stagefile, Dockerfile/Containerfile, or a variant) without the compile /
+// write side effects resolveDockerfile now has — for callers that only need
+// existence, not a build-ready filename.
+func hasContainerBuildFile(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && isContainerBuildFileName(e.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
 // compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
 // "Dockerfile.generated" and ".dockerignore" into dir and returning the
 // generated Dockerfile's filename.
@@ -546,8 +579,11 @@ func compileStagefile(dir string) (string, error) {
 	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
 		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
 	}
-	if err := writeGeneratedFile(filepath.Join(dir, ".dockerignore"), []byte(dockerignoreText)); err != nil {
-		return "", fmt.Errorf("writing .dockerignore: %w", err)
+	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
+	// file passed via -f, so the derived allowlist rides along without ever
+	// touching (or destroying) a user-authored .dockerignore in the project.
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
 	}
 	return generatedDockerfileName, nil
 }
@@ -597,6 +633,11 @@ func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
 	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(fixedText)); err != nil {
 		return dockerfile, nil
 	}
+	// A leftover Stagefile-derived allowlist (from a since-deleted
+	// build.stagefile.yaml) would silently shrink this build's context via
+	// BuildKit's per-Dockerfile ignore precedence — the auto-fixed copy must
+	// build with the same ignore rules as the original Dockerfile.
+	_ = os.Remove(filepath.Join(dir, generatedDockerignoreName))
 	return generatedDockerfileName, nil
 }
 
@@ -700,14 +741,6 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if name == generatedDockerfileName {
-				// Never a user-authored build file — it's the internal
-				// artifact prepareDockerBuildFile produces (compiled
-				// Stagefile or auto-fixed Dockerfile copy) and deliberately
-				// never deletes, so it must not re-enter detection as a
-				// rival candidate on subsequent runs.
-				continue
-			}
 			if isContainerBuildFileName(name) {
 				options = append(options, BuildOption{
 					Label: name,

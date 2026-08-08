@@ -1,7 +1,9 @@
 package lock
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 )
@@ -40,9 +42,14 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 
 // CraneResolver is a Resolver backed by a real registry lookup. It is
 // intentionally not covered by an automated test so the suite never depends
-// on network access; tests inject a fake Resolver instead.
+// on network access; tests inject a fake Resolver instead. The timeout
+// bounds a hung registry connection: resolution runs inline inside every
+// build of a project whose lockfile is missing a pin, and without it a
+// stalled connection would hang the build forever.
 func CraneResolver(ref string) (string, error) {
-	digest, err := crane.Digest(ref)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	digest, err := crane.Digest(ref, crane.WithContext(ctx))
 	if err != nil {
 		return "", fmt.Errorf("crane digest %q: %w", ref, err)
 	}

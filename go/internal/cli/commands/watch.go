@@ -214,7 +214,7 @@ func watchShouldIgnore(path, root string) bool {
 	// would make every watched deploy cancel and restart itself: the deploy
 	// writes the file, the watcher sees the write, the debouncer kills the
 	// in-flight deploy and triggers the next one, forever.
-	if base == generatedDockerfileName || base == stagefileLockName {
+	if base == generatedDockerfileName || base == generatedDockerignoreName || base == stagefileLockName {
 		return true
 	}
 	return strings.HasSuffix(base, "~") ||

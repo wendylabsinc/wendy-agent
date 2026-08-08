@@ -2803,8 +2803,13 @@ func TestResolveDockerfile_CompilesStagefile(t *testing.T) {
 	if !strings.Contains(string(data), "sha256:fakepindigest") {
 		t.Fatalf("generated Dockerfile missing the pinned digest:\n%s", data)
 	}
-	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); err != nil {
-		t.Fatalf("expected .dockerignore to be written: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, generatedDockerignoreName)); err != nil {
+		t.Fatalf("expected %s to be written: %v", generatedDockerignoreName, err)
+	}
+	// A user-authored .dockerignore must never be touched — the derived
+	// allowlist rides along via BuildKit's per-Dockerfile precedence.
+	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); !os.IsNotExist(err) {
+		t.Fatalf("expected no bare .dockerignore to be written, stat err = %v", err)
 	}
 }
 
@@ -2854,8 +2859,10 @@ func TestApplySafeOptimizeFixes_AppliesAdditiveFixesInMemory(t *testing.T) {
 		t.Fatalf("reading Dockerfile.generated: %v", err)
 	}
 	fixed := string(fixedData)
-	if !strings.Contains(fixed, "--no-install-recommends") {
-		t.Fatalf("expected --no-install-recommends to be auto-applied:\n%s", fixed)
+	// apt-install is no longer silently auto-applied: --no-install-recommends
+	// changes which packages land in the image (explicit --fix only).
+	if strings.Contains(fixed, "--no-install-recommends") {
+		t.Fatalf("expected --no-install-recommends NOT to be auto-applied:\n%s", fixed)
 	}
 	if !strings.Contains(fixed, "--mount=type=cache,target=/root/.cache/pip") {
 		t.Fatalf("expected a pip build-cache mount to be auto-applied:\n%s", fixed)

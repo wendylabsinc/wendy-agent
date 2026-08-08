@@ -63,3 +63,4 @@ go/internal/cli/assets/docs/superpowers
 # Stagefile build output — regenerated from build.stagefile.yaml on every
 # build; the lockfile (build.stagefile.lock.yaml) is what's committed.
 Dockerfile.generated
+Dockerfile.generated.dockerignore

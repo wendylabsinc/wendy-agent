@@ -177,6 +177,13 @@ func copyLines(entries []spec.CopyEntry) []string {
 		if dest == "" {
 			dest = e.Paths[0]
 		}
+		// BuildKit requires a multi-source COPY's destination to end with
+		// "/"; a dest without one validates here but hard-fails at docker
+		// build with a raw BuildKit error. Multiple sources make the intent
+		// (a directory) unambiguous, so append it.
+		if len(e.Paths) > 1 && !strings.HasSuffix(dest, "/") {
+			dest += "/"
+		}
 		from := ""
 		if e.From != "local" {
 			from = "--from=" + e.From + " "

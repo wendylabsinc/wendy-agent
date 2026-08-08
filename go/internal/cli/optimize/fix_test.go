@@ -63,6 +63,8 @@ func TestApplyCreateFileSkipsExisting(t *testing.T) {
 
 func TestSafeAutoApplyFindingsKeepsOnlyPurelyAdditiveFixes(t *testing.T) {
 	findings := []Finding{
+		// apt-install must stay excluded: --no-install-recommends changes
+		// which packages actually get installed.
 		{Analyzer: "apt-install", Fix: &Fix{Op: FixReplaceLine}},
 		{Analyzer: "pip-flags", Fix: &Fix{Op: FixReplaceLine}},
 		{Analyzer: "build-cache", Fix: &Fix{Op: FixReplaceLine}},
@@ -73,12 +75,12 @@ func TestSafeAutoApplyFindingsKeepsOnlyPurelyAdditiveFixes(t *testing.T) {
 		{Analyzer: "image-hygiene"}, // no Fix
 	}
 	got := SafeAutoApplyFindings(findings)
-	if len(got) != 4 {
-		t.Fatalf("got %d safe findings, want 4: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("got %d safe findings, want 3: %+v", len(got), got)
 	}
 	for _, f := range got {
 		switch f.Analyzer {
-		case "apt-install", "pip-flags", "build-cache", "add-copy":
+		case "pip-flags", "build-cache", "add-copy":
 		default:
 			t.Fatalf("unexpected analyzer %q in safe-auto-apply set", f.Analyzer)
 		}

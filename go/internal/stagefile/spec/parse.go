@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,10 +11,15 @@ import (
 )
 
 // Parse decodes and validates Stagefile source. A non-nil File is only ever
-// returned once it has passed Validate.
+// returned once it has passed Validate. Unknown keys are an error: a
+// misspelled or misnested key (`entrypont:`, `user:` under `build:`) would
+// otherwise be dropped without a trace — the exact silent drift the format
+// exists to prevent.
 func Parse(data []byte) (*File, error) {
 	var f File
-	if err := yaml.Unmarshal(data, &f); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
 	if err := f.Validate(); err != nil {
