@@ -409,7 +409,16 @@ func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) 
 		if err != nil {
 			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI layout dir: %w", i, desc.Digest, err)
 		}
-		if desc.Size > 0 && fi.Size() != desc.Size {
+		// Descriptor sizes are REQUIRED by the OCI spec; refusing a size-less
+		// descriptor keeps the partial-write check from being silently skipped.
+		// SECURITY: content is intentionally NOT re-hashed here — the cache dir
+		// is 0700 (same-user trust boundary), and re-hashing every layer per
+		// iteration would reintroduce the O(image size) per-build cost this
+		// layout-dir path exists to remove.
+		if desc.Size <= 0 {
+			return nil, nil, fmt.Errorf("layer blob sha256:%s has no size in its manifest descriptor", layerHex)
+		}
+		if fi.Size() != desc.Size {
 			return nil, nil, fmt.Errorf("layer blob sha256:%s is %d bytes on disk but the manifest says %d (partial write?)", layerHex, fi.Size(), desc.Size)
 		}
 		layers = append(layers, localLayer{
@@ -544,10 +553,10 @@ func gcOCILayoutDir(dir string) error {
 // directory (dir+".lock") so a self-heal RemoveAll(dir) never deletes a held
 // lock. Returns a release func that must be called exactly once.
 func lockOCILayoutDir(ctx context.Context, dir string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return nil, fmt.Errorf("creating OCI layout parent: %w", err)
 	}
-	f, err := os.OpenFile(dir+".lock", os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(dir+".lock", os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening OCI layout lock: %w", err)
 	}
@@ -806,7 +815,11 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 // persistent directory turns the per-build export cost from O(image size)
 // into O(changed bytes). Callers own dest's lifecycle (locking and GC).
 func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir string, stdout, stderr io.Writer) error {
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	// 0700: image layers/config can embed build-time material, and the legacy
+	// temp-tar this replaces lived in a MkdirTemp (0700) dir. Restricting the
+	// top-level dir gates traversal regardless of the modes BuildKit gives the
+	// blob files it writes beneath it.
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("creating OCI layout directory: %w", err)
 	}
 	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr)
