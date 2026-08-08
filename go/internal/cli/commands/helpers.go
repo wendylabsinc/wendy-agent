@@ -1297,8 +1297,8 @@ func cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache
 	return best, found
 }
 
-// cachedDeviceIP returns the cached IP for host when a fresh device-cache
-// entry's hostname matches, else "". This is the device-cache fast path's
+// cachedDeviceIP returns the cached IP for host when a device-cache entry
+// (any age) matches the hostname, else "". This is the device-cache fast path's
 // lookup: a hit here lets connectWithAutoTLSDiagnostics skip resolveAddrOnce
 // (and the OS-resolver/mDNS-browse work it can do) entirely.
 func cachedDeviceIP(host string) string {
@@ -1357,7 +1357,7 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 
 // connectWithAutoTLSDiagnostics resolves plaintextAddr and runs the mTLS/
 // plaintext dial ladder (see dialAgentLadder) against it. A DNS/mDNS-name host
-// with a fresh device-cache entry (see cachedDeviceIP) skips resolution
+// with a device-cache entry (any age; see cachedDeviceEntry) skips resolution
 // entirely and dials the cached IP directly — the "instant connect" fast
 // path. That cached IP can be stale (the device moved, rebooted onto a new
 // DHCP lease, etc.), so a fast-path dial that doesn't actually answer is never
@@ -1490,7 +1490,7 @@ var cacheFastPathReachableFn = cacheFastPathReachable
 // probe, not a lazy plaintext "connect") — see
 // connectAgentAtAddressWithProvisionedHint, the sole caller.
 //
-// When an existing fresh entry already matches this hostname (by
+// When an existing entry (any age) already matches this hostname (by
 // normalizeMDNSHost equality — e.g. a discovery scan's TXT-id-keyed row),
 // this refreshes only that entry's IP/Port/LastSeen under its existing ID/
 // DisplayName, via Upsert's non-zero-wins merge — never minting a second row
