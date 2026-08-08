@@ -180,14 +180,33 @@ func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins ce
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
-		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
 	}
 	// Session resumption: nil means caching is disabled — leaving the field
 	// unset is required then, because a typed-nil *Cache in the interface
 	// would panic inside crypto/tls.
-	if cache := tlscache.ForTarget(address, cert.Certificate[0]); cache != nil {
+	cache := tlscache.ForTarget(address, cert.Certificate[0])
+	if cache != nil {
 		tlsCfg.ClientSessionCache = cache
+	}
+	// Always-on wrapper — not gated behind WENDY_TLS_DEBUG, which only nests
+	// as an inner logging layer above (verifyConn already includes it when
+	// set). Marks the cache when THIS connection resumed, before delegating
+	// to the inner verifier, so a subsequent Put for the fresh ticket Go
+	// issues even on a resumed connection does not overwrite the ticket from
+	// the last full handshake (see tlscache.Cache.MarkResumed's doc — without
+	// this, clients would chain tickets forever and never re-run the full
+	// ML-DSA verification). VerifyConnection runs synchronously inside the
+	// handshake, strictly BEFORE crypto/tls processes the server's
+	// post-handshake NewSessionTicket message (that happens lazily on a later
+	// Read), so marking always happens-before the Put it needs to affect —
+	// no race between the two.
+	innerVerify := verifyConn
+	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if cache != nil && cs.DidResume {
+			cache.MarkResumed()
+		}
+		return innerVerify(cs)
 	}
 	return tlsCfg, nil
 }

@@ -18,12 +18,37 @@ const ticketMetaPrefix = "wendy-mtls/1:"
 //
 // Rationale: a resumed TLS 1.3 handshake skips the certificate exchange, so
 // the full ML-DSA chain verification from the original handshake is trusted
-// for the ticket's lifetime (≤7 days, less on agent restart). The cheap
-// re-check here bounds that trust by the cert's own validity window. Declining
-// (returning nil, nil) downgrades to a full handshake, where
-// VerifyPeerCertificate re-runs the complete verification and surfaces the
-// existing error paths if the cert is genuinely bad — a stale ticket
-// self-heals instead of hard-failing on every retry.
+// for as long as the client keeps offering a resumable ticket. The cheap
+// re-check here bounds that trust to the cert's own validity window on EVERY
+// resumption attempt, not just the first. Declining (returning nil, nil)
+// downgrades to a full handshake, where VerifyPeerCertificate re-runs the
+// complete verification and surfaces the existing error paths if the cert is
+// genuinely bad — a stale ticket self-heals instead of hard-failing on every
+// retry.
+//
+// The design spec's documented "≤7 days, less on agent restart" trust bound
+// is NOT enforced by ticket lifetime alone: Go's TLS 1.3 server reissues a
+// fresh ticket on EVERY connection, including resumed ones, so a client that
+// simply overwrote its cached ticket on each connect could chain tickets
+// indefinitely and never trigger another full ML-DSA verification, no matter
+// how old the original handshake was. The actual bound is enforced
+// CLIENT-side (go/internal/cli/tlscache.Cache): the client keeps only the
+// ticket from its last FULL handshake and discards tickets minted on resumed
+// connections (Cache.MarkResumed/Put). Combined with Go's own
+// maxSessionTicketLifetime (7 days) check on both this server and the client,
+// that forces a full handshake — and therefore a full ML-DSA re-verification
+// — at least once a week, even for a client that connects every day. The
+// per-resumption cert-window re-check in this file and the client-side
+// no-chaining rule are two independent layers of the same bound: this one
+// catches a cert that expires mid-week; the client-side rule caps how long a
+// still-valid cert's trust can be extended by resumption alone.
+//
+// Mesh dials are exempt from the chaining risk in a different way: with the
+// anti-MITM peer pin fix in server.go's NewClientTLSConfigExpectingPeer
+// (VerifyConnection re-running the pin+chain check on every resumed mesh
+// connection), a resumed mesh connection re-verifies as much as a full one
+// does, so ticket chaining in the in-memory meshSessionCache is harmless and
+// needs no equivalent no-overwrite rule.
 //
 // now is injectable for handshake-level tests; production passes time.Now.
 func wireSessionTicketChecks(cfg *tls.Config, notBeforeFloor time.Time, now func() time.Time) {

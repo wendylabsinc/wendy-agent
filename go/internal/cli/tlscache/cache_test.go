@@ -1,6 +1,7 @@
 package tlscache
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -169,6 +170,69 @@ func TestCachePutNilEvicts(t *testing.T) {
 	c.Flush()
 	if store.get(c.storeKey) != nil {
 		t.Error("Put(nil) did not evict the stored session")
+	}
+}
+
+// TestMarkResumedSkipsOverwriteOnPut is the regression test for the ticket-
+// chaining finding: without MarkResumed, Put overwrites the stored ticket on
+// every connection — including resumed ones — because Go's TLS 1.3 server
+// reissues a fresh ticket even on a resumed handshake. A client that kept
+// doing that could chain tickets forever and never re-run the full ML-DSA
+// verification the design's ≤7-day trust bound depends on. The fix: once
+// MarkResumed is called (simulating the always-on VerifyConnection wrapper in
+// grpcclient.newAgentTLSConfig observing DidResume), Put must keep the ticket
+// from the last FULL handshake instead of overwriting it.
+func TestMarkResumedSkipsOverwriteOnPut(t *testing.T) {
+	addr, srvResumed := startTLSServer(t)
+	store := newMemStore()
+	c := newCache("cache-test", []byte("client-leaf-der"), store)
+
+	// First connection: full handshake, persists a ticket.
+	if resumed := dialWithCache(t, addr, c); resumed {
+		t.Fatal("first connection unexpectedly resumed")
+	}
+	<-srvResumed
+	c.Flush()
+
+	stored := store.get(c.storeKey)
+	if stored == nil {
+		t.Fatal("first full handshake did not persist a session")
+	}
+	wantUnchanged := append([]byte(nil), stored...)
+
+	// Simulate the always-on VerifyConnection wrapper having observed
+	// DidResume on the connection that is about to call Put.
+	c.MarkResumed()
+
+	// Second connection: the ticket persisted above is still valid, so this
+	// resumes at the TLS layer, and the server (per Go's TLS 1.3 behavior)
+	// issues a fresh ticket that crypto/tls delivers via a REAL Put call —
+	// exercising the actual code path Put must guard, not a fabricated
+	// ClientSessionState.
+	if resumed := dialWithCache(t, addr, c); !resumed {
+		t.Fatal("second connection did not resume — can't exercise MarkResumed's effect on a resumed-connection Put")
+	}
+	<-srvResumed
+	c.Flush()
+
+	if got := store.get(c.storeKey); !bytes.Equal(got, wantUnchanged) {
+		t.Error("Put overwrote the full-handshake ticket after MarkResumed; stored blob changed on a resumed connection")
+	}
+}
+
+// TestCachePutNilEvictsEvenWhenMarkedResumed covers the other half of
+// MarkResumed's contract: eviction (Put(nil)) must always run regardless of
+// the resumed flag — crypto/tls uses Put(nil) to drop sessions it has
+// determined are broken, and skipping that would leave a bad ticket cached.
+func TestCachePutNilEvictsEvenWhenMarkedResumed(t *testing.T) {
+	store := newMemStore()
+	c := newCache("cache-test", []byte("cert"), store)
+	store.put(c.storeKey, []byte("whatever"))
+	c.MarkResumed()
+	c.Put("ignored", nil)
+	c.Flush()
+	if store.get(c.storeKey) != nil {
+		t.Error("Put(nil) did not evict the stored session even though MarkResumed had been called")
 	}
 }
 

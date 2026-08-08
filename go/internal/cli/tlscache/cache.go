@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 )
 
 // blobMagic versions the on-disk/on-keychain blob layout:
@@ -23,7 +24,33 @@ type Cache struct {
 	storeKey string
 	store    sessionStore
 	wg       sync.WaitGroup
+
+	// resumed is set via MarkResumed when the connection this Cache is bound
+	// to resumed a previous session rather than performing a full handshake.
+	// Go's TLS 1.3 server reissues a fresh ticket on EVERY connection,
+	// including resumed ones (see the design spec's "Self-refresh" note), so
+	// without this flag Put would overwrite the stored full-handshake ticket
+	// with a resumed-connection ticket on every call. That would let tickets
+	// chain indefinitely across resumed connections and defeat the periodic
+	// full ML-DSA re-verification the 7-day ticket lifetime is meant to force
+	// (see session_ticket.go's trust-model comment on the agent side). Put(nil)
+	// — session eviction — ignores this flag: crypto/tls uses it to drop
+	// broken/failed sessions and that must always take effect.
+	resumed atomic.Bool
 }
+
+// MarkResumed records that the connection this Cache is bound to resumed a
+// previous session. The next Put call with a non-nil session (the fresh
+// ticket Go issues even on a resumed connection) is then a no-op, keeping
+// whichever ticket was stored by the last FULL handshake instead.
+//
+// Callers must invoke this from a VerifyConnection hook, which crypto/tls
+// runs synchronously inside the handshake — strictly before it processes the
+// server's post-handshake NewSessionTicket message and calls Put (ticket
+// processing happens lazily on a later Read, after Handshake/VerifyConnection
+// has already returned). That ordering means there is no race between
+// marking and persisting for a single connection.
+func (c *Cache) MarkResumed() { c.resumed.Store(true) }
 
 // ForTarget returns a Cache bound to the target address and client leaf cert
 // (DER), or nil when session caching is disabled (WENDY_TLS_SESSION_STORE=off
@@ -72,10 +99,16 @@ func (c *Cache) Get(string) (*tls.ClientSessionState, bool) {
 // connection's record-processing path, so persistence (a Keychain subprocess
 // on macOS) happens on a background goroutine; a ticket lost to process exit
 // just means a full handshake next time. Put(nil) evicts (crypto/tls uses
-// that on certain handshake failures).
+// that on certain handshake failures) and always runs, even when MarkResumed
+// was called — a broken session must still be dropped regardless of how the
+// prior handshake went. A non-nil session on an already-resumed connection is
+// dropped instead of stored; see MarkResumed's doc.
 func (c *Cache) Put(_ string, cs *tls.ClientSessionState) {
 	if cs == nil {
 		c.async(func() { c.store.delete(c.storeKey) })
+		return
+	}
+	if c.resumed.Load() {
 		return
 	}
 	ticket, state, err := cs.ResumptionState()

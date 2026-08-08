@@ -25,7 +25,23 @@ drop from ~2.2s to single-digit/low-tens of milliseconds on LAN.
 - Security posture: full ML-DSA chain trust is anchored at the original
   handshake; resumed connections get **cheap re-checks** (client cert validity
   window) and stale tickets **downgrade to a full handshake**, never a
-  connection error.
+  connection error. Full re-verification recurs at least weekly by
+  construction, not merely by ticket lifetime: Go's TLS 1.3 server reissues a
+  fresh ticket on *every* connection, including resumed ones, so a client
+  that simply overwrote its cached ticket on each connect could chain
+  resumptions indefinitely and never trigger another full handshake. Instead,
+  `tlscache.Cache` keeps only the ticket produced by its **last full
+  handshake** and discards (does not persist) any ticket minted on a resumed
+  connection. Combined with Go's own `maxSessionTicketLifetime` (7 days,
+  enforced by both client and server), that forces a full handshake — and a
+  full ML-DSA re-verification — at least once a week, even for a client that
+  connects every day; the agent's per-resumption client-cert-window check
+  (§3) is a second, independent layer that also catches a cert expiring
+  mid-week. Mesh agent-to-agent dials get the property differently: a resumed
+  mesh connection re-runs the peer identity pin and full chain check on every
+  connection (`NewClientTLSConfigExpectingPeer`'s `VerifyConnection`), so
+  ticket chaining is harmless there and the in-memory mesh session cache
+  needs no equivalent no-overwrite rule.
 - Zero behavior change when no ticket exists, the ticket is invalid, the agent
   restarted, or either side predates this feature (old CLI ↔ new agent and new
   CLI ↔ old agent both fall back to today's full handshake).
@@ -83,6 +99,13 @@ exists.
   secrets; the Keychain is the right primitive for a ticket blob. The
   `security` subprocess costs ~30–80ms on `Get` — noise next to the ~2.2s
   it saves, and the file backend is an env-var flip away if it ever matters.
+  Honest caveat: a Keychain item's ACL trusts `/usr/bin/security` itself, so
+  any process running as the same macOS user can read the item promptlessly
+  via the same CLI we use — this is not protection against same-user
+  malware. What the Keychain buys over a `0600` file is at-rest encryption
+  while the keychain is locked (screen-locked/powered-off device) plus
+  exclusion from Time Machine and iCloud backups; it is not a stronger
+  same-user access boundary than the file backend.
 - **Linux/Windows backend (default): file**,
   `~/.wendy/tls-sessions/<hex(storeKey)>.tlssession`, mode `0600`, directory
   `0700`, atomic temp-file + rename writes (concurrent CLI processes are
