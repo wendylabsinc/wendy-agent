@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -269,6 +270,54 @@ func TestReadOCILayoutDirLayersMissingIndex(t *testing.T) {
 	_, _, err := readOCILayoutDirLayers(t.TempDir(), "linux/arm64")
 	if err == nil {
 		t.Fatal("want error for missing index.json, got nil")
+	}
+}
+
+// Descriptor sizes are required by the OCI spec; without one the partial-write
+// check would be silently skipped, so the reader must refuse.
+func TestReadOCILayoutDirLayersRequiresDescriptorSize(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte("sizeless-layer-tar")
+	layerDigest := "sha256:" + sha256Hex(raw)
+	config := []byte(`{"architecture":"arm64","os":"linux","rootfs":{"type":"layers","diff_ids":["` + layerDigest + `"]}}`)
+	configDigest := "sha256:" + sha256Hex(config)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"` + configDigest + `","size":` + fmt.Sprint(len(config)) + `},` +
+		`"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"` + layerDigest + `"}]}`)
+	manifestDigest := sha256Hex(manifest)
+	index := []byte(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + manifestDigest + `","size":` + fmt.Sprint(len(manifest)) + `}]}`)
+	writeOCILayoutDir(t, dir, map[string][]byte{
+		"oci-layout":                        []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json":                        index,
+		"blobs/sha256/" + manifestDigest:    manifest,
+		"blobs/sha256/" + sha256Hex(config): config,
+		"blobs/sha256/" + sha256Hex(raw):    raw,
+	})
+
+	_, _, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err == nil || !strings.Contains(err.Error(), "no size") {
+		t.Fatalf("want a no-size error, got %v", err)
+	}
+}
+
+// The persistent cache must not be world-readable: the layout parent dir is
+// created 0700 and the lock file 0600.
+func TestLockOCILayoutDirPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	parent := filepath.Join(t.TempDir(), "ocilayout")
+	dir := filepath.Join(parent, "app-linux_arm64")
+	release, err := lockOCILayoutDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if fi, err := os.Stat(parent); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("layout parent perm = %v (err %v), want 0700", fi.Mode().Perm(), err)
+	}
+	if fi, err := os.Stat(dir + ".lock"); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("lock file perm = %v (err %v), want 0600", fi.Mode().Perm(), err)
 	}
 }
 
