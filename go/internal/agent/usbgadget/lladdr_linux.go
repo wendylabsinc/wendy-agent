@@ -45,11 +45,34 @@ func EnsureWellKnownAddress(ctx context.Context, interval time.Duration, logger 
 	}
 }
 
+// Rate-limiting state for the Warn logs below, so a persistent failure (e.g.
+// the agent lacking CAP_NET_ADMIN, or netlink being unreachable) logs once on
+// the transition into failure rather than spamming every interval forever.
+// ensureOnce only ever runs on a single goroutine — the EnsureWellKnownAddress
+// ticker loop, or serially from tests — so plain package-level bools are safe
+// without synchronization.
+var (
+	linkLookupFailing bool
+	addrAddFailing    bool
+)
+
 func ensureOnce(_ context.Context, logger *zap.Logger) {
 	ifaces, err := netInterfacesFn()
 	if err != nil {
 		return
 	}
+	addr, err := netlink.ParseAddr(discovery.WellKnownUSBAddr + "/64")
+	if err != nil {
+		logger.Error("parsing well-known USB address", zap.Error(err))
+		return
+	}
+	// nodad: the only peer on a gadget link is the USB host, which never
+	// claims this address; skipping DAD makes the address usable instantly.
+	addr.Flags = unix.IFA_F_NODAD
+	addr.Scope = int(netlink.SCOPE_LINK)
+
+	linkLookupFailed := false
+	addrAddFailed := false
 	for i := range ifaces {
 		name := ifaces[i].Name
 		// Device-side gadget interfaces are usbN on every supported board
@@ -59,19 +82,21 @@ func ensureOnce(_ context.Context, logger *zap.Logger) {
 		}
 		link, err := linkByNameFn(name)
 		if err != nil {
+			linkLookupFailed = true
+			if !linkLookupFailing {
+				logger.Warn("looking up USB gadget interface", zap.String("iface", name), zap.Error(err))
+			}
 			continue
 		}
-		addr, err := netlink.ParseAddr(discovery.WellKnownUSBAddr + "/64")
-		if err != nil {
-			logger.Error("parsing well-known USB address", zap.Error(err))
-			return
-		}
-		// nodad: the only peer on a gadget link is the USB host, which never
-		// claims this address; skipping DAD makes the address usable instantly.
-		addr.Flags = unix.IFA_F_NODAD
-		addr.Scope = int(netlink.SCOPE_LINK)
 		if err := addrAddFn(link, addr); err != nil && !errors.Is(err, syscall.EEXIST) {
-			logger.Debug("adding well-known USB address", zap.String("iface", name), zap.Error(err))
+			addrAddFailed = true
+			if !addrAddFailing {
+				logger.Warn("adding well-known USB address", zap.String("iface", name), zap.Error(err))
+			}
 		}
 	}
+	// Reset suppression only once a pass sees no failures of that kind, so a
+	// later recurrence logs again instead of staying silenced forever.
+	linkLookupFailing = linkLookupFailed
+	addrAddFailing = addrAddFailed
 }
