@@ -22,6 +22,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -227,19 +228,31 @@ func discoverContinuous(ctx context.Context, opts discovery.DiscoveryOptions, in
 
 type usbScanMsg struct{ devices []models.USBDevice }
 type ethScanMsg struct{ devices []models.EthernetInterface }
-type lanScanMsg struct{ devices []models.LANDevice }
 type btScanMsg struct {
 	devices []models.BluetoothDevice
 	err     error
 }
 type extScanMsg struct{ devices []models.ExternalDevice }
 
-// lanProbeMsg carries the result of an async agent version/OS probe for one LAN
-// device. dev holds the resolved metadata when err is nil.
-type lanProbeMsg struct {
-	name string
-	dev  models.LANDevice
-	err  error
+// lanEventMsg carries one event off the LAN discovery stream (see
+// discovery.StreamLAN), plus the channel it came from so Update can re-arm
+// waitLANEvent and keep draining it.
+type lanEventMsg struct {
+	ev discovery.LANEvent
+	ch <-chan discovery.LANEvent
+}
+
+// waitLANEvent returns a tea.Cmd that blocks for the next event on ch. A
+// closed channel (the stream session ended) yields a nil message, which
+// bubbletea silently drops — Update does not re-arm in that case.
+func waitLANEvent(ch <-chan discovery.LANEvent) tea.Cmd {
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return lanEventMsg{ev: ev, ch: ch}
+	}
 }
 
 // discoverDeviceInfo is the JSON structure copied to the clipboard.
@@ -350,25 +363,15 @@ func (m discoverModel) scanEthernet() tea.Cmd {
 	}
 }
 
-func (m discoverModel) scanLAN() tea.Cmd {
-	return func() tea.Msg {
-		// Discover devices only; version/OS are resolved asynchronously per
-		// device (see probeLANCmd) so rows appear immediately with a
-		// "connecting" spinner instead of blocking on the probe.
-		devices, _ := discovery.DiscoverLAN(m.ctx, m.opts.Timeout)
-		sortLANDevicesForDiscover(devices)
-		return lanScanMsg{devices: devices}
-	}
-}
-
-// probeLANCmd resolves a single LAN device's agent version/OS in the background
-// and reports the result as a lanProbeMsg.
-func (m discoverModel) probeLANCmd(dev models.LANDevice) tea.Cmd {
-	ctx := m.ctx
-	return func() tea.Msg {
-		resolved, _, err := resolveLANVersion(ctx, dev)
-		return lanProbeMsg{name: dev.DisplayName, dev: resolved, err: err}
-	}
+// startLANStream begins a StreamLAN session and returns the tea.Cmd that
+// waits for its first event. The engine emits cached rows instantly (so a
+// device seen in a prior run appears with no delay), then live sightings and
+// probe outcomes, and handles its own offline detection and retry — this
+// model just mirrors whatever it reports. Prober must be set: with a nil
+// Prober a cached row can never be confirmed offline.
+func (m discoverModel) startLANStream() tea.Cmd {
+	events := lanStreamFn(m.ctx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
+	return waitLANEvent(events)
 }
 
 func (m discoverModel) scanBluetooth() tea.Cmd {
@@ -394,7 +397,7 @@ func (m discoverModel) Init() tea.Cmd {
 		cmds = append(cmds, m.scanEthernet())
 	}
 	if m.shouldDiscover(models.InterfaceLAN) {
-		cmds = append(cmds, m.scanLAN())
+		cmds = append(cmds, m.startLANStream())
 	}
 	if m.shouldDiscover(models.InterfaceBluetooth) {
 		cmds = append(cmds, m.scanBluetooth())
@@ -504,68 +507,24 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshTable()
 		delay := m.ethernetInterval.delay(env.DiscoverEthernetInterval())
 		return m, delayThen(delay, m.scanEthernet())
-	case lanScanMsg:
-		// Preserve last known agent metadata when the gRPC probe failed. The
-		// probe uses a 1500 ms timeout, so transient latency can cause a blank
-		// for one scan cycle even though the device is still up.
-		for i := range msg.devices {
-			if msg.devices[i].AgentVersion != "" {
-				continue
-			}
-			for _, prev := range m.collection.LANDevices {
-				if strings.EqualFold(prev.DisplayName, msg.devices[i].DisplayName) && prev.AgentVersion != "" {
-					msg.devices[i].AgentVersion = prev.AgentVersion
-					msg.devices[i].DeviceType = prev.DeviceType
-					msg.devices[i].OS = prev.OS
-					msg.devices[i].OSVersion = prev.OSVersion
-					msg.devices[i].CPUArchitecture = prev.CPUArchitecture
-					break
-				}
-			}
-		}
-		m.collection.LANDevices = msg.devices
-		m.hasResults = true
-
-		// Assign a probe state to each device and kick off a background probe
-		// for any whose version isn't known yet. nextProbeState keeps resolved
-		// rows sticky and avoids flipping a failed row back to the spinner.
-		cmds := []tea.Cmd{m.scanLAN()}
-		for i := range m.collection.LANDevices {
-			d := &m.collection.LANDevices[i]
-			key := strings.ToLower(d.DisplayName)
-			if d.AgentVersion != "" {
-				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
-				continue
-			}
-			prev := m.probe[key]
-			m.probe[key] = nextProbeState(prev, tui.ProbePending)
-			if prev != tui.ProbePending {
-				cmds = append(cmds, m.probeLANCmd(*d))
-			}
-		}
-		m.refreshTable()
-		return m, tea.Batch(cmds...)
-	case lanProbeMsg:
-		key := strings.ToLower(msg.name)
-		for i := range m.collection.LANDevices {
-			d := &m.collection.LANDevices[i]
-			if !strings.EqualFold(d.DisplayName, msg.name) {
-				continue
-			}
-			if msg.err == nil {
-				d.AgentVersion = msg.dev.AgentVersion
-				d.DeviceType = msg.dev.DeviceType
-				d.OS = msg.dev.OS
-				d.OSVersion = msg.dev.OSVersion
-				d.CPUArchitecture = msg.dev.CPUArchitecture
-				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeOK)
+	case lanEventMsg:
+		m.upsertLANDevice(msg.ev.Device)
+		key := strings.ToLower(msg.ev.Device.DisplayName)
+		switch msg.ev.Kind {
+		case discovery.LANCached:
+			m.probe[key] = tui.ProbePending
+		case discovery.LANFound, discovery.LANUpdated:
+			if msg.ev.Probed {
+				m.probe[key] = tui.ProbeOK
 			} else {
-				m.probe[key] = nextProbeState(m.probe[key], tui.ProbeFailed)
+				m.probe[key] = tui.ProbePending
 			}
-			break
+		case discovery.LANOffline:
+			m.probe[key] = tui.ProbeOffline
 		}
+		m.hasResults = true
 		m.refreshTable()
-		return m, nil
+		return m, waitLANEvent(msg.ch)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -712,6 +671,26 @@ func (m discoverModel) anyProbePending() bool {
 		}
 	}
 	return false
+}
+
+// upsertLANDevice merges dev into m.collection.LANDevices, keyed by
+// discoverycache.Key(dev.ID, dev.DisplayName) — the same identity the on-disk
+// cache uses. A device already present (e.g. a LANCached row confirmed by a
+// later LANFound/LANUpdated) is replaced in place so the row count never
+// grows for the same physical device; an unseen device is appended. Offline
+// devices are merged like any other event: the row stays listed, never
+// removed, per the picker's "never drop a known device" contract.
+func (m *discoverModel) upsertLANDevice(dev models.LANDevice) {
+	key := discoverycache.Key(dev.ID, dev.DisplayName)
+	for i := range m.collection.LANDevices {
+		if discoverycache.Key(m.collection.LANDevices[i].ID, m.collection.LANDevices[i].DisplayName) == key {
+			m.collection.LANDevices[i] = dev
+			sortLANDevicesForDiscover(m.collection.LANDevices)
+			return
+		}
+	}
+	m.collection.LANDevices = append(m.collection.LANDevices, dev)
+	sortLANDevicesForDiscover(m.collection.LANDevices)
 }
 
 func (m *discoverModel) refreshTable() {
