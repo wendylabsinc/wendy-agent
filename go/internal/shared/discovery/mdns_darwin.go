@@ -99,12 +99,14 @@ func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSSe
 var resolveServiceFn = resolveMDNSService
 
 // mdnsStreamResolveAndEmit resolves one browse result and hands the outcome
-// to emit. A resolve failure still emits a bare identity when the instance
-// name is usable as a hostname label, so a device with no TXT records, or a
-// transient resolve failure, is not silently dropped from the stream.
-// Otherwise (an instance name that cannot stand in as a hostname, e.g. one
-// containing a space) the result is skipped rather than emitting a misleading
-// dialable-looking identity.
+// to emit. A resolve failure still emits an identity synthesized from the
+// instance name when that name is usable as a hostname label — hostname
+// "<instance>.local" on the agent's default port, exactly what the pre-stream
+// deviceFromBrowse fallback built — so a device with no TXT records, or a
+// transient resolve failure, is neither dropped from the stream nor surfaced
+// as an un-dialable, nameless row. Otherwise (an instance name that cannot
+// stand in as a hostname, e.g. one containing a space) the result is skipped
+// rather than emitting a misleading dialable-looking identity.
 func mdnsStreamResolveAndEmit(ctx context.Context, inst browseResult, serviceType string, emit func(MDNSService)) {
 	resolveCtx, cancel := context.WithTimeout(ctx, dnssdResolveTimeout)
 	defer cancel()
@@ -112,7 +114,12 @@ func mdnsStreamResolveAndEmit(ctx context.Context, inst browseResult, serviceTyp
 	svc, err := resolveServiceFn(resolveCtx, inst, serviceType)
 	if err != nil {
 		if isValidHostnameLabel(inst.instanceName) {
-			emit(MDNSService{InstanceName: inst.instanceName, InterfaceName: inst.interfaceName})
+			emit(MDNSService{
+				InstanceName:  inst.instanceName,
+				Hostname:      inst.instanceName + ".local",
+				Port:          defaultAgentPort,
+				InterfaceName: inst.interfaceName,
+			})
 		}
 		return
 	}

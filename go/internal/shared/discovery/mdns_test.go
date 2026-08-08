@@ -77,6 +77,55 @@ func TestParseTXTRecord(t *testing.T) {
 	}
 }
 
+// TestLANDeviceFromServiceIdentityFallback pins the identity floor of the
+// mDNS→device mapper: a sighting whose hostname (and displayname TXT record)
+// is missing still yields a named, keyable device by falling back to the
+// DNS-SD instance name. Without this an unresolved answer produces
+// ID/DisplayName/Hostname all empty, which every cache and dedup key
+// (discoverycache.Key("","") == "") collapses into a single nameless,
+// un-dialable row.
+func TestLANDeviceFromServiceIdentityFallback(t *testing.T) {
+	cases := []struct {
+		name            string
+		svc             MDNSService
+		wantID, wantDsp string
+	}{
+		{
+			name:    "no hostname falls back to the instance name",
+			svc:     MDNSService{InstanceName: "orin-nano", Port: defaultAgentPort},
+			wantID:  "orin-nano",
+			wantDsp: "orin-nano",
+		},
+		{
+			name:    "empty displayname TXT record falls back too",
+			svc:     MDNSService{InstanceName: "orin-nano", TXTRecords: map[string]string{"displayname": ""}},
+			wantID:  "orin-nano",
+			wantDsp: "orin-nano",
+		},
+		{
+			name:    "TXT device id still wins over the instance name",
+			svc:     MDNSService{InstanceName: "orin-nano", TXTRecords: map[string]string{"wendyosdevice": "uuid-1"}},
+			wantID:  "uuid-1",
+			wantDsp: "orin-nano",
+		},
+		{
+			name:    "a resolved hostname still wins over the instance name",
+			svc:     MDNSService{InstanceName: "instance", Hostname: "orin.local"},
+			wantID:  "orin",
+			wantDsp: "orin",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			dev := lanDeviceFromService(tt.svc)
+			if dev.ID != tt.wantID || dev.DisplayName != tt.wantDsp {
+				t.Fatalf("ID/DisplayName = %q/%q; want %q/%q", dev.ID, dev.DisplayName, tt.wantID, tt.wantDsp)
+			}
+		})
+	}
+}
+
 func TestPreferIPv4Addr(t *testing.T) {
 	cases := []struct {
 		name  string
