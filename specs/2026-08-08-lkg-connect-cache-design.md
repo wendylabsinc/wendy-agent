@@ -71,10 +71,8 @@ When the matched entry has a non-empty `IP`, `Port > 0`, and `MTLS: true`,
 ladder:
 
 - **TCP pre-check**: `net.DialTimeout("tcp", ip:port, lkgTCPConnectTimeout)`
-  with `lkgTCPConnectTimeout = 1s`. Failure → skip the direct dial and fall
-  through to the existing flow (which for a dead IP proceeds to the stale
-  retry's fresh resolution). This bounds the dead-IP worst case at ~1s
-  instead of many seconds of ladder probes.
+  with `lkgTCPConnectTimeout = 1s`, via a shared `lkgTCPAlive(addr)` helper
+  (see below).
 - **Direct dial**: run the existing ladder mechanics against `ip:entry.Port`
   (the advertised mTLS port) with the cert list rotated so certs whose
   `OrganizationID` matches the entry's `OrgID` come first (stable order
@@ -82,11 +80,37 @@ ladder:
   extracting `dialAgentLadderWithCerts(ctx, addr, certs)` from
   `dialAgentLadder` (which keeps its signature and behavior) plus a pure
   `rotateCertsForOrg(certs, orgID)` helper.
-- **Fallback**: any direct-dial failure falls through to the existing
-  cached-IP ladder + stale-retry flow **verbatim** (one redundant handshake
-  attempt against the same mTLS port in that failure path is accepted).
+- **Three-state fallback**: `dialAgentLKG` reports which of three outcomes it
+  hit (`lkgConnected`, `lkgDeadTCP`, `lkgHandshakeFailed`), and
+  `connectWithAutoTLSDiagnostics` branches on it:
+  - `lkgConnected` → return the connection as-is.
+  - `lkgHandshakeFailed` (TCP answered but the ladder didn't produce a
+    usable mTLS connection — ladder error, nil conn, or a surprising
+    plaintext downgrade) → the host is proven alive, so this falls through
+    to the existing cached-IP ladder + stale-retry flow **verbatim** (one
+    redundant handshake attempt against the same mTLS port in that failure
+    path is accepted).
+  - `lkgDeadTCP` (the pre-check itself failed) → the cached IP never enters
+    the cached-IP ladder at all. `fromCache` stays `false`, so the flow
+    proceeds straight to fresh resolution against the *original* host:port —
+    exactly what the stale-cache retry would have produced, minus the
+    wasted ladder attempt against a black hole. This is what actually bounds
+    the dead-IP worst case at ~1s instead of many seconds of ladder probes;
+    the base's naive "any LKG failure falls into the cached-IP ladder"
+    behavior would otherwise still pay the full ladder cost against a dead
+    IP before ever re-resolving.
   `WENDY_TLS_DEBUG` logs one line for the LKG attempt: hit/skip and the
   failure reason.
+- **LKG-ineligible cache dials get the same bound**: entries that don't
+  qualify for the direct dial (`MTLS: false` or `Port == 0`) never call
+  `dialAgentLKG`, but their cached-IP fromCache dial is otherwise exactly as
+  exposed to a dead IP as the LKG path is. `connectWithAutoTLSDiagnostics`
+  therefore runs the same `lkgTCPAlive` pre-check against `ip:plainPort`
+  before committing to `fromCache` for these entries too: alive → proceed
+  fromCache as before; dead → fall through to fresh resolution. Without this
+  bound, any-age lookup (§1) would let a stale LKG-ineligible entry (e.g. an
+  unprovisioned device that moved) feed an unbounded ladder attempt — a
+  regression versus the base's TTL gate.
 
 ### 3. Write-back fidelity
 
@@ -114,7 +138,7 @@ behavior plus ≤1s.
 | --- | --- | --- |
 | `.local`, cache fresh (<1h) | fast (resolution skipped) | same, minus plaintext-port ladder step |
 | `.local`, cache stale (>1h) | ~1.5s (full resolution) | ~fast-path cost (any-age) |
-| Dead/stale cached IP | up to ~17s of ladder probes before retry | ≤1s pre-check, then normal retry |
+| Dead/stale cached IP | up to ~17s of ladder probes before retry | ≤1s pre-check, then straight to fresh resolution (cached-IP ladder never runs against a dead IP) |
 | Multi-org, wrong-cert-first | +1–2s per wrong cert (device-side full handshake) | org-matched cert first |
 | IP literal / unix socket | unchanged | unchanged |
 
@@ -128,9 +152,16 @@ behavior plus ≤1s.
   clobbers an advertised mTLS port with a plaintext port.
 - Integration (fake TLS agent, existing test-seam style —
   `deviceCacheLoadFn`, `cacheFastPathReachableFn`, resolver fns): (a)
-  any-age hit connects with zero resolver invocations; (b) dead-IP entry
-  falls through within ~1s (TCP pre-check) and the stale retry still
-  connects; (c) direct dial uses the rotated cert first (spy on cert order).
+  any-age hit connects with zero resolver invocations; (b) a dead-IP LKG
+  entry never enters the cached-IP ladder — the pre-check (~1s) sends it
+  straight to fresh resolution, and the ladder is spied to assert it only
+  ever ran against the freshly-resolved address, never the dead cached IP
+  (`lkgDeadTCP`); a live-TCP-but-failed-handshake entry (`lkgHandshakeFailed`)
+  still gets the cached-IP ladder + stale retry, unchanged; (c) direct dial
+  uses the rotated cert first (spy on cert order); (d) an LKG-ineligible
+  entry (`MTLS: false`) gets the same pre-check bound before its fromCache
+  dial: dead → fresh resolution, alive → fromCache ladder at the cached IP,
+  same as before this delta.
 - On-device gate: with a >1h-old cache entry, `wendy device info --device
   <name>.local` skips resolution (fast path) on this LAN; dead-IP fallback
   stays snappy.

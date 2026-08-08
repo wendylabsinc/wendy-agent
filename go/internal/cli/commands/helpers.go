@@ -1320,29 +1320,65 @@ const lkgTCPConnectTimeout = 1 * time.Second
 // tcpDialTimeoutFn is a seam over net.DialTimeout for LKG fast-path tests.
 var tcpDialTimeoutFn = net.DialTimeout
 
+// lkgTCPAlive reports whether addr answers a bounded TCP connect within
+// lkgTCPConnectTimeout. It's the shared dead-IP bound: dialAgentLKG uses it
+// against the cached mTLS endpoint, and connectWithAutoTLSDiagnostics uses it
+// directly against the cached plaintext endpoint for LKG-ineligible entries
+// (MTLS=false or Port==0), which never call dialAgentLKG at all.
+func lkgTCPAlive(addr string) bool {
+	raw, err := tcpDialTimeoutFn("tcp", addr, lkgTCPConnectTimeout)
+	if err != nil {
+		return false
+	}
+	raw.Close()
+	return true
+}
+
 // loadAllCLICertsFn is a seam over loadAllCLICerts for LKG fast-path tests.
 var loadAllCLICertsFn = loadAllCLICerts
 
+// lkgOutcome distinguishes dialAgentLKG's three possible results so its
+// caller can tell a dead cached IP (never worth retrying against — fresh
+// resolution is strictly better) apart from a live host that simply failed
+// its handshake (worth the existing cached-IP ladder + stale-retry
+// diagnostics, because the host is proven reachable).
+type lkgOutcome int
+
+const (
+	// lkgConnected: the direct dial succeeded; conn is ready to use.
+	lkgConnected lkgOutcome = iota
+	// lkgDeadTCP: the TCP pre-check itself failed — the cached IP is dead
+	// or unreachable. The caller must not run the cached-IP ladder against
+	// it; fresh resolution is the only useful next step.
+	lkgDeadTCP
+	// lkgHandshakeFailed: TCP answered but the mTLS ladder didn't produce a
+	// usable mTLS connection (ladder error, nil conn, or a plaintext
+	// downgrade). The host is alive, so the ordinary cached-IP ladder and
+	// its diagnostics still have value.
+	lkgHandshakeFailed
+)
+
 // dialAgentLKG is the last-known-good direct dial: one bounded attempt at a
 // cached device's advertised mTLS endpoint with the entry's org's cert
-// first. ok=false means "fall through to the ordinary connect flow" — the
-// fast path never surfaces its own failures as the connect's outcome.
+// first. The returned lkgOutcome tells the caller how to fall through —
+// dialAgentLKG never surfaces its own failures as the connect's outcome.
 // Trust is unchanged: the same certs, verifiers, and pins run here as on
 // the ordinary path; the cache contributes routing only.
-func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, bool) {
+func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
 	addr := hostPort(e.IP, e.Port)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
-	raw, err := tcpDialTimeoutFn("tcp", addr, lkgTCPConnectTimeout)
-	if err != nil {
+	if !lkgTCPAlive(addr) {
 		if tlsDebug {
-			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: tcp pre-check failed: %v\n", addr, err)
+			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: tcp pre-check failed\n", addr)
 		}
-		return nil, nil, false
+		return nil, nil, lkgDeadTCP
 	}
-	raw.Close()
 	certs := rotateCertsForOrg(loadAllCLICertsFn(), e.OrgID)
 	if len(certs) == 0 {
-		return nil, nil, false
+		// TCP answered, so the host is alive — this just means there's
+		// nothing to dial with. Route through the ordinary path rather than
+		// treating it like a dead IP.
+		return nil, nil, lkgHandshakeFailed
 	}
 	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, addr, certs)
 	if err != nil || conn == nil || !conn.IsMTLS {
@@ -1354,12 +1390,12 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 		if tlsDebug {
 			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %v\n", addr, err)
 		}
-		return nil, mtlsErr, false
+		return nil, mtlsErr, lkgHandshakeFailed
 	}
 	if tlsDebug {
 		fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: connected\n", addr)
 	}
-	return conn, mtlsErr, true
+	return conn, mtlsErr, lkgConnected
 }
 
 // dialAgentLKGFn is a seam over dialAgentLKG for connect-flow tests.
@@ -1413,13 +1449,26 @@ func defaultDeviceUnreachableError(hostname string, err error) error {
 // with a device-cache entry (any age; see cachedDeviceEntry) skips resolution
 // entirely and dials the cached IP directly — the "instant connect" fast
 // path. That cached IP can be stale (the device moved, rebooted onto a new
-// DHCP lease, etc.), so a fast-path dial that doesn't actually answer is never
-// treated as "device unreachable" (spec §4): it re-resolves exactly as the
-// cache-miss path would and retries the whole ladder once — unless the retry
-// can't possibly help (see the guards inline below), in which case the
-// original attempt's result is kept. The device-cache write for a confirmed-
-// live connection does NOT happen here — a lazy plaintext "success" from this
-// function proves nothing (see cacheFastPathReachable's doc); it happens at
+// DHCP lease, etc.), so this distinguishes a dead cached IP from a live one
+// that simply failed its handshake:
+//
+//   - A dead cached IP (dialAgentLKG's TCP pre-check fails, or — for entries
+//     ineligible for the LKG direct dial — lkgTCPAlive's own pre-check
+//     fails) never enters the cached-IP ladder at all: fromCache stays
+//     false and the flow below falls straight through to fresh resolution,
+//     bounding the dead-IP worst case at ~lkgTCPConnectTimeout instead of a
+//     full ladder against a black hole.
+//   - A live cached IP that fails its handshake (lkgHandshakeFailed, or an
+//     LKG-ineligible entry that passed its TCP pre-check) is never treated
+//     as "device unreachable" (spec §4) on that basis alone: it runs the
+//     cached-IP ladder, and if that doesn't answer, re-resolves exactly as
+//     the cache-miss path would and retries the whole ladder once — unless
+//     the retry can't possibly help (see the guards inline below), in which
+//     case the original attempt's result is kept.
+//
+// The device-cache write for a confirmed-live connection does NOT happen
+// here — a lazy plaintext "success" from this function proves nothing (see
+// cacheFastPathReachable's doc); it happens at
 // connectAgentAtAddressWithProvisionedHint's real post-connect proof of life.
 func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
 	// An admin-entitled on-device container reaches the agent over its local
@@ -1431,20 +1480,46 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		return conn, nil, err
 	}
 
+	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	originalAddr := plaintextAddr
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
 		if e, ok := cachedDeviceHostEntry(plainHost); ok && e.IP != "" {
-			// Last-known-good direct dial: the advertised mTLS endpoint with
-			// the entry's org's cert first, TCP-bounded so a dead IP costs at
-			// most lkgTCPConnectTimeout. Failures fall through to the
-			// cached-IP ladder + stale-cache retry below.
-			if e.MTLS && e.Port > 0 {
-				if conn, mtlsErr, ok := dialAgentLKGFn(ctx, e); ok {
+			cachedAddr := net.JoinHostPort(e.IP, plainPort)
+			switch {
+			case e.MTLS && e.Port > 0:
+				// Last-known-good direct dial: the advertised mTLS endpoint
+				// with the entry's org's cert first, TCP-bounded so a dead
+				// IP costs at most lkgTCPConnectTimeout.
+				switch conn, mtlsErr, outcome := dialAgentLKGFn(ctx, e); outcome {
+				case lkgConnected:
 					return conn, mtlsErr, nil
+				case lkgHandshakeFailed:
+					// The host answered TCP — it's alive, just didn't
+					// hand back a usable mTLS connection. The ordinary
+					// cached-IP ladder (and its diagnostics) still have
+					// value, so fall through to it verbatim.
+					plaintextAddr, fromCache = cachedAddr, true
+				case lkgDeadTCP:
+					// The cached IP didn't even answer TCP. Running the
+					// ladder against it would just burn its budget on a
+					// black hole, so skip the fromCache path entirely —
+					// fromCache stays false, and the flow below
+					// re-resolves originalAddr fresh, exactly like the
+					// stale-cache retry would have done, minus the
+					// wasted ladder attempt.
+				}
+			case lkgTCPAlive(cachedAddr):
+				// LKG-ineligible entry (no advertised mTLS endpoint to
+				// direct-dial), but the cached-IP fromCache ladder below
+				// still needs the same dead-IP bound the LKG path gets,
+				// otherwise a stale entry here is unbounded.
+				plaintextAddr, fromCache = cachedAddr, true
+			default:
+				if tlsDebug {
+					fmt.Fprintf(os.Stderr, "[tls-debug] lkg-ineligible %s: tcp pre-check failed, skipping cached-IP ladder\n", cachedAddr)
 				}
 			}
-			plaintextAddr, fromCache = net.JoinHostPort(e.IP, plainPort), true
 		}
 	}
 	if !fromCache {
