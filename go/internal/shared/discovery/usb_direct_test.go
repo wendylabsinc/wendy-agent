@@ -23,7 +23,7 @@ func TestUSBDirectCandidatesFrom(t *testing.T) {
 		{Index: 7, Name: "ncm0", Flags: net.FlagUp},                   // NCM adapter → candidate
 	}
 
-	got := usbDirectCandidatesFrom(ifaces, "linux")
+	got := usbDirectCandidatesFrom(ifaces, "linux", nil)
 	want := []USBDirectCandidate{
 		{Interface: "enxaabbccddeeff", Zone: "enxaabbccddeeff"},
 		{Interface: "ncm0", Zone: "ncm0"},
@@ -38,8 +38,75 @@ func TestUSBDirectCandidatesFrom(t *testing.T) {
 	}
 
 	// Windows zones are numeric interface indexes, not names.
-	gotWin := usbDirectCandidatesFrom(ifaces, "windows")
+	gotWin := usbDirectCandidatesFrom(ifaces, "windows", nil)
 	if len(gotWin) != 2 || gotWin[0].Zone != "3" || gotWin[1].Zone != "7" {
 		t.Fatalf("windows candidates = %+v, want zones \"3\" and \"7\"", gotWin)
+	}
+}
+
+// On macOS a gadget link is a bare BSD name that matches no name heuristic —
+// only the "Hardware Port" display name identifies it. Without the resolver the
+// whole feature is inert there.
+func TestUSBDirectCandidatesFromDarwinDisplayNames(t *testing.T) {
+	ifaces := []net.Interface{
+		{Index: 4, Name: "en0", Flags: net.FlagUp}, // Wi-Fi → skipped
+		{Index: 5, Name: "en5", Flags: net.FlagUp}, // gadget NCM → candidate
+		{Index: 6, Name: "en7", Flags: net.FlagUp}, // Thunderbolt bridge → skipped
+	}
+	displayNames := map[string]string{
+		"en0": "Wi-Fi",
+		"en5": "Wendy USB NCM",
+		"en7": "Thunderbolt Bridge",
+	}
+	var asked []string
+	resolve := func(name string) string {
+		asked = append(asked, name)
+		return displayNames[name]
+	}
+
+	got := usbDirectCandidatesFrom(ifaces, "darwin", resolve)
+	if len(got) != 1 || got[0] != (USBDirectCandidate{Interface: "en5", Zone: "en5"}) {
+		t.Fatalf("candidates = %+v, want just en5", got)
+	}
+	// Darwin zones are BSD names, and every interface needed the resolver
+	// because none of them match on name alone.
+	if len(asked) != 3 {
+		t.Fatalf("resolver asked for %v, want all three interfaces", asked)
+	}
+}
+
+// A Windows friendly name ("Ethernet 3") is equally opaque; the adapter
+// description carries the USB signal, while the zone stays the numeric index.
+func TestUSBDirectCandidatesFromWindowsDescriptions(t *testing.T) {
+	ifaces := []net.Interface{
+		{Index: 11, Name: "Ethernet", Flags: net.FlagUp},
+		{Index: 12, Name: "Ethernet 3", Flags: net.FlagUp},
+	}
+	descriptions := map[string]string{
+		"Ethernet":   "Intel(R) Ethernet Connection I219-V",
+		"Ethernet 3": "Wendy USB NCM Network Adapter",
+	}
+
+	got := usbDirectCandidatesFrom(ifaces, "windows", func(n string) string { return descriptions[n] })
+	if len(got) != 1 || got[0] != (USBDirectCandidate{Interface: "Ethernet 3", Zone: "12"}) {
+		t.Fatalf("candidates = %+v, want Ethernet 3 with zone \"12\"", got)
+	}
+}
+
+// The resolver stands behind a system query, so interfaces already classified
+// by name must not trigger it.
+func TestUSBDirectCandidatesFromSkipsResolverWhenNameSuffices(t *testing.T) {
+	ifaces := []net.Interface{
+		{Index: 3, Name: "enxaabbccddeeff", Flags: net.FlagUp},
+		{Index: 4, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback},
+		{Index: 5, Name: "usb0", Flags: 0}, // down → never reaches the resolver
+	}
+
+	got := usbDirectCandidatesFrom(ifaces, "linux", func(name string) string {
+		t.Fatalf("resolver must not be consulted for %q", name)
+		return ""
+	})
+	if len(got) != 1 || got[0].Interface != "enxaabbccddeeff" {
+		t.Fatalf("candidates = %+v, want just enxaabbccddeeff", got)
 	}
 }

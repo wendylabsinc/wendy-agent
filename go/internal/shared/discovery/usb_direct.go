@@ -4,6 +4,7 @@ import (
 	"net"
 	"runtime"
 	"strconv"
+	"time"
 )
 
 // WellKnownUSBAddr is the fixed IPv6 link-local address every WendyOS device
@@ -34,6 +35,10 @@ func (c USBDirectCandidate) HostPort(port int) string {
 // inject fixtures (mirrors osLookupHostFn-style seams elsewhere in the CLI).
 var netInterfacesFn = net.Interfaces
 
+// usbDisplayNameTimeout bounds the single system query a display-name resolver
+// makes (networksetup on macOS, Get-NetAdapter on Windows).
+const usbDisplayNameTimeout = 3 * time.Second
+
 // USBDirectCandidates returns one dial candidate per up, non-loopback,
 // USB-backed network interface on this host. An empty result means no USB
 // gadget link is present.
@@ -42,17 +47,31 @@ func USBDirectCandidates() []USBDirectCandidate {
 	if err != nil {
 		return nil
 	}
-	return usbDirectCandidatesFrom(ifaces, runtime.GOOS)
+	return usbDirectCandidatesFrom(ifaces, runtime.GOOS, usbDisplayNameResolver())
 }
 
-func usbDirectCandidatesFrom(ifaces []net.Interface, goos string) []USBDirectCandidate {
+// usbDirectCandidatesFrom classifies host interfaces into dial candidates.
+// displayName maps an interface name to its platform display name (the macOS
+// "Hardware Port", the Windows adapter description); it may be nil where the
+// interface name alone is enough. It is consulted only for interfaces the cheap
+// name heuristics reject, so a host whose links are all classified by name
+// never pays for the system query behind it.
+func usbDirectCandidatesFrom(ifaces []net.Interface, goos string, displayName func(string) string) []USBDirectCandidate {
 	var out []USBDirectCandidate
 	for i := range ifaces {
 		if ifaces[i].Flags&net.FlagLoopback != 0 || ifaces[i].Flags&net.FlagUp == 0 {
 			continue
 		}
 		if !looksLikeUSBConnection(ifaces[i].Name, "") {
-			continue
+			// A macOS BSD name ("en5") and a Windows friendly name
+			// ("Ethernet 3") carry no USB signal at all — only the display
+			// name does, so ask for it before giving up on this interface.
+			if displayName == nil {
+				continue
+			}
+			if !looksLikeUSBConnection(ifaces[i].Name, displayName(ifaces[i].Name)) {
+				continue
+			}
 		}
 		zone := ifaces[i].Name
 		if goos == "windows" {
