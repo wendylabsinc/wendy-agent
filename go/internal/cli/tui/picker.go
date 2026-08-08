@@ -713,9 +713,12 @@ func DeviceWarningLegend(items []PickerItem) string {
 
 // itemShowsOutdated reports whether the Agent cell renders the outdated glyph.
 // A pending probe shows a spinner and a failed one may show no version at all,
-// and neither can carry a marker.
+// and neither can carry a marker. An offline row renders "offline" instead of
+// a version, and its version is cached metadata no live probe has confirmed —
+// update hints must never fire from that alone.
 func itemShowsOutdated(item PickerItem) bool {
-	return item.AgentOutdated && item.AgentVersion != "" && item.Probe != ProbePending
+	return item.AgentOutdated && item.AgentVersion != "" &&
+		item.Probe != ProbePending && item.Probe != ProbeOffline
 }
 
 type pickerColumnDef struct {

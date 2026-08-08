@@ -521,24 +521,18 @@ func (m discoverModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delay := m.ethernetInterval.delay(env.DiscoverEthernetInterval())
 		return m, delayThen(delay, m.scanEthernet())
 	case lanEventMsg:
+		// A superseded identity is this same device under a stale,
+		// connect-minted hostname key; dropping it keeps one row per device.
+		if msg.ev.Supersedes != "" {
+			m.removeLANDevice(msg.ev.Supersedes)
+		}
 		m.upsertLANDevice(msg.ev.Device)
 		// Keyed by the same identity upsertLANDevice merges rows by (TXT
 		// device ID, falling back to display name) — not the display name
 		// alone, which can collide across devices or change out from under a
 		// single device, either of which would orphan/cross-wire this state.
 		key := discoverycache.Key(msg.ev.Device.ID, msg.ev.Device.DisplayName)
-		switch msg.ev.Kind {
-		case discovery.LANCached:
-			m.probe[key] = tui.ProbePending
-		case discovery.LANFound, discovery.LANUpdated:
-			if msg.ev.Probed {
-				m.probe[key] = tui.ProbeOK
-			} else {
-				m.probe[key] = tui.ProbePending
-			}
-		case discovery.LANOffline:
-			m.probe[key] = tui.ProbeOffline
-		}
+		m.probe[key], _ = lanRowState(msg.ev)
 		m.hasResults = true
 		m.refreshTable()
 		return m, waitLANEvent(msg.ch)
@@ -708,6 +702,20 @@ func (m *discoverModel) upsertLANDevice(dev models.LANDevice) {
 	}
 	m.collection.LANDevices = append(m.collection.LANDevices, dev)
 	sortLANDevicesForDiscover(m.collection.LANDevices)
+}
+
+// removeLANDevice drops the row for a cache identity the discovery engine has
+// superseded — a connect-minted, hostname-derived row replaced by the same
+// device's real TXT identity (discovery.LANEvent.Supersedes) — so one physical
+// device never occupies two rows.
+func (m *discoverModel) removeLANDevice(key string) {
+	for i := range m.collection.LANDevices {
+		if discoverycache.Key(m.collection.LANDevices[i].ID, m.collection.LANDevices[i].DisplayName) == key {
+			m.collection.LANDevices = append(m.collection.LANDevices[:i], m.collection.LANDevices[i+1:]...)
+			break
+		}
+	}
+	delete(m.probe, key)
 }
 
 func (m *discoverModel) refreshTable() {
