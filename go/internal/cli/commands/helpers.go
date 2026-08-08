@@ -1551,9 +1551,8 @@ func cacheHostnameForStorage(host string) string {
 // its own. connectWithAutoTLSDiagnostics calls it for every connect —
 // resolved-address and device-cache fast path alike, including the fast
 // path's stale-cache retry — so all three share this exact same ladder.
-func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
-	allCerts := loadAllCLICerts()
 	var lastMTLSErr error
 	recordMTLSErr := func(addr string, err error) {
 		if err != nil {
@@ -1641,10 +1640,43 @@ func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.Age
 	return conn, lastMTLSErr, err
 }
 
+// dialAgentLadder is dialAgentLadderWithCerts with the CLI's stored certs
+// in config order — the shape every non-fast-path caller wants.
+func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
+	return dialAgentLadderWithCerts(ctx, plaintextAddr, loadAllCLICerts())
+}
+
+// dialAgentLadderWithCertsFn is a seam over dialAgentLadderWithCerts for
+// tests that need to observe the cert order the LKG fast path passes.
+var dialAgentLadderWithCertsFn = dialAgentLadderWithCerts
+
 // dialAgentLadderFn is a seam over dialAgentLadder for tests that need to
 // count or fake ladder invocations directly (e.g. proving a stale-cache
 // retry did or didn't redial) without standing up a real mTLS cert chain.
 var dialAgentLadderFn = dialAgentLadder
+
+// rotateCertsForOrg returns certs reordered so entries whose OrganizationID
+// matches orgID come first, preserving relative order within both groups
+// (a stable partition). orgID 0 (unknown) or no match returns certs
+// unchanged. Never mutates the input.
+func rotateCertsForOrg(certs []config.CertificateInfo, orgID int32) []config.CertificateInfo {
+	if orgID == 0 {
+		return certs
+	}
+	matched := make([]config.CertificateInfo, 0, len(certs))
+	rest := make([]config.CertificateInfo, 0, len(certs))
+	for _, c := range certs {
+		if int32(c.OrganizationID) == orgID {
+			matched = append(matched, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	if len(matched) == 0 {
+		return certs
+	}
+	return append(matched, rest...)
+}
 
 // isCertRejectionError reports whether a gRPC probe error is a server-sent TLS
 // alert rejecting the client certificate, as distinct from the client failing to
