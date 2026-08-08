@@ -597,12 +597,24 @@ func applyAudio(spec *Spec) {
 		Access: "rw",
 	})
 
-	// isSocket reports whether path is a Unix domain socket. Uses Lstat
-	// so symlinks are not followed — runc can't resolve symlink targets
-	// through bind mounts.
+	// isSocket reports whether path is a Unix domain socket owned by the
+	// expected "wendy" session UID. Uses Lstat so symlinks are not followed —
+	// runc can't resolve symlink targets through bind mounts, and a symlink
+	// swapped in after the glob must not be. The owner check matters because
+	// pipewireUserSocketGlob matches every UID under /run/user: without it,
+	// any local UID's session socket could be the one this root-run code
+	// bind-mounts into a container.
 	isSocket := func(path string) bool {
 		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
+		if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		uid, ok := pipewireUserUID()
+		if !ok {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		return ok && st.Uid == uid
 	}
 
 	// Only a user session socket (/run/user/<uid>/pipewire-0) is mounted.
@@ -682,6 +694,23 @@ var driGlobs = []string{"/dev/dri/*"}
 // pipewireUserSocketGlob locates the PipeWire socket the audio entitlement
 // mounts. Behind a var so tests can redirect it into a tempdir.
 var pipewireUserSocketGlob = "/run/user/*/pipewire-0"
+
+// pipewireUserUID resolves the "wendy" user's UID, the only session whose
+// socket applyAudio will bind-mount into a container. Behind a var so tests
+// can stub it without requiring a real "wendy" account on the test host. See
+// the agent's own audio package for the equivalent used by its PipeWire
+// client.
+var pipewireUserUID = func() (uint32, bool) {
+	u, err := user.Lookup("wendy")
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(uid), true
+}
 
 // lookupRenderGID resolves the host "render" group GID, which owns
 // /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when

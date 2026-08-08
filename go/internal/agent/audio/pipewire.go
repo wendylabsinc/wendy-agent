@@ -16,16 +16,35 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // SocketGlob locates the per-user PipeWire socket. Behind a var so tests can
 // redirect it into a tempdir.
 var SocketGlob = "/run/user/*/pipewire-0"
+
+// expectedUID resolves the "wendy" user's UID, the only session whose socket
+// root will trust. Without this, RuntimeDir would hand a root-run process to
+// whichever local UID's session socket happened to glob first on a
+// multi-user host. Behind a var so tests can stub it without requiring a real
+// "wendy" account on the test host.
+var expectedUID = func() (uint32, bool) {
+	u, err := user.Lookup("wendy")
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(uid), true
+}
 
 // queryTimeout bounds a single pw-dump or wpctl invocation, so a wedged
 // PipeWire cannot hold an RPC open indefinitely.
@@ -61,16 +80,36 @@ func (d Defaults) IsDefault(n Node) bool {
 }
 
 // RuntimeDir returns the directory holding the user session's PipeWire socket,
-// or "" when no session is up.
+// or "" when no session is up. Only the socket owned by the "wendy" user is
+// trusted: on a multi-user host, any local UID can create a session under
+// /run/user/<uid>, and root blindly following the first glob match would let
+// that UID influence the agent's audio graph operations.
 func RuntimeDir() string {
+	uid, ok := expectedUID()
+	if !ok {
+		return ""
+	}
 	matches, _ := filepath.Glob(SocketGlob)
 	for _, m := range matches {
-		if fi, err := os.Stat(m); err == nil && fi.Mode()&os.ModeSocket != 0 {
-			return filepath.Dir(m)
+		// Lstat, not Stat: a symlink swapped in after the glob must not be
+		// followed to a socket outside the expected session.
+		fi, err := os.Lstat(m)
+		if err != nil || fi.Mode()&os.ModeSocket == 0 {
+			continue
 		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != uid {
+			continue
+		}
+		return filepath.Dir(m)
 	}
 	return ""
 }
+
+// Available reports whether a PipeWire user session is up. Callers use this
+// to decide between the PipeWire and ALSA-fallback code paths. Behind a var
+// so tests can force either path without a real socket or a "wendy" account.
+var Available = func() bool { return RuntimeDir() != "" }
 
 // Command builds a command pointed at the user session, or errors when no
 // session is up. The system-wide instance is never used: it has no session

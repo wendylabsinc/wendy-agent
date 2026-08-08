@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
@@ -440,10 +441,18 @@ func TestApplyEntitlements_Audio(t *testing.T) {
 	}
 
 	// The PipeWire mount is conditional: it is added only when a user session
-	// socket exists at /run/user/*/pipewire-0.
+	// socket exists at /run/user/*/pipewire-0 and is owned by the "wendy" user.
 	isSocket := func(path string) bool {
 		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
+		if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		uid, ok := pipewireUserUID()
+		if !ok {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		return ok && st.Uid == uid
 	}
 	// Mirror applyAudio's socket detection.
 	var pipewireSocketSource string
@@ -583,9 +592,13 @@ func TestApplyEntitlements_Audio_MountsOnlyUserSessionSocket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			origGlob := pipewireUserSocketGlob
-			t.Cleanup(func() { pipewireUserSocketGlob = origGlob })
+			origGlob, origUID := pipewireUserSocketGlob, pipewireUserUID
+			t.Cleanup(func() { pipewireUserSocketGlob, pipewireUserUID = origGlob, origUID })
 			pipewireUserSocketGlob = filepath.Join(base, "user", "*", "pipewire-0")
+			// The test process's own UID stands in for "wendy": creating a
+			// socket actually owned by an arbitrary UID would require root.
+			ownUID := uint32(os.Getuid())
+			pipewireUserUID = func() (uint32, bool) { return ownUID, true }
 
 			os.RemoveAll(filepath.Join(base, "user"))
 			os.RemoveAll(filepath.Join(base, "sys"))
@@ -620,6 +633,40 @@ func TestApplyEntitlements_Audio_MountsOnlyUserSessionSocket(t *testing.T) {
 				t.Errorf("pulse mounted from %q, want none", gotPulse)
 			}
 		})
+	}
+}
+
+// A socket owned by a UID other than the expected "wendy" one must never be
+// bind-mounted into a container, even though it passes the socket-type check:
+// pipewireUserSocketGlob matches every UID under /run/user, and this is the
+// only thing stopping a root-run agent from handing a container another local
+// user's session.
+func TestApplyEntitlements_Audio_RejectsUnexpectedSocketOwner(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatalf("MkdirTemp() = %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(base) })
+
+	userSocket := filepath.Join(base, "user", "1000", "pipewire-0")
+	listenUnix(t, userSocket)
+
+	origGlob, origUID := pipewireUserSocketGlob, pipewireUserUID
+	t.Cleanup(func() { pipewireUserSocketGlob, pipewireUserUID = origGlob, origUID })
+	pipewireUserSocketGlob = filepath.Join(base, "user", "*", "pipewire-0")
+	pipewireUserUID = func() (uint32, bool) { return uint32(os.Getuid()) + 1, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementAudio}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if got := mountSourceFor(spec, "/run/pipewire/pipewire-0"); got != "" {
+		t.Errorf("mounted a socket owned by an unexpected UID: source = %q", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package audio
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -218,15 +219,29 @@ func TestParseVolume(t *testing.T) {
 }
 
 func TestRuntimeDir(t *testing.T) {
-	dir := t.TempDir()
-	orig := SocketGlob
-	t.Cleanup(func() { SocketGlob = orig })
+	// Short base path: Unix socket paths are limited to ~104 bytes, and
+	// t.TempDir() can exceed that once "user-1000/pipewire-0" is appended.
+	dir, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	origGlob, origUID := SocketGlob, expectedUID
+	t.Cleanup(func() { SocketGlob, expectedUID = origGlob, origUID })
+
+	// The test process's own UID stands in for "wendy": creating a socket
+	// actually owned by an arbitrary UID would require root.
+	ownUID := uint32(os.Getuid())
+	expectedUID = func() (uint32, bool) { return ownUID, true }
 
 	// No session: callers must be able to tell, so they can report audio as
 	// unavailable rather than silently listing nothing.
 	SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
 	if got := RuntimeDir(); got != "" {
 		t.Errorf("no session should yield \"\", got %q", got)
+	}
+	if Available() {
+		t.Error("Available() = true with no session")
 	}
 
 	// A plain file is not a socket and must not be mistaken for a session.
@@ -240,4 +255,40 @@ func TestRuntimeDir(t *testing.T) {
 	if got := RuntimeDir(); got != "" {
 		t.Errorf("a regular file should not count as a session, got %q", got)
 	}
+
+	// A socket owned by a UID other than the expected one must not be trusted,
+	// even though it passes the socket-type check.
+	listenUnix(t, filepath.Join(sessionDir, "pipewire-0"))
+	expectedUID = func() (uint32, bool) { return ownUID + 1, true }
+	if got := RuntimeDir(); got != "" {
+		t.Errorf("a socket owned by an unexpected UID must not be trusted, got %q", got)
+	}
+
+	// The expected UID's own socket is trusted.
+	expectedUID = func() (uint32, bool) { return ownUID, true }
+	if got := RuntimeDir(); got != sessionDir {
+		t.Errorf("RuntimeDir() = %q, want %q", got, sessionDir)
+	}
+	if !Available() {
+		t.Error("Available() = false with a valid session socket")
+	}
+
+	// expectedUID failing (no "wendy" account on this host) must not fall back
+	// to trusting the first match regardless of owner.
+	expectedUID = func() (uint32, bool) { return 0, false }
+	if got := RuntimeDir(); got != "" {
+		t.Errorf("unresolvable expected UID should yield \"\", got %q", got)
+	}
+}
+
+// listenUnix creates a real Unix domain socket at path so tests can exercise
+// mode-based socket detection without root.
+func listenUnix(t *testing.T, path string) {
+	t.Helper()
+	_ = os.Remove(path)
+	l, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", path, err)
+	}
+	t.Cleanup(func() { l.Close() })
 }
