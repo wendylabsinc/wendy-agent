@@ -29,6 +29,20 @@ func TestBuildCacheFlagsMissingMount(t *testing.T) {
 	}
 }
 
+func TestBuildCacheReportsButNeverFixesPipNoCacheDir(t *testing.T) {
+	// A pip cache mount next to --no-cache-dir would be dead weight (pip
+	// ignores the mounted cache), and removing the user's flag isn't
+	// additive — so the finding must carry no Fix.
+	tg := dockerfileTarget(t, "FROM python:3.11-slim\nRUN pip install --no-cache-dir -r requirements.txt\n")
+	got := buildCacheAnalyzer{}.Analyze(tg)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Fix != nil {
+		t.Fatalf("expected report-only finding (no Fix), got %+v", got[0].Fix)
+	}
+}
+
 func TestBuildCacheSilentWhenMountPresent(t *testing.T) {
 	tg := dockerfileTarget(t, "FROM rust:1\nRUN --mount=type=cache,target=/root/.cargo cargo build\n")
 	got := buildCacheAnalyzer{}.Analyze(tg)

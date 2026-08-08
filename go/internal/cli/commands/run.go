@@ -1210,6 +1210,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
+		if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+			return "docker", nil
+		}
 		// Accept Dockerfile/Containerfile and dot/hyphen variants.
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
@@ -1436,11 +1439,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if projectType == "swift" {
 		targetIsDarwin := platformOS(platform) == "darwin"
 		explicitSwift := normalizeBuildType(opts.buildType) == "swift"
-		resolvedBuildFile, dockerfileResolveErr := resolveDockerfile(cwd, "", false)
-		if dockerfileResolveErr != nil {
-			return dockerfileResolveErr
-		}
-		needsHostSwift := explicitSwift || resolvedBuildFile == ""
+		// Read-only existence probe: resolveDockerfile would compile a
+		// Stagefile (registry resolution, lockfile write) or write an
+		// auto-fixed Dockerfile.generated just to answer a yes/no question
+		// whose result is discarded on the host-swift path.
+		needsHostSwift := explicitSwift || !hasContainerBuildFile(cwd)
 
 		if needsHostSwift {
 			if targetIsDarwin && runtime.GOOS != "darwin" {

@@ -1,0 +1,13 @@
+version: 1
+stages:
+  - name: app
+    from: dustynv/pytorch:2.7-r36.4.0-cu128-24.04
+    copy:
+      - from: local
+        paths: [app.py]
+    entrypoint:
+      # -u replaces the deleted Dockerfile's ENV PYTHONUNBUFFERED=1 (the
+      # Stagefile DSL has no env support yet): this example's whole point is
+      # streaming GPU diagnostics, and block-buffered stdout would sit
+      # invisible in `wendy logs` and vanish entirely on a crash.
+      exec: [python3, -u, app.py]
