@@ -54,7 +54,7 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 	}
 	caPool.AppendCertsFromPEM([]byte(certPEM))
 
-	return &tls.Config{
+	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		// RequireAnyClientCert requires the client to present a cert but defers
 		// chain verification to VerifyPeerCertificate, which handles ML-DSA.
@@ -69,7 +69,11 @@ func NewTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger, notBefor
 		ClientCAs:             nil,
 		MinVersion:            tls.VersionTLS12,
 		VerifyPeerCertificate: buildVerifyPeerCertificate(caPool, caCerts, logger, notBeforeFloor),
-	}, nil
+	}
+	// Session resumption: stamp the client cert window into tickets and
+	// decline stale ones (see session_ticket.go for the security rationale).
+	wireSessionTicketChecks(cfg, notBeforeFloor, time.Now)
+	return cfg, nil
 }
 
 // NewServer creates a gRPC server with mTLS credentials.
