@@ -22,6 +22,23 @@ message VideoDevice {
     string mac              = 9; // stable identity for network cameras; empty for local cameras
     bool has_credentials    = 10; // the agent holds a login for this camera
     bool online             = 11; // the most recent probe reached this camera
+    // Discrete capture modes the camera advertises (VIDIOC_ENUM_FRAMESIZES),
+    // across the pixel formats the capture path can negotiate. Empty for
+    // network cameras, for CSI/libcamera sources, and when the node cannot be
+    // opened. A client can use this to request a mode the camera actually has,
+    // instead of guessing: with no way to see this, callers were reduced to
+    // trying standard webcam sizes, which a non-webcam sensor does not offer.
+    repeated FrameSize frame_sizes = 12;
+}
+
+// A capture mode the camera advertises. Sizes are reported exactly as the
+// driver returns them, including entries that are obviously malformed — some
+// UVC firmware advertises impossible geometries (4x12305, 60x3299 observed on a
+// thermal module). Reporting them unfiltered keeps this an honest view of the
+// device; callers should sanity-check before requesting one.
+message FrameSize {
+    uint32 width  = 1;
+    uint32 height = 2;
 }
 
 enum VideoTransport {
@@ -45,6 +62,25 @@ message StreamVideoRequest {
     uint32 width      = 2; // pixels; 0 = device default
     uint32 height     = 3; // pixels; 0 = device default
     uint32 framerate  = 4; // fps; 0 = device default
+    RenderMode render = 5; // how frames are rendered before encoding; default RAW
+}
+
+// How the agent renders frames before encoding them.
+//
+// RAW is the default and must stay so: rendering is LOSSY and irreversible.
+// A thermal frame carries per-pixel temperature in its luma; normalising and
+// colouring it produces a picture a human can read but destroys the values
+// every analytic consumer needs (hotspot detection, thermography, alerting).
+// So the agent never transforms frames unless a caller explicitly asks.
+//
+// THERMAL exists because raw thermal is unreadable on screen: measured on a
+// TOPDON TC001, a whole scene spans ~16 of 256 grey levels, so it renders as a
+// flat grey rectangle in any ordinary viewer. It applies a per-frame contrast
+// stretch followed by a heat palette. Per-frame is essential — a fixed stretch
+// clips to a blank field within minutes as ambient temperature drifts.
+enum RenderMode {
+    RENDER_MODE_RAW     = 0;
+    RENDER_MODE_THERMAL = 1;
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
