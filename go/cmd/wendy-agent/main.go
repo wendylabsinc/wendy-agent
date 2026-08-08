@@ -43,6 +43,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -716,6 +717,10 @@ func main() {
 			}
 		}()
 	}
+
+	// Keep the USB gadget interface reachable at the well-known link-local
+	// address the CLI dials directly (no mDNS/DHCP needed over USB-C).
+	go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
 
 	// Local control socket: the agent's full gRPC over a unix socket with NO
 	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin

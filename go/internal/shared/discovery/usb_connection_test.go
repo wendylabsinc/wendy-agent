@@ -119,3 +119,9 @@ func TestIsIPv4LANAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikeUSBConnectionNCM(t *testing.T) {
+	if !looksLikeUSBConnection("ncm0", "") {
+		t.Fatal("ncm0 should be classified as a USB connection")
+	}
+}

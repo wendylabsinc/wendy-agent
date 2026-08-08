@@ -614,12 +614,18 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
-	hosts := []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)}
-	if strings.TrimSpace(dev.USB) != "" {
+	ip, hostname := strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)
+	hosts := []string{ip, hostname}
+	// A zoned IPv6 literal (fe80::5741:1%enx0) can only come from the USB
+	// well-known-address probe, which just proved the agent answers there. Such
+	// a device is typically one whose mDNS is broken — that is why the probe
+	// found it — so its .local name costs a full resolver timeout plus a dial
+	// timeout before the address that works is even tried. It stays first.
+	if strings.TrimSpace(dev.USB) != "" && !strings.Contains(ip, "%") {
 		// A USB-NCM path exists. The routed Wi-Fi IP (dev.IPAddress) may be
 		// black-holed by AP isolation on residential routers, so try the
 		// link-local .local hostname (reachable over USB) first.
-		hosts = []string{strings.TrimSpace(dev.Hostname), strings.TrimSpace(dev.IPAddress)}
+		hosts = []string{hostname, ip}
 	}
 
 	var addresses []string
@@ -1028,6 +1034,10 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 					return nil, connErr
 				}
 				conn = refreshedConn
+			} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
+				// The stored address is unreachable but the same device (verified
+				// by hostname) is on USB — use it directly.
+				conn = usbConn
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)
@@ -1180,8 +1190,15 @@ func resolveHostMDNSFallback(ctx context.Context, host string) string {
 // own resolver remains the fallback.
 func resolveAddrOnce(ctx context.Context, addr string) string {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || net.ParseIP(host) != nil {
-		return addr // not host:port, or already a literal IP
+	if err != nil {
+		return addr // not host:port
+	}
+	hostNoZone := host
+	if i := strings.IndexByte(hostNoZone, '%'); i >= 0 {
+		hostNoZone = hostNoZone[:i] // net.ParseIP rejects zone suffixes
+	}
+	if net.ParseIP(hostNoZone) != nil {
+		return addr // already a literal IP (possibly zoned, e.g. USB link-local)
 	}
 	if ip := resolveHostMDNSFallback(ctx, host); ip != "" {
 		return net.JoinHostPort(ip, port)
@@ -2293,6 +2310,36 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 	}
 }
 
+// muxLANDevices merges two LAN device streams into one. Each producer owns and
+// closes its own input channel: a producer must never send into a channel it
+// does not own, because the owner's close turns an in-flight send into a panic.
+// The merged channel closes once both inputs have.
+func muxLANDevices(a, b <-chan models.LANDevice) <-chan models.LANDevice {
+	out := make(chan models.LANDevice, 16)
+	go func() {
+		defer close(out)
+		// A closed input is nil-ed out so its always-ready receive stops
+		// starving the other one; the loop ends when both are nil.
+		for a != nil || b != nil {
+			select {
+			case dev, ok := <-a:
+				if !ok {
+					a = nil
+					continue
+				}
+				out <- dev
+			case dev, ok := <-b:
+				if !ok {
+					b = nil
+					continue
+				}
+				out <- dev
+			}
+		}
+	}()
+	return out
+}
+
 // pickDevice runs an interactive TUI that discovers devices across all
 // transports and providers, then lets the user select one.
 // LAN discovery runs continuously so devices that come online after the
@@ -2338,6 +2385,24 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// Continuous LAN discovery — devices appear as they're found.
 	lanCh := make(chan models.LANDevice, 16)
 	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
+
+	// USB well-known-address probe: a USB-attached device appears in the
+	// picker even when mDNS is broken on this host. The picker's MergeItem
+	// dedupes it against the mDNS entry for the same device. It feeds its own
+	// channel — lanCh belongs to DiscoverLANContinuous, which closes it when the
+	// browse stream ends, and that can happen while probe sends are in flight.
+	usbCh := make(chan models.LANDevice, 16)
+	go func() {
+		defer close(usbCh)
+		for _, dev := range probeUSBDirectDevices(discoverCtx) {
+			select {
+			case usbCh <- dev:
+			case <-discoverCtx.Done():
+				return
+			}
+		}
+	}()
+	deviceCh := muxLANDevices(lanCh, usbCh)
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
 		// While the probe is still in flight the Agent/OS columns show a
@@ -2373,7 +2438,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		}}})
 	}
 	go func() {
-		for rawDev := range lanCh {
+		for rawDev := range deviceCh {
 			// Show the device immediately with a "connecting" spinner, then
 			// resolve its version/OS and update the row in place.
 			sendLANItem(rawDev, false, tui.ProbePending)
