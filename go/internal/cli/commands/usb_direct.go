@@ -177,10 +177,20 @@ func discoverWithUSBDirect(ctx context.Context, opts discovery.DiscoveryOptions)
 	}
 	collection, err := discovery.Discover(ctx, opts)
 	wg.Wait()
-	if err == nil && len(probed) > 0 {
+	if err != nil {
+		// Discovery failing outright (no multicast route, avahi down) is the
+		// very situation the direct probe exists for, and anything it reached
+		// is a verified live agent. Report those instead of throwing them away
+		// along with the error.
+		if len(probed) > 0 {
+			return &models.DevicesCollection{LANDevices: probed}, nil
+		}
+		return collection, err
+	}
+	if len(probed) > 0 {
 		collection.LANDevices = mergeUSBDirectDevices(collection.LANDevices, probed)
 	}
-	return collection, err
+	return collection, nil
 }
 
 // mergeUSBDirectDevices folds direct-probe results into an mDNS-discovered LAN
