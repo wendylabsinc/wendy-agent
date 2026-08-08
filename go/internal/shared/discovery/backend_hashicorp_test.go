@@ -198,12 +198,32 @@ func TestHashicorpSweepOnceQueriesInterfacesInParallel(t *testing.T) {
 
 // TestHashicorpStreamBackendLiveAdvertise is the end-to-end property this
 // backend exists for: an advertised service arrives within one sweep, and
-// arrives again after a re-query — proving the backend keeps re-sweeping
-// rather than querying once and going quiet. It advertises its own
-// hashicorp/mdns server in-process (mirroring hashicorp/mdns's own
+// arrives again after a genuine re-query — proving the backend keeps
+// re-sweeping rather than querying once and going quiet. It advertises its
+// own hashicorp/mdns server in-process (mirroring hashicorp/mdns's own
 // TestServer_Lookup) rather than depending on a real device on the network,
-// and skips outright in a sandbox that cannot open a multicast listener.
+// and skips outright when this host cannot exercise it: no multicast
+// listener available, or no eligible network interface for
+// hashicorpSweepTargets to query in the first place.
+//
+// hashicorp/mdns's own client.query never returns before params.Timeout
+// elapses (it keeps listening for further answers on every interface for the
+// full window), even once it has already delivered a matching entry. That
+// gives this test a provable lower bound — not just a probabilistic one — on
+// the gap between a sweep's replies and the next sweep's: no reply from sweep
+// N+1 can be emitted before sweep N's queries all return, which cannot happen
+// before hashicorpSweepTimeout has elapsed since sweep N started. So instead
+// of treating "the second value read off the arrivals channel" as proof a
+// re-query happened (multiple eligible interfaces on this host can each
+// deliver their own answer for the SAME sweep, arriving back to back), this
+// drains every arrival that shows up within a quiet window short enough that
+// it cannot possibly reach into the next sweep, and only then waits for the
+// next arrival — which is thereby guaranteed to belong to a later sweep.
 func TestHashicorpStreamBackendLiveAdvertise(t *testing.T) {
+	if len(hashicorpSweepTargets()) == 0 {
+		t.Skip("no eligible mDNS interfaces on this host; hashicorpStreamBackend would never query")
+	}
+
 	const serviceType = "_wendy-hcbackendtest._tcp"
 	instance := fmt.Sprintf("wendy-hcbackendtest-%d", os.Getpid())
 	const port = 51260
@@ -220,12 +240,20 @@ func TestHashicorpStreamBackendLiveAdvertise(t *testing.T) {
 	t.Cleanup(func() { _ = server.Shutdown() })
 
 	origRequery, origTimeout := hashicorpRequeryDelay, hashicorpSweepTimeout
-	hashicorpRequeryDelay = 200 * time.Millisecond
-	hashicorpSweepTimeout = 2 * time.Second
+	hashicorpSweepTimeout = 500 * time.Millisecond
+	hashicorpRequeryDelay = 300 * time.Millisecond
 	t.Cleanup(func() {
 		hashicorpRequeryDelay = origRequery
 		hashicorpSweepTimeout = origTimeout
 	})
+
+	// Short enough that a second reply from the SAME sweep (another eligible
+	// interface answering) cannot plausibly be spaced out this far on a real
+	// LAN, but long enough that it is well clear of ordinary multicast RTT
+	// jitter. Deliberately well under hashicorpSweepTimeout so draining it out
+	// can never itself run into the next sweep's replies.
+	const quietWindow = 200 * time.Millisecond
+	const waitFor = 5 * time.Second
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -245,18 +273,31 @@ func TestHashicorpStreamBackendLiveAdvertise(t *testing.T) {
 		})
 	}()
 
-	waitFor := hashicorpSweepTimeout + 3*time.Second
-
-	var first, second arrival
+	var first arrival
 	select {
 	case first = <-arrivals:
 	case <-time.After(waitFor):
 		t.Fatal("advertised service did not arrive within the first sweep")
 	}
+
+	// Drain any further same-sweep replies (other eligible interfaces
+	// answering); only a genuine quiet period proves sweep 1 is done emitting.
+	sweep1Last := first.at
+drain:
+	for {
+		select {
+		case a := <-arrivals:
+			sweep1Last = a.at
+		case <-time.After(quietWindow):
+			break drain
+		}
+	}
+
+	var second arrival
 	select {
 	case second = <-arrivals:
 	case <-time.After(waitFor):
-		t.Fatal("advertised service did not arrive again after a re-query")
+		t.Fatal("advertised service did not arrive again after a re-query (second sweep never happened)")
 	}
 
 	cancel()
@@ -269,8 +310,9 @@ func TestHashicorpStreamBackendLiveAdvertise(t *testing.T) {
 		t.Fatal("hashicorpStreamBackend did not return after ctx cancellation (a goroutine outlived the call)")
 	}
 
-	if !second.at.After(first.at) {
-		t.Error("second arrival was not after the first (re-query did not happen)")
+	if gap := second.at.Sub(sweep1Last); gap < hashicorpSweepTimeout {
+		t.Errorf("gap between sweep-1's last reply and the next arrival = %v, want >= hashicorpSweepTimeout (%v) — "+
+			"this looks like two replies from the SAME sweep rather than a genuine re-query", gap, hashicorpSweepTimeout)
 	}
 	for _, a := range []arrival{first, second} {
 		if a.svc.Port != port {
@@ -281,6 +323,94 @@ func TestHashicorpStreamBackendLiveAdvertise(t *testing.T) {
 				t.Errorf("TXT[%q] = %q, want %q", k, a.svc.TXTRecords[k], v)
 			}
 		}
+	}
+}
+
+// ── hashicorpStreamBackend requery cadence + ctx-done contract (no network) ─
+
+// TestHashicorpStreamBackendRequeriesOnCadenceAndJoinsOnCancel exercises
+// hashicorpStreamBackend itself (not just its sweepOnce/sweepTargets pieces)
+// with the ifaceListFn and sweepQueryFn seams faked out, so it needs no
+// network and never skips — unlike TestHashicorpStreamBackendLiveAdvertise,
+// this always runs. It pins two properties: the backend keeps re-sweeping on
+// the hashicorpRequeryDelay cadence rather than querying once and stopping,
+// and once ctx is cancelled it returns nil promptly with every goroutine
+// already joined — checked by confirming sweepQueryFn is never called again
+// after hashicorpStreamBackend has returned.
+func TestHashicorpStreamBackendRequeriesOnCadenceAndJoinsOnCancel(t *testing.T) {
+	origIfaces := ifaceListFn
+	origQuery := sweepQueryFn
+	origRequery, origTimeout := hashicorpRequeryDelay, hashicorpSweepTimeout
+	t.Cleanup(func() {
+		ifaceListFn = origIfaces
+		sweepQueryFn = origQuery
+		hashicorpRequeryDelay = origRequery
+		hashicorpSweepTimeout = origTimeout
+	})
+
+	ifaceListFn = func() []net.Interface { return []net.Interface{{Name: "eth-fake-0"}} }
+	hashicorpRequeryDelay = 10 * time.Millisecond
+	hashicorpSweepTimeout = 200 * time.Millisecond
+
+	var mu sync.Mutex
+	var callCount int
+	sweepQueryFn = func(ctx context.Context, _ *net.Interface, _ string, _ chan *mdns.ServiceEntry, _ time.Duration) error {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return nil // fake query: no entries, returns immediately
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- hashicorpStreamBackend(ctx, wendyServiceType, func(MDNSService) {})
+	}()
+
+	// (a) Requery cadence: poll (bounded, generous) rather than a fixed sleep
+	// so this is fast on a quick machine and not flaky on a slow one.
+	const wantSweeps = 3
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		n := callCount
+		mu.Unlock()
+		if n >= wantSweeps {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d sweeps ran within 3s at a %v requery delay, want >= %d (backend is not re-querying on cadence)",
+				n, hashicorpRequeryDelay, wantSweeps)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// (b) ctx-done contract: cancel, and require a prompt, fully-joined return.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("hashicorpStreamBackend returned %v, want nil after ctx cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("hashicorpStreamBackend did not return promptly after ctx cancellation")
+	}
+
+	// No goroutine may outlive the call: once done has fired, sweepQueryFn
+	// must never be invoked again. Settle for comfortably longer than the
+	// (10ms) requery cadence so a lingering sweeper would certainly show up.
+	mu.Lock()
+	countAtReturn := callCount
+	mu.Unlock()
+
+	time.Sleep(150 * time.Millisecond)
+
+	mu.Lock()
+	countAfterSettle := callCount
+	mu.Unlock()
+	if countAfterSettle != countAtReturn {
+		t.Errorf("sweepQueryFn was called %d more time(s) after hashicorpStreamBackend returned — a goroutine outlived the call",
+			countAfterSettle-countAtReturn)
 	}
 }
 
