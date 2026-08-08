@@ -76,11 +76,6 @@ type browseResult struct {
 	interfaceName string
 }
 
-// dnssdBrowseSettle is how long a browse waits for further results after one
-// arrives. Browsing is open-ended, so this is what bounds a scan on a network
-// that has already answered.
-const dnssdBrowseSettle = 500 * time.Millisecond
-
 // dnssdResolve resolves a browse result into a LANDevice.
 func dnssdResolve(ctx context.Context, inst browseResult, interfaceDisplayNames map[string]string, linkSpeeds map[string]string) (models.LANDevice, error) {
 	hostname, port, txtRecords, err := dnssdResolveInstance(ctx, inst, wendyServiceType)

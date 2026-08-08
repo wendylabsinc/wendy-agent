@@ -66,15 +66,17 @@ func TestBrowseMDNSServicesContinuousStreamsLateArrival(t *testing.T) {
 		}
 	}
 
-	// The same instance must not be streamed twice: the picker relies on dedup
-	// to avoid a row per browse reply (mDNSResponder repeats them per interface).
+	// BrowseMDNSServicesContinuous does not deduplicate (see
+	// TestBrowseMDNSServicesContinuousForwardsUntilCancel in mdns_test.go):
+	// mDNSResponder repeats an Add per interface and on ordinary answer
+	// refresh, and callers that care about repeats (the device picker) merge
+	// by identity themselves. This drains whatever else arrives without
+	// asserting on it, then checks cancellation still closes the channel
+	// promptly.
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
-		for svc := range ch {
-			if svc.InstanceName == instance {
-				t.Errorf("instance %q streamed more than once", instance)
-			}
+		for range ch {
 		}
 	}()
 

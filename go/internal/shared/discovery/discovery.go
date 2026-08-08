@@ -43,6 +43,12 @@ type DiscoveryOptions struct {
 	// Timeout is the maximum duration for the discovery scan.
 	// Zero uses the default timeout.
 	Timeout time.Duration
+
+	// LAN configures the streaming LAN scan CollectLAN runs (cache/prober).
+	// The zero value disables both: mDNS-only confirmation, no cache reads
+	// or writes — the same behavior Discover always had before it moved onto
+	// the streaming engine.
+	LAN StreamOptions
 }
 
 // Discover runs device discovery across the requested interface types concurrently
@@ -98,7 +104,7 @@ func Discover(ctx context.Context, opts DiscoveryOptions) (*models.DevicesCollec
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if devices, err := discoverLAN(ctx, timeout); err == nil {
+			if devices, err := CollectLAN(ctx, opts.LAN, timeout); err == nil {
 				mu.Lock()
 				collection.LANDevices = devices
 				mu.Unlock()
@@ -149,7 +155,7 @@ func DiscoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
-	return discoverLAN(ctx, timeout)
+	return CollectLAN(ctx, StreamOptions{}, timeout)
 }
 
 // DiscoverBluetooth discovers Wendy devices via Bluetooth.

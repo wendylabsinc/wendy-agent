@@ -208,7 +208,7 @@ func dnssdBrowseStream(ctx context.Context, serviceType string, onResult func(br
 }
 
 // dnssdBrowse collects browse results, returning once results stop arriving.
-// Once the first result lands it waits dnssdBrowseSettle for more, so a
+// Once the first result lands it waits browseSettle for more, so a
 // populated network does not pay the full timeout.
 func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
 	browseCtx, cancel := context.WithCancel(ctx)
@@ -245,7 +245,7 @@ func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error
 			}
 			seen[key] = true
 			results = append(results, r)
-			settle = time.After(dnssdBrowseSettle)
+			settle = time.After(browseSettle)
 		case <-settle:
 			return results, nil
 		}
