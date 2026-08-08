@@ -653,6 +653,69 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return buildImageToOCILayoutWithBuildkit(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
 	}
 
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, stdout, stderr)
+}
+
+// buildImageToOCILayoutDirWithDocker builds with the shared buildx builder and
+// exports into an OCI layout DIRECTORY (`--output type=oci,tar=false`). Unlike
+// the tar export, BuildKit skips blobs already present at dest, so a warm
+// persistent directory turns the per-build export cost from O(image size)
+// into O(changed bytes). Callers own dest's lifecycle (locking and GC).
+func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir string, stdout, stderr io.Writer) error {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating OCI layout directory: %w", err)
+	}
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr)
+}
+
+// chunkLayoutDir is the persistent per-app OCI layout directory used by the
+// chunk-diff deploy path's tar=false export. Keyed by app AND platform so a
+// device-architecture switch never GC-thrashes the other platform's blobs.
+func chunkLayoutDir(userCacheDir, appID, platform string) string {
+	return filepath.Join(userCacheDir, "wendy", "ocilayout",
+		sanitizeCacheKey(appID)+"-"+sanitizeCacheKey(platform))
+}
+
+// buildxOCIExportArgs assembles the `docker buildx build` argument vector for
+// an OCI export (tar or layout-dir). Pure function for testability; build-arg
+// keys are sorted for a reproducible command line.
+func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, tarFalse bool, buildArgs map[string]string, haveCacheIndex bool) []string {
+	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
+	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
+	cacheDirSlash := filepath.ToSlash(cacheDir)
+	args := []string{
+		"buildx", "build",
+		"--builder", builder,
+		"--platform", platform,
+		"--progress", "plain",
+	}
+	if dockerfile != "" {
+		args = append(args, "-f", dockerfile)
+	}
+	if haveCacheIndex {
+		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
+	}
+	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
+	keys := make([]string, 0, len(buildArgs))
+	for k := range buildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
+	}
+	output := "type=oci,dest=" + dest
+	if tarFalse {
+		output += ",tar=false"
+	}
+	args = append(args, "--output", output, ".")
+	return args
+}
+
+// buildImageWithBuildxOCIExport is the shared docker-buildx body behind both
+// OCI export shapes: dest is a tar path (tarFalse=false, legacy) or a layout
+// directory (tarFalse=true).
+func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, stdout, stderr io.Writer) error {
 	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
 	// phase into lock acquisition, builder verification (the buildx inspect
 	// calls), and the actual buildx solve.
@@ -695,42 +758,15 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return err
 	}
 
-	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
-	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
-	cacheDirSlash := filepath.ToSlash(cacheDir)
-	args := []string{
-		"buildx", "build",
-		"--builder", buildxBuilder,
-		"--platform", platform,
-		"--progress", "plain",
-	}
+	resolvedDockerfile := ""
 	if dockerfile != "" {
-		resolvedDockerfile, err := confinedDockerfilePath(cwd, dockerfile)
+		resolvedDockerfile, err = confinedDockerfilePath(cwd, dockerfile)
 		if err != nil {
 			return err
 		}
-		args = append(args, "-f", resolvedDockerfile)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "index.json")); err == nil {
-		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
-	}
-	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
-
-	// Sort build-arg keys for reproducible argument order.
-	keys := make([]string, 0, len(buildArgs))
-	for k := range buildArgs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		args = append(args, "--build-arg", k+"="+buildArgs[k])
-	}
-
-	// OCI-layout export instead of registry push.
-	args = append(args,
-		"--output", "type=oci,dest="+dest,
-		".",
-	)
+	_, cacheIndexErr := os.Stat(filepath.Join(cacheDir, "index.json"))
+	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheDir, dest, tarFalse, buildArgs, cacheIndexErr == nil)
 
 	submark("  build: setup (cache/env)")
 

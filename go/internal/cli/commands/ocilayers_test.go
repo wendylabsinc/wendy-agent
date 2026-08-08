@@ -270,6 +270,52 @@ func TestReadOCILayoutDirLayersMissingIndex(t *testing.T) {
 	}
 }
 
+func TestChunkLayoutDir(t *testing.T) {
+	got := chunkLayoutDir("/cache", "Com.Wendylabs.Examples.App", "linux/arm64")
+	want := filepath.Join("/cache", "wendy", "ocilayout", "com.wendylabs.examples.app-linux_arm64")
+	if got != want {
+		t.Fatalf("chunkLayoutDir = %q, want %q", got, want)
+	}
+}
+
+func TestBuildxOCIExportArgs(t *testing.T) {
+	t.Run("dir mode, no cache index, sorted build args", func(t *testing.T) {
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "/c/buildx", "/dest/layout", true,
+			map[string]string{"ZED": "2", "ALPHA": "1"}, false)
+		want := []string{
+			"buildx", "build",
+			"--builder", "wendy-oci",
+			"--platform", "linux/arm64",
+			"--progress", "plain",
+			"-f", "/proj/Dockerfile",
+			"--cache-to", "type=local,dest=/c/buildx",
+			"--build-arg", "ALPHA=1",
+			"--build-arg", "ZED=2",
+			"--output", "type=oci,dest=/dest/layout,tar=false",
+			".",
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("args mismatch:\n got  %q\n want %q", got, want)
+		}
+	})
+	t.Run("tar mode with cache index, no dockerfile", func(t *testing.T) {
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/buildx", "/tmp/image.tar", false, nil, true)
+		want := []string{
+			"buildx", "build",
+			"--builder", "wendy-oci",
+			"--platform", "linux/arm64",
+			"--progress", "plain",
+			"--cache-from", "type=local,src=/c/buildx",
+			"--cache-to", "type=local,dest=/c/buildx",
+			"--output", "type=oci,dest=/tmp/image.tar",
+			".",
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("args mismatch:\n got  %q\n want %q", got, want)
+		}
+	})
+}
+
 // readOCILayoutLayers must reference layer blobs by their byte range in the
 // on-disk tar (never buffering them in RAM), and that range must be exact —
 // the compressed bytes read back have to hash to the layer digest.
