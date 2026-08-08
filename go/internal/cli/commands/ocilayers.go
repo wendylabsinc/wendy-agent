@@ -238,6 +238,58 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		return io.ReadAll(io.NewSectionReader(f, loc.off, loc.size))
 	}
 
+	img, err := ociImageFromIndex(indexJSON, getBlob, platform)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	layers := make([]localLayer, 0, len(img.Layers))
+	for i, desc := range img.Layers {
+		layerHex, err := digestToHex(desc.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
+		}
+		loc, ok := blobOffsets[layerHex]
+		if !ok {
+			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
+		}
+		// Reference the compressed blob by its range in the on-disk tar; it is
+		// streamed (never fully buffered) during the push, and decompression is
+		// deferred so cache-resolved layers are never read at all.
+		layers = append(layers, localLayer{
+			Digest:    desc.Digest,
+			DiffID:    desc.DiffID,
+			MediaType: desc.MediaType,
+			TarPath:   ociTarPath,
+			Offset:    loc.off,
+			Size:      loc.size,
+		})
+	}
+	return layers, img.ImageConfig, nil
+}
+
+// ociResolvedImage is the platform-resolved content of an OCI layout: the raw
+// image config plus the manifest's layer descriptors, labelled with diff IDs
+// when the config's rootfs.diff_ids align 1:1 with the layer list.
+type ociResolvedImage struct {
+	ImageConfig []byte
+	Layers      []ociResolvedLayer
+}
+
+// ociResolvedLayer is one manifest layer descriptor, independent of where its
+// compressed bytes live (tar byte range or layout-dir blob file).
+type ociResolvedLayer struct {
+	Digest    string // "sha256:<hex>" compressed blob digest
+	DiffID    string // "" when the config's diff_ids don't align with the layer list
+	MediaType string
+	Size      int64 // from the manifest descriptor; 0 when absent
+}
+
+// ociImageFromIndex resolves an OCI layout's index.json to the image manifest
+// for the target platform and returns its layer descriptors plus the raw image
+// config blob. getBlob fetches small blobs (manifests, indexes, the config) by
+// hex digest; layer blobs are never fetched here.
+func ociImageFromIndex(indexJSON []byte, getBlob func(hex string) ([]byte, error), platform string) (*ociResolvedImage, error) {
 	// Parse index.json and resolve to a concrete image manifest. buildx emits
 	// index.json → image-manifest directly, while Apple Container's `image save`
 	// wraps the image in one (or two) nested image-indexes; both are handled by
@@ -246,16 +298,16 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		Manifests []ociDescriptor `json:"manifests"`
 	}
 	if err := json.Unmarshal(indexJSON, &index); err != nil {
-		return nil, nil, fmt.Errorf("parsing index.json: %w", err)
+		return nil, fmt.Errorf("parsing index.json: %w", err)
 	}
 	if len(index.Manifests) == 0 {
-		return nil, nil, fmt.Errorf("index.json has no manifests")
+		return nil, fmt.Errorf("index.json has no manifests")
 	}
 
 	wantOS, wantArch := parseOCIPlatform(platform)
 	manifestData, err := resolveOCIImageManifest(index.Manifests, getBlob, wantOS, wantArch, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Parse the manifest to get the config descriptor and layer descriptors.
@@ -266,10 +318,11 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		Layers []struct {
 			MediaType string `json:"mediaType"`
 			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
 		} `json:"layers"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, nil, fmt.Errorf("parsing manifest: %w", err)
+		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 
 	// Fetch the image config blob so the runtime config (Cmd/Entrypoint/Env/
@@ -282,11 +335,11 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	if manifest.Config.Digest != "" {
 		configHex, err := digestToHex(manifest.Config.Digest)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
+			return nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
 		}
 		imageConfig, err = getBlob(configHex)
 		if err != nil {
-			return nil, nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
+			return nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
 		}
 		var cfg struct {
 			RootFS struct {
@@ -306,33 +359,20 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	// it the slow way rather than risk mislabelling a layer.
 	diffIDsAligned := len(diffIDs) == len(manifest.Layers)
 
-	layers := make([]localLayer, 0, len(manifest.Layers))
+	img := &ociResolvedImage{ImageConfig: imageConfig}
 	for i, desc := range manifest.Layers {
-		layerHex, err := digestToHex(desc.Digest)
-		if err != nil {
-			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
-		}
-		loc, ok := blobOffsets[layerHex]
-		if !ok {
-			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
-		}
 		var diffID string
 		if diffIDsAligned {
 			diffID = diffIDs[i]
 		}
-		// Reference the compressed blob by its range in the on-disk tar; it is
-		// streamed (never fully buffered) during the push, and decompression is
-		// deferred so cache-resolved layers are never read at all.
-		layers = append(layers, localLayer{
+		img.Layers = append(img.Layers, ociResolvedLayer{
 			Digest:    desc.Digest,
 			DiffID:    diffID,
 			MediaType: desc.MediaType,
-			TarPath:   ociTarPath,
-			Offset:    loc.off,
-			Size:      loc.size,
+			Size:      desc.Size,
 		})
 	}
-	return layers, imageConfig, nil
+	return img, nil
 }
 
 // blobLoc is a blob's byte range within an OCI-layout tar.
