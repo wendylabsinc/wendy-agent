@@ -827,3 +827,397 @@ func TestCollectLANWaitsForCachedProbes(t *testing.T) {
 		t.Fatalf("settle must wait for the cached probe to conclude before returning: %+v", got)
 	}
 }
+
+// useAnnotator swaps the platform annotator seam for the duration of a test.
+func useAnnotator(t *testing.T, build func(context.Context) func(*models.LANDevice)) {
+	t.Helper()
+	orig := newLANAnnotator
+	t.Cleanup(func() { newLANAnnotator = orig })
+	newLANAnnotator = build
+}
+
+// TestStreamHostnamelessSightingNeverEmitsEmptyIdentity covers the darwin
+// resolve-failure fallback's blast radius at the engine level: a sighting
+// with no hostname must either arrive as a named, dialable row (the mapper
+// falls back to the instance name) or be dropped entirely. What it must never
+// do is produce a row with an empty identity — discoverycache.Key("", "") is
+// "", so every such device would collapse onto one nameless, un-dialable
+// cache entry that replays as a ghost row for an hour.
+func TestStreamHostnamelessSightingNeverEmitsEmptyIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	events, stop := startStream(t, StreamOptions{UseCache: true})
+
+	// Nothing to key a row by at all: no hostname, no instance name, no TXT.
+	fb.emit(t, MDNSService{IPAddress: "10.0.0.60", Port: 50051})
+	expectQuiet(t, events, 200*time.Millisecond)
+
+	// Hostname-less but named (the darwin resolve-failure fallback's shape):
+	// the row is synthesized, named, and dialable.
+	fb.emit(t, MDNSService{InstanceName: "orin-nano", Hostname: "orin-nano.local", Port: defaultAgentPort})
+
+	got := collectEvents(t, events, 1, 5*time.Second)[0]
+	if got.Kind != LANFound || got.Device.ID != "orin-nano" || got.Device.DisplayName != "orin-nano" {
+		t.Fatalf("hostname-less sighting must surface as a named row: %+v", got)
+	}
+	if got.Device.Hostname == "" || got.Device.Port == 0 {
+		t.Fatalf("synthesized row must stay dialable: %+v", got.Device)
+	}
+	stop()
+
+	reloaded, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload cache: %v", err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 {
+		t.Fatalf("expected exactly one persisted entry, got %+v", fresh)
+	}
+	if discoverycache.Key(fresh[0].ID, fresh[0].DisplayName) == "" {
+		t.Fatalf("empty-key entry poisoned the cache: %+v", fresh[0])
+	}
+}
+
+// TestCollectLANWaitsForFirstAnswerOnColdCache pins the batch scan's settle
+// gate: with an empty cache every probe has concluded before the session even
+// begins, so arming settle at that point would conclude an empty scan in
+// collectSettle — `wendy discover --json` returning nothing on a first run
+// while the answer was still in flight. Settle may only start once something
+// has actually been confirmed.
+func TestCollectLANWaitsForFirstAnswerOnColdCache(t *testing.T) {
+	shrinkDuration(t, &collectSettle, 50*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json") // no seed: cold cache
+
+	answerDelay := 800 * time.Millisecond
+	backend := func(ctx context.Context, _ string, emit func(MDNSService)) error {
+		select {
+		case <-time.After(answerDelay):
+		case <-ctx.Done():
+			return nil
+		}
+		emit(wendyService("dev-24", "orin", "orin.local", "10.0.0.24", 50051))
+		<-ctx.Done()
+		return nil
+	}
+	useStreamSeams(t, backend, cacheLoaderFor(path))
+
+	start := time.Now()
+	got, err := CollectLAN(context.Background(), StreamOptions{UseCache: true}, 5*time.Second)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("CollectLAN error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "dev-24" {
+		t.Fatalf("a slow first answer must not be cut off by settle (returned after %v): %+v", elapsed, got)
+	}
+	if elapsed >= 5*time.Second {
+		t.Fatalf("CollectLAN ran to the timeout cap (%v); settle should have concluded it after the answer", elapsed)
+	}
+}
+
+// TestStreamLiveDeviceProbeFailureIsReported covers the probe black hole: a
+// device mDNS can see but whose agent does not answer used to produce no
+// event at all, leaving every surface spinning on "verifying" forever. The
+// failure is reported once — repeats stay silent until something re-confirms
+// the row.
+func TestStreamLiveDeviceProbeFailureIsReported(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: failingProber(errors.New("connection refused"))})
+	fb.emit(t, wendyService("dev-30", "orin", "orin.local", "10.0.0.30", 50051))
+
+	got := collectEvents(t, events, 2, 5*time.Second)
+	if got[0].Kind != LANFound || got[0].Probed || got[0].ProbeFailed {
+		t.Fatalf("first event must be the unprobed mDNS sighting: %+v", got[0])
+	}
+	if got[1].Kind != LANUpdated || !got[1].ProbeFailed || got[1].Probed {
+		t.Fatalf("a failed probe on a live device must be reported: %+v", got[1])
+	}
+	if got[1].Device.ID != "dev-30" {
+		t.Fatalf("the failure must name the device it belongs to: %+v", got[1].Device)
+	}
+	// A live device never goes Offline — that marker is for cached rows the
+	// network has not seen at all.
+	expectQuiet(t, events, 200*time.Millisecond)
+}
+
+// TestStreamReSightingReProbesFailedDevice covers mid-boot recovery on every
+// platform: a device whose probe failed is re-probed when mDNS sees it again
+// (its agent may have finished starting), and that retry is event-driven —
+// there is no polling loop behind it.
+func TestStreamReSightingReProbesFailedDevice(t *testing.T) {
+	shrinkDuration(t, &probeRetryInterval, 0)
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	var calls atomic.Int32
+	prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		if calls.Add(1) == 1 {
+			return models.LANDevice{}, errors.New("connection refused")
+		}
+		dev.AgentVersion = "0.19.1"
+		return dev, nil
+	}
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+
+	svc := wendyService("dev-31", "orin", "orin.local", "10.0.0.31", 50051)
+	fb.emit(t, svc)
+
+	got := collectEvents(t, events, 2, 5*time.Second)
+	if got[0].Kind != LANFound || !got[1].ProbeFailed {
+		t.Fatalf("expected a sighting then a reported probe failure: %+v", got)
+	}
+
+	// The device announces itself again, unchanged: no row update is due, but
+	// the failed probe is retried against it.
+	fb.emit(t, svc)
+
+	recovered := collectEvents(t, events, 1, 5*time.Second)[0]
+	if recovered.Kind != LANUpdated || !recovered.Probed || recovered.Device.AgentVersion != "0.19.1" {
+		t.Fatalf("the re-sighting's probe must confirm the row: %+v", recovered)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("expected exactly one re-probe off the re-sighting, prober ran %d times", n)
+	}
+}
+
+// TestStreamCachedRowsPrecedeAnnotatorConstruction pins the whole point of
+// the cache: building the platform annotator shells out (networksetup on
+// darwin, Get-NetAdapter on windows — 0.5–2s), so it must not sit between
+// session start and the cached rows. It is built lazily, on the first live
+// sighting, which is the only thing that needs it.
+func TestStreamCachedRowsPrecedeAnnotatorConstruction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path, discoverycache.Entry{ID: "dev-40", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.40", Port: 50051})
+
+	var built atomic.Bool
+	buildStarted := make(chan struct{})
+	useAnnotator(t, func(context.Context) func(*models.LANDevice) {
+		close(buildStarted)
+		time.Sleep(300 * time.Millisecond)
+		built.Store(true)
+		return func(*models.LANDevice) {}
+	})
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	start := time.Now()
+	events, _ := startStream(t, StreamOptions{UseCache: true})
+
+	cached := collectEvents(t, events, 1, 5*time.Second)[0]
+	elapsed := time.Since(start)
+	if cached.Kind != LANCached || cached.Device.ID != "dev-40" {
+		t.Fatalf("first event must be the cached row: %+v", cached)
+	}
+	if built.Load() || elapsed >= 300*time.Millisecond {
+		t.Fatalf("cached row waited on the annotator (%v elapsed, built=%v)", elapsed, built.Load())
+	}
+
+	// It is still built — a live sighting is what needs the refinement.
+	fb.emit(t, wendyService("dev-41", "nano", "nano.local", "10.0.0.41", 50051))
+	select {
+	case <-buildStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("annotator was never built for a live sighting")
+	}
+}
+
+// TestStreamSupersedesConnectMintedIdentity covers the duplicate row a plain
+// `wendy run` leaves behind: cacheConnectSuccess mints an identity from the
+// hostname when it finds no cache entry, and the same device's real TXT
+// device id then arrives as a second identity. The engine retires the minted
+// one — one row emitted, one cache entry left, keyed by the TXT id.
+func TestStreamSupersedesConnectMintedIdentity(t *testing.T) {
+	mintedEntry := func() discoverycache.Entry {
+		return discoverycache.Entry{ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.42", Port: 50051}
+	}
+	sighting := wendyService("uuid-1", "orin", "orin.local", "10.0.0.42", 50051)
+
+	// liveRows replays what a surface keyed by cache identity would show.
+	liveRows := func(events []LANEvent) map[string]bool {
+		rows := make(map[string]bool)
+		for _, ev := range events {
+			if ev.Supersedes != "" {
+				delete(rows, ev.Supersedes)
+			}
+			rows[discoverycache.Key(ev.Device.ID, ev.Device.DisplayName)] = true
+		}
+		return rows
+	}
+
+	assertOneEntry := func(t *testing.T, path string) {
+		t.Helper()
+		reloaded, err := discoverycache.LoadFrom(path)
+		if err != nil {
+			t.Fatalf("reload cache: %v", err)
+		}
+		fresh := reloaded.Fresh(time.Now())
+		if len(fresh) != 1 || fresh[0].ID != "uuid-1" {
+			t.Fatalf("cache must end with exactly one entry, keyed by the TXT id: %+v", fresh)
+		}
+	}
+
+	t.Run("minted row still unconfirmed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "devices.json")
+		seedCache(t, path, mintedEntry())
+
+		fb := newFakeBackend()
+		useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+		events, stop := startStream(t, StreamOptions{UseCache: true}) // browse-only
+		cached := collectEvents(t, events, 1, 5*time.Second)[0]
+
+		fb.emit(t, sighting)
+		found := collectEvents(t, events, 1, 5*time.Second)[0]
+		if found.Kind != LANFound || found.Device.ID != "uuid-1" {
+			t.Fatalf("the TXT-id sighting must confirm the device: %+v", found)
+		}
+		if found.Supersedes != "orin" {
+			t.Fatalf("Supersedes = %q; want the minted identity it replaced", found.Supersedes)
+		}
+		expectQuiet(t, events, 200*time.Millisecond)
+		if rows := liveRows([]LANEvent{cached, found}); len(rows) != 1 || !rows["uuid-1"] {
+			t.Fatalf("expected exactly one live row keyed by the TXT id, got %v", rows)
+		}
+		stop()
+		assertOneEntry(t, path)
+	})
+
+	t.Run("minted row already emitted as confirmed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "devices.json")
+		seedCache(t, path, mintedEntry())
+
+		fb := newFakeBackend()
+		useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+		prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+			dev.AgentVersion = "0.19.1"
+			return dev, nil
+		}
+		events, stop := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+
+		got := collectEvents(t, events, 2, 5*time.Second)
+		if got[1].Kind != LANFound || !got[1].Probed || got[1].Device.ID != "orin" {
+			t.Fatalf("the minted row must be live-confirmed before the sighting: %+v", got[1])
+		}
+
+		fb.emit(t, sighting)
+		replaced := collectEvents(t, events, 1, 5*time.Second)[0]
+		if replaced.Supersedes != "orin" || replaced.Device.ID != "uuid-1" {
+			t.Fatalf("an already-emitted minted row must be replaced, not duplicated: %+v", replaced)
+		}
+		// The retargeted probe re-confirms the row under its new identity.
+		reconfirmed := collectEvents(t, events, 1, 5*time.Second)[0]
+		if reconfirmed.Device.ID != "uuid-1" || !reconfirmed.Probed {
+			t.Fatalf("superseding identity must be re-probed: %+v", reconfirmed)
+		}
+		if rows := liveRows(append(got, replaced, reconfirmed)); len(rows) != 1 || !rows["uuid-1"] {
+			t.Fatalf("expected exactly one live row keyed by the TXT id, got %v", rows)
+		}
+		stop()
+		assertOneEntry(t, path)
+	})
+}
+
+// TestStreamIgnoresInterfaceChurn covers the multi-homed sighting churn every
+// hashicorp-backed platform produces: each device is re-announced per
+// interface per sweep, and Windows adds an interface-less default sweep on
+// top. Those repeats must not flip the row's interface back and forth, and
+// must not rewrite the cache file on every sweep.
+func TestStreamIgnoresInterfaceChurn(t *testing.T) {
+	shrinkDuration(t, &cacheFlushDelay, 20*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	events, _ := startStream(t, StreamOptions{UseCache: true})
+
+	withIface := wendyService("dev-51", "orin", "orin.local", "10.0.0.51", 50051)
+	withIface.InterfaceName = "eth0"
+	blankIface := withIface
+	blankIface.InterfaceName = ""
+
+	fb.emit(t, withIface)
+	found := collectEvents(t, events, 1, 5*time.Second)[0]
+	if found.Kind != LANFound || found.Device.NetworkInterface != "eth0" {
+		t.Fatalf("first sighting must land with its interface: %+v", found)
+	}
+
+	// Let the first (real) flush land, then watch the file across the churn.
+	var before os.FileInfo
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		info, err := os.Stat(path)
+		if err == nil {
+			before = info
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the sighting never reached the cache file: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	for i := 0; i < 3; i++ {
+		fb.emit(t, blankIface)
+		fb.emit(t, withIface)
+	}
+
+	// Not one further event: an interface that blanks and comes back changed
+	// nothing about the device.
+	expectQuiet(t, events, 200*time.Millisecond)
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat cache: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("unchanged re-announcements rewrote the cache file: %v → %v", before.ModTime(), after.ModTime())
+	}
+}
+
+// TestStreamKeepsIPv4TargetOverLinkLocalIPv6 covers the other half of the
+// churn: avahi and hashicorp both report a device once per protocol, and the
+// IPv6 answer is typically a link-local address that needs a zone id. A row
+// already answering on IPv4 must not retarget to it (which would clear
+// probeConfirmed and flip the surface back to a spinner every sweep).
+func TestStreamKeepsIPv4TargetOverLinkLocalIPv6(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	events, stop := startStream(t, StreamOptions{UseCache: true})
+
+	fb.emit(t, wendyService("dev-52", "orin", "orin.local", "10.0.0.52", 50051))
+	found := collectEvents(t, events, 1, 5*time.Second)[0]
+	if found.Device.IPAddress != "10.0.0.52" {
+		t.Fatalf("first sighting must land at its IPv4 address: %+v", found.Device)
+	}
+
+	v6 := wendyService("dev-52", "orin", "orin.local", "fe80::1%eth0", 50051)
+	v6.InterfaceName = "eth0"
+	fb.emit(t, v6)
+	expectQuiet(t, events, 200*time.Millisecond)
+	stop()
+
+	reloaded, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload cache: %v", err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 || fresh[0].IP != "10.0.0.52" {
+		t.Fatalf("stored dial target must stay the IPv4 one: %+v", fresh)
+	}
+}

@@ -3,6 +3,8 @@ package discovery
 import (
 	"context"
 	"log"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,20 @@ type LANEvent struct {
 	// Probed: Device's AgentVersion/OS/IsMTLS were confirmed by a live agent
 	// probe (not just mDNS TXT records).
 	Probed bool
+	// ProbeFailed: the agent probe for this live-confirmed device concluded
+	// with an error (refused, timed out, TLS rejected). The device is on the
+	// network — mDNS just saw it — but nothing answered as an agent, so a
+	// surface must stop showing a "verifying" spinner for it. Never set
+	// together with Probed. A cached device that was never seen live goes
+	// LANOffline instead.
+	ProbeFailed bool
+	// Supersedes names the cache key of an already-emitted identity this
+	// device replaces: the connect-minted, hostname-derived row
+	// (cacheConnectSuccess mints ID == DisplayName == hostname) for the same
+	// physical device the live sighting just identified by its TXT device id.
+	// A surface keyed by cache identity must drop that row; one keyed by
+	// hostname (the picker) already merges the two.
+	Supersedes string
 }
 
 // LANProber verifies a device by talking to its agent. On success the
@@ -57,6 +73,19 @@ var (
 	cacheFlushDelay   = time.Second             // debounce for cache writes
 	backendRetryDelay = 2 * time.Second         // backend died mid-session
 	backendRetries    = 3                       // ...restart attempts before giving up
+	// probeRetryInterval bounds how often a live device whose probe failed is
+	// re-probed while it keeps announcing itself. The retry is driven by mDNS
+	// re-sightings (a device mid-boot re-announces, and the hashicorp backend
+	// re-sweeps every couple of seconds), never by a polling loop of our own,
+	// so this only keeps a permanently-broken agent from being dialed on every
+	// single sweep.
+	probeRetryInterval = 5 * time.Second
+	// cacheRefreshInterval is how often an unchanged, still-announcing device
+	// re-stamps its cache entry's LastSeen. Repeat announcements otherwise
+	// write nothing (see handleSighting), which is what keeps a long-lived
+	// picker session from rewriting the cache file on every sweep; this bounds
+	// how stale a still-present device's entry can get in such a session.
+	cacheRefreshInterval = 5 * time.Minute
 )
 
 // streamEventBuffer decouples the engine loop from a consumer that renders
@@ -97,9 +126,13 @@ var collectSettle = 500 * time.Millisecond
 // once (e.g. a probe superseding an mDNS-only sighting), the later event
 // wins.
 //
-// The scan concludes as soon as it safely can: once every cached entry's
-// initial probe has concluded and collectSettle has passed with no further
-// confirmation, or once timeout elapses — whichever comes first.
+// The scan concludes as soon as it safely can: once at least one device has
+// been confirmed, every cached entry's initial probe has concluded, and
+// collectSettle has passed with no further confirmation — or once timeout
+// elapses, whichever comes first. Settle is deliberately gated on having
+// confirmed *something*: on a cold cache every probe concludes before the
+// session even starts, and arming settle there would conclude an empty scan
+// in collectSettle, long before mDNS has had a chance to answer.
 func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) ([]models.LANDevice, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -153,6 +186,11 @@ func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) 
 			if !ok {
 				return conclude(nil)
 			}
+			// A superseded identity is the same physical device under a stale,
+			// hostname-derived key; keeping it would list the device twice.
+			if ev.Supersedes != "" {
+				delete(devices, ev.Supersedes)
+			}
 			if ev.Kind == LANFound || ev.Kind == LANUpdated {
 				devices[discoverycache.Key(ev.Device.ID, ev.Device.DisplayName)] = ev.Device
 				if probesDoneClosed {
@@ -162,7 +200,12 @@ func CollectLAN(ctx context.Context, opts StreamOptions, timeout time.Duration) 
 		case <-probesDoneCh:
 			probesDoneClosed = true
 			probesDoneCh = nil
-			armSettle()
+			// Nothing confirmed yet (the common cold-cache case): there is no
+			// quiet period to measure, so hold out for the timeout cap rather
+			// than concluding an empty scan collectSettle from now.
+			if len(devices) > 0 {
+				armSettle()
+			}
 		case <-settleC:
 			return conclude(nil)
 		case <-overall.C:
@@ -187,7 +230,19 @@ type lanDeviceState struct {
 	// version fields are agent-verified rather than cache- or TXT-derived.
 	probeConfirmed bool
 	probing        bool
-	probeFailed    bool
+	// probeFailed: the most recent concluded probe failed.
+	probeFailed bool
+	// reportedFailure: consumers currently render this row as probe-failed, so
+	// a repeat failure is not re-emitted. Cleared by any later confirmation
+	// (a sighting-driven update or a successful probe), which is what makes a
+	// device that comes back and fails again report the failure once more.
+	reportedFailure bool
+	// probeEnded is when the most recent probe concluded; it rate-limits the
+	// re-sighting-driven retry (probeRetryInterval).
+	probeEnded time.Time
+	// persisted is when this identity was last written to the cache, bounding
+	// the LastSeen refresh of an otherwise unchanged device.
+	persisted time.Time
 	// probeGen rises whenever a probe is (re)scheduled; a result carrying an
 	// older generation lost its target and is discarded.
 	probeGen       int
@@ -210,10 +265,16 @@ type lanStream struct {
 	opts StreamOptions
 	out  chan<- LANEvent
 
-	states   map[string]*lanDeviceState
-	cache    *discoverycache.Cache // nil when unavailable or not requested
-	dirty    bool
-	annotate func(*models.LANDevice) // platform refinement, applied to live sightings
+	states map[string]*lanDeviceState
+	cache  *discoverycache.Cache // nil when unavailable or not requested
+	dirty  bool
+	// annotator builds the platform refinement applied to live sightings. It
+	// is lazy (sync.OnceValue) because building it shells out on some
+	// platforms — networksetup on darwin, Get-NetAdapter on windows, 0.5–2s —
+	// and cached rows must reach the consumer before any of that happens.
+	// Built on the engine goroutine, on the first live sighting, so the
+	// session's single-goroutine ownership of its state still holds.
+	annotator func() func(*models.LANDevice)
 
 	emissions chan MDNSService
 	results   chan lanProbeResult
@@ -245,7 +306,7 @@ func runLANStream(ctx context.Context, opts StreamOptions, out chan<- LANEvent, 
 		sem:           make(chan struct{}, probeWorkers),
 		pendingProbes: make(map[string]bool),
 		probesDone:    probesDone,
-		annotate:      newLANAnnotator(ctx),
+		annotator:     sync.OnceValue(func() func(*models.LANDevice) { return newLANAnnotator(ctx) }),
 	}
 	defer s.finish()
 
@@ -315,10 +376,16 @@ func (s *lanStream) emitCached() {
 	now := time.Now()
 	for _, entry := range cache.Fresh(now) {
 		key := discoverycache.Key(entry.ID, entry.DisplayName)
+		// An identity-less entry (written by a build that emitted hostname-less
+		// sightings) is un-dialable and collapses every such device onto the
+		// same key. Skip it; the next save drops it.
+		if key == "" {
+			continue
+		}
 		if _, dup := s.states[key]; dup {
 			continue
 		}
-		st := &lanDeviceState{dev: entry.Device(), fromCache: true}
+		st := &lanDeviceState{dev: entry.Device(), fromCache: true, persisted: entry.LastSeen}
 		s.states[key] = st
 		s.emit(LANEvent{Kind: LANCached, Device: st.dev})
 		if s.opts.Prober != nil {
@@ -359,63 +426,175 @@ func (s *lanStream) runBackend() {
 // handleSighting folds one live mDNS answer into the session.
 func (s *lanStream) handleSighting(svc MDNSService) {
 	dev := lanDeviceFromService(svc)
-	s.annotate(&dev)
 	key := discoverycache.Key(dev.ID, dev.DisplayName)
+	if key == "" {
+		// Neither a TXT device id, a display name, nor a hostname: there is no
+		// identity to key a row (or a cache entry) by, and every such sighting
+		// would collapse onto the same empty key as a nameless, un-dialable
+		// row. Drop it rather than emit or persist it.
+		return
+	}
+	s.annotate(&dev)
 	now := time.Now()
+
+	superseded := s.supersedeHostDerived(key, dev)
 
 	st, known := s.states[key]
 	if !known {
 		st = &lanDeviceState{dev: dev, confirmed: true}
 		s.states[key] = st
-		s.persist(st.dev, now)
-		s.emit(LANEvent{Kind: LANFound, Device: st.dev})
+		s.persist(st, now)
+		s.emit(LANEvent{Kind: LANFound, Device: st.dev, Supersedes: superseded})
 		s.scheduleProbe(key, st)
 		return
 	}
 
 	updated := applySighting(st.dev, dev)
+	if !st.probeFailed {
+		// Multi-homed churn guard: while the address the session already holds
+		// still looks good, a re-sighting may refine it but never downgrade it.
+		// A failed probe drops the guard — a target nothing answers at has
+		// nothing left to protect.
+		updated = preferStableTarget(st.dev, updated)
+	}
 	targetMoved := probeTargetChanged(st.dev, updated)
 	changed := mdnsFieldsChanged(st.dev, updated)
+	returning := !st.confirmed
 	st.dev = updated
 	if targetMoved {
 		// Nothing has verified this address yet, so the row must stop claiming
 		// probe-confirmed data until the retargeted probe below answers.
 		st.probeConfirmed = false
 	}
-	s.persist(updated, now)
 
 	switch {
-	case !st.confirmed:
+	case returning:
 		// A cached (or offlined) row just proved it is on the network.
 		st.confirmed = true
 		st.offline = false
-		s.emit(LANEvent{Kind: LANFound, Device: updated, Probed: st.probeConfirmed})
-	case changed:
-		s.emit(LANEvent{Kind: LANUpdated, Device: updated, Probed: st.probeConfirmed})
+		s.persist(st, now)
+		s.emitConfirmation(LANEvent{Kind: LANFound, Device: updated, Probed: st.probeConfirmed, Supersedes: superseded}, st)
+	case changed || superseded != "":
+		s.persist(st, now)
+		s.emitConfirmation(LANEvent{Kind: LANUpdated, Device: updated, Probed: st.probeConfirmed, Supersedes: superseded}, st)
+	default:
+		// An unchanged re-announcement: no event, and no cache write beyond
+		// the occasional LastSeen refresh, so a long-lived session does not
+		// flush the cache file on every sweep.
+		if now.Sub(st.persisted) >= cacheRefreshInterval {
+			s.persist(st, now)
+		}
 	}
 
-	// Retarget: a probe aimed at the old address can no longer speak for this
-	// device — whether it is still in flight (its result is discarded by
-	// generation), failed there, or succeeded there.
-	if targetMoved {
+	switch {
+	case targetMoved || superseded != "":
+		// Retarget: a probe aimed at the old address (or booked under the
+		// superseded identity) can no longer speak for this device — whether
+		// it is still in flight (its result is discarded by generation),
+		// failed there, or succeeded there.
+		s.scheduleProbe(key, st)
+	case st.probing || !st.probeFailed:
+		// Verified, or a verification is already under way.
+	case returning || now.Sub(st.probeEnded) >= probeRetryInterval:
+		// The device is announcing itself but its agent did not answer last
+		// time (mid-boot, agent restarting). Re-probing off the re-sighting
+		// keeps that recovery event-driven on every platform.
 		s.scheduleProbe(key, st)
 	}
+}
+
+// supersedeHostDerived retires an already-known identity that the sighting
+// under key has just proven to be the same physical device: a connect-minted
+// cache row (cacheConnectSuccess mints ID == DisplayName == hostname when it
+// finds no existing entry) that the device's real TXT device id now replaces.
+// The old row's probe bookkeeping migrates onto the new key, its cache entry
+// is deleted, and the returned old key travels on the next event so consumers
+// keyed by cache identity drop the stale row. "" when nothing was superseded.
+func (s *lanStream) supersedeHostDerived(key string, dev models.LANDevice) string {
+	host := dev.HostKey()
+	if host == "" || hostDerivedIdentity(dev) {
+		return "" // nothing better than a hostname to supersede *with*
+	}
+	for oldKey, st := range s.states {
+		if oldKey == key || !hostDerivedIdentity(st.dev) || st.dev.HostKey() != host {
+			continue
+		}
+		delete(s.states, oldKey)
+		if s.cache != nil {
+			s.cache.Delete(oldKey)
+			s.dirty = true
+		}
+		if _, exists := s.states[key]; !exists {
+			// Any probe still in flight was booked under oldKey and can no
+			// longer be delivered (handleProbeResult retires it), so this
+			// state is no longer probing; handleSighting schedules a fresh
+			// probe under the new key.
+			st.probing = false
+			st.probeGen++
+			s.states[key] = st
+		}
+		return oldKey
+	}
+	return ""
+}
+
+// hostDerivedIdentity reports whether dev's identity was minted from its
+// hostname rather than read from a wendyosdevice/id TXT record — the shape a
+// connect-success cache write leaves behind, and the shape a device that
+// advertises no id TXT record resolves to.
+func hostDerivedIdentity(dev models.LANDevice) bool {
+	host := dev.HostKey()
+	return host != "" && strings.EqualFold(dev.ID, host) && strings.EqualFold(dev.DisplayName, host)
+}
+
+// emitConfirmation emits an event that (re)states what a surface should render
+// for a device, clearing the "already reported as probe-failed" latch so a
+// probe that fails again after this is reported again.
+func (s *lanStream) emitConfirmation(ev LANEvent, st *lanDeviceState) {
+	st.reportedFailure = false
+	s.emit(ev)
+}
+
+// annotate applies the platform refinement to a live sighting, building the
+// annotator on first use (see lanStream.annotator).
+func (s *lanStream) annotate(dev *models.LANDevice) {
+	s.annotator()(dev)
 }
 
 // handleProbeResult folds one prober outcome into the session.
 func (s *lanStream) handleProbeResult(res lanProbeResult) {
 	st, known := s.states[res.key]
-	if !known || res.gen != st.probeGen {
+	if !known {
+		// The identity is gone (superseded by the device's real TXT id), so
+		// nothing will ever answer under this key: retire it from the settle
+		// gate or a batch scan would wait out its whole timeout.
+		s.probeConcluded(res.key)
+		return
+	}
+	if res.gen != st.probeGen {
 		// Stale: the probe target moved and a fresh probe is already running.
 		return
 	}
 	st.probing = false
+	st.probeEnded = time.Now()
 	defer s.probeConcluded(res.key)
 
 	if res.err != nil {
 		st.probeFailed = true
-		if st.fromCache && !st.confirmed && s.graceElapsed {
-			s.markOffline(res.key, st)
+		st.probeConfirmed = false
+		switch {
+		case st.fromCache && !st.confirmed:
+			// Cached and never seen live: the grace window owns this row.
+			if s.graceElapsed {
+				s.markOffline(res.key, st)
+			}
+		case st.confirmed && !st.reportedFailure:
+			// The device is on the network but its agent did not answer: say
+			// so once, so a surface stops spinning on "verifying" and can show
+			// the no-access hint. Repeat failures stay silent until something
+			// else re-confirms the row.
+			st.reportedFailure = true
+			s.emit(LANEvent{Kind: LANUpdated, Device: st.dev, ProbeFailed: true})
 		}
 		return
 	}
@@ -424,14 +603,14 @@ func (s *lanStream) handleProbeResult(res lanProbeResult) {
 	st.probeConfirmed = true
 	st.offline = false
 	st.dev = applyProbe(st.dev, res.dev)
-	s.persist(st.dev, time.Now())
+	s.persist(st, time.Now())
 
 	kind := LANUpdated
 	if !st.confirmed {
 		kind = LANFound
 		st.confirmed = true
 	}
-	s.emit(LANEvent{Kind: kind, Device: st.dev, Probed: true})
+	s.emitConfirmation(LANEvent{Kind: kind, Device: st.dev, Probed: true}, st)
 }
 
 // handleGrace runs once, offlineGrace after session start: every cached row
@@ -541,11 +720,12 @@ func (s *lanStream) emit(ev LANEvent) {
 // device (a live sighting's fields plus whatever a probe confirmed), so
 // Upsert's non-zero-wins merge would only ever resurrect a value the device
 // has since dropped — an mTLS flag or an orgid TXT record that went away.
-func (s *lanStream) persist(dev models.LANDevice, now time.Time) {
+func (s *lanStream) persist(st *lanDeviceState, now time.Time) {
 	if s.cache == nil {
 		return
 	}
-	s.cache.Replace(discoverycache.EntryFromDevice(dev), now)
+	st.persisted = now
+	s.cache.Replace(discoverycache.EntryFromDevice(st.dev), now)
 	s.dirty = true
 }
 
@@ -592,6 +772,83 @@ func applyProbe(stored, probed models.LANDevice) models.LANDevice {
 	dev.OSVersion = probed.OSVersion
 	dev.CPUArchitecture = probed.CPUArchitecture
 	return dev
+}
+
+// preferStableTarget keeps the dial target and interface the session already
+// holds whenever a re-sighting would only make them worse. Every hashicorp
+// platform re-announces each device once per interface per sweep (and Windows
+// adds an interface-less default sweep on top), so without this a multi-homed
+// device oscillates: NetworkInterface flips to "" and back, the probe target
+// swings between a USB-C gadget link and Wi-Fi, and each swing clears
+// probeConfirmed — an endless OK↔spinner flicker plus a cache write per sweep.
+//
+// Only downgrades are refused, so a device that genuinely moves still
+// retargets (an equally-good address always wins): the preferences are the
+// ones the pre-stream batch path applied when it collapsed per-interface
+// duplicates — a USB gadget link over anything else, IPv4 over IPv6,
+// routable over link-local, and a known value over a blank one.
+func preferStableTarget(stored, sighted models.LANDevice) models.LANDevice {
+	dev := sighted
+	if (stored.USB != "" && sighted.USB == "") || addressDowngrade(stored.IPAddress, sighted.IPAddress) {
+		dev.IPAddress, dev.Hostname, dev.Port = stored.IPAddress, stored.Hostname, stored.Port
+		dev.NetworkInterface, dev.USB = stored.NetworkInterface, stored.USB
+		return dev
+	}
+	if dev.Hostname == "" {
+		dev.Hostname = stored.Hostname
+	}
+	if dev.Port == 0 {
+		dev.Port = stored.Port
+	}
+	if dev.NetworkInterface == "" {
+		dev.NetworkInterface, dev.USB = stored.NetworkInterface, stored.USB
+	}
+	return dev
+}
+
+// addressDowngrade reports whether candidate is a strictly worse dial target
+// than the stored address: blank where one was known, IPv6 for a device
+// already answering on IPv4 (an IPv6 set typically leads with an RFC 4941
+// temporary address that rotates away), or link-local where a routable
+// address was known.
+func addressDowngrade(stored, candidate string) bool {
+	if stored == "" {
+		return false
+	}
+	if candidate == "" {
+		return true
+	}
+	if isIPv4LANAddress(stored) && !isIPv4LANAddress(candidate) {
+		return true
+	}
+	return isRoutableLANAddress(stored) && !isRoutableLANAddress(candidate)
+}
+
+// isIPv4LANAddress reports whether addr (optionally "%zone"-suffixed) is an
+// IPv4 or IPv4-mapped address.
+func isIPv4LANAddress(addr string) bool {
+	a, err := netip.ParseAddr(stripZone(addr))
+	return err == nil && (a.Is4() || a.Is4In6())
+}
+
+// isRoutableLANAddress reports whether addr is a directly dialable address —
+// all IPv4 (including 169.254.0.0/16 link-local) or non-link-local IPv6 — as
+// opposed to an IPv6 link-local unicast address (fe80::/10), which needs a
+// zone id and is a poor default dial target. An empty or unparseable address
+// is treated as non-routable.
+func isRoutableLANAddress(addr string) bool {
+	a, err := netip.ParseAddr(stripZone(addr))
+	if err != nil {
+		return false
+	}
+	return a.Is4() || a.Is4In6() || !a.IsLinkLocalUnicast()
+}
+
+func stripZone(addr string) string {
+	if i := strings.IndexByte(addr, '%'); i >= 0 {
+		return addr[:i]
+	}
+	return addr
 }
 
 // mdnsFieldsChanged reports whether anything a live sighting carries (address
