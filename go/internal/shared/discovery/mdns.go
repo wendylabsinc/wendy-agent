@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -152,12 +153,14 @@ func BrowseMDNSServicesContinuous(ctx context.Context, serviceType string) (<-ch
 	ch := make(chan MDNSService, 16)
 	go func() {
 		defer close(ch)
-		_ = browseBackendFn(ctx, serviceType, func(svc MDNSService) {
+		if err := browseBackendFn(ctx, serviceType, func(svc MDNSService) {
 			select {
 			case ch <- svc:
 			case <-ctx.Done():
 			}
-		})
+		}); err != nil && ctx.Err() == nil {
+			log.Printf("discovery: continuous mDNS browse for %s stopped: %v", serviceType, err)
+		}
 	}()
 	return ch, nil
 }
@@ -218,12 +221,18 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 			if !seen[key] {
 				seen[key] = true
 				services = append(services, svc)
+				// Only a newly discovered service pushes settle back out —
+				// mirroring darwin's dnssdBrowse precedent. mdnsStreamBackend
+				// deliberately does not dedup (a multi-homed device or an
+				// ordinary re-announcement re-fires Add), so re-arming on
+				// every emission would let repeats alone stall this out to
+				// the full timeout, defeating the early exit.
+				if settleTimer != nil {
+					settleTimer.Stop()
+				}
+				settleTimer = time.NewTimer(browseSettle)
+				settleC = settleTimer.C
 			}
-			if settleTimer != nil {
-				settleTimer.Stop()
-			}
-			settleTimer = time.NewTimer(browseSettle)
-			settleC = settleTimer.C
 		case <-settleC:
 			return conclude(nil)
 		case <-overall.C:
