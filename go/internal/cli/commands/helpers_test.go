@@ -623,50 +623,6 @@ func TestResolveDeviceAddress_NoDevice(t *testing.T) {
 	}
 }
 
-func TestResolveLANVersionsKeepsDevicesWhenMetadataLookupFails(t *testing.T) {
-	orig := getAgentVersionAtAddress
-	defer func() { getAgentVersionAtAddress = orig }()
-
-	getAgentVersionAtAddress = func(_ context.Context, address string) (bool, *agentpb.GetAgentVersionResponse, error) {
-		return false, nil, errors.New("unreachable: " + address)
-	}
-
-	devices := []models.LANDevice{
-		{
-			DisplayName: "Wendy One",
-			Hostname:    "wendy-one.local",
-			IPAddress:   "192.168.1.10",
-			Port:        defaultAgentPort,
-		},
-		{
-			DisplayName: "Wendy Two",
-			Hostname:    "wendy-two.local",
-			IPAddress:   "192.168.1.11",
-			Port:        defaultAgentPort,
-		},
-	}
-
-	expected := make([]models.LANDevice, len(devices))
-	copy(expected, devices)
-
-	got := resolveLANVersions(context.Background(), devices)
-
-	if len(got) != len(expected) {
-		t.Fatalf("resolveLANVersions() returned %d devices, want %d", len(got), len(expected))
-	}
-	for i := range expected {
-		if got[i].DisplayName != expected[i].DisplayName {
-			t.Fatalf("resolveLANVersions()[%d].DisplayName = %q, want %q", i, got[i].DisplayName, expected[i].DisplayName)
-		}
-		if got[i].IPAddress != expected[i].IPAddress {
-			t.Fatalf("resolveLANVersions()[%d].IPAddress = %q, want %q", i, got[i].IPAddress, expected[i].IPAddress)
-		}
-		if got[i].AgentVersion != "" {
-			t.Fatalf("resolveLANVersions()[%d].AgentVersion = %q, want empty", i, got[i].AgentVersion)
-		}
-	}
-}
-
 func TestDefaultDeviceSearchLabel(t *testing.T) {
 	got := defaultDeviceSearchLabel("wendyos-daring-razorbill.local")
 	want := `Searching for default device "wendyos-daring-razorbill.local"...`

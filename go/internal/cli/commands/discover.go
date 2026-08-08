@@ -38,7 +38,14 @@ func newDiscoverCmd() *cobra.Command {
 		Short: "Discover WendyOS devices on the network",
 		Long:  "Continuously scan for WendyOS devices until Ctrl+C. Use --timeout to scan once for a fixed duration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts := discovery.DiscoveryOptions{}
+			opts := discovery.DiscoveryOptions{
+				// The continuous TUI path streams LAN devices directly via
+				// lanStreamFn/startLANStream and never reads opts.LAN, so
+				// setting it unconditionally here only affects the JSON and
+				// one-shot paths below — both want the CLI's cache+probe LAN
+				// collection instead of the old mDNS-only confirmation.
+				LAN: cliLANStreamOptions(),
+			}
 
 			switch discoverType {
 			case "usb":
@@ -126,7 +133,6 @@ func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
 		return fmt.Errorf("discovery failed: %w", err)
 	}
 
-	collection.LANDevices = resolveLANVersions(ctx, collection.LANDevices)
 	annotateLANUSBFromEthernet(collection)
 	sortLANDevicesForDiscover(collection.LANDevices)
 
@@ -153,7 +159,6 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeL
 	work := func() tea.Msg {
 		collection, err := discovery.Discover(ctx, opts)
 		if err == nil {
-			collection.LANDevices = resolveLANVersions(ctx, collection.LANDevices)
 			annotateLANUSBFromEthernet(collection)
 			sortLANDevicesForDiscover(collection.LANDevices)
 			if includeExternal {
