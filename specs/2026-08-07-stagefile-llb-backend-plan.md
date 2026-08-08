@@ -289,8 +289,16 @@ git commit -m "refactor(stagefile): give recipes one definition shared by both b
 **Interfaces:**
 - Consumes: `ir.Graph`, `recipe.For`, `recipe.RunSpec`.
 - Produces: `llbgen.ImageConfig{Entrypoint []string; User string}` and
-  `llbgen.Emit(g *ir.Graph, images map[string]string, platform string) (*llb.Definition, *ImageConfig, error)`.
-  Task 3 solves the definition and applies the config.
+  `llbgen.Emit(g *ir.Graph, images map[string]string, configs map[string][]byte, platform string) (*llb.Definition, *ImageConfig, error)`.
+  Task 3 solves the definition and stamps the returned output config onto the
+  result.
+
+  `configs` holds each base image's raw OCI image-config JSON, keyed by the same
+  ref as `images`. It is a parameter rather than something a later stage applies
+  because `WithImageConfig` acts on an `llb.State` and `Emit` marshals before
+  returning — after that the states no longer exist. It is also a genuine build
+  input: `PATH` and `WorkingDir` change the resulting filesystem, so it belongs
+  in the function whose output a cache key will eventually describe.
 
 **Design note.** Build one `llb.State` per node, indexed like `ir.Graph.Nodes`, so
 the graph maps across one-to-one. Ops:
@@ -456,8 +464,28 @@ git commit -m "feat(stagefile): compile the IR to BuildKit LLB"
 
 Only `Address` needs unit tests; `Run` needs a daemon and is covered in task 5.
 
-The gateway callback is the whole reason for this design — it is where image
-config gets attached, which raw LLB cannot express:
+**Correction to this plan, found during task 2.** "Image config" is two
+different things, and the original text conflated them:
+
+- **Output image config** — the `Entrypoint` and `User` stamped onto the image
+  this build produces. That belongs here, in the gateway callback, exactly as
+  written below.
+- **Base image config** — the `Env` (notably `PATH`) and `WorkingDir` that a
+  Dockerfile `RUN` inherits from its base image. That canNOT be applied here.
+  `WithImageConfig` operates on an `llb.State` and must be applied before any
+  dependent op is built, but `llbgen.Emit` marshals before returning, so by the
+  time this task holds a `*llb.Definition` the states are gone.
+
+Base config therefore became a parameter of `Emit`
+(`configs map[string][]byte`, keyed like `images`). **This task's remaining job
+for it is to resolve those configs** — fetch each base image's OCI config JSON
+via the registry client already used by `lock` — and hand them to `Emit`. Do not
+default a missing config to empty: an exec with no inherited `PATH` fails to
+find `go` or `cargo`, and a missing `WorkingDir` silently relocates every
+relative copy to `/`, producing a build that succeeds and yields a different
+image than the Dockerfile backend.
+
+The gateway callback below is for the output config only:
 
 ```go
 res, err := c.Solve(ctx, gateway.SolveRequest{Definition: def.ToPB()})
