@@ -12,7 +12,9 @@ wendy device top [flags]
 
 `wendy device top` opens a full-screen, auto-refreshing dashboard showing whole-machine CPU and memory utilization, per-GPU utilization/memory (and temperature/power where reported), and a per-app/per-container table of CPU% and memory. CPU percentages are computed from deltas between refreshes, so the first frame may read low until a second sample is taken.
 
-Apps are grouped the same way as [`wendy device dashboard`](dashboard.md): multi-service apps show a group header with one subrow per service. A side panel shows the listening ports of the currently selected app.
+Apps are grouped the same way as [`wendy device dashboard`](dashboard.md): multi-service apps show a group header with one subrow per service. Running apps (`●`), stopped apps (`○`), and crash-looping apps (`↻`) have distinct row styling and are counted separately. Resource columns show unavailable values for stopped and crash-looping rows instead of presenting them as active zero-usage workloads. A side panel shows the listening ports of the currently selected running app.
+
+Press `x` to stop the selected app. For a multi-service app, this stops the whole app even when the cursor is on one of its service rows. Stop uses Wendy's normal graceful shutdown behavior and may escalate to a force kill when the app does not exit within its grace period.
 
 > **Note:** This command requires a recent device agent. Against an agent that's too old to report resource stats, the command reports that the agent doesn't support resource stats and suggests updating it with [`wendy device update`](update.md).
 
@@ -23,6 +25,7 @@ Apps are grouped the same way as [`wendy device dashboard`](dashboard.md): multi
 | `↑` / `k`, `↓` / `j` | Move the selection up / down |
 | `c` | Sort apps by CPU usage (descending) |
 | `m` | Sort apps by memory usage (descending) |
+| `x` | Stop the selected app and all of its services |
 | `q` / `Ctrl+C` | Quit |
 
 ## Flags
@@ -41,7 +44,7 @@ The [global `--json` flag](../../global-flags.md) is also honored — see below.
 wendy device top --json
 ```
 
-The snapshot has this shape:
+Plain snapshots include a `STATE` column. JSON snapshots have this shape:
 
 ```json
 {
@@ -70,6 +73,7 @@ The snapshot has this shape:
 
 - `host.gpus` is omitted on devices that report no GPU.
 - Each GPU's `tempC` and `powerW` are omitted when the agent doesn't report them.
+- `containers[].state` is `running`, `stopped`, or `crash-loop`.
 - `containers[].cpuPercent` is each container's share of the whole machine (0–100 across all cores).
 
 ## Related

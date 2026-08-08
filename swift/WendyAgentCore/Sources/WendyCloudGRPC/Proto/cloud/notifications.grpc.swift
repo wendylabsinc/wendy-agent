@@ -33,6 +33,19 @@ public enum Wendycloud_V1_NotificationService: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "CreateNotificationV2" metadata.
+        public enum CreateNotificationV2: Sendable {
+            /// Request type for "CreateNotificationV2".
+            public typealias Input = Wendycloud_V1_CreateNotificationV2Request
+            /// Response type for "CreateNotificationV2".
+            public typealias Output = Wendycloud_V1_CreateNotificationV2Response
+            /// Descriptor for "CreateNotificationV2".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.NotificationService"),
+                method: "CreateNotificationV2",
+                type: .unary
+            )
+        }
         /// Namespace for "ListNotifications" metadata.
         public enum ListNotifications: Sendable {
             /// Request type for "ListNotifications".
@@ -43,7 +56,7 @@ public enum Wendycloud_V1_NotificationService: Sendable {
             public static let descriptor = GRPCCore.MethodDescriptor(
                 service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "wendycloud.v1.NotificationService"),
                 method: "ListNotifications",
-                type: .unary
+                type: .serverStreaming
             )
         }
         /// Namespace for "GetNotification" metadata.
@@ -101,6 +114,7 @@ public enum Wendycloud_V1_NotificationService: Sendable {
         /// Descriptors for all methods in the "wendycloud.v1.NotificationService" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             CreateNotification.descriptor,
+            CreateNotificationV2.descriptor,
             ListNotifications.descriptor,
             GetNotification.descriptor,
             DeleteNotification.descriptor,
@@ -133,6 +147,11 @@ extension Wendycloud_V1_NotificationService {
     public protocol StreamingServiceProtocol: GRPCCore.RegistrableRPCService {
         /// Handle the "CreateNotification" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+        /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+        ///
         /// - Parameters:
         ///   - request: A streaming request of `Wendycloud_V1_CreateNotificationRequest` messages.
         ///   - context: Context providing information about the RPC.
@@ -145,7 +164,32 @@ extension Wendycloud_V1_NotificationService {
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_Notification>
 
+        /// Handle the "CreateNotificationV2" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+        /// > User credentials and provisioned-device credentials are both supported.
+        /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+        /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Wendycloud_V1_CreateNotificationV2Request` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Wendycloud_V1_CreateNotificationV2Response` messages.
+        func createNotificationV2(
+            request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CreateNotificationV2Request>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_CreateNotificationV2Response>
+
         /// Handle the "ListNotifications" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Server-streamed pagination using offset/limit (matches OrganizationService)
         ///
         /// - Parameters:
         ///   - request: A streaming request of `Wendycloud_V1_ListNotificationsRequest` messages.
@@ -226,6 +270,11 @@ extension Wendycloud_V1_NotificationService {
     public protocol ServiceProtocol: Wendycloud_V1_NotificationService.StreamingServiceProtocol {
         /// Handle the "CreateNotification" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+        /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+        ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationRequest` message.
         ///   - context: Context providing information about the RPC.
@@ -238,7 +287,32 @@ extension Wendycloud_V1_NotificationService {
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_Notification>
 
+        /// Handle the "CreateNotificationV2" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+        /// > User credentials and provisioned-device credentials are both supported.
+        /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+        /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationV2Request` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Wendycloud_V1_CreateNotificationV2Response` message.
+        func createNotificationV2(
+            request: GRPCCore.ServerRequest<Wendycloud_V1_CreateNotificationV2Request>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_CreateNotificationV2Response>
+
         /// Handle the "ListNotifications" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Server-streamed pagination using offset/limit (matches OrganizationService)
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_ListNotificationsRequest` message.
@@ -246,11 +320,11 @@ extension Wendycloud_V1_NotificationService {
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A response containing a single `Wendycloud_V1_ListNotificationsResponse` message.
+        /// - Returns: A streaming response of `Wendycloud_V1_ListNotificationsResponse` messages.
         func listNotifications(
             request: GRPCCore.ServerRequest<Wendycloud_V1_ListNotificationsRequest>,
             context: GRPCCore.ServerContext
-        ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListNotificationsResponse>
+        ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListNotificationsResponse>
 
         /// Handle the "GetNotification" method.
         ///
@@ -317,6 +391,11 @@ extension Wendycloud_V1_NotificationService {
     public protocol SimpleServiceProtocol: Wendycloud_V1_NotificationService.ServiceProtocol {
         /// Handle the "CreateNotification" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+        /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+        ///
         /// - Parameters:
         ///   - request: A `Wendycloud_V1_CreateNotificationRequest` message.
         ///   - context: Context providing information about the RPC.
@@ -329,19 +408,45 @@ extension Wendycloud_V1_NotificationService {
             context: GRPCCore.ServerContext
         ) async throws -> Wendycloud_V1_Notification
 
-        /// Handle the "ListNotifications" method.
+        /// Handle the "CreateNotificationV2" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+        /// > User credentials and provisioned-device credentials are both supported.
+        /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+        /// > including an otherwise identical request, fails with ALREADY_EXISTS.
         ///
         /// - Parameters:
-        ///   - request: A `Wendycloud_V1_ListNotificationsRequest` message.
+        ///   - request: A `Wendycloud_V1_CreateNotificationV2Request` message.
         ///   - context: Context providing information about the RPC.
         /// - Throws: Any error which occurred during the processing of the request. Thrown errors
         ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
         ///     to an internal error.
-        /// - Returns: A `Wendycloud_V1_ListNotificationsResponse` to respond with.
+        /// - Returns: A `Wendycloud_V1_CreateNotificationV2Response` to respond with.
+        func createNotificationV2(
+            request: Wendycloud_V1_CreateNotificationV2Request,
+            context: GRPCCore.ServerContext
+        ) async throws -> Wendycloud_V1_CreateNotificationV2Response
+
+        /// Handle the "ListNotifications" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Server-streamed pagination using offset/limit (matches OrganizationService)
+        ///
+        /// - Parameters:
+        ///   - request: A `Wendycloud_V1_ListNotificationsRequest` message.
+        ///   - response: A response stream of `Wendycloud_V1_ListNotificationsResponse` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
         func listNotifications(
             request: Wendycloud_V1_ListNotificationsRequest,
+            response: GRPCCore.RPCWriter<Wendycloud_V1_ListNotificationsResponse>,
             context: GRPCCore.ServerContext
-        ) async throws -> Wendycloud_V1_ListNotificationsResponse
+        ) async throws
 
         /// Handle the "GetNotification" method.
         ///
@@ -411,6 +516,17 @@ extension Wendycloud_V1_NotificationService.StreamingServiceProtocol {
             serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_Notification>(),
             handler: { request, context in
                 try await self.createNotification(
+                    request: request,
+                    context: context
+                )
+            }
+        )
+        router.registerHandler(
+            forMethod: Wendycloud_V1_NotificationService.Method.CreateNotificationV2.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_CreateNotificationV2Request>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_CreateNotificationV2Response>(),
+            handler: { request, context in
+                try await self.createNotificationV2(
                     request: request,
                     context: context
                 )
@@ -488,6 +604,17 @@ extension Wendycloud_V1_NotificationService.ServiceProtocol {
         return GRPCCore.StreamingServerResponse(single: response)
     }
 
+    public func createNotificationV2(
+        request: GRPCCore.StreamingServerRequest<Wendycloud_V1_CreateNotificationV2Request>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_CreateNotificationV2Response> {
+        let response = try await self.createNotificationV2(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
     public func listNotifications(
         request: GRPCCore.StreamingServerRequest<Wendycloud_V1_ListNotificationsRequest>,
         context: GRPCCore.ServerContext
@@ -496,7 +623,7 @@ extension Wendycloud_V1_NotificationService.ServiceProtocol {
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
-        return GRPCCore.StreamingServerResponse(single: response)
+        return response
     }
 
     public func getNotification(
@@ -560,16 +687,33 @@ extension Wendycloud_V1_NotificationService.SimpleServiceProtocol {
         )
     }
 
-    public func listNotifications(
-        request: GRPCCore.ServerRequest<Wendycloud_V1_ListNotificationsRequest>,
+    public func createNotificationV2(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_CreateNotificationV2Request>,
         context: GRPCCore.ServerContext
-    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_ListNotificationsResponse> {
-        return GRPCCore.ServerResponse<Wendycloud_V1_ListNotificationsResponse>(
-            message: try await self.listNotifications(
+    ) async throws -> GRPCCore.ServerResponse<Wendycloud_V1_CreateNotificationV2Response> {
+        return GRPCCore.ServerResponse<Wendycloud_V1_CreateNotificationV2Response>(
+            message: try await self.createNotificationV2(
                 request: request.message,
                 context: context
             ),
             metadata: [:]
+        )
+    }
+
+    public func listNotifications(
+        request: GRPCCore.ServerRequest<Wendycloud_V1_ListNotificationsRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Wendycloud_V1_ListNotificationsResponse> {
+        return GRPCCore.StreamingServerResponse<Wendycloud_V1_ListNotificationsResponse>(
+            metadata: [:],
+            producer: { writer in
+                try await self.listNotifications(
+                    request: request.message,
+                    response: writer,
+                    context: context
+                )
+                return [:]
+            }
         )
     }
 
@@ -637,6 +781,11 @@ extension Wendycloud_V1_NotificationService {
     public protocol ClientProtocol: Sendable {
         /// Call the "CreateNotification" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+        /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+        ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationRequest` message.
         ///   - serializer: A serializer for `Wendycloud_V1_CreateNotificationRequest` messages.
@@ -654,7 +803,37 @@ extension Wendycloud_V1_NotificationService {
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_Notification>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
+        /// Call the "CreateNotificationV2" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+        /// > User credentials and provisioned-device credentials are both supported.
+        /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+        /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationV2Request` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_CreateNotificationV2Request` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_CreateNotificationV2Response` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func createNotificationV2<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_CreateNotificationV2Request>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CreateNotificationV2Request>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_CreateNotificationV2Response>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_CreateNotificationV2Response>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
         /// Call the "ListNotifications" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Server-streamed pagination using offset/limit (matches OrganizationService)
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_ListNotificationsRequest` message.
@@ -670,7 +849,7 @@ extension Wendycloud_V1_NotificationService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListNotificationsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListNotificationsResponse>,
             options: GRPCCore.CallOptions,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
 
         /// Call the "GetNotification" method.
@@ -768,6 +947,11 @@ extension Wendycloud_V1_NotificationService {
 
         /// Call the "CreateNotification" method.
         ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+        /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+        ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationRequest` message.
         ///   - serializer: A serializer for `Wendycloud_V1_CreateNotificationRequest` messages.
@@ -796,7 +980,48 @@ extension Wendycloud_V1_NotificationService {
             )
         }
 
+        /// Call the "CreateNotificationV2" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+        /// > User credentials and provisioned-device credentials are both supported.
+        /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+        /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationV2Request` message.
+        ///   - serializer: A serializer for `Wendycloud_V1_CreateNotificationV2Request` messages.
+        ///   - deserializer: A deserializer for `Wendycloud_V1_CreateNotificationV2Response` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func createNotificationV2<Result>(
+            request: GRPCCore.ClientRequest<Wendycloud_V1_CreateNotificationV2Request>,
+            serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_CreateNotificationV2Request>,
+            deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_CreateNotificationV2Response>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_CreateNotificationV2Response>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Wendycloud_V1_NotificationService.Method.CreateNotificationV2.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
+
         /// Call the "ListNotifications" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Server-streamed pagination using offset/limit (matches OrganizationService)
         ///
         /// - Parameters:
         ///   - request: A request containing a single `Wendycloud_V1_ListNotificationsRequest` message.
@@ -812,11 +1037,9 @@ extension Wendycloud_V1_NotificationService {
             serializer: some GRPCCore.MessageSerializer<Wendycloud_V1_ListNotificationsRequest>,
             deserializer: some GRPCCore.MessageDeserializer<Wendycloud_V1_ListNotificationsResponse>,
             options: GRPCCore.CallOptions = .defaults,
-            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result = { response in
-                try response.message
-            }
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable {
-            try await self.client.unary(
+            try await self.client.serverStreaming(
                 request: request,
                 descriptor: Wendycloud_V1_NotificationService.Method.ListNotifications.descriptor,
                 serializer: serializer,
@@ -953,6 +1176,11 @@ extension Wendycloud_V1_NotificationService {
 extension Wendycloud_V1_NotificationService.ClientProtocol {
     /// Call the "CreateNotification" method.
     ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+    /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+    ///
     /// - Parameters:
     ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationRequest` message.
     ///   - options: Options to apply to this RPC.
@@ -976,7 +1204,43 @@ extension Wendycloud_V1_NotificationService.ClientProtocol {
         )
     }
 
+    /// Call the "CreateNotificationV2" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+    /// > User credentials and provisioned-device credentials are both supported.
+    /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+    /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Wendycloud_V1_CreateNotificationV2Request` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func createNotificationV2<Result>(
+        request: GRPCCore.ClientRequest<Wendycloud_V1_CreateNotificationV2Request>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_CreateNotificationV2Response>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.createNotificationV2(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Wendycloud_V1_CreateNotificationV2Request>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Wendycloud_V1_CreateNotificationV2Response>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "ListNotifications" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Server-streamed pagination using offset/limit (matches OrganizationService)
     ///
     /// - Parameters:
     ///   - request: A request containing a single `Wendycloud_V1_ListNotificationsRequest` message.
@@ -988,9 +1252,7 @@ extension Wendycloud_V1_NotificationService.ClientProtocol {
     public func listNotifications<Result>(
         request: GRPCCore.ClientRequest<Wendycloud_V1_ListNotificationsRequest>,
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         try await self.listNotifications(
             request: request,
@@ -1107,6 +1369,11 @@ extension Wendycloud_V1_NotificationService.ClientProtocol {
 extension Wendycloud_V1_NotificationService.ClientProtocol {
     /// Call the "CreateNotification" method.
     ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+    /// > MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+    ///
     /// - Parameters:
     ///   - message: request message to send.
     ///   - metadata: Additional metadata to send, defaults to empty.
@@ -1134,7 +1401,47 @@ extension Wendycloud_V1_NotificationService.ClientProtocol {
         )
     }
 
+    /// Call the "CreateNotificationV2" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Creates per-user Notifications for the union of users, organization teams, and roles.
+    /// > User credentials and provisioned-device credentials are both supported.
+    /// > notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+    /// > including an otherwise identical request, fails with ALREADY_EXISTS.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func createNotificationV2<Result>(
+        _ message: Wendycloud_V1_CreateNotificationV2Request,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_CreateNotificationV2Response>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Wendycloud_V1_CreateNotificationV2Request>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.createNotificationV2(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
     /// Call the "ListNotifications" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Server-streamed pagination using offset/limit (matches OrganizationService)
     ///
     /// - Parameters:
     ///   - message: request message to send.
@@ -1148,9 +1455,7 @@ extension Wendycloud_V1_NotificationService.ClientProtocol {
         _ message: Wendycloud_V1_ListNotificationsRequest,
         metadata: GRPCCore.Metadata = [:],
         options: GRPCCore.CallOptions = .defaults,
-        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result = { response in
-            try response.message
-        }
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.StreamingClientResponse<Wendycloud_V1_ListNotificationsResponse>) async throws -> Result
     ) async throws -> Result where Result: Sendable {
         let request = GRPCCore.ClientRequest<Wendycloud_V1_ListNotificationsRequest>(
             message: message,

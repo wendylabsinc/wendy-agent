@@ -90,8 +90,49 @@ func ros2RPCError(err error) error {
 		return fmt.Errorf("this device's agent does not support ROS 2 inspection; update it with `wendy device update`")
 	case codes.FailedPrecondition:
 		return errors.New(status.Convert(err).Message())
+	case codes.DeadlineExceeded:
+		return errROS2Timeout
+	case codes.ResourceExhausted:
+		// Currently raised when one echoed message exceeds the streaming limit;
+		// the server-side message already explains the remedy.
+		return errors.New(status.Convert(err).Message())
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errROS2Timeout
 	}
 	return err
+}
+
+// errROS2Timeout replaces a bare "context deadline exceeded" with something the
+// user can act on. The unary RPCs are deadline-bounded (see ros2UnaryTimeout);
+// before that a sidecar stuck on DDS discovery hung the CLI indefinitely with
+// nothing on screen.
+var errROS2Timeout = errors.New("timed out waiting for the device's ROS 2 graph; the sidecar may " +
+	"be stuck on DDS discovery — try `wendy device ros2 doctor`, or narrow the query with --domain")
+
+// Client-side deadlines for the non-streaming ROS 2 RPCs.
+//
+// There were none: every call rode the ambient context, so a stalled DDS
+// discovery inside the sidecar hung the CLI indefinitely with nothing on screen.
+// Each agent-side exec costs roughly a second (container exec dispatch + sourcing
+// the ROS environment + a fresh rclpy process doing discovery), which sets the
+// scale here.
+//
+// Streaming commands — echo, hz, bag record, exec, action send_goal — deliberately
+// get no deadline: they run until the user stops them.
+const (
+	// ros2UnaryTimeout covers a single targeted command plus, on a mixed-RMW
+	// device, its routing probe.
+	ros2UnaryTimeout = 45 * time.Second
+	// ros2FanOutTimeout covers the commands that fan out one exec per node or per
+	// topic (graph, topics --all).
+	ros2FanOutTimeout = 5 * time.Minute
+)
+
+// ros2Ctx derives a deadline-bounded context for a unary RPC. The caller must
+// defer the returned cancel.
+func ros2Ctx(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(parent, timeout)
 }
 
 // ros2DomainFlag registers the shared --domain override flag.
@@ -146,7 +187,9 @@ func newROS2NodesCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListNodes(cmd.Context(), &agentpbv2.ListROS2NodesRequest{DomainId: ros2DomainPtr(domain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListNodes(rpcCtx, &agentpbv2.ListROS2NodesRequest{DomainId: ros2DomainPtr(domain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -199,7 +242,9 @@ func newROS2TopicsCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListTopics(cmd.Context(), &agentpbv2.ListROS2TopicsRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2FanOutTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListTopics(rpcCtx, &agentpbv2.ListROS2TopicsRequest{
 				DomainId:      ros2DomainPtr(domain),
 				IncludeCounts: all,
 			})
@@ -283,7 +328,9 @@ func newROS2TopicCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.GetTopicInfo(cmd.Context(), &agentpbv2.GetROS2TopicInfoRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.GetTopicInfo(rpcCtx, &agentpbv2.GetROS2TopicInfoRequest{
 				DomainId: ros2DomainPtr(domain),
 				Topic:    args[0],
 			})
@@ -321,7 +368,9 @@ func newROS2ServicesCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListServices(cmd.Context(), &agentpbv2.ListROS2ServicesRequest{DomainId: ros2DomainPtr(domain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListServices(rpcCtx, &agentpbv2.ListROS2ServicesRequest{DomainId: ros2DomainPtr(domain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -387,7 +436,9 @@ func newROS2CallCmd() *cobra.Command {
 			if len(args) == 3 {
 				req.Request = args[2]
 			}
-			resp, err := client.client.CallService(cmd.Context(), req)
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.CallService(rpcCtx, req)
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -419,7 +470,9 @@ func newROS2ParamsCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListParams(cmd.Context(), &agentpbv2.ListROS2ParamsRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListParams(rpcCtx, &agentpbv2.ListROS2ParamsRequest{
 				DomainId: ros2DomainPtr(domain),
 				Node:     node,
 			})
@@ -465,7 +518,9 @@ func newROS2ParamCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.GetParam(cmd.Context(), &agentpbv2.GetROS2ParamRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.GetParam(rpcCtx, &agentpbv2.GetROS2ParamRequest{
 				DomainId: ros2DomainPtr(getDomain),
 				Node:     args[0],
 				Param:    args[1],
@@ -494,7 +549,9 @@ func newROS2ParamCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.SetParam(cmd.Context(), &agentpbv2.SetROS2ParamRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.SetParam(rpcCtx, &agentpbv2.SetROS2ParamRequest{
 				DomainId: ros2DomainPtr(setDomain),
 				Node:     args[0],
 				Param:    args[1],
@@ -532,7 +589,9 @@ func newROS2DoctorCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.Doctor(cmd.Context(), &agentpbv2.ROS2DoctorRequest{DomainId: ros2DomainPtr(domain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.Doctor(rpcCtx, &agentpbv2.ROS2DoctorRequest{DomainId: ros2DomainPtr(domain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -567,7 +626,9 @@ func newROS2ActionCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListActions(cmd.Context(), &agentpbv2.ListROS2ActionsRequest{DomainId: ros2DomainPtr(listDomain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListActions(rpcCtx, &agentpbv2.ListROS2ActionsRequest{DomainId: ros2DomainPtr(listDomain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -621,7 +682,9 @@ func newROS2ActionCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.GetActionInfo(cmd.Context(), &agentpbv2.GetROS2ActionInfoRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.GetActionInfo(rpcCtx, &agentpbv2.GetROS2ActionInfoRequest{
 				DomainId: ros2DomainPtr(infoDomain),
 				Action:   args[0],
 			})
@@ -737,7 +800,9 @@ func newROS2LifecycleCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListLifecycleNodes(cmd.Context(), &agentpbv2.ListROS2LifecycleNodesRequest{DomainId: ros2DomainPtr(nodesDomain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListLifecycleNodes(rpcCtx, &agentpbv2.ListROS2LifecycleNodesRequest{DomainId: ros2DomainPtr(nodesDomain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -786,7 +851,9 @@ func newROS2LifecycleCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.GetLifecycleState(cmd.Context(), &agentpbv2.GetROS2LifecycleStateRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.GetLifecycleState(rpcCtx, &agentpbv2.GetROS2LifecycleStateRequest{
 				DomainId: ros2DomainPtr(getDomain),
 				Node:     args[0],
 			})
@@ -814,7 +881,9 @@ func newROS2LifecycleCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListLifecycleTransitions(cmd.Context(), &agentpbv2.ListROS2LifecycleTransitionsRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListLifecycleTransitions(rpcCtx, &agentpbv2.ListROS2LifecycleTransitionsRequest{
 				DomainId: ros2DomainPtr(listDomain),
 				Node:     args[0],
 			})
@@ -860,7 +929,9 @@ func newROS2LifecycleCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.SetLifecycleState(cmd.Context(), &agentpbv2.SetROS2LifecycleStateRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.SetLifecycleState(rpcCtx, &agentpbv2.SetROS2LifecycleStateRequest{
 				DomainId:   ros2DomainPtr(setDomain),
 				Node:       args[0],
 				Transition: args[1],
@@ -902,7 +973,9 @@ func newROS2ComponentCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListComponents(cmd.Context(), &agentpbv2.ListROS2ComponentsRequest{DomainId: ros2DomainPtr(listDomain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListComponents(rpcCtx, &agentpbv2.ListROS2ComponentsRequest{DomainId: ros2DomainPtr(listDomain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -962,7 +1035,9 @@ func newROS2ComponentCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.LoadComponent(cmd.Context(), &agentpbv2.LoadROS2ComponentRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.LoadComponent(rpcCtx, &agentpbv2.LoadROS2ComponentRequest{
 				DomainId:  ros2DomainPtr(loadDomain),
 				Container: args[0],
 				Package:   args[1],
@@ -996,7 +1071,9 @@ func newROS2ComponentCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.UnloadComponent(cmd.Context(), &agentpbv2.UnloadROS2ComponentRequest{
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.UnloadComponent(rpcCtx, &agentpbv2.UnloadROS2ComponentRequest{
 				DomainId:  ros2DomainPtr(unloadDomain),
 				Container: args[0],
 				Uid:       uint32(uid),
@@ -1160,7 +1237,9 @@ func newROS2GraphCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.GetGraph(cmd.Context(), &agentpbv2.GetROS2GraphRequest{DomainId: ros2DomainPtr(domain)})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2FanOutTimeout)
+			defer rpcCancel()
+			resp, err := client.client.GetGraph(rpcCtx, &agentpbv2.GetROS2GraphRequest{DomainId: ros2DomainPtr(domain)})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -1307,7 +1386,9 @@ func newROS2BagListCmd() *cobra.Command {
 			}
 			defer client.Close()
 
-			resp, err := client.client.ListBags(cmd.Context(), &agentpbv2.ListROS2BagsRequest{})
+			rpcCtx, rpcCancel := ros2Ctx(cmd.Context(), ros2UnaryTimeout)
+			defer rpcCancel()
+			resp, err := client.client.ListBags(rpcCtx, &agentpbv2.ListROS2BagsRequest{})
 			if err != nil {
 				return ros2RPCError(err)
 			}
@@ -1672,7 +1753,7 @@ func drainExecStream(ctx context.Context, stream execRecvStream, args []string, 
 func newROS2ExecCmd() *cobra.Command {
 	var domain int32
 	cmd := &cobra.Command{
-		Use:   "exec [args...]",
+		Use:   "exec <args>...",
 		Short: "Run a raw ros2 CLI command on the device",
 		Long: `Run a raw ros2 CLI command inside the device's ROS 2 sidecar.
 

@@ -19,7 +19,7 @@ struct `'wendy device bluetooth disconnect'` {
                 #expect(result.status.isSuccess)
                 #expect(result.stdout.contains("Disconnect a Bluetooth peripheral"))
                 #expect(
-                    result.stdout.contains("wendy device bluetooth disconnect [address] [flags]")
+                    result.stdout.contains("wendy device bluetooth disconnect <address> [flags]")
                 )
                 #expect(result.stdout.contains("--device"))
                 #expect(result.stderr == "")

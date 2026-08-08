@@ -24,11 +24,16 @@ const (
 	audioGroupGID uint32 = 29
 	// videoGroupGID is the standard video group GID.
 	videoGroupGID uint32 = 44
-	// inputGroupGID is the standard input group GID (for /dev/input devices).
-	inputGroupGID uint32 = 105
+	// inputGroupFallbackGID is used when the host input group cannot be resolved.
+	// Debian/Ubuntu commonly use 105; WendyOS deliberately uses 19, so normal
+	// operation must resolve the host group instead of assuming this value.
+	inputGroupFallbackGID uint32 = 105
 	// dialoutGroupGID is the standard dialout group GID (owns serial tty nodes
 	// like /dev/ttyACM* and /dev/ttyUSB* on Debian/Ubuntu hosts).
 	dialoutGroupGID uint32 = 20
+	// appSystemAPIGroupGID is reserved by WendyOS for private app System API
+	// sockets, allowing non-root workloads to connect without world access.
+	appSystemAPIGroupGID uint32 = 2000
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -46,6 +51,9 @@ type ApplyOptions struct {
 	// DBUS_SYSTEM_BUS_ADDRESS — mounting the raw host D-Bus socket directly
 	// would expose every system service, so it is never done.
 	DBusProxySocketDir string
+	// SystemAPISocketDir is the app-specific host directory prepared by
+	// AppSystemAPISocketManager. It contains only the narrow System API socket.
+	SystemAPISocketDir string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -104,6 +112,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 				didSetDeviceCapabilities = true
 				SetDeviceCapabilities(spec)
 			}
+		case appconfig.EntitlementNotifications:
+			applySystemAPI(spec, opts.SystemAPISocketDir)
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
@@ -411,26 +421,36 @@ func applyDisplay(spec *Spec) {
 	}
 }
 
-// applyAdmin grants a container access to the wendy-agent's local control socket
-// (full gRPC, no mTLS). It is the entire trust boundary: only containers that
-// declare the admin entitlement get the socket, so anything with this can fully
-// control the device's apps. The mount is conditional on the host socket
-// existing so an app still starts if the agent socket is down (no-op-safe).
-//
-// The socket's parent *directory* is mounted, not the socket file. A file
-// bind-mount pins a single inode, but localsocket.Listen unlinks and recreates
-// the socket (a fresh inode) on every agent start. Mounting the file would
-// strand a long-lived container on the deleted inode after an agent restart
-// (every dial → connection refused). Mounting the directory lets the container
-// resolve the socket name live on each dial, so a restart is transparent.
-//
-// A directory mount only survives *socket-file* churn, though — it still pins
-// the directory's inode. That is why the host directory lives on disk
-// (AdminAgentSocketHostPath, under /var/lib/wendy) rather than on tmpfs /run: a
-// /run directory is wiped and re-created with a fresh inode on every boot, which
-// would strand the mount on the orphaned pre-reboot inode (in-container dial →
-// ENOENT). See AdminAgentSocketHostPath. The socket lives in its own dedicated
-// directory so this exposes nothing else. Read-only: connecting needs no write.
+// applySystemAPI mounts the app's stable, private System API directory. The
+// directory is mounted rather than the socket inode so Agent socket recreation
+// is transparent to an already-running container.
+func applySystemAPI(spec *Spec, hostDirectory string) {
+	if hostDirectory == "" {
+		return
+	}
+	const containerDirectory = "/run/wendy/system"
+	const containerSocket = containerDirectory + "/system.sock"
+	socketPath := filepath.Join(hostDirectory, "system.sock")
+	fi, err := os.Lstat(socketPath)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return
+	}
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: containerDirectory,
+		Source:      hostDirectory,
+		Type:        "bind",
+		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
+	})
+	spec.Process.User.AdditionalGids = appendUnique(
+		spec.Process.User.AdditionalGids,
+		appSystemAPIGroupGID,
+	)
+	spec.Process.Env = append(spec.Process.Env, "WENDY_SYSTEM_SOCKET="+containerSocket)
+}
+
+// applyAdmin grants a container access to the wendy-agent's full local control
+// socket. Its parent disk-backed directory is mounted so socket recreation and
+// host reboot do not strand a long-lived container on a stale inode.
 func applyAdmin(spec *Spec) {
 	fi, err := os.Lstat(AdminAgentSocketHostPath)
 	if err != nil || fi.Mode()&os.ModeSocket == 0 {
@@ -577,27 +597,39 @@ func applyAudio(spec *Spec) {
 		Access: "rw",
 	})
 
-	// isSocket reports whether path is a Unix domain socket. Uses Lstat
-	// so symlinks are not followed — runc can't resolve symlink targets
-	// through bind mounts.
+	// isSocket reports whether path is a Unix domain socket owned by the
+	// expected "wendy" session UID. Uses Lstat so symlinks are not followed —
+	// runc can't resolve symlink targets through bind mounts, and a symlink
+	// swapped in after the glob must not be. The owner check matters because
+	// pipewireUserSocketGlob matches every UID under /run/user: without it,
+	// any local UID's session socket could be the one this root-run code
+	// bind-mounts into a container.
 	isSocket := func(path string) bool {
 		fi, err := os.Lstat(path)
-		return err == nil && fi.Mode()&os.ModeSocket != 0 && fi.Mode()&os.ModeSymlink == 0
+		if err != nil || fi.Mode()&os.ModeSocket == 0 || fi.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		uid, ok := pipewireUserUID()
+		if !ok {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		return ok && st.Uid == uid
 	}
 
-	// Find the PipeWire socket. Check the system path first, then probe
-	// for a user session socket (e.g. /run/user/1000/pipewire-0 on RPi OS
-	// where PipeWire runs as a user service).
+	// Only a user session socket (/run/user/<uid>/pipewire-0) is mounted.
+	// WirePlumber runs inside the wendy user's session, and an instance
+	// without a session manager has an empty graph — no sinks, no Bluetooth,
+	// and no pulse/native beside it. Handing a container that socket gives it
+	// something that looks like audio and plays nothing, so no socket is
+	// mounted instead and the container is left with /dev/snd and the audio
+	// group, which is all such a host can honestly offer.
 	var pipewireSocketSource string
-	if isSocket("/run/pipewire/pipewire-0") {
-		pipewireSocketSource = "/run/pipewire/pipewire-0"
-	} else {
-		userSockets, _ := filepath.Glob("/run/user/*/pipewire-0")
-		for _, s := range userSockets {
-			if isSocket(s) {
-				pipewireSocketSource = s
-				break
-			}
+	userSockets, _ := filepath.Glob(pipewireUserSocketGlob)
+	for _, s := range userSockets {
+		if isSocket(s) {
+			pipewireSocketSource = s
+			break
 		}
 	}
 
@@ -659,11 +691,47 @@ var udevRuntimeDir = "/run/udev"
 // redirect into a tempdir.
 var driGlobs = []string{"/dev/dri/*"}
 
+// pipewireUserSocketGlob locates the PipeWire socket the audio entitlement
+// mounts. Behind a var so tests can redirect it into a tempdir.
+var pipewireUserSocketGlob = "/run/user/*/pipewire-0"
+
+// pipewireUserUID resolves the "wendy" user's UID, the only session whose
+// socket applyAudio will bind-mount into a container. Behind a var so tests
+// can stub it without requiring a real "wendy" account on the test host. See
+// the agent's own audio package for the equivalent used by its PipeWire
+// client.
+var pipewireUserUID = func() (uint32, bool) {
+	u, err := user.Lookup("wendy")
+	if err != nil {
+		return 0, false
+	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(uid), true
+}
+
 // lookupRenderGID resolves the host "render" group GID, which owns
 // /dev/dri/renderD*. Behind a var so tests can stub it. Returns ok=false when
 // the host has no render group (then only the video GID is added).
 var lookupRenderGID = func() (uint32, bool) {
 	g, err := user.LookupGroup("render")
+	if err != nil {
+		return 0, false
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(gid), true
+}
+
+// lookupInputGID resolves the host group that owns /dev/input. It is behind a
+// var so tests can cover WendyOS's GID 19 and the legacy fallback without
+// depending on the developer machine's group database.
+var lookupInputGID = func() (uint32, bool) {
+	g, err := user.LookupGroup("input")
 	if err != nil {
 		return 0, false
 	}
@@ -1206,10 +1274,18 @@ func applySPI(spec *Spec) {
 	})
 }
 
-// applyInput adds HID input device access (barcode scanners, keyboards, etc.).
+// applyInput adds Linux input access (game controllers, scanners, keyboards,
+// etc.).
 func applyInput(spec *Spec) {
-	// Add input group for /dev/input device permissions.
-	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGroupGID)
+	// Add the host's input group for /dev/input permissions. Group IDs are an
+	// image policy detail rather than a portable ABI: WendyOS uses 19 while
+	// Debian/Ubuntu commonly use 105. The supplemental group is what lets a
+	// non-root OCI process open the recursively mounted event nodes.
+	inputGID := inputGroupFallbackGID
+	if gid, ok := lookupInputGID(); ok {
+		inputGID = gid
+	}
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, inputGID)
 
 	// Mount /dev/input for HID event devices.
 	spec.Mounts = append(spec.Mounts, Mount{

@@ -61,3 +61,6 @@ Its state is persisted in `~/.wendy/config.json`:
 |----------|-------------|
 | `GITHUB_TOKEN` | When set, the CLI uses it as a bearer token for GitHub API release checks and agent update lookups. When absent, those requests are made unauthenticated. |
 | `WENDY_ANALYTICS` | Set to `false` to disable analytics. |
+| `WENDY_APPSTORE_API` | Override the Wendy AppStore resolution API base URL used by `wendy app install` / `wendy device apps install`. Takes precedence over the built-in default; the `--api` flag takes precedence over this variable. |
+| `WENDY_AGENT_SIGNATURE_PATH` | Path to a detached ML-DSA65 signature file for the agent update binary. When set, `wendy device update` includes the signature in the `UpdateAgent` RPC. Has no effect until a verification key is embedded in the agent. |
+| `WENDY_IMAGE_SIGNATURE_PATH` | Path to a detached ML-DSA65 signature file for the OCI image config. When set, `wendy run` includes the signature in `RunContainer` calls. Has no effect until a per-org publisher key is provisioned on the agent. |

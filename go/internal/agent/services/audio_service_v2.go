@@ -31,17 +31,31 @@ func (s *AudioServiceV2) ListAudioDevices(ctx context.Context, req *agentpbv2.Li
 	if err != nil {
 		return nil, err
 	}
+	volumes := s.v1.nodeVolumes(ctx, v1resp.Devices)
 	devices := make([]*agentpbv2.AudioDevice, len(v1resp.Devices))
 	for i, d := range v1resp.Devices {
 		devices[i] = &agentpbv2.AudioDevice{
-			DeviceId:    d.Id,
-			Name:        d.Name,
-			Description: d.Description,
-			Type:        agentpbv2.AudioDeviceType(d.Type),
-			IsDefault:   d.IsDefault,
+			DeviceId:      d.Id,
+			Name:          d.Name,
+			Description:   d.Description,
+			Type:          agentpbv2.AudioDeviceType(d.Type),
+			IsDefault:     d.IsDefault,
+			VolumePercent: volumes[d.Id],
 		}
 	}
 	return &agentpbv2.ListAudioDevicesResponse{Devices: devices}, nil
+}
+
+func (s *AudioServiceV2) SetAudioVolume(ctx context.Context, req *agentpbv2.SetAudioVolumeRequest) (*agentpbv2.SetAudioVolumeResponse, error) {
+	actual, err := s.v1.setAudioVolume(ctx, req.DeviceId, req.VolumePercent)
+	if err != nil {
+		message := err.Error()
+		return &agentpbv2.SetAudioVolumeResponse{Success: false, ErrorMessage: &message}, nil
+	}
+	return &agentpbv2.SetAudioVolumeResponse{
+		Success:       true,
+		VolumePercent: &actual,
+	}, nil
 }
 
 func (s *AudioServiceV2) SetDefaultAudioDevice(ctx context.Context, req *agentpbv2.SetDefaultAudioDeviceRequest) (*agentpbv2.SetDefaultAudioDeviceResponse, error) {

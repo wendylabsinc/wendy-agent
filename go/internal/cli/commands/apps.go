@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -134,6 +135,9 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			containers = append(containers, c)
 		}
 	}
+	sortRunningFirst(containers, func(c *agentpb.AppContainer) string {
+		return c.GetRunningState().String()
+	})
 
 	if jsonOutput {
 		type jsonService struct {
@@ -147,6 +151,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			FailureCount      uint32        `json:"failureCount,omitempty"`
 			ExitCode          *int32        `json:"exitCode,omitempty"` // pointer so a clean exit 0 is still emitted alongside terminationReason
 			TerminationReason string        `json:"terminationReason,omitempty"`
+			HTTPPort          uint32        `json:"httpPort,omitempty"`
 			Services          []jsonService `json:"services,omitempty"`
 		}
 		apps := make([]jsonApp, len(containers))
@@ -170,6 +175,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				FailureCount:      c.GetFailureCount(),
 				ExitCode:          exitCode,
 				TerminationReason: c.GetTerminationReason(),
+				HTTPPort:          c.GetHttpPort(),
 				Services:          svcs,
 			}
 		}
@@ -185,7 +191,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 		cliLogln("No applications deployed.")
 		return nil
 	}
-	headers := []string{"", "Name", "Version", "Failures", "Reason"}
+	headers := []string{"", "Name", "Version", "Port", "Failures", "Reason"}
 	var rows [][]string
 	for _, c := range containers {
 		services := c.GetServices()
@@ -195,6 +201,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName() + " " + lipgloss.NewStyle().Foreground(tui.ColorDim).Render("[group]"),
 				c.GetAppVersion(),
+				httpPortColumn(c.GetHttpPort()),
 				fmt.Sprintf("%d", c.GetFailureCount()),
 				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
@@ -206,6 +213,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 					"",
 					"",
 					"",
+					"",
 				})
 			}
 		} else {
@@ -213,6 +221,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName(),
 				c.GetAppVersion(),
+				httpPortColumn(c.GetHttpPort()),
 				fmt.Sprintf("%d", c.GetFailureCount()),
 				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
@@ -220,6 +229,15 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
+}
+
+// httpPortColumn renders an app's declared http entitlement port for the
+// apps-list table, or "" when the app declares none.
+func httpPortColumn(port uint32) string {
+	if port == 0 {
+		return ""
+	}
+	return fmt.Sprintf(":%d", port)
 }
 
 // terminationSummary renders a stopped app's exit reason for display. Empty for
@@ -312,6 +330,9 @@ func appsListProvider(ctx context.Context, cm providers.ContainerManager) error 
 	if err != nil {
 		return err
 	}
+	sortRunningFirst(containers, func(c providers.ContainerInfo) string {
+		return c.State
+	})
 
 	if jsonOutput {
 		data, err := json.MarshalIndent(containers, "", "  ")
@@ -751,6 +772,16 @@ type appInfo struct {
 	IsGroup bool // true when this app has multiple service containers
 }
 
+// sortRunningFirst performs a stable partition so running apps appear before
+// every other state while preserving the device's order within each group.
+func sortRunningFirst[T any](items []T, state func(T) string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		iRunning := strings.EqualFold(state(items[i]), "running")
+		jRunning := strings.EqualFold(state(items[j]), "running")
+		return iRunning && !jRunning
+	})
+}
+
 func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 	if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 		bleClient, err := connectBLEAgent(target.Bluetooth)
@@ -770,6 +801,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 				State:   a.GetState(),
 			}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 
@@ -796,6 +828,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 				})
 			}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 
@@ -812,6 +845,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 		for i, c := range containers {
 			apps[i] = appInfo{Name: c.Name, State: c.State}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 

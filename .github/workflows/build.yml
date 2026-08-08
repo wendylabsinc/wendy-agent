@@ -905,7 +905,11 @@ jobs:
   publish-agent-gcs:
     name: Publish agent to GCS
     runs-on: ubuntu-latest
-    needs: [determine-version, build]
+    # build-agent-macos-app is intentionally excluded from the result checks
+    # below (though still listed in needs, so its artifact is available to
+    # download): a failed or skipped macOS build must not block Linux agent
+    # publishing. The download step tolerates a missing macOS zip.
+    needs: [determine-version, build, build-agent-macos-app]
     if: |
       always() &&
       needs.determine-version.result == 'success' &&
@@ -922,6 +926,16 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: wendy-agent-linux-*.tar.gz
+          merge-multiple: true
+          path: agent-artifacts
+
+      # Optional: matches zero artifacts (and does not fail) if
+      # build-agent-macos-app failed or was skipped, e.g. during a
+      # macOS signing/notarization outage.
+      - name: Download macOS agent artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: wendy-agent-macos-*.zip
           merge-multiple: true
           path: agent-artifacts
 

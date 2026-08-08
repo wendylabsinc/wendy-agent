@@ -45,6 +45,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -166,6 +168,10 @@ func main() {
 
 	// Initialize containerd client (best-effort; may fail on non-Linux or without containerd).
 	var containerdClient services.ContainerdClient
+	// Declared here (rather than inside the else block below) so it stays in
+	// scope down at the mesh dialer / friendly-name resolver wiring, where the
+	// provisioning identity needed to build the roster becomes available.
+	var meshDNS *mesh.DNSServer
 	containerdAddr := os.Getenv("WENDY_CONTAINERD_ADDR")
 	if containerdAddr == "" {
 		containerdAddr = agentcontainerd.DefaultAddress
@@ -179,7 +185,7 @@ func main() {
 
 		// Inject the shared mesh DNS server so applyMeshEgress/teardownMeshEgress
 		// can resolve peer-device names for containers on the mesh network mode.
-		meshDNS := mesh.NewDNSServer(logger, "127.0.0.53:53")
+		meshDNS = mesh.NewDNSServer(logger, "127.0.0.53:53")
 		ctrdClient.SetMeshDNS(meshDNS)
 	}
 
@@ -263,11 +269,21 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
+	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
+	if ctrdClient != nil {
+		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
+		ctrdClient.RestoreAppSystemAPISockets(ctx)
+	}
+
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
+	// Network cameras have to be found before they can be listed, so probe
+	// periodically rather than only when a client asks.
+	videoSvc.StartDiscovery()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
@@ -619,11 +635,37 @@ func main() {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
 	}
 
+	// Hybrid friendly-name resolver: <devicename>.<org-slug>.cloud.wendy.dev.
+	// Mirrors the meshDialer construction just above — not gated on
+	// alreadyProvisioned. On an unenrolled device orgID/assetID/chainPEM are
+	// zero/empty, so MeshRoster.Sync simply fails closed (logged, retried)
+	// until the device is provisioned, rather than never starting at all.
+	meshRoster := services.NewMeshRoster(logger, cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
+	meshBrowse := func(ctx context.Context) ([]models.LANDevice, error) {
+		col, err := discovery.Discover(ctx, discovery.DiscoveryOptions{
+			Types:   []models.InterfaceType{models.InterfaceLAN},
+			Timeout: 1 * time.Second,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return col.LANDevices, nil
+	}
+	meshResolver := services.NewMeshResolver(logger, orgID, meshRoster, meshBrowse)
+	if meshDNS != nil {
+		meshDNS.SetResolver(meshResolver)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		meshRoster.RunSync(ctx, 5*time.Minute)
+	}()
+
 	if alreadyProvisioned {
 		startMTLSServer(certPEM, chainPEM, keyPEM)
 		startTunnelBroker()
-		_, _, assetID, _ := provisioningSvc.ProvisioningInfo()
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
+		_, orgID, assetID, _ := provisioningSvc.ProvisioningInfo()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 	}
 
@@ -731,7 +773,21 @@ func main() {
 			freshBrokerURL = brokerURLForCloudHost(cloudHost)
 		}
 		meshDialer.UpdateIdentity(freshBrokerURL, orgID, assetID, certPEM, keyPEM, chainPEM)
-		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID)
+		// Same story for the friendly-name roster/resolver: the boot-time
+		// snapshot is org=0/asset=0/empty chain, so without this refresh
+		// friendly names stay dead (resolver rejects every LAN peer, roster
+		// dials with a null identity) until the agent is restarted.
+		meshRoster.UpdateIdentity(cloudGRPCURLForCloudHost(cloudHost), orgID, assetID, certPEM, keyPEM, chainPEM)
+		meshResolver.UpdateOwnOrgID(orgID)
+		// Resync immediately so friendly names work without waiting for the periodic tick.
+		go func() {
+			sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			if err := meshRoster.Sync(sctx); err != nil {
+				logger.Warn("mesh roster resync after provisioning failed", zap.Error(err))
+			}
+		}()
+		configpartition.UpdateAvahiForProvisioning(logger, mtlsPortNum, assetID, orgID)
 		startBLEPeripheral(certPEM, chainPEM, keyPEM)
 		if agentServer != nil {
 			logger.Info("Device provisioned — shutting down plaintext gRPC port", zap.String("port", agentPort))
@@ -756,6 +812,13 @@ func main() {
 	// Best-effort and non-blocking: a cloud outage must never delay the agent
 	// coming up locally (mDNS discovery still works unenrolled).
 	go provisioningSvc.ApplyEnrollmentFile(context.Background())
+
+	// Restore audio peripherals paired before the last reboot. Nothing else
+	// does: BlueZ only reconnects after a link supervision timeout and has no
+	// startup path, and a speaker that was already powered when the host went
+	// away never pages us. Runs once per boot and waits on the user audio
+	// session, so it neither delays startup nor repeats on agent restarts.
+	go btManager.ReconnectTrusted(ctx)
 
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
@@ -967,6 +1030,16 @@ func brokerURLForCloudHost(cloudHost string) string {
 	return net.JoinHostPort(cloudHost, "50052")
 }
 
+// cloudGRPCURLForCloudHost returns the cloud API gRPC target for the mesh
+// roster RPC, derived from the provisioning cloud host the same way the broker
+// URL is. If WENDY_CLOUD_URL is set it wins (dev/self-host override).
+func cloudGRPCURLForCloudHost(cloudHost string) string {
+	if v := os.Getenv("WENDY_CLOUD_URL"); v != "" {
+		return v
+	}
+	return brokerURLForCloudHost(cloudHost) // same host:port; MeshRosterService is served there
+}
+
 func handleUtilityCommand(args []string) (bool, int) {
 	// CNI dispatch takes precedence over everything else, including the
 	// len(args) == 0 case below: the vendored bridge plugin's IPAM
@@ -991,8 +1064,21 @@ func handleUtilityCommand(args []string) (bool, int) {
 	}
 
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils open-browser <url>")
+		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils <command>")
 		return true, 2
+	}
+	if args[1] == "ipcam-gstreamer" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "invalid GStreamer helper invocation")
+			return true, 2
+		}
+		if err := services.RunIPCameraGStreamerHelper(os.Stdin, os.Stdout); err != nil {
+			// Keep this deliberately generic: the helper's pipeline contains camera
+			// credentials, and library diagnostics may repeat property values.
+			fmt.Fprintln(os.Stderr, "GStreamer capture pipeline failed")
+			return true, 1
+		}
+		return true, 0
 	}
 	if args[1] != "open-browser" {
 		return false, 0

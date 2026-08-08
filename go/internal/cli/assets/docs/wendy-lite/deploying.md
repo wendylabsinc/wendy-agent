@@ -26,8 +26,8 @@ Pick your language and build to `.wasm`:
 
 **Swift:**
 ```bash
-swiftly run +6.3.1 swift build \
-    --swift-sdk swift-6.3.1-RELEASE_wasm-embedded \
+swiftly run +6.3.2 swift build \
+    --swift-sdk swift-6.3.2-RELEASE_wasm-embedded \
     --triple wasm32-unknown-wasip1 \
     -c release
 # Output: .build/wasm32-unknown-wasip1/release/MyApp.wasm
@@ -70,6 +70,14 @@ idf.py flash
 
 The `idf.py build` step picks up the updated `main/demo_wasm.h` and links the WASM binary into the firmware. `idf.py flash` writes the merged binary over USB.
 
+> **Preview targets:** If you are targeting a chip that is in ESP-IDF preview (e.g. `esp32s31`), prepend `--preview` to every `idf.py` invocation:
+> ```bash
+> idf.py --preview set-target esp32s31
+> idf.py --preview build
+> idf.py --preview flash
+> ```
+> Without `--preview`, `set-target` prints a warning and exits without configuring the target.
+
 ---
 
 ## Updating a running device
@@ -77,6 +85,8 @@ The `idf.py build` step picks up the updated `main/demo_wasm.h` and links the WA
 ### USB flash (always available)
 
 The simplest update path is to re-run `idf.py flash` with the device connected via USB. No WiFi required; no agent required.
+
+> **Boards without auto-reset:** some ESP32 devkits do not wire DTR/RTS to the chip's BOOT/RESET pins. On these boards, `idf.py flash` will fail with "No serial data received" unless you manually enter bootloader mode first: hold the **BOOT** button, press and release **RESET**, then release **BOOT**. The ESP32-S31-Korvo-1 is one such board.
 
 ### CLI via WiFi (when WiFi is provisioned)
 

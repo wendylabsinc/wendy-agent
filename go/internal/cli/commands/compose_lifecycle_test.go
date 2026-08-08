@@ -263,7 +263,7 @@ func TestComposeStartAndStream_MetadataOnDeclaringServiceOnly(t *testing.T) {
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, nil, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -342,7 +342,7 @@ func TestComposeStartAndStream_UnimplementedFallbackNoDoubleFire(t *testing.T) {
 	stdoutW, stderrW := newServiceLogWriters(ordered)
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, nil, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, nil, stdoutW, stderrW); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -373,17 +373,35 @@ func TestComposeStartAndStream_AppLevelFiresOnceAfterAllStarted(t *testing.T) {
 	defer ln.Close()
 	port := testPort(t, ln)
 
-	svcCfgs := map[string]*appconfig.AppConfig{
-		"minecraft": {AppID: "app", ServiceName: "minecraft"},
-		"webui":     {AppID: "app", ServiceName: "webui"},
+	composeCfg := &composeConfig{Services: map[string]composeService{
+		"minecraft": {Image: "alpine"},
+		"webui":     {Image: "alpine"},
+	}}
+	companion := &appconfig.AppConfig{
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
+		Readiness:    &appconfig.ReadinessConfig{TimeoutSeconds: 180},
 	}
+	svcCfgs, warnings, err := buildComposeServiceConfigs("proj", composeCfg, companion)
+	if err != nil {
+		t.Fatalf("buildComposeServiceConfigs: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected config warnings: %v", warnings)
+	}
+	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 	ordered := []string{"minecraft", "webui"}
-	appLevelCfg := &appconfig.AppConfig{
-		AppID:     "app",
-		Readiness: &appconfig.ReadinessConfig{TCPSocket: &appconfig.TCPSocketProbe{Port: port}, TimeoutSeconds: 5},
-		Hooks: &appconfig.HooksConfig{
-			PostStart: &appconfig.HookCommand{OpenURL: fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)},
-		},
+	for _, name := range ordered {
+		if gotPort, ok := httpEntitlementPort(svcCfgs[name].Entitlements); !ok || gotPort != port {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited %d", name, gotPort, ok, port)
+		}
+		if svcLifecycleCfgs[name] != nil {
+			t.Errorf("%s private lifecycle config = %+v, want nil", name, svcLifecycleCfgs[name])
+		}
+	}
+	appLevelCfg := appLevelLifecycleConfig(companion.AppID, companion)
+	if appLevelCfg == nil || appLevelCfg.Readiness == nil || appLevelCfg.Readiness.TimeoutSeconds != 180 {
+		t.Fatalf("app-level lifecycle config = %+v, want timeoutSeconds 180", appLevelCfg)
 	}
 
 	fake := &composeHookContainerClient{deadline: time.Now().Add(20 * time.Second)}
@@ -401,7 +419,7 @@ func TestComposeStartAndStream_AppLevelFiresOnceAfterAllStarted(t *testing.T) {
 	stdoutW, stderrW := newServiceLogWriters(ordered)
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutW, stderrW); err != nil {
+	if err := composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutW, stderrW); err != nil {
 		t.Fatalf("composeStartAndStream: %v", err)
 	}
 
@@ -476,7 +494,7 @@ func TestComposeStartAndStream_NaturalEndSuppressesInFlightFallback(t *testing.T
 
 	done := make(chan error, 1)
 	go func() {
-		done <- composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutW, stderrW)
+		done <- composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcCfgs, appLevelCfg, stdoutW, stderrW)
 	}()
 
 	select {
@@ -503,15 +521,26 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("host-side hook uses `touch`, unavailable on Windows")
 	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	port := testPort(t, ln)
 
 	sentinel := filepath.Join(t.TempDir(), "webui-cli-ran")
 	browserCalls := swapBrowserOpen(t)
 
 	svcCfgs := map[string]*appconfig.AppConfig{
-		"minecraft": {AppID: "app", ServiceName: "minecraft"},
+		"minecraft": {
+			AppID:        "app",
+			ServiceName:  "minecraft",
+			Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
+		},
 		"webui": {
-			AppID:       "app",
-			ServiceName: "webui",
+			AppID:        "app",
+			ServiceName:  "webui",
+			Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
 			Hooks: &appconfig.HooksConfig{
 				PostStart: &appconfig.HookCommand{
 					CLI:   fmt.Sprintf("touch %q", sentinel),
@@ -520,10 +549,18 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 			},
 		},
 	}
+	svcLifecycleCfgs := map[string]*appconfig.AppConfig{
+		"minecraft": nil,
+		"webui": {
+			AppID:       "app",
+			ServiceName: "webui",
+			Hooks:       svcCfgs["webui"].Hooks,
+		},
+	}
 	ordered := []string{"minecraft", "webui"}
 	appLevelCfg := &appconfig.AppConfig{
-		AppID: "app",
-		Hooks: &appconfig.HooksConfig{PostStart: &appconfig.HookCommand{OpenURL: "http://${WENDY_HOSTNAME}:8080"}},
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: port}},
 	}
 
 	fake := &hookSvcContainerClient{}
@@ -535,7 +572,7 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 
 	runCtx, runCancel := context.WithCancel(context.Background())
 	defer runCancel()
-	if err := composeStartDetached(context.Background(), runCtx, conn, ordered, svcCfgs, appLevelCfg, "proj"); err != nil {
+	if err := composeStartDetached(context.Background(), runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, "proj"); err != nil {
 		t.Fatalf("composeStartDetached: %v", err)
 	}
 
@@ -562,7 +599,7 @@ func TestComposeDetach_HooksSequentialWithMetadata(t *testing.T) {
 	if len(*browserCalls) != 1 {
 		t.Fatalf("browserOpen fired %d times (%v), want exactly 1 (app-level fallback)", len(*browserCalls), *browserCalls)
 	}
-	if want := "http://127.0.0.1:8080"; (*browserCalls)[0] != want {
+	if want := fmt.Sprintf("http://127.0.0.1:%d", port); (*browserCalls)[0] != want {
 		t.Errorf("openURL = %q, want %q", (*browserCalls)[0], want)
 	}
 }

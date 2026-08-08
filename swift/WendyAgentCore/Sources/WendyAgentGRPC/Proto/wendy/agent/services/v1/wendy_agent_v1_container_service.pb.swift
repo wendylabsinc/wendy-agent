@@ -245,6 +245,11 @@ public nonisolated struct Wendy_Agent_Services_V1_RunContainerLayersRequest: Sen
   /// Detached ML-DSA65 signature over the SHA256 digest of the OCI image config; empty until a signer is deployed.
   public var imageSignature: Data = Data()
 
+  /// Additional environment variables to inject. Format: "KEY=VALUE".
+  /// Same semantics as CreateContainerRequest.env, which this path forwards to.
+  /// Agents predating this field ignore it and start the container without it.
+  public var env: [String] = []
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -1455,7 +1460,7 @@ nonisolated extension Wendy_Agent_Services_V1_LayerHeader: SwiftProtobuf.Message
 
 nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".RunContainerLayersRequest"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0\u{3}working_dir\0\u{3}user_args\0\u{3}image_config\0\u{3}image_signature\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}image_name\0\u{3}app_name\0\u{1}cmd\0\u{1}layers\0\u{3}app_config\0\u{3}restart_policy\0\u{3}working_dir\0\u{3}user_args\0\u{3}image_config\0\u{3}image_signature\0\u{1}env\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1473,6 +1478,7 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
       case 8: try { try decoder.decodeRepeatedStringField(value: &self.userArgs) }()
       case 9: try { try decoder.decodeSingularBytesField(value: &self.imageConfig) }()
       case 10: try { try decoder.decodeSingularBytesField(value: &self.imageSignature) }()
+      case 11: try { try decoder.decodeRepeatedStringField(value: &self.env) }()
       default: break
       }
     }
@@ -1513,6 +1519,9 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
     if !self.imageSignature.isEmpty {
       try visitor.visitSingularBytesField(value: self.imageSignature, fieldNumber: 10)
     }
+    if !self.env.isEmpty {
+      try visitor.visitRepeatedStringField(value: self.env, fieldNumber: 11)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1527,6 +1536,7 @@ nonisolated extension Wendy_Agent_Services_V1_RunContainerLayersRequest: SwiftPr
     if lhs.userArgs != rhs.userArgs {return false}
     if lhs.imageConfig != rhs.imageConfig {return false}
     if lhs.imageSignature != rhs.imageSignature {return false}
+    if lhs.env != rhs.env {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

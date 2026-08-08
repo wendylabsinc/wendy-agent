@@ -270,7 +270,7 @@ func newBluetoothConnectCmd() *cobra.Command {
 	var trust bool
 
 	cmd := &cobra.Command{
-		Use:   "connect [address]",
+		Use:   "connect <address>",
 		Short: "Connect to a Bluetooth peripheral",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -307,7 +307,7 @@ func newBluetoothConnectCmd() *cobra.Command {
 
 func newBluetoothDisconnectCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "disconnect [address]",
+		Use:   "disconnect <address>",
 		Short: "Disconnect a Bluetooth peripheral",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -333,7 +333,7 @@ func newBluetoothDisconnectCmd() *cobra.Command {
 
 func newBluetoothForgetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "forget [address]",
+		Use:   "forget <address>",
 		Short: "Forget a paired Bluetooth peripheral",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

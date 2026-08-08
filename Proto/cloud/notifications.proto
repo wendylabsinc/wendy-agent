@@ -4,10 +4,21 @@ package wendycloud.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "cloud/organizations.proto";
 
 service NotificationService {
-  rpc CreateNotification(CreateNotificationRequest) returns (Notification);
-  rpc ListNotifications(ListNotificationsRequest) returns (ListNotificationsResponse);
+  // Legacy single-user creation API. Kept for existing dashboard and legacy clients.
+  // MIGRATION(wendycloud.v2): Remove this RPC and request; see API_V2_MIGRATION.md.
+  rpc CreateNotification(CreateNotificationRequest) returns (Notification) {
+    option deprecated = true;
+  }
+  // Creates per-user Notifications for the union of users, organization teams, and roles.
+  // User credentials and provisioned-device credentials are both supported.
+  // notification_id is the caller-chosen resource UUID. Any reuse of its canonical UUID,
+  // including an otherwise identical request, fails with ALREADY_EXISTS.
+  rpc CreateNotificationV2(CreateNotificationV2Request) returns (CreateNotificationV2Response);
+  // Server-streamed pagination using offset/limit (matches OrganizationService)
+  rpc ListNotifications(ListNotificationsRequest) returns (stream ListNotificationsResponse);
   rpc GetNotification(GetNotificationRequest) returns (Notification);
   rpc DeleteNotification(DeleteNotificationRequest) returns (DeleteNotificationResponse);
   rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
@@ -22,7 +33,18 @@ enum NotificationSeverity {
   NOTIFICATION_SEVERITY_CRITICAL = 4;
 }
 
+message NotificationAudience {
+  // At least one selector is required and must resolve to at least one recipient.
+  // Cloud resolves the selectors as a deduplicated union, with at most 100 raw
+  // selectors across all three lists and at most 10,000 resolved users.
+  repeated string user_ids = 1;
+  repeated int32 team_ids = 2;
+  repeated OrganizationRole roles = 3;
+}
+
 message Notification {
+  // Fields 1 through 8 are the legacy Companion contract and must remain stable.
+  // MIGRATION(wendycloud.v2): Migrate the read model to canonical UUID APIs; see API_V2_MIGRATION.md.
   int32 id = 1;
   string user_id = 2;
   int32 organization_id = 3;
@@ -31,9 +53,21 @@ message Notification {
   google.protobuf.Struct related_entities = 6;
   google.protobuf.Timestamp created_at = 7;
   optional google.protobuf.Timestamp deleted_at = 8;
+
+  string title = 9;
+  string deep_link = 10;
+  // Canonical UUID v4; absent for legacy Notifications.
+  optional string notification_id = 11;
+  google.protobuf.Struct metadata = 12;
+  optional NotificationAudience audience = 13;
+  optional string created_by_user_id = 14;
+  optional int32 created_by_asset_id = 15;
+  optional string created_by_app_id = 16;
 }
 
 message CreateNotificationRequest {
+  option deprecated = true;
+
   string user_id = 1;
   int32 organization_id = 2;
   string body = 3;
@@ -41,19 +75,51 @@ message CreateNotificationRequest {
   google.protobuf.Struct related_entities = 5;
 }
 
+message CreateNotificationV2Request {
+  // Required for user-authenticated callers. Provisioned devices omit it because Cloud
+  // derives the organization from their certificate.
+  optional int32 organization_id = 1;
+  NotificationAudience audience = 2;
+  // REFACTOR: Request content intentionally duplicates Notification content because
+  // Notification must retain legacy flat fields 1-8 for Companion wire compatibility.
+  // MIGRATION(wendycloud.v2): Extract NotificationContent; see API_V2_MIGRATION.md.
+  // Required; 1-120 UTF-8 bytes, with no surrounding whitespace or control characters.
+  string title = 3;
+  // Required; 1-2,000 UTF-8 bytes, with no surrounding whitespace or control characters.
+  string body = 4;
+  // NOTIFICATION_SEVERITY_UNSPECIFIED is invalid.
+  NotificationSeverity severity = 5;
+  // Required absolute wendy:// URI understood by Wendy clients; 1-2,048 UTF-8 bytes,
+  // with a host and no userinfo or credentials.
+  string deep_link = 6;
+  // Caller-generated UUID v4, stored and returned as canonical lowercase text.
+  string notification_id = 7;
+  // Optional structured metadata; serialized JSON is limited to 16 KiB.
+  optional google.protobuf.Struct metadata = 8;
+  // Required for provisioned-device callers and stamped by the Wendy agent/daemon.
+  // Cloud validates that this app belongs to the authenticated organization and device.
+  optional string app_id = 9;
+}
+
+message CreateNotificationV2Response {
+  // Canonical lowercase UUID v4.
+  string notification_id = 1;
+
+}
+
 message ListNotificationsRequest {
   int32 organization_id = 1;
   string user_id = 2;
-  int32 page_size = 3;
-  string page_token = 4;
+  // Offset/limit based pagination
+  optional int32 offset = 3;
+  optional int32 limit = 4;
   optional NotificationSeverity severity_filter = 5;
   bool include_deleted = 6;
 }
 
 message ListNotificationsResponse {
-  repeated Notification notifications = 1;
-  string next_page_token = 2;
-  int32 total_count = 3;
+  Notification notification = 1;
+  int32 total = 2;
 }
 
 message GetNotificationRequest {

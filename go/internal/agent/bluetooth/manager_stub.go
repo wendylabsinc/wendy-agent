@@ -37,3 +37,5 @@ func (m *StubManager) Disconnect(_ context.Context, _ string) error {
 func (m *StubManager) Forget(_ context.Context, _ string) error {
 	return errUnsupported
 }
+
+func (m *StubManager) ReconnectTrusted(_ context.Context) {}

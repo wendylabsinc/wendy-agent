@@ -16,6 +16,40 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 
 > **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
+## Notifications
+
+Use `{ "type": "notifications" }` when an app needs to alert operators through
+Wendy Cloud and Companion. WendyKit exposes this as
+`WendyNotification.send(_:)`.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/system` (one private app-facing socket per app) |
+| Injected environment | `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock` |
+| Supplementary group | GID `2000`, so non-root apps can connect without world access |
+| Stable host directory | Per-app subdirectory under `/var/lib/wendy/app-system` |
+| Cloud deadline | 15 seconds per `Send` call |
+| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
+
+The app supplies one or more user, organization team, or role selectors plus
+content, severity, deep link, a caller-chosen Notification UUID v4 resource
+identity, and optional metadata. After successful creation, any canonical UUID
+reuse returns `ALREADY_EXISTS` rather than replaying success. A local validation
+or rate-limit rejection does not claim the UUID, so that UUID remains valid for
+retry. All selector categories are unioned, normalized, and deduplicated. The
+app-facing API accepts at most 100 selector entries before deduplication; Cloud
+resolves at most 10,000 recipients. The agent/daemon stamps trusted `app_id`;
+Wendy Cloud stores it as `created_by_app_id` and derives device and organization
+identity from device mTLS. Apps without the entitlement receive no private app
+connection mount, environment variable, or socket group. The full administrative Agent socket
+remains separate and requires `admin`.
+
+All entitled services in a multi-service app share the app's stable socket
+directory and app identity. Running containers reconnect on their next call
+after socket restoration; no redeploy is required. Stopped containers retain
+their mount and can reconnect when started again. The directory remains until
+the last entitled service container is deleted.
+
 ## Network
 
 The network entitlement allows the container to access the device's network. If the device is connected to WiFi, Ethernet or otherwise, the container will have access to make TCP and UDP connections to the internet.
@@ -35,7 +69,7 @@ A "network" type entitlement can have the following values:
 
 ## Input
 
-The input entitlement allows the container to access HID input devices such as barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
+The input entitlement allows the container to access Linux input devices such as game controllers, barcode scanners, keyboards, and other devices that appear under `/dev/input/`. This is separate from the USB entitlement — USB covers `/dev/bus/usb` (raw USB access), while input covers the higher-level Linux input subsystem.
 
 ```json
 {
@@ -45,22 +79,37 @@ The input entitlement allows the container to access HID input devices such as b
 
 The container receives:
 - A bind mount of `/dev/input/` (including `by-id/` symlinks for stable device identification)
-- Membership in the `input` group (GID 105) for device permissions
+- Membership in the host's `input` group for device permissions
 - A cgroup device rule allowing access to input devices (major 13)
 
 ### Device discovery
 
-Event device numbers (`/dev/input/event0`, `event1`, etc.) are assigned dynamically and can change across reboots. Use the stable symlinks under `/dev/input/by-id/` to identify devices reliably:
+Event device numbers (`/dev/input/event0`, `event1`, etc.) are assigned dynamically and can change across reboots. Use a stable symlink basename under `/dev/input/by-id/` where one exists, or the evdev device's `uniq` identity, to identify devices reliably:
 
 ```
 /dev/input/by-id/usb-USBKey_Chip_USBKey_Module_202730041341-event-kbd
 ```
 
+### Bluetooth game controllers
+
+BlueZ on WendyOS owns pairing, trust, and reconnect. Pair and trust the pad on
+the device first (both behaviors are enabled by default):
+
+```sh
+wendy device bluetooth connect <address>
+```
+
+Then declare `{ "type": "input" }` on the service that reads the controller
+and select it by `/dev/input/by-id` basename or evdev `uniq`. No controller API,
+mapping service, or raw `usb` entitlement is required for standard Linux
+gamepad event codes. The same input entitlement also covers a controller used
+over wired USB.
+
 ### When to use input vs USB
 
 | Entitlement | Access | Use case |
 |-------------|--------|----------|
-| `input` | `/dev/input/` (Linux input subsystem) | Reading HID events — barcode scanners, keyboards, game controllers |
+| `input` | `/dev/input/` (Linux input subsystem) | Reading input events — game controllers, barcode scanners, keyboards |
 | `usb` | `/dev/bus/usb` (raw USB) | Low-level USB communication — custom protocols, firmware updates, libusb |
 
 Most USB HID devices (scanners, keyboards) should use `input`. You only need `usb` if your app talks raw USB protocols.
@@ -158,6 +207,37 @@ spi.close()
 ```
 
 > **Security note:** unlike `serial` and `i2c` — which are scoped to a single named node's exact `major:minor` — `spi` is a **whole-major** grant. An app that declares it can open **every** SPI bus on the host, not just one. This is deliberate: the entitlement exposes the SPI subsystem rather than an individual bus, and a host can present many `spidev*.*` nodes whose minors are not known ahead of time. Grant it only to apps you trust with all of the device's SPI buses.
+
+## Audio
+
+The audio entitlement grants a container playback and capture access, both through the host's PipeWire session and through raw ALSA. One entitlement covers speakers and microphones alike.
+
+```json
+{
+    "type": "audio"
+}
+```
+
+The entitlement takes no options.
+
+The container receives:
+- A bind mount of `/dev/snd` for raw ALSA access
+- Membership in the `audio` group (GID 29) for device permissions
+- A cgroup device rule allowing the sound major (116) with `rw` access (no `mknod`)
+- The host's user-session PipeWire socket, mounted at `/run/pipewire/pipewire-0`, with `PIPEWIRE_RUNTIME_DIR=/run/pipewire` set
+- `PULSE_SERVER=unix:/run/pipewire/pulse-native`, when the host session exposes a PulseAudio compatibility socket
+
+### Prefer PipeWire over raw ALSA
+
+Both paths are granted, but they do not reach the same devices. ALSA can only see sound cards. A Bluetooth speaker or microphone has no card behind it — it exists only as a node in the PipeWire graph — so `aplay` and `arecord` cannot reach one at all.
+
+Use a PipeWire-aware client (`pw-play`, `pw-record`) or a PulseAudio one (`paplay`, GStreamer's `pulsesink`), which covers sound cards and Bluetooth endpoints alike. Reach for raw ALSA only when you specifically need a wired card.
+
+### When the host has no audio session
+
+Only the socket belonging to a **user session** is mounted. WendyOS runs the session manager inside the `wendy` user's session, and a PipeWire instance without one has an empty graph — no sinks, no sources, and no PulseAudio socket beside it.
+
+If no user session is running, the container still gets `/dev/snd` and the audio group, but no socket and no environment variables. This is deliberate: handing an app a socket onto an empty graph would give it something that looks like working audio and plays nothing. Check for `PIPEWIRE_RUNTIME_DIR` if your app needs to distinguish the two cases.
 
 ## Persist
 

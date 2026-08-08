@@ -264,9 +264,9 @@ func TestScanBluetoothPeripherals_WithPeripherals(t *testing.T) {
 // ---------- Audio tool tests ----------
 
 func TestListAudioDevices_ServiceAvailable(t *testing.T) {
-	// ListAudioDevices calls system tools (pw-cli/pactl/arecord). In CI without
-	// audio hardware it returns codes.Internal. Accept both outcomes: success
-	// with 0-N devices, or an unavailable-hardware error.
+	// ListAudioDevices queries the live PipeWire graph. CI has no session, so it
+	// returns codes.Internal there. Accept both outcomes: success with 0-N
+	// devices, or an unavailable-audio error.
 	cl, cleanup := startAudioServer(t)
 	defer cleanup()
 
@@ -287,61 +287,4 @@ func TestListAudioDevices_ServiceAvailable(t *testing.T) {
 	}
 	// If it succeeds, devices may be nil or empty — just verify it's a valid response.
 	t.Logf("ListAudioDevices returned %d device(s)", len(resp.GetDevices()))
-}
-
-func TestParseALSAOutput_InputDevices(t *testing.T) {
-	// Sample output from `arecord -l` on a system with one sound card.
-	output := `**** List of CAPTURE Hardware Devices ****
-card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]
-  Subdevices: 1/1
-  Subdevice #0: subdevice #0
-card 0: PCH [HDA Intel PCH], device 2: ALC3246 Alt Analog [ALC3246 Alt Analog]
-  Subdevices: 1/1
-  Subdevice #0: subdevice #0
-`
-
-	devices := parseALSAOutput(output, agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)
-	if len(devices) == 0 {
-		t.Fatal("expected at least one device from ALSA output")
-	}
-	for _, d := range devices {
-		if d.GetName() == "" {
-			t.Error("device name should not be empty")
-		}
-		if d.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT {
-			t.Errorf("device type = %v; want INPUT", d.GetType())
-		}
-	}
-	t.Logf("parsed %d ALSA input device(s)", len(devices))
-}
-
-func TestParseALSAOutput_OutputDevices(t *testing.T) {
-	output := `**** List of PLAYBACK Hardware Devices ****
-card 0: PCH [HDA Intel PCH], device 0: ALC3246 Analog [ALC3246 Analog]
-  Subdevices: 1/1
-  Subdevice #0: subdevice #0
-`
-
-	devices := parseALSAOutput(output, agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT)
-	if len(devices) == 0 {
-		t.Fatal("expected at least one device from ALSA output")
-	}
-	if devices[0].GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
-		t.Errorf("device type = %v; want OUTPUT", devices[0].GetType())
-	}
-}
-
-func TestParseALSAOutput_Empty(t *testing.T) {
-	devices := parseALSAOutput("", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)
-	if len(devices) != 0 {
-		t.Errorf("expected 0 devices from empty output, got %d", len(devices))
-	}
-}
-
-func TestParseALSAOutput_NoSoundcards(t *testing.T) {
-	output := "arecord: device_list:272: no soundcards found...\n"
-	devices := parseALSAOutput(output, agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)
-	if len(devices) != 0 {
-		t.Errorf("expected 0 devices when no soundcards, got %d", len(devices))
-	}
 }

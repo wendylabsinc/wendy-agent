@@ -14,7 +14,11 @@ Each integration test is a self-contained directory:
 .github/ci-tests/<name>/
 ```
 
-The naming convention is `<language>-<feature>`, for example `python-camera` or `swift-filesystem`.
+The naming convention is `<language>-<feature>`, for example `python-camera` or
+`swift-filesystem`. Entitlement boundaries use paired positive and negative
+fixtures where useful: `python-notifications` verifies the private app
+connection is present, while `python-no-notifications` verifies it is absent
+without the entitlement.
 
 Depending on the language, a test directory contains:
 
@@ -54,13 +58,17 @@ Depending on the language, a test directory contains:
 
 ### Test behaviour
 
-- Test apps must print a success message and exit `0` on success.
+- Test apps must print a line containing `PASS` and exit `0` on success.
 - Negative/blocking tests (verifying a capability is absent) should exit `1` if the blocked capability accidentally succeeds.
 - Each test is single-purpose: it proves exactly one feature works.
 
+Both signals are required. An attached `wendy run` exits `0` whatever the container did, so the harness reads the exit code back from `wendy device apps list --json` instead — and falls back to the printed verdict on agents that record no exit code, or when an app deployed under a `serviceName` reports only a running state. A test that prints no verdict can only be judged by the exit-code path.
+
+Assert on something the feature actually changes inside the container. A signal that is present whether or not the entitlement was granted proves nothing: `/sys` is a plain read-only sysfs mount, so device nodes under `/sys/class/*` are visible to every container regardless of entitlements. Write the negative test alongside the positive one and check that each fails when the entitlement is flipped — a test that cannot fail is worse than no test.
+
 ### Running integration tests locally
 
-Tests are driven by `go/scripts/test-ci.sh`. The script contains an `ALL_TESTS` array listing every registered test name.
+Tests are driven by `go/scripts/test-ci.sh`. Its `ALL_TESTS` array is the single source of truth for what runs: adding a name there is all that is needed, and CI runs whatever it lists.
 
 ```sh
 bash go/scripts/test-ci.sh <name>
@@ -68,11 +76,31 @@ bash go/scripts/test-ci.sh <name>
 
 Refer to the `usage()` block in that script for a full list of available test names and options.
 
+### Identifying the device under test
+
+Before running anything, the harness logs the agent version, OS, device type and architecture it found via `wendy device info`:
+
+```
+==> Agent version: 2026.07.27-003050
+==> Device OS: wendyos WendyOS-0.17.0
+==> Device type: jetson-agx-thor (arm64)
+```
+
+Read this first when triaging a failure. A result is only meaningful against a known agent, and an out-of-date agent produces failures indistinguishable from product bugs. Two values are worth recognising:
+
+- `Agent version: dev` — an unstamped binary, so a hand-built agent rather than a release. Push a current one with `wendy device update --device <host>`.
+- `Device type: none reported` — no `/etc/wendyos/device-type`, so the target is a generic Linux agent install and not a WendyOS image. Such a host is skipped by the nightly OS update and has no auto-updater, so its agent only changes when someone deploys one.
+
 ### CI execution
 
-Integration tests run in `.github/workflows/integration-tests.yml` on both macOS and Linux runners.
+Integration tests run in `.github/workflows/integration-tests.yml` on both macOS and Linux runners. Neither job names the tests it runs — the harness runs `ALL_TESTS` and decides what is applicable, so a newly registered test needs no workflow change.
 
-> **Note:** Swift tests (`swift-*`) run only on the macOS job. The Linux job omits them.
+The harness skips a test rather than failing it when the host or device cannot support it:
+
+| Tests | Skipped unless |
+| --- | --- |
+| `swift-*` | the build host has a `swiftly` toolchain (checked instead of `swift`, which on macOS is an Xcode shim that exists with no usable toolchain behind it) |
+| `*-gpu` | the device reports `gpuVendor: nvidia` — these are CUDA tests, and `hasGpu` is also true for a non-NVIDIA GPU with a `/dev/dri` node |
 
 #### Stable release gate
 
@@ -86,11 +114,13 @@ Pull requests from within the repository that modify files under `.github/` auto
 
 ## Automated Integration Test Coverage (CI)
 
-When a PR is merged into `main`, the workflow `.github/workflows/integration-test-coverage.yml` automatically checks whether the merged changes introduced new CLI features, device capabilities, entitlements, or deployment modes that are not yet covered by an integration test.
+`.github/workflows/integration-test-review.yml` checks whether a PR introduces CLI features, device capabilities, entitlements, or deployment modes that no integration test covers, and suggests the missing tests.
 
 ### How it works
 
-1. **Trigger:** Fires on `pull_request` closed events against `main`, but only when the PR was actually merged and does **not** carry the `ai-suggestion` label (to avoid recursive loops).
-2. **Diff fetch:** Downloads the full PR diff via the GitHub CLI.
-3. **Analysis:** Sends the diff, the PR title/body, all existing CI tests (up to a 20 000-byte budget), `go/scripts/test-ci.sh`, and `.github/workflows/integration-tests.yml` to Claude (Anthropic SDK `anthropic==0.97.0`, model `claude-sonnet-4-6`) with a prompt that instructs it to identify uncovered features and generate the necessary test files.
-4. **File writing:** Parses the `<file path="...">...
+1. **Trigger:** `pull_request` opened, synchronize, or reopened against `main`, for branches in this repository only.
+2. **Diff fetch:** Downloads the PR diff via the GitHub CLI.
+3. **Analysis:** Sends the diff, the PR title/body, the existing CI tests, `go/scripts/test-ci.sh`, and `.github/workflows/integration-tests.yml` to Claude, with a prompt describing the test layout and the registration step. It answers `NO_CHANGES_NEEDED` when nothing is missing.
+4. **Suggestion:** Posts the reply as a PR review comment containing the full file content for each suggested test. Nothing is committed — apply, adapt, or dismiss the suggestions yourself.
+
+The suggestions are only as current as that prompt. When the harness changes how tests are registered, run, or skipped, update the prompt in the workflow too, or it will keep advising authors to edit things that no longer exist.

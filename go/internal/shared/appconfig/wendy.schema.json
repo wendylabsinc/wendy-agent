@@ -31,6 +31,15 @@
       "type": "string",
       "description": "Project language (e.g. \"swift\", \"python\")."
     },
+    "serviceName": {
+      "type": "string",
+      "maxLength": 57,
+      "pattern": "^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$",
+      "description": "Name of the service this config describes within a multi-service app. Written by the CLI when it splits a services map."
+    },
+    "xcode": {
+      "$ref": "#/$defs/xcode"
+    },
     "debug": {
       "type": "boolean",
       "default": false,
@@ -74,6 +83,13 @@
     },
     "frameworks": { "$ref": "#/$defs/frameworks" },
     "resources": { "$ref": "#/$defs/resourceLimits" },
+    "env": {
+      "type": "object",
+      "description": "Environment variables to inject into the app's container. For a multi-service app this is the default, and a service's own env overrides it key by key. Values may reference host environment variables with ${VAR} (or $VAR), expanded by `wendy run` at deploy time; an entry whose value expands to empty is dropped so the container falls back to its own default.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "services": {
       "type": "object",
       "description": "Per-service build and runtime configuration for a multi-service app.",
@@ -280,11 +296,33 @@
         },
         {
           "properties": {
+            "type": { "const": "http" },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Primary HTTP port exposed by the app."
+            }
+          },
+          "required": ["type", "port"],
+          "additionalProperties": false,
+          "description": "Declares the app's primary HTTP port for discovery, readiness, and browser opening."
+        },
+        {
+          "properties": {
             "type": { "const": "display" }
           },
           "required": ["type"],
           "additionalProperties": false,
           "description": "Present to a locally-attached monitor as a Wayland client: GPU render nodes (/dev/dri) plus the WendyOS compositor's Wayland socket. At most one per app; requires a display-enabled WendyOS image."
+        },
+        {
+          "properties": {
+            "type": { "const": "notifications" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Send app-attributed Wendy Notifications through the app's private Wendy System API socket. The agent/daemon derives app, device, and organization identity; the entitlement never exposes the full Agent control plane."
         },
         {
           "properties": {
@@ -392,6 +430,17 @@
         }
       }
     },
+    "xcode": {
+      "type": "object",
+      "description": "Xcode build settings for native Darwin deployments.",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "description": "Xcode scheme to build."
+        }
+      }
+    },
     "run": {
       "type": "object",
       "description": "Runtime configuration applied when the app is started.",
@@ -433,6 +482,11 @@
             "distro": {
               "type": "string",
               "description": "ROS 2 distribution (e.g. humble, jazzy). Defaults to humble."
+            },
+            "discoveryScope": {
+              "type": "string",
+              "enum": ["app", "host"],
+              "description": "DDS discovery scope. 'app' (default) restricts discovery to the app group; 'host' permits discovery over the device host network."
             }
           }
         }

@@ -6,8 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install onnxruntime-gpu from Jetson AI Lab (CUDA 12.6 for JetPack 6.x).
 # CDI maps all CUDA libraries from the host at runtime.
+# The Jetson index carries only NVIDIA-built wheels, so it is an extra index:
+# with --index-url it replaces PyPI, onnxruntime-gpu's own dependencies
+# (flatbuffers, protobuf, sympy...) become unresolvable, and pip backtracks
+# through every wheel version to ResolutionImpossible.
 RUN pip3 install --no-cache-dir onnxruntime-gpu \
-    --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
+    --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
 
 # Install onnx (model creation) and numpy separately from PyPI.
 RUN pip3 install --no-cache-dir onnx numpy==1.26.4

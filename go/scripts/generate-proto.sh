@@ -88,6 +88,7 @@ CLOUD_PROTOS=(
     "cloud/assets.proto"
     "cloud/certificates.proto"
     "cloud/deployments.proto"
+    "cloud/mesh.proto"
     "cloud/notifications.proto"
     "cloud/organizations.proto"
     "cloud/remote_logging.proto"
@@ -101,8 +102,20 @@ for p in "${CLOUD_PROTOS[@]}"; do
     CLOUD_M_OPTS="$CLOUD_M_OPTS --go-grpc_opt=M${p}=${CLOUD_PKG}"
 done
 
+# ---- Wendy System API protos ----
+SYSTEM_PKG="$MODULE/go/proto/gen/systempb"
+SYSTEM_PROTOS=(
+    "wendy/system/v1/notifications.proto"
+)
+
+SYSTEM_M_OPTS=""
+for p in "${SYSTEM_PROTOS[@]}"; do
+    SYSTEM_M_OPTS="$SYSTEM_M_OPTS --go_opt=M${p}=${SYSTEM_PKG}"
+    SYSTEM_M_OPTS="$SYSTEM_M_OPTS --go-grpc_opt=M${p}=${SYSTEM_PKG}"
+done
+
 # All M opts combined for cross-package imports
-ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS"
+ALL_M_OPTS="$AGENT_M_OPTS $V2_AGENT_M_OPTS $OTEL_M_OPTS $CLOUD_M_OPTS $SYSTEM_M_OPTS"
 
 echo "Generating OpenTelemetry protos..."
 mkdir -p "$GEN_DIR/otelpb"
@@ -147,6 +160,17 @@ protoc \
     --go-grpc_out="$GEN_DIR/cloudpb" \
     --go-grpc_opt=module="$CLOUD_PKG" \
     ${CLOUD_PROTOS[@]}
+
+echo "Generating Wendy System API protos..."
+mkdir -p "$GEN_DIR/systempb"
+protoc \
+    --proto_path="$PROTO_DIR" \
+    --go_out="$GEN_DIR/systempb" \
+    --go_opt=module="$SYSTEM_PKG" \
+    $ALL_M_OPTS \
+    --go-grpc_out="$GEN_DIR/systempb" \
+    --go-grpc_opt=module="$SYSTEM_PKG" \
+    ${SYSTEM_PROTOS[@]}
 
 echo "Generating Wendy Lite protos..."
 LITE_PKG="$MODULE/go/proto/gen/litepb"

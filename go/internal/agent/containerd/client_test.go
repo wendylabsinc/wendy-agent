@@ -1035,7 +1035,7 @@ func TestBuildROS2Env_WithConfig(t *testing.T) {
 			},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	for _, want := range []string{
 		"ROS_DOMAIN_ID=42",
 		"RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
@@ -1052,9 +1052,28 @@ func TestBuildROS2Env_WithConfig(t *testing.T) {
 
 func TestBuildROS2Env_NoConfig(t *testing.T) {
 	cfg := &appconfig.AppConfig{}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if len(got) != 0 {
 		t.Errorf("expected empty env for no ROS2 config, got %v", got)
+	}
+}
+
+func TestBuildROS2Env_HostDiscovery(t *testing.T) {
+	domainID := 30
+	cfg := &appconfig.AppConfig{
+		Frameworks: &appconfig.FrameworksConfig{
+			ROS2: &appconfig.ROS2Config{
+				DomainID:       &domainID,
+				DiscoveryScope: appconfig.ROS2DiscoveryScopeHost,
+			},
+		},
+	}
+	got := mustBuildROS2Env(t, cfg, "sh.wendy.foxglovebridge", "")
+	if !envContains(got, "ROS_LOCALHOST_ONLY=0") {
+		t.Errorf("expected host discovery to disable localhost-only mode, got %v", got)
+	}
+	if envContains(got, "ROS_LOCALHOST_ONLY=1") {
+		t.Errorf("host discovery must not enable localhost-only mode, got %v", got)
 	}
 }
 
@@ -1062,7 +1081,7 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 	cfg := &appconfig.AppConfig{
 		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	val, ok := envValue(got, "ROS_DOMAIN_ID")
 	if !ok {
 		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
@@ -1072,7 +1091,7 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 		t.Errorf("auto domain ID = %q, want integer in [0,232]", val)
 	}
 	// Stable: a second call for the same appId must produce the same ID.
-	again := buildROS2Env(cfg, "com.example.app", "")
+	again := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if val2, _ := envValue(again, "ROS_DOMAIN_ID"); val2 != val {
 		t.Errorf("auto domain ID not stable: %q vs %q", val, val2)
 	}
@@ -1089,8 +1108,18 @@ func TestBuildROS2Env_InvalidDomainID(t *testing.T) {
 			ROS2: &appconfig.ROS2Config{DomainID: &domainID},
 		},
 	}
-	if got := buildROS2Env(cfg, "com.example.app", ""); len(got) != 0 {
-		t.Errorf("expected empty env for out-of-range domain ID, got %v", got)
+	// Previously this returned an empty env, which meant the container started
+	// with no ROS_DOMAIN_ID at all and fell back to the global default domain 0 —
+	// i.e. a validation gap produced maximum exposure. It must fail instead.
+	got, err := buildROS2Env(cfg, "com.example.app", "")
+	if err == nil {
+		t.Fatalf("expected an error for out-of-range domain ID, got env %v", got)
+	}
+	if got != nil {
+		t.Errorf("expected nil env alongside the error, got %v", got)
+	}
+	if !strings.Contains(err.Error(), "domain 0") {
+		t.Errorf("error should explain the domain-0 fallback it is preventing, got: %v", err)
 	}
 }
 
@@ -1100,7 +1129,7 @@ func TestBuildROS2Env_NonCycloneRMWSkipsCycloneURI(t *testing.T) {
 			ROS2: &appconfig.ROS2Config{RMW: "fastrtps"},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if !envContains(got, "RMW_IMPLEMENTATION=rmw_fastrtps_cpp") {
 		t.Errorf("expected short rmw name to normalize to rmw_fastrtps_cpp, got %v", got)
 	}
@@ -1120,11 +1149,11 @@ func TestBuildROS2Env_ServiceOverride(t *testing.T) {
 			"camera": {},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "detector")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "detector")
 	if !envContains(got, "ROS_DOMAIN_ID=7") {
 		t.Errorf("expected service-level override ROS_DOMAIN_ID=7, got %v", got)
 	}
-	got = buildROS2Env(cfg, "com.example.app", "camera")
+	got = mustBuildROS2Env(t, cfg, "com.example.app", "camera")
 	if !envContains(got, "ROS_DOMAIN_ID=1") {
 		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
 	}

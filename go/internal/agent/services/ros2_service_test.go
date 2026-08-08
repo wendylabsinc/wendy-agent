@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +32,9 @@ type fakeROS2Runtime struct {
 	outputs map[string]string
 	// execFn, when set, overrides the outputs map entirely.
 	execFn func(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error)
-	calls  []ROS2ExecOptions
+
+	mu    sync.Mutex // guards calls; ListTopics fans out concurrent ExecROS2 calls
+	calls []ROS2ExecOptions
 }
 
 func (f *fakeROS2Runtime) FindROS2Containers(context.Context) ([]ROS2Target, error) {
@@ -53,7 +56,9 @@ func (f *fakeROS2Runtime) StopROS2Sidecar(context.Context) error { return nil }
 func (f *fakeROS2Runtime) VerifyROS2Sidecar(context.Context) error { return f.verifyErr }
 
 func (f *fakeROS2Runtime) ExecROS2(ctx context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, opts)
+	f.mu.Unlock()
 	if f.execFn != nil {
 		return f.execFn(ctx, opts, stdout, stderr)
 	}
@@ -244,6 +249,118 @@ func TestROS2Service_ListTopicsWithCounts(t *testing.T) {
 	}
 }
 
+// TestROS2Service_ListTopicsCountsRunConcurrently proves --all's per-topic
+// `topic info` execs are fanned out rather than run one at a time: with n
+// topics each taking a fixed simulated delay, a sequential implementation
+// would take n*delay, while the bounded-concurrency implementation should
+// finish in a small multiple of delay regardless of n.
+func TestROS2Service_ListTopicsCountsRunConcurrently(t *testing.T) {
+	const n = 24
+	const delay = 20 * time.Millisecond
+
+	var listOut strings.Builder
+	for i := range n {
+		fmt.Fprintf(&listOut, "/t%d [std_msgs/msg/String]\n", i)
+	}
+
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, _ io.Writer) (int, error) {
+			switch {
+			case len(opts.Args) >= 2 && opts.Args[0] == "topic" && opts.Args[1] == "list":
+				io.WriteString(stdout, listOut.String())
+				return 0, nil
+			case len(opts.Args) >= 3 && opts.Args[0] == "topic" && opts.Args[1] == "info":
+				time.Sleep(delay)
+				fmt.Fprintf(stdout, "Type: std_msgs/msg/String\nPublisher count: 1\nSubscription count: 0\n")
+				return 0, nil
+			default:
+				return 1, nil
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	start := time.Now()
+	resp, err := svc.ListTopics(context.Background(), &agentpbv2.ListROS2TopicsRequest{IncludeCounts: true})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(resp.GetTopics()) != n {
+		t.Fatalf("got %d topics, want %d", len(resp.GetTopics()), n)
+	}
+
+	// Sequential execution would take n*delay = 480ms; bounded concurrency
+	// (width 8) needs only ceil(n/8) rounds ~= 60ms. Give generous slack for
+	// scheduling jitter while still failing if counts run one at a time.
+	if elapsed >= n*delay/2 {
+		t.Errorf("ListTopics(IncludeCounts) across %d topics took %v (>= %v); per-topic counts do not appear to run concurrently", n, elapsed, n*delay/2)
+	}
+}
+
+// TestROS2Service_ListTopicsCountsPreserveOrderAndTolerateErrors exercises the
+// concurrent fan-out with per-topic completion order scrambled (later topics
+// finish first) and one topic's `topic info` failing outright, verifying that
+// output order still matches `topic list` order and a failed lookup leaves
+// that topic's counts at zero rather than aborting the whole request.
+func TestROS2Service_ListTopicsCountsPreserveOrderAndTolerateErrors(t *testing.T) {
+	const n = 16
+	const failIdx = 3
+
+	var listOut strings.Builder
+	for i := range n {
+		fmt.Fprintf(&listOut, "/t%d [std_msgs/msg/String]\n", i)
+	}
+
+	rt := &fakeROS2Runtime{
+		sidecar: ROS2Sidecar{Distro: "humble"},
+		execFn: func(_ context.Context, opts ROS2ExecOptions, stdout, stderr io.Writer) (int, error) {
+			switch {
+			case len(opts.Args) >= 2 && opts.Args[0] == "topic" && opts.Args[1] == "list":
+				io.WriteString(stdout, listOut.String())
+				return 0, nil
+			case len(opts.Args) >= 3 && opts.Args[0] == "topic" && opts.Args[1] == "info":
+				var idx int
+				fmt.Sscanf(opts.Args[2], "/t%d", &idx)
+				if idx == failIdx {
+					io.WriteString(stderr, "boom")
+					return 1, nil
+				}
+				// Reverse-order delay: earlier topics in list order finish
+				// last, so completion order is the opposite of list order.
+				time.Sleep(time.Duration(n-idx) * time.Millisecond)
+				fmt.Fprintf(stdout, "Type: std_msgs/msg/String\nPublisher count: %d\nSubscription count: 0\n", idx)
+				return 0, nil
+			default:
+				return 1, nil
+			}
+		},
+	}
+	svc := newTestROS2Service(t, rt, t.TempDir())
+
+	resp, err := svc.ListTopics(context.Background(), &agentpbv2.ListROS2TopicsRequest{IncludeCounts: true})
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(resp.GetTopics()) != n {
+		t.Fatalf("got %d topics, want %d", len(resp.GetTopics()), n)
+	}
+	for i, topic := range resp.GetTopics() {
+		want := fmt.Sprintf("/t%d", i)
+		if topic.GetName() != want {
+			t.Fatalf("topics[%d].Name = %q, want %q (list order not preserved)", i, topic.GetName(), want)
+		}
+		wantPubs := int32(i)
+		if i == failIdx {
+			wantPubs = 0 // failed `topic info` leaves counts at zero
+		}
+		if topic.GetPublisherCount() != wantPubs {
+			t.Errorf("topics[%d].PublisherCount = %d, want %d", i, topic.GetPublisherCount(), wantPubs)
+		}
+	}
+}
+
 func TestROS2Service_GetSetParam(t *testing.T) {
 	rt := &fakeROS2Runtime{
 		sidecar: ROS2Sidecar{Distro: "humble"},
@@ -310,10 +427,17 @@ type fakeServerStream[T any] struct {
 	grpc.ServerStream
 	ctx  context.Context
 	sent []*T
+	// onSend, when set, runs after each Send with the new message count. Lets a
+	// test react to the stream mid-flight (e.g. cancel the client after the
+	// first message).
+	onSend func(count int) error
 }
 
 func (f *fakeServerStream[T]) Send(msg *T) error {
 	f.sent = append(f.sent, msg)
+	if f.onSend != nil {
+		return f.onSend(len(f.sent))
+	}
 	return nil
 }
 

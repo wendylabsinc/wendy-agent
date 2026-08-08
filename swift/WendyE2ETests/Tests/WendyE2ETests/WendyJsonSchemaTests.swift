@@ -52,7 +52,9 @@ struct `'wendy json schema'` {
                 let properties = try #require(schema["properties"] as? [String: Any])
                 let definitions = try #require(schema["$defs"] as? [String: Any])
 
-                #expect(schema["$schema"] as? String == "https://json-schema.org/draft/2020-12/schema")
+                #expect(
+                    schema["$schema"] as? String == "https://json-schema.org/draft/2020-12/schema"
+                )
                 #expect(schema["$id"] as? String == "https://wendy.dev/schemas/wendy.json")
                 #expect(properties["appId"] != nil)
                 #expect(properties["platform"] != nil)

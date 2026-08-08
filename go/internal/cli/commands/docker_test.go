@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -20,6 +21,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,6 +83,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		io.Discard,
 		io.Discard,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildAndPushImageWithBuilder: %v", err)
@@ -1309,9 +1313,12 @@ func TestResolveRegistryForAgentUsesConnectionDialer(t *testing.T) {
 		},
 	}
 
-	registryAddr, cleanup, err := resolveRegistryForAgent(ctx, conn, 5000)
+	registryAddr, cleanup, dialErr, err := resolveRegistryForAgent(ctx, conn, 5000)
 	if err != nil {
 		t.Fatalf("resolveRegistryForAgent: %v", err)
+	}
+	if dialErr == nil {
+		t.Fatal("resolveRegistryForAgent returned nil dialErr accessor")
 	}
 	defer cleanup()
 
@@ -1641,6 +1648,321 @@ func TestRegistryProxyBindsLoopback(t *testing.T) {
 	if !ip.IsLoopback() {
 		t.Fatalf("registry proxy bound to %s, want a loopback address", ip)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// isDialRefused / registry proxy dial-error recording
+//
+// These guard the "Mac agent has no container runtime" error path: a Mac
+// agent only opens its embedded registry when it found Docker/OrbStack/Apple
+// container at startup, so a push to a Mac with none installed dies with a
+// bare connection-refused. isDialRefused must recognize that specifically,
+// and both proxy types must record it so callers can explain what happened.
+// ---------------------------------------------------------------------------
+
+func TestIsDialRefused(t *testing.T) {
+	if isDialRefused(nil) {
+		t.Error("isDialRefused(nil) = true; want false")
+	}
+	if isDialRefused(errors.New("some other failure")) {
+		t.Error("isDialRefused(unrelated error) = true; want false")
+	}
+	refused := fmt.Errorf("dial tcp 192.168.0.200:5555: connect: %w", syscall.ECONNREFUSED)
+	if !isDialRefused(refused) {
+		t.Errorf("isDialRefused(%v) = false; want true", refused)
+	}
+	if !isDialRefused(errors.New("dial tcp 127.0.0.1:5555: connect: connection refused")) {
+		t.Error("isDialRefused should match on the 'connection refused' message even without a wrapped errno")
+	}
+}
+
+func TestRegistryProxy_RecordsDialError(t *testing.T) {
+	// Reserve a port, then close it immediately so nothing is listening —
+	// dialing it is refused, mirroring a Mac agent with no container runtime.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := ln.Addr().String()
+	ln.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	proxy, err := startRegistryProxy(ctx, "127.0.0.1:0", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	if err := proxy.LastDialError(); err != nil {
+		t.Fatalf("LastDialError before any connection = %v; want nil", err)
+	}
+
+	conn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(proxy.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// The proxy closes the client connection once the dial to target fails.
+	buf := make([]byte, 1)
+	_, _ = conn.Read(buf)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if dialErr := proxy.LastDialError(); dialErr != nil {
+			if !isDialRefused(dialErr) {
+				t.Errorf("LastDialError = %v; want a connection-refused error", dialErr)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("LastDialError was never recorded")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestMTLSRegistryHTTPProxy_RecordsDialError(t *testing.T) {
+	ca := generateTestCA(t)
+	clientLeaf := generateTestLeaf(t, ca, x509.ExtKeyUsageClientAuth)
+
+	// Reserve then release a port so dialing it is refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := ln.Addr().String()
+	ln.Close()
+
+	proxy, err := startMTLSRegistryHTTPProxy(target, clientLeaf.pemStr, marshalKeyPEM(t, clientLeaf.key), ca.pemStr)
+	if err != nil {
+		t.Fatalf("startMTLSRegistryHTTPProxy: %v", err)
+	}
+	defer proxy.Close()
+
+	if err := proxy.LastDialError(); err != nil {
+		t.Fatalf("LastDialError before any request = %v; want nil", err)
+	}
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/v2/", proxy.Port()))
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d; want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+
+	dialErr := proxy.LastDialError()
+	if dialErr == nil {
+		t.Fatal("LastDialError = nil after a refused request; want a recorded error")
+	}
+	if !isDialRefused(dialErr) {
+		t.Errorf("LastDialError = %v; want a connection-refused error", dialErr)
+	}
+}
+
+func TestMaybeRegistryUnavailable(t *testing.T) {
+	refused := fmt.Errorf("dial tcp 192.168.1.20:5555: connect: %w", syscall.ECONNREFUSED)
+	buildErr := errors.New("docker buildx build failed: exit status 1")
+
+	t.Run("darwin refused converts", func(t *testing.T) {
+		err := maybeRegistryUnavailable("darwin", "wendys-mac.local", func() error { return refused }, buildErr)
+		if !isRegistryUnavailable(err) {
+			t.Fatalf("err = %v; want registryUnavailableError", err)
+		}
+		msg := err.Error()
+		for _, want := range []string{
+			"wendys-mac.local",
+			"isn't running a container registry",
+			"update the",
+			`"platform": "darwin"`,
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("message %q missing %q", msg, want)
+			}
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Error("friendly error does not unwrap to the dial error")
+		}
+	})
+	t.Run("linux refused passes through", func(t *testing.T) {
+		if err := maybeRegistryUnavailable("linux", "device.local", func() error { return refused }, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+	t.Run("darwin nil accessor passes through", func(t *testing.T) {
+		if err := maybeRegistryUnavailable("darwin", "device.local", nil, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+	t.Run("darwin non-refused dial error passes through", func(t *testing.T) {
+		timeout := errors.New("dial tcp: i/o timeout")
+		if err := maybeRegistryUnavailable("darwin", "device.local", func() error { return timeout }, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+}
+
+func TestRegistryProxy_ClearsDialErrorOnSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var dials atomic.Int32
+	proxy, err := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(context.Context) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, fmt.Errorf("dial tcp: connect: %w", syscall.ECONNREFUSED)
+		}
+		proxySide, remoteSide := net.Pipe()
+		go func() {
+			buf := make([]byte, 4)
+			n, err := remoteSide.Read(buf)
+			if err == nil && n > 0 {
+				_, _ = remoteSide.Write(buf[:n])
+			}
+		}()
+		return proxySide, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	addr := "127.0.0.1:" + strconv.Itoa(proxy.Port())
+
+	// First connection: dial fails, error recorded.
+	c1, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c1.Read(buf) // proxy closes the conn on dial failure
+	c1.Close()
+	waitFor(t, "refused dial recorded", func() bool { return isDialRefused(proxy.LastDialError()) })
+
+	// Second connection succeeds: the recorded error must clear.
+	c2, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if _, err := c2.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c2.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "dial error cleared after success", func() bool { return proxy.LastDialError() == nil })
+}
+
+// waitFor polls cond every 10ms until it holds, failing the test after 2s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestResolveRegistryForAgent_DialErrAccessorAndCacheHit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refused := fmt.Errorf("broker tunnel: connect: %w", syscall.ECONNREFUSED)
+	conn := &grpcclient.AgentConnection{
+		Host: "refusing-device",
+		RegistryDialer: func(context.Context, int) (net.Conn, error) {
+			return nil, refused
+		},
+	}
+
+	addr1, cleanup1, dialErr1, err := resolveRegistryForAgent(ctx, conn, 5555)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAgent: %v", err)
+	}
+	defer cleanup1()
+	if dialErr1 == nil {
+		t.Fatal("nil dialErr accessor on first resolve")
+	}
+	if got := dialErr1(); got != nil {
+		t.Fatalf("dialErr before any connection = %v; want nil", got)
+	}
+
+	_, port, err := net.SplitHostPort(addr1)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", addr1, err)
+	}
+	c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c.Read(buf)
+	c.Close()
+	waitFor(t, "refused dial visible via accessor", func() bool { return isDialRefused(dialErr1()) })
+
+	// Cache hit: same address, and the accessor still reports the failure.
+	addr2, cleanup2, dialErr2, err := resolveRegistryForAgent(ctx, conn, 5555)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAgent (cache hit): %v", err)
+	}
+	defer cleanup2()
+	if addr2 != addr1 {
+		t.Fatalf("cache hit addr = %q; want %q", addr2, addr1)
+	}
+	if dialErr2 == nil || !isDialRefused(dialErr2()) {
+		t.Fatal("cache hit accessor does not report the recorded refusal")
+	}
+}
+
+func TestResolveRegistryForAppleContainer_RecordsDialRefused(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Reserve then release a port so dialing it is refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+
+	conn := &grpcclient.AgentConnection{Host: "127.0.0.1"}
+	addr, cleanup, useMTLS, dialErr, err := resolveRegistryForAppleContainer(ctx, conn, deadPort)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAppleContainer: %v", err)
+	}
+	defer cleanup()
+	if useMTLS {
+		t.Fatal("plain-LAN branch returned useMTLS = true")
+	}
+	if dialErr == nil {
+		t.Fatal("nil dialErr accessor")
+	}
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c.Read(buf)
+	c.Close()
+	waitFor(t, "refused dial recorded", func() bool { return isDialRefused(dialErr()) })
 }
 
 func TestFindIPv4ViaNeighborTable_UnknownAddress(t *testing.T) {

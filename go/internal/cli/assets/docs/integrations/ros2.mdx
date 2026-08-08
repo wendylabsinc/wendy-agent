@@ -21,6 +21,12 @@ The agent discovers ROS 2 app containers (those deployed with a `frameworks.ros2
 config in `wendy.json`) and starts a CLI sidecar in the same DDS domain. Your
 `ros2` commands run inside that sidecar over gRPC.
 
+ROS 2 discovery is app-local by default: Wendy injects `ROS_LOCALHOST_ONLY=1`
+so unrelated apps and robots do not discover each other. A bridge or inspection
+tool that intentionally needs the device's wider ROS 2 graph can opt in with
+`"discoveryScope": "host"` in `frameworks.ros2`; pair it with a host-network
+entitlement so DDS can reach the device interfaces.
+
 <Callout type="info">
 No SSH, no `source /opt/ros/<distro>/setup.bash`, and no extra ports. If a device
 runs apps across multiple RMW implementations (for example CycloneDDS and Fast

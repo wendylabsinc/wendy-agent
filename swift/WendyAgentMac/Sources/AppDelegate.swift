@@ -32,6 +32,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
                 delegate: self
             )
 
+            // Registered before start() so the services the agent builds at
+            // startup capture it. Invoked from a detached task after the
+            // update RPC has returned, so stop()'s drain cannot deadlock on
+            // the still-open update stream.
+            await self.wendyAgent.setAgentTerminationHandler { [weak self] in
+                await self?.performQuit()
+            }
+
             do {
                 try await self.wendyAgent.start()
             } catch {
@@ -58,6 +66,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate,
     }
 
     func statusMenuControllerDidSelectQuit(_ controller: StatusMenuController) {
+        self.performQuit()
+    }
+
+    /// Shuts the agent down and terminates the app. Shared by the Quit menu
+    /// item and the agent's post-update termination handler; re-entrant calls
+    /// are ignored.
+    private func performQuit() {
         guard !self.isQuitting else { return }
         self.isQuitting = true
 

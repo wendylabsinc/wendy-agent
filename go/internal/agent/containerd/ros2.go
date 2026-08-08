@@ -38,6 +38,11 @@ const (
 	// list and stream bags without exec round-trips.
 	ROS2BagDir = "/var/wendy/ros2-bags"
 
+	// ROS2BagDirMode keeps recordings off world-readable. Bags carry raw sensor
+	// data — camera frames, lidar, audio, positions — so 0o755 was more open than
+	// it needed to be.
+	ROS2BagDirMode = 0o750
+
 	// labelKeyROS2Sidecar marks the sidecar container and stores its distro.
 	// The sidecar intentionally has no sh.wendy/app.version label so it never
 	// appears in ListContainers output.
@@ -68,6 +73,11 @@ const (
 	// escalating to SIGKILL. `ros2 bag record` needs the grace period to
 	// finalize the bag on disk.
 	ros2ExecStopGrace = 10 * time.Second
+
+	// ros2ExecKillWait bounds the wait for the exit status after SIGKILL. The
+	// previous bare channel receive could hold the RPC — and one of the sidecar's
+	// ros2MaxConcurrentExecs slots — forever if the shim never reported.
+	ros2ExecKillWait = 15 * time.Second
 
 	// ros2MaxConcurrentExecs is the maximum number of simultaneous ExecROS2
 	// calls allowed against a single sidecar. Beyond this the exec is rejected
@@ -342,7 +352,10 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 			zap.String("rmw", rmw), zap.String("image", image.Name()), zap.String("anchor", anchor.ContainerID))
 	}
 
-	if err := os.MkdirAll(ROS2BagDir, 0o755); err != nil {
+	// 0o750, not 0o755: rosbag2 recordings are raw sensor data (camera frames,
+	// lidar, audio, positions) and there is no reason for every local account on
+	// the device to be able to read them.
+	if err := os.MkdirAll(ROS2BagDir, ROS2BagDirMode); err != nil {
 		return services.ROS2Sidecar{}, fmt.Errorf("creating bag directory: %w", err)
 	}
 
@@ -461,6 +474,37 @@ func (c *Client) ensureOneROS2Sidecar(ctx context.Context, anchor *services.ROS2
 	return sidecar, nil
 }
 
+// ros2ShellArgs builds the argv for running `script` inside the sidecar, with
+// `extra` appended as positional arguments ("$@" starts at $1).
+//
+// Uses `/bin/sh` rather than `/bin/bash`. Every non-FastRTPS RMW — which includes
+// the CycloneDDS default, i.e. the common case — reuses the *app's own image* as
+// the sidecar image, and a slim ROS image (the natural target for a C++ or Swift
+// node) frequently ships no bash. That made the CLI probe fail with an opaque
+// setup error and then every `wendy device ros2` command fail with a bare exec
+// error. `source` is a bashism, so it becomes `.`, which is POSIX and works in
+// bash too.
+//
+// Split out as a pure function so the shell contract is unit-testable without
+// containerd.
+func ros2ShellArgs(distro, script string, extra []string) []string {
+	args := []string{"/bin/sh", "-c", script}
+	if extra != nil {
+		// argv[0] for the script's positional parameters; "$@" then starts at the
+		// first element of extra.
+		args = append(args, "ros2")
+		args = append(args, extra...)
+	}
+	return args
+}
+
+// ros2SourceAndExec is the shell script the sidecar runs for a `ros2` invocation:
+// source the ROS environment, then exec the CLI with the caller's arguments kept
+// out of shell interpretation via "$@" (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+func ros2SourceAndExec(distro string) string {
+	return fmt.Sprintf(". /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec ros2 \"$@\"", distro)
+}
+
 // sidecarHasROS2CLI reports whether the running sidecar task can find the ros2
 // CLI on PATH after sourcing the ROS environment. Used to fail loudly when a
 // reused app image shipped the RMW but not ros2cli (WDY-1593). A probe-setup
@@ -473,10 +517,9 @@ func (c *Client) sidecarHasROS2CLI(ctx context.Context, container containerd.Con
 	}
 	pspec := spec.Process
 	pspec.Terminal = false
-	pspec.Args = []string{
-		"/bin/bash", "-lc",
-		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", distro),
-	}
+	pspec.Args = ros2ShellArgs(distro,
+		fmt.Sprintf(". /opt/ros/%s/setup.bash >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", distro),
+		nil)
 	execID := fmt.Sprintf("ros2-probe-%d", ros2ExecCounter.Add(1))
 	proc, err := task.Exec(ctx, execID, pspec, cio.NullIO)
 	if err != nil {
@@ -812,19 +855,21 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 	pspec := spec.Process
 	// The ROS environment lives in /opt/ros/<distro>/setup.bash; the "$@"
 	// indirection keeps user-supplied args out of shell interpretation
-	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10). See ros2ShellArgs for why this is
+	// /bin/sh rather than /bin/bash.
 	pspec.Terminal = false
-	pspec.Args = append([]string{
-		"/bin/bash", "-c",
-		fmt.Sprintf("source /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec ros2 \"$@\"", distro),
-		"ros2",
-	}, opts.Args...)
+	pspec.Args = ros2ShellArgs(distro, ros2SourceAndExec(distro), opts.Args)
 	// Copy pspec.Env before appending to avoid mutating the slice header returned
 	// by container.Spec (future callers might cache the spec or share the backing
 	// array across execs — defensive copy prevents env bleed-over, L5, WDY-1706).
+	//
+	// ROS_AUTOMATIC_DISCOVERY_RANGE accompanies ROS_LOCALHOST_ONLY for the same
+	// reason as in buildROS2Env: the latter has been deprecated since Iron, and the
+	// sidecar has to see the same graph as the app it is anchored to.
 	pspec.Env = append(append([]string(nil), pspec.Env...),
 		"ROS_DOMAIN_ID="+strconv.Itoa(opts.DomainID),
 		"ROS_LOCALHOST_ONLY=1",
+		"ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST",
 	)
 	// Match the anchor app's RMW so the CLI speaks the same DDS implementation;
 	// otherwise it falls to the image default and sees nothing on another RMW
@@ -865,18 +910,46 @@ func (c *Client) ExecROS2(ctx context.Context, opts services.ROS2ExecOptions, st
 		return -1, fmt.Errorf("starting ROS 2 exec: %w", err)
 	}
 
+	// drainIO waits for containerd's cio copy goroutines to finish moving the
+	// FIFOs into stdout/stderr.
+	//
+	// The exit status arriving does NOT mean the output has been copied. The
+	// deferred proc.Delete then calls cio.Cancel(), which *closes the read ends of
+	// the FIFOs* and aborts any copy still in flight (containerd v2
+	// pkg/cio/io_unix.go copyIO + client/process.go Delete). So the tail of a
+	// command's output could be silently dropped — and every caller here hands
+	// stdout straight to a parser, which then reported a partial topic/node list
+	// with exit code 0. Waiting here first lets the copies finish naturally: the
+	// writer side is already closed by the exited process, so each copy sees a
+	// clean EOF.
+	drainIO := func() {
+		if pio := proc.IO(); pio != nil {
+			pio.Wait()
+		}
+	}
+
 	select {
 	case st := <-statusC:
+		drainIO()
 		return int(st.ExitCode()), st.Error()
 	case <-ctx.Done():
 		_ = proc.Kill(nctx, syscall.SIGINT)
 		select {
 		case st := <-statusC:
+			drainIO()
 			return int(st.ExitCode()), ctx.Err()
 		case <-time.After(ros2ExecStopGrace):
 			_ = proc.Kill(nctx, syscall.SIGKILL)
-			st := <-statusC
-			return int(st.ExitCode()), ctx.Err()
+			// Bounded: a wedged shim would otherwise hold this RPC (and one of the
+			// sidecar's ros2MaxConcurrentExecs slots) forever.
+			select {
+			case st := <-statusC:
+				drainIO()
+				return int(st.ExitCode()), ctx.Err()
+			case <-time.After(ros2ExecKillWait):
+				return -1, fmt.Errorf("ROS 2 exec did not exit within %s of SIGKILL: %w",
+					ros2ExecKillWait, ctx.Err())
+			}
 		}
 	}
 }

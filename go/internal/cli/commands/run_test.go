@@ -309,7 +309,7 @@ func TestExpandServiceEnv(t *testing.T) {
 		"LITERAL":    "5",
 	}}
 
-	got := expandServiceEnv(svc)
+	got := expandServiceEnv(nil, svc)
 	want := []string{"LITERAL=5", "MESH_PEERS=265,266,267"}
 	if len(got) != len(want) {
 		t.Fatalf("expandServiceEnv() = %v, want %v", got, want)
@@ -320,10 +320,90 @@ func TestExpandServiceEnv(t *testing.T) {
 		}
 	}
 
-	if expandServiceEnv(nil) != nil {
+	if expandServiceEnv(nil, nil) != nil {
 		t.Fatal("expandServiceEnv(nil) should be nil")
 	}
-	if expandServiceEnv(&appconfig.ServiceConfig{}) != nil {
+	if expandServiceEnv(nil, &appconfig.ServiceConfig{}) != nil {
 		t.Fatal("expandServiceEnv(no env) should be nil")
+	}
+}
+
+// TestExpandServiceEnv_AppLevelDefault covers WDY-2040: app-level env is the
+// default for each service, and the service's own env wins key by key.
+func TestExpandServiceEnv_AppLevelDefault(t *testing.T) {
+	appCfg := &appconfig.AppConfig{Env: map[string]string{
+		"SHARED":   "app",
+		"OVERRIDE": "app",
+	}}
+	svc := &appconfig.ServiceConfig{Env: map[string]string{
+		"OVERRIDE": "service",
+		"OWN":      "service",
+	}}
+
+	got := expandServiceEnv(appCfg, svc)
+	want := []string{"OVERRIDE=service", "OWN=service", "SHARED=app"}
+	if len(got) != len(want) {
+		t.Fatalf("expandServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expandServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// TestResolveServiceEnv_AppLevel covers WDY-2040: a single-container app has no
+// services map, so its env comes from the app level alone.
+func TestResolveServiceEnv_AppLevel(t *testing.T) {
+	t.Setenv("HOST_TOKEN", "abc123")
+
+	cfg := &appconfig.AppConfig{Env: map[string]string{
+		"OTEL_LOGS_EXPORTER": "console",
+		"TOKEN":              "${HOST_TOKEN}",
+		"UNSET":              "${NOT_SET_IN_HOST_ENV}",
+	}}
+
+	got := resolveServiceEnv(cfg)
+	want := []string{"OTEL_LOGS_EXPORTER=console", "TOKEN=abc123"}
+	if len(got) != len(want) {
+		t.Fatalf("resolveServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolveServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// A service env entry overrides the app-level default of the same key when the
+// whole app is deployed as one container request.
+func TestResolveServiceEnv_ServiceOverridesAppLevel(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Env: map[string]string{"SHARED": "app", "ONLY_APP": "app"},
+		Services: map[string]*appconfig.ServiceConfig{
+			"api": {Env: map[string]string{"SHARED": "service"}},
+		},
+	}
+
+	got := resolveServiceEnv(cfg)
+	want := []string{"ONLY_APP=app", "SHARED=service"}
+	if len(got) != len(want) {
+		t.Fatalf("resolveServiceEnv() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("resolveServiceEnv()[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestValidateEnvFlag(t *testing.T) {
+	if err := validateEnvFlag([]string{"OK=1", "EMPTY=", "WITH_EQUALS=a=b"}); err != nil {
+		t.Fatalf("validateEnvFlag rejected valid entries: %v", err)
+	}
+	for _, entry := range []string{"NO_EQUALS", "BAD-KEY=1", "1LEADING=1", "=1"} {
+		if err := validateEnvFlag([]string{entry}); err == nil {
+			t.Errorf("validateEnvFlag(%q) = nil, want an error", entry)
+		}
 	}
 }

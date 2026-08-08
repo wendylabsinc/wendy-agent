@@ -30,7 +30,7 @@ func newCloudTunnelCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return cloudTunnelCommand(cmd.Context(), cloudGRPC, deviceName, brokerURL, localPort, remotePort, udp)
+			return cloudTunnelCommand(cmd.Context(), cloudGRPC, effectiveDeviceName(deviceName), brokerURL, localPort, remotePort, udp)
 		},
 	}
 

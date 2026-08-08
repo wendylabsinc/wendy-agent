@@ -118,6 +118,54 @@ func TestMultiServiceCreateConfig_DoesNotInheritTopLevelHooks(t *testing.T) {
 	}
 }
 
+func TestMultiServiceLifecycleConfig_ScopesHTTPEntitlements(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		AppID: "sh.wendy.examples.wendymc",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host"},
+			{Type: appconfig.EntitlementHTTP, Port: 8080},
+		},
+		Readiness: &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"minecraft": {Context: "./minecraft"},
+			"webui":     {Context: "./webui"},
+		},
+	}
+
+	for _, name := range []string{"minecraft", "webui"} {
+		createCfg := multiServiceCreateConfig(appCfg, name, appCfg.Services[name])
+		if port, ok := httpEntitlementPort(createCfg.Entitlements); !ok || port != 8080 {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited 8080", name, port, ok)
+		}
+		if lifecycleCfg := multiServiceLifecycleConfig(appCfg.AppID, name, appCfg.Services[name]); lifecycleCfg != nil {
+			t.Errorf("%s lifecycle config = %+v, want nil (top-level HTTP must not execute per service)", name, lifecycleCfg)
+		}
+	}
+
+	appLifecycle := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+	if appLifecycle == nil {
+		t.Fatal("app-level HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(appLifecycle.Entitlements); !ok || port != 8080 {
+		t.Errorf("app-level lifecycle HTTP = %d, %v; want 8080", port, ok)
+	}
+	if appLifecycle.Readiness == nil || appLifecycle.Readiness.TimeoutSeconds != 180 {
+		t.Errorf("app-level readiness = %+v, want timeoutSeconds 180", appLifecycle.Readiness)
+	}
+	if readiness := effectiveReadiness(appLifecycle); readiness == nil || readiness.TCPSocket == nil || readiness.TCPSocket.Port != 8080 || readiness.TimeoutSeconds != 180 {
+		t.Errorf("effective app-level readiness = %+v, want port 8080 with timeoutSeconds 180", readiness)
+	}
+
+	appCfg.Services["webui"].Entitlements = []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 9090}}
+	serviceLifecycle := multiServiceLifecycleConfig(appCfg.AppID, "webui", appCfg.Services["webui"])
+	if serviceLifecycle == nil {
+		t.Fatal("service-local HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(serviceLifecycle.Entitlements); !ok || port != 9090 {
+		t.Errorf("service lifecycle HTTP = %d, %v; want service-declared 9090", port, ok)
+	}
+}
+
 func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 	appCfg := ros2ExampleAppConfig()
 	cfg := multiServiceCreateConfig(appCfg, "talker", appCfg.Services["talker"])
@@ -125,5 +173,40 @@ func TestMultiServiceContainerName_MatchesAgentConvention(t *testing.T) {
 	// the agent derives from (AppID, ServiceName) at creation time.
 	if got := multiServiceContainerName(appCfg.AppID, "talker"); got != cfg.ContainerName() {
 		t.Errorf("multiServiceContainerName = %q, ContainerName() = %q — start/stop would miss the container", got, cfg.ContainerName())
+	}
+}
+
+// TestMultiServiceCreateConfig_CarriesResolvedResources covers WDY-2171/WDY-1729:
+// the per-service config sent to the agent has no services map, so it must
+// carry the already-resolved limits. Without them the agent resolves nothing
+// and the container runs uncapped.
+func TestMultiServiceCreateConfig_CarriesResolvedResources(t *testing.T) {
+	pids := int64(256)
+	appCfg := &appconfig.AppConfig{
+		AppID:     "app",
+		Resources: &appconfig.ResourceLimits{Memory: "256Mi", PIDs: &pids},
+		Services: map[string]*appconfig.ServiceConfig{
+			"db":  {Context: "db"},
+			"api": {Context: "api", Resources: &appconfig.ResourceLimits{Memory: "128Mi"}},
+		},
+	}
+
+	db := multiServiceCreateConfig(appCfg, "db", appCfg.Services["db"])
+	if db.Resources == nil {
+		t.Fatal("db: resources are nil; the service inherits the app-level limits")
+	}
+	if db.Resources.Memory != "256Mi" {
+		t.Errorf("db memory = %q, want the inherited 256Mi", db.Resources.Memory)
+	}
+
+	api := multiServiceCreateConfig(appCfg, "api", appCfg.Services["api"])
+	if api.Resources == nil {
+		t.Fatal("api: resources are nil")
+	}
+	if api.Resources.Memory != "128Mi" {
+		t.Errorf("api memory = %q, want its own 128Mi", api.Resources.Memory)
+	}
+	if api.Resources.PIDs == nil || *api.Resources.PIDs != pids {
+		t.Errorf("api pids = %v, want the inherited %d (a memory override must not drop it)", api.Resources.PIDs, pids)
 	}
 }

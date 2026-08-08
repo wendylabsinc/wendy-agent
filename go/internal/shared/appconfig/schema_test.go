@@ -3,6 +3,7 @@ package appconfig
 import (
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 )
 
@@ -75,6 +76,16 @@ func TestSchemaJSON_HasFrameworksAndServices(t *testing.T) {
 	for k := range want {
 		t.Errorf("ros2RMWAliases key %q is missing from schema rmw enum", k)
 	}
+
+	// Discovery scope must stay aligned with the values accepted by Go validation.
+	discoveryScope, _ := ros2Props["discoveryScope"].(map[string]any)
+	if discoveryScope == nil {
+		t.Fatal("$defs.frameworks.ros2 missing discoveryScope property")
+	}
+	discoveryEnum, _ := discoveryScope["enum"].([]any)
+	if len(discoveryEnum) != 2 || discoveryEnum[0] != ROS2DiscoveryScopeApp || discoveryEnum[1] != ROS2DiscoveryScopeHost {
+		t.Errorf("schema discoveryScope enum = %v, want [%q %q]", discoveryEnum, ROS2DiscoveryScopeApp, ROS2DiscoveryScopeHost)
+	}
 }
 
 func TestSchemaJSON_HasResources(t *testing.T) {
@@ -143,6 +154,64 @@ func TestSchemaJSON_ServiceHasReadinessAndHooks(t *testing.T) {
 	}
 }
 
+func TestSchemaJSON_HTTPEntitlement(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	entitlement := defOf(t, schema, "entitlement")
+	branches, ok := entitlement["oneOf"].([]any)
+	if !ok {
+		t.Fatal("$defs.entitlement missing oneOf")
+	}
+
+	var httpBranch map[string]any
+	for _, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		props, _ := branch["properties"].(map[string]any)
+		typeProp, _ := props["type"].(map[string]any)
+		if typeProp["const"] == "http" {
+			httpBranch = branch
+			break
+		}
+	}
+	if httpBranch == nil {
+		t.Fatal("$defs.entitlement.oneOf missing http branch")
+	}
+	if additional, ok := httpBranch["additionalProperties"].(bool); !ok || additional {
+		t.Errorf("http entitlement additionalProperties = %v, want false", httpBranch["additionalProperties"])
+	}
+
+	required, _ := httpBranch["required"].([]any)
+	requiredSet := make(map[string]bool, len(required))
+	for _, key := range required {
+		if name, ok := key.(string); ok {
+			requiredSet[name] = true
+		}
+	}
+	for _, key := range []string{"type", "port"} {
+		if !requiredSet[key] {
+			t.Errorf("http entitlement does not require %q", key)
+		}
+	}
+
+	props := schemaProps(t, httpBranch)
+	port, ok := props["port"].(map[string]any)
+	if !ok {
+		t.Fatal("http entitlement missing port property")
+	}
+	if got := port["type"]; got != "integer" {
+		t.Errorf("http port type = %v, want integer", got)
+	}
+	if got := int(port["minimum"].(float64)); got != 1 {
+		t.Errorf("http port minimum = %d, want 1", got)
+	}
+	if got := int(port["maximum"].(float64)); got != 65535 {
+		t.Errorf("http port maximum = %d, want 65535", got)
+	}
+}
+
 func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 	// The flagship ROS 2 example must validate against the schema (WDY-1700):
 	// every top-level key it uses must be a declared property, else
@@ -165,4 +234,60 @@ func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {
 			t.Errorf("ROS 2 example uses top-level key %q not declared in schema properties (additionalProperties:false would reject it)", k)
 		}
 	}
+}
+
+// TestSchemaJSON_MatchesStructFields is a sync guard: the schema declares
+// additionalProperties:false, so any field the Go structs decode but the schema
+// omits is reported as invalid by editors, and any schema-only property is
+// accepted in an editor and then silently dropped at load.
+func TestSchemaJSON_MatchesStructFields(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	cases := []struct {
+		name  string
+		props map[string]any
+		want  map[string]bool
+	}{
+		{"top level", schemaProps(t, schema), jsonFieldNames(reflect.TypeOf(AppConfig{}))},
+		{"$defs.service", schemaProps(t, defOf(t, schema, "service")), jsonFieldNames(reflect.TypeOf(ServiceConfig{}))},
+	}
+
+	for _, tc := range cases {
+		for key := range tc.want {
+			if _, ok := tc.props[key]; !ok {
+				t.Errorf("%s: schema is missing %q, which the struct decodes", tc.name, key)
+			}
+		}
+		for key := range tc.props {
+			// $schema is an editor pointer, not a config field.
+			if key == "$schema" {
+				continue
+			}
+			if !tc.want[key] {
+				t.Errorf("%s: schema declares %q, which no struct field decodes", tc.name, key)
+			}
+		}
+	}
+}
+
+func schemaProps(t *testing.T, node map[string]any) map[string]any {
+	t.Helper()
+	props, ok := node["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("node has no properties object")
+	}
+	return props
+}
+
+func defOf(t *testing.T, schema map[string]any, name string) map[string]any {
+	t.Helper()
+	defs, _ := schema["$defs"].(map[string]any)
+	def, ok := defs[name].(map[string]any)
+	if !ok {
+		t.Fatalf("schema missing $defs.%s", name)
+	}
+	return def
 }

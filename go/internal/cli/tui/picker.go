@@ -152,6 +152,10 @@ type PickerItem struct {
 	// secured with mTLS. A warning is shown in the picker when this item is highlighted.
 	Insecure bool
 
+	// AgentOutdated marks the agent as older than the CLI, rendered as a glyph
+	// on the Agent column. Callers own the comparison; the picker only displays it.
+	AgentOutdated bool
+
 	// Value is the opaque payload returned when this item is selected.
 	Value interface{}
 }
@@ -238,7 +242,7 @@ type PickerModel struct {
 	spinner      spinner.Model // animates Agent/OS cells while probes are pending
 	columns      []pickerColumnDef
 	fixedColumns bool
-	legend       string // optional glyph legend rendered under the table
+	deviceLegend bool // render the device glyph legend under the table
 	selected     *PickerItem
 	scanning     bool
 	quitting     bool
@@ -262,7 +266,7 @@ func NewPicker() PickerModel {
 		spinner:      newProbeSpinner(),
 		columns:      pickerDeviceColumnDefs,
 		fixedColumns: true,
-		legend:       DeviceTableLegend,
+		deviceLegend: true,
 		scanning:     true,
 	}
 	m.refreshTable()
@@ -583,12 +587,12 @@ func (m PickerModel) View() string {
 		sb.WriteString(m.viewLine(style.Render("  "+m.flashMessage)) + "\n")
 	}
 
-	if m.legend != "" {
-		sb.WriteString(m.viewLine(pickerHint.Render("  "+m.legend)) + "\n")
+	if m.deviceLegend {
+		sb.WriteString(m.viewLine(pickerHint.Render("  "+DeviceTableLegend(visible))) + "\n")
 	}
 
 	if idx := m.itemIndexForRow(m.table.Cursor()); idx >= 0 && idx < len(visible) && visible[idx].Insecure {
-		sb.WriteString(m.viewLine(pickerInsecure.Render("  ⚠  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
+		sb.WriteString(m.viewLine(pickerInsecure.Render("  "+GlyphInsecure+"  Connection is not secured with mTLS. PKI support is coming soon.")) + "\n")
 	}
 
 	if m.scanning {
@@ -654,8 +658,62 @@ func (m PickerModel) Selected() *PickerItem {
 	return m.selected
 }
 
-// DeviceTableLegend explains the glyphs used in the compact device table.
-const DeviceTableLegend = "● provisioned  ○ unprovisioned  ✦ default  ⚠ agent older than CLI"
+// Glyphs marking a warning state on a device row, and the legend entries that
+// explain them. Each glyph has exactly one meaning across every device table.
+const (
+	GlyphOutdated = "⚠"
+	GlyphInsecure = "!"
+
+	LegendOutdated = GlyphOutdated + " agent older than CLI"
+	LegendInsecure = GlyphInsecure + " not using mTLS"
+)
+
+// DeviceTableLegendBase documents the glyphs the device table always explains.
+// These are common enough that their absence from a row is itself informative,
+// so they stay listed whether or not any row carries them.
+const DeviceTableLegendBase = "● provisioned  ○ unprovisioned  ✦ default"
+
+// DeviceTableLegend documents the base glyphs plus each warning glyph that
+// items actually render, so a warning is never advertised when none is shown.
+func DeviceTableLegend(items []PickerItem) string {
+	legend := DeviceTableLegendBase
+	for _, entry := range deviceLegendWarnings(items) {
+		legend += "  " + entry
+	}
+	return legend
+}
+
+// deviceLegendWarnings returns the legend entries for the warning glyphs items
+// render, in glyph order. Empty when no row carries one.
+func deviceLegendWarnings(items []PickerItem) []string {
+	var outdated, insecure bool
+	for _, item := range items {
+		outdated = outdated || itemShowsOutdated(item)
+		insecure = insecure || item.Insecure
+	}
+	var entries []string
+	if outdated {
+		entries = append(entries, LegendOutdated)
+	}
+	if insecure {
+		entries = append(entries, LegendInsecure)
+	}
+	return entries
+}
+
+// DeviceWarningLegend documents only the warning glyphs items render, for
+// tables that have no provisioned/default markers to explain. Empty when
+// nothing is marked, so the caller can omit the line entirely.
+func DeviceWarningLegend(items []PickerItem) string {
+	return strings.Join(deviceLegendWarnings(items), "  ")
+}
+
+// itemShowsOutdated reports whether the Agent cell renders the outdated glyph.
+// A pending probe shows a spinner and a failed one may show no version at all,
+// and neither can carry a marker.
+func itemShowsOutdated(item PickerItem) bool {
+	return item.AgentOutdated && item.AgentVersion != "" && item.Probe != ProbePending
+}
 
 type pickerColumnDef struct {
 	title    string
@@ -740,7 +798,11 @@ var pickerDeviceColumnDefs = []pickerColumnDef{
 		title:    "Agent",
 		minWidth: 7,
 		value: func(item PickerItem) string {
-			return probeColumnValue(item.Probe, item.AgentVersion, item.ProbeFrame)
+			val := probeColumnValue(item.Probe, item.AgentVersion, item.ProbeFrame)
+			if itemShowsOutdated(item) {
+				val += " " + GlyphOutdated
+			}
+			return val
 		},
 	},
 	{
@@ -1098,7 +1160,7 @@ func pickerRows(items []PickerItem, cols []pickerColumnDef, defaultKey string, h
 		for _, col := range cols {
 			val := col.value(item)
 			if col.required && item.Insecure {
-				val += " ⚠"
+				val += " " + GlyphInsecure
 			}
 			row = append(row, val)
 		}

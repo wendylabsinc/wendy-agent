@@ -21,11 +21,25 @@ enum DeviceIdentity {
         "sh/wendy/\(organizationID)/\(assetID)"
     }
 
+    /// The authoritative Wendy identity URN for a device (asset):
+    /// `urn:wendy:org:<org>:asset:<assetID>`. This is placed in the CSR as a URI
+    /// SAN and is what `OrgIdentity.identity(fromLeaf:)` prefers over the
+    /// CommonName. Mirrors the Go agent's `certs.AssetURN`.
+    static func assetURN(organizationID: Int32, assetID: Int32) -> String {
+        "urn:wendy:org:\(organizationID):asset:\(assetID)"
+    }
+
     /// A PEM-encoded PKCS#10 CSR for `commonName`, signed with the given key.
     /// Requests digitalSignature key usage (critical) and clientAuth+serverAuth
     /// EKUs so the device identity can act as both a TLS client to the cloud and
-    /// a TLS server for the agent's gRPC endpoint.
-    static func generateCSRPEM(privateKeyPEM: String, commonName: String) throws -> String {
+    /// a TLS server for the agent's gRPC endpoint. `identityURN`, when non-empty,
+    /// is added as a URI SAN carrying the authoritative Wendy identity (build it
+    /// with `assetURN(organizationID:assetID:)`).
+    static func generateCSRPEM(
+        privateKeyPEM: String,
+        commonName: String,
+        identityURN: String
+    ) throws -> String {
         let privateKey = try Certificate.PrivateKey(pemEncoded: privateKeyPEM)
 
         let subject = try DistinguishedName {
@@ -37,6 +51,50 @@ enum DeviceIdentity {
                 KeyUsage(digitalSignature: true)
             )
             try ExtendedKeyUsage([.clientAuth, .serverAuth])
+            if !identityURN.isEmpty {
+                SubjectAlternativeNames([.uniformResourceIdentifier(identityURN)])
+            }
+        }
+
+        let attributes = try CertificateSigningRequest.Attributes([
+            .init(ExtensionRequest(extensions: extensions))
+        ])
+
+        let csr = try CertificateSigningRequest(
+            version: .v1,
+            subject: subject,
+            privateKey: privateKey,
+            attributes: attributes,
+            signatureAlgorithm: .ecdsaWithSHA256
+        )
+
+        return try csr.serializeAsPEM().pemString
+    }
+
+    /// A PEM-encoded PKCS#10 CSR for `commonName`, signed through a Secure
+    /// Enclave-backed identity (the raw key never enters process memory).
+    /// Otherwise identical to `generateCSRPEM(privateKeyPEM:commonName:identityURN:)`:
+    /// same subject, same critical `digitalSignature` key usage, same
+    /// client/server EKUs, same URI SAN — only the key source differs.
+    static func generateCSRPEM(
+        identity: SecureEnclaveIdentity,
+        commonName: String,
+        identityURN: String
+    ) throws -> String {
+        let privateKey = identity.certificatePrivateKey
+
+        let subject = try DistinguishedName {
+            CommonName(commonName)
+        }
+
+        let extensions = try Certificate.Extensions {
+            Critical(
+                KeyUsage(digitalSignature: true)
+            )
+            try ExtendedKeyUsage([.clientAuth, .serverAuth])
+            if !identityURN.isEmpty {
+                SubjectAlternativeNames([.uniformResourceIdentifier(identityURN)])
+            }
         }
 
         let attributes = try CertificateSigningRequest.Attributes([

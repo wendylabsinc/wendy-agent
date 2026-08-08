@@ -28,6 +28,28 @@ for f in "${tarballs[@]}"; do
     '. + {($arch): {path:$path, checksum:$sum, size_bytes:$size}}')"
 done
 
+# 1b) Upload each macOS agent zip, if any, and extend the artifacts JSON with
+# darwin-<arch> keys. nullglob (set above) makes a zero-match glob expand to
+# an empty array instead of the literal pattern, so a missing/failed macOS
+# build is a silent no-op here rather than a script failure — the macOS build
+# must never block Linux publishing.
+macos_zips=(agent-artifacts/wendy-agent-macos-*-"${VERSION}".zip)
+if [ ${#macos_zips[@]} -eq 0 ]; then
+  echo "no macos agent zip found for version ${VERSION}; skipping darwin artifacts" >&2
+else
+  for f in "${macos_zips[@]}"; do
+    base="$(basename "$f")"                              # wendy-agent-macos-<arch>-<version>.zip
+    arch="$(echo "$base" | sed -E 's/^wendy-agent-macos-([^-]+)-.*/\1/')"
+    dest="agent/${VERSION}/${base}"
+    echo "Uploading $f -> gs://${BUCKET}/${dest}"
+    gcloud storage cp "$f" "gs://${BUCKET}/${dest}"
+    sum="$(sha256sum "$f" | cut -d' ' -f1)"
+    size="$(stat -c%s "$f")"
+    artifacts="$(echo "$artifacts" | jq --arg arch "darwin-${arch}" --arg path "$dest" --arg sum "$sum" --argjson size "$size" \
+      '. + {($arch): {path:$path, checksum:$sum, size_bytes:$size}}')"
+  done
+fi
+
 is_nightly=true
 [ "$IS_RELEASE" = "true" ] && is_nightly=false
 entry="$(jq -n --argjson nightly "$is_nightly" --argjson arts "$artifacts" '{is_nightly:$nightly, artifacts:$arts}')"

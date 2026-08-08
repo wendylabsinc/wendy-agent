@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest an idea or improvement for WendyOS
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the workflow or pain point, not just the solution.
+      placeholder: When I deploy to multiple Jetsons, I have to run `wendy run` once per device...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - wendy CLI
+        - wendy-agent
+        - WendyOS image
+        - App entitlements (wendy.json)
+        - Docs
+        - Other

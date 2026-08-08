@@ -28,6 +28,27 @@ func TestDeviceAppsListCommand_HelpDescribesDeployedApps(t *testing.T) {
 	}
 }
 
+func TestSortRunningFirstStable(t *testing.T) {
+	apps := []appInfo{
+		{Name: "stopped-1", State: "STOPPED"},
+		{Name: "running-1", State: "RUNNING"},
+		{Name: "crash-looping", State: "CRASH_LOOPING"},
+		{Name: "running-2", State: "running"},
+		{Name: "stopped-2", State: "STOPPED"},
+	}
+
+	sortRunningFirst(apps, func(a appInfo) string { return a.State })
+
+	got := make([]string, len(apps))
+	for i, app := range apps {
+		got[i] = app.Name
+	}
+	want := []string{"running-1", "running-2", "stopped-1", "crash-looping", "stopped-2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("app order = %v, want %v", got, want)
+	}
+}
+
 func TestAppsList_GroupDisplayShowsServiceSubRows(t *testing.T) {
 	containers := []*agentpb.AppContainer{
 		{
@@ -127,5 +148,17 @@ func TestStateIcon_CrashLoopingDistinctFromStopped(t *testing.T) {
 	}
 	if !strings.Contains(crash, "↻") {
 		t.Fatalf("crash-looping icon %q should contain ↻", crash)
+	}
+}
+
+func TestHTTPPortColumn_Zero(t *testing.T) {
+	if got := httpPortColumn(0); got != "" {
+		t.Errorf("httpPortColumn(0) = %q, want empty string", got)
+	}
+}
+
+func TestHTTPPortColumn_NonZero(t *testing.T) {
+	if got := httpPortColumn(8080); got != ":8080" {
+		t.Errorf("httpPortColumn(8080) = %q, want %q", got, ":8080")
 	}
 }

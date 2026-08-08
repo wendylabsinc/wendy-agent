@@ -118,6 +118,44 @@ func TestCloudDiscover_HasStructuredContent(t *testing.T) {
 	}
 }
 
+func TestCloudDiscover_MaxBytesTruncates(t *testing.T) {
+	assets := make([]*cloudpb.Asset, 0, 200)
+	for i := int32(0); i < 200; i++ {
+		assets = append(assets, &cloudpb.Asset{
+			Id:              i,
+			OrganizationId:  7,
+			Name:            "some-padding-device-name",
+			AssetType:       "device",
+			IsComputeDevice: true,
+		})
+	}
+	fake := &fakeCloudAssetServer{assets: assets}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_discover", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent has unexpected type %T", result.StructuredContent)
+	}
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+}
+
 func TestCloud_MultipleSessions_Code(t *testing.T) {
 	srv := New(&config.Config{
 		Auth: []config.AuthConfig{
@@ -160,17 +198,6 @@ func TestCloudDiscover_RequiresCloudGRPCWhenMultipleAuthSessionsExist(t *testing
 		},
 	}, nil)
 	result, err := srv.callTool(context.Background(), "cloud_discover", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.IsError {
-		t.Fatal("expected error result")
-	}
-}
-
-func TestCloudRun_RequiresProjectPath(t *testing.T) {
-	srv := New(&config.Config{}, nil)
-	result, err := srv.callTool(context.Background(), "cloud_run", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

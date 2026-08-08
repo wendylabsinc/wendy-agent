@@ -5,7 +5,7 @@
 > session commands (`use`, `default`, `refresh-certs`) remain under
 > `wendy auth`.
 
-Authenticates the CLI with Wendy Cloud. Opens a browser to the cloud dashboard, waits for the OAuth callback, generates a key pair and CSR, then issues and stores an mTLS certificate. Subsequent commands that connect to provisioned devices use this certificate automatically.
+Authenticates the CLI with Wendy Cloud. Opens a browser to the cloud dashboard, waits for the OAuth callback, generates a key pair and a CSR (which includes the user's Wendy identity as a URI Subject Alternative Name — `urn:wendy:org:‹org›:user:‹userID›`), then issues and stores an mTLS certificate. Subsequent commands that connect to provisioned devices use this certificate automatically.
 
 After displaying the login URL, the CLI also prints a QR code in the terminal. You can scan this QR code with the **Wendy iOS app** to authenticate on your phone instead of (or in addition to) the browser flow.
 

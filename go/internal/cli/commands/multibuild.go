@@ -195,7 +195,7 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 //
 // Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
 // means "don't skip it".
-func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
 	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
@@ -209,7 +209,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		if err != nil {
 			continue
 		}
-		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs)
+		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs, expandServiceEnv(appCfg, svc))
 		if err != nil {
 			continue
 		}
@@ -309,13 +309,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// presence, so this currently skips nothing for multi-service; see
 	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
-	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, services, buildArgs)
+	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
 	if n := len(skip); n > 0 {
 		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -363,13 +363,14 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		return err
 	}
 
-	// Build every per-service config once and reuse the same objects for both
-	// the create payload (createService) and lifecycle-hook firing
-	// (startAndStreamServices), so a service's readiness/hooks are carried in a
-	// single place (WDY-1271).
+	// Build the full per-service create configs and separate CLI-private
+	// lifecycle views. The latter preserve declaration scope so inherited
+	// top-level HTTP does not execute once per service.
 	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
 	for name, svc := range services {
 		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
 	}
 
 	// The app-level fallback fires the group's top-level readiness/hooks once,
@@ -397,7 +398,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 			AppName:       serviceCfg.ContainerName(),
 			AppConfig:     appConfigData,
 			RestartPolicy: restartPolicy,
-			Env:           expandServiceEnv(svc),
+			Env:           expandServiceEnv(appCfg, svc),
 		}
 
 		cliLogln("Creating container for service %s...", name)
@@ -430,7 +431,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
-	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, appLevelCfg); err != nil {
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		return err
 	}
 	// In --keep-going mode, exit non-zero after deploying the healthy subset so
@@ -461,6 +462,7 @@ func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
 	regPort int,
+	agentOS string,
 	cwd, appID string,
 	services map[string]*appconfig.ServiceConfig,
 	platform string,
@@ -563,7 +565,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(ctx, conn, regPort, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = buildServiceImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -603,7 +605,9 @@ func buildServicesParallel(
 	for r := range results {
 		if r.err != nil {
 			failed[r.name] = r.err
-			if r.log != "" {
+			// Skip the raw replay for the friendly "no registry on the Mac agent"
+			// error — the retried-push spam would bury the actionable message.
+			if r.log != "" && !isRegistryUnavailable(r.err) {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}
@@ -735,7 +739,23 @@ func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *app
 	if svc.Frameworks != nil {
 		cfg.Frameworks = svc.Frameworks
 	}
+	// The per-service config carries no services map, so the agent's
+	// ResolveResourcesForService has nothing to merge — resolve the app-level
+	// default against this service's override here instead. Without this the
+	// container is created with no limits at all (WDY-1729).
+	cfg.Resources = appCfg.ResolveResourcesForService(name)
 	return cfg
+}
+
+// multiServiceLifecycleConfig builds the CLI-private lifecycle view for one
+// services-map entry. Unlike multiServiceCreateConfig, it intentionally sees
+// only HTTP entitlements declared by the service itself; inherited top-level
+// HTTP belongs to the app-level lifecycle config and must run only once.
+func multiServiceLifecycleConfig(appID, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
+	if svc == nil {
+		return nil
+	}
+	return lifecycleConfig(appID, name, svc.Readiness, svc.Hooks, svc.Entitlements)
 }
 
 // multiServiceContainerName returns the container name the agent derives for
@@ -755,14 +775,14 @@ func multiServiceContainerName(appID, serviceName string) string {
 // the agent resolves a secondary's namespace join at container create time
 // against the primary's running task.
 //
-// svcCfgs supplies the per-service AppConfig for each name in ordered: it both
-// carries the agent-side postStart hook onto the StartContainer RPC (via
-// contextWithPostStartAgentHook) and drives the per-service readiness→announce
-// →postStart sequence. appLevelCfg, when non-nil, is the group-level fallback
-// fired once after every service has started. Hook firing is strictly
-// non-blocking with respect to the sequential create→start→Started-ack loop,
-// which is load-bearing for shared-namespace joins (WDY-1271).
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
+// svcCfgs supplies the full create/agent-hook config for each service, while
+// svcLifecycleCfgs supplies the private CLI lifecycle view whose entitlements
+// contain only service-declared HTTP. appLevelCfg, when non-nil, is the
+// group-level fallback fired once after every service has started. Hook firing
+// is strictly non-blocking with respect to the sequential
+// create→start→Started-ack loop, which is load-bearing for shared-namespace
+// joins (WDY-1271).
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -814,7 +834,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		// failures only warn (non-fatal), so we still return nil. No reap: there is
 		// nothing left to wait on once we detach.
 		for _, name := range ordered {
-			runner.runOne(runCtx, context.Background(), svcCfgs[name])
+			runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
 		}
 		runner.runOne(runCtx, context.Background(), appLevelCfg)
 		return nil
@@ -863,7 +883,7 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 		// failing probe never delays creating/starting the next service — the
 		// sequential Started-ack ordering above is load-bearing for
 		// shared-ipc/shared-network joins and must not be disturbed (WDY-1271).
-		runner.startAsync(runCtx, svcCfgs[name])
+		runner.startAsync(runCtx, svcLifecycleCfgs[name])
 		wg.Add(1)
 		go func(name string, stream agentpb.WendyContainerService_StartContainerClient) {
 			defer wg.Done()

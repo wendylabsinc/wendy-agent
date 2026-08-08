@@ -57,12 +57,19 @@ var _ services.ContainerdClient = (*Client)(nil)
 // DefaultAddress is the default containerd socket path on Linux.
 const DefaultAddress = "/run/containerd/containerd.sock"
 
+type AppSystemAPISocketProvider interface {
+	Ensure(appID, serviceName string, capabilities []string) (string, error)
+	Release(appID, serviceName string)
+	ReleaseApp(appID string)
+}
+
 type Client struct {
-	client       *containerd.Client
-	logger       *zap.Logger
-	namespace    string
-	mu           sync.Mutex
-	proxyManager *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	client                  *containerd.Client
+	logger                  *zap.Logger
+	namespace               string
+	mu                      sync.Mutex
+	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	systemAPISocketProvider AppSystemAPISocketProvider
 
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
@@ -138,6 +145,60 @@ func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
 		return
 	}
 	c.meshDNS = d
+}
+
+// SetAppSystemAPISocketProvider injects the manager for private app System API sockets.
+func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvider) {
+	c.systemAPISocketProvider = provider
+}
+
+type appSystemAPIOwner struct {
+	appID       string
+	serviceName string
+}
+
+func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIOwner {
+	owners := make([]appSystemAPIOwner, 0, len(labelSets))
+	for _, labels := range labelSets {
+		appID := labels[labelKeyAppID]
+		serviceName := labels[labelKeyServiceName]
+		if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
+			continue
+		}
+		if entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications) {
+			owners = append(owners, appSystemAPIOwner{appID: appID, serviceName: serviceName})
+		}
+	}
+	return owners
+}
+
+// RestoreAppSystemAPISockets reconstructs listeners and ownership from trusted,
+// persisted container labels after an Agent restart. Stopped containers count
+// too because they retain the socket directory mount and may be started later.
+func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
+	if c.systemAPISocketProvider == nil {
+		return
+	}
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("restore app System API sockets: listing containers failed", zap.Error(err))
+		return
+	}
+	labelSets := make([]map[string]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("restore app System API socket: reading container failed", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		labelSets = append(labelSets, info.Labels)
+	}
+	for _, owner := range appSystemAPIOwnersFromLabels(labelSets) {
+		if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, []string{services.SystemAPICapabilityNotifications}); err != nil {
+			c.logger.Warn("restore app System API socket failed", zap.String(logfields.AppID, owner.appID), zap.Error(err))
+		}
+	}
 }
 
 func NewClient(logger *zap.Logger, address string, proxyMgr *dbusproxy.Manager) (*Client, error) {
@@ -909,6 +970,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		oldHadSystemAPI := false
+		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
+			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
+		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
 		// for it to exit. A surviving process keeps devices/ports the new
@@ -926,12 +991,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			c.forceDeleteTask(ctx, containerName)
 		}
 		if delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup); delErr != nil && !errdefs.IsNotFound(delErr) {
-			// Not fatal here — NewContainer below fails with AlreadyExists if
-			// the old record is truly stuck — but log the root cause so a
-			// failed replace is attributable (WDY-1818).
-			c.logger.Error("Failed to delete existing container during replace",
-				zap.String("container_name", containerName),
-				zap.Error(delErr))
+			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
+		}
+		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
+			c.systemAPISocketProvider.Release(appID, serviceName)
 		}
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
@@ -1066,7 +1129,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	env = append(env, req.GetEnv()...)
 	env = appendFallbackEnv(env)
 	env = append(env, wendyEnv...)
-	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
+	ros2Env, err := buildROS2Env(appCfg, appID, serviceName)
+	if err != nil {
+		// Fail the create rather than start a ROS 2 container with no
+		// ROS_DOMAIN_ID, which silently lands it on the global default domain 0.
+		return fmt.Errorf("resolving ROS 2 environment for %q: %w", appID, err)
+	}
+	env = append(env, ros2Env...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -1083,8 +1152,31 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		c.applyCDIGPU(spec)
 	}
 
+	var systemAPISocketDir string
+	systemAPIRefOwned := false
+	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
+		if c.systemAPISocketProvider == nil {
+			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
+		}
+		systemAPISocketDir, err = c.systemAPISocketProvider.Ensure(
+			appID,
+			serviceName,
+			[]string{services.SystemAPICapabilityNotifications},
+		)
+		if err != nil {
+			return fmt.Errorf("preparing app System API socket: %w", err)
+		}
+		systemAPIRefOwned = true
+		defer func() {
+			if systemAPIRefOwned {
+				c.systemAPISocketProvider.Release(appID, serviceName)
+			}
+		}()
+	}
+
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
+		SystemAPISocketDir: systemAPISocketDir,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
@@ -1296,8 +1388,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("creating container %q: %w", containerName, err)
 	}
 
-	// Container created successfully; keep the D-Bus proxy running.
+	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
+	systemAPIRefOwned = false
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
@@ -1391,22 +1484,16 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	}()
 	ctx = c.withNamespace(ctx)
 
-	container, err := c.client.LoadContainer(ctx, appName)
+	// Start streams one container's output, so a bare appID naming a group is
+	// an error here rather than a fan-out.
+	ctrs, _, _, err := c.resolveTargets(ctx, appName)
 	if err != nil {
-		// Fall back to a label-based lookup so that callers can pass the bare
-		// appID (e.g. "myapp") even when the container was created under a
-		// multi-service name (e.g. "myapp/api" for serviceName="api").
-		// If the label query returns exactly one container we use it; if it
-		// returns multiple the caller must be more specific.
-		ctrs, labelErr := c.containersForApp(ctx, appName)
-		if labelErr != nil || len(ctrs) == 0 {
-			return nil, fmt.Errorf("loading container %q: %w", appName, err)
-		}
-		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
-		}
-		container = ctrs[0]
+		return nil, fmt.Errorf("loading container %q: %w", appName, err)
 	}
+	if len(ctrs) > 1 {
+		return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
+	}
+	container := ctrs[0]
 
 	// Name parsing is ambiguous for multi-service containers because '_' is
 	// also legal inside appIDs: "app_talker" parses as a bare appID, which
@@ -1525,7 +1612,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// getIsolation requires c.mu (held here via muHeld).
 	isolation := c.getIsolation(appID)
 	if appconfig.IsSharedNamespaceIsolation(isolation) {
-		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
+		// Presence alone is not enough: a per-service stop leaves the group
+		// entry behind, so a dead PID must be replaced rather than kept.
+		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		if !hasPrimary || !c.primaryTaskAlive(ctx, appID, primaryPID) {
 			c.setPrimaryPID(appID, task.Pid())
 		}
 	}
@@ -2105,27 +2195,40 @@ func validateUserEnv(entries []string) error {
 // DISABLED: it requires an iox-roudi daemon that WendyOS does not run, and
 // enabling it makes CycloneDDS block at startup ("RouDi not found - waiting")
 // until the container is SIGKILLed, restart-looping. With it off, CycloneDDS
-// uses UDP over loopback, which works within the app group's shared network
-// namespace — ROS_LOCALHOST_ONLY=1 (always injected alongside) pins it to lo.
-// No <Interfaces> block: localhost-only already selects lo, and an autodetermine
-// interface on top makes it select "lo" twice ("the same interface may not be
-// selected twice"), which fails domain creation. Re-enabling zero-copy needs an
-// iox-roudi system service on the device first (WDY-884).
+// uses UDP. ROS_LOCALHOST_ONLY selects loopback for app-scoped discovery; for
+// host-scoped discovery CycloneDDS selects a device interface automatically.
+// No <Interfaces> block is supplied so the same inline config works for both
+// scopes. Re-enabling zero-copy needs an iox-roudi system service on the device
+// first (WDY-884).
 const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false</Enable></SharedMemory></Domain></CycloneDDS>`
 
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
 // service-level config for multi-service apps). The injected set is
-// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and
-// ROS_LOCALHOST_ONLY (WDY-884).
-func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []string {
+// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and both
+// discovery-scope variables (WDY-884).
+//
+// Returns an error rather than nil for an invalid config. It used to return nil,
+// which meant the container started with *no* ROS 2 environment at all — so
+// ROS_DOMAIN_ID fell back to 0, the global default domain everything else is on.
+// A validation gap upstream therefore produced maximum exposure instead of a
+// failure, which is the wrong direction for a mechanism whose job is isolation.
+func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]string, error) {
 	ros2 := appCfg.ResolveROS2ConfigForService(serviceName)
 	if ros2 == nil {
-		return nil
+		return nil, nil
 	}
 	domainID := ros2.ResolvedDomainID(appID)
 	if domainID < 0 {
-		return nil // invalid explicit domain ID; caller should have validated at config parse time
+		return nil, fmt.Errorf("frameworks.ros2.domainId is outside [%d,%d]; refusing to start "+
+			"the container without ROS_DOMAIN_ID isolation (it would default to domain 0)",
+			appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
+	}
+	discoveryScope := ros2.ResolvedDiscoveryScope()
+	if discoveryScope == "" {
+		return nil, fmt.Errorf("frameworks.ros2.discoveryScope %q is not %q or %q; refusing to "+
+			"start the container with an undefined DDS discovery scope",
+			ros2.DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
@@ -2137,10 +2240,21 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 			env = append(env, "CYCLONEDDS_URI="+cycloneDDSInlineConfig)
 		}
 	}
-	// Services in an app group share a network namespace, so localhost is
-	// sufficient and DDS must not discover nodes on the wider network.
-	env = append(env, "ROS_LOCALHOST_ONLY=1")
-	return env
+	// Services are app-local by default. Host-scoped tools such as Foxglove
+	// explicitly opt in to discovering ROS 2 participants on the device network.
+	//
+	// Both variables are set, not just ROS_LOCALHOST_ONLY. That one has been
+	// deprecated since Iron in favour of ROS_AUTOMATIC_DISCOVERY_RANGE, and
+	// ROS2Config.Distro explicitly advertises "jazzy" — so on the newer distros we
+	// claim to support, the sole mechanism enforcing app-local isolation was at
+	// best deprecated. For an app carrying `network: host` it is the only thing
+	// between that app and every other DDS participant on the device.
+	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
+		env = append(env, "ROS_LOCALHOST_ONLY=0", "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET")
+	} else {
+		env = append(env, "ROS_LOCALHOST_ONLY=1", "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
+	}
+	return env, nil
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
@@ -2693,6 +2807,72 @@ func (c *Client) streamOutput(
 	outputCh <- services.ContainerOutput{Done: true}
 }
 
+// resolveTargets resolves name to the containers it addresses:
+//
+//  1. a container whose ID equals name — a single-container app, or one service
+//     addressed as "{appID}_{serviceName}"
+//  2. containers whose labelKeyAppID equals name — every service in the group
+//  3. neither — errdefs.ErrNotFound
+//
+// Container IDs are unique within the namespace, so rule 1 has at most one hit.
+// appID is the label-derived group identity; wholeApp reports whether name
+// addressed every container in the group.
+//
+// Caller must hold c.mu. ctx must already have the containerd namespace set.
+func (c *Client) resolveTargets(ctx context.Context, name string) (ctrs []containerd.Container, appID string, wholeApp bool, err error) {
+	// name reaches the containerd filter expression via containersForApp
+	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	if verr := appconfig.ValidateAppID(name); verr != nil {
+		return nil, "", false, fmt.Errorf("invalid app name: %w", verr)
+	}
+
+	ctr, loadErr := c.client.LoadContainer(ctx, name)
+	switch {
+	case loadErr == nil:
+		// The "default" namespace is shared with anything else that speaks to
+		// containerd, so an ID match alone is not proof this is ours: require
+		// the app-id label (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+		if id, ok := c.wendyAppIDOf(ctx, ctr); ok {
+			group, groupErr := c.containersForApp(ctx, id)
+			if groupErr != nil {
+				return nil, "", false, groupErr
+			}
+			return []containerd.Container{ctr}, id, len(group) <= 1, nil
+		}
+		// Unlabelled or foreign: fall through, which reports NotFound.
+	case !errdefs.IsNotFound(loadErr):
+		// A real lookup failure must not be laundered into NotFound.
+		return nil, "", false, fmt.Errorf("loading container %q: %w",
+			sanitizeForLog(name, 253), loadErr)
+	}
+
+	group, err := c.containersForApp(ctx, name)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(group) == 0 {
+		return nil, "", false, fmt.Errorf("%w: no app or service named %q",
+			errdefs.ErrNotFound, sanitizeForLog(name, 253))
+	}
+	return group, name, true, nil
+}
+
+// wendyAppIDOf returns ctr's group identity from its app-id label, and whether
+// ctr is Wendy-managed at all. The container ID cannot stand in for a missing
+// label: '_' is legal inside an appID, so "myapp_alpha" is ambiguous. Labels are
+// external state, so the value is re-validated (SOC2-CC6, NIST-SI-10).
+func (c *Client) wendyAppIDOf(ctx context.Context, ctr containerd.Container) (string, bool) {
+	labels, err := ctr.Labels(ctx)
+	if err != nil {
+		return "", false
+	}
+	id := labels[labelKeyAppID]
+	if id == "" || appconfig.ValidateAppID(id) != nil {
+		return "", false
+	}
+	return id, true
+}
+
 // containersForApp returns all Wendy-managed containers whose labelKeyAppID
 // label equals appID. Both single-container apps (one container) and
 // multi-service apps (one container per service) are found this way, with no
@@ -2733,6 +2913,23 @@ func (c *Client) containersForApp(ctx context.Context, appID string) ([]containe
 func (c *Client) ContainerIDsForApp(ctx context.Context, appID string) ([]string, error) {
 	ctx = c.withNamespace(ctx)
 	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(ctrs))
+	for i, ctr := range ctrs {
+		ids[i] = ctr.ID()
+	}
+	return ids, nil
+}
+
+// ResolveAppContainerIDs returns the container IDs addressed by name. See
+// resolveTargets.
+func (c *Client) ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error) {
+	ctx = c.withNamespace(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctrs, _, _, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2840,12 +3037,12 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	return nil
 }
 
-// StopContainer stops all containers belonging to appID. For single-container
-// apps this is one container; for multi-service apps it stops every service.
+// StopContainer stops the containers addressed by name: a bare appID stops
+// every service, "{appID}_{serviceName}" stops one. See resolveTargets.
 // c.mu is held for the full duration to prevent a concurrent
 // CreateContainerWithProgress from inserting a new service container between
 // the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
-func (c *Client) StopContainer(ctx context.Context, appID string) error {
+func (c *Client) StopContainer(ctx context.Context, name string) error {
 	ctx = c.withNamespace(ctx)
 
 	// Hold mutex only long enough to enumerate containers and resolve stop order.
@@ -2853,17 +3050,10 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	// blocking I/O (SIGTERM wait, 10 s timeout), which would starve concurrent
 	// StartContainer / CreateContainerWithProgress calls (SOC2-CC6, NIST-AC-3).
 	c.mu.Lock()
-	ctrs, err := c.containersForApp(ctx, appID)
+	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		c.mu.Unlock()
 		return err
-	}
-	if len(ctrs) == 0 {
-		// Idempotent: already stopped / never created.
-		c.logger.Info("StopContainer: no containers found, already stopped",
-			zap.String(logfields.AppID, sanitizeForLog(appID, 253)))
-		c.mu.Unlock()
-		return nil
 	}
 	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
 	// Mark app as stopping before releasing the mutex so any concurrent
@@ -2884,26 +3074,30 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 		}
 	}
 
-	// Re-acquire mutex for map cleanup. Both reads and writes of these maps
-	// are protected by c.mu to prevent data races with concurrent callers
-	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
-	// clearPrimaryPID under the lock; other per-app metadata is kept alive until
-	// after the late sweep so that appIsolation is still readable by any
-	// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
-	c.mu.Lock()
-	c.clearPrimaryPID(appID)
-	c.mu.Unlock()
+	// Per-app state is only released once the whole group is stopped; siblings
+	// still need it.
+	if wholeApp {
+		// Re-acquire mutex for map cleanup. Both reads and writes of these maps
+		// are protected by c.mu to prevent data races with concurrent callers
+		// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+		// clearPrimaryPID under the lock; other per-app metadata is kept alive until
+		// after the late sweep so that appIsolation is still readable by any
+		// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
+		c.mu.Lock()
+		c.clearPrimaryPID(appID)
+		c.mu.Unlock()
 
-	// Re-enumerate unconditionally to catch any containers that appeared after
-	// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
-	// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
-	// appStopping is still set during this sweep to block new concurrent creates.
-	if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
-		for _, ctr := range lateCtrs {
-			if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
-				c.logger.Error("StopContainer: failed to stop late-appearing container",
-					zap.String("container_id", ctr.ID()), zap.Error(stopErr))
-				errs = append(errs, stopErr)
+		// Re-enumerate to catch any containers that appeared after
+		// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
+		// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
+		// appStopping is still set during this sweep to block new concurrent creates.
+		if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
+			for _, ctr := range lateCtrs {
+				if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
+					c.logger.Error("StopContainer: failed to stop late-appearing container",
+						zap.String("container_id", ctr.ID()), zap.Error(stopErr))
+					errs = append(errs, stopErr)
+				}
 			}
 		}
 	}
@@ -2914,9 +3108,11 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	// appStopping) until this section completes (SOC2-CC6, NIST-AC-3, NIST-SI-16,
 	// ISO27001-A.8, SOC2-CC8/ISO27001-A.12 unbounded-growth prevention).
 	c.mu.Lock()
-	delete(c.appServices, appID)
-	delete(c.appIsolation, appID)
-	delete(c.serviceIPs, appID)
+	if wholeApp {
+		delete(c.appServices, appID)
+		delete(c.appIsolation, appID)
+		delete(c.serviceIPs, appID)
+	}
 	delete(c.appStopping, appID)
 	c.mu.Unlock()
 
@@ -3111,17 +3307,15 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 // DeleteContainer deletes all containers belonging to appID. For multi-service
 // apps all service containers are removed. When deleteImage is true, each
 // distinct image is deleted once (services sharing an image are handled safely).
-func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage bool) error {
+func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
-	ctrs, err := c.containersForApp(ctx, appID)
+	// A bare appID deletes every service; "{appID}_{serviceName}" deletes one.
+	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		return err
-	}
-	if len(ctrs) == 0 {
-		return nil // Already gone.
 	}
 
 	seen := make(map[string]bool)
@@ -3144,6 +3338,10 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 				c.logger.Info("Image deleted", zap.String("image", imgName))
 			}
 		}
+	}
+	// The system-API socket is per app: only release it once the app is gone.
+	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
+		c.systemAPISocketProvider.ReleaseApp(appID)
 	}
 	return errors.Join(errs...)
 }
@@ -3325,6 +3523,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		version      string
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
+		httpPort     uint32
 		services     []serviceEntry
 		exitCode     int32
 		exitReason   string // "" until an exit label is seen for this app
@@ -3354,6 +3553,13 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
+		var httpPort uint32
+		if portStr, ok := info.Labels[labelKeyHTTPPort]; ok && portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 32); err == nil {
+				httpPort = uint32(p)
+			}
+		}
+
 		// labelKeyAppID is always set by wendyLabels; fall back to container ID
 		// for containers created before this label was introduced.
 		appID := info.Labels[labelKeyAppID]
@@ -3376,6 +3582,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
+				httpPort:     httpPort,
 				services:     []serviceEntry{svc},
 			}
 			if hasExit {
@@ -3388,6 +3595,9 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			if httpPort != 0 && e.httpPort == 0 {
+				e.httpPort = httpPort
 			}
 			// Keep the first exit reason seen for the app (multi-service apps
 			// aggregate; a single stopped service's cause is better than none).
@@ -3432,6 +3642,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
+			HttpPort:     e.httpPort,
 			Services:     services,
 		}
 		// Exit diagnostics are only meaningful for a stopped app; a running app

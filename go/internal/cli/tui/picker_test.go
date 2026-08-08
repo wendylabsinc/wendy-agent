@@ -305,8 +305,8 @@ func TestNewPicker_ShowsDeviceTableLegend(t *testing.T) {
 	updated, _ := m.Update(PickerAddMsg{Items: []PickerItem{{Name: "alpha", Value: "alpha"}}})
 	pm := updated.(PickerModel)
 
-	if !strings.Contains(pm.View(), DeviceTableLegend) {
-		t.Fatalf("expected device picker view to contain legend %q, got %q", DeviceTableLegend, pm.View())
+	if !strings.Contains(pm.View(), DeviceTableLegendBase) {
+		t.Fatalf("expected device picker view to contain legend %q, got %q", DeviceTableLegendBase, pm.View())
 	}
 }
 
