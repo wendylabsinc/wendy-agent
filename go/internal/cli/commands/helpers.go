@@ -1279,7 +1279,7 @@ var deviceCacheLoadFn = discoverycache.Load
 // costs one bounded dial attempt; the stale-cache retry re-resolves). When
 // several entries' hostnames normalize equal (e.g. a device re-provisioned
 // under a new identity), the most recent LastSeen wins. Shared by
-// cachedDeviceIP's lookup and cacheConnectSuccess's write path so a
+// cachedDeviceHostEntry's lookup and cacheConnectSuccess's write path so a
 // connect-success write always lands under a real device's existing
 // identity.
 func cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache.Entry, bool) {
@@ -1297,20 +1297,73 @@ func cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache
 	return best, found
 }
 
-// cachedDeviceIP returns the cached IP for host when a device-cache entry
-// (any age) matches the hostname, else "". This is the device-cache fast path's
-// lookup: a hit here lets connectWithAutoTLSDiagnostics skip resolveAddrOnce
-// (and the OS-resolver/mDNS-browse work it can do) entirely.
-func cachedDeviceIP(host string) string {
+// cachedDeviceHostEntry loads the device cache and returns the entry whose
+// hostname matches host (any age, most recent wins). This is the device-cache
+// fast path's lookup: a hit here lets connectWithAutoTLSDiagnostics skip
+// resolveAddrOnce (and the OS-resolver/mDNS-browse work it can do) entirely.
+// Returns the empty entry and false when the cache is unavailable or nothing
+// matches.
+func cachedDeviceHostEntry(host string) (discoverycache.Entry, bool) {
 	cache, err := deviceCacheLoadFn()
 	if err != nil || cache == nil {
-		return ""
+		return discoverycache.Entry{}, false
 	}
-	if e, ok := cachedDeviceEntry(cache, host); ok {
-		return e.IP
-	}
-	return ""
+	return cachedDeviceEntry(cache, host)
 }
+
+// lkgTCPConnectTimeout bounds the last-known-good fast path's TCP
+// pre-check. A dead or reassigned cached IP must cost at most this before
+// the connect falls through to fresh resolution — without the bound, the
+// full ladder would burn its mtlsProbeTimeout budgets against a black hole.
+const lkgTCPConnectTimeout = 1 * time.Second
+
+// tcpDialTimeoutFn is a seam over net.DialTimeout for LKG fast-path tests.
+var tcpDialTimeoutFn = net.DialTimeout
+
+// loadAllCLICertsFn is a seam over loadAllCLICerts for LKG fast-path tests.
+var loadAllCLICertsFn = loadAllCLICerts
+
+// dialAgentLKG is the last-known-good direct dial: one bounded attempt at a
+// cached device's advertised mTLS endpoint with the entry's org's cert
+// first. ok=false means "fall through to the ordinary connect flow" — the
+// fast path never surfaces its own failures as the connect's outcome.
+// Trust is unchanged: the same certs, verifiers, and pins run here as on
+// the ordinary path; the cache contributes routing only.
+func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, bool) {
+	addr := hostPort(e.IP, e.Port)
+	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
+	raw, err := tcpDialTimeoutFn("tcp", addr, lkgTCPConnectTimeout)
+	if err != nil {
+		if tlsDebug {
+			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: tcp pre-check failed: %v\n", addr, err)
+		}
+		return nil, nil, false
+	}
+	raw.Close()
+	certs := rotateCertsForOrg(loadAllCLICertsFn(), e.OrgID)
+	if len(certs) == 0 {
+		return nil, nil, false
+	}
+	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, addr, certs)
+	if err != nil || conn == nil || !conn.IsMTLS {
+		// The entry advertised mTLS; a plaintext downgrade here would be
+		// surprising, so route it through the ordinary path instead.
+		if conn != nil {
+			conn.Close()
+		}
+		if tlsDebug {
+			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %v\n", addr, err)
+		}
+		return nil, mtlsErr, false
+	}
+	if tlsDebug {
+		fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: connected\n", addr)
+	}
+	return conn, mtlsErr, true
+}
+
+// dialAgentLKGFn is a seam over dialAgentLKG for connect-flow tests.
+var dialAgentLKGFn = dialAgentLKG
 
 // isMDNSShapedHost reports whether host is a plausible mDNS device name: a
 // bare hostname (no dot) other than the reserved loopback name "localhost",
@@ -1381,8 +1434,17 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 	originalAddr := plaintextAddr
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
-		if ip := cachedDeviceIP(plainHost); ip != "" {
-			plaintextAddr, fromCache = net.JoinHostPort(ip, plainPort), true
+		if e, ok := cachedDeviceHostEntry(plainHost); ok && e.IP != "" {
+			// Last-known-good direct dial: the advertised mTLS endpoint with
+			// the entry's org's cert first, TCP-bounded so a dead IP costs at
+			// most lkgTCPConnectTimeout. Failures fall through to the
+			// cached-IP ladder + stale-cache retry below.
+			if e.MTLS && e.Port > 0 {
+				if conn, mtlsErr, ok := dialAgentLKGFn(ctx, e); ok {
+					return conn, mtlsErr, nil
+				}
+			}
+			plaintextAddr, fromCache = net.JoinHostPort(e.IP, plainPort), true
 		}
 	}
 	if !fromCache {
@@ -1475,7 +1537,7 @@ var cacheFastPathReachableFn = cacheFastPathReachable
 
 // cacheConnectSuccess best-effort upserts the device cache with the IP that
 // conn actually dialed for originalAddr's host, so subsequent connects to the
-// same DNS/mDNS name hit cachedDeviceIP's fast path. Guards, in order:
+// same DNS/mDNS name hit cachedDeviceHostEntry's fast path. Guards, in order:
 //   - only DNS/mDNS-name hosts — a literal-IP host has nothing to learn;
 //   - only hosts shaped like a real mDNS device name (isMDNSShapedHost) —
 //     FQDNs/tunnel relays and "localhost" are never advertised over mDNS, so
@@ -1483,7 +1545,7 @@ var cacheFastPathReachableFn = cacheFastPathReachable
 //   - only when conn actually dialed a literal IP — when resolution failed
 //     entirely, the raw hostname can fall all the way through to
 //     grpcclient.Connect unchanged, and storing a NAME in the IP field would
-//     poison the next cachedDeviceIP lookup with exactly the ".local"
+//     poison the next cachedDeviceHostEntry lookup with exactly the ".local"
 //     resolution gap issue #1155 exists to work around.
 //
 // Callers must only invoke this once liveness is actually confirmed (a real
@@ -1533,7 +1595,7 @@ func cacheConnectSuccess(originalAddr string, conn *grpcclient.AgentConnection) 
 // cacheHostnameForStorage normalizes a bare mDNS-style hostname (no dot) to
 // its ".local" form before it's cached, matching the shape a live mDNS
 // sighting stores (see discoverycache.EntryFromDevice). normalizeMDNSHost
-// equality means cachedDeviceIP's match doesn't actually depend on this, but
+// equality means cachedDeviceHostEntry's match doesn't actually depend on this, but
 // keeping the stored form consistent avoids a confusing on-disk mix of "orin"
 // and "orin.local" for the same device. Only called after isMDNSShapedHost
 // has already ruled out "localhost" and non-".local" dotted hosts.
