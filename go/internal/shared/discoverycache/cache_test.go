@@ -158,3 +158,43 @@ func TestEntryDeviceRoundTrip(t *testing.T) {
 		t.Fatalf("round trip lost fields: %+v", dev)
 	}
 }
+
+// TestDeleteRemovesEntryFromFile pins the removal path the streaming engine
+// needs when it retires a stale identity (a connect-minted hostname row the
+// device's real TXT device id supersedes): the entry must disappear from the
+// file too, not be re-read off disk and kept by the next flush.
+func TestDeleteRemovesEntryFromFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	now := time.Now()
+
+	seed, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.Upsert(Entry{ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051}, now)
+	seed.Upsert(Entry{ID: "uuid-1", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051}, now)
+	if err := seed.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Delete(Key("orin", "orin"))
+	if fresh := c.Fresh(now); len(fresh) != 1 || fresh[0].ID != "uuid-1" {
+		t.Fatalf("Delete left the entry in memory: %+v", fresh)
+	}
+	if err := c.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := reloaded.Fresh(now)
+	if len(fresh) != 1 || fresh[0].ID != "uuid-1" {
+		t.Fatalf("deleted entry survived the flush: %+v", fresh)
+	}
+}

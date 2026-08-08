@@ -162,6 +162,20 @@ func (c *Cache) Replace(e Entry, now time.Time) {
 	c.dirty[key] = true
 }
 
+// Delete removes the entry stored under key and records the removal so the
+// next Flush drops it from the file too (rather than re-reading it off disk
+// and keeping it). Deleting an absent key is a no-op on this cache but still
+// removes whatever is on disk under that key — which is the point: the caller
+// is the streaming engine retiring an identity it has proven stale, e.g. a
+// connect-minted hostname row superseded by the device's real TXT device id.
+func (c *Cache) Delete(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	delete(c.entries, key)
+	c.dirty[key] = true
+}
+
 // mergeEntry applies incoming's non-zero fields on top of stored, leaving
 // stored's value wherever incoming carries the zero value for that field.
 func mergeEntry(stored, incoming Entry) Entry {
@@ -214,9 +228,11 @@ func mergeEntry(stored, incoming Entry) Entry {
 	return result
 }
 
-// Flush persists: re-reads the file, overlays this cache's dirty entries,
-// drops entries older than TTL, writes temp file + atomic os.Rename.
-// Concurrent CLIs: last writer wins, lost writes are re-learned next scan.
+// Flush persists: re-reads the file, overlays this cache's dirty entries
+// (a dirty key this cache no longer holds was deleted, so it is dropped from
+// the file too), drops entries older than TTL, writes temp file + atomic
+// os.Rename. Concurrent CLIs: last writer wins, lost writes are re-learned
+// next scan.
 func (c *Cache) Flush(now time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -228,6 +244,8 @@ func (c *Cache) Flush(now time.Time) error {
 	for key := range c.dirty {
 		if e, ok := c.entries[key]; ok {
 			merged[key] = e
+		} else {
+			delete(merged, key)
 		}
 	}
 
