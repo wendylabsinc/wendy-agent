@@ -7,7 +7,10 @@ package secretstore
 
 // Store persists opaque secrets by account name. Get treats every failure
 // as a miss; Put reports failure so callers holding the only copy of a
-// secret can refuse to discard it; Delete is best-effort.
+// secret can refuse to discard it; Delete is best-effort. Service and
+// account strings must contain no whitespace or quotes — the macOS backend
+// interpolates them into a `security -i` command line; wendy's callers
+// satisfy this by using fixed service names and hex/base64-encoded accounts.
 type Store interface {
 	Get(account string) []byte
 	Put(account string, secret []byte) error

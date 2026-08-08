@@ -51,6 +51,16 @@ func (k keychain) Put(account string, secret []byte) error {
 	// contain no whitespace, so no quoting is needed.
 	cmdLine := fmt.Sprintf("add-generic-password -U -s %s -a %s -j wendy-cli-secret -w %s\n",
 		k.service, account, base64.StdEncoding.EncodeToString(secret))
+	// `security -i` consumes stdin in 4096-byte lines: a command line at or
+	// past that boundary can be truncated — and if the cut lands on the
+	// trailing newline, the truncated write can succeed instead of erroring,
+	// silently storing a corrupt value. Refuse before that can happen rather
+	// than risk it. Today's payloads (a P-256 PEM key, short tokens, TLS
+	// session-ticket blobs) are all well under this, so this is a
+	// deterministic-failure guard, not a live bug.
+	if len(cmdLine) >= 4000 {
+		return fmt.Errorf("secret too large for security(1) stdin line (%d bytes, limit ~4096): refusing truncated write", len(cmdLine))
+	}
 	_, err := RunSecurity(ctx, cmdLine, "-i")
 	return err
 }

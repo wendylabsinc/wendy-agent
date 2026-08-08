@@ -87,20 +87,28 @@ func resolveError(cause error) error {
 }
 
 // keyAccount derives the deterministic Keychain account for a client
-// private key, so re-login for the same identity overwrites one item.
-func keyAccount(cloudGRPC string, orgID int, userID string) string {
-	sum := sha256.Sum256([]byte(cloudGRPC + "|" + strconv.Itoa(orgID) + "|" + userID))
+// private key, so re-login for the same identity overwrites one item. It
+// hashes cloudGRPC|orgID|userID|assetID: userID alone is not enough because
+// asset certs (from performLocalLogin) carry no UserID, only an AssetID, so
+// two asset certs on the same endpoint+org with different AssetID must not
+// collide on the same Keychain item.
+func keyAccount(cloudGRPC string, orgID int, userID string, assetID int) string {
+	sum := sha256.Sum256([]byte(cloudGRPC + "|" + strconv.Itoa(orgID) + "|" + userID + "|" + strconv.Itoa(assetID)))
 	return "key-" + hex.EncodeToString(sum[:8])
 }
 
 // tokenAccount derives the deterministic Keychain account for a cloud API
-// token. It includes orgID because AddAuth deliberately keeps one auth
-// entry per (cloudGRPC, orgID) pair — several orgs can share one endpoint
-// (e.g. multiple orgs on the production cloud) — so the account must be
-// per-org too, or a second org's token would overwrite the first's Keychain
-// item while both entries' references kept pointing at the same account.
-func tokenAccount(cloudGRPC string, orgID int) string {
-	sum := sha256.Sum256([]byte(cloudGRPC + "|" + strconv.Itoa(orgID)))
+// token. It hashes cloudDashboard|cloudGRPC|orgID — the same triple AddAuth
+// dedups auth entries on — because a browser login (CloudDashboard set) and
+// an --api-key login (CloudDashboard empty, see performLocalLogin) against
+// the same endpoint+org coexist as two distinct AddAuth entries; omitting
+// cloudDashboard would let one entry's dehydrated token overwrite the
+// other's Keychain item even though both entries' references kept pointing
+// at the same account. orgID matters for the analogous reason: several orgs
+// can share one endpoint (e.g. multiple orgs on the production cloud), each
+// with its own AddAuth entry.
+func tokenAccount(cloudDashboard, cloudGRPC string, orgID int) string {
+	sum := sha256.Sum256([]byte(cloudDashboard + "|" + cloudGRPC + "|" + strconv.Itoa(orgID)))
 	return "token-" + hex.EncodeToString(sum[:8])
 }
 
@@ -168,7 +176,7 @@ func dehydrate(cfg *Config) {
 	for i := range cfg.Auth {
 		a := &cfg.Auth[i]
 		if a.APIKey != "" && !isRef(a.APIKey) {
-			acct := tokenAccount(a.CloudGRPC, authEntryOrgID(*a))
+			acct := tokenAccount(a.CloudDashboard, a.CloudGRPC, authEntryOrgID(*a))
 			if store.Put(acct, []byte(a.APIKey)) == nil {
 				cacheSecret(refPrefixV1+acct, a.APIKey)
 				a.APIKey = refPrefixV1 + acct
@@ -177,7 +185,7 @@ func dehydrate(cfg *Config) {
 		for j := range a.Certificates {
 			c := &a.Certificates[j]
 			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
-				acct := keyAccount(a.CloudGRPC, c.OrganizationID, c.UserID)
+				acct := keyAccount(a.CloudGRPC, c.OrganizationID, c.UserID, c.AssetID)
 				if store.Put(acct, []byte(c.PemPrivateKey)) == nil {
 					cacheSecret(refPrefixV1+acct, c.PemPrivateKey)
 					c.PemPrivateKey = refPrefixV1 + acct
@@ -212,17 +220,7 @@ func inlineSecrets(cfg *Config) {
 // hasInlineSecrets reports whether any secret field holds a real value
 // (as opposed to a reference or empty).
 func hasInlineSecrets(cfg *Config) bool {
-	for _, a := range cfg.Auth {
-		if a.APIKey != "" && !isRef(a.APIKey) {
-			return true
-		}
-		for _, c := range a.Certificates {
-			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
-				return true
-			}
-		}
-	}
-	return false
+	return countInlineSecrets(cfg) > 0
 }
 
 // MigrateSecretsIfNeeded moves pre-existing plaintext secrets into the

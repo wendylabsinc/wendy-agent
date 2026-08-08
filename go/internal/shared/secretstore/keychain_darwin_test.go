@@ -1,6 +1,7 @@
 package secretstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -82,6 +83,28 @@ func TestKeychainPutKeepsSecretOffArgvAndReportsError(t *testing.T) {
 	withFake(t, failing)
 	if err := NewKeychain("svc-a").Put("acct1", []byte("secret")); err == nil {
 		t.Error("Put with failing security = nil error, want non-nil")
+	}
+}
+
+// TestKeychainPutRefusesOversizedCommandLine is the regression test for the
+// security(1) 4096-byte stdin-line truncation guard: an oversized secret must
+// be refused before RunSecurity is ever invoked, never handed to it for a
+// truncated (possibly silently "successful") write.
+func TestKeychainPutRefusesOversizedCommandLine(t *testing.T) {
+	fake := &fakeSecurity{}
+	withFake(t, fake)
+	// base64 inflates by ~4/3, so 4000 raw bytes comfortably pushes the full
+	// "add-generic-password ..." command line past the 4000-byte guard.
+	oversized := bytes.Repeat([]byte{'x'}, 4000)
+	err := NewKeychain("svc-a").Put("acct1", oversized)
+	if err == nil {
+		t.Fatal("Put with oversized secret = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("error %q missing size-guard wording", err.Error())
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("fake runner was called %d times, want 0 — guard must short-circuit before invoking security", len(fake.calls))
 	}
 }
 

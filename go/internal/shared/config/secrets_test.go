@@ -118,9 +118,9 @@ func TestAccessorUnknownRefVersion(t *testing.T) {
 }
 
 func TestAccountDerivationDeterministic(t *testing.T) {
-	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1")
-	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1")
-	b := keyAccount("grpc.wendy.com:443", 8, "user-1")
+	a1 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
+	a2 := keyAccount("grpc.wendy.com:443", 7, "user-1", 0)
+	b := keyAccount("grpc.wendy.com:443", 8, "user-1", 0)
 	if a1 != a2 {
 		t.Errorf("same inputs → different accounts: %q vs %q", a1, a2)
 	}
@@ -130,17 +130,44 @@ func TestAccountDerivationDeterministic(t *testing.T) {
 	if !strings.HasPrefix(a1, "key-") || len(a1) != len("key-")+16 {
 		t.Errorf("account %q not key-<hex16>", a1)
 	}
-	tk1 := tokenAccount("grpc.wendy.com:443", 7)
-	tk2 := tokenAccount("grpc.wendy.com:443", 7)
-	tkOther := tokenAccount("grpc.wendy.com:443", 8)
+	tk1 := tokenAccount("https://cloud.wendy.dev", "grpc.wendy.com:443", 7)
+	tk2 := tokenAccount("https://cloud.wendy.dev", "grpc.wendy.com:443", 7)
+	tkOther := tokenAccount("https://cloud.wendy.dev", "grpc.wendy.com:443", 8)
 	if tk1 != tk2 {
-		t.Errorf("same (endpoint, org) → different token accounts: %q vs %q", tk1, tk2)
+		t.Errorf("same (dashboard, endpoint, org) → different token accounts: %q vs %q", tk1, tk2)
 	}
 	if tk1 == tkOther {
 		t.Error("different org on the same endpoint → same token account")
 	}
 	if !strings.HasPrefix(tk1, "token-") || len(tk1) != len("token-")+16 {
 		t.Errorf("token account %q not token-<hex16>", tk1)
+	}
+}
+
+// TestAccountDerivationDashboardVariance is the regression test for the
+// missing-CloudDashboard finding: AddAuth dedups auth entries on
+// (CloudDashboard, CloudGRPC, orgID), so a browser login (CloudDashboard
+// set) and an --api-key login (CloudDashboard empty, see performLocalLogin
+// in auth.go) against the same endpoint+org coexist as two distinct
+// entries. tokenAccount must include CloudDashboard or those two entries'
+// dehydrated tokens collide on one Keychain account.
+func TestAccountDerivationDashboardVariance(t *testing.T) {
+	withDashboard := tokenAccount("https://cloud.wendy.dev", "grpc.wendy.com:443", 7)
+	withoutDashboard := tokenAccount("", "grpc.wendy.com:443", 7)
+	if withDashboard == withoutDashboard {
+		t.Error("differing CloudDashboard (same endpoint+org) → same token account")
+	}
+}
+
+// TestAccountDerivationAssetVariance is the regression test for the
+// missing-AssetID finding: asset certs minted by performLocalLogin carry no
+// UserID, only an AssetID, so two asset certs on the same endpoint+org with
+// different AssetID must not collide on one key account.
+func TestAccountDerivationAssetVariance(t *testing.T) {
+	a := keyAccount("grpc.wendy.com:443", 7, "", 100)
+	b := keyAccount("grpc.wendy.com:443", 7, "", 200)
+	if a == b {
+		t.Error("differing AssetID with empty UserID (same endpoint+org) → same key account")
 	}
 }
 
@@ -157,8 +184,6 @@ func TestResolveErrorWhenNoBackend(t *testing.T) {
 		t.Fatal("expected error resolving a ref with no platform backend")
 	}
 }
-
-var _ = errors.New // silence unused-import if errors ends up unused
 
 func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -341,6 +366,127 @@ func TestSaveTokenAccountPerOrgOnSharedEndpoint(t *testing.T) {
 	tokB, err := loaded.Auth[1].BearerToken()
 	if err != nil || tokB != "tok-org-b" {
 		t.Errorf("org B BearerToken = %q, %v, want %q", tokB, err, "tok-org-b")
+	}
+}
+
+// TestSaveTokenAccountPerDashboardOnSharedEndpoint is the sibling regression
+// test for the missing-CloudDashboard finding at the Save/Load level:
+// AddAuth dedups on (CloudDashboard, CloudGRPC, orgID), so a browser login
+// (CloudDashboard set) and an --api-key login (CloudDashboard empty, see
+// performLocalLogin in auth.go) against the same endpoint+org coexist as two
+// separate entries. Before the fix, tokenAccount ignored CloudDashboard, so
+// dehydrating the second entry's token would Put it under the first
+// entry's account, destroying the first token even though both references
+// still looked distinct on disk.
+func TestSaveTokenAccountPerDashboardOnSharedEndpoint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{
+		{
+			CloudDashboard: "https://cloud.wendy.dev",
+			CloudGRPC:      "grpc.wendy.com:443",
+			APIKey:         "tok-browser",
+			Certificates:   []CertificateInfo{{OrganizationID: 1}},
+		},
+		{
+			CloudDashboard: "", // --api-key login leaves this empty
+			CloudGRPC:      "grpc.wendy.com:443",
+			APIKey:         "tok-apikey",
+			Certificates:   []CertificateInfo{{OrganizationID: 1}},
+		},
+	}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !isRef(loaded.Auth[0].APIKey) || !isRef(loaded.Auth[1].APIKey) {
+		t.Fatalf("expected both APIKeys to be dehydrated refs, got %q and %q", loaded.Auth[0].APIKey, loaded.Auth[1].APIKey)
+	}
+	if loaded.Auth[0].APIKey == loaded.Auth[1].APIKey {
+		t.Fatalf("browser login and --api-key login on the shared endpoint got the same keychain reference: %q", loaded.Auth[0].APIKey)
+	}
+
+	// Cold cache: resolutions must come from the fake store itself, proving
+	// each entry independently holds its own token in the Keychain.
+	resetSecretCacheForTest()
+	tokBrowser, err := loaded.Auth[0].BearerToken()
+	if err != nil || tokBrowser != "tok-browser" {
+		t.Errorf("browser-login BearerToken = %q, %v, want %q", tokBrowser, err, "tok-browser")
+	}
+	tokAPIKey, err := loaded.Auth[1].BearerToken()
+	if err != nil || tokAPIKey != "tok-apikey" {
+		t.Errorf("api-key-login BearerToken = %q, %v, want %q", tokAPIKey, err, "tok-apikey")
+	}
+}
+
+// TestSaveKeyAccountPerAssetOnEmptyUserID is the sibling regression test for
+// the missing-AssetID finding: asset certs minted by performLocalLogin
+// (device/asset identities) carry no UserID, only an AssetID. Before the
+// fix, keyAccount ignored AssetID, so two asset certs on the same
+// endpoint+org would dehydrate their private keys to the same Keychain
+// account, and the second Save would destroy the first key.
+func TestSaveKeyAccountPerAssetOnEmptyUserID(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{
+		{
+			CloudGRPC: "grpc.wendy.com:443",
+			Certificates: []CertificateInfo{{
+				OrganizationID: 1,
+				AssetID:        100,
+				PemPrivateKey:  "-----BEGIN PRIVATE KEY-----\nasset-100",
+			}},
+		},
+		{
+			CloudGRPC: "grpc.wendy.com:443",
+			Certificates: []CertificateInfo{{
+				OrganizationID: 1,
+				AssetID:        200,
+				PemPrivateKey:  "-----BEGIN PRIVATE KEY-----\nasset-200",
+			}},
+		},
+	}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	key0 := loaded.Auth[0].Certificates[0].PemPrivateKey
+	key1 := loaded.Auth[1].Certificates[0].PemPrivateKey
+	if !isRef(key0) || !isRef(key1) {
+		t.Fatalf("expected both private keys to be dehydrated refs, got %q and %q", key0, key1)
+	}
+	if key0 == key1 {
+		t.Fatalf("two asset certs (empty UserID, differing AssetID) got the same keychain reference: %q", key0)
+	}
+
+	resetSecretCacheForTest()
+	pem0, err := loaded.Auth[0].Certificates[0].PrivateKeyPEM()
+	if err != nil || !strings.Contains(pem0, "asset-100") {
+		t.Errorf("asset 100 PrivateKeyPEM = %q, %v, want to contain %q", pem0, err, "asset-100")
+	}
+	pem1, err := loaded.Auth[1].Certificates[0].PrivateKeyPEM()
+	if err != nil || !strings.Contains(pem1, "asset-200") {
+		t.Errorf("asset 200 PrivateKeyPEM = %q, %v, want to contain %q", pem1, err, "asset-200")
 	}
 }
 

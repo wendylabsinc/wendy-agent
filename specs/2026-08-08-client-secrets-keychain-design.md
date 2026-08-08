@@ -39,14 +39,18 @@ keep separate policy knobs.
 
 Credential items: service **`wendy-credentials`**, account
 `<kind>-<sha16>` where `kind ∈ {key, token}` and `sha16` is the first 16 hex
-chars of `SHA256(cloudGRPC|orgID|userID)` for keys, and `SHA256(cloudGRPC|orgID)`
-for tokens. Tokens are keyed by org as well as endpoint because `AddAuth`
-deliberately keeps one auth entry per `(cloudGRPC, orgID)` pair — several
-orgs can share one endpoint (e.g. multiple orgs on the production cloud) —
-so a per-endpoint-only account would let a second org's token overwrite the
-first org's Keychain item on save. Deterministic accounts mean re-login for
-the same identity overwrites the same item. Writes ride stdin via
-`security -i` (never argv), mirroring PR #1612.
+chars of `SHA256(cloudDashboard|cloudGRPC|orgID)` for tokens, and
+`SHA256(cloudGRPC|orgID|userID|assetID)` for keys. The token formula hashes
+the same `(cloudDashboard, cloudGRPC, orgID)` triple `AddAuth` dedups auth
+entries on, so two auth entries never collide on one Keychain item — notably
+a browser login (`cloudDashboard` set) and an `--api-key` login
+(`cloudDashboard` empty) against the same endpoint+org are distinct AddAuth
+entries and must get distinct accounts. Keys are additionally scoped by
+`userID`/`assetID` because asset certs (from `performLocalLogin`) carry no
+`userID`, only an `assetID` — two asset certs on the same endpoint+org must
+not collide either. Deterministic accounts mean re-login for the same
+identity overwrites the same item. Writes ride stdin via `security -i`
+(never argv), mirroring PR #1612.
 
 Honest posture (same as the ticket store): the item ACL trusts
 `/usr/bin/security`, so any same-user process reads it promptlessly — the
@@ -116,11 +120,13 @@ worst case is the status quo, never a lost credential.
 
 - **Login/refresh** (`auth.go`) keep writing plaintext into the structs;
   `Save()` converts. No flow changes.
-- **Logout/entry removal**: every path that deletes an `AuthConfig` or
-  replaces a `CertificateInfo` deletes the referenced Keychain items
-  (best-effort; a leaked item is inert without the config referencing it,
-  but tidy-up is cheap). The implementation plan enumerates the exact sites
-  (auth logout, cert refresh replacing entries, org removal).
+- **Logout**: the only path that actually deletes `AuthConfig` entries today;
+  it deletes every Keychain item the config referenced (best-effort; a
+  leaked item is inert without the config referencing it, but tidy-up is
+  cheap). Cert refresh (`refresh-certs`) is not a deletion path: it replaces
+  a `CertificateInfo` in place for the same identity, so the deterministic
+  `keyAccount` is unchanged and the next `Save()` simply overwrites the
+  existing Keychain item via `Put` — no explicit delete needed.
 - **Downgrade**: accepted per decision above. The migration notice names the
   consequence.
 - The resumption ticket cache is unaffected (separate service name, separate

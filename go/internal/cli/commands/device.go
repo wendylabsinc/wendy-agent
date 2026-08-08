@@ -1023,6 +1023,7 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	}
 	cloudCtx, ctxErr := cloudContext(ctx, auth)
 	if ctxErr != nil {
+		cloudConn.Close()
 		return nil, nil, ctxErr
 	}
 	return cloudConn, cloudCtx, nil

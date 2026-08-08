@@ -2,6 +2,7 @@ package tlscache
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 )
 
 // memStore is an in-memory secretstore.Store recording deletes.
@@ -302,6 +305,45 @@ func TestSetResumedFalseAllowsPutAfterLaterFullHandshake(t *testing.T) {
 
 	if store.Get(c.storeKey) == nil {
 		t.Error("later full handshake's ticket was not persisted after an earlier resumed handshake on the same Cache — SetResumed did not reset")
+	}
+}
+
+// TestKeychainPutCommandLineSizeForSessionTicket measures — and permanently
+// guards — the real security(1) command-line size for a captured TLS session
+// ticket blob going through the ACTUAL darwin keychain Put path (not a fake
+// blob): it fakes secretstore.RunSecurity to capture the stdin the real
+// keychain.Put builds, then drives a real handshake so the blob is a genuine
+// encoded session ticket. This is the FINDING 1 measurement: the 4000-byte
+// truncation guard in secretstore's keychain Put protects this path too, and
+// this test proves the real ticket size stays comfortably under it.
+func TestKeychainPutCommandLineSizeForSessionTicket(t *testing.T) {
+	store := secretstore.NewKeychain(keychainService)
+	if store == nil {
+		t.Skip("no Keychain backend on this platform")
+	}
+
+	var captured string
+	origRun := secretstore.RunSecurity
+	secretstore.RunSecurity = func(_ context.Context, stdin string, _ ...string) ([]byte, error) {
+		captured = stdin
+		return nil, nil
+	}
+	t.Cleanup(func() { secretstore.RunSecurity = origRun })
+
+	addr, srvResumed := startTLSServer(t)
+	c := newCache("cache-test", []byte("client-leaf-der"), store)
+	if resumed := dialWithCache(t, addr, c); resumed {
+		t.Fatal("first connection unexpectedly resumed")
+	}
+	<-srvResumed
+	c.Flush()
+
+	if captured == "" {
+		t.Fatal("Put was never invoked through the faked security runner")
+	}
+	t.Logf("keychain Put command line for a session-ticket blob = %d bytes", len(captured))
+	if len(captured) >= 4000 {
+		t.Errorf("session-ticket keychain command line = %d bytes, at/over the 4000-byte truncation guard in secretstore's keychain Put", len(captured))
 	}
 }
 

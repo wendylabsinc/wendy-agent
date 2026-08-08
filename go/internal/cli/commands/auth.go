@@ -419,14 +419,19 @@ func newAuthLogoutCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
-			// Discard the Keychain items the entries reference before
-			// dropping the references themselves.
-			config.DeleteStoredSecrets(cfg)
-
+			// Drop the references and save FIRST, then delete the Keychain
+			// items they pointed at. A failed Save here leaves config.json
+			// and the Keychain items both untouched, so a retry (or a
+			// manual fix) can still recover; deleting the items first would
+			// instead risk leaving config.json referencing Keychain items
+			// that no longer exist, breaking every command until the user
+			// re-logs in.
+			entries := cfg.Auth
 			cfg.Auth = nil
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+			config.DeleteStoredSecrets(&config.Config{Auth: entries})
 
 			fmt.Println(tui.SuccessMessage("Logged out. All authentication credentials removed."))
 			return nil
