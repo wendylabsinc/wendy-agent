@@ -855,7 +855,7 @@ if !fromCache {
 Delete, verifying zero references first (`grep -rn <name> go/ | grep -v _test`):
 - `DiscoverLANContinuous` (discovery.go:163) + `discoverLANContinuous` (all three platforms) — the picker was its only consumer (Task 10 removed that).
 - Per-platform `discoverLAN` implementations + `discoverLANAvahi` + `parseAvahiResolveLine` + `avahiUnescape` + `parseAvahiTXT` + `hasAvahiBrowse` (linux), `deviceFromBrowse`/`dnssdResolve`/`dnssdBrowse` remnants (darwin) — `DiscoverLAN` is stream-backed since Task 4; keep whatever `mdnsStreamBackend`/annotators still use (`dnssdBrowseStream`, `dnssdResolveInstance`, `darwinInterfaceDisplayNameMap`, `setLANNetworkInterface`, `linuxInterfaceLinkSpeed`, `isValidHostnameLabel`).
-- The `avahi-browse` exec import — after this task `grep -rn "exec.Command" go/internal/shared/discovery/` must return nothing (Global Constraint: no child processes).
+- The `avahi-browse` exec invocations — after this task `grep -rn "exec.Command\|exec.LookPath" go/internal/shared/discovery/mdns*.go go/internal/shared/discovery/dnssd*.go` must return nothing, and `discovery_linux.go` must have no avahi-browse exec left (Global Constraint: no child processes in the mDNS browse path). Bluetooth/Ethernet/USB/serial shell-outs (`bluetoothctl`, `networksetup`, `ifconfig`, `system_profiler`, powershell) are explicitly out of scope per the spec and stay.
 
 - [ ] **Step 1:** For each symbol: grep, delete symbol + its tests, build.
 - [ ] **Step 2:** Full suite: `go test ./go/internal/... -race` → PASS. Cross-builds pass. `grep -rn "exec.Command" go/internal/shared/discovery/` → empty.
