@@ -8,11 +8,11 @@ import (
 	"sync"
 )
 
-// resolveMDNSService resolves a browse result into an MDNSService. Callers
-// bound its ctx themselves: discoverLAN* invokes it inline from its browse
-// callback (so a hanging lookup would stall its socket pump), while
-// mdnsStreamBackend's resolver pool (via mdnsStreamResolveAndEmit) calls it
-// off a queue, where a slow lookup only holds up its own worker.
+// resolveMDNSService resolves a browse result into an MDNSService. Its only
+// caller, mdnsStreamResolveAndEmit, invokes it (via the resolveServiceFn
+// seam) off mdnsStreamBackend's resolver-pool queue, so a slow lookup only
+// holds up its own worker rather than the browse callback itself; the ctx it
+// bounds the lookup with is that worker's own.
 func resolveMDNSService(ctx context.Context, inst browseResult, serviceType string) (MDNSService, error) {
 	hostname, port, txtRecords, err := dnssdResolveInstance(ctx, inst, serviceType)
 	if err != nil {

@@ -92,8 +92,7 @@ func hashicorpSweepOnce(ctx context.Context, serviceType string, emit func(MDNSS
 
 // hashicorpSweepTargets returns the *net.Interface values one sweep should
 // query. On Windows it leads with a nil entry — hashicorp/mdns's
-// default/all-interface query, mirroring discovery_windows.go's
-// BrowseMDNSServices/discoverLAN, since Windows does not reliably route
+// default/all-interface query — since Windows does not reliably route
 // multicast replies back to a specific adapter-scoped query alone. Linux
 // omits it: a nil query there binds to whatever the kernel treats as the
 // default multicast interface and would miss secondary/USB-OTG adapters that
@@ -202,9 +201,9 @@ func hashicorpEntryToService(entry *mdns.ServiceEntry, iface *net.Interface, ser
 }
 
 // parseMDNSInfoFields parses hashicorp/mdns InfoFields (raw TXT records) into
-// a key→value map. Used by every hashicorp/mdns-backed path in this package:
-// the Linux avahi-browse fallback (discovery_linux.go, mdns_linux.go) and
-// this streaming backend.
+// a key→value map, for hashicorpEntryToService above — the sole conversion
+// point for every hashicorp/mdns-backed path in this package (Windows
+// primary, Linux fallback when the Avahi daemon is unreachable).
 func parseMDNSInfoFields(fields []string) map[string]string {
 	records := make(map[string]string)
 	for _, txt := range fields {
