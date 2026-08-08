@@ -1970,8 +1970,11 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 // context.Background() so the hook outlives the CLI. Returns the hook's cmd
 // for the caller to reap, nil when no CLI hook ran.
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
+	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
-	if err := waitForReadiness(ctx, readiness, conn.Host); err != nil {
+	err := waitForReadiness(ctx, readiness, conn.Host)
+	rp("  ↳ runcontainer: readiness wait")
+	if err != nil {
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -1998,7 +2001,9 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		clone.Hooks = hooks
 		effectiveCfg = &clone
 	}
-	return startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
+	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
+	rp("  ↳ runcontainer: announce + postStart hook")
+	return cmd
 }
 
 // startPostStartHook fires the postStart hook actions for appCfg. serviceName
@@ -2096,6 +2101,11 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 	// when the stream ends (matching startAndStreamContainer's runCtx handling).
 	// Cleanup runs in a defer so the hook is killed and reaped on every exit
 	// path, including stream errors.
+	// Splits the runcontainer phase into its device-side and host-side halves:
+	// everything up to Started is the agent creating and starting the
+	// container, everything after is the CLI waiting on the app and firing
+	// hooks. They have completely different causes when one is slow.
+	rc := phaseTimer()
 	hookCtx, hookCancel := context.WithCancel(ctx)
 	var postStartCmd *exec.Cmd
 	defer func() {
@@ -2114,6 +2124,7 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
+			rc("  ↳ runcontainer: device create+start")
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
