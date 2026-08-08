@@ -614,12 +614,18 @@ func lanAgentAddresses(dev models.LANDevice) []string {
 		port -= agentMTLSPortOffset // advertised port is mTLS; connectWithAutoTLS will add the offset back
 	}
 
-	hosts := []string{strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)}
-	if strings.TrimSpace(dev.USB) != "" {
+	ip, hostname := strings.TrimSpace(dev.IPAddress), strings.TrimSpace(dev.Hostname)
+	hosts := []string{ip, hostname}
+	// A zoned IPv6 literal (fe80::5741:1%enx0) can only come from the USB
+	// well-known-address probe, which just proved the agent answers there. Such
+	// a device is typically one whose mDNS is broken — that is why the probe
+	// found it — so its .local name costs a full resolver timeout plus a dial
+	// timeout before the address that works is even tried. It stays first.
+	if strings.TrimSpace(dev.USB) != "" && !strings.Contains(ip, "%") {
 		// A USB-NCM path exists. The routed Wi-Fi IP (dev.IPAddress) may be
 		// black-holed by AP isolation on residential routers, so try the
 		// link-local .local hostname (reachable over USB) first.
-		hosts = []string{strings.TrimSpace(dev.Hostname), strings.TrimSpace(dev.IPAddress)}
+		hosts = []string{hostname, ip}
 	}
 
 	var addresses []string

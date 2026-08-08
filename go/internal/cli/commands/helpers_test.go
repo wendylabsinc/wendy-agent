@@ -903,6 +903,13 @@ func TestLanAgentAddressesPrefersUSBLinkLocal(t *testing.T) {
 			dev:  models.LANDevice{Hostname: "playful-reed.local", USB: "en5 (USB Ethernet) 480 Mbps", Port: 50051},
 			want: []string{"playful-reed.local:50051"},
 		},
+		{
+			// Probe-built device: the zoned link-local address is the verified
+			// USB path, while .local is the name mDNS failed to serve.
+			name: "zoned link-local from the usb probe outranks the .local name",
+			dev:  models.LANDevice{Hostname: "playful-reed.local", IPAddress: "fe80::5741:1%enx0", USB: "enx0", Port: 50051},
+			want: []string{"[fe80::5741:1%enx0]:50051", "playful-reed.local:50051"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
