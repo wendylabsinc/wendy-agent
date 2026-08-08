@@ -188,19 +188,6 @@ func avahiUnescape(s string) string {
 	return b.String()
 }
 
-// parseMDNSInfoFields parses hashicorp/mdns InfoFields (raw TXT records) into
-// a key→value map. This is used by the hashicorp/mdns fallback path, which runs
-// when avahi-browse is unavailable.
-func parseMDNSInfoFields(fields []string) map[string]string {
-	records := make(map[string]string)
-	for _, txt := range fields {
-		if k, v, ok := strings.Cut(txt, "="); ok {
-			records[k] = v
-		}
-	}
-	return records
-}
-
 // parseAvahiTXT parses avahi's TXT record field.
 // Format: "key1=val1" "key2=val2" ...
 func parseAvahiTXT(field string) map[string]string {
