@@ -424,6 +424,126 @@ func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) 
 	return layers, img.ImageConfig, nil
 }
 
+// gcOCILayoutDir deletes blobs in dir that are no longer reachable from
+// index.json. buildx's tar=false export only ever ADDS blobs, so superseded
+// manifests/configs/layers accumulate until pruned. Reachability keeps every
+// index entry (nested indexes and attestation manifests included), each
+// manifest's config, and each manifest's layers. A missing dir or index is a
+// no-op; unreadable blobs during the walk are kept (best-effort, never breaks
+// a deployable layout).
+func gcOCILayoutDir(dir string) error {
+	indexJSON, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read OCI layout index for GC: %w", err)
+	}
+	var index struct {
+		Manifests []ociDescriptor `json:"manifests"`
+	}
+	if err := json.Unmarshal(indexJSON, &index); err != nil {
+		return fmt.Errorf("parsing index.json for GC: %w", err)
+	}
+
+	referenced := map[string]bool{}
+	var walk func(descs []ociDescriptor, depth int)
+	walk = func(descs []ociDescriptor, depth int) {
+		if depth > 6 {
+			return
+		}
+		for _, d := range descs {
+			hexDigest, err := digestToHex(d.Digest)
+			if err != nil {
+				continue
+			}
+			referenced[hexDigest] = true
+			blob, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", hexDigest))
+			if err != nil {
+				continue
+			}
+			if isOCIImageIndexMediaType(d.MediaType) {
+				var nested struct {
+					Manifests []ociDescriptor `json:"manifests"`
+				}
+				if err := json.Unmarshal(blob, &nested); err == nil {
+					walk(nested.Manifests, depth+1)
+				}
+				continue
+			}
+			// Image manifests (attestation manifests share the media type): keep
+			// the config and every layer blob.
+			var manifest struct {
+				Config struct {
+					Digest string `json:"digest"`
+				} `json:"config"`
+				Layers []struct {
+					Digest string `json:"digest"`
+				} `json:"layers"`
+			}
+			if err := json.Unmarshal(blob, &manifest); err != nil {
+				continue
+			}
+			if hexDigest, err := digestToHex(manifest.Config.Digest); err == nil {
+				referenced[hexDigest] = true
+			}
+			for _, l := range manifest.Layers {
+				if hexDigest, err := digestToHex(l.Digest); err == nil {
+					referenced[hexDigest] = true
+				}
+			}
+		}
+	}
+	walk(index.Manifests, 0)
+
+	blobsDir := filepath.Join(dir, "blobs", "sha256")
+	dirEntries, err := os.ReadDir(blobsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("listing blobs for GC: %w", err)
+	}
+	for _, e := range dirEntries {
+		if e.IsDir() || referenced[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(blobsDir, e.Name())); err != nil {
+			return fmt.Errorf("pruning blob %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+// lockOCILayoutDir serializes use of a persistent layout directory across
+// wendy processes (build → read → push → GC). The lock file sits NEXT TO the
+// directory (dir+".lock") so a self-heal RemoveAll(dir) never deletes a held
+// lock. Returns a release func that must be called exactly once.
+func lockOCILayoutDir(ctx context.Context, dir string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return nil, fmt.Errorf("creating OCI layout parent: %w", err)
+	}
+	f, err := os.OpenFile(dir+".lock", os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening OCI layout lock: %w", err)
+	}
+	locked, err := tryLockFile(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("acquiring OCI layout lock: %w", err)
+	}
+	if !locked {
+		if err := blockLockFile(ctx, f); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("acquiring OCI layout lock: %w", err)
+		}
+	}
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, nil
+}
+
 // blobLoc is a blob's byte range within an OCI-layout tar.
 type blobLoc struct {
 	off  int64

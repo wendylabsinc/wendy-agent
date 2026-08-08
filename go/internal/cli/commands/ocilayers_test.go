@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestIsImageBuildFailure verifies the classification used by the chunk-diff
@@ -267,6 +269,76 @@ func TestReadOCILayoutDirLayersMissingIndex(t *testing.T) {
 	_, _, err := readOCILayoutDirLayers(t.TempDir(), "linux/arm64")
 	if err == nil {
 		t.Fatal("want error for missing index.json, got nil")
+	}
+}
+
+// GC must keep every blob reachable from index.json (all index entries, nested
+// indexes and attestation manifests included) and delete only orphans left
+// behind by superseded builds.
+func TestGCOCILayoutDir(t *testing.T) {
+	dir := t.TempDir()
+	raw := []byte("gc-test-layer-tar")
+	entries := minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw)
+	orphan := []byte("orphaned-blob-from-a-previous-build")
+	entries["blobs/sha256/"+sha256Hex(orphan)] = orphan
+	writeOCILayoutDir(t, dir, entries)
+
+	if err := gcOCILayoutDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", sha256Hex(orphan))); !os.IsNotExist(err) {
+		t.Fatal("orphan blob should have been deleted")
+	}
+	for name := range minimalOCILayoutEntries(t, raw, "application/vnd.oci.image.layer.v1.tar", raw) {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(name))); err != nil {
+			t.Fatalf("referenced entry %q should survive GC: %v", name, err)
+		}
+	}
+}
+
+func TestGCOCILayoutDirMissingDirIsNoop(t *testing.T) {
+	if err := gcOCILayoutDir(filepath.Join(t.TempDir(), "nope")); err != nil {
+		t.Fatalf("missing dir should be a no-op, got %v", err)
+	}
+}
+
+// The per-app layout lock must exclude a second acquirer until released. The
+// lock file lives NEXT TO the directory so self-heal's RemoveAll(dir) can
+// never delete a held lock.
+func TestLockOCILayoutDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "app-layout")
+	release, err := lockOCILayoutDir(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir + ".lock"); err != nil {
+		t.Fatalf("lock file should sit next to the dir: %v", err)
+	}
+
+	acquired := make(chan struct{})
+	go func() {
+		r2, err := lockOCILayoutDir(context.Background(), dir)
+		if err != nil {
+			t.Error(err)
+			close(acquired)
+			return
+		}
+		close(acquired)
+		r2()
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("second acquire should block while the lock is held")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-acquired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second acquire never succeeded after release")
 	}
 }
 
