@@ -565,7 +565,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
-	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
+	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
@@ -1726,9 +1726,8 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-		// Announce + fire-and-forget post-start hook (outlives the CLI process),
-		// but only if the app passes readiness.
-		runPostStartIfReady(ctx, context.Background(), conn, appCfg)
+		// Detached returns as soon as the container is started — see
+		// runPostStartIfReady's doc comment.
 		return nil
 	}
 
@@ -1966,6 +1965,23 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 // probe reported a success that never happened — "App reachable at ..." and a
 // browser tab pointed at a container that had already exited.
 //
+// ATTACHED RUNS ONLY. Detached deploys (--detach, and --watch, which sets
+// opts.detach) never call this. The readiness probe waits out the app's own
+// boot — measured at ~500-660ms for a trivial Python app, several times the
+// CLI's entire remaining overhead — which an attached run can afford because
+// it stays to stream logs anyway, but a detached run cannot: its whole point
+// is to return once the container is started, and --watch paid that wait on
+// every single redeploy.
+//
+// The host-side hook goes with it rather than being fired early, because it
+// is only meaningful once the app is listening: an app declaring an `http`
+// entitlement gets an openURL hook synthesized automatically (see
+// synthesizedOpenURLHook), so firing it without the gate would open a browser
+// at a port nothing is bound to yet — and in watch mode, one per redeploy.
+//
+// The agent-side (in-container) hook is unaffected: it rides on the
+// RunContainer/StartContainer RPC context and still runs on the device.
+//
 // hookCtx bounds the hook's CLI child process; detached callers pass
 // context.Background() so the hook outlives the CLI. Returns the hook's cmd
 // for the caller to reap, nil when no CLI hook ran.
@@ -2131,11 +2147,10 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			}
 			if opts.detach {
 				// Mirror startAndStreamContainer's detach branch: the container
-				// is started; wait for readiness, fire the host post-start hook,
-				// then return without tailing logs. The container keeps running
-				// independently of this (now-abandoned) output stream.
+				// is started, so return without tailing logs or waiting on
+				// readiness (see runPostStartIfReady's doc comment). The container keeps
+				// running independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-				runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
