@@ -56,11 +56,13 @@ const (
 	maxConnectAttempts = 3
 	// connectRetryDelay is the wait between retry attempts.
 	connectRetryDelay = 750 * time.Millisecond
-	// hidServiceUUID is the Bluetooth SIG Human Interface Device service. A
-	// device advertising it (or an input-* icon) is expected to produce a
-	// Linux input device once its connection is actually usable, which is
-	// what makes hollow connects detectable for this class.
-	hidServiceUUID = "00001812-0000-1000-8000-00805f9b34fb"
+	// HID service UUIDs for the two Bluetooth transports: 0x1812 is HID over
+	// GATT (LE), while 0x1124 is the Classic Bluetooth HID service class. A
+	// device advertising either UUID (or an input-* icon) is expected to
+	// produce a Linux input device once its connection is actually usable,
+	// which is what makes hollow connects detectable for this class.
+	hidServiceUUID        = "00001812-0000-1000-8000-00805f9b34fb"
+	classicHIDServiceUUID = "00001124-0000-1000-8000-00805f9b34fb"
 	// inputArrivalTimeout bounds how long Connect waits for the kernel input
 	// device of a just-connected HID peripheral. On a healthy encrypted link
 	// bluetoothd attaches HID/HOG and uhid registers within a second or two;
@@ -545,7 +547,7 @@ func isHIDDevice(props map[string]dbus.Variant) bool {
 	}
 	if uuids, ok := props["UUIDs"].Value().([]string); ok {
 		for _, uuid := range uuids {
-			if strings.EqualFold(uuid, hidServiceUUID) {
+			if strings.EqualFold(uuid, hidServiceUUID) || strings.EqualFold(uuid, classicHIDServiceUUID) {
 				return true
 			}
 		}
@@ -848,11 +850,13 @@ func (m *BlueZManager) Connect(ctx context.Context, address string, pair, trust 
 // mode), then pairs and connects from scratch. For HID peripherals the fresh
 // connect must also produce a kernel input device before success is reported.
 func (m *BlueZManager) repairFreshly(ctx context.Context, conn *dbus.Conn, address string, trust bool) (bool, error) {
-	if devicePath, adapterPath, err := lookupCachedDevice(ctx, conn, address); err == nil {
-		adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
-		if call := adapter.CallWithContext(ctx, adapterIface+".RemoveDevice", 0, devicePath); call.Err != nil {
-			m.logger.Warn("Failed to remove stale bond", zap.String("address", address), zap.Error(call.Err))
-		}
+	devicePath, adapterPath, err := lookupCachedDevice(ctx, conn, address)
+	if err != nil {
+		return false, fmt.Errorf("locating stale pairing for %s: %w", address, err)
+	}
+	adapter := conn.Object(bluezService, dbus.ObjectPath(adapterPath))
+	if call := adapter.CallWithContext(ctx, adapterIface+".RemoveDevice", 0, devicePath); call.Err != nil {
+		return false, m.wrapBluetoothError("removing stale pairing for", address, call.Err)
 	}
 
 	devicePath, props, err := m.resolveDevice(ctx, conn, address)

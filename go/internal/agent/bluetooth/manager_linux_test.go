@@ -540,6 +540,9 @@ func TestIsHIDDevice(t *testing.T) {
 		{"hid service uuid", map[string]dbus.Variant{
 			"UUIDs": dbus.MakeVariant([]string{"0000180f-0000-1000-8000-00805f9b34fb", hidServiceUUID}),
 		}, true},
+		{"classic hid service uuid", map[string]dbus.Variant{
+			"UUIDs": dbus.MakeVariant([]string{classicHIDServiceUUID}),
+		}, true},
 		{"uppercase uuid", map[string]dbus.Variant{
 			"UUIDs": dbus.MakeVariant([]string{strings.ToUpper(hidServiceUUID)}),
 		}, true},
