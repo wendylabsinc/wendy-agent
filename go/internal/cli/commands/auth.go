@@ -598,10 +598,14 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	// Connect to cloud using existing mTLS credentials.
 	var refreshTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		existingKeyPEM, err := existingCert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading existing client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			existingCert.PemCertificate,
 			existingCert.PemCertificateChain,
-			existingCert.PemPrivateKey,
+			existingKeyPEM,
 			"",
 		)
 		if err != nil {
@@ -619,8 +623,13 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 
 	certClient := cloudpb.NewCertificateServiceClient(certConn)
 
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
+
 	// Use RefreshCertificate RPC.
-	refreshResp, err := certClient.RefreshCertificate(cloudContext(ctx, auth), &cloudpb.RefreshCertificateRequest{
+	refreshResp, err := certClient.RefreshCertificate(cloudCtx, &cloudpb.RefreshCertificateRequest{
 		PemCsr: csrPEM,
 	})
 	if err != nil {

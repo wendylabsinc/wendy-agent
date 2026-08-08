@@ -606,7 +606,11 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 			var connectErrs []error
 			connected := false
 			for _, certInfo := range certInfos {
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				keyPEM, err := certInfo.PrivateKeyPEM()
+				if err != nil {
+					return nil, fmt.Errorf("wendy-lite provider: loading client key: %w", err)
+				}
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 				if err != nil {
 					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 				}
