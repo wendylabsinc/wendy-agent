@@ -91,16 +91,18 @@ func BrowseMDNSServicesContinuous(ctx context.Context, serviceType string) (<-ch
 	return ch, nil
 }
 
-// resolveMDNSService resolves a browse result into an MDNSService.
+// resolveMDNSService resolves a browse result into an MDNSService. Callers
+// bound its ctx themselves: BrowseMDNSServices*/discoverLAN* invoke it inline
+// from their browse callback (so a hanging lookup would stall their socket
+// pump), while mdnsStreamBackend's resolver pool calls it off a queue, where
+// a slow lookup only holds up its own worker.
 func resolveMDNSService(ctx context.Context, inst browseResult, serviceType string) (MDNSService, error) {
 	hostname, port, txtRecords, err := dnssdResolveInstance(ctx, inst, serviceType)
 	if err != nil {
 		return MDNSService{}, err
 	}
 
-	// Through the resolver rather than net.LookupHost, which ignores ctx: this
-	// runs inside the browse callback on the streaming path, so a lookup that
-	// hangs stalls the socket pump and stops discovery for every other device.
+	// Through the resolver rather than net.LookupHost, which ignores ctx —
 	// DefaultResolver keeps the system resolver, which .local names need.
 	ipAddr := ""
 	if addrs, lookupErr := net.DefaultResolver.LookupHost(ctx, hostname); lookupErr == nil {
@@ -173,16 +175,25 @@ func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSSe
 	return err
 }
 
+// resolveServiceFn is the resolve step mdnsStreamResolveAndEmit calls. A var,
+// not a direct call to resolveMDNSService, so tests can force a resolve
+// failure deterministically and pin the isValidHostnameLabel fallback gate
+// below without depending on real dns-sd failure conditions.
+var resolveServiceFn = resolveMDNSService
+
 // mdnsStreamResolveAndEmit resolves one browse result and hands the outcome
 // to emit. A resolve failure still emits a bare identity when the instance
 // name is usable as a hostname label — mirroring deviceFromBrowse's fallback
 // at discovery_darwin.go:139 — so a device with no TXT records, or a
 // transient resolve failure, is not silently dropped from the stream.
+// Otherwise (an instance name that cannot stand in as a hostname, e.g. one
+// containing a space) the result is skipped rather than emitting a misleading
+// dialable-looking identity.
 func mdnsStreamResolveAndEmit(ctx context.Context, inst browseResult, serviceType string, emit func(MDNSService)) {
 	resolveCtx, cancel := context.WithTimeout(ctx, dnssdResolveTimeout)
 	defer cancel()
 
-	svc, err := resolveMDNSService(resolveCtx, inst, serviceType)
+	svc, err := resolveServiceFn(resolveCtx, inst, serviceType)
 	if err != nil {
 		if isValidHostnameLabel(inst.instanceName) {
 			emit(MDNSService{InstanceName: inst.instanceName, InterfaceName: inst.interfaceName})

@@ -4,6 +4,7 @@ package discovery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -174,4 +175,50 @@ func TestMDNSStreamBackend(t *testing.T) {
 			t.Errorf("instance %q arrived after %v, want < 3s (not waiting for ctx end)", inst, a.at)
 		}
 	}
+}
+
+// TestMDNSStreamResolveAndEmitFallback pins mdnsStreamResolveAndEmit's
+// isValidHostnameLabel gate on a failed resolve, in both directions: a name
+// that can stand in as a hostname label still surfaces a bare identity
+// (mirroring deviceFromBrowse's fallback at discovery_darwin.go:139), so a
+// device with no TXT records or a transient resolve failure is not silently
+// dropped from the stream — but a name that cannot (e.g. one containing a
+// space) is skipped rather than emitting a misleading dialable-looking
+// identity. Deterministic and network-free: resolveServiceFn is swapped for
+// a resolver that always fails, so no mDNSResponder round trip is involved.
+func TestMDNSStreamResolveAndEmitFallback(t *testing.T) {
+	orig := resolveServiceFn
+	t.Cleanup(func() { resolveServiceFn = orig })
+	resolveServiceFn = func(context.Context, browseResult, string) (MDNSService, error) {
+		return MDNSService{}, errors.New("forced resolve failure")
+	}
+
+	t.Run("valid hostname label still emits a bare identity", func(t *testing.T) {
+		var got []MDNSService
+		mdnsStreamResolveAndEmit(context.Background(), browseResult{
+			instanceName:  "valid-label",
+			interfaceName: "en0",
+		}, wendyServiceType, func(svc MDNSService) { got = append(got, svc) })
+
+		if len(got) != 1 {
+			t.Fatalf("got %d emissions, want 1: %+v", len(got), got)
+		}
+		svc := got[0]
+		if svc.InstanceName != "valid-label" || svc.InterfaceName != "en0" ||
+			svc.Hostname != "" || svc.Port != 0 || len(svc.TXTRecords) != 0 {
+			t.Errorf("emitted %+v, want bare {InstanceName: valid-label, InterfaceName: en0}", svc)
+		}
+	})
+
+	t.Run("instance name unusable as a hostname label is skipped", func(t *testing.T) {
+		var got []MDNSService
+		mdnsStreamResolveAndEmit(context.Background(), browseResult{
+			instanceName:  "My Device", // space: not a valid RFC1123 label
+			interfaceName: "en0",
+		}, wendyServiceType, func(svc MDNSService) { got = append(got, svc) })
+
+		if len(got) != 0 {
+			t.Errorf("got %d emissions, want 0 (invalid label must not emit): %+v", len(got), got)
+		}
+	})
 }
