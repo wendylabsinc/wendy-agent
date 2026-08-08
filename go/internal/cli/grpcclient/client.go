@@ -9,11 +9,13 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tlscache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -44,6 +46,10 @@ const (
 	grpcKeepaliveTime    = 15 * time.Minute
 	grpcKeepaliveTimeout = 10 * time.Second
 )
+
+// tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
+// Overridable in tests to capture output.
+var tlsDebugWriter io.Writer = os.Stderr
 
 type AgentConnection struct {
 	Conn           *grpc.ClientConn
@@ -135,7 +141,10 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
 }
 
-func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
+// newAgentTLSConfig builds the client TLS config for one agent target,
+// including the persistent session cache that lets repeat CLI invocations
+// skip the full ML-DSA handshake (see specs/2026-08-07-tls-session-resumption-design.md).
+func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins certs.PinChecker, observedOrg *atomic.Int32) (*tls.Config, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
 	// chain certs (from pki-core) cause parse failures on the agent's server.
@@ -148,7 +157,6 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
-	observedOrg := new(atomic.Int32)
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
@@ -162,11 +170,33 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
 	}
+	if os.Getenv("WENDY_TLS_DEBUG") != "" {
+		inner := verifyConn
+		verifyConn = func(cs tls.ConnectionState) error {
+			fmt.Fprintf(tlsDebugWriter, "[tls-debug] %s resumed=%v\n", address, cs.DidResume)
+			return inner(cs)
+		}
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
 		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
+	}
+	// Session resumption: nil means caching is disabled — leaving the field
+	// unset is required then, because a typed-nil *Cache in the interface
+	// would panic inside crypto/tls.
+	if cache := tlscache.ForTarget(address, cert.Certificate[0]); cache != nil {
+		tlsCfg.ClientSessionCache = cache
+	}
+	return tlsCfg, nil
+}
+
+func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
+	observedOrg := new(atomic.Int32)
+	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg)
+	if err != nil {
+		return nil, err
 	}
 
 	conn, err := grpc.NewClient(
