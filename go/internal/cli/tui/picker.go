@@ -46,6 +46,7 @@ const (
 	ProbePending                   // probe in flight: show an animated spinner
 	ProbeOK                        // probe succeeded: show the version
 	ProbeFailed                    // probe failed: show the error glyph
+	ProbeOffline                   // device offline: show "offline" text
 )
 
 // ProbeFailedGlyph marks a row whose agent probe failed and for which no version
@@ -71,8 +72,8 @@ func ColorizeProbeGlyphs(view string) string {
 
 // probeColumnValue renders an Agent/OS cell for the given probe state. While
 // pending it shows the current spinner frame; on failure with no cached version
-// it shows the error glyph; otherwise it shows the version text (a cached
-// version is preserved even after a later transient failure).
+// it shows the error glyph; for offline it shows "offline"; otherwise it shows
+// the version text (a cached version is preserved even after a later transient failure).
 func probeColumnValue(state ProbeState, version, frame string) string {
 	switch state {
 	case ProbePending:
@@ -81,6 +82,8 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 		if version == "" {
 			return ProbeFailedGlyph
 		}
+	case ProbeOffline:
+		return "offline"
 	}
 	return version
 }
