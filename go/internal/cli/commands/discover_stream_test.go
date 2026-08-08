@@ -305,3 +305,99 @@ func TestDiscoverStream_SharedDisplayNameKeepsIndependentProbeStates(t *testing.
 		t.Fatalf("expected one resolved row and one still-pending row, got rows=%v", rows)
 	}
 }
+
+// TestDiscoverStream_ProbeFailedShowsFailedState covers the event the engine
+// emits for a device mDNS can see but whose agent does not answer. Before it
+// existed the row spun on "verifying" forever; the model must render it as
+// ProbeFailed instead.
+func TestDiscoverStream_ProbeFailedShowsFailedState(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
+
+	dev := models.LANDevice{ID: "dev-4", DisplayName: "epsilon", IPAddress: "10.0.0.8", Port: defaultAgentPort}
+	updated, _ := m.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANFound, Device: dev}})
+	dm := updated.(discoverModel)
+	if dm.probe[probeKey(dev)] != tui.ProbePending {
+		t.Fatalf("probe state = %v; want ProbePending before the probe concludes", dm.probe[probeKey(dev)])
+	}
+
+	updated, _ = dm.Update(lanEventMsg{ev: discovery.LANEvent{Kind: discovery.LANUpdated, Device: dev, ProbeFailed: true}})
+	dm = updated.(discoverModel)
+
+	if dm.probe[probeKey(dev)] != tui.ProbeFailed {
+		t.Fatalf("probe state = %v; want ProbeFailed", dm.probe[probeKey(dev)])
+	}
+	if got := len(dm.collection.LANDevices); got != 1 {
+		t.Fatalf("LANDevices = %d; want 1 (a failed probe never removes the row)", got)
+	}
+	if cell := discoverAgentCell(t, dm); cell != tui.ProbeFailedGlyph {
+		t.Fatalf("failed row Agent cell = %q; want %q", cell, tui.ProbeFailedGlyph)
+	}
+}
+
+// TestDiscoverStream_SupersededRowIsDropped covers the connect-minted
+// duplicate: `wendy run` caches an identity minted from the hostname, the
+// live scan then identifies the same device by its TXT device id, and the
+// engine reports which identity it replaced. The model must drop that row so
+// one device never occupies two.
+func TestDiscoverStream_SupersededRowIsDropped(t *testing.T) {
+	m := newDiscoverModel(context.Background(), defaultOpts(), true)
+
+	minted := models.LANDevice{ID: "orin", DisplayName: "orin", Hostname: "orin.local", IPAddress: "10.0.0.5", Port: defaultAgentPort}
+	updated, _ := m.Update(lanCachedEvent(minted))
+	dm := updated.(discoverModel)
+	if got := len(dm.collection.LANDevices); got != 1 {
+		t.Fatalf("LANDevices = %d after the cached minted row; want 1", got)
+	}
+
+	real := models.LANDevice{ID: "uuid-1", DisplayName: "orin", Hostname: "orin.local", IPAddress: "10.0.0.5", Port: defaultAgentPort}
+	updated, _ = dm.Update(lanEventMsg{ev: discovery.LANEvent{
+		Kind: discovery.LANFound, Device: real, Probed: true, Supersedes: probeKey(minted),
+	}})
+	dm = updated.(discoverModel)
+
+	if got := len(dm.collection.LANDevices); got != 1 {
+		t.Fatalf("LANDevices = %d; want 1 (the minted identity must be replaced, not duplicated)", got)
+	}
+	if dm.collection.LANDevices[0].ID != "uuid-1" {
+		t.Fatalf("surviving row = %+v; want the TXT-id identity", dm.collection.LANDevices[0])
+	}
+	if _, stale := dm.probe[probeKey(minted)]; stale {
+		t.Fatal("superseded identity left its probe state behind")
+	}
+	if dm.probe[probeKey(real)] != tui.ProbeOK {
+		t.Fatalf("probe state = %v; want ProbeOK", dm.probe[probeKey(real)])
+	}
+}
+
+// TestLANRowState pins the single mapping both LAN surfaces (device picker
+// and discover TUI) render events through, including the two states the row
+// can only reach through a probe outcome: ProbeFailed (seen on the network,
+// agent silent) and the insecure marker, which only a real probe can speak
+// for.
+func TestLANRowState(t *testing.T) {
+	mtls := models.LANDevice{ID: "dev", DisplayName: "orin", IsMTLS: true}
+	plain := models.LANDevice{ID: "dev", DisplayName: "orin"}
+
+	cases := []struct {
+		name         string
+		ev           discovery.LANEvent
+		wantProbe    tui.ProbeState
+		wantInsecure bool
+	}{
+		{"cached row verifies", discovery.LANEvent{Kind: discovery.LANCached, Device: plain}, tui.ProbePending, false},
+		{"unprobed sighting verifies", discovery.LANEvent{Kind: discovery.LANFound, Device: plain}, tui.ProbePending, false},
+		{"probed mTLS row is secure", discovery.LANEvent{Kind: discovery.LANFound, Device: mtls, Probed: true}, tui.ProbeOK, false},
+		{"probed plaintext row is insecure", discovery.LANEvent{Kind: discovery.LANUpdated, Device: plain, Probed: true}, tui.ProbeOK, true},
+		{"failed probe stops the spinner", discovery.LANEvent{Kind: discovery.LANUpdated, Device: plain, ProbeFailed: true}, tui.ProbeFailed, false},
+		{"offline row stays listed", discovery.LANEvent{Kind: discovery.LANOffline, Device: plain}, tui.ProbeOffline, false},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			probe, insecure := lanRowState(tt.ev)
+			if probe != tt.wantProbe || insecure != tt.wantInsecure {
+				t.Fatalf("lanRowState = (%v, %v); want (%v, %v)", probe, insecure, tt.wantProbe, tt.wantInsecure)
+			}
+		})
+	}
+}

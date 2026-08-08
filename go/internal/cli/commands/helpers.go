@@ -703,6 +703,32 @@ func lanProber(ctx context.Context, dev models.LANDevice) (models.LANDevice, err
 // fake event stream; production never reassigns it.
 var lanStreamFn = discovery.StreamLAN
 
+// lanRowState maps one streaming LAN discovery event onto the row state a
+// surface renders it as, plus whether the row is marked insecure. Shared by
+// the device picker and the discover TUI so the two can never drift.
+//
+//   - a cached row, and a live sighting no probe has answered for yet, are
+//     both "verifying" (spinner);
+//   - a probe that failed on a device mDNS can see stops the spinner: the row
+//     shows the failure glyph and may show the no-access hint;
+//   - only a successful probe can speak for the connection's mTLS status,
+//     so nothing else ever marks a row insecure;
+//   - a cached row nothing confirmed goes offline, and stays listed.
+func lanRowState(ev discovery.LANEvent) (probe tui.ProbeState, insecure bool) {
+	switch {
+	case ev.Kind == discovery.LANOffline:
+		return tui.ProbeOffline, false
+	case ev.Kind == discovery.LANCached:
+		return tui.ProbePending, false
+	case ev.ProbeFailed:
+		return tui.ProbeFailed, false
+	case ev.Probed:
+		return tui.ProbeOK, !ev.Device.IsMTLS
+	default:
+		return tui.ProbePending, false
+	}
+}
+
 // cliLANStreamOptions is the CLI's single definition of how a LAN scan should
 // run: read/write the on-disk cache (so a device seen in a prior run appears
 // instantly) and confirm every candidate with lanProber (an agent probe),
@@ -2640,19 +2666,12 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// a nil Prober a cached row can never be confirmed offline.
 	events := lanStreamFn(discoverCtx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
 	go func() {
+		// ev.Supersedes needs no handling here: picker rows dedup by hostname
+		// (deviceDedupKey/HostKey), so a superseded connect-minted row and the
+		// TXT-id row that replaces it are already the same row.
 		for ev := range events {
-			switch ev.Kind {
-			case discovery.LANCached:
-				sendLANItem(ev.Device, false, tui.ProbePending)
-			case discovery.LANFound, discovery.LANUpdated:
-				if ev.Probed {
-					sendLANItem(ev.Device, !ev.Device.IsMTLS, tui.ProbeOK)
-				} else {
-					sendLANItem(ev.Device, false, tui.ProbePending)
-				}
-			case discovery.LANOffline:
-				sendLANItem(ev.Device, false, tui.ProbeOffline)
-			}
+			probe, insecure := lanRowState(ev)
+			sendLANItem(ev.Device, insecure, probe)
 		}
 	}()
 
