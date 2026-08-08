@@ -376,6 +376,10 @@ func avahiBrowse(ctx context.Context, conn avahiConn, serviceType string, emit f
 		conn.RemoveSignal(sigCh)
 		return fmt.Errorf("avahi: creating service browser for %s: %w", serviceType, err)
 	}
+	// Logged here rather than at the call site in mdns_linux.go: only a browser
+	// the daemon actually created proves this is the backend that ran.
+	logMDNSBackend("avahi-dbus") // WENDY_MDNS_DEBUG: which backend is running
+
 	browserPath, ok := singleObjectPath(reply)
 	if !ok {
 		conn.RemoveSignal(sigCh)

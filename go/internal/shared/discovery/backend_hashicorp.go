@@ -61,6 +61,7 @@ func eligibleMDNSInterfaces() []net.Interface {
 // that should make the engine restart this backend; it always returns nil
 // once ctx is done.
 func hashicorpStreamBackend(ctx context.Context, serviceType string, emit func(MDNSService)) error {
+	logMDNSBackend("hashicorp") // WENDY_MDNS_DEBUG: which backend is running
 	for {
 		hashicorpSweepOnce(ctx, serviceType, emit)
 
