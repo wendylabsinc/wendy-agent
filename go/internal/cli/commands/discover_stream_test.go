@@ -89,6 +89,25 @@ func searchLANEventMsg(cmd tea.Cmd) (lanEventMsg, bool) {
 	return lanEventMsg{}, false
 }
 
+// TestCLILANStreamOptions_UsesCacheAndProber pins the CLI's single definition
+// of how a LAN scan should run — cliLANStreamOptions — to the contract every
+// consumer (one-shot/JSON discover, MCP's device_list, fleet commands, and
+// the batch helpers in helpers.go) relies on: cached rows are read (UseCache)
+// and every candidate is confirmed by a live agent probe, never a bare mDNS
+// sighting (Prober set). This is also what makes discover.go's removal of the
+// old post-hoc resolveLANVersions() pass safe: that function no longer
+// exists (deleted with its last caller), so any accidental reintroduction of
+// a call to it fails the build, not just this test.
+func TestCLILANStreamOptions_UsesCacheAndProber(t *testing.T) {
+	opts := cliLANStreamOptions()
+	if !opts.UseCache {
+		t.Error("UseCache = false; want true so cached rows appear instantly")
+	}
+	if opts.Prober == nil {
+		t.Error("Prober = nil; want lanProber so a cached row can be confirmed (or found offline)")
+	}
+}
+
 // TestDiscoverStream_CachedThenProbedUpdatesInPlace drives the discover
 // model's real Init/Update wiring — a fake lanStreamFn feeds events through
 // the channel Init hands to waitLANEvent — and verifies: a cached row shows

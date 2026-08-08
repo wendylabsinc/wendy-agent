@@ -532,7 +532,9 @@ var getAgentVersionAtAddress = func(ctx context.Context, address string) (bool, 
 	return conn.IsMTLS, resp, err
 }
 
-var discoverLANDevices = discovery.DiscoverLAN
+var discoverLANDevices = func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
+	return discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
+}
 
 var isInteractiveTerminalFn = func() bool {
 	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd()))
@@ -669,41 +671,6 @@ func resolveLANAgentVersion(ctx context.Context, dev models.LANDevice) (string, 
 	return "", false, nil, lastErr
 }
 
-// resolveLANVersions queries each LAN device's gRPC endpoint concurrently to
-// populate AgentVersion, OS, OSVersion, and CPUArchitecture.
-// Devices stay in the returned slice even when the metadata probe fails.
-func resolveLANVersions(ctx context.Context, devices []models.LANDevice) []models.LANDevice {
-	type indexedResult struct {
-		index int
-		resp  *agentpb.GetAgentVersionResponse
-	}
-
-	ch := make(chan *indexedResult, len(devices))
-	for i := range devices {
-		go func(idx int) {
-			d := &devices[idx]
-			_, _, resp, err := resolveLANAgentVersion(ctx, *d)
-			if err != nil {
-				ch <- &indexedResult{index: idx}
-				return
-			}
-			ch <- &indexedResult{index: idx, resp: resp}
-		}(i)
-	}
-
-	for range devices {
-		r := <-ch
-		if r != nil && r.resp != nil {
-			devices[r.index].AgentVersion = r.resp.GetVersion()
-			devices[r.index].DeviceType = r.resp.GetDeviceType()
-			devices[r.index].OS = r.resp.GetOs()
-			devices[r.index].OSVersion = r.resp.GetOsVersion()
-			devices[r.index].CPUArchitecture = r.resp.GetCpuArchitecture()
-		}
-	}
-	return devices
-}
-
 // resolveLANVersion queries a single LAN device's gRPC endpoint to populate
 // version metadata. It also returns whether that connection used mTLS.
 func resolveLANVersion(ctx context.Context, dev models.LANDevice) (models.LANDevice, bool, error) {
@@ -734,6 +701,17 @@ func lanProber(ctx context.Context, dev models.LANDevice) (models.LANDevice, err
 // lanStreamFn is a seam over discovery.StreamLAN so tests can substitute a
 // fake event stream; production never reassigns it.
 var lanStreamFn = discovery.StreamLAN
+
+// cliLANStreamOptions is the CLI's single definition of how a LAN scan should
+// run: read/write the on-disk cache (so a device seen in a prior run appears
+// instantly) and confirm every candidate with lanProber (an agent probe),
+// never a bare mDNS sighting. Every CLI surface that collects LAN devices —
+// one-shot/JSON discover, MCP's device_list, fleet commands, and the batch
+// helpers below — shares this so they all get the same cache+probe
+// acceleration.
+func cliLANStreamOptions() discovery.StreamOptions {
+	return discovery.StreamOptions{UseCache: true, Prober: lanProber}
+}
 
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
 type SelectedDevice struct {
@@ -1157,7 +1135,22 @@ var osLookupHostFn = func(ctx context.Context, host string) ([]string, error) {
 
 // lanBrowseFn browses the LAN for WendyOS devices via mDNS. It is a package
 // variable so tests can substitute a fixture instead of a real network browse.
-var lanBrowseFn = discovery.DiscoverLAN
+//
+// Declared without an inline initializer and assigned in init() below: an
+// inline `var lanBrowseFn = func(...) { ... cliLANStreamOptions() ... }`
+// creates a compile-time initialization cycle, because cliLANStreamOptions
+// pulls in lanProber -> resolveLANAgentVersion -> getAgentVersionAtAddress,
+// and getAgentVersionAtAddress's own initializer reaches back into this file's
+// connectWithAutoTLS -> resolveMDNSHost, which reads lanBrowseFn. Deferring
+// the assignment to init() (which runs after all package vars are
+// initialized) breaks that cycle while keeping this a plain overridable var.
+var lanBrowseFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
+
+func init() {
+	lanBrowseFn = func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
+		return discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
+	}
+}
 
 // resolveHostMDNSFallback resolves a bare hostname to a single IP, preferring
 // IPv4. It tries the OS resolver first, then falls back to an mDNS browse for
