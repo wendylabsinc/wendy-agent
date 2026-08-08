@@ -864,6 +864,44 @@ func TestPickOCIDescriptorFallbackPrefersNewest(t *testing.T) {
 	}
 }
 
+// TestPickOCIDescriptorFallbackSkipsAttestationManifest ensures that with
+// newest-last iteration, a trailing buildx attestation manifest
+// (platform os=unknown/arch=unknown) does NOT win the fallback over a real
+// image manifest when no exact platform match exists.
+func TestPickOCIDescriptorFallbackSkipsAttestationManifest(t *testing.T) {
+	arm := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "arm64", OS: "linux"}
+	unknown := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "unknown", OS: "unknown"}
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:image", Platform: arm},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:attestation", Platform: unknown},
+	}
+	// No exact match for linux/amd64: the fallback must skip the trailing
+	// attestation manifest and return the real image manifest instead.
+	got := pickOCIDescriptor(descs, "linux", "amd64")
+	if got == nil || got.Digest != "sha256:image" {
+		t.Fatalf("want fallback to skip attestation manifest and return sha256:image, got %+v", got)
+	}
+}
+
+// TestPickOCIDescriptorFallbackNilPlatformStillWins ensures the fallback still
+// picks a platform-NIL descriptor when it is the only candidate (nil platform
+// must not be mistaken for the unknown/unknown attestation shape).
+func TestPickOCIDescriptorFallbackNilPlatformStillWins(t *testing.T) {
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:onlycandidate"},
+	}
+	got := pickOCIDescriptor(descs, "linux", "amd64")
+	if got == nil || got.Digest != "sha256:onlycandidate" {
+		t.Fatalf("want the only nil-platform candidate to win the fallback, got %+v", got)
+	}
+}
+
 // writeBlob writes content under blobs/sha256/<sha256(content)> and returns
 // the digest string.
 func writeBlob(t *testing.T, dir string, content []byte) string {

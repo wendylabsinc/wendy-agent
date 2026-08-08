@@ -171,6 +171,10 @@ func pickOCIDescriptor(descs []ociDescriptor, wantOS, wantArch string) *ociDescr
 	}
 	for i := len(descs) - 1; i >= 0; i-- {
 		d := &descs[i]
+		if d.Platform != nil && d.Platform.OS == "unknown" && d.Platform.Architecture == "unknown" {
+			// buildx attestation manifest — never a deployable image.
+			continue
+		}
 		if isOCIImageManifestMediaType(d.MediaType) || isOCIImageIndexMediaType(d.MediaType) {
 			return d
 		}
@@ -919,9 +923,15 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 		return err
 	}
 	// The export appended this build's manifest; drop every older entry so
-	// readers and GC see exactly one current image.
+	// readers and GC see exactly one current image. Prune is hygiene, not
+	// correctness: pickOCIDescriptor (newest-last) and gcOCILayoutDir (keeps
+	// everything index-reachable) are both correct even without pruning, and
+	// prune is strictly LESS tolerant than either (exact top-level platform
+	// match only, no nested indexes). A buildx environment whose index shapes
+	// prune refuses must not lose the ability to build, so a prune failure is
+	// only a warning here.
 	if err := pruneOCILayoutDirIndex(destDir, platform); err != nil {
-		return fmt.Errorf("pruning OCI layout index: %w", err)
+		fmt.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
 	}
 	return nil
 }
