@@ -208,6 +208,37 @@ spi.close()
 
 > **Security note:** unlike `serial` and `i2c` — which are scoped to a single named node's exact `major:minor` — `spi` is a **whole-major** grant. An app that declares it can open **every** SPI bus on the host, not just one. This is deliberate: the entitlement exposes the SPI subsystem rather than an individual bus, and a host can present many `spidev*.*` nodes whose minors are not known ahead of time. Grant it only to apps you trust with all of the device's SPI buses.
 
+## Audio
+
+The audio entitlement grants a container playback and capture access, both through the host's PipeWire session and through raw ALSA. One entitlement covers speakers and microphones alike.
+
+```json
+{
+    "type": "audio"
+}
+```
+
+The entitlement takes no options.
+
+The container receives:
+- A bind mount of `/dev/snd` for raw ALSA access
+- Membership in the `audio` group (GID 29) for device permissions
+- A cgroup device rule allowing the sound major (116) with `rw` access (no `mknod`)
+- The host's user-session PipeWire socket, mounted at `/run/pipewire/pipewire-0`, with `PIPEWIRE_RUNTIME_DIR=/run/pipewire` set
+- `PULSE_SERVER=unix:/run/pipewire/pulse-native`, when the host session exposes a PulseAudio compatibility socket
+
+### Prefer PipeWire over raw ALSA
+
+Both paths are granted, but they do not reach the same devices. ALSA can only see sound cards. A Bluetooth speaker or microphone has no card behind it — it exists only as a node in the PipeWire graph — so `aplay` and `arecord` cannot reach one at all.
+
+Use a PipeWire-aware client (`pw-play`, `pw-record`) or a PulseAudio one (`paplay`, GStreamer's `pulsesink`), which covers sound cards and Bluetooth endpoints alike. Reach for raw ALSA only when you specifically need a wired card.
+
+### When the host has no audio session
+
+Only the socket belonging to a **user session** is mounted. WendyOS runs the session manager inside the `wendy` user's session, and a PipeWire instance without one has an empty graph — no sinks, no sources, and no PulseAudio socket beside it.
+
+If no user session is running, the container still gets `/dev/snd` and the audio group, but no socket and no environment variables. This is deliberate: handing an app a socket onto an empty graph would give it something that looks like working audio and plays nothing. Check for `PIPEWIRE_RUNTIME_DIR` if your app needs to distinguish the two cases.
+
 ## Persist
 
 The persist entitlement allows the container to persist data across restarts. Data is stored on the host filesystem and mounted into the container at the specified path.

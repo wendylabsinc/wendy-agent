@@ -813,6 +813,13 @@ func main() {
 	// coming up locally (mDNS discovery still works unenrolled).
 	go provisioningSvc.ApplyEnrollmentFile(context.Background())
 
+	// Restore audio peripherals paired before the last reboot. Nothing else
+	// does: BlueZ only reconnects after a link supervision timeout and has no
+	// startup path, and a speaker that was already powered when the host went
+	// away never pages us. Runs once per boot and waits on the user audio
+	// session, so it neither delays startup nor repeats on agent restarts.
+	go btManager.ReconnectTrusted(ctx)
+
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
 		otelPort = p

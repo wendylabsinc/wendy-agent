@@ -1,16 +1,15 @@
 package services
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -18,39 +17,21 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// wpctlSetDefault executes "wpctl set-default <id>" and returns the combined
-// output and any error. It is a package-level variable so that tests can inject
-// a mock implementation without spawning a real wpctl process.
-var wpctlSetDefault = func(ctx context.Context, id string) ([]byte, error) {
-	return exec.CommandContext(ctx, "wpctl", "set-default", id).CombinedOutput()
-}
-
-// pactlSetDefault executes "pactl <set-default-sink|set-default-source> <name>"
-// and returns the combined output and any error. It is a package-level variable
-// so that tests can inject a mock implementation without spawning a real pactl process.
-var pactlSetDefault = func(ctx context.Context, subcmd, name string) ([]byte, error) {
-	return exec.CommandContext(ctx, "pactl", subcmd, name).CombinedOutput()
-}
-
-// amixerRun executes amixer on the host. It is replaceable in tests so mixer
-// discovery and volume changes do not depend on local audio hardware.
-var amixerRun = func(ctx context.Context, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, "amixer", args...).CombinedOutput()
-}
-
-// resolvePipeWireNodeIDsFn resolves the ALSA card/device pair to PipeWire node
-// IDs. Overriding this variable in tests avoids executing pw-dump.
-var resolvePipeWireNodeIDsFn = resolvePipeWireNodeIDs
-
-// resolvePulseAudioSinkOrSourceFn resolves the ALSA card/device pair to
-// PulseAudio sink/source matches. Overriding this variable in tests avoids
-// executing pactl.
-var resolvePulseAudioSinkOrSourceFn = resolvePulseAudioSinkOrSource
-
-// AudioService implements agentpb.WendyAudioServiceServer.
+// AudioService implements agentpb.WendyAudioServiceServer on top of PipeWire.
+// Device IDs are PipeWire node IDs, which wpctl accepts directly and which name
+// Bluetooth endpoints as well as sound cards.
+//
+// When no PipeWire user session is running (audio.Available() is false),
+// every method here falls back to raw ALSA (aplay/arecord/amixer) instead of
+// failing outright, so a board with a sound card but no desktop session still
+// has basic playback and capture. The two paths never mix within one call:
+// falling back means enumerating ALSA cards *instead of* the PipeWire graph,
+// not alongside it, which is what caused a Bluetooth device to appear on some
+// surfaces and not others before this service moved to PipeWire exclusively.
 type AudioService struct {
 	agentpb.UnimplementedWendyAudioServiceServer
 	logger *zap.Logger
@@ -61,131 +42,124 @@ func NewAudioService(logger *zap.Logger) *AudioService {
 	return &AudioService{logger: logger}
 }
 
-// ListAudioDevices enumerates audio devices via ALSA (arecord/aplay).
-// Devices are selected with ALSA card/device arguments in plughw:<card>,<device>
-// form. Returned device IDs encode both the ALSA card and device numbers as
-// ((card << 8) | device) + 1; alsaDeviceArg decodes them back into the correct
-// plughw:<card>,<device> streaming argument. We use plughw rather than hw so
-// ALSA's plug layer can handle format conversion when needed. PipeWire/PulseAudio
-// node IDs are a different numbering system and would not map correctly to these
-// streaming device arguments.
-func (s *AudioService) ListAudioDevices(ctx context.Context, _ *agentpb.ListAudioDevicesRequest) (*agentpb.ListAudioDevicesResponse, error) {
-	devices, err := s.listALSADevices(ctx)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+// audioDeviceType maps a node's direction onto the proto enum.
+func audioDeviceType(n audio.Node) agentpb.AudioDeviceType {
+	if n.IsSink {
+		return agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT
+	}
+	return agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT
+}
+
+// ListAudioDevices enumerates the sinks and sources in the PipeWire graph, or
+// the raw ALSA cards when no PipeWire session is up. The ALSA fallback has no
+// notion of a default device, so IsDefault is always false there.
+func (s *AudioService) ListAudioDevices(ctx context.Context, req *agentpb.ListAudioDevicesRequest) (*agentpb.ListAudioDevicesResponse, error) {
+	var nodes []audio.Node
+	var defaults audio.Defaults
+	if audio.Available() {
+		var err error
+		nodes, defaults, err = audio.ListNodes(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+		}
+	} else {
+		var err error
+		nodes, err = audio.ListAlsaNodes(ctx)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+		}
+	}
+
+	filter := req.GetTypeFilter()
+	devices := make([]*agentpb.AudioDevice, 0, len(nodes))
+	for _, n := range nodes {
+		devType := audioDeviceType(n)
+		if filter != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_UNSPECIFIED && filter != devType {
+			continue
+		}
+		devices = append(devices, &agentpb.AudioDevice{
+			Id:          n.ID,
+			Name:        n.Name,
+			Description: n.Description,
+			Type:        devType,
+			IsDefault:   defaults.IsDefault(n),
+		})
 	}
 	return &agentpb.ListAudioDevicesResponse{Devices: devices}, nil
 }
 
-var simpleMixerControlPattern = regexp.MustCompile(`^Simple mixer control '(.+)',\d+$`)
-var playbackVolumePattern = regexp.MustCompile(`\[(\d{1,3})%\]`)
+// volumeQueryConcurrency bounds the wpctl processes nodeVolumes has in flight.
+const volumeQueryConcurrency = 8
 
-// preferredPlaybackControls covers the conventional ALSA simple-control names.
-// If none is present, mixerControl falls back to the first control that exposes
-// a playback volume, which keeps USB and board-specific codecs usable.
-var preferredPlaybackControls = []string{"Master", "PCM", "Speaker", "Headphone"}
-
-func parseSimpleMixerControls(output string) []string {
-	var controls []string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		if match := simpleMixerControlPattern.FindStringSubmatch(strings.TrimSpace(scanner.Text())); len(match) == 2 {
-			controls = append(controls, match[1])
-		}
+// nodeVolumes reports each device's volume as a percentage; devices whose
+// volume cannot be read are absent from the map. Each read is a wpctl process,
+// so an unresponsive node cannot serialise the whole listing behind it.
+func (s *AudioService) nodeVolumes(ctx context.Context, devices []*agentpb.AudioDevice) map[uint32]*uint32 {
+	if !audio.Available() {
+		return s.alsaVolumes(ctx, devices)
 	}
-	return controls
-}
 
-func orderPlaybackControls(controls []string) []string {
-	ordered := make([]string, 0, len(controls))
-	used := make(map[int]bool, len(controls))
-	for _, preferred := range preferredPlaybackControls {
-		for i, control := range controls {
-			if !used[i] && strings.EqualFold(control, preferred) {
-				ordered = append(ordered, control)
-				used[i] = true
+	volumes := make(map[uint32]*uint32, len(devices))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, volumeQueryConcurrency)
+	for _, device := range devices {
+		id := device.GetId()
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			volume, ok := audio.NodeVolume(ctx, id)
+			if !ok {
+				s.logger.Debug("Volume unavailable", zap.Uint32("node_id", id))
+				return
 			}
-		}
+			mu.Lock()
+			volumes[id] = &volume
+			mu.Unlock()
+		}()
 	}
-	for i, control := range controls {
-		if !used[i] {
-			ordered = append(ordered, control)
-		}
-	}
-	return ordered
+	wg.Wait()
+	return volumes
 }
 
-func parsePlaybackVolume(output string) (uint32, bool) {
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, "Playback") {
-			continue
-		}
-		match := playbackVolumePattern.FindStringSubmatch(line)
-		if len(match) != 2 {
-			continue
-		}
-		volume, err := strconv.ParseUint(match[1], 10, 32)
-		if err == nil && volume <= 100 {
-			return uint32(volume), true
-		}
-	}
-	return 0, false
+// alsaVolumeResult caches one card's mixerControl lookup, so cards with
+// several devices (e.g. multiple HDMI outputs) are not re-queried per device.
+type alsaVolumeResult struct {
+	volume uint32
+	ok     bool
 }
 
-// mixerControl resolves the ALSA simple mixer control that owns playback
-// volume for a card and returns its current percentage.
-func mixerControl(ctx context.Context, card uint64) (string, uint32, error) {
-	cardArg := strconv.FormatUint(card, 10)
-	listOutput, err := amixerRun(ctx, "-c", cardArg, "scontrols")
-	if err != nil {
-		return "", 0, fmt.Errorf("listing mixer controls: %w: %s", err, strings.TrimSpace(string(listOutput)))
-	}
-
-	for _, control := range orderPlaybackControls(parseSimpleMixerControls(string(listOutput))) {
-		output, getErr := amixerRun(ctx, "-c", cardArg, "sget", control)
-		if getErr != nil {
-			continue
-		}
-		if volume, ok := parsePlaybackVolume(string(output)); ok {
-			return control, volume, nil
-		}
-	}
-	return "", 0, fmt.Errorf("no playback volume control found on ALSA card %d", card)
-}
-
-func (s *AudioService) playbackVolumes(ctx context.Context, devices []*agentpb.AudioDevice) map[uint32]*uint32 {
-	type mixerResult struct {
-		volume uint32
-		err    error
-	}
-	byCard := make(map[uint64]mixerResult)
-	volumes := make(map[uint32]*uint32)
+// alsaVolumes is nodeVolumes' fallback for when no PipeWire session is up.
+// ALSA has no per-node volume concept — the mixer control is card-scoped —
+// so only outputs are reported, matching what a card's mixer can honestly
+// answer.
+func (s *AudioService) alsaVolumes(ctx context.Context, devices []*agentpb.AudioDevice) map[uint32]*uint32 {
+	volumes := make(map[uint32]*uint32, len(devices))
+	cache := make(map[uint64]alsaVolumeResult)
 	for _, device := range devices {
 		if device.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
 			continue
 		}
-		card, _ := decodeALSAID(device.GetId())
-		result, ok := byCard[card]
-		if !ok {
-			_, result.volume, result.err = mixerControl(ctx, card)
-			byCard[card] = result
+		card, _ := audio.DecodeAlsaID(device.GetId())
+		result, cached := cache[card]
+		if !cached {
+			volume, ok := audio.AlsaVolume(ctx, card)
+			result = alsaVolumeResult{volume: volume, ok: ok}
+			cache[card] = result
 		}
-		if result.err == nil {
-			volume := result.volume
-			volumes[device.GetId()] = &volume
-		} else {
-			s.logger.Debug("Playback volume unavailable",
-				zap.Uint64("alsa_card", card), zap.Error(result.err))
+		if !result.ok {
+			s.logger.Debug("ALSA playback volume unavailable", zap.Uint64("alsa_card", card))
+			continue
 		}
+		volume := result.volume
+		volumes[device.GetId()] = &volume
 	}
 	return volumes
 }
 
-// SetAudioVolume sets an ALSA output card's playback volume. ALSA simple mixer
-// controls are card-scoped, so the device component of the encoded ID is used
-// for validation but does not select a separate mixer.
+// setAudioVolume sets a node's volume and reports the value that took effect.
 func (s *AudioService) setAudioVolume(ctx context.Context, deviceID, volumePercent uint32) (uint32, error) {
 	if deviceID == 0 {
 		return 0, status.Error(codes.InvalidArgument, "device ID 0 is not a valid audio device")
@@ -194,503 +168,268 @@ func (s *AudioService) setAudioVolume(ctx context.Context, deviceID, volumePerce
 		return 0, status.Errorf(codes.InvalidArgument, "volume must be between 0 and 100, got %d", volumePercent)
 	}
 
-	card, _ := decodeALSAID(deviceID)
-	if card > 255 {
-		return 0, status.Errorf(codes.InvalidArgument,
-			"device ID %d encodes out-of-range ALSA card %d (max 255)", deviceID, card)
+	if !audio.Available() {
+		return s.setAlsaVolume(ctx, deviceID, volumePercent)
 	}
 
-	control, _, err := mixerControl(ctx, card)
+	nodes, _, err := audio.ListNodes(ctx)
 	if err != nil {
+		return 0, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+	}
+	node, ok := audio.FindNode(nodes, deviceID)
+	if !ok {
+		return 0, status.Errorf(codes.NotFound, "no audio device with ID %d", deviceID)
+	}
+
+	if err := audio.SetNodeVolume(ctx, deviceID, volumePercent); err != nil {
 		return 0, err
 	}
-	cardArg := strconv.FormatUint(card, 10)
-	percentArg := fmt.Sprintf("%d%%", volumePercent)
-	output, err := amixerRun(ctx, "-c", cardArg, "sset", control, percentArg, "unmute")
-	if err != nil {
-		return 0, fmt.Errorf("setting %s playback volume: %w: %s", control, err, strings.TrimSpace(string(output)))
-	}
 
+	// PipeWire clamps and quantises, and a hardware mixer may land on a nearby
+	// step, so report what the graph holds.
 	actual := volumePercent
-	if parsed, ok := parsePlaybackVolume(string(output)); ok {
-		actual = parsed
+	if v, ok := audio.NodeVolume(ctx, deviceID); ok {
+		actual = v
 	}
-	s.logger.Info("Audio playback volume set",
+	s.logger.Info("Audio volume set",
 		zap.Uint32("device_id", deviceID),
-		zap.Uint64("alsa_card", card),
-		zap.String("control", control),
+		zap.String("node", node.Name),
 		zap.Uint32("volume_percent", actual))
 	return actual, nil
 }
 
-// listALSADevices falls back to ALSA for audio device enumeration.
-func (s *AudioService) listALSADevices(ctx context.Context) ([]*agentpb.AudioDevice, error) {
-	var devices []*agentpb.AudioDevice
-	var firstErr error
-
-	for _, info := range []struct {
-		bin     string
-		devType agentpb.AudioDeviceType
-	}{
-		{"arecord", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT},
-		{"aplay", agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT},
-	} {
-		var stdout, stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, info.bin, "-l")
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Run(); err != nil {
-			if firstErr == nil {
-				se := strings.TrimSpace(stderr.String())
-				if se != "" {
-					firstErr = fmt.Errorf("%s -l: %w: %s", info.bin, err, se)
-				} else {
-					firstErr = fmt.Errorf("%s -l: %w", info.bin, err)
-				}
-			}
-			continue
-		}
-		devices = append(devices, parseALSAOutput(stdout.String(), info.devType)...)
-	}
-
-	if len(devices) == 0 && firstErr != nil {
-		return nil, firstErr
-	}
-	return devices, nil
-}
-
-// parseALSAOutput parses the output of arecord -l or aplay -l.
-// IDs are encoded as ((card << 8) | device) + 1 so that 0 remains the
-// "unspecified" sentinel used by alsaDeviceArg.
-func parseALSAOutput(output string, devType agentpb.AudioDeviceType) []*agentpb.AudioDevice {
-	var devices []*agentpb.AudioDevice
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "card ") {
-			continue
-		}
-		// Parse "card N: CardName [Desc], device M: DeviceName [Desc]"
-		parts := strings.SplitN(line, ":", 2)
-		if len(parts) < 2 {
-			continue
-		}
-		cardNum, err := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(parts[0], "card ")), 10, 32)
-		if err != nil {
-			continue
-		}
-		var deviceNum uint64
-		rest := parts[1]
-		if idx := strings.Index(rest, ", device "); idx >= 0 {
-			after := rest[idx+len(", device "):]
-			if ci := strings.Index(after, ":"); ci >= 0 {
-				if d, err := strconv.ParseUint(strings.TrimSpace(after[:ci]), 10, 32); err == nil {
-					deviceNum = d
-				}
-			}
-		}
-		id := ((cardNum << 8) | deviceNum) + 1
-		devices = append(devices, &agentpb.AudioDevice{
-			Id:          uint32(id),
-			Name:        fmt.Sprintf("hw:%d,%d", cardNum, deviceNum),
-			Description: strings.TrimSpace(rest),
-			Type:        devType,
-		})
-	}
-	return devices
-}
-
-// decodeALSAID decodes an ALSA-encoded device ID (as produced by ListAudioDevices)
-// into its constituent ALSA card and device numbers.
-// The encoding is: id = ((card << 8) | device) + 1.
-// Card occupies bits 15–8 and device occupies bits 7–0; both are in [0, 255].
-// An id of 0 is invalid for this encoding and decodes to (0, 0).
-// The caller is responsible for validating that the decoded card is ≤ 255.
-func decodeALSAID(id uint32) (card, device uint64) {
-	if id == 0 {
-		return 0, 0
-	}
-	encoded := uint64(id) - 1
-	return encoded >> 8, encoded & 0xFF
-}
-
-// pwDumpNode models the relevant fields of a single object emitted by pw-dump.
-// pw-dump outputs a JSON array of such objects.
-type pwDumpNode struct {
-	ID   uint32 `json:"id"`
-	Type string `json:"type"`
-	Info struct {
-		Props map[string]json.RawMessage `json:"props"`
-	} `json:"info"`
-}
-
-// resolvePipeWireNodeIDs uses pw-dump to find all PipeWire node IDs whose
-// ALSA card/device properties match the given card/device numbers. Matching
-// requires a paired-family approach: BOTH alsa.card AND alsa.device must match
-// (legacy family), OR BOTH api.alsa.card AND api.alsa.pcm.device must match
-// (native PipeWire family). Cross-family mixing — e.g. alsa.card from the
-// legacy family paired with api.alsa.pcm.device from the native family — is
-// rejected. A single ALSA card/device pair may appear as multiple PipeWire
-// nodes (e.g. one Audio/Sink and one Audio/Source), so we return all matches.
-// Returns nil if no matching nodes are found or pw-dump is unavailable.
-func resolvePipeWireNodeIDs(ctx context.Context, card, device uint64) []string {
-	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(cmdCtx, "pw-dump")
-	out, err := cmd.Output()
+// setAlsaVolume is setAudioVolume's fallback for when no PipeWire session is
+// up. The mixer control is card-scoped, so an input device is rejected rather
+// than silently changing a playback control it does not own.
+func (s *AudioService) setAlsaVolume(ctx context.Context, deviceID, volumePercent uint32) (uint32, error) {
+	nodes, err := audio.ListAlsaNodes(ctx)
 	if err != nil {
-		return nil
+		return 0, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
 	}
-
-	var nodes []pwDumpNode
-	if err := json.Unmarshal(out, &nodes); err != nil {
-		return nil
-	}
-
-	return filterPipeWireNodeIDs(nodes, card, device)
-}
-
-// filterPipeWireNodeIDs returns the string node IDs from nodes whose type is
-// PipeWire:Interface:Node, whose media.class is exactly "Audio/Sink" or
-// "Audio/Source" (excluding virtual/monitor nodes such as "Audio/Source/Virtual"),
-// and whose ALSA card/device properties match the given card and device numbers
-// using a paired-family approach: BOTH alsa.card AND alsa.device must match
-// (legacy family), OR BOTH api.alsa.card AND api.alsa.pcm.device must match
-// (native PipeWire family). Cross-family mixing — e.g. alsa.card matched with
-// api.alsa.pcm.device — is explicitly rejected to avoid false positives.
-// Extracted from resolvePipeWireNodeIDs to allow unit testing without executing
-// pw-dump.
-func filterPipeWireNodeIDs(nodes []pwDumpNode, card, device uint64) []string {
-	cardStr := fmt.Sprintf("%d", card)
-	deviceStr := fmt.Sprintf("%d", device)
-
-	var ids []string
-	for _, node := range nodes {
-		// Reject ID 0; valid PipeWire node IDs are positive integers.
-		if node.ID == 0 {
-			continue
-		}
-		// Only consider PipeWire Node objects; other types (Device, Port, etc.)
-		// can share ALSA properties but are not valid wpctl targets.
-		if node.Type != "PipeWire:Interface:Node" {
-			continue
-		}
-
-		props := node.Info.Props
-		if props == nil {
-			continue
-		}
-
-		// Only include real audio sink/source nodes. PipeWire uses exactly
-		// "Audio/Sink" for playback and "Audio/Source" for capture. Virtual or
-		// monitor nodes appear as "Audio/Source/Virtual" and must be excluded to
-		// avoid accidentally changing the default input to a monitor source.
-		var mediaClass string
-		if raw, ok := props["media.class"]; ok {
-			_ = json.Unmarshal(raw, &mediaClass)
-		}
-		if mediaClass != "Audio/Sink" && mediaClass != "Audio/Source" {
-			continue
-		}
-
-		// Match card+device as a paired family to avoid cross-family mixing
-		// (e.g. alsa.card matching with api.alsa.pcm.device).
-		legacyMatch := jsonPropMatches(props, "alsa.card", cardStr) &&
-			jsonPropMatches(props, "alsa.device", deviceStr)
-		apiMatch := jsonPropMatches(props, "api.alsa.card", cardStr) &&
-			jsonPropMatches(props, "api.alsa.pcm.device", deviceStr)
-		if !legacyMatch && !apiMatch {
-			continue
-		}
-
-		ids = append(ids, fmt.Sprintf("%d", node.ID))
-	}
-
-	return ids
-}
-
-// jsonPropMatches reports whether the named property in a pw-dump props map
-// equals wantStr. The property value may be a JSON string ("N") or number (N).
-func jsonPropMatches(props map[string]json.RawMessage, key, wantStr string) bool {
-	raw, ok := props[key]
+	node, ok := audio.FindNode(nodes, deviceID)
 	if !ok {
-		return false
+		return 0, status.Errorf(codes.NotFound, "no audio device with ID %d", deviceID)
 	}
-	// Try as a JSON string first.
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s == wantStr
+	if !node.IsSink {
+		return 0, status.Errorf(codes.InvalidArgument, "device %d (%s) is an input; it has no playback volume", deviceID, node.Name)
 	}
-	// Try as a number.
-	var n json.Number
-	if json.Unmarshal(raw, &n) == nil {
-		return n.String() == wantStr
+
+	card, _ := audio.DecodeAlsaID(deviceID)
+	actual, err := audio.SetAlsaVolume(ctx, card, volumePercent)
+	if err != nil {
+		return 0, err
 	}
-	return false
+	s.logger.Info("ALSA playback volume set",
+		zap.Uint32("device_id", deviceID),
+		zap.Uint64("alsa_card", card),
+		zap.String("node", node.Name),
+		zap.Uint32("volume_percent", actual))
+	return actual, nil
 }
 
-// pulseAudioMatch holds a resolved PulseAudio sink or source name and the
-// category it was found in ("sinks" or "sources").
-type pulseAudioMatch struct {
-	name     string
-	category string
-}
-
-// parsePulseAudioOutput scans a raw "pactl list sinks" or "pactl list sources"
-// output string and returns the names of all entries whose alsa.card and
-// alsa.device properties match the given card and device numbers. category is
-// only used to populate the returned pulseAudioMatch entries; it does not affect
-// filtering logic. Extracted from resolvePulseAudioSinkOrSource to allow unit
-// testing without executing pactl.
-func parsePulseAudioOutput(output string, card, device uint64, category string) []pulseAudioMatch {
-	cardStr := fmt.Sprintf("%d", card)
-	deviceStr := fmt.Sprintf("%d", device)
-
-	var matches []pulseAudioMatch
-	var currentName string
-	var currentCard, currentDevice string
-
-	flush := func() {
-		if currentName != "" && currentCard == cardStr && currentDevice == deviceStr {
-			// Exclude monitor sources: PulseAudio exposes a monitor source for every
-			// sink (e.g. "alsa_output.*.monitor"). These share the same alsa.card /
-			// alsa.device as the sink, so without this filter we would erroneously
-			// set the default input to the monitor when the user selected an output.
-			if strings.HasSuffix(currentName, ".monitor") {
-				return
-			}
-			matches = append(matches, pulseAudioMatch{name: currentName, category: category})
-		}
-	}
-
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		if strings.HasPrefix(line, "Name:") {
-			// Flush previous entry before starting a new one.
-			flush()
-			currentName = strings.TrimSpace(strings.TrimPrefix(line, "Name:"))
-			currentCard = ""
-			currentDevice = ""
-			continue
-		}
-
-		// ALSA properties appear in the Properties section as:
-		//   alsa.card = "N"
-		//   alsa.device = "M"
-		// We split on " = " and compare the trimmed key exactly to avoid matching
-		// related properties such as alsa.card_name when looking for alsa.card.
-		if parts := strings.SplitN(line, " = ", 2); len(parts) == 2 {
-			key := strings.TrimSpace(parts[0])
-			switch key {
-			case "alsa.card":
-				val := extractPactlPropertyValue(line)
-				if val == cardStr {
-					currentCard = val
-				}
-			case "alsa.device":
-				val := extractPactlPropertyValue(line)
-				if val == deviceStr {
-					currentDevice = val
-				}
-			}
-		}
-	}
-	// Flush last entry.
-	flush()
-
-	return matches
-}
-
-// resolvePulseAudioSinkOrSource finds all PulseAudio sinks and sources whose
-// ALSA card/device properties match the given values. It inspects
-// "pactl list sinks" and "pactl list sources" for alsa.card and alsa.device
-// properties. Returning all matches (instead of the first) prevents the
-// ambiguity where an input and output on the same ALSA card/device share the
-// same encoded ID: callers can then set the correct default for each category.
-// Returns nil if no match is found.
-func resolvePulseAudioSinkOrSource(ctx context.Context, card, device uint64) []pulseAudioMatch {
-	var matches []pulseAudioMatch
-
-	for _, cat := range []string{"sinks", "sources"} {
-		cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		cmd := exec.CommandContext(cmdCtx, "pactl", "list", cat)
-		out, err := cmd.Output()
-		cancel()
-		if err != nil {
-			continue
-		}
-
-		matches = append(matches, parsePulseAudioOutput(string(out), card, device, cat)...)
-	}
-	return matches
-}
-
-// extractPactlPropertyValue extracts the value from a pactl property line like:
-//
-//	alsa.card = "0"
-func extractPactlPropertyValue(line string) string {
-	eqIdx := strings.Index(line, "=")
-	if eqIdx < 0 {
-		return ""
-	}
-	val := strings.TrimSpace(line[eqIdx+1:])
-	if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
-		return val[1 : len(val)-1]
-	}
-	return val
-}
-
-// SetDefaultAudioDevice sets the default audio device using PipeWire or PulseAudio.
-// The SetDefaultAudioDeviceRequest.device_id value is the ALSA-encoded device ID
-// returned by ListAudioDevices, encoded as ((card << 8) | device) + 1. It is not
-// a PipeWire/WirePlumber node ID and must not be passed through to wpctl directly.
-// This function decodes the ALSA card/device pair from device_id, resolves that
-// pair to the appropriate PipeWire node ID or PulseAudio sink/source name, and
-// then invokes wpctl/pactl.
+// SetDefaultAudioDevice makes a node the default for its direction. Setting a
+// sink leaves the default source alone, and vice versa.
 func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.SetDefaultAudioDeviceRequest) (*agentpb.SetDefaultAudioDeviceResponse, error) {
 	if req.GetDeviceId() == 0 {
 		return nil, status.Errorf(codes.InvalidArgument, "device ID 0 is not a valid audio device")
 	}
 
-	alsaCard, alsaDevice := decodeALSAID(req.GetDeviceId())
-	if alsaCard > 255 {
-		return nil, status.Errorf(codes.InvalidArgument,
-			"device ID %d encodes out-of-range ALSA card %d (max 255)", req.GetDeviceId(), alsaCard)
-	}
-
-	// Try PipeWire first: resolve the ALSA card/device to all matching PipeWire
-	// node IDs (a device may appear as both a sink and a source in PipeWire).
-	nodeIDs := resolvePipeWireNodeIDsFn(ctx, alsaCard, alsaDevice)
-	var wpctlErr error
-	if len(nodeIDs) > 0 {
-		var failedIDs []string
-		var lastWpctlErr error
-		var lastWpctlOutput string
-		for _, nodeID := range nodeIDs {
-			wpctlCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			output, err := wpctlSetDefault(wpctlCtx, nodeID)
-			cancel()
-			if err != nil {
-				s.logger.Warn("wpctl set-default failed for node",
-					zap.String("node_id", nodeID), zap.Error(err),
-					zap.String("output", strings.TrimSpace(string(output))))
-				failedIDs = append(failedIDs, nodeID)
-				lastWpctlErr = err
-				lastWpctlOutput = strings.TrimSpace(string(output))
-			} else {
-				s.logger.Info("Default audio device set via PipeWire",
-					zap.Uint32("device_id", req.GetDeviceId()),
-					zap.Uint64("alsa_card", alsaCard),
-					zap.Uint64("alsa_device", alsaDevice),
-					zap.String("pw_node_id", nodeID))
-			}
-		}
-		if len(failedIDs) == 0 {
-			// All wpctl calls succeeded.
-			return &agentpb.SetDefaultAudioDeviceResponse{Success: true}, nil
-		}
-		// One or more wpctl calls failed; fall through to PulseAudio so a partial
-		// failure (e.g. sink set but source failed) does not silently report success.
-		wpctlErr = fmt.Errorf("wpctl set-default %v: %w; output: %s", failedIDs, lastWpctlErr, lastWpctlOutput)
-	}
-
-	s.logger.Debug("PipeWire node not found or wpctl failed for ALSA device, trying PulseAudio",
-		zap.Uint64("alsa_card", alsaCard), zap.Uint64("alsa_device", alsaDevice))
-
-	// Fall back to PulseAudio: resolve the ALSA card/device to a sink/source name.
-	resp, paErr := s.setPulseAudioDefaultByALSA(ctx, req.GetDeviceId(), alsaCard, alsaDevice)
-	if paErr != nil {
-		var errMsg string
-		if len(nodeIDs) > 0 && wpctlErr != nil {
-			errMsg = fmt.Sprintf("PipeWire node(s) found (%v) but wpctl failed; PulseAudio also failed: %v; wpctl error: %v", nodeIDs, paErr, wpctlErr)
-		} else {
-			errMsg = fmt.Sprintf("no PipeWire node or PulseAudio sink/source found for ALSA card %d device %d: %v", alsaCard, alsaDevice, paErr)
-		}
+	if !audio.Available() {
+		// "Default sink/source" is PipeWire/WirePlumber metadata; raw ALSA has
+		// no equivalent to set. Saying so beats reporting success for a
+		// setting that does not exist.
+		errMsg := fmt.Sprintf("cannot set a default audio device: no PipeWire session is running (device %d)", req.GetDeviceId())
 		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
 	}
-	// If PA returned a failure response (not error) and PW had also failed,
-	// augment the error message so callers see both failure contexts.
-	if !resp.GetSuccess() && len(nodeIDs) > 0 && wpctlErr != nil {
-		combined := fmt.Sprintf("PipeWire node(s) found (%v) but wpctl failed (%v); PulseAudio also reported failure: %s",
-			nodeIDs, wpctlErr, resp.GetErrorMessage())
-		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &combined}, nil
-	}
-	return resp, nil
-}
 
-// setPulseAudioDefaultByALSA resolves the given ALSA card/device to all
-// matching PulseAudio sinks and sources by matching ALSA properties, then sets
-// each as the system default. Both sink and source defaults are updated when a
-// device appears in both categories (which is possible when input and output
-// share the same ALSA card/device numbers).
-func (s *AudioService) setPulseAudioDefaultByALSA(ctx context.Context, deviceID uint32, card, device uint64) (*agentpb.SetDefaultAudioDeviceResponse, error) {
-	matches := resolvePulseAudioSinkOrSourceFn(ctx, card, device)
-	if len(matches) == 0 {
-		return nil, fmt.Errorf("no PulseAudio sink or source found for ALSA card %d device %d", card, device)
+	nodes, _, err := audio.ListNodes(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
 	}
-
-	var setErrors []string
-	for _, m := range matches {
-		var pactlCmd string
-		if m.category == "sinks" {
-			pactlCmd = "set-default-sink"
-		} else {
-			pactlCmd = "set-default-source"
-		}
-		if out, err := pactlSetDefault(ctx, pactlCmd, m.name); err != nil {
-			setErrors = append(setErrors, fmt.Sprintf("pactl %s %s: %v: %s", pactlCmd, m.name, err, strings.TrimSpace(string(out))))
-			continue
-		}
-		s.logger.Info("Default audio device set via PulseAudio",
-			zap.Uint32("device_id", deviceID),
-			zap.Uint64("alsa_card", card),
-			zap.Uint64("alsa_device", device),
-			zap.String("pa_name", m.name),
-			zap.String("category", m.category))
-	}
-
-	if len(setErrors) > 0 {
-		// All matches must succeed; any failure means the device was not fully
-		// set as default (e.g. sink succeeded but source failed).
-		errMsg := fmt.Sprintf("pactl set-default failed: %s", strings.Join(setErrors, "; "))
+	node, ok := audio.FindNode(nodes, req.GetDeviceId())
+	if !ok {
+		errMsg := fmt.Sprintf("no audio device with ID %d", req.GetDeviceId())
 		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
 	}
+
+	if err := audio.SetDefaultNode(ctx, req.GetDeviceId()); err != nil {
+		errMsg := err.Error()
+		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
+	}
+
+	s.logger.Info("Default audio device set",
+		zap.Uint32("device_id", req.GetDeviceId()),
+		zap.String("node", node.Name),
+		zap.Bool("sink", node.IsSink))
 	return &agentpb.SetDefaultAudioDeviceResponse{Success: true}, nil
 }
 
-// firstALSACaptureDeviceID returns the encoded device ID of the first ALSA capture
-// device from arecord -l. The ID is the encoded form ((card << 8) | device) + 1,
-// matching the IDs returned by ListAudioDevices. Returns 0 if no device is found.
-func firstALSACaptureDeviceID(ctx context.Context) uint32 {
-	cmd := exec.CommandContext(ctx, "arecord", "-l")
-	out, err := cmd.Output()
-	if err != nil {
-		return 0
-	}
-	devices := parseALSAOutput(string(out), agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_INPUT)
-	if len(devices) > 0 {
-		return devices[0].GetId()
-	}
-	return 0
+// captureSource names where startCapture should read audio from: a PipeWire
+// object (pwTarget, pw-record's --target) or a raw ALSA device (alsaDevice,
+// arecord's -D). Exactly one of the two is set.
+type captureSource struct {
+	pwTarget   string
+	alsaDevice string
 }
 
-// alsaDeviceArg returns the arecord -D argument for the given device ID.
-// IDs from ListAudioDevices are encoded as ((card << 8) | device) + 1; 0 means
-// "unspecified" and triggers auto-selection of the first capture card.
-// plughw is used instead of hw so ALSA's plug layer handles format/rate conversion.
-func alsaDeviceArg(ctx context.Context, id uint32) string {
-	if id == 0 {
-		id = firstALSACaptureDeviceID(ctx)
-		if id == 0 {
-			return "plughw:0,0"
+// captureTarget resolves a request's device ID to a capture source, using
+// PipeWire when a session is up and raw ALSA otherwise. Device ID 0 means
+// "unspecified": prefer the default source when one exists (PipeWire only),
+// otherwise take the first input available.
+func captureTarget(ctx context.Context, deviceID uint32) (captureSource, error) {
+	if !audio.Available() {
+		return alsaCaptureTarget(ctx, deviceID)
+	}
+
+	nodes, defaults, err := audio.ListNodes(ctx)
+	if err != nil {
+		return captureSource{}, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+	}
+
+	if deviceID != 0 {
+		node, ok := audio.FindNode(nodes, deviceID)
+		if !ok {
+			return captureSource{}, status.Errorf(codes.NotFound, "no audio device with ID %d", deviceID)
+		}
+		if node.IsSink {
+			return captureSource{}, status.Errorf(codes.InvalidArgument,
+				"device %d (%s) is an output; capture needs an input", deviceID, node.Name)
+		}
+		return captureSource{pwTarget: targetArg(node)}, nil
+	}
+
+	var first *audio.Node
+	for i, n := range nodes {
+		if n.IsSink {
+			continue
+		}
+		if n.Name == defaults.SourceName {
+			return captureSource{pwTarget: targetArg(n)}, nil
+		}
+		if first == nil {
+			first = &nodes[i]
 		}
 	}
-	encoded := uint64(id) - 1
-	card := encoded >> 8
-	device := encoded & 0xFF
-	return fmt.Sprintf("plughw:%d,%d", card, device)
+	if first == nil {
+		return captureSource{}, status.Error(codes.FailedPrecondition, "no audio input devices available")
+	}
+	return captureSource{pwTarget: targetArg(*first)}, nil
+}
+
+// alsaCaptureTarget is captureTarget's fallback for when no PipeWire session
+// is up. ALSA has no default-source concept, so device ID 0 takes the first
+// input card found.
+func alsaCaptureTarget(ctx context.Context, deviceID uint32) (captureSource, error) {
+	nodes, err := audio.ListAlsaNodes(ctx)
+	if err != nil {
+		return captureSource{}, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
+	}
+
+	if deviceID != 0 {
+		node, ok := audio.FindNode(nodes, deviceID)
+		if !ok {
+			return captureSource{}, status.Errorf(codes.NotFound, "no audio device with ID %d", deviceID)
+		}
+		if node.IsSink {
+			return captureSource{}, status.Errorf(codes.InvalidArgument,
+				"device %d (%s) is an output; capture needs an input", deviceID, node.Name)
+		}
+		return captureSource{alsaDevice: node.Name}, nil
+	}
+
+	for _, n := range nodes {
+		if !n.IsSink {
+			return captureSource{alsaDevice: n.Name}, nil
+		}
+	}
+	return captureSource{}, status.Error(codes.FailedPrecondition, "no audio input devices available")
+}
+
+// targetArg renders a node as a --target value. pw-record takes an object
+// serial, not the object ID used everywhere else, and falls back to the name.
+func targetArg(n audio.Node) string {
+	if n.Serial != 0 {
+		return fmt.Sprintf("%d", n.Serial)
+	}
+	return n.Name
+}
+
+// capture is a running pw-record or arecord process emitting raw s16le PCM on
+// stdout.
+type capture struct {
+	cmd    *exec.Cmd
+	stdout io.ReadCloser
+	stderr bytes.Buffer
+	reaped sync.Once
+}
+
+// startCapture records from src. latency may be empty to leave PipeWire's
+// default quantum alone; it has no ALSA equivalent and is ignored there.
+// Sample rate and channel bounds are enforced here, not by callers, so every
+// present and future caller is protected rather than only the ones that
+// happen to validate first.
+func startCapture(ctx context.Context, src captureSource, sampleRate, channels uint32, latency string) (*capture, error) {
+	if sampleRate < minSampleRate || sampleRate > maxSampleRate {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"sample rate must be between %d and %d, got %d", minSampleRate, maxSampleRate, sampleRate)
+	}
+	if channels == 0 || channels > maxChannels {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"channels must be between 1 and %d, got %d", maxChannels, channels)
+	}
+
+	if src.alsaDevice != "" {
+		cmd := audio.ArecordCommand(ctx, src.alsaDevice, sampleRate, channels)
+		return runCapture(cmd)
+	}
+
+	args := []string{
+		"--target", src.pwTarget,
+		"--rate", strconv.FormatUint(uint64(sampleRate), 10),
+		"--channels", strconv.FormatUint(uint64(channels), 10),
+		"--format", "s16",
+		"--raw",
+	}
+	if latency != "" {
+		args = append(args, "--latency", latency)
+	}
+	args = append(args, "-")
+
+	cmd, err := audio.Command(ctx, "pw-record", args...)
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+	}
+	return runCapture(cmd)
+}
+
+// runCapture starts cmd and wires up its stdout/stderr for capture, common to
+// both the pw-record and arecord code paths.
+func runCapture(cmd *exec.Cmd) (*capture, error) {
+	c := &capture{cmd: cmd}
+	cmd.Stderr = &c.stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create audio pipe: %v", err)
+	}
+	c.stdout = stdout
+	if err := cmd.Start(); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to start audio capture: %v", err)
+	}
+	return c, nil
+}
+
+// Err reaps the process and returns anything it printed. Reading the buffer
+// before the reap would race with the child's writes, so stderr is only
+// reachable through here.
+func (c *capture) Err() string {
+	c.reaped.Do(func() { _ = c.cmd.Wait() })
+	return strings.TrimSpace(c.stderr.String())
+}
+
+// Close stops the capture.
+func (c *capture) Close() {
+	_ = c.cmd.Process.Kill()
+	c.reaped.Do(func() { _ = c.cmd.Wait() })
 }
 
 // StreamAudioLevels streams peak/RMS dB levels for a device.
@@ -705,32 +444,20 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 		rateHz = 60
 	}
 
+	target, err := captureTarget(ctx, req.GetDeviceId())
+	if err != nil {
+		return err
+	}
+
+	rec, err := startCapture(ctx, target, 48000, 1, "")
+	if err != nil {
+		return err
+	}
+	defer rec.Close()
+
 	interval := time.Second / time.Duration(rateHz)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
-	// Device IDs from audio list are encoded ALSA card+device pairs (see ListAudioDevices).
-	// ID 0 means "unspecified" — auto-select the first capture device.
-	deviceArg := alsaDeviceArg(ctx, req.GetDeviceId())
-
-	cmd := exec.CommandContext(ctx, "arecord",
-		"-D", deviceArg,
-		"-f", "S16_LE",
-		"-r", "48000",
-		"-c", "1",
-		"-t", "raw",
-		"-",
-	)
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return status.Errorf(codes.Internal, "failed to create audio pipe: %v", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return status.Errorf(codes.Internal, "failed to start audio capture: %v", err)
-	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
 
 	buf := make([]byte, 48000*2/int(rateHz)) // samples per interval * 2 bytes per sample
 
@@ -739,9 +466,9 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			n, err := stdout.Read(buf)
+			n, err := rec.stdout.Read(buf)
 			if err != nil {
-				if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+				if msg := rec.Err(); msg != "" {
 					return status.Errorf(codes.Internal, "audio capture failed: %s", msg)
 				}
 				return nil
@@ -760,6 +487,14 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 	}
 }
 
+// Bounds on the capture format. The lower rate bound also keeps the 10ms chunk
+// below from rounding to zero samples.
+const (
+	minSampleRate = 8000
+	maxSampleRate = 192000
+	maxChannels   = 8
+)
+
 // StreamAudio streams raw PCM audio data from a microphone.
 func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.ServerStreamingServer[agentpb.AudioChunk]) error {
 	ctx := stream.Context()
@@ -772,31 +507,20 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	if channels == 0 {
 		channels = 1
 	}
+	// Bounds on sampleRate/channels are enforced by startCapture, not here, so
+	// every caller of startCapture is protected uniformly.
 
-	// Device IDs from audio list are encoded ALSA card+device pairs (see ListAudioDevices).
-	// ID 0 means "unspecified" — auto-select the first capture device.
-	deviceArg := alsaDeviceArg(ctx, req.GetDeviceId())
-
-	cmd := exec.CommandContext(ctx, "arecord",
-		"-D", deviceArg,
-		"-f", "S16_LE",
-		"-r", fmt.Sprintf("%d", sampleRate),
-		"-c", fmt.Sprintf("%d", channels),
-		"-t", "raw",
-		"--buffer-time=20000", // 20ms ALSA buffer to minimise capture latency
-		"--period-time=10000", // 10ms periods so data is delivered in small, frequent reads
-		"-",
-	)
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
-	stdout, err := cmd.StdoutPipe()
+	target, err := captureTarget(ctx, req.GetDeviceId())
 	if err != nil {
-		return status.Errorf(codes.Internal, "failed to create audio pipe: %v", err)
+		return err
 	}
-	if err := cmd.Start(); err != nil {
-		return status.Errorf(codes.Internal, "failed to start audio capture: %v", err)
+
+	// A 10ms graph latency matches the chunk size below.
+	rec, err := startCapture(ctx, target, sampleRate, channels, "10ms")
+	if err != nil {
+		return err
 	}
-	defer func() { cmd.Process.Kill(); cmd.Wait() }() //nolint:errcheck
+	defer rec.Close()
 
 	// Send ~10ms chunks of PCM data to keep per-chunk latency low.
 	chunkSamples := sampleRate / 100 // 10ms worth of samples
@@ -810,9 +534,9 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 		default:
 		}
 
-		n, err := stdout.Read(buf)
+		n, err := rec.stdout.Read(buf)
 		if err != nil {
-			if msg := strings.TrimSpace(stderrBuf.String()); msg != "" {
+			if msg := rec.Err(); msg != "" {
 				return status.Errorf(codes.Internal, "audio capture failed: %s", msg)
 			}
 			return nil
