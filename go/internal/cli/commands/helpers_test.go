@@ -18,8 +18,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"google.golang.org/grpc"
 )
 
 // ── hostPort ────────────────────────────────────────────────────────
@@ -826,6 +828,331 @@ func stubDiscoverLANDevices(t *testing.T, devices []models.LANDevice, err error)
 	t.Cleanup(func() {
 		discoverLANDevices = orig
 	})
+}
+
+// ── device-cache fast path (connectWithAutoTLSDiagnostics) ────────────
+
+// startPlaintextVersionAgent serves versionOnlyAgent (defined in
+// helpers_socket_test.go) over plaintext TCP on loopback and returns its
+// address ("127.0.0.1:PORT"). Used to simulate a real, reachable device for
+// the device-cache fast-path tests below.
+func startPlaintextVersionAgent(t *testing.T) string {
+	t.Helper()
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := grpc.NewServer()
+	agentpb.RegisterWendyAgentServiceServer(srv, versionOnlyAgent{})
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+	return lis.Addr().String()
+}
+
+// seedDeviceCache writes entries (each upserted, then flushed) to a fresh
+// device-cache file at path, mirroring the discovery package's seedCache
+// helper for the same discoverycache.Cache type.
+func seedDeviceCache(t *testing.T, path string, entries ...discoverycache.Entry) {
+	t.Helper()
+	c, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	now := time.Now()
+	for _, e := range entries {
+		c.Upsert(e, now)
+	}
+	if err := c.Flush(now); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+}
+
+// A fresh cache hit must dial the cached IP directly and never consult the OS
+// resolver — that's the entire point of the fast path.
+func TestConnectWithAutoTLSDiagnostics_CacheHitSkipsResolution(t *testing.T) {
+	setTempConfig(t, &config.Config{}) // no certs → plaintext-only ladder
+
+	origLoad, origLookup := deviceCacheLoadFn, osLookupHostFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+	}()
+
+	realAddr := startPlaintextVersionAgent(t)
+	realHost, realPort, err := net.SplitHostPort(realAddr)
+	if err != nil {
+		t.Fatalf("split real address: %v", err)
+	}
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: realHost, Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	lookupCalls := 0
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		lookupCalls++
+		return nil, errors.New("OS resolver should not run on a fresh cache hit")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:"+realPort)
+	if err != nil {
+		t.Fatalf("connectWithAutoTLSDiagnostics: %v", err)
+	}
+	defer conn.Close()
+	if conn.Host != realHost {
+		t.Fatalf("dialed host = %q, want cached IP %q", conn.Host, realHost)
+	}
+	if lookupCalls != 0 {
+		t.Fatalf("osLookupHostFn called %d times, want 0 on a fresh cache hit", lookupCalls)
+	}
+}
+
+// A cache miss must fall through to the pre-existing resolveAddrOnce path
+// (OS resolver first), unchanged.
+func TestConnectWithAutoTLSDiagnostics_CacheMissUsesOSResolver(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup := deviceCacheLoadFn, osLookupHostFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+	}()
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json") // never seeded: empty cache
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	realAddr := startPlaintextVersionAgent(t)
+	realHost, realPort, err := net.SplitHostPort(realAddr)
+	if err != nil {
+		t.Fatalf("split real address: %v", err)
+	}
+
+	lookupCalls := 0
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		lookupCalls++
+		return []string{realHost}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := connectWithAutoTLSDiagnostics(ctx, "orin2.local:"+realPort)
+	if err != nil {
+		t.Fatalf("connectWithAutoTLSDiagnostics: %v", err)
+	}
+	defer conn.Close()
+	if lookupCalls == 0 {
+		t.Fatal("expected osLookupHostFn to run on a cache miss")
+	}
+}
+
+// A stale cached IP that fails to answer must never make an otherwise
+// reachable device look unreachable (spec §4): the fast path must re-resolve
+// via the same mDNS-browse fallback the cache-miss path uses and retry once.
+func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
+	setTempConfig(t, &config.Config{})
+
+	origLoad, origLookup, origBrowse := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn
+	defer func() {
+		deviceCacheLoadFn = origLoad
+		osLookupHostFn = origLookup
+		lanBrowseFn = origBrowse
+	}()
+
+	realAddr := startPlaintextVersionAgent(t)
+	realHost, realPort, err := net.SplitHostPort(realAddr)
+	if err != nil {
+		t.Fatalf("split real address: %v", err)
+	}
+
+	// 127.0.0.2 is loopback but nothing is bound there. Dialing it on the real
+	// server's port simulates a stale cached IP: connection refused,
+	// immediately and deterministically — no OS-level dial timeout to wait
+	// out, and no risk of colliding with the real server's own port.
+	const staleIP = "127.0.0.2"
+
+	cachePath := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, cachePath, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: staleIP, Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// The OS resolver can't see the device (the Windows/Linux ".local" gap
+	// issue #1155 works around); only the mDNS browse fallback can — which is
+	// what the retry must use.
+	osLookupHostFn = func(context.Context, string) ([]string, error) {
+		return nil, errors.New("no such host")
+	}
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) {
+		return []models.LANDevice{{Hostname: "orin.local", IPAddress: realHost}}, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, _, err := connectWithAutoTLSDiagnostics(ctx, "orin.local:"+realPort)
+	if err != nil {
+		t.Fatalf("connectWithAutoTLSDiagnostics: %v", err)
+	}
+	defer conn.Close()
+	if conn.Host != realHost {
+		t.Fatalf("dialed host = %q, want re-resolved mDNS IP %q", conn.Host, realHost)
+	}
+
+	// The successful retry should have self-healed the stale entry.
+	reloaded, err := discoverycache.LoadFrom(cachePath)
+	if err != nil {
+		t.Fatalf("reload cache: %v", err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 || fresh[0].IP != realHost {
+		t.Fatalf("cache after retry = %+v, want a single fresh entry with IP %q", fresh, realHost)
+	}
+}
+
+func TestCachedDeviceIP(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, path, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051,
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	if got := cachedDeviceIP("orin.local"); got != "10.0.0.5" {
+		t.Errorf("cachedDeviceIP(fresh match) = %q, want %q", got, "10.0.0.5")
+	}
+	if got := cachedDeviceIP("Orin.LOCAL."); got != "10.0.0.5" {
+		t.Errorf("cachedDeviceIP(case/dot-insensitive) = %q, want %q", got, "10.0.0.5")
+	}
+	if got := cachedDeviceIP("other.local"); got != "" {
+		t.Errorf("cachedDeviceIP(no match) = %q, want empty", got)
+	}
+}
+
+func TestCachedDeviceIP_StaleEntryIgnored(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	c, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-2 * discoverycache.TTL)
+	c.Upsert(discoverycache.Entry{ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5"}, stale)
+	if err := c.Flush(stale); err != nil {
+		t.Fatal(err)
+	}
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	if got := cachedDeviceIP("orin.local"); got != "" {
+		t.Fatalf("cachedDeviceIP(stale entry) = %q, want empty", got)
+	}
+}
+
+func TestCachedDeviceIP_LoadErrorYieldsEmpty(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return nil, errors.New("boom") }
+
+	if got := cachedDeviceIP("orin.local"); got != "" {
+		t.Fatalf("cachedDeviceIP(load error) = %q, want empty", got)
+	}
+}
+
+func TestCacheConnectSuccess_UpsertsFreshEntry(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "10.0.0.9"})
+
+	reloaded, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 {
+		t.Fatalf("got %d cached entries, want 1", len(fresh))
+	}
+	e := fresh[0]
+	if e.IP != "10.0.0.9" {
+		t.Errorf("IP = %q, want %q", e.IP, "10.0.0.9")
+	}
+	if e.Port != 50051 {
+		t.Errorf("Port = %d, want 50051", e.Port)
+	}
+	if normalizeMDNSHost(e.Hostname) != "orin" {
+		t.Errorf("Hostname = %q, does not normalize to %q", e.Hostname, "orin")
+	}
+}
+
+func TestCacheConnectSuccess_SkipsLiteralIPHost(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	cacheConnectSuccess("192.168.1.50:50051", &grpcclient.AgentConnection{Host: "192.168.1.50"})
+
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("expected no cache file written for a literal-IP host")
+	}
+}
+
+// A cache-write failure (here: the load seam itself erroring) must never be
+// allowed to surface — cacheConnectSuccess is best-effort and must not panic
+// or otherwise disrupt an already-successful connect.
+func TestCacheConnectSuccess_IgnoresLoadError(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return nil, errors.New("boom") }
+
+	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "10.0.0.9"})
+}
+
+// Task 3's decision on record: partial-state writers (like this connect-only
+// sighting, which carries no probed AgentVersion/OS) must Upsert, not
+// Replace, so they never wipe those fields from a fuller entry a discovery
+// scan already wrote under the same key.
+func TestCacheConnectSuccess_PreservesProbedFieldsViaUpsert(t *testing.T) {
+	orig := deviceCacheLoadFn
+	defer func() { deviceCacheLoadFn = orig }()
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, path, discoverycache.Entry{
+		ID: "orin", DisplayName: "orin", Hostname: "orin.local",
+		IP: "10.0.0.5", Port: 50051, AgentVersion: "1.2.3", OS: "wendyos",
+	})
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+
+	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "10.0.0.6"})
+
+	reloaded, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 {
+		t.Fatalf("got %d entries, want 1 (connect-only write must merge under the same key)", len(fresh))
+	}
+	e := fresh[0]
+	if e.IP != "10.0.0.6" {
+		t.Errorf("IP = %q, want refreshed %q", e.IP, "10.0.0.6")
+	}
+	if e.AgentVersion != "1.2.3" || e.OS != "wendyos" {
+		t.Errorf("connect-only upsert wiped probed fields: AgentVersion=%q OS=%q", e.AgentVersion, e.OS)
+	}
 }
 
 func TestProvisionedAgentUnauthorizedMentionsCLIUpgrade(t *testing.T) {
