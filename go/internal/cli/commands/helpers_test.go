@@ -1385,7 +1385,7 @@ func TestConnectAgentAtAddressWithProvisionedHint_FailedProbeDoesNotWriteCache(t
 	}
 }
 
-func TestCachedDeviceIP(t *testing.T) {
+func TestCachedDeviceHostEntry(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
 
@@ -1395,18 +1395,18 @@ func TestCachedDeviceIP(t *testing.T) {
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
 
-	if got := cachedDeviceIP("orin.local"); got != "10.0.0.5" {
-		t.Errorf("cachedDeviceIP(fresh match) = %q, want %q", got, "10.0.0.5")
+	if e, ok := cachedDeviceHostEntry("orin.local"); !ok || e.IP != "10.0.0.5" {
+		t.Errorf("cachedDeviceHostEntry(fresh match) = %+v, %v; want IP %q, true", e, ok, "10.0.0.5")
 	}
-	if got := cachedDeviceIP("Orin.LOCAL."); got != "10.0.0.5" {
-		t.Errorf("cachedDeviceIP(case/dot-insensitive) = %q, want %q", got, "10.0.0.5")
+	if e, ok := cachedDeviceHostEntry("Orin.LOCAL."); !ok || e.IP != "10.0.0.5" {
+		t.Errorf("cachedDeviceHostEntry(case/dot-insensitive) = %+v, %v; want IP %q, true", e, ok, "10.0.0.5")
 	}
-	if got := cachedDeviceIP("other.local"); got != "" {
-		t.Errorf("cachedDeviceIP(no match) = %q, want empty", got)
+	if e, ok := cachedDeviceHostEntry("other.local"); ok {
+		t.Errorf("cachedDeviceHostEntry(no match) = %+v, %v; want false", e, ok)
 	}
 }
 
-func TestCachedDeviceIP_MatchesStaleEntry(t *testing.T) {
+func TestCachedDeviceHostEntry_MatchesStaleEntry(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
 
@@ -1422,18 +1422,107 @@ func TestCachedDeviceIP_MatchesStaleEntry(t *testing.T) {
 	}
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
 
-	if got := cachedDeviceIP("orin.local"); got != "10.0.0.5" {
-		t.Fatalf("cachedDeviceIP(stale entry) = %q, want 10.0.0.5 (connect lookup uses any-age entries)", got)
+	if e, ok := cachedDeviceHostEntry("orin.local"); !ok || e.IP != "10.0.0.5" {
+		t.Fatalf("cachedDeviceHostEntry(stale entry) = %+v, %v; want IP 10.0.0.5, true (connect lookup uses any-age entries)", e, ok)
 	}
 }
 
-func TestCachedDeviceIP_LoadErrorYieldsEmpty(t *testing.T) {
+func TestCachedDeviceHostEntry_LoadErrorYieldsEmpty(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return nil, errors.New("boom") }
 
-	if got := cachedDeviceIP("orin.local"); got != "" {
-		t.Fatalf("cachedDeviceIP(load error) = %q, want empty", got)
+	if e, ok := cachedDeviceHostEntry("orin.local"); ok {
+		t.Fatalf("cachedDeviceHostEntry(load error) = %+v, %v; want false", e, ok)
+	}
+}
+
+func TestDialAgentLKGSkipsOnTCPPrecheckFailure(t *testing.T) {
+	origTCP := tcpDialTimeoutFn
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		if timeout != lkgTCPConnectTimeout {
+			t.Errorf("pre-check timeout = %v, want %v", timeout, lkgTCPConnectTimeout)
+		}
+		return nil, errors.New("no route to host")
+	}
+	ladderCalled := false
+	origLadder := dialAgentLadderWithCertsFn
+	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+		ladderCalled = true
+		return nil, nil, errors.New("must not be reached")
+	}
+	t.Cleanup(func() { tcpDialTimeoutFn = origTCP; dialAgentLadderWithCertsFn = origLadder })
+
+	_, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	if ok {
+		t.Fatal("dialAgentLKG reported success despite failed TCP pre-check")
+	}
+	if ladderCalled {
+		t.Error("ladder dial ran after failed pre-check — dead IP must cost only the pre-check")
+	}
+}
+
+func TestDialAgentLKGRotatesCertsAndDialsMTLSPort(t *testing.T) {
+	origTCP := tcpDialTimeoutFn
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
+	var gotAddr string
+	var gotOrgs []int
+	origLadder := dialAgentLadderWithCertsFn
+	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+		gotAddr = addr
+		for _, c := range certs {
+			gotOrgs = append(gotOrgs, c.OrganizationID)
+		}
+		return &grpcclient.AgentConnection{IsMTLS: true}, nil, nil
+	}
+	origCerts := loadAllCLICertsFn
+	loadAllCLICertsFn = func() []config.CertificateInfo {
+		return []config.CertificateInfo{{OrganizationID: 1}, {OrganizationID: 2}}
+	}
+	t.Cleanup(func() {
+		tcpDialTimeoutFn = origTCP
+		dialAgentLadderWithCertsFn = origLadder
+		loadAllCLICertsFn = origCerts
+	})
+
+	conn, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	if !ok || conn == nil {
+		t.Fatal("dialAgentLKG failed on the happy path")
+	}
+	if gotAddr != "10.0.0.9:50052" {
+		t.Errorf("dialed %q, want the entry's mTLS endpoint 10.0.0.9:50052", gotAddr)
+	}
+	if fmt.Sprint(gotOrgs) != fmt.Sprint([]int{2, 1}) {
+		t.Errorf("cert org order = %v, want entry-org-first [2 1]", gotOrgs)
+	}
+}
+
+func TestDialAgentLKGFallsThroughOnPlaintextDowngrade(t *testing.T) {
+	origTCP := tcpDialTimeoutFn
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
+	origLadder := dialAgentLadderWithCertsFn
+	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+		return grpcclient.NewFromConn(nil), nil, nil // IsMTLS=false: ladder fell to plaintext
+	}
+	origCerts := loadAllCLICertsFn
+	loadAllCLICertsFn = func() []config.CertificateInfo { return []config.CertificateInfo{{OrganizationID: 1}} }
+	t.Cleanup(func() {
+		tcpDialTimeoutFn = origTCP
+		dialAgentLadderWithCertsFn = origLadder
+		loadAllCLICertsFn = origCerts
+	})
+
+	_, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true})
+	if ok {
+		t.Fatal("LKG accepted a plaintext downgrade for an entry advertised as mTLS")
 	}
 }
 
@@ -1487,8 +1576,8 @@ func TestCacheConnectSuccess_SkipsLiteralIPHost(t *testing.T) {
 // Critical: when resolution fails entirely, dialAgentLadder's plaintext
 // fallback can fall through to grpcclient.Connect with the raw, unresolved
 // hostname, leaving conn.Host set to a NAME rather than an IP. Storing that
-// in the IP field would poison the next cachedDeviceIP lookup with exactly
-// the ".local" resolution gap issue #1155 exists to work around.
+// in the IP field would poison the next cachedDeviceHostEntry lookup with
+// exactly the ".local" resolution gap issue #1155 exists to work around.
 func TestCacheConnectSuccess_RejectsNonIPDialedHost(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
@@ -1538,7 +1627,7 @@ func TestCacheConnectSuccess_IgnoresLoadError(t *testing.T) {
 // Critical fix: cacheConnectSuccess must write under an EXISTING entry (any age)
 // identity (its discovery-assigned TXT-id ID/DisplayName) when one
 // matches this hostname, not mint a second row under a host-derived key —
-// otherwise the same physical device shows up twice and cachedDeviceIP's
+// otherwise the same physical device shows up twice and cachedDeviceHostEntry's
 // next lookup can nondeterministically return a different row for the same
 // device. Also covers Task 3's decision on record: this connect-only write
 // (no probed AgentVersion/OS) must Upsert, not Replace, so it never wipes
