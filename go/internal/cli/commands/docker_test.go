@@ -2857,11 +2857,13 @@ func TestApplySafeOptimizeFixes_AppliesAdditiveFixesInMemory(t *testing.T) {
 	if !strings.Contains(fixed, "--no-install-recommends") {
 		t.Fatalf("expected --no-install-recommends to be auto-applied:\n%s", fixed)
 	}
-	if !strings.Contains(fixed, "--no-cache-dir") {
-		t.Fatalf("expected --no-cache-dir to be auto-applied:\n%s", fixed)
-	}
 	if !strings.Contains(fixed, "--mount=type=cache,target=/root/.cache/pip") {
 		t.Fatalf("expected a pip build-cache mount to be auto-applied:\n%s", fixed)
+	}
+	// The cache mount supersedes pip-flags' --no-cache-dir: the flag would
+	// disable exactly the cache the mount persists.
+	if strings.Contains(fixed, "--no-cache-dir") {
+		t.Fatalf("expected --no-cache-dir NOT to be added alongside a pip cache mount:\n%s", fixed)
 	}
 }
 

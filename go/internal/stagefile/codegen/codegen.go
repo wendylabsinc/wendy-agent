@@ -136,7 +136,10 @@ func pipInstallLines(p *spec.PipInstall) []string {
 	if p.Requirements != "" {
 		lines = append(lines, fmt.Sprintf("COPY %s %s", p.Requirements, p.Requirements))
 	}
-	parts := []string{"pip", "install", "--no-cache-dir"}
+	// No --no-cache-dir here: the cache mount below already keeps pip's
+	// cache out of the image layer, and disabling the cache would force a
+	// full wheel re-download every time this layer rebuilds.
+	parts := []string{"pip", "install"}
 	if p.Requirements != "" {
 		parts = append(parts, "-r", shellQuote(p.Requirements))
 	}

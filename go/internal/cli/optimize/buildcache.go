@@ -44,6 +44,22 @@ func (a buildCacheAnalyzer) Analyze(t *Target) []Finding {
 		if !ok {
 			continue
 		}
+		// A pip cache mount would be dead weight next to --no-cache-dir:
+		// pip ignores the mounted cache entirely. The useful change —
+		// dropping the flag and adding the mount — removes text the user
+		// wrote, so it's reported without a Fix rather than applied.
+		if rule.target == "/root/.cache/pip" && strings.Contains(inst.Args, "--no-cache-dir") {
+			out = append(out, Finding{
+				Analyzer: a.ID(),
+				Severity: SeverityWarning,
+				Title:    fmt.Sprintf("%q disables the cache a build-cache mount would reuse", rule.match),
+				Detail: "This RUN uses --no-cache-dir, so pip re-downloads every wheel each time the layer rebuilds. " +
+					"Replace --no-cache-dir with `--mount=type=cache,target=/root/.cache/pip` on the RUN to keep the " +
+					"image just as slim while making rebuilds much faster — not auto-fixed, since it removes a flag you wrote.",
+				Location: &Loc{File: t.Dockerfile.Path, Line: inst.Line},
+			})
+			continue
+		}
 		raw := t.Dockerfile.Lines[inst.Line-1]
 		newLine := insertRunFlag(raw, fmt.Sprintf("--mount=type=cache,target=%s", rule.target))
 		out = append(out, Finding{

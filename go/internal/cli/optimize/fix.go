@@ -18,9 +18,9 @@ type AppliedFix struct {
 //
 // FixReplaceLine fixes are grouped by file and applied together (see
 // applyLineFixes) rather than one read-modify-write cycle per fix, so that
-// two fixes landing on the same line — e.g. a pip install line that needs
-// both --no-cache-dir and a build-cache mount — both take effect instead of
-// the second one silently losing to a stale Fix.Old check.
+// two fixes landing on the same line both take effect instead of the second
+// one silently losing to a stale Fix.Old check. Contradictory same-line
+// pairs are resolved first: a pip cache mount supersedes --no-cache-dir.
 func ApplyFixes(findings []Finding) ([]AppliedFix, error) {
 	var results []AppliedFix
 	var lineFixes []Finding
@@ -158,9 +158,25 @@ func applyLineFixes(lines []string, findings []Finding) ([]string, []AppliedFix)
 	out := append([]string(nil), lines...)
 	var results []AppliedFix
 
+	// A build-cache pip mount and a pip-flags --no-cache-dir landing on the
+	// same line contradict each other: --no-cache-dir disables exactly the
+	// cache the mount persists. The mount alone keeps the layer just as slim
+	// (the cache lives outside the image) while letting rebuilds reuse
+	// downloaded wheels, so it supersedes the flag.
+	pipMountLines := map[int]bool{}
+	for _, f := range findings {
+		if f.Analyzer == "build-cache" && strings.Contains(f.Fix.New, "--mount=type=cache,target=/root/.cache/pip") {
+			pipMountLines[f.Fix.Line] = true
+		}
+	}
+
 	byLine := map[int][]Fix{}
 	var order []int
 	for _, f := range findings {
+		if f.Analyzer == "pip-flags" && pipMountLines[f.Fix.Line] {
+			results = append(results, AppliedFix{Fix: *f.Fix, Applied: false, Reason: "superseded by pip cache mount on the same line"})
+			continue
+		}
 		idx := f.Fix.Line - 1
 		if _, seen := byLine[idx]; !seen {
 			order = append(order, idx)

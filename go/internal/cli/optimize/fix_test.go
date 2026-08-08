@@ -3,6 +3,7 @@ package optimize
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -136,9 +137,41 @@ func TestApplyFixesToLinesSkipsStaleFix(t *testing.T) {
 }
 
 func TestApplyFixesToLinesComposesTwoFixesOnTheSameLine(t *testing.T) {
-	// A pip install line is exactly the real-world collision: build-cache
-	// wants to insert a mount right after RUN, and pip-flags wants to
-	// append --no-cache-dir right after "pip install". Both must land.
+	// Two insertion fixes on one line must both land instead of the second
+	// losing to a stale Fix.Old check. (Synthetic analyzers: the historical
+	// real-world pair, build-cache + pip-flags, is now resolved as
+	// contradictory before composition — see the supersede test below.)
+	lines := []string{"FROM debian:12", "RUN make build"}
+	findings := []Finding{
+		{Analyzer: "a", Fix: &Fix{
+			Op: FixReplaceLine, Line: 2,
+			Old: "RUN make build",
+			New: "RUN --mount=type=cache,target=/root/.cache make build",
+		}},
+		{Analyzer: "b", Fix: &Fix{
+			Op: FixReplaceLine, Line: 2,
+			Old: "RUN make build",
+			New: "RUN make build -j4",
+		}},
+	}
+
+	got, applied := ApplyFixesToLines(lines, findings)
+
+	for _, a := range applied {
+		if !a.Applied {
+			t.Fatalf("expected both fixes to be applied, got %+v", applied)
+		}
+	}
+	want := "RUN --mount=type=cache,target=/root/.cache make build -j4"
+	if got[1] != want {
+		t.Fatalf("got  %q\nwant %q", got[1], want)
+	}
+}
+
+func TestApplyFixesToLinesPipCacheMountSupersedesNoCacheDir(t *testing.T) {
+	// build-cache's pip mount and pip-flags' --no-cache-dir contradict each
+	// other (the flag disables exactly the cache the mount persists), so
+	// only the mount may land.
 	lines := []string{"FROM python:3.11-slim", "RUN pip install -r requirements.txt"}
 	findings := []Finding{
 		{Analyzer: "build-cache", Fix: &Fix{
@@ -155,14 +188,21 @@ func TestApplyFixesToLinesComposesTwoFixesOnTheSameLine(t *testing.T) {
 
 	got, applied := ApplyFixesToLines(lines, findings)
 
-	for _, a := range applied {
-		if !a.Applied {
-			t.Fatalf("expected both fixes to be applied, got %+v", applied)
-		}
-	}
-	want := "RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir -r requirements.txt"
+	want := "RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt"
 	if got[1] != want {
 		t.Fatalf("got  %q\nwant %q", got[1], want)
+	}
+	var mountApplied, flagApplied bool
+	for _, a := range applied {
+		if strings.Contains(a.Fix.New, "--mount=") {
+			mountApplied = a.Applied
+		}
+		if strings.Contains(a.Fix.New, "--no-cache-dir") {
+			flagApplied = a.Applied
+		}
+	}
+	if !mountApplied || flagApplied {
+		t.Fatalf("want mount applied and --no-cache-dir superseded, got %+v", applied)
 	}
 }
 

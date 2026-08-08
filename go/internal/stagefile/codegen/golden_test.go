@@ -32,7 +32,7 @@ func TestGenerateGoldenExampleFixture(t *testing.T) {
 		"RUN apt-get update && apt-get install -y --no-install-recommends 'build-essential' \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
 		"\n" +
 		"FROM python:3.12-slim@sha256:abc123 AS app\n" +
 		"COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages\n" +
