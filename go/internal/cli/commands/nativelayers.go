@@ -222,6 +222,429 @@ func saveNativeState(dir string, s nativeState) error {
 	return os.Rename(tmp.Name(), filepath.Join(dir, nativeStateName))
 }
 
+// ociManifest captures the standard OCI image-manifest fields the splice
+// mutates. Annotations are preserved; anything nonstandard would be dropped,
+// which buildx-produced image manifests don't carry.
+type ociManifest struct {
+	SchemaVersion int               `json:"schemaVersion"`
+	MediaType     string            `json:"mediaType,omitempty"`
+	Config        ociManifestDesc   `json:"config"`
+	Layers        []ociManifestDesc `json:"layers"`
+	Annotations   map[string]string `json:"annotations,omitempty"`
+}
+
+type ociManifestDesc struct {
+	MediaType   string            `json:"mediaType,omitempty"`
+	Digest      string            `json:"digest"`
+	Size        int64             `json:"size"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+const nativeLayerMediaType = "application/vnd.oci.image.layer.v1.tar+gzip"
+
+// ociLayoutDirManifest resolves the layout dir's index to the image manifest
+// for the target platform and returns its raw bytes plus digest.
+func ociLayoutDirManifest(dir, platform string) (manifestData []byte, manifestDigest string, err error) {
+	indexJSON, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return nil, "", fmt.Errorf("read OCI layout index: %w", err)
+	}
+	var index struct {
+		Manifests []ociDescriptor `json:"manifests"`
+	}
+	if err := json.Unmarshal(indexJSON, &index); err != nil {
+		return nil, "", fmt.Errorf("parsing index.json: %w", err)
+	}
+	getBlob := func(hexDigest string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(dir, "blobs", "sha256", hexDigest))
+	}
+	wantOS, wantArch := parseOCIPlatform(platform)
+	manifestData, err = resolveOCIImageManifest(index.Manifests, getBlob, wantOS, wantArch, 0)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(manifestData)
+	return manifestData, "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// writeLayoutBlob content-addresses data into the layout dir's blob store
+// (no-op when already present) and returns its digest.
+func writeLayoutBlob(dir string, data []byte) (string, error) {
+	sum := sha256.Sum256(data)
+	hexDigest := hex.EncodeToString(sum[:])
+	blobsDir := filepath.Join(dir, "blobs", "sha256")
+	p := filepath.Join(blobsDir, hexDigest)
+	if _, err := os.Stat(p); err == nil {
+		return "sha256:" + hexDigest, nil
+	}
+	if err := os.MkdirAll(blobsDir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(blobsDir, ".blob-*")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), p); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return "sha256:" + hexDigest, nil
+}
+
+// spliceNativeLayers rewrites the layout dir's image for the target platform:
+// the layers whose digests are `replace` (matched BY DIGEST, in order) become
+// `with`, the config's rootfs.diff_ids follow 1:1, and index.json atomically
+// points at the rewritten manifest (any attestation entries are dropped —
+// provenance no longer describes the spliced image). Superseded blobs stay on
+// disk for the deploy-time GC. Returns the new manifest digest.
+func spliceNativeLayers(dir, platform string, replace []string, with []*nativeLayer) (string, error) {
+	if len(replace) != len(with) {
+		return "", fmt.Errorf("splice: %d digests to replace but %d layers given", len(replace), len(with))
+	}
+	manifestData, _, err := ociLayoutDirManifest(dir, platform)
+	if err != nil {
+		return "", err
+	}
+	var m ociManifest
+	if err := json.Unmarshal(manifestData, &m); err != nil {
+		return "", fmt.Errorf("parsing manifest for splice: %w", err)
+	}
+
+	cfgHex, err := digestToHex(m.Config.Digest)
+	if err != nil {
+		return "", fmt.Errorf("splice: invalid config digest %q: %w", m.Config.Digest, err)
+	}
+	cfgData, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", cfgHex))
+	if err != nil {
+		return "", fmt.Errorf("splice: config blob: %w", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		return "", fmt.Errorf("splice: parsing config: %w", err)
+	}
+	rootfs, _ := cfg["rootfs"].(map[string]any)
+	diffIDs, _ := rootfs["diff_ids"].([]any)
+	if rootfs == nil || len(diffIDs) != len(m.Layers) {
+		return "", fmt.Errorf("splice: config diff_ids (%d) do not align with manifest layers (%d)", len(diffIDs), len(m.Layers))
+	}
+
+	// Locate every replace digest, in order.
+	positions := make([]int, 0, len(replace))
+	next := 0
+	for i := range m.Layers {
+		if next < len(replace) && m.Layers[i].Digest == replace[next] {
+			positions = append(positions, i)
+			next++
+		}
+	}
+	if next != len(replace) {
+		return "", fmt.Errorf("splice: layer %q not found in manifest", replace[next])
+	}
+
+	for j, pos := range positions {
+		nl := with[j]
+		if _, err := writeLayoutBlob(dir, nl.Blob); err != nil {
+			return "", fmt.Errorf("splice: writing native layer: %w", err)
+		}
+		m.Layers[pos] = ociManifestDesc{
+			MediaType: nativeLayerMediaType,
+			Digest:    nl.Digest,
+			Size:      int64(len(nl.Blob)),
+		}
+		diffIDs[pos] = nl.DiffID
+	}
+
+	newCfg, err := json.Marshal(cfg)
+	if err != nil {
+		return "", err
+	}
+	cfgDigest, err := writeLayoutBlob(dir, newCfg)
+	if err != nil {
+		return "", fmt.Errorf("splice: writing config: %w", err)
+	}
+	m.Config.Digest = cfgDigest
+	m.Config.Size = int64(len(newCfg))
+
+	newManifest, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	manifestDigest, err := writeLayoutBlob(dir, newManifest)
+	if err != nil {
+		return "", fmt.Errorf("splice: writing manifest: %w", err)
+	}
+
+	wantOS, wantArch := parseOCIPlatform(platform)
+	index := map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests": []map[string]any{{
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest":    manifestDigest,
+			"size":      len(newManifest),
+			"platform":  map[string]any{"os": wantOS, "architecture": wantArch},
+		}},
+	}
+	indexData, err := json.Marshal(index)
+	if err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".index-*.json")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.Write(indexData); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, "index.json")); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return manifestDigest, nil
+}
+
+// nativeAppCopyEntries returns the final stage's `from: local` copy entries —
+// the instructions whose layers the native path owns.
+func nativeAppCopyEntries(sf *spec.File) []spec.CopyEntry {
+	if len(sf.Stages) == 0 {
+		return nil
+	}
+	var out []spec.CopyEntry
+	for _, c := range sf.Stages[len(sf.Stages)-1].Copy {
+		if c.From == "local" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// configWorkingDir extracts config.WorkingDir from a raw image config blob
+// ("" when unset — COPY then resolves against "/").
+func configWorkingDir(cfgData []byte) string {
+	var cfg struct {
+		Config struct {
+			WorkingDir string `json:"WorkingDir"`
+		} `json:"config"`
+	}
+	_ = json.Unmarshal(cfgData, &cfg)
+	return cfg.Config.WorkingDir
+}
+
+// buildNativeAppLayers materializes every final-stage local copy entry.
+func buildNativeAppLayers(cwd string, sf *spec.File, workDir string) ([]*nativeLayer, error) {
+	entries := nativeAppCopyEntries(sf)
+	layers := make([]*nativeLayer, 0, len(entries))
+	for _, e := range entries {
+		nl, err := buildNativeCopyLayer(cwd, e, workDir)
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, nl)
+	}
+	return layers, nil
+}
+
+// layoutLayerFileNames decompresses a layout-dir layer blob and returns its
+// non-directory tar entry names.
+func layoutLayerFileNames(dir string, desc ociManifestDesc) (map[string]bool, error) {
+	hexDigest, err := digestToHex(desc.Digest)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", hexDigest))
+	if err != nil {
+		return nil, err
+	}
+	r, cleanup, err := layerTarReader(bytes.NewReader(data), desc.MediaType)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	names := map[string]bool{}
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+		names[strings.TrimPrefix(path.Clean(hdr.Name), "./")] = true
+	}
+	return names, nil
+}
+
+// nativeNonDirNames filters a native layer's entry list down to files/links.
+func nativeNonDirNames(l *nativeLayer) map[string]bool {
+	names := map[string]bool{}
+	for _, n := range l.FileNames {
+		if !strings.HasSuffix(n, "/") {
+			names[n] = true
+		}
+	}
+	return names
+}
+
+// adoptNativeLayers runs after a successful buildx build of an eligible
+// project: it rebuilds each final-stage local copy entry natively, sanity
+// checks the manifest's LAST M layers against them (the file-name sets must
+// match — this is the one place the position→instruction assumption is
+// trusted, and only under verification), splices, and records state. Returns
+// false with no error when the check rejects; the buildx layers then ship
+// as-is and the native path stays disabled until the next buildx build.
+func adoptNativeLayers(dir, platform, cwd string, sf *spec.File, depsHash string) (bool, error) {
+	entries := nativeAppCopyEntries(sf)
+	if len(entries) == 0 {
+		return false, nil
+	}
+	manifestData, _, err := ociLayoutDirManifest(dir, platform)
+	if err != nil {
+		return false, nil
+	}
+	var m ociManifest
+	if err := json.Unmarshal(manifestData, &m); err != nil {
+		return false, nil
+	}
+	if len(m.Layers) < len(entries) {
+		return false, nil
+	}
+	cfgHex, err := digestToHex(m.Config.Digest)
+	if err != nil {
+		return false, nil
+	}
+	cfgData, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", cfgHex))
+	if err != nil {
+		return false, nil
+	}
+
+	native, err := buildNativeAppLayers(cwd, sf, configWorkingDir(cfgData))
+	if err != nil {
+		return false, nil
+	}
+
+	base := len(m.Layers) - len(entries)
+	replace := make([]string, len(entries))
+	for i, nl := range native {
+		got, err := layoutLayerFileNames(dir, m.Layers[base+i])
+		if err != nil {
+			return false, nil
+		}
+		want := nativeNonDirNames(nl)
+		if len(got) != len(want) {
+			cliLogln("native layers: buildx layer %d file set differs from copy entry %d; keeping buildx layers", base+i, i)
+			return false, nil
+		}
+		for n := range want {
+			if !got[n] {
+				cliLogln("native layers: buildx layer %d is missing %q; keeping buildx layers", base+i, n)
+				return false, nil
+			}
+		}
+		replace[i] = m.Layers[base+i].Digest
+	}
+
+	manifestDigest, err := spliceNativeLayers(dir, platform, replace, native)
+	if err != nil {
+		return false, err
+	}
+	digests := make([]string, len(native))
+	for i, nl := range native {
+		digests[i] = nl.Digest
+	}
+	if err := saveNativeState(dir, nativeState{
+		DepsHash:        depsHash,
+		ManifestDigest:  manifestDigest,
+		AppLayerDigests: digests,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// tryNativeRebuild is the buildx-free iteration: with deps unchanged and the
+// layout still exactly what we last wrote, rebuild the app layers from disk
+// and splice them in. Any doubt returns (false, nil) and the buildx path runs.
+func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState) (bool, error) {
+	_, manifestDigest, err := ociLayoutDirManifest(dir, platform)
+	if err != nil || manifestDigest != st.ManifestDigest {
+		return false, nil
+	}
+	entries := nativeAppCopyEntries(sf)
+	if len(entries) == 0 || len(entries) != len(st.AppLayerDigests) {
+		return false, nil
+	}
+	cfgData, _, err := ociLayoutDirConfig(dir, platform)
+	if err != nil {
+		return false, nil
+	}
+	native, err := buildNativeAppLayers(cwd, sf, configWorkingDir(cfgData))
+	if err != nil {
+		return false, nil
+	}
+	newDigest, err := spliceNativeLayers(dir, platform, st.AppLayerDigests, native)
+	if err != nil {
+		return false, nil
+	}
+	digests := make([]string, len(native))
+	for i, nl := range native {
+		digests[i] = nl.Digest
+	}
+	if err := saveNativeState(dir, nativeState{
+		DepsHash:        st.DepsHash,
+		ManifestDigest:  newDigest,
+		AppLayerDigests: digests,
+	}); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ociLayoutDirConfig returns the raw image config blob and its digest for the
+// platform's manifest in the layout dir.
+func ociLayoutDirConfig(dir, platform string) ([]byte, string, error) {
+	manifestData, _, err := ociLayoutDirManifest(dir, platform)
+	if err != nil {
+		return nil, "", err
+	}
+	var m ociManifest
+	if err := json.Unmarshal(manifestData, &m); err != nil {
+		return nil, "", err
+	}
+	cfgHex, err := digestToHex(m.Config.Digest)
+	if err != nil {
+		return nil, "", err
+	}
+	cfgData, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", cfgHex))
+	if err != nil {
+		return nil, "", err
+	}
+	return cfgData, m.Config.Digest, nil
+}
+
 // nativeLayerEpoch is the fixed modification time stamped on every entry of a
 // native layer. Zeroed times are what make the layer a pure function of the
 // input file contents (BuildKit's COPY preserves source mtimes, which defeats

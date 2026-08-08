@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
@@ -301,6 +303,202 @@ func TestNativeStateRoundTrip(t *testing.T) {
 	}
 	if _, ok := loadNativeState(dir); ok {
 		t.Fatal("corrupt state must load as not-ok")
+	}
+}
+
+// tarBytes builds an uncompressed tar with the given entries (a trailing "/"
+// in the name makes a directory entry).
+func tarBytes(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	names := make([]string, 0, len(entries))
+	for n := range entries {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		hdr := &tar.Header{Name: n, Mode: 0o644, Size: int64(len(entries[n]))}
+		if strings.HasSuffix(n, "/") {
+			hdr.Typeflag = tar.TypeDir
+			hdr.Mode = 0o755
+			hdr.Size = 0
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if hdr.Typeflag != tar.TypeDir {
+			if _, err := tw.Write([]byte(entries[n])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// writeTwoLayerLayoutDir builds a layout dir whose image has a deps layer and
+// an app layer (both uncompressed tars), with aligned diff_ids and the given
+// WorkingDir. Returns the app layer's digest.
+func writeTwoLayerLayoutDir(t *testing.T, dir string, depsTar, appTar []byte, workingDir string) (appDigest string) {
+	t.Helper()
+	depsDigest := "sha256:" + sha256Hex(depsTar)
+	appDigest = "sha256:" + sha256Hex(appTar)
+	config := []byte(`{"architecture":"arm64","os":"linux","config":{"Entrypoint":["python","main.py"],"WorkingDir":"` + workingDir + `"},"rootfs":{"type":"layers","diff_ids":["` + depsDigest + `","` + appDigest + `"]}}`)
+	configDigest := "sha256:" + sha256Hex(config)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"` + configDigest + `","size":` + fmt.Sprint(len(config)) + `},` +
+		`"layers":[` +
+		`{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"` + depsDigest + `","size":` + fmt.Sprint(len(depsTar)) + `},` +
+		`{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"` + appDigest + `","size":` + fmt.Sprint(len(appTar)) + `}]}`)
+	manifestDigest := sha256Hex(manifest)
+	index := []byte(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + manifestDigest + `","size":` + fmt.Sprint(len(manifest)) + `,"platform":{"os":"linux","architecture":"arm64"}}]}`)
+	writeOCILayoutDir(t, dir, map[string][]byte{
+		"oci-layout":                        []byte(`{"imageLayoutVersion":"1.0.0"}`),
+		"index.json":                        index,
+		"blobs/sha256/" + manifestDigest:    manifest,
+		"blobs/sha256/" + sha256Hex(config): config,
+		"blobs/sha256/" + sha256Hex(depsTar): depsTar,
+		"blobs/sha256/" + sha256Hex(appTar):  appTar,
+	})
+	return appDigest
+}
+
+func TestAdoptAndSpliceNativeLayers(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name: "app", From: "python:3.11-slim",
+		Copy: []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}, Dest: "app/"}},
+	}}}
+
+	dir := t.TempDir()
+	depsTar := tarBytes(t, map[string]string{"usr/lib/python/dep.py": "dep"})
+	appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "print('v1')\n"})
+	oldAppDigest := writeTwoLayerLayoutDir(t, dir, depsTar, appTar, "")
+
+	ok, err := adoptNativeLayers(dir, "linux/arm64", proj, sf, "sha256:deps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("adoption should accept a matching file set")
+	}
+
+	st, stOK := loadNativeState(dir)
+	if !stOK || st.DepsHash != "sha256:deps1" || len(st.AppLayerDigests) != 1 {
+		t.Fatalf("state not recorded: %+v ok=%v", st, stOK)
+	}
+	if st.AppLayerDigests[0] == oldAppDigest {
+		t.Fatal("adopted app layer should be the native rebuild, not the buildx layer")
+	}
+
+	// The layout must remain readable and now expose the native layer with the
+	// deps layer untouched.
+	layers, cfg, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != 2 {
+		t.Fatalf("want 2 layers, got %d", len(layers))
+	}
+	if layers[0].Digest != "sha256:"+sha256Hex(depsTar) {
+		t.Fatal("deps layer must be untouched")
+	}
+	if layers[1].Digest != st.AppLayerDigests[0] {
+		t.Fatal("manifest must reference the native app layer")
+	}
+	if !bytes.Contains(cfg, []byte(`"Entrypoint":["python","main.py"]`)) {
+		t.Fatal("config runtime fields must survive the splice")
+	}
+	if !bytes.Contains(cfg, []byte(layers[1].DiffID)) {
+		t.Fatal("config diff_ids must reference the native layer's diff ID")
+	}
+
+	// Now the iteration loop: edit the app file, rebuild natively without any
+	// buildx involvement.
+	writeFile(t, proj, "main.py", "print('v2')\n")
+	rebuilt, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebuilt {
+		t.Fatal("native rebuild should succeed after an app-only edit")
+	}
+	layers2, cfg2, err := readOCILayoutDirLayers(dir, "linux/arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if layers2[1].Digest == layers[1].Digest {
+		t.Fatal("app layer digest should change after the edit")
+	}
+	if layers2[0].Digest != layers[0].Digest {
+		t.Fatal("deps layer must still be untouched")
+	}
+	if !bytes.Contains(cfg2, []byte(layers2[1].DiffID)) {
+		t.Fatal("config diff_ids must track the rebuilt layer")
+	}
+	st2, _ := loadNativeState(dir)
+	if st2 == nil || st2.AppLayerDigests[0] != layers2[1].Digest {
+		t.Fatal("state must track the rebuilt layer")
+	}
+}
+
+func TestAdoptNativeLayersRejectsFileSetMismatch(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name: "app", From: "python:3.11-slim",
+		Copy: []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}, Dest: "app/"}},
+	}}}
+
+	dir := t.TempDir()
+	depsTar := tarBytes(t, map[string]string{"usr/lib/python/dep.py": "dep"})
+	// The "buildx" app layer holds an extra file the copy entry doesn't declare
+	// — the position→instruction assumption is wrong, adoption must refuse.
+	appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "m", "app/surprise.py": "s"})
+	writeTwoLayerLayoutDir(t, dir, depsTar, appTar, "")
+
+	before, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	ok, err := adoptNativeLayers(dir, "linux/arm64", proj, sf, "sha256:deps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("adoption must reject a mismatched file set")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("a rejected adoption must leave the layout untouched")
+	}
+	if _, stOK := loadNativeState(dir); stOK {
+		t.Fatal("a rejected adoption must not record state")
+	}
+}
+
+func TestTryNativeRebuildRefusesExternalManifestChange(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name: "app", From: "python:3.11-slim",
+		Copy: []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}, Dest: "app/"}},
+	}}}
+	dir := t.TempDir()
+	depsTar := tarBytes(t, map[string]string{"dep.py": "dep"})
+	appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "print('v1')\n"})
+	writeTwoLayerLayoutDir(t, dir, depsTar, appTar, "")
+
+	// A state whose manifest digest doesn't match the dir (someone rebuilt
+	// behind our back) must refuse the native path.
+	stale := &nativeState{DepsHash: "sha256:d", ManifestDigest: "sha256:not-the-real-one", AppLayerDigests: []string{"sha256:x"}}
+	ok, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("native rebuild must refuse when the manifest changed externally")
 	}
 }
 
