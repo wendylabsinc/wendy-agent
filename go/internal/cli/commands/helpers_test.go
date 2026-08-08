@@ -1534,12 +1534,12 @@ func TestCacheConnectSuccess_IgnoresLoadError(t *testing.T) {
 	cacheConnectSuccess("orin.local:50051", &grpcclient.AgentConnection{Host: "10.0.0.9"})
 }
 
-// Critical fix: cacheConnectSuccess must write under an EXISTING fresh
-// entry's identity (its discovery-assigned TXT-id ID/DisplayName) when one
+// Critical fix: cacheConnectSuccess must write under an EXISTING entry (any age)
+// identity (its discovery-assigned TXT-id ID/DisplayName) when one
 // matches this hostname, not mint a second row under a host-derived key —
 // otherwise the same physical device shows up twice and cachedDeviceIP's
-// next lookup can nondeterministically return the stale row for the rest of
-// the TTL. Also covers Task 3's decision on record: this connect-only write
+// next lookup can nondeterministically return a different row for the same
+// device. Also covers Task 3's decision on record: this connect-only write
 // (no probed AgentVersion/OS) must Upsert, not Replace, so it never wipes
 // those fields.
 func TestCacheConnectSuccess_ReusesExistingDiscoveryIdentity(t *testing.T) {
