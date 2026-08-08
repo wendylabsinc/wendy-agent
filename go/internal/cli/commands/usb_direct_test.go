@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"io"
+	"net"
 	"strings"
 	"testing"
 
@@ -14,6 +15,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+// withUSBDirectStubs stubs candidate enumeration and the version probe. The
+// pre-dial liveness gate is stubbed to succeed, so tests exercise the behaviour
+// that follows it; stubUSBDirectPreDial overrides that where the gate itself is
+// under test.
 func withUSBDirectStubs(t *testing.T, cands []discovery.USBDirectCandidate,
 	probe func(ctx context.Context, address string) (bool, *agentpb.GetAgentVersionResponse, error)) {
 	t.Helper()
@@ -21,6 +26,14 @@ func withUSBDirectStubs(t *testing.T, cands []discovery.USBDirectCandidate,
 	usbDirectCandidatesFn = func() []discovery.USBDirectCandidate { return cands }
 	getAgentVersionAtAddress = probe
 	t.Cleanup(func() { usbDirectCandidatesFn, getAgentVersionAtAddress = origCands, origProbe })
+	stubUSBDirectPreDial(t, func(context.Context, discovery.USBDirectCandidate) bool { return true })
+}
+
+func stubUSBDirectPreDial(t *testing.T, gate func(context.Context, discovery.USBDirectCandidate) bool) {
+	t.Helper()
+	orig := usbDirectPreDialFn
+	usbDirectPreDialFn = gate
+	t.Cleanup(func() { usbDirectPreDialFn = orig })
 }
 
 func TestProbeUSBDirectDevicesBuildsLANDevice(t *testing.T) {
@@ -96,6 +109,92 @@ func TestProbeUSBDirectDevicesNoCandidatesDialsNothing(t *testing.T) {
 	if devs := probeUSBDirectDevices(context.Background()); devs != nil {
 		t.Fatalf("got %v, want nil", devs)
 	}
+}
+
+// A USB ethernet dongle with nothing behind it is indistinguishable from a
+// device at enumeration time, so the expensive mTLS-per-cert path must not run
+// until a raw TCP connect proves something is listening.
+func TestProbeUSBDirectDevicesSkipsCandidateFailingPreDial(t *testing.T) {
+	withUSBDirectStubs(t,
+		[]discovery.USBDirectCandidate{{Interface: "enxdongle", Zone: "enxdongle"}},
+		func(context.Context, string) (bool, *agentpb.GetAgentVersionResponse, error) {
+			t.Fatal("version probe must not run for a candidate that failed the pre-dial gate")
+			return false, nil, nil
+		})
+	stubUSBDirectPreDial(t, func(context.Context, discovery.USBDirectCandidate) bool { return false })
+
+	if devs := probeUSBDirectDevices(context.Background()); len(devs) != 0 {
+		t.Fatalf("got %d devices, want 0", len(devs))
+	}
+}
+
+func TestUSBDirectFallbackSkipsCandidateFailingPreDial(t *testing.T) {
+	withUSBDirectStubs(t,
+		[]discovery.USBDirectCandidate{{Interface: "enxdongle", Zone: "enxdongle"}},
+		getAgentVersionAtAddress)
+	stubUSBDirectPreDial(t, func(context.Context, discovery.USBDirectCandidate) bool { return false })
+
+	origConnect := usbDirectConnectFn
+	usbDirectConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		t.Fatal("connect must not run for a candidate that failed the pre-dial gate")
+		return nil, nil
+	}
+	t.Cleanup(func() { usbDirectConnectFn = origConnect })
+
+	if _, ok := usbDirectFallback(context.Background(), "wendy-orin.local"); ok {
+		t.Fatal("a candidate with nothing listening must not yield a fallback connection")
+	}
+}
+
+// The gate must accept either agent port: an unprovisioned agent serves
+// plaintext on 50051, while a provisioned one shuts that listener down and
+// serves only mTLS on 50052, so gating on 50051 alone would hide every
+// provisioned device.
+func TestAnyAgentPortAnswers(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go closeAcceptedConnections(listener)
+	t.Cleanup(func() { listener.Close() })
+	live := listener.Addr().String()
+	dead := closedTCPAddr(t)
+
+	tests := []struct {
+		name      string
+		answering int // agent port whose address points at the live listener
+		want      bool
+	}{
+		{name: "unprovisioned agent answers on the plaintext port", answering: defaultAgentPort, want: true},
+		{name: "provisioned agent answers only on the mTLS port", answering: defaultAgentPort + agentMTLSPortOffset, want: true},
+		{name: "dead usb dongle answers on neither", answering: 0, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := anyAgentPortAnswers(context.Background(), func(port int) string {
+				if port == tt.answering {
+					return live
+				}
+				return dead
+			})
+			if got != tt.want {
+				t.Fatalf("anyAgentPortAnswers() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// closedTCPAddr returns a loopback address nothing listens on, so a connect
+// there is refused immediately rather than waiting out the dial timeout.
+func closedTCPAddr(t *testing.T) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := listener.Addr().String()
+	listener.Close()
+	return addr
 }
 
 func TestMergeUSBDirectDevices(t *testing.T) {

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"net"
 	"sync"
 	"time"
 
@@ -33,6 +34,57 @@ func advertisedAgentPort(isMTLS bool) int {
 	return defaultAgentPort
 }
 
+// usbDirectPreDialTimeout bounds the liveness gate below. A live agent on a USB
+// link completes the TCP handshake in milliseconds; a dead peer costs one NDP
+// neighbor-resolution attempt instead of the full probe budget.
+const usbDirectPreDialTimeout = time.Second
+
+// usbDirectPreDialFn is a seam for tests.
+var usbDirectPreDialFn = usbDirectPreDial
+
+// usbDirectPreDial reports whether anything answers at the well-known address
+// on this candidate. Every USB ethernet dongle (enx…) qualifies as a candidate,
+// and a dead one otherwise burns the whole usbDirectProbeBudget on mTLS
+// handshake attempts — one per stored org cert, across two ports — inflating
+// both `wendy discover` and every usbDirectFallback attempt. A raw TCP connect
+// is a sufficient gate before that expensive path.
+//
+// Both agent ports are dialed, concurrently: an unprovisioned agent serves
+// plaintext gRPC on defaultAgentPort, while a provisioned one shuts that
+// listener down and serves only mTLS on port+1, so neither port alone proves
+// liveness.
+func usbDirectPreDial(ctx context.Context, cand discovery.USBDirectCandidate) bool {
+	return anyAgentPortAnswers(ctx, cand.HostPort)
+}
+
+// anyAgentPortAnswers reports whether a TCP connect succeeds on either agent
+// port at the addresses addrForPort builds. Both are dialed concurrently so a
+// dead peer costs one timeout rather than two.
+func anyAgentPortAnswers(ctx context.Context, addrForPort func(port int) string) bool {
+	ports := [...]int{defaultAgentPort, defaultAgentPort + agentMTLSPortOffset}
+	dialCtx, cancel := context.WithTimeout(ctx, usbDirectPreDialTimeout)
+	defer cancel()
+
+	answered := make(chan bool, len(ports))
+	for _, port := range ports {
+		go func(port int) {
+			conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addrForPort(port))
+			if err != nil {
+				answered <- false
+				return
+			}
+			conn.Close()
+			answered <- true
+		}(port)
+	}
+	for range ports {
+		if <-answered {
+			return true
+		}
+	}
+	return false
+}
+
 // probeUSBDirectDevices dials the well-known USB link-local address on every
 // USB-backed host interface in parallel and returns a LANDevice for each Wendy
 // agent that answers. Devices on WendyOS images without the well-known address
@@ -53,6 +105,9 @@ func probeUSBDirectDevices(ctx context.Context) []models.LANDevice {
 		wg.Add(1)
 		go func(i int, cand discovery.USBDirectCandidate) {
 			defer wg.Done()
+			if !usbDirectPreDialFn(pctx, cand) {
+				return
+			}
 			isMTLS, resp, err := getAgentVersionAtAddress(pctx, cand.HostPort(defaultAgentPort))
 			if err != nil || resp == nil {
 				return
@@ -183,6 +238,10 @@ func usbDirectFallback(ctx context.Context, wantHost string) (*grpcclient.AgentC
 	}
 	for _, cand := range usbDirectCandidatesFn() {
 		pctx, cancel := context.WithTimeout(ctx, usbDirectProbeBudget)
+		if !usbDirectPreDialFn(pctx, cand) {
+			cancel()
+			continue
+		}
 		conn, err := usbDirectConnectFn(pctx, cand.HostPort(defaultAgentPort))
 		if err != nil {
 			cancel()
