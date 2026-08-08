@@ -135,13 +135,33 @@ func NewClientTLSConfig(certPEM, chainPEM, keyPEM string, logger *zap.Logger) (*
 		// replaces Go's built-in one; never hand out a config without it.
 		return nil, errors.New("mtls: base TLS config has no peer verifier")
 	}
-	return &tls.Config{
+	chainVerify := base.VerifyPeerCertificate
+	cfg := &tls.Config{
 		Certificates:          base.Certificates,
 		MinVersion:            base.MinVersion,
 		InsecureSkipVerify:    true, // verification is NOT disabled: VerifyPeerCertificate below performs the full (ML-DSA-aware) chain check
-		VerifyPeerCertificate: base.VerifyPeerCertificate,
+		VerifyPeerCertificate: chainVerify,
 		ClientSessionCache:    meshSessionCache,
-	}, nil
+	}
+	// Defense in depth: on a resumed TLS 1.3 handshake Go skips
+	// VerifyPeerCertificate entirely (no certificate exchange happens) and
+	// only calls VerifyConnection, with ConnectionState.PeerCertificates
+	// restored from the cached session ticket rather than freshly presented.
+	// Without re-running the chain check here, a resumed mesh connection
+	// would perform zero client-side verification of the peer's certificate.
+	// On a full handshake VerifyPeerCertificate already ran, so there is
+	// nothing to redo.
+	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if !cs.DidResume {
+			return nil
+		}
+		rawCerts := make([][]byte, len(cs.PeerCertificates))
+		for i, c := range cs.PeerCertificates {
+			rawCerts[i] = c.Raw
+		}
+		return chainVerify(rawCerts, nil)
+	}
+	return cfg, nil
 }
 
 // NewClientTLSConfigExpectingPeer is like NewClientTLSConfig but additionally
@@ -161,7 +181,7 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 		return nil, err
 	}
 	chainVerify := base.VerifyPeerCertificate
-	base.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	pinnedVerify := func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 		if err := chainVerify(rawCerts, verifiedChains); err != nil {
 			return err
 		}
@@ -187,6 +207,38 @@ func NewClientTLSConfigExpectingPeer(certPEM, chainPEM, keyPEM string, logger *z
 				wantAssetID, wantOrgID, ident.EntityID, ident.OrgID)
 		}
 		return nil
+	}
+	base.VerifyPeerCertificate = pinnedVerify
+	// CRITICAL: a resumed TLS 1.3 handshake skips VerifyPeerCertificate
+	// entirely — Go only calls VerifyConnection, with
+	// ConnectionState.PeerCertificates restored from the cached session
+	// ticket. All mesh dials share one process-wide meshSessionCache AND one
+	// constant gRPC authority (passthrough:///mesh-peer), so without this,
+	// a ticket cached while dialing asset A could be resumed while
+	// "expecting" asset B, silently bypassing the anti-MITM pin above (see
+	// meshDialLAN's doc in mesh_dialer.go). Re-run the SAME pinned verify
+	// closure against the resumed connection's restored peer certs; on a
+	// full handshake (DidResume false) VerifyPeerCertificate already ran
+	// this check, so there is nothing to redo. A pin mismatch here hard-fails
+	// the connection rather than silently declining to resume: a full
+	// handshake to the wrong peer would fail this same pin check, so there
+	// is no decline-vs-fail asymmetry to preserve.
+	//
+	// With this fix in place, every resumed mesh connection re-verifies the
+	// full chain + identity pin, so a client that let session tickets chain
+	// indefinitely across resumptions (extending trust well past a single
+	// handshake's ML-DSA verification — see tlscache.Cache.MarkResumed's doc
+	// for why the CLI↔agent path guards against exactly that) is harmless
+	// here: the in-memory meshSessionCache needs no equivalent guard.
+	base.VerifyConnection = func(cs tls.ConnectionState) error {
+		if !cs.DidResume {
+			return nil
+		}
+		rawCerts := make([][]byte, len(cs.PeerCertificates))
+		for i, c := range cs.PeerCertificates {
+			rawCerts[i] = c.Raw
+		}
+		return pinnedVerify(rawCerts, nil)
 	}
 	return base, nil
 }
