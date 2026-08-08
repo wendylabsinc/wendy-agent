@@ -719,6 +719,22 @@ func resolveLANVersion(ctx context.Context, dev models.LANDevice) (models.LANDev
 	return dev, isMTLS, nil
 }
 
+// lanProber is the CLI's discovery.LANProber: it probes a device's agent for
+// version metadata and stamps the connection's authoritative mTLS status onto
+// the returned device.
+func lanProber(ctx context.Context, dev models.LANDevice) (models.LANDevice, error) {
+	resolved, isMTLS, err := resolveLANVersion(ctx, dev)
+	if err != nil {
+		return dev, err
+	}
+	resolved.IsMTLS = isMTLS
+	return resolved, nil
+}
+
+// lanStreamFn is a seam over discovery.StreamLAN so tests can substitute a
+// fake event stream; production never reassigns it.
+var lanStreamFn = discovery.StreamLAN
+
 // SelectedDevice represents either a gRPC agent, BLE device, or an external provider device.
 type SelectedDevice struct {
 	// Exactly one of Agent/Bluetooth/External is set.
@@ -2335,9 +2351,6 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	// Cancel continuous discovery when the picker exits.
 	discoverCtx, discoverCancel := context.WithCancel(ctx)
 
-	// Continuous LAN discovery — devices appear as they're found.
-	lanCh := make(chan models.LANDevice, 16)
-	go discovery.DiscoverLANContinuous(discoverCtx, lanCh)
 	sendLANItem := func(dev models.LANDevice, insecure bool, probe tui.ProbeState) {
 		devCopy := dev
 		// While the probe is still in flight the Agent/OS columns show a
@@ -2372,33 +2385,25 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 			}},
 		}}})
 	}
+	// Streaming LAN discovery — cached rows appear instantly, live sightings
+	// and probe outcomes follow, and the engine itself handles offline
+	// detection and retry (see discovery.StreamLAN). Prober must be set: with
+	// a nil Prober a cached row can never be confirmed offline.
+	events := lanStreamFn(discoverCtx, discovery.StreamOptions{UseCache: true, Prober: lanProber})
 	go func() {
-		for rawDev := range lanCh {
-			// Show the device immediately with a "connecting" spinner, then
-			// resolve its version/OS and update the row in place.
-			sendLANItem(rawDev, false, tui.ProbePending)
-			resolved, isMTLS, err := resolveLANVersion(discoverCtx, rawDev)
-			if err == nil {
-				sendLANItem(resolved, !isMTLS, tui.ProbeOK)
-				continue
-			}
-			// Version probe failed on first attempt: mark the row failed (red
-			// triangle) and retry in the background so the version appears once
-			// the device becomes responsive, without requiring rediscovery.
-			sendLANItem(rawDev, false, tui.ProbeFailed)
-			go func(d models.LANDevice) {
-				for attempt := 0; attempt < 5; attempt++ {
-					select {
-					case <-discoverCtx.Done():
-						return
-					case <-time.After(2 * time.Second):
-					}
-					if updated, isMTLS, retryErr := resolveLANVersion(discoverCtx, d); retryErr == nil {
-						sendLANItem(updated, !isMTLS, tui.ProbeOK)
-						return
-					}
+		for ev := range events {
+			switch ev.Kind {
+			case discovery.LANCached:
+				sendLANItem(ev.Device, false, tui.ProbePending)
+			case discovery.LANFound, discovery.LANUpdated:
+				if ev.Probed {
+					sendLANItem(ev.Device, !ev.Device.IsMTLS, tui.ProbeOK)
+				} else {
+					sendLANItem(ev.Device, false, tui.ProbePending)
 				}
-			}(rawDev)
+			case discovery.LANOffline:
+				sendLANItem(ev.Device, false, tui.ProbeOffline)
+			}
 		}
 	}()
 
