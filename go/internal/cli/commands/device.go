@@ -187,7 +187,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				}
 			}
 
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -2177,7 +2177,7 @@ func newDeviceUpdateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), ExcludeBluetooth(), SuppressUpdateCheck())
+			conn, err := connectToAgent(ctx, ExcludeProviders("local", "docker", "wendy-lite"), SuppressUpdateCheck())
 			if err != nil {
 				return err
 			}
@@ -2765,7 +2765,6 @@ func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentCo
 	return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 		return connectToAgent(waitCtx,
 			ExcludeProviders("local", "docker", "wendy-lite"),
-			ExcludeBluetooth(),
 			SuppressUpdateCheck(),
 			SuppressProvisioningHint(),
 			NonInteractive(),

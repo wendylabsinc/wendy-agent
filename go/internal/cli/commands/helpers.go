@@ -885,12 +885,12 @@ func isInteractiveTerminal() bool {
 // connection failure. Shows a warning and immediately opens the device picker
 // where the user can select a new device and optionally set/unset default
 // via 'd'/'x' shortcuts.
-func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, excludeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+func handleDefaultDeviceRecovery(ctx context.Context, hostname string, elapsed time.Duration, _ error, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	warnStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
 	fmt.Println(warnStyle.Render(fmt.Sprintf("⚠ Default device %q is unreachable after %s.", hostname, formatElapsedSeconds(elapsed))))
 	fmt.Println()
 
-	return pickDevice(ctx, excludeProviders, excludeBluetooth, suppressUpdateCheck)
+	return pickDevice(ctx, excludeProviders, includeBluetooth, suppressUpdateCheck)
 }
 
 func defaultDeviceSearchLabel(hostname string) string {
@@ -1006,6 +1006,10 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 	for _, o := range opts {
 		o(&cfg)
 	}
+	// connectToAgent only ever returns a gRPC connection, so a BLE device is
+	// never a usable answer here — never scan for or offer one, whatever the
+	// caller passed. BLE-capable commands use resolveTarget + IncludeBluetooth.
+	cfg.includeBluetooth = false
 
 	// Admin-entitled on-device container: dial the local socket, skip discovery.
 	if conn, ok, err := dialAgentSocketIfSet(ctx); ok {
@@ -1071,7 +1075,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)
-				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+				target, recErr := handleDefaultDeviceRecovery(ctx, hostname, time.Since(startedAt), connErr, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
 				if recErr != nil {
 					return nil, recErr
 				}
@@ -1108,7 +1112,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+	target, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
 	if pickErr != nil {
 		return nil, pickErr
 	}
@@ -1734,7 +1738,7 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 		// every command pay a doomed handshake per non-matching org (see
 		// certorder.go). Purely a reordering — the remaining certs still follow
 		// in their original order, so a stale hint costs nothing extra.
-		preferredOrg, havePreferredOrg := preferredCertOrg(host)
+		preferredOrg, havePreferredOrg := preferredCertOrgForHost(host)
 		allCerts = orderCertsByOrg(allCerts, preferredOrg, havePreferredOrg)
 		if port, err := strconv.Atoi(portStr); err == nil {
 			// Try the given port first (covers explicit tunnel ports that already
@@ -1756,8 +1760,26 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 			var plaintextAddrCertReject bool
 			var mtlsPortCertFails, mtlsPortNonCertFails int
 			var observedDeviceOrg int32 // org read from the device's server cert on a failed mTLS probe (0 = none)
+			// probeOrder indexes allCerts. It starts as the caller's order and is
+			// corrected at most once, in place, the first time the device's own
+			// server certificate names an org we hold an untried cert for (see
+			// promoteOrgNext). That correction is what saves an agent too old to
+			// advertise an mDNS `orgid` TXT record from a full linear scan on a
+			// cold certorder memo: BuildServerVerifyConnection fires
+			// OnServerIdentity before the expected-org and chain checks, so even
+			// a rejected probe tells us which org the device actually belongs to.
+			// Shared across both address rungs so the second inherits the first's
+			// correction. In practice the correction lands on whichever rung is
+			// actually an mTLS endpoint: probing a plaintext port with TLS fails
+			// before any server certificate arrives, so it observes no org.
+			probeOrder := make([]int, len(allCerts))
+			for i := range probeOrder {
+				probeOrder[i] = i
+			}
+			jumped := false
 			for addrIdx, mtlsAddr := range mtlsAddrs {
-				for i := range allCerts {
+				for pos := range probeOrder {
+					i := probeOrder[pos]
 					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
@@ -1785,6 +1807,18 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 					}
 					if org, ok := conn.ObservedServerOrg(); ok {
 						observedDeviceOrg = org
+						// The device just named its own org. Try that org's cert
+						// next rather than grinding through the remaining ones in
+						// their original order. Purely a reordering of certs we
+						// already hold — the trust decision stays with
+						// BuildServerVerifyConnection (expected-org, ML-DSA chain,
+						// SPKI pin), so an org claimed by a hostile server only
+						// ever gets shown a cert this loop would have shown it
+						// anyway. Honoured once: a device that keeps naming orgs
+						// must not be able to reshuffle the ladder indefinitely.
+						if !jumped && promoteOrgNext(probeOrder, pos, allCerts, org) {
+							jumped = true
+						}
 					}
 					conn.Close()
 					if addrIdx == 0 {
@@ -2223,7 +2257,7 @@ type resolveOption func(*resolveConfig)
 
 type resolveConfig struct {
 	excludeProviderKeys      map[string]bool
-	excludeBluetooth         bool
+	includeBluetooth         bool
 	suppressProvisioningHint bool
 	suppressUpdateCheck      bool
 	nonInteractive           bool
@@ -2255,11 +2289,19 @@ func NonInteractive() resolveOption {
 	}
 }
 
-// ExcludeBluetooth skips the BLE scan and filters out BLE-only devices
-// (those with no LAN or external endpoint) from the interactive device picker.
-func ExcludeBluetooth() resolveOption {
+// IncludeBluetooth opts a command into BLE discovery: the picker runs a BLE
+// scan, offers BLE-only devices, and resolveTarget may hand back a
+// SelectedDevice with only Bluetooth set.
+//
+// BLE is opt-in because reaching a device over BLE needs explicit handling in
+// the caller (see connectBLEAgent and the ble.AgentClient command set, which
+// covers only wifi/apps/hardware/version). A command that has no BLE code path
+// must not offer BLE devices in its picker — the user would pick one only to be
+// told the command can't use it. Pass this only from commands that branch on
+// target.Bluetooth.
+func IncludeBluetooth() resolveOption {
 	return func(c *resolveConfig) {
-		c.excludeBluetooth = true
+		c.includeBluetooth = true
 	}
 }
 
@@ -2401,7 +2443,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				conn = refreshedConn
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
-				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
 			} else if isDefault {
 				return nil, defaultDeviceUnreachableError(device, err)
 			} else {
@@ -2424,7 +2466,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	return pickDevice(ctx, cfg.excludeProviderKeys, cfg.excludeBluetooth, cfg.suppressUpdateCheck)
+	return pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
 }
 
 // findDeviceByID searches all available providers for a device whose ID
@@ -2804,7 +2846,10 @@ func discoverProviderForPicker(ctx context.Context, prov providers.DeviceProvide
 // initial scan still appear in the picker.
 // excludeProviders hides the named provider keys from the picker. Local run
 // targets are hidden on top of these unless providers.ShowLocalDevices is set.
-func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
+// includeBluetooth enables the BLE scan; it is off by default so commands that
+// cannot talk over BLE never show a device they can't use (see
+// IncludeBluetooth).
+func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBluetooth bool, suppressUpdateCheck bool) (*SelectedDevice, error) {
 	excludeProviders = hideLocalProviders(excludeProviders)
 
 	picker := tui.NewPicker()
@@ -2918,7 +2963,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 	}
 
 	// Continuous Bluetooth discovery — re-scan every 5 seconds.
-	if !excludeBluetooth {
+	if includeBluetooth {
 		go func() {
 			for {
 				bleDevices, err := discovery.DiscoverBluetooth(discoverCtx, true)
