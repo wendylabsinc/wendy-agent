@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -34,5 +35,39 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	}
 	if loaded.Images["debian:12"] != "sha256:deadbeef" {
 		t.Fatalf("Images = %+v", loaded.Images)
+	}
+}
+
+func TestSaveSkipsUnchangedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "build.stagefile.lock.yaml")
+	f := &File{Version: 1, SourceHash: "sha256:abc", Images: map[string]string{"debian:12": "sha256:def"}}
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged lockfile was rewritten (mtime churn re-triggers wendy watch)")
+	}
+	f.SourceHash = "sha256:changed"
+	if err := f.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.SourceHash != "sha256:changed" {
+		t.Fatalf("SourceHash = %q", reloaded.SourceHash)
 	}
 }

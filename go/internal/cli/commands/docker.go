@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -42,6 +43,52 @@ import (
 // stagefileSourceName is the conventional filename for a Stagefile source,
 // matching the standalone stagefile tool's own CLI default.
 const stagefileSourceName = "build.stagefile.yaml"
+
+// stagefileLockName is the lockfile the Stagefile compiler maintains next to
+// its source (digest pins; see go/internal/stagefile/lock).
+const stagefileLockName = "build.stagefile.lock.yaml"
+
+// generatedDockerfileName is the internal build artifact prepareDockerBuildFile
+// writes (compiled Stagefile or auto-fixed Dockerfile copy). The writer, the
+// build-file-detection exclusion, and the watch ignore list all key off this
+// one name so they can't drift.
+const generatedDockerfileName = "Dockerfile.generated"
+
+// writeGeneratedFile writes data to path only when the current content
+// differs, via a same-directory temp file + rename. The rename keeps
+// concurrent readers (parallel service builds sharing a context dir, buildx
+// reading .dockerignore at context-send time) from ever observing a
+// truncated file, and skipping the no-op write matters for `wendy watch`:
+// these files live inside the watched root, and rewriting identical bytes on
+// every build would re-trigger the watcher mid-deploy.
+func writeGeneratedFile(path string, data []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
 // used by neighbor-table helpers. Tests can replace this variable to stub
@@ -496,13 +543,13 @@ func compileStagefile(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte(dockerfileText), 0o644); err != nil {
-		return "", fmt.Errorf("writing Dockerfile.generated: %w", err)
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte(dockerignoreText), 0o644); err != nil {
+	if err := writeGeneratedFile(filepath.Join(dir, ".dockerignore"), []byte(dockerignoreText)); err != nil {
 		return "", fmt.Errorf("writing .dockerignore: %w", err)
 	}
-	return "Dockerfile.generated", nil
+	return generatedDockerfileName, nil
 }
 
 // applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
@@ -547,10 +594,10 @@ func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
 		return dockerfile, nil
 	}
 	fixedText := strings.Join(fixedLines, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte(fixedText), 0o644); err != nil {
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(fixedText)); err != nil {
 		return dockerfile, nil
 	}
-	return "Dockerfile.generated", nil
+	return generatedDockerfileName, nil
 }
 
 func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
@@ -653,11 +700,12 @@ func detectBuildOptions(dir string) []BuildOption {
 				continue
 			}
 			name := e.Name()
-			if name == "Dockerfile.generated" {
+			if name == generatedDockerfileName {
 				// Never a user-authored build file — it's the internal
-				// artifact compileStagefileIfNeeded produces from a Stagefile
-				// and deliberately never deletes, so it must not re-enter
-				// detection as a rival candidate on subsequent runs.
+				// artifact prepareDockerBuildFile produces (compiled
+				// Stagefile or auto-fixed Dockerfile copy) and deliberately
+				// never deletes, so it must not re-enter detection as a
+				// rival candidate on subsequent runs.
 				continue
 			}
 			if isContainerBuildFileName(name) {

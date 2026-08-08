@@ -2974,3 +2974,44 @@ func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T)
 		}
 	})
 }
+
+func TestWriteGeneratedFile_SkipsUnchangedWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, generatedDockerfileName)
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same content: the file must not be rewritten (no mtime churn — a
+	// rewrite would re-trigger `wendy watch` mid-deploy).
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged content still rewrote the file")
+	}
+	if err := writeGeneratedFile(path, []byte("FROM b\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "FROM b\n" {
+		t.Fatalf("content = %q", data)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
+	}
+}

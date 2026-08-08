@@ -209,6 +209,14 @@ func watchShouldIgnore(path, root string) bool {
 		}
 	}
 	base := filepath.Base(path)
+	// Build artifacts the deploy pipeline itself writes into the project dir
+	// (prepareDockerBuildFile / the Stagefile compiler). Reacting to them
+	// would make every watched deploy cancel and restart itself: the deploy
+	// writes the file, the watcher sees the write, the debouncer kills the
+	// in-flight deploy and triggers the next one, forever.
+	if base == generatedDockerfileName || base == stagefileLockName {
+		return true
+	}
 	return strings.HasSuffix(base, "~") ||
 		strings.HasSuffix(base, ".swp") ||
 		strings.HasSuffix(base, ".swx") ||

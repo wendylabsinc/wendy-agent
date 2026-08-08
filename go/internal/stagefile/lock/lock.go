@@ -1,6 +1,7 @@
 package lock
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
@@ -34,11 +35,17 @@ func Load(path string) (*File, error) {
 	return &f, nil
 }
 
-// Save writes f to path as YAML.
+// Save writes f to path as YAML. An unchanged lockfile is left untouched
+// (no write, no mtime churn): the compiler calls Save on every build, and a
+// rewrite of identical bytes would still fire file watchers — `wendy watch`
+// would cancel and restart its own deploy on every cycle.
 func (f *File) Save(path string) error {
 	data, err := yaml.Marshal(f)
 	if err != nil {
 		return err
+	}
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
 	}
 	return os.WriteFile(path, data, 0o644)
 }
