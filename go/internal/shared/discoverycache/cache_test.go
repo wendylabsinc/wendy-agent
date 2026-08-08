@@ -66,6 +66,39 @@ func TestUpsertMergeAndTTL(t *testing.T) {
 	}
 }
 
+func TestReplaceDropsFieldsUpsertWouldKeep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	c, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.Upsert(Entry{ID: "a", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051, MTLS: true, OrgID: 7, MeshName: "brave-dolphin", AgentVersion: "0.19.1"}, now)
+
+	// The device stopped advertising mTLS/orgid/name: a caller holding the
+	// complete current state replaces the row outright.
+	c.Replace(Entry{ID: "a", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051, AgentVersion: "0.19.1"}, now)
+
+	fresh := c.Fresh(now)
+	if len(fresh) != 1 {
+		t.Fatalf("want 1 entry, got %d", len(fresh))
+	}
+	if fresh[0].MTLS || fresh[0].OrgID != 0 || fresh[0].MeshName != "" {
+		t.Fatalf("Replace must drop cleared fields: %+v", fresh[0])
+	}
+	if fresh[0].AgentVersion != "0.19.1" || fresh[0].IP != "10.0.0.5" || !fresh[0].LastSeen.Equal(now) {
+		t.Fatalf("Replace must store the given entry verbatim, stamped now: %+v", fresh[0])
+	}
+
+	if err := c.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, _ := LoadFrom(path)
+	if got := reloaded.Fresh(now); len(got) != 1 || got[0].MTLS || got[0].OrgID != 0 {
+		t.Fatalf("cleared fields must not survive the flush: %+v", got)
+	}
+}
+
 func TestFlushRoundTripAndEviction(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "devices.json")
 	c, _ := LoadFrom(path)

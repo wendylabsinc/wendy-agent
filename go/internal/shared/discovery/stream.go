@@ -277,32 +277,37 @@ func (s *lanStream) handleSighting(svc MDNSService) {
 	if !known {
 		st = &lanDeviceState{dev: dev, confirmed: true}
 		s.states[key] = st
-		s.upsert(st.dev, now)
+		s.persist(st.dev, now)
 		s.emit(LANEvent{Kind: LANFound, Device: st.dev})
 		s.scheduleProbe(key, st)
 		return
 	}
 
-	merged := mergeLANDevice(st.dev, dev)
-	targetMoved := probeTargetChanged(st.dev, merged)
-	changed := mdnsFieldsChanged(st.dev, merged)
-	st.dev = merged
-	s.upsert(merged, now)
+	updated := applySighting(st.dev, dev)
+	targetMoved := probeTargetChanged(st.dev, updated)
+	changed := mdnsFieldsChanged(st.dev, updated)
+	st.dev = updated
+	if targetMoved {
+		// Nothing has verified this address yet, so the row must stop claiming
+		// probe-confirmed data until the retargeted probe below answers.
+		st.probeConfirmed = false
+	}
+	s.persist(updated, now)
 
 	switch {
 	case !st.confirmed:
 		// A cached (or offlined) row just proved it is on the network.
 		st.confirmed = true
 		st.offline = false
-		s.emit(LANEvent{Kind: LANFound, Device: merged, Probed: st.probeConfirmed})
+		s.emit(LANEvent{Kind: LANFound, Device: updated, Probed: st.probeConfirmed})
 	case changed:
-		s.emit(LANEvent{Kind: LANUpdated, Device: merged, Probed: st.probeConfirmed})
+		s.emit(LANEvent{Kind: LANUpdated, Device: updated, Probed: st.probeConfirmed})
 	}
 
 	// Retarget: a probe aimed at the old address can no longer speak for this
-	// device, and a probe that failed at the old address deserves a retry at
-	// the new one.
-	if targetMoved && (st.probing || st.probeFailed) {
+	// device — whether it is still in flight (its result is discarded by
+	// generation), failed there, or succeeded there.
+	if targetMoved {
 		s.scheduleProbe(key, st)
 	}
 }
@@ -328,8 +333,8 @@ func (s *lanStream) handleProbeResult(res lanProbeResult) {
 	st.probeFailed = false
 	st.probeConfirmed = true
 	st.offline = false
-	st.dev = mergeLANDevice(st.dev, res.dev)
-	s.upsert(st.dev, time.Now())
+	st.dev = applyProbe(st.dev, res.dev)
+	s.persist(st.dev, time.Now())
 
 	kind := LANUpdated
 	if !st.confirmed {
@@ -439,13 +444,18 @@ func (s *lanStream) emit(ev LANEvent) {
 	}
 }
 
-// upsert records a device in the cache; the write itself is debounced by the
+// persist records a device in the cache; the write itself is debounced by the
 // flush ticker. A session without a cache keeps everything in memory.
-func (s *lanStream) upsert(dev models.LANDevice, now time.Time) {
+//
+// Replace, not Upsert: dev is the session's complete current view of the
+// device (a live sighting's fields plus whatever a probe confirmed), so
+// Upsert's non-zero-wins merge would only ever resurrect a value the device
+// has since dropped — an mTLS flag or an orgid TXT record that went away.
+func (s *lanStream) persist(dev models.LANDevice, now time.Time) {
 	if s.cache == nil {
 		return
 	}
-	s.cache.Upsert(discoverycache.EntryFromDevice(dev), now)
+	s.cache.Replace(discoverycache.EntryFromDevice(dev), now)
 	s.dirty = true
 }
 
@@ -462,13 +472,36 @@ func (s *lanStream) flush() {
 	}
 }
 
-// mergeLANDevice folds incoming's non-zero fields onto stored using the cache's
-// own merge rule, so an emitted device always matches what gets persisted —
-// notably, an mDNS sighting of a probed device keeps its agent version instead
-// of blanking it until the next probe.
-func mergeLANDevice(stored, incoming models.LANDevice) models.LANDevice {
-	merged := discoverycache.Merge(discoverycache.EntryFromDevice(stored), discoverycache.EntryFromDevice(incoming))
-	return merged.Device()
+// applySighting folds a live mDNS answer into what the session already knows.
+// The answer is authoritative for everything mDNS carries — identity, address,
+// and TXT-derived metadata — so a record the device stopped advertising (tls,
+// orgid, name) is actually cleared rather than kept alive by a stale value.
+// Only the fields no mDNS answer can speak for, the ones an agent probe fills
+// in, survive from the previous view: a re-announcement must not blank a
+// probed agent version until the next probe replaces it.
+func applySighting(stored, sighted models.LANDevice) models.LANDevice {
+	dev := sighted
+	dev.AgentVersion = stored.AgentVersion
+	dev.DeviceType = stored.DeviceType
+	dev.OS = stored.OS
+	dev.OSVersion = stored.OSVersion
+	dev.CPUArchitecture = stored.CPUArchitecture
+	return dev
+}
+
+// applyProbe folds an agent probe's answer into what the session already knows.
+// The probe owns the version fields it read from the agent and the mTLS mode it
+// actually negotiated (per the LANProber contract, that beats the tls TXT
+// record); the address and mDNS metadata stay as the last sighting left them.
+func applyProbe(stored, probed models.LANDevice) models.LANDevice {
+	dev := stored
+	dev.IsMTLS = probed.IsMTLS
+	dev.AgentVersion = probed.AgentVersion
+	dev.DeviceType = probed.DeviceType
+	dev.OS = probed.OS
+	dev.OSVersion = probed.OSVersion
+	dev.CPUArchitecture = probed.CPUArchitecture
+	return dev
 }
 
 // mdnsFieldsChanged reports whether anything a live sighting carries (address

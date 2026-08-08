@@ -313,6 +313,218 @@ func TestStreamProbeRetargetsOnAddressChange(t *testing.T) {
 	expectQuiet(t, events, 300*time.Millisecond)
 }
 
+func TestStreamOfflineReProbeRecovers(t *testing.T) {
+	shrinkDuration(t, &offlineGrace, 50*time.Millisecond)
+	shrinkDuration(t, &offlineRetryDelay, 30*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path, discoverycache.Entry{ID: "dev-1", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051})
+
+	fb := newFakeBackend() // silent: recovery must come from the re-probe alone
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	// A device mid-boot: the first probe is refused, the retry gets through.
+	var calls atomic.Int32
+	prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		if calls.Add(1) == 1 {
+			return models.LANDevice{}, errors.New("connection refused")
+		}
+		dev.AgentVersion = "0.19.1"
+		return dev, nil
+	}
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+
+	got := collectEvents(t, events, 3, 5*time.Second)
+	if got[0].Kind != LANCached || got[1].Kind != LANOffline {
+		t.Fatalf("expected cached then offline, got %+v", got[:2])
+	}
+	if got[2].Kind != LANFound || !got[2].Probed || got[2].Device.AgentVersion != "0.19.1" {
+		t.Fatalf("the post-offline re-probe must flip the row back online: %+v", got[2])
+	}
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("expected exactly one re-probe after offline, prober ran %d times", n)
+	}
+}
+
+func TestStreamOfflineReProbeFailureDoesNotRepeatOffline(t *testing.T) {
+	shrinkDuration(t, &offlineGrace, 50*time.Millisecond)
+	shrinkDuration(t, &offlineRetryDelay, 30*time.Millisecond)
+
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedCache(t, path, discoverycache.Entry{ID: "dev-1", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051})
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	var calls atomic.Int32
+	prober := func(context.Context, models.LANDevice) (models.LANDevice, error) {
+		calls.Add(1)
+		return models.LANDevice{}, errors.New("no route to host")
+	}
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+
+	got := collectEvents(t, events, 2, 5*time.Second)
+	if got[0].Kind != LANCached || got[1].Kind != LANOffline {
+		t.Fatalf("expected cached then offline, got %+v", got)
+	}
+
+	// Wait for the single re-probe to run and fail.
+	deadline := time.Now().Add(3 * time.Second)
+	for calls.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the offline re-probe never ran (prober calls: %d)", calls.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// An already-offline row stays offline silently, and there is only ever
+	// one retry — no polling loop behind it.
+	expectQuiet(t, events, 200*time.Millisecond)
+	if n := calls.Load(); n != 2 {
+		t.Fatalf("expected exactly one re-probe, prober ran %d times", n)
+	}
+}
+
+func TestStreamClearedTXTRecordsUpdateAndPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	events, stop := startStream(t, StreamOptions{UseCache: true}) // browse-only
+
+	advertised := wendyService("dev-11", "orin", "orin.local", "10.0.0.11", 50051)
+	advertised.TXTRecords["tls"] = "true"
+	advertised.TXTRecords["orgid"] = "7"
+	advertised.TXTRecords["assetid"] = "3"
+	advertised.TXTRecords["name"] = "brave-dolphin"
+	fb.emit(t, advertised)
+
+	first := collectEvents(t, events, 1, 5*time.Second)[0]
+	if first.Kind != LANFound || !first.Device.IsMTLS || first.Device.OrgID != 7 || first.Device.MeshName != "brave-dolphin" {
+		t.Fatalf("first sighting must carry the advertised TXT records: %+v", first.Device)
+	}
+
+	// The device re-announces without those records (unenrolled, mTLS off).
+	fb.emit(t, wendyService("dev-11", "orin", "orin.local", "10.0.0.11", 50051))
+
+	cleared := collectEvents(t, events, 1, 5*time.Second)[0]
+	if cleared.Kind != LANUpdated {
+		t.Fatalf("dropped TXT records must surface as an update: %+v", cleared)
+	}
+	if cleared.Device.IsMTLS || cleared.Device.OrgID != 0 || cleared.Device.AssetID != 0 || cleared.Device.MeshName != "" {
+		t.Fatalf("a live sighting owns its TXT-derived fields: %+v", cleared.Device)
+	}
+	stop()
+
+	reloaded, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("reload cache: %v", err)
+	}
+	fresh := reloaded.Fresh(time.Now())
+	if len(fresh) != 1 {
+		t.Fatalf("expected exactly one persisted entry, got %+v", fresh)
+	}
+	if fresh[0].MTLS || fresh[0].OrgID != 0 || fresh[0].AssetID != 0 || fresh[0].MeshName != "" {
+		t.Fatalf("stale TXT values must not be re-persisted: %+v", fresh[0])
+	}
+}
+
+func TestStreamProbeOwnsMTLSAndSurvivesResighting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	// The TXT record advertises mTLS but the agent answers in plaintext.
+	prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		dev.AgentVersion = "3.3.3"
+		dev.OS = "WendyOS"
+		dev.IsMTLS = false
+		return dev, nil
+	}
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+
+	advertised := wendyService("dev-12", "orin", "orin.local", "10.0.0.12", 50051)
+	advertised.TXTRecords["tls"] = "true"
+	fb.emit(t, advertised)
+
+	got := collectEvents(t, events, 2, 5*time.Second)
+	if got[0].Kind != LANFound || !got[0].Device.IsMTLS {
+		t.Fatalf("first sighting must reflect the tls TXT record: %+v", got[0].Device)
+	}
+	if got[1].Kind != LANUpdated || !got[1].Probed || got[1].Device.IsMTLS {
+		t.Fatalf("the probe owns the mTLS mode it actually negotiated: %+v", got[1])
+	}
+	if got[1].Device.AgentVersion != "3.3.3" {
+		t.Fatalf("probe must fill in the version fields: %+v", got[1].Device)
+	}
+
+	// A re-announcement at the same address restates tls=true (mDNS owns that
+	// field) but must not blank what the probe learned.
+	fb.emit(t, advertised)
+
+	resighted := collectEvents(t, events, 1, 5*time.Second)[0]
+	if resighted.Kind != LANUpdated || !resighted.Device.IsMTLS {
+		t.Fatalf("re-announcement owns the TXT-derived mTLS flag again: %+v", resighted)
+	}
+	if resighted.Device.AgentVersion != "3.3.3" || resighted.Device.OS != "WendyOS" {
+		t.Fatalf("a sighting must not blank probe-owned fields: %+v", resighted.Device)
+	}
+	if !resighted.Probed {
+		t.Fatalf("the address never moved, so the row stays probe-confirmed: %+v", resighted)
+	}
+}
+
+func TestStreamAddressMoveClearsProbedUntilReconfirmed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+
+	fb := newFakeBackend()
+	useStreamSeams(t, fb.fn, cacheLoaderFor(path))
+
+	probed := make(chan string, 8)
+	prober := func(_ context.Context, dev models.LANDevice) (models.LANDevice, error) {
+		probed <- dev.IPAddress
+		dev.AgentVersion = "1.0.0"
+		return dev, nil
+	}
+
+	events, _ := startStream(t, StreamOptions{UseCache: true, Prober: prober})
+	fb.emit(t, wendyService("dev-13", "orin", "orin.local", "10.0.0.13", 50051))
+
+	got := collectEvents(t, events, 2, 5*time.Second)
+	if got[0].Kind != LANFound || got[0].Probed {
+		t.Fatalf("first sighting is unprobed: %+v", got[0])
+	}
+	if got[1].Kind != LANUpdated || !got[1].Probed {
+		t.Fatalf("probe must confirm the row: %+v", got[1])
+	}
+	if first := <-probed; first != "10.0.0.13" {
+		t.Fatalf("probe went to the wrong address: %s", first)
+	}
+
+	// The device moves. Its new address has been probed by nobody.
+	fb.emit(t, wendyService("dev-13", "orin", "orin.local", "10.0.0.99", 50051))
+
+	moved := collectEvents(t, events, 1, 5*time.Second)[0]
+	if moved.Kind != LANUpdated || moved.Device.IPAddress != "10.0.0.99" {
+		t.Fatalf("address move must surface as an update: %+v", moved)
+	}
+	if moved.Probed {
+		t.Fatalf("an unverified address must not be reported as probe-confirmed: %+v", moved)
+	}
+
+	reconfirmed := collectEvents(t, events, 1, 5*time.Second)[0]
+	if reconfirmed.Kind != LANUpdated || !reconfirmed.Probed || reconfirmed.Device.IPAddress != "10.0.0.99" {
+		t.Fatalf("the retargeted probe must re-confirm the row: %+v", reconfirmed)
+	}
+	if second := <-probed; second != "10.0.0.99" {
+		t.Fatalf("retargeted probe went to the wrong address: %s", second)
+	}
+}
+
 func TestStreamNewDeviceFoundThenProbedUpdate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "devices.json") // no file: empty cache
 
