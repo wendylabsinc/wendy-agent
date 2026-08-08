@@ -3,7 +3,11 @@ package services
 import (
 	"strings"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 )
 
 const (
@@ -37,11 +41,11 @@ func isSensitiveLabelKey(key string) bool {
 // sanitizeAttributes returns a new attribute slice with deny-listed keys
 // removed, keys and string values truncated, and the total count capped at
 // maxLabels. The input slice and its elements are not modified.
-func sanitizeAttributes(attrs []*otelpb.KeyValue) []*otelpb.KeyValue {
+func sanitizeAttributes(attrs []*commonpb.KeyValue) []*commonpb.KeyValue {
 	if len(attrs) == 0 {
 		return attrs
 	}
-	out := make([]*otelpb.KeyValue, 0, min(len(attrs), maxLabels))
+	out := make([]*commonpb.KeyValue, 0, min(len(attrs), maxLabels))
 	for _, attr := range attrs {
 		if len(out) >= maxLabels {
 			break
@@ -55,16 +59,16 @@ func sanitizeAttributes(attrs []*otelpb.KeyValue) []*otelpb.KeyValue {
 		}
 		v := attr.GetValue()
 		if s := v.GetStringValue(); len(s) > maxLabelValLen {
-			v = &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: s[:maxLabelValLen]}}
+			v = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s[:maxLabelValLen]}}
 		}
-		out = append(out, &otelpb.KeyValue{Key: k, Value: v})
+		out = append(out, &commonpb.KeyValue{Key: k, Value: v})
 	}
 	return out
 }
 
 // sanitizeLogs scrubs resource and log-record attributes and truncates oversized
 // log bodies, mutating req in place.
-func sanitizeLogs(req *otelpb.ExportLogsServiceRequest) {
+func sanitizeLogs(req *collogspb.ExportLogsServiceRequest) {
 	if req == nil {
 		return
 	}
@@ -77,7 +81,7 @@ func sanitizeLogs(req *otelpb.ExportLogsServiceRequest) {
 				lr.Attributes = sanitizeAttributes(lr.GetAttributes())
 				if body := lr.GetBody(); body != nil {
 					if s := body.GetStringValue(); len(s) > maxLogBodyBytes {
-						lr.Body = &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: s[:maxLogBodyBytes]}}
+						lr.Body = &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s[:maxLogBodyBytes]}}
 					}
 				}
 			}
@@ -87,7 +91,7 @@ func sanitizeLogs(req *otelpb.ExportLogsServiceRequest) {
 
 // sanitizeMetrics scrubs resource attributes and every data-point's attributes
 // across all metric data types, mutating req in place.
-func sanitizeMetrics(req *otelpb.ExportMetricsServiceRequest) {
+func sanitizeMetrics(req *colmetricspb.ExportMetricsServiceRequest) {
 	if req == nil {
 		return
 	}
@@ -105,25 +109,25 @@ func sanitizeMetrics(req *otelpb.ExportMetricsServiceRequest) {
 
 // sanitizeMetricDataPoints scrubs the attributes on each data point of m,
 // dispatching on the metric's data type.
-func sanitizeMetricDataPoints(m *otelpb.Metric) {
+func sanitizeMetricDataPoints(m *metricspb.Metric) {
 	switch data := m.GetData().(type) {
-	case *otelpb.Metric_Gauge:
+	case *metricspb.Metric_Gauge:
 		for _, dp := range data.Gauge.GetDataPoints() {
 			dp.Attributes = sanitizeAttributes(dp.GetAttributes())
 		}
-	case *otelpb.Metric_Sum:
+	case *metricspb.Metric_Sum:
 		for _, dp := range data.Sum.GetDataPoints() {
 			dp.Attributes = sanitizeAttributes(dp.GetAttributes())
 		}
-	case *otelpb.Metric_Histogram:
+	case *metricspb.Metric_Histogram:
 		for _, dp := range data.Histogram.GetDataPoints() {
 			dp.Attributes = sanitizeAttributes(dp.GetAttributes())
 		}
-	case *otelpb.Metric_ExponentialHistogram:
+	case *metricspb.Metric_ExponentialHistogram:
 		for _, dp := range data.ExponentialHistogram.GetDataPoints() {
 			dp.Attributes = sanitizeAttributes(dp.GetAttributes())
 		}
-	case *otelpb.Metric_Summary:
+	case *metricspb.Metric_Summary:
 		for _, dp := range data.Summary.GetDataPoints() {
 			dp.Attributes = sanitizeAttributes(dp.GetAttributes())
 		}
@@ -132,7 +136,7 @@ func sanitizeMetricDataPoints(m *otelpb.Metric) {
 
 // sanitizeTraces scrubs resource, span, span-event, and span-link attributes,
 // mutating req in place.
-func sanitizeTraces(req *otelpb.ExportTraceServiceRequest) {
+func sanitizeTraces(req *coltracepb.ExportTraceServiceRequest) {
 	if req == nil {
 		return
 	}

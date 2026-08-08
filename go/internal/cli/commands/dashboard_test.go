@@ -6,7 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 // ansiRE strips SGR color codes (and any other escape sequences) so tests can
@@ -15,12 +16,12 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
 
-func strBody(s string) *otelpb.AnyValue {
-	return &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: s}}
+func strBody(s string) *commonpb.AnyValue {
+	return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s}}
 }
 
-func strAttr(key, val string) *otelpb.KeyValue {
-	return &otelpb.KeyValue{Key: key, Value: strBody(val)}
+func strAttr(key, val string) *commonpb.KeyValue {
+	return &commonpb.KeyValue{Key: key, Value: strBody(val)}
 }
 
 func TestSanitizeLogText(t *testing.T) {
@@ -71,7 +72,7 @@ func noRowContainsControlBytes(t *testing.T, rows []string) {
 }
 
 func TestFormatLogLinesMultilineSplitsIntoRows(t *testing.T) {
-	lr := &otelpb.LogRecord{Body: strBody("line1\nline2\nline3")}
+	lr := &logspb.LogRecord{Body: strBody("line1\nline2\nline3")}
 	rows := formatLogLines("svc", lr)
 
 	if len(rows) != 3 {
@@ -96,7 +97,7 @@ func TestFormatLogLinesMultilineSplitsIntoRows(t *testing.T) {
 
 func TestFormatLogLinesStripsProgressControlSequences(t *testing.T) {
 	// A spinner line as produced by `ollama pull`: trailing erase + carriage return.
-	lr := &otelpb.LogRecord{Body: strBody("pulling manifest ⠋\x1b[2K\r")}
+	lr := &logspb.LogRecord{Body: strBody("pulling manifest ⠋\x1b[2K\r")}
 	rows := formatLogLines("llm-app", lr)
 
 	if len(rows) != 1 {
@@ -109,9 +110,9 @@ func TestFormatLogLinesStripsProgressControlSequences(t *testing.T) {
 }
 
 func TestFormatLogLinesAttributesOnLastRow(t *testing.T) {
-	lr := &otelpb.LogRecord{
+	lr := &logspb.LogRecord{
 		Body:       strBody("a\nb"),
-		Attributes: []*otelpb.KeyValue{strAttr("stream", "stderr")},
+		Attributes: []*commonpb.KeyValue{strAttr("stream", "stderr")},
 	}
 	rows := formatLogLines("svc", lr)
 
@@ -131,7 +132,7 @@ func TestFormatLogLinesAttributesOnLastRow(t *testing.T) {
 func TestFormatLogLinesPreservesInteriorBlankLines(t *testing.T) {
 	// A body with an intentional interior blank line and a single terminating
 	// newline: the interior blank is kept, only the terminator empty is dropped.
-	lr := &otelpb.LogRecord{Body: strBody("a\n\nb\n")}
+	lr := &logspb.LogRecord{Body: strBody("a\n\nb\n")}
 	rows := formatLogLines("svc", lr)
 
 	if len(rows) != 3 {
@@ -208,7 +209,7 @@ func TestDashboardLogsHorizontalScrollLeftClampsAtZero(t *testing.T) {
 }
 
 func TestFormatLogLinesNilBody(t *testing.T) {
-	lr := &otelpb.LogRecord{Attributes: []*otelpb.KeyValue{strAttr("k", "v")}}
+	lr := &logspb.LogRecord{Attributes: []*commonpb.KeyValue{strAttr("k", "v")}}
 	rows := formatLogLines("svc", lr)
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row for body-less record, got %d: %#v", len(rows), rows)

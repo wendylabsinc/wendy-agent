@@ -4,18 +4,25 @@ import (
 	"strings"
 	"testing"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-func kv(key, val string) *otelpb.KeyValue {
-	return &otelpb.KeyValue{
+func kv(key, val string) *commonpb.KeyValue {
+	return &commonpb.KeyValue{
 		Key:   key,
-		Value: &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: val}},
+		Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: val}},
 	}
 }
 
 func TestSanitizeAttributes_DropsSensitiveAndTruncates(t *testing.T) {
-	in := []*otelpb.KeyValue{
+	in := []*commonpb.KeyValue{
 		kv("user", "alice"),
 		kv("password", "hunter2"),       // dropped by deny-list
 		kv("auth_header", "Bearer xyz"), // dropped (contains "auth")
@@ -41,7 +48,7 @@ func TestSanitizeAttributes_DropsSensitiveAndTruncates(t *testing.T) {
 }
 
 func TestSanitizeAttributes_CapsCount(t *testing.T) {
-	in := make([]*otelpb.KeyValue, 0, maxLabels+10)
+	in := make([]*commonpb.KeyValue, 0, maxLabels+10)
 	for i := 0; i < maxLabels+10; i++ {
 		in = append(in, kv("k", "v"))
 	}
@@ -51,13 +58,13 @@ func TestSanitizeAttributes_CapsCount(t *testing.T) {
 }
 
 func TestSanitizeLogs_TruncatesBodyAndScrubsAttrs(t *testing.T) {
-	req := &otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{{
-			Resource: &otelpb.Resource{Attributes: []*otelpb.KeyValue{kv("token", "abc")}},
-			ScopeLogs: []*otelpb.ScopeLogs{{
-				LogRecords: []*otelpb.LogRecord{{
-					Body:       &otelpb.AnyValue{Value: &otelpb.AnyValue_StringValue{StringValue: strings.Repeat("x", maxLogBodyBytes+100)}},
-					Attributes: []*otelpb.KeyValue{kv("secret", "s"), kv("ok", "1")},
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{{
+			Resource: &resourcepb.Resource{Attributes: []*commonpb.KeyValue{kv("token", "abc")}},
+			ScopeLogs: []*logspb.ScopeLogs{{
+				LogRecords: []*logspb.LogRecord{{
+					Body:       &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: strings.Repeat("x", maxLogBodyBytes+100)}},
+					Attributes: []*commonpb.KeyValue{kv("secret", "s"), kv("ok", "1")},
 				}},
 			}},
 		}},
@@ -83,76 +90,76 @@ func TestSanitizeMetrics_ScrubsDataPointAttrs(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		metric *otelpb.Metric
-		getDP  func(m *otelpb.Metric) []*otelpb.KeyValue
+		metric *metricspb.Metric
+		getDP  func(m *metricspb.Metric) []*commonpb.KeyValue
 	}{
 		{
 			name: "Gauge",
-			metric: &otelpb.Metric{
+			metric: &metricspb.Metric{
 				Name: "gauge",
-				Data: &otelpb.Metric_Gauge{Gauge: &otelpb.Gauge{
-					DataPoints: []*otelpb.NumberDataPoint{{
-						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+				Data: &metricspb.Metric_Gauge{Gauge: &metricspb.Gauge{
+					DataPoints: []*metricspb.NumberDataPoint{{
+						Attributes: []*commonpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
 			},
-			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+			getDP: func(m *metricspb.Metric) []*commonpb.KeyValue {
 				return m.GetGauge().GetDataPoints()[0].GetAttributes()
 			},
 		},
 		{
 			name: "Sum",
-			metric: &otelpb.Metric{
+			metric: &metricspb.Metric{
 				Name: "sum",
-				Data: &otelpb.Metric_Sum{Sum: &otelpb.Sum{
-					DataPoints: []*otelpb.NumberDataPoint{{
-						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+				Data: &metricspb.Metric_Sum{Sum: &metricspb.Sum{
+					DataPoints: []*metricspb.NumberDataPoint{{
+						Attributes: []*commonpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
 			},
-			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+			getDP: func(m *metricspb.Metric) []*commonpb.KeyValue {
 				return m.GetSum().GetDataPoints()[0].GetAttributes()
 			},
 		},
 		{
 			name: "Histogram",
-			metric: &otelpb.Metric{
+			metric: &metricspb.Metric{
 				Name: "histogram",
-				Data: &otelpb.Metric_Histogram{Histogram: &otelpb.Histogram{
-					DataPoints: []*otelpb.HistogramDataPoint{{
-						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+				Data: &metricspb.Metric_Histogram{Histogram: &metricspb.Histogram{
+					DataPoints: []*metricspb.HistogramDataPoint{{
+						Attributes: []*commonpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
 			},
-			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+			getDP: func(m *metricspb.Metric) []*commonpb.KeyValue {
 				return m.GetHistogram().GetDataPoints()[0].GetAttributes()
 			},
 		},
 		{
 			name: "ExponentialHistogram",
-			metric: &otelpb.Metric{
+			metric: &metricspb.Metric{
 				Name: "exp_histogram",
-				Data: &otelpb.Metric_ExponentialHistogram{ExponentialHistogram: &otelpb.ExponentialHistogram{
-					DataPoints: []*otelpb.ExponentialHistogramDataPoint{{
-						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+				Data: &metricspb.Metric_ExponentialHistogram{ExponentialHistogram: &metricspb.ExponentialHistogram{
+					DataPoints: []*metricspb.ExponentialHistogramDataPoint{{
+						Attributes: []*commonpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
 			},
-			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+			getDP: func(m *metricspb.Metric) []*commonpb.KeyValue {
 				return m.GetExponentialHistogram().GetDataPoints()[0].GetAttributes()
 			},
 		},
 		{
 			name: "Summary",
-			metric: &otelpb.Metric{
+			metric: &metricspb.Metric{
 				Name: "summary",
-				Data: &otelpb.Metric_Summary{Summary: &otelpb.Summary{
-					DataPoints: []*otelpb.SummaryDataPoint{{
-						Attributes: []*otelpb.KeyValue{denyAttr, safeAttr},
+				Data: &metricspb.Metric_Summary{Summary: &metricspb.Summary{
+					DataPoints: []*metricspb.SummaryDataPoint{{
+						Attributes: []*commonpb.KeyValue{denyAttr, safeAttr},
 					}},
 				}},
 			},
-			getDP: func(m *otelpb.Metric) []*otelpb.KeyValue {
+			getDP: func(m *metricspb.Metric) []*commonpb.KeyValue {
 				return m.GetSummary().GetDataPoints()[0].GetAttributes()
 			},
 		},
@@ -160,10 +167,10 @@ func TestSanitizeMetrics_ScrubsDataPointAttrs(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &otelpb.ExportMetricsServiceRequest{
-				ResourceMetrics: []*otelpb.ResourceMetrics{{
-					ScopeMetrics: []*otelpb.ScopeMetrics{{
-						Metrics: []*otelpb.Metric{tc.metric},
+			req := &colmetricspb.ExportMetricsServiceRequest{
+				ResourceMetrics: []*metricspb.ResourceMetrics{{
+					ScopeMetrics: []*metricspb.ScopeMetrics{{
+						Metrics: []*metricspb.Metric{tc.metric},
 					}},
 				}},
 			}
@@ -179,18 +186,18 @@ func TestSanitizeMetrics_ScrubsDataPointAttrs(t *testing.T) {
 }
 
 func TestSanitizeTraces_ScrubsSpanAttrs(t *testing.T) {
-	req := &otelpb.ExportTraceServiceRequest{
-		ResourceSpans: []*otelpb.ResourceSpans{{
-			ScopeSpans: []*otelpb.ScopeSpans{{
-				Spans: []*otelpb.Span{{
+	req := &coltracepb.ExportTraceServiceRequest{
+		ResourceSpans: []*tracepb.ResourceSpans{{
+			ScopeSpans: []*tracepb.ScopeSpans{{
+				Spans: []*tracepb.Span{{
 					Name:       "s",
-					Attributes: []*otelpb.KeyValue{kv("credential", "c"), kv("route", "/x")},
-					Events: []*otelpb.Span_Event{{
+					Attributes: []*commonpb.KeyValue{kv("credential", "c"), kv("route", "/x")},
+					Events: []*tracepb.Span_Event{{
 						Name:       "e",
-						Attributes: []*otelpb.KeyValue{kv("api_key", "secret"), kv("event_type", "click")},
+						Attributes: []*commonpb.KeyValue{kv("api_key", "secret"), kv("event_type", "click")},
 					}},
-					Links: []*otelpb.Span_Link{{
-						Attributes: []*otelpb.KeyValue{kv("token", "t"), kv("link_kind", "parent")},
+					Links: []*tracepb.Span_Link{{
+						Attributes: []*commonpb.KeyValue{kv("token", "t"), kv("link_kind", "parent")},
 					}},
 				}},
 			}},

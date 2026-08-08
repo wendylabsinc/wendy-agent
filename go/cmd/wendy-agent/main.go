@@ -50,7 +50,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 const (
@@ -840,9 +842,9 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 	)
-	otelpb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
-	otelpb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
-	otelpb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
+	collogspb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
+	colmetricspb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
+	coltracepb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
 
 	otelLis, err := listenDualStackLoopback(otelPort)
 	if err != nil {
