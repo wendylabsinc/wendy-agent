@@ -145,8 +145,12 @@ func newDevicePushAgentCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
 			// An unconfirmed stream is expected — the agent restarts as the
 			// binary lands — and the hash check below verifies what runs.
-			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hex); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
-				return fmt.Errorf("uploading agent: %w", err)
+			unconfirmed := false
+			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hex); err != nil {
+				if !errors.Is(err, errAgentUpdateUnconfirmed) {
+					return fmt.Errorf("uploading agent: %w", err)
+				}
+				unconfirmed = true
 			}
 			conn.Close()
 
@@ -159,11 +163,21 @@ func newDevicePushAgentCmd() *cobra.Command {
 			defer newConn.Close()
 			fmt.Fprintln(os.Stderr, " ready.")
 
-			reported, err := verifyAgentAfterUpdate(ctx, newConn.AgentService, sha256Hex, "", agentVerifyWaitOptions{})
+			verified, err := verifyAgentAfterUpdate(ctx, newConn.AgentService, sha256Hex, "", agentVerifyWaitOptions{})
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "Verified: the device is running the uploaded binary (version %s).\n", reported)
+			if verified.HashVerified {
+				fmt.Fprintf(os.Stderr, "Verified: the device is running the uploaded binary (version %s).\n", verified.Version)
+				return nil
+			}
+			// Without a reported hash nothing was proven. If the upload was
+			// also never acked, "success" would be a guess — fail instead.
+			if unconfirmed {
+				return fmt.Errorf("the upload was never confirmed and the agent (version %s) does not report a binary hash; "+
+					"cannot tell whether the push landed — check the device", verified.Version)
+			}
+			fmt.Fprintf(os.Stderr, "Agent restarted (version %s). It does not report a binary hash, so the push could not be verified.\n", verified.Version)
 			return nil
 		},
 	}
@@ -2340,11 +2354,22 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// A successful reconnect proves reachability, not that the
 				// swap landed — always check what the device actually runs
 				// before claiming success (a silent no-op or rollback still
-				// reports the old binary here).
-				reportedVersion, verifyErr := verifyAgentAfterUpdate(ctx, conn.AgentService, sha256Hash, expectedAgentVersion, agentVerifyWaitOptions{})
+				// reports the old binary here). The darwin artifact is an
+				// app-bundle ZIP, so its hash can never equal a hash of the
+				// running executable: skip the hash comparison there and let
+				// the version check carry the verdict. The verify window
+				// matches the restart budget so a mismatch re-poll can
+				// outlast a lingering old agent.
+				verifySHA := sha256Hash
+				if strings.EqualFold(preUpdateVersion.GetOs(), "darwin") {
+					verifySHA = ""
+				}
+				verified, verifyErr := verifyAgentAfterUpdate(ctx, conn.AgentService, verifySHA, expectedAgentVersion,
+					agentVerifyWaitOptions{Timeout: agentRestartTimeoutFor(preUpdateVersion.GetOs())})
 				if verifyErr != nil {
 					return verifyErr
 				}
+				reportedVersion := verified.Version
 
 				if jsonOutput {
 					resp := map[string]string{
@@ -2392,15 +2417,20 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}
 			if shouldReapplyBinary(binaryPath != "", outcome) {
 				fmt.Println(tui.InfoMessage("Re-applying your --binary agent onto the updated OS..."))
-				reappliedVersion, err := reapplyBinaryAfterOSUpdate(ctx, conn, preUpdateVersion.GetOs(), binaryData, sha256Hash, jsonOutput)
+				reapplied, err := reapplyBinaryAfterOSUpdate(ctx, conn, preUpdateVersion.GetOs(), binaryData, sha256Hash, jsonOutput)
 				if err != nil {
 					return fmt.Errorf("re-applying --binary after OS update: %w", err)
 				}
-				reappliedMsg := "Dev agent re-applied; it survived the OS update."
-				if reappliedVersion != "" {
-					reappliedMsg = fmt.Sprintf("Dev agent re-applied; it survived the OS update (agent reports %s).", reappliedVersion)
+				if reapplied.HashVerified {
+					fmt.Println(tui.SuccessMessage(fmt.Sprintf(
+						"Dev agent re-applied; the device is running your binary (version %s).", reapplied.Version)))
+				} else {
+					// No hash means nothing was proven — the running agent
+					// could still be the updated image's bundled one.
+					fmt.Println(tui.InfoMessage(fmt.Sprintf(
+						"Re-applied your --binary agent, but the running agent (version %s) does not report a binary hash, "+
+							"so the re-apply could not be verified — it may still be the OS image's bundled agent.", reapplied.Version)))
 				}
-				fmt.Println(tui.SuccessMessage(reappliedMsg))
 			}
 			return nil
 		},
@@ -2595,30 +2625,30 @@ func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*gr
 // forwarded to awaitAgentRestart for its restart-timeout selection; in
 // practice this path is unreachable for darwin (an OS update is refused on
 // Macs before reaching here), so osName is always a Linux-family value.
-func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, osName string, binaryData []byte, sha256Hash string, jsonOutput bool) (string, error) {
+func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, osName string, binaryData []byte, sha256Hash string, jsonOutput bool) (agentVerifyResult, error) {
 	conn, err := awaitAgentRestart(ctx, updatedAgentReconnectFunc(ctx, priorConn), osName, jsonOutput)
 	if err != nil {
-		return "", err
+		return agentVerifyResult{}, err
 	}
 	if conn == nil {
-		return "", errors.New("reconnected to a nil agent connection after the OS update")
+		return agentVerifyResult{}, errors.New("reconnected to a nil agent connection after the OS update")
 	}
 
 	// An unconfirmed upload is expected here too — the agent restarts as the
 	// binary lands — and the verification below checks what actually runs.
 	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
 		_ = conn.Close()
-		return "", err
+		return agentVerifyResult{}, err
 	}
 
 	reconnectAfter := updatedAgentReconnectFunc(ctx, conn)
 	_ = conn.Close()
 	readyConn, err := awaitAgentRestart(ctx, reconnectAfter, osName, jsonOutput)
 	if err != nil {
-		return "", err
+		return agentVerifyResult{}, err
 	}
 	if readyConn == nil {
-		return "", errors.New("reconnected to a nil agent connection after the re-apply")
+		return agentVerifyResult{}, errors.New("reconnected to a nil agent connection after the re-apply")
 	}
 	defer readyConn.Close()
 
@@ -2753,9 +2783,11 @@ func agentUpdateVerified(reported, expected string) bool {
 		return false
 	}
 	// CompareVersions ranks dev builds newest, but a device still reporting
-	// a dev build after a release upload means the swap did not land — the
-	// vacuous pass would hide exactly the silent no-op this check exists for.
-	if version.IsDev(reported) {
+	// a dev build after a RELEASE upload means the swap did not land — the
+	// vacuous pass would hide exactly the silent no-op this check exists
+	// for. A dev expectation (a workflow_dispatch publish can stamp a -dev
+	// version into the manifest) legitimately produces a dev report.
+	if version.IsDev(reported) && !version.IsDev(expected) {
 		return false
 	}
 	return version.CompareVersions(reported, expected) >= 0
@@ -2799,13 +2831,25 @@ func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedS
 		resp.GetVersion(), expectedVersion)
 }
 
+// agentVerifyResult is what verifyAgentAfterUpdate learned about the agent
+// that answered. HashVerified reports whether the running binary's hash was
+// actually compared and matched — callers must not claim cryptographic proof
+// without it, since a hash-less agent (mac, pre-hash releases) passes the
+// version fallback vacuously.
+type agentVerifyResult struct {
+	Version      string
+	HashVerified bool
+}
+
 // verifyAgentAfterUpdate polls GetAgentVersion on the freshly restarted agent
-// and returns the version it reports, with evaluateAgentUpdateOutcome's
-// verdict as the error. Transient RPC errors are retried for a short window —
-// an agent can accept connections a beat before it serves — but a verdict
-// from a live response is definitive and never retried. uploadedSHA256 and
-// expectedVersion may each be empty when unknown.
-func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgentServiceClient, uploadedSHA256, expectedVersion string, opts agentVerifyWaitOptions) (string, error) {
+// and returns what it reports, with evaluateAgentUpdateOutcome's verdict as
+// the error. Both RPC errors AND failing verdicts are retried within the
+// window: an agent can accept connections a beat before it serves, and the
+// first reconnect can land on the still-alive OLD agent (it exits ~500ms
+// after committing, longer on darwin), whose response would mis-verdict a
+// successful update. Only the window expiring makes a verdict final.
+// uploadedSHA256 and expectedVersion may each be empty when unknown.
+func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgentServiceClient, uploadedSHA256, expectedVersion string, opts agentVerifyWaitOptions) (agentVerifyResult, error) {
 	if opts.Timeout <= 0 {
 		opts.Timeout = defaultAgentVerifyTimeout
 	}
@@ -2816,13 +2860,21 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 
-	var lastErr error
+	var lastRPCErr, lastVerdictErr error
 	for {
 		resp, err := agentService.GetAgentVersion(waitCtx, &agentpb.GetAgentVersionRequest{})
 		if err == nil {
-			return resp.GetVersion(), evaluateAgentUpdateOutcome(resp, uploadedSHA256, expectedVersion)
+			if verdict := evaluateAgentUpdateOutcome(resp, uploadedSHA256, expectedVersion); verdict != nil {
+				lastVerdictErr = verdict
+			} else {
+				return agentVerifyResult{
+					Version:      resp.GetVersion(),
+					HashVerified: uploadedSHA256 != "" && resp.GetBinarySha256() != "",
+				}, nil
+			}
+		} else {
+			lastRPCErr = err
 		}
-		lastErr = err
 		if waitCtx.Err() != nil {
 			break
 		}
@@ -2830,7 +2882,10 @@ func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgent
 			break
 		}
 	}
-	return "", fmt.Errorf("could not verify the updated agent: %w", lastErr)
+	if lastVerdictErr != nil {
+		return agentVerifyResult{}, lastVerdictErr
+	}
+	return agentVerifyResult{}, fmt.Errorf("could not verify the updated agent: %w", lastRPCErr)
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {

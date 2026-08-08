@@ -1080,6 +1080,33 @@ func TestGetAgentVersionReportsBinarySHA256(t *testing.T) {
 	}
 }
 
+func TestWarmBinaryHashPrimesTheCache(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "wendy-agent")
+	content := []byte("the binary this process started from")
+	if err := os.WriteFile(binPath, content, 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sum := sha256.Sum256(content)
+	want := hex.EncodeToString(sum[:])
+
+	svc := NewAgentService(zap.NewNop(), &mockNetworkManager{}, &mockHardwareDiscoverer{}, &mockBluetoothManager{}, &AgentInstaller{})
+	svc.execPathResolver = func() (string, os.FileMode, error) { return binPath, 0o755, nil }
+	svc.WarmBinaryHash()
+
+	// binarySHA256 shares the warm goroutine's sync.Once, so this read
+	// synchronizes with (or performs) the computation.
+	if got := svc.binarySHA256(); got != want {
+		t.Fatalf("binarySHA256() = %q, want %q", got, want)
+	}
+
+	if err := os.WriteFile(binPath, []byte("replaced by an update"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if got := svc.binarySHA256(); got != want {
+		t.Fatalf("binarySHA256() = %q after exec path replaced, want warmed %q", got, want)
+	}
+}
+
 func TestGetAgentVersionBinarySHA256EmptyWhenUnreadable(t *testing.T) {
 	client, cleanup := startAgentServer(t,
 		&mockNetworkManager{},

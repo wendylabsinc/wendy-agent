@@ -404,6 +404,11 @@ func TestAgentUpdateVerified(t *testing.T) {
 		// this verification exists to catch.
 		{"dev reported against a release expectation fails", "dev", "2026.07.01-223311", false},
 		{"-dev suffix against a release expectation fails", "2026.01.01-000000-dev", "2026.07.01-223311", false},
+		// ...but when the EXPECTED version is itself a dev build (a
+		// workflow_dispatch publish can stamp a -dev version into the
+		// manifest), a dev report is exactly what success looks like.
+		{"dev reported against a dev expectation passes", "2026.01.01-000000-dev", "2026.01.01-000000-dev", true},
+		{"plain dev against a dev expectation passes", "dev", "2026.01.01-000000-dev", true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -472,19 +477,35 @@ func TestVerifyAgentAfterUpdate(t *testing.T) {
 	okResp := &agentpb.GetAgentVersionResponse{Version: "2026.07.01-223311", BinarySha256: "aabb"}
 	fastOpts := agentVerifyWaitOptions{Timeout: 2 * time.Second, PollInterval: 10 * time.Millisecond}
 
-	t.Run("returns the reported version on first-try success", func(t *testing.T) {
+	t.Run("returns the reported version and hash proof on first-try success", func(t *testing.T) {
 		client := &fakeVersionAgentClient{respond: func(int) (*agentpb.GetAgentVersionResponse, error) {
 			return okResp, nil
 		}}
-		ver, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "2026.07.01-223311", fastOpts)
+		res, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "2026.07.01-223311", fastOpts)
 		if err != nil {
 			t.Fatalf("verifyAgentAfterUpdate() error = %v", err)
 		}
-		if ver != "2026.07.01-223311" {
-			t.Fatalf("version = %q, want %q", ver, "2026.07.01-223311")
+		if res.Version != "2026.07.01-223311" {
+			t.Fatalf("version = %q, want %q", res.Version, "2026.07.01-223311")
+		}
+		if !res.HashVerified {
+			t.Fatal("HashVerified = false, want true (hashes were compared and matched)")
 		}
 		if client.calls != 1 {
 			t.Fatalf("calls = %d, want 1", client.calls)
+		}
+	})
+
+	t.Run("a hash-less agent passes the version fallback without claiming hash proof", func(t *testing.T) {
+		client := &fakeVersionAgentClient{respond: func(int) (*agentpb.GetAgentVersionResponse, error) {
+			return &agentpb.GetAgentVersionResponse{Version: "2026.07.01-223311"}, nil
+		}}
+		res, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "2026.07.01-223311", fastOpts)
+		if err != nil {
+			t.Fatalf("verifyAgentAfterUpdate() error = %v", err)
+		}
+		if res.HashVerified {
+			t.Fatal("HashVerified = true, want false (the agent reported no hash — nothing was proven)")
 		}
 	})
 
@@ -495,12 +516,12 @@ func TestVerifyAgentAfterUpdate(t *testing.T) {
 			}
 			return okResp, nil
 		}}
-		ver, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "", fastOpts)
+		res, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "", fastOpts)
 		if err != nil {
 			t.Fatalf("verifyAgentAfterUpdate() error = %v", err)
 		}
-		if ver != "2026.07.01-223311" {
-			t.Fatalf("version = %q, want %q", ver, "2026.07.01-223311")
+		if res.Version != "2026.07.01-223311" {
+			t.Fatalf("version = %q, want %q", res.Version, "2026.07.01-223311")
 		}
 		if client.calls != 2 {
 			t.Fatalf("calls = %d, want 2", client.calls)
@@ -521,16 +542,42 @@ func TestVerifyAgentAfterUpdate(t *testing.T) {
 		}
 	})
 
-	t.Run("a verdict mismatch is definitive and not retried", func(t *testing.T) {
+	t.Run("a hash mismatch is re-polled until the new agent answers", func(t *testing.T) {
+		// The first reconnect can land on the still-alive OLD agent (it only
+		// exits ~500ms after committing, longer on darwin), whose cached hash
+		// is the old binary's — an early mismatch must not be terminal.
+		client := &fakeVersionAgentClient{respond: func(call int) (*agentpb.GetAgentVersionResponse, error) {
+			if call < 3 {
+				return &agentpb.GetAgentVersionResponse{Version: "2026.06.30-120000", BinarySha256: "oldhash"}, nil
+			}
+			return okResp, nil
+		}}
+		res, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "", fastOpts)
+		if err != nil {
+			t.Fatalf("verifyAgentAfterUpdate() error = %v", err)
+		}
+		if !res.HashVerified {
+			t.Fatal("HashVerified = false, want true once the new agent answered")
+		}
+		if client.calls != 3 {
+			t.Fatalf("calls = %d, want 3", client.calls)
+		}
+	})
+
+	t.Run("a persistent hash mismatch fails with the verdict after the window", func(t *testing.T) {
 		client := &fakeVersionAgentClient{respond: func(int) (*agentpb.GetAgentVersionResponse, error) {
 			return &agentpb.GetAgentVersionResponse{Version: "2026.07.01-223311", BinarySha256: "not-what-we-sent"}, nil
 		}}
-		_, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "", fastOpts)
+		_, err := verifyAgentAfterUpdate(context.Background(), client, "aabb", "",
+			agentVerifyWaitOptions{Timeout: 100 * time.Millisecond, PollInterval: 20 * time.Millisecond})
 		if err == nil {
 			t.Fatal("verifyAgentAfterUpdate() succeeded, want hash-mismatch error")
 		}
-		if client.calls != 1 {
-			t.Fatalf("calls = %d, want 1 (mismatch must not be retried)", client.calls)
+		if !strings.Contains(err.Error(), "not running the binary") {
+			t.Fatalf("error %q should carry the hash-mismatch verdict, not an RPC failure", err)
+		}
+		if client.calls < 2 {
+			t.Fatalf("calls = %d, want >= 2 (mismatch must be re-polled within the window)", client.calls)
 		}
 	})
 }

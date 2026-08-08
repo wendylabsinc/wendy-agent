@@ -723,6 +723,12 @@ type GetAgentVersionResponse struct {
 	// Lets an updater confirm an uploaded binary is what actually runs,
 	// even when version strings cannot distinguish builds (dev builds).
 	// Empty when the agent cannot hash its own executable.
+	//
+	// Only comparable to the update payload on platforms where that payload
+	// IS the executable (linux). The darwin payload is an app-bundle zip, so
+	// its hash can never match this field — the CLI must skip the comparison
+	// there, and a future darwin implementation should instead persist and
+	// report the hash of the update payload it committed.
 	BinarySha256  string `protobuf:"bytes,20,opt,name=binary_sha256,json=binarySha256,proto3" json:"binary_sha256,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

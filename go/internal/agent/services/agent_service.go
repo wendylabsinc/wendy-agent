@@ -145,6 +145,16 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	return resp, nil
 }
 
+// WarmBinaryHash starts computing the executable hash in the background so
+// the first GetAgentVersion — which doubles as the CLI's liveness probe with
+// a ~3s budget — doesn't pay a full read of the binary (tens of MB, possibly
+// off cold SD-card storage) inside that window. Call once at startup, after
+// any execPathResolver override; GetAgentVersion still blocks on (or itself
+// performs) the same one-time computation.
+func (s *AgentService) WarmBinaryHash() {
+	go s.binarySHA256()
+}
+
 // binarySHA256 returns the hex SHA-256 of the executable this process was
 // started from, computed once and cached: after an update commits, the file
 // at the exec path is already the NEW binary while this process still runs
