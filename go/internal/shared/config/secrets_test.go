@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -150,3 +151,145 @@ func TestResolveErrorWhenNoBackend(t *testing.T) {
 }
 
 var _ = errors.New // silence unused-import if errors ends up unused
+
+func TestSaveDehydratesAndLoadResolves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{{
+		CloudGRPC: "grpc.wendy.com:443",
+		APIKey:    "tok-123",
+		Certificates: []CertificateInfo{{
+			PemCertificate: "CERT",
+			PemPrivateKey:  "-----BEGIN PRIVATE KEY-----\nabc",
+			OrganizationID: 7,
+			UserID:         "user-1",
+		}},
+	}}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	// Caller's struct must be untouched (dehydration happens on a clone).
+	if isRef(cfg.Auth[0].APIKey) || isRef(cfg.Auth[0].Certificates[0].PemPrivateKey) {
+		t.Fatal("Save mutated the caller's config")
+	}
+	// On-disk JSON must contain no secret material.
+	path, _ := configPath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	for _, secret := range []string{"tok-123", "BEGIN PRIVATE KEY"} {
+		if strings.Contains(string(raw), secret) {
+			t.Errorf("config.json still contains secret %q", secret)
+		}
+	}
+	// Reload → fields are refs → accessors resolve.
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !isRef(loaded.Auth[0].APIKey) {
+		t.Fatalf("APIKey on disk = %q, want a reference", loaded.Auth[0].APIKey)
+	}
+	tok, err := loaded.Auth[0].BearerToken()
+	if err != nil || tok != "tok-123" {
+		t.Fatalf("BearerToken = %q, %v", tok, err)
+	}
+	key, err := loaded.Auth[0].Certificates[0].PrivateKeyPEM()
+	if err != nil || !strings.Contains(key, "BEGIN PRIVATE KEY") {
+		t.Fatalf("PrivateKeyPEM = %q, %v", key, err)
+	}
+	// Certificates stayed inline (public material).
+	if loaded.Auth[0].Certificates[0].PemCertificate != "CERT" {
+		t.Error("public certificate was not left inline")
+	}
+}
+
+func TestSavePutFailureKeepsSecretInline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	store.putErr = errors.New("keychain locked")
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok-123"}}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _ := Load()
+	if loaded.Auth[0].APIKey != "tok-123" {
+		t.Fatalf("APIKey = %q, want inline tok-123 after Put failure", loaded.Auth[0].APIKey)
+	}
+}
+
+func TestSaveFileModeSkipsAndDeMigrates(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store := newFakeStore()
+	store.m["token-cafebabe0000dead"] = []byte("tok-999") // seeded ref target
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	cfg := &Config{Auth: []AuthConfig{{
+		CloudGRPC: "g1",
+		APIKey:    "tok-inline", // must STAY inline
+	}, {
+		CloudGRPC: "g2",
+		APIKey:    refPrefixV1 + "token-cafebabe0000dead", // must be inlined back
+	}}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _ := Load()
+	if loaded.Auth[0].APIKey != "tok-inline" {
+		t.Errorf("file mode dehydrated anyway: %q", loaded.Auth[0].APIKey)
+	}
+	if loaded.Auth[1].APIKey != "tok-999" {
+		t.Errorf("file mode did not de-migrate ref: %q", loaded.Auth[1].APIKey)
+	}
+}
+
+func TestSaveFileModeKeepsRefOnFailedRead(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	useFakeStore(t, newFakeStore()) // empty store → ref unresolvable
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	ref := refPrefixV1 + "token-0123456789abcdef"
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: ref}}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _ := Load()
+	if loaded.Auth[0].APIKey != ref {
+		t.Errorf("unresolvable ref was rewritten to %q; must keep the reference", loaded.Auth[0].APIKey)
+	}
+}
+
+func TestHasInlineSecrets(t *testing.T) {
+	if hasInlineSecrets(&Config{}) {
+		t.Error("empty config reports inline secrets")
+	}
+	if hasInlineSecrets(&Config{Auth: []AuthConfig{{APIKey: refPrefixV1 + "token-x"}}}) {
+		t.Error("all-refs config reports inline secrets")
+	}
+	if !hasInlineSecrets(&Config{Auth: []AuthConfig{{APIKey: "tok"}}}) {
+		t.Error("inline APIKey not detected")
+	}
+	if !hasInlineSecrets(&Config{Auth: []AuthConfig{{Certificates: []CertificateInfo{{PemPrivateKey: "PEM"}}}}}) {
+		t.Error("inline key not detected")
+	}
+}

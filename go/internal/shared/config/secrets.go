@@ -3,7 +3,9 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,4 +122,96 @@ func (a AuthConfig) BearerToken() (string, error) {
 		return a.APIKey, nil
 	}
 	return resolveSecret(a.APIKey)
+}
+
+// dehydrateEnabled reports whether Save should move inline secrets into the
+// platform store. WENDY_SECRET_STORE=file forces inline writes (and
+// de-migration); everything else uses the platform default.
+func dehydrateEnabled() bool {
+	if os.Getenv("WENDY_SECRET_STORE") == "file" {
+		return false
+	}
+	return secretsPlatformDefault
+}
+
+// clone deep-copies a Config via JSON round-trip so Save can rewrite secret
+// fields without mutating the caller's struct.
+func (c *Config) clone() *Config {
+	data, err := json.Marshal(c)
+	if err != nil {
+		return c // marshaling plain structs cannot realistically fail; degrade to in-place
+	}
+	var out Config
+	if err := json.Unmarshal(data, &out); err != nil {
+		return c
+	}
+	return &out
+}
+
+// dehydrate pushes every inline secret into the credential store and
+// replaces the field with its reference. A failed Put keeps the value
+// inline — the store never holds the only copy until a write succeeded.
+func dehydrate(cfg *Config) {
+	store := newCredentialStore()
+	if store == nil {
+		return
+	}
+	for i := range cfg.Auth {
+		a := &cfg.Auth[i]
+		if a.APIKey != "" && !isRef(a.APIKey) {
+			acct := tokenAccount(a.CloudGRPC)
+			if store.Put(acct, []byte(a.APIKey)) == nil {
+				cacheSecret(refPrefixV1+acct, a.APIKey)
+				a.APIKey = refPrefixV1 + acct
+			}
+		}
+		for j := range a.Certificates {
+			c := &a.Certificates[j]
+			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
+				acct := keyAccount(a.CloudGRPC, c.OrganizationID, c.UserID)
+				if store.Put(acct, []byte(c.PemPrivateKey)) == nil {
+					cacheSecret(refPrefixV1+acct, c.PemPrivateKey)
+					c.PemPrivateKey = refPrefixV1 + acct
+				}
+			}
+		}
+	}
+}
+
+// inlineSecrets is the de-migration path (WENDY_SECRET_STORE=file):
+// references that resolve are written back inline; unresolvable references
+// are kept — never drop a secret.
+func inlineSecrets(cfg *Config) {
+	for i := range cfg.Auth {
+		a := &cfg.Auth[i]
+		if isRef(a.APIKey) {
+			if v, err := resolveSecret(a.APIKey); err == nil {
+				a.APIKey = v
+			}
+		}
+		for j := range a.Certificates {
+			c := &a.Certificates[j]
+			if isRef(c.PemPrivateKey) {
+				if v, err := resolveSecret(c.PemPrivateKey); err == nil {
+					c.PemPrivateKey = v
+				}
+			}
+		}
+	}
+}
+
+// hasInlineSecrets reports whether any secret field holds a real value
+// (as opposed to a reference or empty).
+func hasInlineSecrets(cfg *Config) bool {
+	for _, a := range cfg.Auth {
+		if a.APIKey != "" && !isRef(a.APIKey) {
+			return true
+		}
+		for _, c := range a.Certificates {
+			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
+				return true
+			}
+		}
+	}
+	return false
 }
