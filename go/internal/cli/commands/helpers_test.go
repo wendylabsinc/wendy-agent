@@ -963,11 +963,12 @@ func TestConnectWithAutoTLSDiagnostics_CacheMissUsesOSResolver(t *testing.T) {
 func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLookup, origBrowse := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn
+	origLoad, origLookup, origBrowse, origTCP := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		osLookupHostFn = origLookup
 		lanBrowseFn = origBrowse
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	realAddr := startPlaintextVersionAgent(t)
@@ -976,10 +977,7 @@ func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 		t.Fatalf("split real address: %v", err)
 	}
 
-	// 127.0.0.2 is loopback but nothing is bound there. Dialing it on the real
-	// server's port simulates a stale cached IP: connection refused,
-	// immediately and deterministically — no OS-level dial timeout to wait
-	// out, and no risk of colliding with the real server's own port.
+	// 127.0.0.2 is loopback but nothing is bound there — a stale cached IP.
 	const staleIP = "127.0.0.2"
 
 	cachePath := filepath.Join(t.TempDir(), "devices.json")
@@ -987,6 +985,16 @@ func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: staleIP, Port: 50051,
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2) before it ever
+	// reaches the ladder. Stub it dead — deterministic and instant, unlike a
+	// real dial to an unbound loopback address, whose refusal timing is
+	// environment-dependent — so the pre-check itself sends this straight to
+	// fresh resolution, exactly the stale-IP path this test means to cover.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		return nil, errors.New("no route to host")
+	}
 
 	// The OS resolver can't see the device (the Windows/Linux ".local" gap
 	// issue #1155 works around); only the mDNS browse fallback can — which is
@@ -1061,11 +1069,12 @@ func TestConnectWithAutoTLSDiagnostics_DoesNotWriteCacheDirectly(t *testing.T) {
 func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	origLoad, origLadder, origReachable, origTCP := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	cachePath := filepath.Join(t.TempDir(), "devices.json")
@@ -1073,6 +1082,16 @@ func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
 		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051,
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
+	// so the test still exercises the fromCache ladder + retry-skip logic
+	// below, not a real network dial.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
 
 	calls := 0
 	rejectionErr := newTLSHandshakeRejectedError(errors.New("cert rejected"))
@@ -1100,11 +1119,12 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 	stubOrgNameResolver(t, nil)
 
-	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	origLoad, origLadder, origReachable, origTCP := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	cachePath := filepath.Join(t.TempDir(), "devices.json")
@@ -1112,6 +1132,16 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051,
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
+	// so the test still exercises the fromCache ladder + retry-skip logic
+	// below, not a real network dial.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
 
 	calls := 0
 	certs := []config.CertificateInfo{{OrganizationID: 3}}
@@ -1141,12 +1171,13 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 func TestConnectWithAutoTLSDiagnostics_SameAddressRetrySkipped(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLookup, origLadder, origReachable := deviceCacheLoadFn, osLookupHostFn, dialAgentLadderFn, cacheFastPathReachableFn
+	origLoad, origLookup, origLadder, origReachable, origTCP := deviceCacheLoadFn, osLookupHostFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		osLookupHostFn = origLookup
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	const staleIP = "127.0.0.2"
@@ -1155,6 +1186,16 @@ func TestConnectWithAutoTLSDiagnostics_SameAddressRetrySkipped(t *testing.T) {
 		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: staleIP, Port: 50051,
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
+	// so the test still exercises the fromCache ladder + same-address-skip
+	// logic below, not a real network dial.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
 
 	// Re-resolution via the OS resolver yields the EXACT same (stale) IP —
 	// no new information for a retry to find.
@@ -1185,11 +1226,12 @@ func TestConnectWithAutoTLSDiagnostics_SameAddressRetrySkipped(t *testing.T) {
 func TestConnectWithAutoTLSDiagnostics_SkipsRetryWhenContextExpired(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLadder, origReachable := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn
+	origLoad, origLadder, origReachable, origTCP := deviceCacheLoadFn, dialAgentLadderFn, cacheFastPathReachableFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		dialAgentLadderFn = origLadder
 		cacheFastPathReachableFn = origReachable
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	cachePath := filepath.Join(t.TempDir(), "devices.json")
@@ -1197,6 +1239,16 @@ func TestConnectWithAutoTLSDiagnostics_SkipsRetryWhenContextExpired(t *testing.T
 		ID: "orin", DisplayName: "orin", Hostname: "orin.local", IP: "127.0.0.2", Port: 50051,
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2). Stub it live
+	// so the test still exercises the expired-context retry-skip logic
+	// below, not a real network dial.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go c2.Close()
+		return c1, nil
+	}
 
 	calls := 0
 	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
@@ -1290,11 +1342,12 @@ func TestIsMDNSShapedHost(t *testing.T) {
 func TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntry(t *testing.T) {
 	setTempConfig(t, &config.Config{})
 
-	origLoad, origLookup, origBrowse := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn
+	origLoad, origLookup, origBrowse, origTCP := deviceCacheLoadFn, osLookupHostFn, lanBrowseFn, tcpDialTimeoutFn
 	defer func() {
 		deviceCacheLoadFn = origLoad
 		osLookupHostFn = origLookup
 		lanBrowseFn = origBrowse
+		tcpDialTimeoutFn = origTCP
 	}()
 
 	realAddr := startPlaintextVersionAgent(t)
@@ -1311,6 +1364,14 @@ func TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntr
 		IP: staleIP, Port: 50051, AgentVersion: "1.4.0", OS: "wendyos",
 	})
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(cachePath) }
+
+	// This entry is LKG-ineligible (MTLS unset), so the fromCache path now
+	// runs through the same TCP-bounded pre-check (Finding 2) first. Stub it
+	// dead — deterministic and instant — so the pre-check itself sends this
+	// straight to fresh resolution via the stubs below.
+	tcpDialTimeoutFn = func(network, addr string, timeout time.Duration) (net.Conn, error) {
+		return nil, errors.New("no route to host")
+	}
 
 	osLookupHostFn = func(context.Context, string) ([]string, error) {
 		return nil, errors.New("no such host")
@@ -1453,9 +1514,9 @@ func TestDialAgentLKGSkipsOnTCPPrecheckFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { tcpDialTimeoutFn = origTCP; dialAgentLadderWithCertsFn = origLadder })
 
-	_, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
-	if ok {
-		t.Fatal("dialAgentLKG reported success despite failed TCP pre-check")
+	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	if outcome != lkgDeadTCP {
+		t.Fatalf("dialAgentLKG outcome = %v, want lkgDeadTCP", outcome)
 	}
 	if ladderCalled {
 		t.Error("ladder dial ran after failed pre-check — dead IP must cost only the pre-check")
@@ -1489,9 +1550,9 @@ func TestDialAgentLKGRotatesCertsAndDialsMTLSPort(t *testing.T) {
 		loadAllCLICertsFn = origCerts
 	})
 
-	conn, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
-	if !ok || conn == nil {
-		t.Fatal("dialAgentLKG failed on the happy path")
+	conn, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	if outcome != lkgConnected || conn == nil {
+		t.Fatalf("dialAgentLKG outcome = %v, conn = %v; want lkgConnected with a connection", outcome, conn)
 	}
 	if gotAddr != "10.0.0.9:50052" {
 		t.Errorf("dialed %q, want the entry's mTLS endpoint 10.0.0.9:50052", gotAddr)
@@ -1520,9 +1581,9 @@ func TestDialAgentLKGFallsThroughOnPlaintextDowngrade(t *testing.T) {
 		loadAllCLICertsFn = origCerts
 	})
 
-	_, _, ok := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true})
-	if ok {
-		t.Fatal("LKG accepted a plaintext downgrade for an entry advertised as mTLS")
+	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true})
+	if outcome != lkgHandshakeFailed {
+		t.Fatalf("LKG outcome = %v, want lkgHandshakeFailed for a plaintext downgrade of an entry advertised as mTLS", outcome)
 	}
 }
 
