@@ -1273,21 +1273,28 @@ func normalizeMDNSHost(host string) string {
 // deviceCacheLoadFn is a seam over discoverycache.Load for tests.
 var deviceCacheLoadFn = discoverycache.Load
 
-// cachedDeviceEntry returns the fresh (within discoverycache.TTL) device-
-// cache entry, if any, whose Hostname matches host (normalizeMDNSHost
-// equality). Shared by cachedDeviceIP's lookup and cacheConnectSuccess's
-// write path so a connect-success write always lands under a real device's
-// existing identity — a discovery scan's TXT-id-derived ID/DisplayName —
-// instead of minting a second row under a host-derived key for the same
-// physical device.
+// cachedDeviceEntry returns the device-cache entry, if any, whose Hostname
+// matches host (normalizeMDNSHost equality), regardless of the entry's age
+// — the connect fast path deliberately uses stale entries too (a stale IP
+// costs one bounded dial attempt; the stale-cache retry re-resolves). When
+// several entries' hostnames normalize equal (e.g. a device re-provisioned
+// under a new identity), the most recent LastSeen wins. Shared by
+// cachedDeviceIP's lookup and cacheConnectSuccess's write path so a
+// connect-success write always lands under a real device's existing
+// identity.
 func cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache.Entry, bool) {
 	want := normalizeMDNSHost(host)
-	for _, e := range cache.Fresh(time.Now()) {
-		if normalizeMDNSHost(e.Hostname) == want {
-			return e, true
+	var best discoverycache.Entry
+	var found bool
+	for _, e := range cache.Entries() {
+		if normalizeMDNSHost(e.Hostname) != want {
+			continue
+		}
+		if !found || e.LastSeen.After(best.LastSeen) {
+			best, found = e, true
 		}
 	}
-	return discoverycache.Entry{}, false
+	return best, found
 }
 
 // cachedDeviceIP returns the cached IP for host when a fresh device-cache

@@ -1405,7 +1405,7 @@ func TestCachedDeviceIP(t *testing.T) {
 	}
 }
 
-func TestCachedDeviceIP_StaleEntryIgnored(t *testing.T) {
+func TestCachedDeviceIP_MatchesStaleEntry(t *testing.T) {
 	orig := deviceCacheLoadFn
 	defer func() { deviceCacheLoadFn = orig }()
 
@@ -1421,8 +1421,8 @@ func TestCachedDeviceIP_StaleEntryIgnored(t *testing.T) {
 	}
 	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
 
-	if got := cachedDeviceIP("orin.local"); got != "" {
-		t.Fatalf("cachedDeviceIP(stale entry) = %q, want empty", got)
+	if got := cachedDeviceIP("orin.local"); got != "10.0.0.5" {
+		t.Fatalf("cachedDeviceIP(stale entry) = %q, want 10.0.0.5 (connect lookup uses any-age entries)", got)
 	}
 }
 
@@ -1961,4 +1961,30 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			t.Errorf("entry.provider = %#v, want the source provider", entry.provider)
 		}
 	})
+}
+
+func TestCachedDeviceEntryAnyAgeMostRecentWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	cache, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	old := time.Now().Add(-3 * discoverycache.TTL)
+	newer := time.Now().Add(-2 * discoverycache.TTL)
+	// Two distinct device identities sharing one hostname (e.g. a device
+	// re-provisioned under a new id): most recent LastSeen must win.
+	cache.Upsert(discoverycache.Entry{ID: "dev-old", Hostname: "orin.local", IP: "10.0.0.8"}, old)
+	cache.Upsert(discoverycache.Entry{ID: "dev-new", Hostname: "orin.local", IP: "10.0.0.9"}, newer)
+
+	e, ok := cachedDeviceEntry(cache, "orin.local")
+	if !ok {
+		t.Fatal("stale entries not matched — connect lookup must be any-age")
+	}
+	if e.IP != "10.0.0.9" {
+		t.Errorf("matched IP %q, want most-recent 10.0.0.9", e.IP)
+	}
+	// Bare-name form matches the .local stored form.
+	if _, ok := cachedDeviceEntry(cache, "orin"); !ok {
+		t.Error("bare hostname did not match .local entry")
+	}
 }

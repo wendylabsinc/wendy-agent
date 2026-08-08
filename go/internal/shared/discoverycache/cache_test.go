@@ -198,3 +198,19 @@ func TestDeleteRemovesEntryFromFile(t *testing.T) {
 		t.Fatalf("deleted entry survived the flush: %+v", fresh)
 	}
 }
+
+func TestEntriesIncludesStale(t *testing.T) {
+	c, err := LoadFrom(filepath.Join(t.TempDir(), "devices.json"))
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	now := time.Now()
+	c.Upsert(Entry{ID: "fresh-dev", Hostname: "fresh.local", IP: "10.0.0.1"}, now)
+	c.Upsert(Entry{ID: "stale-dev", Hostname: "stale.local", IP: "10.0.0.2"}, now.Add(-2*TTL))
+	if got := len(c.Fresh(now)); got != 1 {
+		t.Fatalf("Fresh = %d entries, want 1 (display TTL must be unchanged)", got)
+	}
+	if got := len(c.Entries()); got != 2 {
+		t.Fatalf("Entries = %d, want 2 (stale included)", got)
+	}
+}
