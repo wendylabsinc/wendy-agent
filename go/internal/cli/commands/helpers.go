@@ -1028,6 +1028,10 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 					return nil, connErr
 				}
 				conn = refreshedConn
+			} else if usbConn, ok := usbDirectFallback(ctx, hostname); ok {
+				// The stored address is unreachable but the same device (verified
+				// by hostname) is on USB — use it directly.
+				conn = usbConn
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
 				hostname, _, _ := net.SplitHostPort(addr)

@@ -5,8 +5,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // usbDirectProbeBudget bounds one well-known-address probe. A dead candidate
@@ -149,4 +151,37 @@ func mergeUSBDirectDevices(devices, probed []models.LANDevice) []models.LANDevic
 		}
 	}
 	return devices
+}
+
+// usbDirectConnectFn is a seam for tests.
+var usbDirectConnectFn = connectWithAutoTLS
+
+// usbDirectFallback attempts to reach the requested device over the USB
+// well-known address after normal resolution/connection failed (e.g. mDNS
+// broken on this host, stale stored address). It returns a live connection
+// ONLY when the device's reported hostname matches the requested one; an
+// empty hostname (agent predating the field) never matches — connecting to
+// whichever device happens to be plugged in would silently target the wrong
+// machine.
+func usbDirectFallback(ctx context.Context, wantHost string) (*grpcclient.AgentConnection, bool) {
+	want := normalizeMDNSHost(wantHost)
+	if want == "" {
+		return nil, false
+	}
+	for _, cand := range usbDirectCandidatesFn() {
+		pctx, cancel := context.WithTimeout(ctx, usbDirectProbeBudget)
+		conn, err := usbDirectConnectFn(pctx, cand.HostPort(defaultAgentPort))
+		if err != nil {
+			cancel()
+			continue
+		}
+		resp, verr := conn.AgentService.GetAgentVersion(pctx, &agentpb.GetAgentVersionRequest{})
+		cancel()
+		if verr != nil || resp.GetHostname() == "" || normalizeMDNSHost(resp.GetHostname()) != want {
+			conn.Close()
+			continue
+		}
+		return conn, true
+	}
+	return nil, false
 }

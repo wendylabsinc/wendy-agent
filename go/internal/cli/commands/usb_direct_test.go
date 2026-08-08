@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"google.golang.org/grpc"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -119,5 +122,68 @@ func TestResolveAddrOnceSkipsResolutionForZonedIPLiteral(t *testing.T) {
 	addr := "[fe80::5741:1%enx0]:50051"
 	if got := resolveAddrOnce(context.Background(), addr); got != addr {
 		t.Fatalf("resolveAddrOnce = %q, want unchanged %q", got, addr)
+	}
+}
+
+// fakeVersionClient overrides only GetAgentVersion; every other method of the
+// embedded (nil) interface panics if called, which is what we want in tests.
+type fakeVersionClient struct {
+	agentpb.WendyAgentServiceClient
+	resp *agentpb.GetAgentVersionResponse
+	err  error
+}
+
+func (f fakeVersionClient) GetAgentVersion(context.Context, *agentpb.GetAgentVersionRequest, ...grpc.CallOption) (*agentpb.GetAgentVersionResponse, error) {
+	return f.resp, f.err
+}
+
+func TestUSBDirectFallbackMatchesHostname(t *testing.T) {
+	withUSBDirectStubs(t,
+		[]discovery.USBDirectCandidate{{Interface: "enxa", Zone: "enxa"}},
+		getAgentVersionAtAddress) // unused by fallback; keep original semantics
+
+	origConnect := usbDirectConnectFn
+	usbDirectConnectFn = func(_ context.Context, addr string) (*grpcclient.AgentConnection, error) {
+		if addr != "[fe80::5741:1%enxa]:50051" {
+			t.Errorf("dial addr = %q", addr)
+		}
+		return &grpcclient.AgentConnection{
+			AgentService: fakeVersionClient{resp: &agentpb.GetAgentVersionResponse{Hostname: "wendy-orin"}},
+		}, nil
+	}
+	t.Cleanup(func() { usbDirectConnectFn = origConnect })
+
+	conn, ok := usbDirectFallback(context.Background(), "wendy-orin.local")
+	if !ok || conn == nil {
+		t.Fatal("expected a matched connection")
+	}
+}
+
+func TestUSBDirectFallbackRejectsWrongOrUnknownHostname(t *testing.T) {
+	for name, resp := range map[string]*agentpb.GetAgentVersionResponse{
+		"wrong device": {Hostname: "wendy-pi"},
+		"old agent":    {Hostname: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			withUSBDirectStubs(t,
+				[]discovery.USBDirectCandidate{{Interface: "enxa", Zone: "enxa"}},
+				getAgentVersionAtAddress)
+			origConnect := usbDirectConnectFn
+			usbDirectConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+				return &grpcclient.AgentConnection{AgentService: fakeVersionClient{resp: resp}}, nil
+			}
+			t.Cleanup(func() { usbDirectConnectFn = origConnect })
+
+			if _, ok := usbDirectFallback(context.Background(), "wendy-orin.local"); ok {
+				t.Fatal("must not connect to a device with a different or unknown hostname")
+			}
+		})
+	}
+}
+
+func TestUSBDirectFallbackNoCandidates(t *testing.T) {
+	withUSBDirectStubs(t, nil, getAgentVersionAtAddress)
+	if _, ok := usbDirectFallback(context.Background(), "wendy-orin.local"); ok {
+		t.Fatal("no candidates must mean no fallback")
 	}
 }
