@@ -220,6 +220,11 @@ message GetAgentVersionResponse {
     // Number of online logical CPU cores, from /proc/stat. Zero when the
     // agent cannot read it.
     uint32 cpu_count = 19;
+    // Hex SHA-256 of the executable this agent process was started from.
+    // Lets an updater confirm an uploaded binary is what actually runs,
+    // even when version strings cannot distinguish builds (dev builds).
+    // Empty when the agent cannot hash its own executable.
+    string binary_sha256 = 20;
 }
 
 // A network interface on the device and the IP addresses assigned to it.

@@ -1037,3 +1037,67 @@ func TestDetectCUDAVersion_NothingFound(t *testing.T) {
 		t.Errorf("detectCUDAVersionIn = %q, want empty", got)
 	}
 }
+
+func TestGetAgentVersionReportsBinarySHA256(t *testing.T) {
+	binPath := filepath.Join(t.TempDir(), "wendy-agent")
+	content := []byte("fake agent binary contents")
+	if err := os.WriteFile(binPath, content, 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	sum := sha256.Sum256(content)
+	want := hex.EncodeToString(sum[:])
+
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) {
+			svc.execPathResolver = func() (string, os.FileMode, error) { return binPath, 0o755, nil }
+		},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion: %v", err)
+	}
+	if resp.GetBinarySha256() != want {
+		t.Errorf("binarySha256 = %q; want %q", resp.GetBinarySha256(), want)
+	}
+
+	// The hash means "the binary this process was started from": once
+	// computed it must not change even if the file at the exec path is
+	// replaced, as happens between a committed update and the restart.
+	if err := os.WriteFile(binPath, []byte("replaced by an update"), 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	resp, err = client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion after replace: %v", err)
+	}
+	if resp.GetBinarySha256() != want {
+		t.Errorf("binarySha256 changed to %q after exec path was replaced; want cached %q", resp.GetBinarySha256(), want)
+	}
+}
+
+func TestGetAgentVersionBinarySHA256EmptyWhenUnreadable(t *testing.T) {
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+		func(svc *AgentService) {
+			svc.execPathResolver = func() (string, os.FileMode, error) {
+				return "", 0, fmt.Errorf("exec path unavailable")
+			}
+		},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion must succeed even when hashing fails: %v", err)
+	}
+	if resp.GetBinarySha256() != "" {
+		t.Errorf("binarySha256 = %q; want empty when the executable cannot be hashed", resp.GetBinarySha256())
+	}
+}
