@@ -238,6 +238,58 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		return io.ReadAll(io.NewSectionReader(f, loc.off, loc.size))
 	}
 
+	img, err := ociImageFromIndex(indexJSON, getBlob, platform)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	layers := make([]localLayer, 0, len(img.Layers))
+	for i, desc := range img.Layers {
+		layerHex, err := digestToHex(desc.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
+		}
+		loc, ok := blobOffsets[layerHex]
+		if !ok {
+			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
+		}
+		// Reference the compressed blob by its range in the on-disk tar; it is
+		// streamed (never fully buffered) during the push, and decompression is
+		// deferred so cache-resolved layers are never read at all.
+		layers = append(layers, localLayer{
+			Digest:    desc.Digest,
+			DiffID:    desc.DiffID,
+			MediaType: desc.MediaType,
+			TarPath:   ociTarPath,
+			Offset:    loc.off,
+			Size:      loc.size,
+		})
+	}
+	return layers, img.ImageConfig, nil
+}
+
+// ociResolvedImage is the platform-resolved content of an OCI layout: the raw
+// image config plus the manifest's layer descriptors, labelled with diff IDs
+// when the config's rootfs.diff_ids align 1:1 with the layer list.
+type ociResolvedImage struct {
+	ImageConfig []byte
+	Layers      []ociResolvedLayer
+}
+
+// ociResolvedLayer is one manifest layer descriptor, independent of where its
+// compressed bytes live (tar byte range or layout-dir blob file).
+type ociResolvedLayer struct {
+	Digest    string // "sha256:<hex>" compressed blob digest
+	DiffID    string // "" when the config's diff_ids don't align with the layer list
+	MediaType string
+	Size      int64 // from the manifest descriptor; 0 when absent
+}
+
+// ociImageFromIndex resolves an OCI layout's index.json to the image manifest
+// for the target platform and returns its layer descriptors plus the raw image
+// config blob. getBlob fetches small blobs (manifests, indexes, the config) by
+// hex digest; layer blobs are never fetched here.
+func ociImageFromIndex(indexJSON []byte, getBlob func(hex string) ([]byte, error), platform string) (*ociResolvedImage, error) {
 	// Parse index.json and resolve to a concrete image manifest. buildx emits
 	// index.json → image-manifest directly, while Apple Container's `image save`
 	// wraps the image in one (or two) nested image-indexes; both are handled by
@@ -246,16 +298,16 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		Manifests []ociDescriptor `json:"manifests"`
 	}
 	if err := json.Unmarshal(indexJSON, &index); err != nil {
-		return nil, nil, fmt.Errorf("parsing index.json: %w", err)
+		return nil, fmt.Errorf("parsing index.json: %w", err)
 	}
 	if len(index.Manifests) == 0 {
-		return nil, nil, fmt.Errorf("index.json has no manifests")
+		return nil, fmt.Errorf("index.json has no manifests")
 	}
 
 	wantOS, wantArch := parseOCIPlatform(platform)
 	manifestData, err := resolveOCIImageManifest(index.Manifests, getBlob, wantOS, wantArch, 0)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Parse the manifest to get the config descriptor and layer descriptors.
@@ -266,10 +318,11 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 		Layers []struct {
 			MediaType string `json:"mediaType"`
 			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
 		} `json:"layers"`
 	}
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return nil, nil, fmt.Errorf("parsing manifest: %w", err)
+		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 
 	// Fetch the image config blob so the runtime config (Cmd/Entrypoint/Env/
@@ -282,11 +335,11 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	if manifest.Config.Digest != "" {
 		configHex, err := digestToHex(manifest.Config.Digest)
 		if err != nil {
-			return nil, nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
+			return nil, fmt.Errorf("invalid config digest %q: %w", manifest.Config.Digest, err)
 		}
 		imageConfig, err = getBlob(configHex)
 		if err != nil {
-			return nil, nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
+			return nil, fmt.Errorf("config blob %s: %w", manifest.Config.Digest, err)
 		}
 		var cfg struct {
 			RootFS struct {
@@ -306,33 +359,213 @@ func readOCILayoutLayers(ociTarPath, platform string) ([]localLayer, []byte, err
 	// it the slow way rather than risk mislabelling a layer.
 	diffIDsAligned := len(diffIDs) == len(manifest.Layers)
 
-	layers := make([]localLayer, 0, len(manifest.Layers))
+	img := &ociResolvedImage{ImageConfig: imageConfig}
 	for i, desc := range manifest.Layers {
-		layerHex, err := digestToHex(desc.Digest)
-		if err != nil {
-			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
-		}
-		loc, ok := blobOffsets[layerHex]
-		if !ok {
-			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI tar", i, desc.Digest)
-		}
 		var diffID string
 		if diffIDsAligned {
 			diffID = diffIDs[i]
 		}
-		// Reference the compressed blob by its range in the on-disk tar; it is
-		// streamed (never fully buffered) during the push, and decompression is
-		// deferred so cache-resolved layers are never read at all.
-		layers = append(layers, localLayer{
+		img.Layers = append(img.Layers, ociResolvedLayer{
 			Digest:    desc.Digest,
 			DiffID:    diffID,
 			MediaType: desc.MediaType,
-			TarPath:   ociTarPath,
-			Offset:    loc.off,
-			Size:      loc.size,
+			Size:      desc.Size,
 		})
 	}
-	return layers, imageConfig, nil
+	return img, nil
+}
+
+// readOCILayoutDirLayers is readOCILayoutLayers' sibling for an OCI layout
+// DIRECTORY (buildx `--output type=oci,tar=false`): dir holds index.json plus
+// blobs/sha256/<hex> files. Layers come back file-backed against the blob
+// files themselves (offset 0, whole file). Each layer blob's on-disk size is
+// validated against the manifest descriptor so a partially-written blob (e.g.
+// a killed export) fails loudly instead of pushing garbage — callers respond
+// by wiping the directory and rebuilding.
+func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) {
+	indexJSON, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read OCI layout index: %w", err)
+	}
+	blobPath := func(hex string) string {
+		return filepath.Join(dir, "blobs", "sha256", hex)
+	}
+	getBlob := func(hex string) ([]byte, error) {
+		return os.ReadFile(blobPath(hex))
+	}
+
+	img, err := ociImageFromIndex(indexJSON, getBlob, platform)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	layers := make([]localLayer, 0, len(img.Layers))
+	for i, desc := range img.Layers {
+		layerHex, err := digestToHex(desc.Digest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d: invalid digest %q: %w", i, desc.Digest, err)
+		}
+		fi, err := os.Stat(blobPath(layerHex))
+		if err != nil {
+			return nil, nil, fmt.Errorf("layer %d blob %s not found in OCI layout dir: %w", i, desc.Digest, err)
+		}
+		if desc.Size > 0 && fi.Size() != desc.Size {
+			return nil, nil, fmt.Errorf("layer blob sha256:%s is %d bytes on disk but the manifest says %d (partial write?)", layerHex, fi.Size(), desc.Size)
+		}
+		layers = append(layers, localLayer{
+			Digest:    desc.Digest,
+			DiffID:    desc.DiffID,
+			MediaType: desc.MediaType,
+			TarPath:   blobPath(layerHex),
+			Offset:    0,
+			Size:      fi.Size(),
+		})
+	}
+	return layers, img.ImageConfig, nil
+}
+
+// chunkExportModeEnv forces the chunk-diff deploy's legacy temp-tar export
+// ("tar") instead of the persistent layout directory. Escape hatch only.
+const chunkExportModeEnv = "WENDY_CHUNK_EXPORT"
+
+// chunkExportPlan decides how the chunk-diff deploy exports the built image:
+// "dir" — persistent OCI layout directory (buildx tar=false, blob-deduped) —
+// for the docker backend, "tar" for backends that can only emit a tar
+// (apple-container, on-device buildctl), for the WENDY_CHUNK_EXPORT=tar
+// escape hatch, and for unknown builders (whose normalize error then surfaces
+// on the tar path exactly as before).
+func chunkExportPlan(builder string) string {
+	if os.Getenv(chunkExportModeEnv) == "tar" {
+		return "tar"
+	}
+	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
+		return "tar"
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil || normalized != imageBuilderDocker {
+		return "tar"
+	}
+	return "dir"
+}
+
+// gcOCILayoutDir deletes blobs in dir that are no longer reachable from
+// index.json. buildx's tar=false export only ever ADDS blobs, so superseded
+// manifests/configs/layers accumulate until pruned. Reachability keeps every
+// index entry (nested indexes and attestation manifests included), each
+// manifest's config, and each manifest's layers. A missing dir or index is a
+// no-op; unreadable blobs during the walk are kept (best-effort, never breaks
+// a deployable layout).
+func gcOCILayoutDir(dir string) error {
+	indexJSON, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read OCI layout index for GC: %w", err)
+	}
+	var index struct {
+		Manifests []ociDescriptor `json:"manifests"`
+	}
+	if err := json.Unmarshal(indexJSON, &index); err != nil {
+		return fmt.Errorf("parsing index.json for GC: %w", err)
+	}
+
+	referenced := map[string]bool{}
+	var walk func(descs []ociDescriptor, depth int)
+	walk = func(descs []ociDescriptor, depth int) {
+		if depth > 6 {
+			return
+		}
+		for _, d := range descs {
+			hexDigest, err := digestToHex(d.Digest)
+			if err != nil {
+				continue
+			}
+			referenced[hexDigest] = true
+			blob, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", hexDigest))
+			if err != nil {
+				continue
+			}
+			if isOCIImageIndexMediaType(d.MediaType) {
+				var nested struct {
+					Manifests []ociDescriptor `json:"manifests"`
+				}
+				if err := json.Unmarshal(blob, &nested); err == nil {
+					walk(nested.Manifests, depth+1)
+				}
+				continue
+			}
+			// Image manifests (attestation manifests share the media type): keep
+			// the config and every layer blob.
+			var manifest struct {
+				Config struct {
+					Digest string `json:"digest"`
+				} `json:"config"`
+				Layers []struct {
+					Digest string `json:"digest"`
+				} `json:"layers"`
+			}
+			if err := json.Unmarshal(blob, &manifest); err != nil {
+				continue
+			}
+			if hexDigest, err := digestToHex(manifest.Config.Digest); err == nil {
+				referenced[hexDigest] = true
+			}
+			for _, l := range manifest.Layers {
+				if hexDigest, err := digestToHex(l.Digest); err == nil {
+					referenced[hexDigest] = true
+				}
+			}
+		}
+	}
+	walk(index.Manifests, 0)
+
+	blobsDir := filepath.Join(dir, "blobs", "sha256")
+	dirEntries, err := os.ReadDir(blobsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("listing blobs for GC: %w", err)
+	}
+	for _, e := range dirEntries {
+		if e.IsDir() || referenced[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(blobsDir, e.Name())); err != nil {
+			return fmt.Errorf("pruning blob %s: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
+// lockOCILayoutDir serializes use of a persistent layout directory across
+// wendy processes (build → read → push → GC). The lock file sits NEXT TO the
+// directory (dir+".lock") so a self-heal RemoveAll(dir) never deletes a held
+// lock. Returns a release func that must be called exactly once.
+func lockOCILayoutDir(ctx context.Context, dir string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return nil, fmt.Errorf("creating OCI layout parent: %w", err)
+	}
+	f, err := os.OpenFile(dir+".lock", os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening OCI layout lock: %w", err)
+	}
+	locked, err := tryLockFile(f)
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("acquiring OCI layout lock: %w", err)
+	}
+	if !locked {
+		if err := blockLockFile(ctx, f); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("acquiring OCI layout lock: %w", err)
+		}
+	}
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, nil
 }
 
 // blobLoc is a blob's byte range within an OCI-layout tar.
@@ -564,6 +797,69 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return buildImageToOCILayoutWithBuildkit(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
 	}
 
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, stdout, stderr)
+}
+
+// buildImageToOCILayoutDirWithDocker builds with the shared buildx builder and
+// exports into an OCI layout DIRECTORY (`--output type=oci,tar=false`). Unlike
+// the tar export, BuildKit skips blobs already present at dest, so a warm
+// persistent directory turns the per-build export cost from O(image size)
+// into O(changed bytes). Callers own dest's lifecycle (locking and GC).
+func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir string, stdout, stderr io.Writer) error {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating OCI layout directory: %w", err)
+	}
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr)
+}
+
+// chunkLayoutDir is the persistent per-app OCI layout directory used by the
+// chunk-diff deploy path's tar=false export. Keyed by app AND platform so a
+// device-architecture switch never GC-thrashes the other platform's blobs.
+func chunkLayoutDir(userCacheDir, appID, platform string) string {
+	return filepath.Join(userCacheDir, "wendy", "ocilayout",
+		sanitizeCacheKey(appID)+"-"+sanitizeCacheKey(platform))
+}
+
+// buildxOCIExportArgs assembles the `docker buildx build` argument vector for
+// an OCI export (tar or layout-dir). Pure function for testability; build-arg
+// keys are sorted for a reproducible command line.
+func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, tarFalse bool, buildArgs map[string]string, haveCacheIndex bool) []string {
+	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
+	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
+	cacheDirSlash := filepath.ToSlash(cacheDir)
+	args := []string{
+		"buildx", "build",
+		"--builder", builder,
+		"--platform", platform,
+		"--progress", "plain",
+	}
+	if dockerfile != "" {
+		args = append(args, "-f", dockerfile)
+	}
+	if haveCacheIndex {
+		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
+	}
+	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
+	keys := make([]string, 0, len(buildArgs))
+	for k := range buildArgs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		args = append(args, "--build-arg", k+"="+buildArgs[k])
+	}
+	output := "type=oci,dest=" + dest
+	if tarFalse {
+		output += ",tar=false"
+	}
+	args = append(args, "--output", output, ".")
+	return args
+}
+
+// buildImageWithBuildxOCIExport is the shared docker-buildx body behind both
+// OCI export shapes: dest is a tar path (tarFalse=false, legacy) or a layout
+// directory (tarFalse=true).
+func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, stdout, stderr io.Writer) error {
 	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
 	// phase into lock acquisition, builder verification (the buildx inspect
 	// calls), and the actual buildx solve.
@@ -606,42 +902,15 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return err
 	}
 
-	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
-	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
-	cacheDirSlash := filepath.ToSlash(cacheDir)
-	args := []string{
-		"buildx", "build",
-		"--builder", buildxBuilder,
-		"--platform", platform,
-		"--progress", "plain",
-	}
+	resolvedDockerfile := ""
 	if dockerfile != "" {
-		resolvedDockerfile, err := confinedDockerfilePath(cwd, dockerfile)
+		resolvedDockerfile, err = confinedDockerfilePath(cwd, dockerfile)
 		if err != nil {
 			return err
 		}
-		args = append(args, "-f", resolvedDockerfile)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "index.json")); err == nil {
-		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
-	}
-	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
-
-	// Sort build-arg keys for reproducible argument order.
-	keys := make([]string, 0, len(buildArgs))
-	for k := range buildArgs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		args = append(args, "--build-arg", k+"="+buildArgs[k])
-	}
-
-	// OCI-layout export instead of registry push.
-	args = append(args,
-		"--output", "type=oci,dest="+dest,
-		".",
-	)
+	_, cacheIndexErr := os.Stat(filepath.Join(cacheDir, "index.json"))
+	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheDir, dest, tarFalse, buildArgs, cacheIndexErr == nil)
 
 	submark("  build: setup (cache/env)")
 
