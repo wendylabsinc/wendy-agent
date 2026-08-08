@@ -16,11 +16,11 @@ func TestUSBDirectCandidateHostPort(t *testing.T) {
 
 func TestUSBDirectCandidatesFrom(t *testing.T) {
 	ifaces := []net.Interface{
-		{Index: 3, Name: "enxaabbccddeeff", Flags: net.FlagUp},            // USB by name → candidate
-		{Index: 4, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback},     // loopback → skipped
-		{Index: 5, Name: "wlan1", Flags: net.FlagUp},                      // not USB → skipped
-		{Index: 6, Name: "usb0", Flags: 0},                                // USB name but DOWN → skipped
-		{Index: 7, Name: "ncm0", Flags: net.FlagUp},                       // NCM adapter → candidate
+		{Index: 3, Name: "enxaabbccddeeff", Flags: net.FlagUp},        // USB by name → candidate
+		{Index: 4, Name: "lo0", Flags: net.FlagUp | net.FlagLoopback}, // loopback → skipped
+		{Index: 5, Name: "wlan1", Flags: net.FlagUp},                  // not USB → skipped
+		{Index: 6, Name: "usb0", Flags: 0},                            // USB name but DOWN → skipped
+		{Index: 7, Name: "ncm0", Flags: net.FlagUp},                   // NCM adapter → candidate
 	}
 
 	got := usbDirectCandidatesFrom(ifaces, "linux")
