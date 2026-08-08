@@ -863,3 +863,62 @@ func TestPickOCIDescriptorFallbackPrefersNewest(t *testing.T) {
 		t.Fatalf("want newest (last) fallback sha256:bbbb, got %+v", got)
 	}
 }
+
+// writeBlob writes content under blobs/sha256/<sha256(content)> and returns
+// the digest string.
+func writeBlob(t *testing.T, dir string, content []byte) string {
+	t.Helper()
+	sum := sha256.Sum256(content)
+	hexd := hex.EncodeToString(sum[:])
+	p := filepath.Join(dir, "blobs", "sha256")
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, hexd), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + hexd
+}
+
+func TestPruneThenGCDropsSupersededBuild(t *testing.T) {
+	dir := t.TempDir()
+	// Old build: config + one layer + manifest referencing them.
+	oldCfg := writeBlob(t, dir, []byte(`{"old":"config"}`))
+	oldLayer := writeBlob(t, dir, []byte("old-layer"))
+	oldManifest := writeBlob(t, dir, []byte(`{"config":{"digest":"`+oldCfg+`"},"layers":[{"digest":"`+oldLayer+`"}]}`))
+	// New build: shares nothing with the old one.
+	newCfg := writeBlob(t, dir, []byte(`{"new":"config"}`))
+	newLayer := writeBlob(t, dir, []byte("new-layer"))
+	newManifest := writeBlob(t, dir, []byte(`{"config":{"digest":"`+newCfg+`"},"layers":[{"digest":"`+newLayer+`"}]}`))
+
+	entry := func(digest string) string {
+		return `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + digest + `","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	}
+	writeLayoutIndex(t, dir, entry(oldManifest), entry(newManifest))
+
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gcOCILayoutDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	mustExist := func(digest string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))); err != nil {
+			t.Fatalf("blob %s should survive GC: %v", digest, err)
+		}
+	}
+	mustBeGone := func(digest string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))); !os.IsNotExist(err) {
+			t.Fatalf("blob %s should be GC'd, stat err=%v", digest, err)
+		}
+	}
+	mustExist(newManifest)
+	mustExist(newCfg)
+	mustExist(newLayer)
+	mustBeGone(oldManifest)
+	mustBeGone(oldCfg)
+	mustBeGone(oldLayer)
+}
