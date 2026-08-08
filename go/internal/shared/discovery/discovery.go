@@ -162,10 +162,3 @@ func DiscoverLAN(ctx context.Context, timeout time.Duration) ([]models.LANDevice
 func DiscoverBluetooth(ctx context.Context, activeScan bool) ([]models.BluetoothDevice, error) {
 	return discoverBluetooth(ctx, activeScan)
 }
-
-// DiscoverLANContinuous discovers LAN devices via mDNS continuously,
-// sending each new device to ch as it's found. The scan runs until ctx
-// is cancelled. The channel is closed when discovery stops.
-func DiscoverLANContinuous(ctx context.Context, ch chan<- models.LANDevice) {
-	discoverLANContinuous(ctx, ch)
-}

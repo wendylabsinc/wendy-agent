@@ -207,51 +207,6 @@ func dnssdBrowseStream(ctx context.Context, serviceType string, onResult func(br
 	return err
 }
 
-// dnssdBrowse collects browse results, returning once results stop arriving.
-// Once the first result lands it waits browseSettle for more, so a
-// populated network does not pay the full timeout.
-func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
-	browseCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	resultCh := make(chan browseResult, 16)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- dnssdBrowseStream(browseCtx, serviceType, func(r browseResult) {
-			select {
-			case resultCh <- r:
-			case <-browseCtx.Done():
-			}
-		})
-	}()
-
-	var results []browseResult
-	seen := make(map[string]bool)
-	var settle <-chan time.Time
-
-	for {
-		select {
-		case <-ctx.Done():
-			return results, nil
-		case err := <-errCh:
-			if err != nil && len(results) == 0 {
-				return nil, err
-			}
-			return results, nil
-		case r := <-resultCh:
-			key := r.instanceName + "%" + r.interfaceName
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			results = append(results, r)
-			settle = time.After(browseSettle)
-		case <-settle:
-			return results, nil
-		}
-	}
-}
-
 // dnssdRegister advertises a service until the returned stop func is called.
 // It exists for tests: it lets the browse and resolve paths run against a known
 // service without a device on the network. cgo cannot be used from _test.go

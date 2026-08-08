@@ -35,7 +35,7 @@ func TestLANDeviceFromService(t *testing.T) {
 	if bare.DisplayName != "orin" || bare.ID != "orin" {
 		t.Fatalf("fallbacks: %+v", bare)
 	}
-	// assetid/orgid: 0 or unparseable stays 0 (matches setAssetID at discovery_darwin.go:107)
+	// assetid/orgid: 0 or unparseable stays 0
 	z := lanDeviceFromService(MDNSService{Hostname: "a.local", Port: 1, TXTRecords: map[string]string{"assetid": "0", "orgid": "junk"}})
 	if z.AssetID != 0 || z.OrgID != 0 {
 		t.Fatalf("zero/invalid ids must stay 0: %+v", z)

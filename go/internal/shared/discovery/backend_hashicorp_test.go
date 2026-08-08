@@ -104,6 +104,62 @@ func TestHashicorpEntryToServiceNilInterfaceOmitsZoneAndName(t *testing.T) {
 	}
 }
 
+// ── parseMDNSInfoFields ─────────────────────────────────────────────
+
+func TestParseMDNSInfoFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		fields []string
+		want   map[string]string
+	}{
+		{
+			name:   "empty",
+			fields: nil,
+			want:   map[string]string{},
+		},
+		{
+			name:   "no tls record",
+			fields: []string{"id=some-device", "name=my-device"},
+			want:   map[string]string{"id": "some-device", "name": "my-device"},
+		},
+		{
+			name:   "tls=true for provisioned device",
+			fields: []string{"wendyosdevice=prov-uuid", "tls=true"},
+			want:   map[string]string{"wendyosdevice": "prov-uuid", "tls": "true"},
+		},
+		{
+			name:   "tls=false is not treated as mTLS",
+			fields: []string{"wendyosdevice=some-uuid", "tls=false"},
+			want:   map[string]string{"wendyosdevice": "some-uuid", "tls": "false"},
+		},
+		{
+			name:   "entry without equals sign is skipped",
+			fields: []string{"noequals", "key=val"},
+			want:   map[string]string{"key": "val"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseMDNSInfoFields(tt.fields)
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseMDNSInfoFields(%v) returned %d entries, want %d: got %v", tt.fields, len(got), len(tt.want), got)
+			}
+			for k, want := range tt.want {
+				if got[k] != want {
+					t.Fatalf("parseMDNSInfoFields()[%q] = %q, want %q", k, got[k], want)
+				}
+			}
+			// Verify tls→IsMTLS mapping works correctly.
+			isMTLS := got["tls"] == "true"
+			wantMTLS := tt.want["tls"] == "true"
+			if isMTLS != wantMTLS {
+				t.Fatalf("tls→IsMTLS = %v, want %v", isMTLS, wantMTLS)
+			}
+		})
+	}
+}
+
 // ── hashicorpSweepTargets (pure logic, injected interface list) ───────────
 
 func TestHashicorpSweepTargetsIncludesNilOnWindowsOnly(t *testing.T) {

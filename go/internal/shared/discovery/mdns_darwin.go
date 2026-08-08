@@ -47,9 +47,9 @@ const mdnsStreamJobBuffer = 32
 // mdnsStreamBackend is the darwin implementation of the lanBackendFn and
 // browseBackendFn seams (stream.go, mdns.go): it browses serviceType via
 // mDNSResponder and resolves each answer on a small worker pool instead of
-// inline in the browse callback — the bug discoverLANContinuous carries,
-// where a resolve taking up to its timeout stalls the socket pump for every
-// other device on the network.
+// inline in the browse callback — resolving inline would stall the socket
+// pump for every other device on the network while a resolve runs up to its
+// timeout.
 //
 // Every browse "Add" is queued and resolved, even a repeat of an instance
 // already emitted: unlike those picker-facing continuous browses, this
@@ -100,8 +100,7 @@ var resolveServiceFn = resolveMDNSService
 
 // mdnsStreamResolveAndEmit resolves one browse result and hands the outcome
 // to emit. A resolve failure still emits a bare identity when the instance
-// name is usable as a hostname label — mirroring deviceFromBrowse's fallback
-// at discovery_darwin.go:139 — so a device with no TXT records, or a
+// name is usable as a hostname label, so a device with no TXT records, or a
 // transient resolve failure, is not silently dropped from the stream.
 // Otherwise (an instance name that cannot stand in as a hostname, e.g. one
 // containing a space) the result is skipped rather than emitting a misleading
