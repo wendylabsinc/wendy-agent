@@ -176,7 +176,7 @@ improves 10–100×. 2000× is the tail, not the median.**
 
 ---
 
-## The three things that can sink this
+## The four things that can sink this
 
 ### 1. apt and apk are not deterministic
 
@@ -215,6 +215,25 @@ rebuild-verify a sample rather than trusting on signature alone. The cross-org
 tier should ship last, behind the org tier, precisely because it is the only one
 that introduces a new trust root.
 
+### 4. A device cache tier with no eviction policy is a leak, not a cache
+
+"The robot is the bottom of the tier stack" is the design's most elegant
+consequence, and it is also the one with an unowned failure mode. A device
+accumulates nodes; a Jetson or a Pi has a finite disk. Nothing above specifies an
+eviction policy, a disk budget, or what happens when the node store fills
+partway through a deploy.
+
+On a workstation a full cache is an annoyance. On a robot in the field it is a
+device that stops accepting deployments, or worse, one that fills the partition
+its runtime shares. That is a bricking-shaped risk, not a performance nit, and it
+belongs to stage 8 rather than to whoever discovers it.
+
+**Resolution:** stage 8 does not ship without an explicit per-device node budget,
+an eviction policy (LRU over node last-use, with pinning for nodes belonging to
+the currently-running image), and a deploy path that fails cleanly and reversibly
+when the budget cannot be met — never a partial assembly. The device tier should
+also be the only tier permitted to refuse a promotion outright.
+
 ### Also worth naming: cache-key stability
 
 Bumping `pip/v1` → `pip/v2` invalidates that node for everyone. Op versions live
@@ -238,7 +257,8 @@ worth shipping.
 5. **`cas.Org`** on the per-org registry work.
 6. **`cas.Mesh`** on the existing mesh mTLS data plane.
 7. **`cas.Global`** + signing + transparency log + promotion policy.
-8. **Device as a tier**; node-delta deploy.
+8. **Device as a tier**; node-delta deploy. Gated on the per-device node budget
+   and eviction policy from risk 4 — this stage does not ship without them.
 
 Native-arch build farms are orthogonal to all eight and can proceed in parallel;
 they are the single largest multiplier and the least architecturally risky.

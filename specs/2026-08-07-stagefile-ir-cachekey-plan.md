@@ -870,7 +870,7 @@ func writeExec(e enc, x *ir.ExecOp, in Inputs) error {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `go test ./go/internal/stagefile/cachekey/... -v`
-Expected: all eight tests PASS.
+Expected: all seven tests PASS.
 
 Note: `TestKeyErrorsOnMissingFileDigest` and the npm path both require a file
 digest. If `TestKeyIsStableAcrossUnrelatedFiles` fails, the likely cause is that
