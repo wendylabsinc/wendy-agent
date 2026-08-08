@@ -1,122 +1,145 @@
-# Last-Known-Good Connect Cache
+# Last-Known-Good Connect Cache (delta over PR #1616)
 
 **Date:** 2026-08-08
-**Status:** Approved (design), implementation pending
-**Branch:** `ed/lkg-connect-cache` (stacked on `ed/instant-mdns-discovery`, PR #1616)
+**Status:** Approved (design); revised after base-branch exploration — the
+approved outcome and decisions are unchanged, but PR #1616's branch already
+implements the resolution half of this feature, so this spec now describes
+only the remaining delta.
+**Branch:** `ed/lkg-connect-cache` (stacked on `ed/instant-mdns-discovery`,
+PR #1616)
 
 ## Problem
 
-With TLS session resumption (PR #1612) in place, the mTLS handshake on a
-repeat connect costs ~141ms — but connecting to a device by its `.local`
-name still takes ~1.5s, measured live on macOS (Jetson Orin Nano over LAN):
-mDNS name resolution contributes a constant ~1.2–1.4s per CLI invocation,
-and on a cache-cold path the sequential cert × port probe ladder in
-`connectWithAutoTLSDiagnostics` adds more. The device's address, mTLS port,
-and org were almost always known from a previous command — nothing reuses
-them.
+With TLS session resumption (PR #1612), a repeat mTLS handshake costs
+~141ms, but connecting by `.local` name measured ~1.5s on macOS —
+resolution-dominated (~1.2–1.4s), plus the sequential cert × port probe
+ladder.
 
-PR #1616 already persists exactly this data: `discoverycache`
-(`~/.wendy/devices.json`) stores per-device `Hostname`, `IP`, `Port`,
-`MTLS`, `OrgID`, `LastSeen` with best-effort merge-on-flush semantics. This
-feature makes the connect path a reader (and refresher) of that cache.
+**What the base branch (PR #1616) already provides** in
+`connectWithAutoTLSDiagnostics` (`helpers.go`):
 
-## Decisions (made during design review)
+- `cachedDeviceIP(host)` — skips `resolveAddrOnce` entirely when a
+  device-cache entry's hostname matches (via `cachedDeviceEntry`, which is
+  **TTL-gated**: `cache.Fresh`, 1h).
+- A stale-cache retry: on an unreachable fast-path dial, re-resolve and
+  re-run the ladder once.
+- `cacheConnectSuccess` write-back (refresh under the existing discovery
+  identity; mDNS-shaped-host guards) — but it stores **`originalAddr`'s
+  port** (usually the 50051 plaintext port for a stored default device) and
+  never sets `MTLS`/`OrgID`, so a successful connect can clobber
+  discovery's advertised mTLS port in the cache via Upsert's
+  non-zero-wins merge.
 
-- **Stacked on PR #1616** and reusing `discoverycache` — one cache, one
-  file; discovery pre-warms connects, connects refresh discovery. Merge
-  order: #1616 first.
-- **Any-age fast path**: connect attempts use a cached IP regardless of the
-  cache's 1h TTL (the TTL remains a *display*-freshness bound for the
-  picker). Rationale: a stale IP costs ≤1s (bounded TCP connect) against a
-  guaranteed ~1.3s saving, and the fallback path does fresh resolution, so
-  staleness self-heals.
+**Remaining gaps this PR closes:**
 
-## Design
+1. **The 1h TTL cliff**: the first connect after any >1h gap pays full
+   resolution again — exactly the "morning first command" case.
+2. **Dead-IP cost**: the fast path runs the full ladder against the cached
+   IP with no TCP bound — an unreachable IP can burn up to ~2×7s mTLS
+   probes + 3s plaintext probe before the stale retry.
+3. **Ladder order**: the fast path still tries the plaintext port first and
+   every cert sequentially in config order; each wrong-cert attempt on the
+   mTLS port costs the device a full ML-DSA handshake (~1–2s each for
+   multi-org users).
+4. **Write-back fidelity**: the port-clobber wart above, and the cache
+   never learns `MTLS`/`OrgID` from connects.
 
-### 1. `discoverycache` additions: hostname lookup + refresh-only write-back
+## Decisions (made during design review; unchanged)
 
-- `func (c *Cache) ByHostname(host string) (Entry, bool)` — returns the
-  entry whose `Hostname` matches `host` after normalization on both sides
-  (lowercase, strip trailing dot, strip `.local` suffix — same rules as
-  `normalizeMDNSHost` in `helpers.go`). Requires a non-empty `IP`; when
-  several entries match (shouldn't happen, but the cache is keyed by device
-  id, not hostname), the most recent `LastSeen` wins.
-- Connect-path write-back **only refreshes existing entries**: after a
-  successful connect to hostname H at ip:port, look up `ByHostname(H)` and
-  `Upsert` that entry with the fresh `IP`, `Port`, `LastSeen` (and `OrgID`
-  when learned from the server cert). If no entry matches, write nothing —
-  discovery owns entry creation; synthesizing hostname-keyed entries would
-  pollute the picker's device-id identity space.
+- **Stacked on PR #1616**, reusing `discoverycache` — one cache; discovery
+  pre-warms connects, connects refresh discovery. Merge order: #1616 first.
+- **Any-age fast path** for connects: a cached IP is worth one bounded
+  attempt regardless of the 1h TTL (which remains the *display*-freshness
+  bound for the picker). A stale IP costs ≤1s against a ~1.3s+ saving, and
+  the existing stale-cache retry does fresh resolution, so staleness
+  self-heals.
 
-### 2. Connect fast path in `connectWithAutoTLSDiagnostics`
+## Design (delta)
 
-Located after the `WENDY_AGENT_SOCKET` bypass and before `resolveAddrOnce`:
+### 1. Any-age connect lookup
 
-- Applies only when the target host is a NAME (IP-literal targets and the
-  unix-socket path are untouched) and the CLI holds at least one client
-  cert.
-- On a cache hit: one direct mTLS attempt at the entry's `IP:Port` (the
-  cache stores the advertised port, which is the mTLS port for provisioned
-  devices — skip the fast path when the entry's `MTLS` flag is false).
-- **Cert rotation:** order the cert list so the cert whose org matches the
-  entry's `OrgID` is tried first (falling back to config order). This also
-  removes the N-cert sequential ladder for multi-org users on the fast
-  path.
-- **Budget split:** the fast-path dial uses a custom dialer with a ~1s TCP
-  connect timeout (`lkgTCPConnectTimeout`); once TCP is established, the
-  existing `mtlsProbeTimeout` governs the handshake + `GetAgentVersion`
-  probe, so a loaded device's slow full handshake is not artificially cut.
-  A dead/stale IP therefore costs ≤1s before falling through.
-- **Fallback:** on ANY fast-path failure (no cache entry, TCP timeout,
-  handshake rejection, probe failure) the function continues into today's
-  path unchanged — `resolveAddrOnce` (fresh resolution) + the full
-  cert × port ladder. Under `WENDY_TLS_DEBUG`, the fast path logs one line
-  stating hit/miss and the failure reason.
-- On fast-path success: the §1 write-back refreshes the entry, and the
-  connection is returned exactly as a ladder success would be (same
-  `AgentConnection` fields, `IsMTLS`, observed-org plumbing).
+`discoverycache` gains `func (c *Cache) Entries() []Entry` (all entries,
+any age). The connect path's `cachedDeviceEntry` switches from
+`cache.Fresh(now)` to `cache.Entries()` and, when several entries'
+hostnames normalize equal, picks the most recent `LastSeen`. The picker and
+discovery keep using `Fresh` — display freshness is unchanged.
 
-### 3. Trust model: the cache is a routing hint only
+### 2. LKG direct dial with cert rotation and a TCP bound
 
-Nothing about verification changes. The fast path presents the same client
-cert material, runs the same `BuildServerVerifyConnection` (ML-DSA chain +
-org + pins + `OnServerIdentity`), the same post-connect `enforceDevicePin`,
-and composes with #1612's session resumption (the resumption ticket cache
-is keyed by `address|cert`, so a cached-IP dial hits the same ticket the
-previous connect stored). A hijacked or reassigned IP fails server
-verification and falls through to fresh resolution — the failure mode is
-today's behavior plus ≤1s.
+When the matched entry has a non-empty `IP`, `Port > 0`, and `MTLS: true`,
+`connectWithAutoTLSDiagnostics` attempts, before its existing fast-path
+ladder:
 
-### 4. Expected effect (measured baselines, 2026-08-08)
+- **TCP pre-check**: `net.DialTimeout("tcp", ip:port, lkgTCPConnectTimeout)`
+  with `lkgTCPConnectTimeout = 1s`. Failure → skip the direct dial and fall
+  through to the existing flow (which for a dead IP proceeds to the stale
+  retry's fresh resolution). This bounds the dead-IP worst case at ~1s
+  instead of many seconds of ladder probes.
+- **Direct dial**: run the existing ladder mechanics against `ip:entry.Port`
+  (the advertised mTLS port) with the cert list rotated so certs whose
+  `OrganizationID` matches the entry's `OrgID` come first (stable order
+  otherwise; unknown/zero `OrgID` = unchanged order). Implemented by
+  extracting `dialAgentLadderWithCerts(ctx, addr, certs)` from
+  `dialAgentLadder` (which keeps its signature and behavior) plus a pure
+  `rotateCertsForOrg(certs, orgID)` helper.
+- **Fallback**: any direct-dial failure falls through to the existing
+  cached-IP ladder + stale-retry flow **verbatim** (one redundant handshake
+  attempt against the same mTLS port in that failure path is accepted).
+  `WENDY_TLS_DEBUG` logs one line for the LKG attempt: hit/skip and the
+  failure reason.
 
-| Path | Today | With fast path |
+### 3. Write-back fidelity
+
+`cacheConnectSuccess` gains the connection's actual endpoint facts,
+threaded from its call site (`helpers.go:964`, where the successful
+`conn` is in hand): the **actually-connected port** (not `originalAddr`'s),
+`MTLS: conn.IsMTLS`, and `OrgID` from `conn.ObservedServerOrg()` when
+non-zero. This both feeds §2's direct dial and fixes the base's
+port-clobber wart (a connect can no longer overwrite discovery's advertised
+mTLS port with the plaintext port).
+
+### 4. Trust model: unchanged (cache is a routing hint only)
+
+The direct dial presents the same client certs, runs the same
+`BuildServerVerifyConnection` (ML-DSA chain + org + pins), the same
+post-connect `enforceDevicePin`, and composes with #1612's resumption once
+both merge (the ticket cache is keyed by `address|cert`, so the cached-IP
+dial hits the ticket the previous connect stored). A hijacked or reassigned
+IP fails verification and falls through; the failure mode is today's
+behavior plus ≤1s.
+
+### 5. Expected effect (measured baselines, 2026-08-08)
+
+| Path | Base (#1616) | With this delta |
 | --- | --- | --- |
-| `.local` name, warm ticket | ~1.5s (resolution-dominated) | ~150–300ms |
-| `.local` name, cold ticket | ~2.2–2.9s | ~1s (direct dial, full handshake) |
-| IP literal | ~141ms resumed | unchanged |
-| Stale cached IP | n/a | today + ≤1s |
+| `.local`, cache fresh (<1h) | fast (resolution skipped) | same, minus plaintext-port ladder step |
+| `.local`, cache stale (>1h) | ~1.5s (full resolution) | ~fast-path cost (any-age) |
+| Dead/stale cached IP | up to ~17s of ladder probes before retry | ≤1s pre-check, then normal retry |
+| Multi-org, wrong-cert-first | +1–2s per wrong cert (device-side full handshake) | org-matched cert first |
+| IP literal / unix socket | unchanged | unchanged |
 
-### 5. Testing
+### 6. Testing
 
-- Unit (`discoverycache`): `ByHostname` normalization matrix
-  (`Wendy-X.local.` vs `wendy-x`, empty-IP exclusion, most-recent-wins),
-  refresh-only write-back (no entry → no write).
-- Unit (`commands`): cert rotation by org (match first, stable order
-  otherwise, no-match = unchanged order).
-- Integration (fake TLS agent on 127.0.0.1, as in the #1612 test
-  patterns): (a) fast-path hit connects with zero resolver invocations
-  (inject a resolver spy); (b) entry pointing at a dead IP falls back
-  within the budget and connects via the ladder; (c) entry with a stale IP
-  while the device answers on a new IP self-heals (fallback connects,
-  write-back stores the new IP).
-- On-device gate: repeat `wendy device info --device <name>.local` on this
-  LAN drops from ~1.5s to sub-300ms in the mTLS-attempts phase (after one
-  discovery or prior connect).
+- Unit (`discoverycache`): `Entries()` returns stale + fresh; existing
+  `Fresh` untouched.
+- Unit (`commands`): most-recent-wins hostname match across duplicate
+  hostnames; `rotateCertsForOrg` (match-first, stable, no-match =
+  unchanged); write-back stores actual port/MTLS/OrgID and no longer
+  clobbers an advertised mTLS port with a plaintext port.
+- Integration (fake TLS agent, existing test-seam style —
+  `deviceCacheLoadFn`, `cacheFastPathReachableFn`, resolver fns): (a)
+  any-age hit connects with zero resolver invocations; (b) dead-IP entry
+  falls through within ~1s (TCP pre-check) and the stale retry still
+  connects; (c) direct dial uses the rotated cert first (spy on cert order).
+- On-device gate: with a >1h-old cache entry, `wendy device info --device
+  <name>.local` skips resolution (fast path) on this LAN; dead-IP fallback
+  stays snappy.
 
 ## Non-goals
 
-- Creating cache entries from the connect path (discovery owns creation).
-- Changing the TTL or any picker/discovery behavior from #1616.
-- Caching across trust changes — pins and cert verification stay the
-  arbiters; no "trusted IP" concept exists.
+- Creating cache entries from the connect path beyond the base's existing
+  behavior (discovery owns creation; the base's synthesized-identity
+  fallback for never-discovered hosts is kept as-is).
+- Changing the picker/discovery TTL or any #1616 display behavior.
+- Caching across trust changes — verification and pins stay the arbiters.
 - QUIC (separate spike, queued after this).
