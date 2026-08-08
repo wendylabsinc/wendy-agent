@@ -66,6 +66,7 @@ into `config.json`, which holds user intent.
       "port": 50051,
       "mtls": true,
       "assetId": 3,
+      "orgId": 7,
       "interfaceName": "en0",
       "agentVersion": "0.19.1",
       "os": "WendyOS",
