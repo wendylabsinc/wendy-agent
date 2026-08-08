@@ -352,6 +352,75 @@ func TestGCOCILayoutDirMissingDirIsNoop(t *testing.T) {
 	}
 }
 
+// writeLayoutIndex writes an index.json with the given raw manifest entries.
+func writeLayoutIndex(t *testing.T, dir string, entries ...string) {
+	t.Helper()
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+		strings.Join(entries, ",") + `]}`
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(idx), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPruneOCILayoutDirIndexKeepsOnlyNewestPlatformManifest(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	att := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:cccc","size":1,"platform":{"architecture":"unknown","os":"unknown"},"annotations":{"vnd.docker.reference.type":"attestation-manifest"}}`
+	niu := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbb","size":1,"platform":{"architecture":"arm64","os":"linux"},"annotations":{"org.opencontainers.image.created":"x"}}`
+	writeLayoutIndex(t, dir, old, niu, att)
+
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx struct {
+		Manifests []json.RawMessage `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Manifests) != 1 {
+		t.Fatalf("want exactly 1 manifest entry after prune, got %d: %s", len(idx.Manifests), data)
+	}
+	// The kept entry must be the newest platform match, raw bytes preserved
+	// (annotations intact).
+	if !strings.Contains(string(idx.Manifests[0]), "sha256:bbbb") ||
+		!strings.Contains(string(idx.Manifests[0]), "org.opencontainers.image.created") {
+		t.Fatalf("kept entry lost identity or annotations: %s", idx.Manifests[0])
+	}
+}
+
+func TestPruneOCILayoutDirIndexSingleEntryNoop(t *testing.T) {
+	dir := t.TempDir()
+	only := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	writeLayoutIndex(t, dir, only)
+	before, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatalf("single-entry index must be untouched\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestPruneOCILayoutDirIndexNoMatchErrorsAndPreservesIndex(t *testing.T) {
+	dir := t.TempDir()
+	amd := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"amd64","os":"linux"}}`
+	writeLayoutIndex(t, dir, amd)
+	before, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err == nil {
+		t.Fatal("want error when no manifest matches the platform")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("index must be untouched on error")
+	}
+}
+
 // The per-app layout lock must exclude a second acquirer until released. The
 // lock file lives NEXT TO the directory so self-heal's RemoveAll(dir) can
 // never delete a held lock.
