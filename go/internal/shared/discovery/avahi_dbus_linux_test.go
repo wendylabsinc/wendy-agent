@@ -135,7 +135,7 @@ func TestDecodeResolveReply(t *testing.T) {
 		if svc.InstanceName != "wendyos-foo" {
 			t.Errorf("InstanceName = %q, want %q", svc.InstanceName, "wendyos-foo")
 		}
-		// Trailing dot stripped, same as parseAvahiMDNSService (mdns_linux.go:111).
+		// Trailing dot stripped, same as parseAvahiResolveLine (discovery_linux.go).
 		if svc.Hostname != "wendyos-foo.local" {
 			t.Errorf("Hostname = %q, want %q (trailing dot stripped)", svc.Hostname, "wendyos-foo.local")
 		}

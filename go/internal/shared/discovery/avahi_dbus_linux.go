@@ -154,11 +154,11 @@ func (r realAvahiConn) RemoveSignal(ch chan *dbus.Signal) { r.conn.RemoveSignal(
 var connectAvahiSystemBus = dbus.ConnectSystemBus
 
 // avahiStreamBackend browses via the Avahi daemon's D-Bus API — no
-// avahi-browse child process, unlike browseMDNSAvahi (mdns_linux.go). It
-// returns errAvahiUnavailable when the system bus or the Avahi service itself
-// cannot be reached at all; any other error means browsing started and then
-// failed, which the streaming engine (stream.go) restarts this backend for
-// rather than falling back.
+// avahi-browse child process, unlike discoverLANAvahi's avahi-browse pipe
+// (discovery_linux.go). It returns errAvahiUnavailable when the system bus
+// or the Avahi service itself cannot be reached at all; any other error
+// means browsing started and then failed, which the streaming engine
+// (stream.go) restarts this backend for rather than falling back.
 //
 // dbus.ConnectSystemBus (a private connection this call owns end to end) is
 // used rather than the package-shared dbus.SystemBus: godbus documents that
@@ -312,7 +312,7 @@ func decodeResolveReply(body []any) (MDNSService, bool) {
 	}
 
 	// IPv6 link-local addresses need a zone ID (%iface) to be routable —
-	// mirrored from parseAvahiMDNSService (mdns_linux.go:119).
+	// mirrored from parseAvahiResolveLine (discovery_linux.go).
 	ipAddr := address
 	if addr, err := netip.ParseAddr(ipAddr); err == nil && addr.Is6() && addr.IsLinkLocalUnicast() && ifaceName != "" {
 		ipAddr = ipAddr + "%" + ifaceName

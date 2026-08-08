@@ -387,32 +387,6 @@ func TestParseMDNSInfoFields(t *testing.T) {
 	}
 }
 
-// ── parseAvahiMDNSService ───────────────────────────────────────────
-
-func TestParseAvahiMDNSService(t *testing.T) {
-	line := `=;enp0s20f0u9;IPv6;WendyOS\032on\032wendyos-calm-zinnia;_wendyos._udp;local;wendyos-calm-zinnia.local;fe80::ffab:7cf6:ef:21c5;50051;"displayname=Calm Zinnia" "wendyosdevice=769dc651"`
-
-	svc, ok := parseAvahiMDNSService(line)
-	if !ok {
-		t.Fatal("parseAvahiMDNSService() returned false")
-	}
-	if svc.InstanceName != "WendyOS on wendyos-calm-zinnia" {
-		t.Fatalf("InstanceName = %q, want %q", svc.InstanceName, "WendyOS on wendyos-calm-zinnia")
-	}
-	if svc.Hostname != "wendyos-calm-zinnia.local" {
-		t.Fatalf("Hostname = %q, want %q", svc.Hostname, "wendyos-calm-zinnia.local")
-	}
-	if svc.IPAddress != "fe80::ffab:7cf6:ef:21c5%enp0s20f0u9" {
-		t.Fatalf("IPAddress = %q, want %q", svc.IPAddress, "fe80::ffab:7cf6:ef:21c5%enp0s20f0u9")
-	}
-	if svc.Port != 50051 {
-		t.Fatalf("Port = %d, want %d", svc.Port, 50051)
-	}
-	if svc.TXTRecords["wendyosdevice"] != "769dc651" {
-		t.Fatalf("TXTRecords[wendyosdevice] = %q, want %q", svc.TXTRecords["wendyosdevice"], "769dc651")
-	}
-}
-
 // ── setMeshFields ────────────────────────────────────────────────────
 
 func TestSetMeshFields(t *testing.T) {
