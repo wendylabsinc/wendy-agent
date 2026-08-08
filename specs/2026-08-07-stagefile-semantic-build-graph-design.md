@@ -36,8 +36,9 @@ Dockerfile-based tool at any level of engineering effort.
 
 ## Goals
 
-- Node-level content addressing where a node's cache key is **independent of its
-  parent chain**.
+- Node-level content addressing where a node's cache key is a function of its
+  **semantic dependency closure** rather than of textual layer history, so two
+  projects that reach the same rootfs by different routes share cache.
 - A tiered cache — local → LAN → org → global — so an expensive node is built
   once by anyone rather than once per project.
 - Devices participate as cache tiers, so deploying ships only missing nodes.
@@ -94,16 +95,40 @@ only component with I/O, and it sits behind one interface.
 
 ### The load-bearing property
 
-`cachekey.Key` includes `(op_version, base_digest, op_inputs)` and **never the
-parent chain**.
+`cachekey.Key` is taken over a node's **semantic dependency closure** —
+`(recipe_version, resolved_input_keys, declared_params, input_file_digests)` —
+and not over textual or positional layer history.
 
-This is the whole design in one line. A Dockerfile layer's cache key
-transitively includes every layer before it, so `pip install -r
-requirements.txt` on top of my stage-3 is a different cache entry from the
-identical install on top of yours, even with a byte-identical lock. Under
-content addressing they are the same node. That is what makes cross-project and
-cross-org reuse possible at all, and it is why this cannot be retrofitted onto
-Dockerfile emission — it is a property of the key, not of the cache.
+Stated carefully, because the imprecise version of this claim is tempting and
+wrong. A node that runs on the result of another node genuinely *does* depend on
+it: `pip install` on a rootfs where `apt install foo` ran is not the same node as
+the identical install where `apt install bar` ran, and keying them alike would
+make the cache unsound. The dependency is real and the key must carry it.
+
+What the key drops is everything Docker's key carries *beyond* that dependency:
+the literal instruction text, the position in the file, the identity of unrelated
+sibling stages, and the accumulated history of layers this op does not actually
+read. Under Docker, two projects that reach a byte-identical rootfs by different
+routes have different layer IDs and therefore can never share cache. Under
+content addressing, they converge — the key is a function of what the node
+depends on, not of how the file got there.
+
+So reuse happens exactly when dependency closures coincide. That is a narrower
+claim than "identical ops always share," and it is still where the money is: the
+expensive nodes in practice are common dependencies on stock bases (torch/cu126
+on `python:3.12-slim`), which is precisely the case where closures do coincide
+across projects and orgs.
+
+This is why it cannot be retrofitted onto Dockerfile emission: it is a property
+of how the key is computed, not of where the cache lives.
+
+**Tradeoff worth naming:** the rejected "pure derivations" option (a node
+produces a free-standing tree, composed at COPY time) *would* give true
+base-independence, and a strictly higher reuse ceiling — the same site-packages
+node reusable across *different* base images. It was rejected because ecosystems
+that run postinstall scripts, `ldconfig`, or absolute paths assume a real rootfs.
+If the closure-coincidence rate measured in stage 3 turns out disappointing, that
+is the decision to revisit.
 
 ### The inner loop, concretely
 
