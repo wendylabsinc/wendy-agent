@@ -1,0 +1,126 @@
+package tlscache
+
+import (
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/binary"
+	"encoding/hex"
+	"sync"
+)
+
+// blobMagic versions the on-disk/on-keychain blob layout:
+// "WTS1" | uint32 BE ticket length | ticket | SessionState.Bytes().
+const blobMagic = "WTS1"
+
+// Cache implements tls.ClientSessionCache for a single (target address, client
+// certificate) pair, persisting the most recent session via a sessionStore.
+//
+// The store key binds the client leaf certificate on purpose: a session ticket
+// embeds the client identity verified at the original handshake, so a ticket
+// obtained with one org's cert must never be offered when dialing with
+// another's. Go's own sessionKey (the remote address) is ignored.
+type Cache struct {
+	storeKey string
+	store    sessionStore
+	wg       sync.WaitGroup
+}
+
+// ForTarget returns a Cache bound to the target address and client leaf cert
+// (DER), or nil when session caching is disabled (WENDY_TLS_SESSION_STORE=off
+// or no usable backend). Callers must skip the tls.Config wiring on nil — a
+// nil *Cache inside a non-nil interface value would panic in crypto/tls.
+func ForTarget(address string, clientLeafDER []byte) *Cache {
+	store := newDefaultStore()
+	if store == nil {
+		return nil
+	}
+	return newCache(address, clientLeafDER, store)
+}
+
+func newCache(address string, clientLeafDER []byte, store sessionStore) *Cache {
+	certSum := sha256.Sum256(clientLeafDER)
+	sum := sha256.Sum256(append([]byte(address+"|"), certSum[:]...))
+	return &Cache{storeKey: hex.EncodeToString(sum[:]), store: store}
+}
+
+// Get implements tls.ClientSessionCache. Any decode failure evicts the entry
+// and reports a miss; the caller then performs a full handshake.
+func (c *Cache) Get(string) (*tls.ClientSessionState, bool) {
+	blob := c.store.get(c.storeKey)
+	if blob == nil {
+		return nil, false
+	}
+	ticket, stateBytes, ok := decodeSessionBlob(blob)
+	if !ok {
+		c.store.delete(c.storeKey)
+		return nil, false
+	}
+	state, err := tls.ParseSessionState(stateBytes)
+	if err != nil {
+		c.store.delete(c.storeKey)
+		return nil, false
+	}
+	cs, err := tls.NewResumptionState(ticket, state)
+	if err != nil {
+		c.store.delete(c.storeKey)
+		return nil, false
+	}
+	return cs, true
+}
+
+// Put implements tls.ClientSessionCache. crypto/tls calls it from the
+// connection's record-processing path, so persistence (a Keychain subprocess
+// on macOS) happens on a background goroutine; a ticket lost to process exit
+// just means a full handshake next time. Put(nil) evicts (crypto/tls uses
+// that on certain handshake failures).
+func (c *Cache) Put(_ string, cs *tls.ClientSessionState) {
+	if cs == nil {
+		c.async(func() { c.store.delete(c.storeKey) })
+		return
+	}
+	ticket, state, err := cs.ResumptionState()
+	if err != nil || state == nil {
+		return
+	}
+	stateBytes, err := state.Bytes()
+	if err != nil {
+		return
+	}
+	blob := encodeSessionBlob(ticket, stateBytes)
+	c.async(func() { c.store.put(c.storeKey, blob) })
+}
+
+// Flush blocks until all pending async persists complete. Tests rely on it;
+// callers may use it before exit to make best-effort persistence certain.
+func (c *Cache) Flush() { c.wg.Wait() }
+
+func (c *Cache) async(fn func()) {
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
+		fn()
+	}()
+}
+
+func encodeSessionBlob(ticket, state []byte) []byte {
+	blob := make([]byte, 0, len(blobMagic)+4+len(ticket)+len(state))
+	blob = append(blob, blobMagic...)
+	var l [4]byte
+	binary.BigEndian.PutUint32(l[:], uint32(len(ticket)))
+	blob = append(blob, l[:]...)
+	blob = append(blob, ticket...)
+	blob = append(blob, state...)
+	return blob
+}
+
+func decodeSessionBlob(blob []byte) (ticket, state []byte, ok bool) {
+	header := len(blobMagic) + 4
+	if len(blob) < header || string(blob[:len(blobMagic)]) != blobMagic {
+		return nil, nil, false
+	}
+	n := binary.BigEndian.Uint32(blob[len(blobMagic):header])
+	if uint32(len(blob)-header) < n {
+		return nil, nil, false
+	}
+	return blob[header : header+int(n)], blob[header+int(n):], true
+}
