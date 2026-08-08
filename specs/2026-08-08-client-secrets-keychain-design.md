@@ -30,7 +30,7 @@ Certificates and chains are public material and stay in the JSON.
 
 The `security`-CLI runner and keychain store move from
 `go/internal/cli/tlscache` into a new shared package
-`go/internal/cli/secretstore` (exported: a `Store` interface with
+`go/internal/shared/secretstore` (under shared/, not cli/: the config package consumes it and must never import go/internal/cli) (exported: a `Store` interface with
 `Get/Put/Delete`, the keychain implementation, and the swappable runner for
 test fakes). `tlscache` consumes the shared keychain store; its file backend,
 `WENDY_TLS_SESSION_STORE` env, and `off` semantics stay in `tlscache`
@@ -98,8 +98,7 @@ config is saved. Two triggers cover everyone:
   one-line notice:
   `Moved wendy credentials into the macOS Keychain (older wendy versions will need 'wendy auth login' again).`
 - Any organic `Save()` (login, set-default, etc.) migrates as a side effect;
-  the notice still prints only on the first migration (detected by "a field
-  changed from inline to reference during this Save").
+  organic Saves migrate silently; the root hook owns the notice (a config fully migrated by an organic Save simply never triggers it).
 
 `WENDY_SECRET_STORE=file` disables dehydration: new saves write inline. That
 is also the de-migration path — with the env set, a `Save()` resolves any

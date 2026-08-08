@@ -358,3 +358,58 @@ func TestHasInlineSecrets(t *testing.T) {
 		t.Error("inline key not detected")
 	}
 }
+
+func TestMigrateSecretsIfNeeded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	store := newFakeStore()
+	useFakeStore(t, store)
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = true
+	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok-123"}}}
+	if err := Save(cfg); err != nil { // simulate a pre-existing config...
+		t.Fatalf("seed Save: %v", err)
+	}
+	// ...that was written by an OLD cli: rewrite it inline via file mode.
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	if err := Save(cfg); err != nil {
+		t.Fatalf("inline Save: %v", err)
+	}
+	t.Setenv("WENDY_SECRET_STORE", "")
+
+	loaded, _ := Load()
+	if !hasInlineSecrets(loaded) {
+		t.Fatal("test setup failed: config should hold inline secrets")
+	}
+	if !MigrateSecretsIfNeeded(loaded) {
+		t.Fatal("MigrateSecretsIfNeeded = false, want true (migration ran)")
+	}
+	reloaded, _ := Load()
+	if hasInlineSecrets(reloaded) {
+		t.Error("config still holds inline secrets after migration")
+	}
+	// Second call: nothing left to migrate.
+	if MigrateSecretsIfNeeded(reloaded) {
+		t.Error("second MigrateSecretsIfNeeded = true, want false")
+	}
+}
+
+func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	useFakeStore(t, newFakeStore())
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok"}}}
+
+	origDefault := secretsPlatformDefault
+	secretsPlatformDefault = false // non-darwin
+	if MigrateSecretsIfNeeded(cfg) {
+		t.Error("migrated on a platform without a store")
+	}
+	secretsPlatformDefault = true
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	if MigrateSecretsIfNeeded(cfg) {
+		t.Error("migrated despite WENDY_SECRET_STORE=file")
+	}
+	secretsPlatformDefault = origDefault
+}

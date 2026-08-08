@@ -224,3 +224,38 @@ func hasInlineSecrets(cfg *Config) bool {
 	}
 	return false
 }
+
+// MigrateSecretsIfNeeded moves pre-existing plaintext secrets into the
+// platform store. Called once per invocation from the root command's
+// synchronous pre-run zone; organic Saves elsewhere migrate silently, so
+// this hook exists to (a) migrate users who never run a config-saving
+// command and (b) own the one-line notice. Returns true when a migration
+// actually reduced the number of inline secrets on disk.
+func MigrateSecretsIfNeeded(cfg *Config) bool {
+	if !dehydrateEnabled() || !hasInlineSecrets(cfg) {
+		return false
+	}
+	if err := Save(cfg); err != nil {
+		return false
+	}
+	reloaded, err := Load()
+	if err != nil {
+		return false
+	}
+	return countInlineSecrets(reloaded) < countInlineSecrets(cfg)
+}
+
+func countInlineSecrets(cfg *Config) int {
+	n := 0
+	for _, a := range cfg.Auth {
+		if a.APIKey != "" && !isRef(a.APIKey) {
+			n++
+		}
+		for _, c := range a.Certificates {
+			if c.PemPrivateKey != "" && !isRef(c.PemPrivateKey) {
+				n++
+			}
+		}
+	}
+	return n
+}
