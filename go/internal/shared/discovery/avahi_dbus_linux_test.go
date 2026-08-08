@@ -230,6 +230,12 @@ type fakeAvahiConn struct {
 	freeErr       error
 	resolveFn     func(args []any) ([]any, error)
 
+	// blockMethods, when set for a method name, makes Call hang until its ctx
+	// is done instead of replying — simulating a wedged daemon that still
+	// owns the bus name, to pin avahiCallTimeout's bound on GetVersionString
+	// and ServiceBrowserNew.
+	blockMethods map[string]bool
+
 	sigCh chan *dbus.Signal
 	ready chan struct{}
 	once  sync.Once
@@ -273,11 +279,20 @@ func (f *fakeAvahiConn) RemoveSignal(_ chan *dbus.Signal) {
 	f.logEvent("RemoveSignal")
 }
 
-func (f *fakeAvahiConn) Call(_ context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
+func (f *fakeAvahiConn) Call(ctx context.Context, path dbus.ObjectPath, method string, args ...any) ([]any, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, fakeAvahiCall{path: path, method: method, args: append([]any(nil), args...)})
+	blocking := f.blockMethods[method]
 	f.mu.Unlock()
 	f.logEvent("Call:" + method)
+
+	if blocking {
+		// Simulates a wedged daemon that still owns the bus name: the call
+		// never replies on its own, so only a caller-supplied ctx deadline
+		// can end it — exactly what avahiCallTimeout exists to bound.
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 
 	switch method {
 	case avahiGetVersionStringMethod:
@@ -545,6 +560,199 @@ func TestAvahiBrowseAddMatchSignalFailure(t *testing.T) {
 	}
 	if fake.eventIndex("Call:"+avahiServiceBrowserNewMethod) != -1 {
 		t.Error("avahiBrowse should not attempt ServiceBrowserNew after AddMatchSignal fails")
+	}
+}
+
+// TestAvahiBrowseSignalChannelClosedWithLiveCtxReturnsRestartableError pins
+// the CRITICAL fix: godbus closes every channel registered via Signal() when
+// the connection's transport dies (a bus/daemon crash calls conn.Close()
+// internally, which calls Terminate()) — this can happen with ctx still
+// live, and previously produced the exact same nil return as a clean
+// ctx.Done() stop. That made the streaming engine treat a dead connection as
+// "browse finished cleanly" and never restart it: LAN discovery would
+// silently stop for the rest of the session. sigCh is closed here directly,
+// without ever cancelling ctx, reproducing exactly that condition.
+func TestAvahiBrowseSignalChannelClosedWithLiveCtxReturnsRestartableError(t *testing.T) {
+	fake := newFakeAvahiConn("/browser")
+	fake.resolveFn = func(args []any) ([]any, error) {
+		return resolveReplyBody(1, args[2].(string), "host.local.", "192.168.1.1", 50051, nil), nil
+	}
+
+	ctx := context.Background() // deliberately never cancelled
+	done := make(chan error, 1)
+	go func() {
+		done <- avahiBrowse(ctx, fake, "_wendyos._udp", func(MDNSService) {})
+	}()
+
+	select {
+	case <-fake.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse never registered its signal channel")
+	}
+
+	// Simulate the transport dying: the channel closes on its own, ctx is
+	// still live.
+	close(fake.sigCh)
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("avahiBrowse returned nil for a signal channel that closed with ctx still live; want a restartable error")
+		}
+		if !errors.Is(err, errAvahiConnectionLost) {
+			t.Errorf("err = %v, want errAvahiConnectionLost", err)
+		}
+		if ctx.Err() != nil {
+			t.Fatal("test bug: ctx must still be live for this to pin the right condition")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse did not return after its signal channel closed")
+	}
+
+	// Cleanup must still happen on this path: Free/RemoveSignal are not
+	// skipped just because the failure was detected via the channel itself.
+	if fake.eventIndex("RemoveSignal") == -1 {
+		t.Error("avahiBrowse should still RemoveSignal after a lost connection")
+	}
+	if fake.eventIndex("Call:"+avahiServiceBrowserFreeMethod) == -1 {
+		t.Error("avahiBrowse should still attempt Free after a lost connection")
+	}
+}
+
+// TestAvahiBrowseFailureSignalReturnsRestartableError pins the other CRITICAL
+// half: the avahi daemon can die/restart (systemd bounce, package upgrade)
+// while the D-Bus connection to the bus itself stays up. Avahi reports this
+// per-browser via a Failure signal rather than dropping the connection, so
+// without handling it the read loop would block on sigCh forever, producing
+// nothing, with no error and no restart.
+func TestAvahiBrowseFailureSignalReturnsRestartableError(t *testing.T) {
+	const browserPath = dbus.ObjectPath("/browser")
+	fake := newFakeAvahiConn(browserPath)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- avahiBrowse(ctx, fake, "_wendyos._udp", func(MDNSService) {
+			t.Error("emit must not be called for a Failure signal")
+		})
+	}()
+
+	select {
+	case <-fake.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse never registered its signal channel")
+	}
+
+	fake.sigCh <- &dbus.Signal{
+		Path: browserPath,
+		Name: avahiBrowserFailureSig,
+		Body: []any{"org.freedesktop.Avahi.Server.Error.Failure"},
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("avahiBrowse returned nil for a ServiceBrowser Failure signal; want a restartable error")
+		}
+		if errors.Is(err, errAvahiUnavailable) {
+			t.Error("a Failure signal after browsing started must not be errAvahiUnavailable (not a fallback trigger)")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse did not return after a Failure signal")
+	}
+}
+
+// TestAvahiBrowseCtxCancelStillReturnsNil re-pins, in isolation, that a plain
+// ctx cancellation (no channel close, no Failure signal) still returns nil —
+// the existing, correct "clean stop" behavior that the two fixes above must
+// not disturb. (TestAvahiBrowseOrderingPathFilterAndCleanup already covers
+// this end to end; this test isolates just the property in case that test's
+// scope ever narrows.)
+func TestAvahiBrowseCtxCancelStillReturnsNil(t *testing.T) {
+	fake := newFakeAvahiConn("/browser")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- avahiBrowse(ctx, fake, "_wendyos._udp", func(MDNSService) {})
+	}()
+
+	select {
+	case <-fake.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse never registered its signal channel")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("avahiBrowse returned %v, want nil after a plain ctx cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("avahiBrowse did not return after ctx cancellation")
+	}
+}
+
+// ── bounded availability/setup calls (avahiCallTimeout) ────────────────────
+
+// TestProbeAvahiAvailableTimesOutOnBlockedCall pins the IMPORTANT fix: a
+// wedged avahi daemon that still owns its bus name (hung, not gone) must not
+// block the probe forever — without a bound, there is no errAvahiUnavailable
+// fallback and the backend hangs indefinitely instead of falling back to
+// hashicorp/mdns.
+func TestProbeAvahiAvailableTimesOutOnBlockedCall(t *testing.T) {
+	orig := avahiCallTimeout
+	t.Cleanup(func() { avahiCallTimeout = orig })
+	avahiCallTimeout = 50 * time.Millisecond
+
+	fake := newFakeAvahiConn("/browser")
+	fake.blockMethods = map[string]bool{avahiGetVersionStringMethod: true}
+
+	start := time.Now()
+	err := probeAvahiAvailable(context.Background(), fake)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("probeAvahiAvailable should return an error when GetVersionString never replies")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("probeAvahiAvailable took %v, want it bounded by avahiCallTimeout (50ms)", elapsed)
+	}
+}
+
+// TestAvahiBrowseServiceBrowserNewTimesOutAfterSuccessfulProbe pins the other
+// half of the IMPORTANT fix: ServiceBrowserNew itself must be bounded too, so
+// a daemon that answers the availability probe but then wedges on browser
+// creation still produces a restartable error instead of hanging
+// avahiBrowse (and therefore the whole streaming session) forever.
+func TestAvahiBrowseServiceBrowserNewTimesOutAfterSuccessfulProbe(t *testing.T) {
+	orig := avahiCallTimeout
+	t.Cleanup(func() { avahiCallTimeout = orig })
+	avahiCallTimeout = 50 * time.Millisecond
+
+	fake := newFakeAvahiConn("/browser")
+	fake.blockMethods = map[string]bool{avahiServiceBrowserNewMethod: true}
+
+	start := time.Now()
+	err := avahiBrowse(context.Background(), fake, "_wendyos._udp", func(MDNSService) {
+		t.Error("emit must not be called when ServiceBrowserNew never replies")
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("avahiBrowse should return an error when ServiceBrowserNew never replies")
+	}
+	if errors.Is(err, errAvahiUnavailable) {
+		t.Error("a ServiceBrowserNew timeout after a successful probe must not be errAvahiUnavailable (not a fallback trigger)")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("avahiBrowse took %v, want it bounded by avahiCallTimeout (50ms)", elapsed)
+	}
+	if fake.eventIndex("RemoveSignal") == -1 {
+		t.Error("avahiBrowse should still RemoveSignal after a ServiceBrowserNew timeout")
 	}
 }
 
