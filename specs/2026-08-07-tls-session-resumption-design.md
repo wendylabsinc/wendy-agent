@@ -43,8 +43,10 @@ drop from ~2.2s to single-digit/low-tens of milliseconds on LAN.
   `sessionStore` interface leaves room for them, but the `0600` file default
   matches those platforms' existing key-storage posture for now.
 - Moving the client certificate/private key out of `~/.wendy/config.json`
-  into platform secret stores — worth doing for consistency someday, but a
-  separate change with its own migration concerns.
+  into platform secret stores — **planned follow-up PR** (own spec: Keychain
+  on macOS, migration of existing configs, headless/Linux behavior). The
+  `sessionStore` interface introduced here should be designed so that PR can
+  reuse it.
 - Proto or RPC changes (there are none).
 
 ## Design
