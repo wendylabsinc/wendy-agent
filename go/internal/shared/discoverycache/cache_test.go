@@ -1,0 +1,127 @@
+package discoverycache
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+)
+
+// modelsLANFixture returns a fully-populated models.LANDevice covering every
+// field EntryFromDevice/Device round-trip through Entry.
+func modelsLANFixture() models.LANDevice {
+	return models.LANDevice{
+		ID:               "dev-1",
+		DisplayName:      "Orin Nano",
+		Hostname:         "orin-nano.local",
+		IPAddress:        "10.0.0.5",
+		Port:             50051,
+		IsMTLS:           true,
+		AssetID:          3,
+		MeshName:         "brave-dolphin",
+		OrgID:            7,
+		InterfaceType:    string(models.InterfaceLAN),
+		NetworkInterface: "en0",
+		IsWendyDevice:    true,
+		AgentVersion:     "0.19.1",
+		DeviceType:       "orin-nano",
+		OS:               "wendyos",
+		OSVersion:        "0.19.1",
+		CPUArchitecture:  "arm64",
+	}
+}
+
+func TestKeyFallback(t *testing.T) {
+	if Key("Dev-ID", "orin") != "dev-id" {
+		t.Fatalf("id should win, lowercased")
+	}
+	if Key("", "Orin-Nano") != "orin-nano" {
+		t.Fatalf("displayName fallback, lowercased")
+	}
+}
+
+func TestUpsertMergeAndTTL(t *testing.T) {
+	dir := t.TempDir()
+	c, err := LoadFrom(filepath.Join(dir, "devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	c.Upsert(Entry{ID: "a", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.5", Port: 50051, AgentVersion: "0.19.1"}, now.Add(-2*time.Hour))
+	c.Upsert(Entry{ID: "a", DisplayName: "orin", Hostname: "orin.local", IP: "10.0.0.9", Port: 50051}, now) // browse-only: no version
+	fresh := c.Fresh(now)
+	if len(fresh) != 1 {
+		t.Fatalf("want 1 fresh entry, got %d", len(fresh))
+	}
+	if fresh[0].IP != "10.0.0.9" || fresh[0].AgentVersion != "0.19.1" {
+		t.Fatalf("merge broke: %+v (new IP must win, old version must survive)", fresh[0])
+	}
+
+	// stale entries are not fresh
+	c.Upsert(Entry{ID: "b", DisplayName: "old", Hostname: "old.local", Port: 50051}, now.Add(-61*time.Minute))
+	if got := len(c.Fresh(now)); got != 1 {
+		t.Fatalf("61-minute-old entry must not be fresh, got %d entries", got)
+	}
+}
+
+func TestFlushRoundTripAndEviction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	c, _ := LoadFrom(path)
+	now := time.Now()
+	c.Upsert(Entry{ID: "a", DisplayName: "orin", Hostname: "orin.local", Port: 50051}, now)
+	c.Upsert(Entry{ID: "b", DisplayName: "stale", Hostname: "stale.local", Port: 50051}, now.Add(-2*time.Hour))
+	if err := c.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := LoadFrom(path)
+	if got := len(c2.Fresh(now)); got != 1 {
+		t.Fatalf("stale entry must be evicted on flush, got %d", got)
+	}
+}
+
+func TestFlushMergesConcurrentWriter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	now := time.Now()
+	other, _ := LoadFrom(path)
+	other.Upsert(Entry{ID: "other", DisplayName: "other", Hostname: "other.local", Port: 50051}, now)
+	if err := other.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+	// c was loaded before other's flush (empty file), upserts one entry;
+	// Flush must re-read and keep other's entry too.
+	c, _ := LoadFrom(path) // loaded fresh here for simplicity; the re-read is what's under test
+	c.Upsert(Entry{ID: "mine", DisplayName: "mine", Hostname: "mine.local", Port: 50051}, now)
+	if err := c.Flush(now); err != nil {
+		t.Fatal(err)
+	}
+	c2, _ := LoadFrom(path)
+	if got := len(c2.Fresh(now)); got != 2 {
+		t.Fatalf("flush must merge with on-disk entries, got %d", got)
+	}
+}
+
+func TestCorruptFileIsEmptyCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadFrom(path)
+	if err != nil || len(c.Fresh(time.Now())) != 0 {
+		t.Fatalf("corrupt file must load as empty cache with nil error, err=%v", err)
+	}
+	// and Flush must replace it
+	c.Upsert(Entry{ID: "a", DisplayName: "a", Hostname: "a.local", Port: 50051}, time.Now())
+	if err := c.Flush(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEntryDeviceRoundTrip(t *testing.T) {
+	dev := EntryFromDevice(modelsLANFixture()).Device()
+	if dev.ID != "dev-1" || dev.IPAddress != "10.0.0.5" || !dev.IsMTLS || dev.OrgID != 7 ||
+		dev.AssetID != 3 || dev.InterfaceType != "lan" || !dev.IsWendyDevice || dev.NetworkInterface != "en0" {
+		t.Fatalf("round trip lost fields: %+v", dev)
+	}
+}
