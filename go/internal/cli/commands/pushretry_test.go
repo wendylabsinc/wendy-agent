@@ -1,6 +1,10 @@
 package commands
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+)
 
 func TestIsTransientPushError(t *testing.T) {
 	transient := []string{
@@ -72,6 +76,33 @@ func TestResolveBuildConcurrency(t *testing.T) {
 	for _, tt := range tests {
 		if got := resolveBuildConcurrency(tt.buildCount, tt.override); got != tt.want {
 			t.Errorf("resolveBuildConcurrency(%d, %d) = %d, want %d", tt.buildCount, tt.override, got, tt.want)
+		}
+	}
+}
+
+func TestShouldRetryPush(t *testing.T) {
+	transientOut := `unexpected EOF`
+	buildFailOut := `ERROR: failed to solve: process "/bin/sh -c go build" did not complete successfully: exit code: 1`
+	refused := fmt.Errorf("dial tcp 192.168.1.20:5555: connect: connection refused")
+
+	tests := []struct {
+		name    string
+		ctxErr  error
+		attempt int
+		output  string
+		dialErr error
+		want    bool
+	}{
+		{"transient output retries", nil, 1, transientOut, nil, true},
+		{"refused dial never retries", nil, 1, transientOut, refused, false},
+		{"non-transient output does not retry", nil, 1, buildFailOut, nil, false},
+		{"cancelled context does not retry", context.Canceled, 1, transientOut, nil, false},
+		{"final attempt does not retry", nil, maxBuildPushAttempts, transientOut, nil, false},
+		{"non-refused dial error still retries transient", nil, 1, transientOut, fmt.Errorf("dial tcp: i/o timeout"), true},
+	}
+	for _, tt := range tests {
+		if got := shouldRetryPush(tt.ctxErr, tt.attempt, tt.output, tt.dialErr); got != tt.want {
+			t.Errorf("%s: shouldRetryPush = %v, want %v", tt.name, got, tt.want)
 		}
 	}
 }

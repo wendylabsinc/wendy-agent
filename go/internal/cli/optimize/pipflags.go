@@ -18,13 +18,39 @@ func findPipInstall(args string) (string, bool) {
 	return "", false
 }
 
+func hasPipCacheMount(flags []string) bool {
+	for _, flag := range flags {
+		if !strings.HasPrefix(flag, "--mount=") {
+			continue
+		}
+		isCache := false
+		target := ""
+		for _, option := range strings.Split(strings.TrimPrefix(flag, "--mount="), ",") {
+			key, value, ok := strings.Cut(option, "=")
+			if !ok {
+				continue
+			}
+			switch key {
+			case "type":
+				isCache = value == "cache"
+			case "target", "dst", "destination":
+				target = strings.TrimSuffix(value, "/")
+			}
+		}
+		if isCache && (target == "/root/.cache" || target == "/root/.cache/pip") {
+			return true
+		}
+	}
+	return false
+}
+
 func (a pipFlagsAnalyzer) Analyze(t *Target) []Finding {
 	if t.Dockerfile == nil {
 		return nil
 	}
 	var out []Finding
 	for _, inst := range t.Dockerfile.Instructions {
-		if inst.Cmd != "RUN" {
+		if inst.Cmd != "RUN" || hasPipCacheMount(inst.Flags) {
 			continue
 		}
 		pipCmd, ok := findPipInstall(inst.Args)

@@ -39,6 +39,22 @@ func TestPipFlagsMatchesPip3(t *testing.T) {
 	}
 }
 
+func TestPipFlagsSilentWithPipCacheMount(t *testing.T) {
+	tg := dockerfileTarget(t, "FROM python:3.12\nRUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt\n")
+	got := pipFlagsAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+func TestPipFlagsStillFlagsWithUnrelatedCacheMount(t *testing.T) {
+	tg := dockerfileTarget(t, "FROM python:3.12\nRUN --mount=type=cache,target=/var/cache/apt pip install -r requirements.txt\n")
+	got := pipFlagsAnalyzer{}.Analyze(tg)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+}
+
 func TestPipFlagsIgnoresNonDockerTarget(t *testing.T) {
 	tg := &Target{Name: "app", Kind: KindNativeSwift, Arch: "arm64"}
 	got := pipFlagsAnalyzer{}.Analyze(tg)

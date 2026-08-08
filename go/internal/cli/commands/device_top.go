@@ -817,21 +817,21 @@ func topMeter(label string, ratio float64, value string, width int) string {
 // topNameWidth returns the flexible name width after reserving the resource and
 // state columns. The state column is deliberately wide enough for "crash-loop".
 func topNameWidth(width int) int {
-	// 1 (lead) + name + 1 + 6 (cpu) + 1 + 6 (memp) + 1 + 10 (mem) +
-	// 1 + 10 (state) = name + 37. Keep one spare cell for terminal quirks.
-	nameW := width - 38
+	// 1 (lead) + name + 1 + 6 (cpu) + 1 + 10 (mem) +
+	// 1 + 10 (state) = name + 30. Keep one spare cell for terminal quirks.
+	nameW := width - 31
 	if nameW < 10 {
 		nameW = 10
 	}
 	return nameW
 }
 
-func topFormatRow(name, cpu, memp, mem, state string, nameW int) string {
+func topFormatRow(name, cpu, mem, state string, nameW int) string {
 	r := []rune(name)
 	if len(r) > nameW {
 		name = string(r[:nameW])
 	}
-	return fmt.Sprintf(" %-*s %6s %6s %10s %-10s", nameW, name, cpu, memp, mem, state)
+	return fmt.Sprintf(" %-*s %6s %10s %-10s", nameW, name, cpu, mem, state)
 }
 
 func (m topModel) View() string {
@@ -972,7 +972,7 @@ func (m topModel) listLines(width int) []string {
 		memTitle = "MEM▾"
 	}
 	var lines []string
-	header := padOrCrop(topFormatRow("APP", cpuTitle, "MEM%", memTitle, "STATE", nameW), width)
+	header := padOrCrop(topFormatRow("APP", cpuTitle, memTitle, "STATE", nameW), width)
 	lines = append(lines, topHeaderBar.Render(header))
 
 	if len(m.rows) == 0 {
@@ -988,13 +988,11 @@ func (m topModel) listLines(width int) []string {
 		if r.hasCPU && m.havePrev {
 			cpu = fmt.Sprintf("%.1f", r.cpuPercent)
 		}
-		memp := "-"
 		mem := "—"
 		if r.state == agentpb.AppRunningState_RUNNING && memTotal > 0 {
-			memp = fmt.Sprintf("%.1f", float64(r.memBytes)/float64(memTotal)*100)
 			mem = formatBytes(r.memBytes)
 		}
-		row := padOrCrop(topFormatRow(topDisplayName(r), cpu, memp, mem, topStateLabel(r.state), nameW), width)
+		row := padOrCrop(topFormatRow(topDisplayName(r), cpu, mem, topStateLabel(r.state), nameW), width)
 		switch {
 		case i == m.cursor:
 			lines = append(lines, topSelRow.Render(row))

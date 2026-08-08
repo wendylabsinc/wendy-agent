@@ -172,6 +172,26 @@ func TestDeviceList_ScanTrue_IncludesScanResults(t *testing.T) {
 	}
 }
 
+func TestDeviceList_MaxBytesTruncates(t *testing.T) {
+	auth := make([]config.AuthConfig, 0, 50)
+	for i := 0; i < 50; i++ {
+		auth = append(auth, config.AuthConfig{CloudGRPC: "some-long-device-hostname-for-padding.local:50051"})
+	}
+	srv := New(&config.Config{Auth: auth}, nil)
+
+	result, err := srv.callTool(context.Background(), "device_list", map[string]any{"max_bytes": 50})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("truncation is not an error result: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["truncated"] != true {
+		t.Errorf("expected truncated=true, got %v", sc["truncated"])
+	}
+}
+
 func TestDeviceConnect_CallsConnectFn(t *testing.T) {
 	fake := &fakeAgentServer{
 		versionResp: &agentpb.GetAgentVersionResponse{Version: "1.0.0"},

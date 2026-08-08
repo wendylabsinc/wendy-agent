@@ -340,6 +340,73 @@ jobs:
             grep -q "WendyOS Docs" "${response_file}"
           done <<< "${DEPLOY_PATHS}"
 
+      - name: Deploy vanity redirects
+        if: >-
+          needs.build.outputs.is_release_deploy == 'true' ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          DOCS_BUCKET: wendy-docs-public
+        run: |
+          set -euo pipefail
+
+          # Short vanity paths served from the bucket root, e.g.
+          # https://docs.wendy.dev/pi -> the Raspberry Pi 5 install guide.
+          # Slugs must never collide with deploy path prefixes
+          # (latest, latest-nightly, release-*, branch-*).
+          declare -A REDIRECTS=(
+            [pi]="https://docs.wendy.dev/latest/installation/wendyos-raspberry-pi-5/"
+            [thor]="https://docs.wendy.dev/latest/installation/wendyos-nvidia-jetson-agx-thor/"
+            [jetson]="https://docs.wendy.dev/latest/installation/wendyos-nvidia-jetson-orin-nano/"
+            [jetson-orin]="https://docs.wendy.dev/latest/installation/wendyos-nvidia-jetson-orin-nano/"
+            [jetson-orin-nano]="https://docs.wendy.dev/latest/installation/wendyos-nvidia-jetson-orin-nano/"
+          )
+
+          workdir="$(mktemp -d)"
+          for slug in "${!REDIRECTS[@]}"; do
+            target="${REDIRECTS[${slug}]}"
+            if [[ ! "${slug}" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]]; then
+              echo "::error::Unsupported vanity redirect slug: ${slug}"
+              exit 1
+            fi
+            case "${slug}" in
+              latest|latest-nightly|release-*|branch-*)
+                echo "::error::Vanity redirect slug collides with deploy paths: ${slug}"
+                exit 1
+                ;;
+            esac
+            if [[ ! "${target}" =~ ^https://docs\.wendy\.dev/[a-z0-9][a-z0-9./_-]{0,200}$ ]]; then
+              echo "::error::Unsupported vanity redirect target: ${target}"
+              exit 1
+            fi
+
+            mkdir -p "${workdir}/${slug}"
+            cat > "${workdir}/${slug}/index.html" <<HTML
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=${target}">
+          <link rel="canonical" href="${target}">
+          <title>Redirecting to WendyOS Docs</title>
+          </head>
+          <body>
+          <p>Redirecting to <a href="${target}">${target}</a>&hellip;</p>
+          </body>
+          </html>
+          HTML
+
+            gcloud storage cp "${workdir}/${slug}/index.html" \
+              "gs://${DOCS_BUCKET}/${slug}/index.html" \
+              --cache-control="public, max-age=300" \
+              --quiet \
+              --project="${GCP_PROJECT_ID}"
+
+            response_file="$(mktemp)"
+            curl -fsS --max-time 30 -o "${response_file}" "https://docs.wendy.dev/${slug}/"
+            grep -qF "${target}" "${response_file}"
+          done
+
       - name: Delete expired branch previews
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}

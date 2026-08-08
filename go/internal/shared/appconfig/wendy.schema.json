@@ -296,6 +296,20 @@
         },
         {
           "properties": {
+            "type": { "const": "http" },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Primary HTTP port exposed by the app."
+            }
+          },
+          "required": ["type", "port"],
+          "additionalProperties": false,
+          "description": "Declares the app's primary HTTP port for discovery, readiness, and browser opening."
+        },
+        {
+          "properties": {
             "type": { "const": "display" }
           },
           "required": ["type"],

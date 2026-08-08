@@ -188,7 +188,7 @@ func firmwareMismatchError(t *testing.T) error {
 }
 
 func TestCameraFirmwareDiagnostic(t *testing.T) {
-	err := cameraFirmwareDiagnostic(firmwareMismatchError(t))
+	err := cameraStreamDiagnostic(firmwareMismatchError(t))
 	for _, want := range []string{"R38.2.0", "R36.4.3", "wendy os install", "do not use --rootfs-only"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("diagnostic %q missing %q", err, want)

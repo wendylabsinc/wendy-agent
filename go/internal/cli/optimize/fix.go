@@ -101,10 +101,10 @@ func ApplyFixes(findings []Finding) ([]AppliedFix, error) {
 // actually gets installed or how the built artifact behaves, so it's safe
 // to apply automatically and silently (e.g. before every build, with no
 // prompt). Fixes outside this set are reported but never auto-applied:
-// node-ci's npm-ci swap can turn a passing build into a hard failure on a
-// drifted lockfile, and release-debug's -c release/--release swap changes
-// the shipped binary's runtime behavior — both are visible-diff, explicit
-// `--fix` candidates only, not silent ones.
+// release-debug's -c release/--release swap changes the shipped binary's
+// runtime behavior, so it's a visible-diff, explicit `--fix` candidate
+// only. (node-ci goes further and emits no Fix at all: an npm-ci swap can
+// turn a passing build into a hard failure on a drifted lockfile.)
 var safeAutoApplyAnalyzers = map[string]bool{
 	"apt-install": true,
 	"pip-flags":   true,

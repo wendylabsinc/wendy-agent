@@ -64,6 +64,57 @@ func TestNodeCISilentOnGlobalInstall(t *testing.T) {
 	}
 }
 
+func TestNodeCISilentOnDifferentSubcommand(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install-ci-test\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+func TestNodeCISilentOnIndividualDependencyInstall(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install left-pad\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
+func TestNodeCIReportsProjectInstallWithFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN npm install --legacy-peer-deps\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Fix != nil {
+		t.Fatalf("expected no auto-fix (npm ci can hard-fail on a drifted lockfile — report-only), got %+v", got[0].Fix)
+	}
+}
+
+func TestNodeCIIgnoresMentionOutsideCommandPosition(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tg := dockerfileTargetInDir(t, dir, "FROM node:20\nRUN echo npm install\n")
+	got := nodeCIAnalyzer{}.Analyze(tg)
+	if len(got) != 0 {
+		t.Fatalf("got %d findings, want 0: %+v", len(got), got)
+	}
+}
+
 func TestNodeCIIgnoresNonDockerTarget(t *testing.T) {
 	tg := &Target{Name: "app", Kind: KindNativeSwift, Arch: "arm64"}
 	got := nodeCIAnalyzer{}.Analyze(tg)

@@ -3,6 +3,7 @@ package appconfig
 import (
 	"fmt"
 	"hash/fnv"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -53,11 +54,32 @@ var ros2RMWAliases = map[string]string{
 	"rmw_gurumdds_cpp":   "rmw_gurumdds_cpp",
 }
 
-// validateROS2Config rejects an out-of-range domainId or an unknown rmw so a
-// typo fails fast at config-parse / `wendy run` time instead of silently
-// launching a container with no ROS_DOMAIN_ID/RMW_IMPLEMENTATION isolation
-// (WDY-1701). prefix labels the source, e.g. "frameworks.ros2" or
-// `services["talker"].frameworks.ros2`.
+// ROS2DistroPattern is the shape a ROS 2 distribution name must have. It gets
+// interpolated into an image reference (docker.io/library/ros:<distro>) and into
+// a shell command inside the sidecar (source /opt/ros/<distro>/setup.bash), so it
+// is validated at config-parse time as well as at use time (SOC2-CC6,
+// ISO27001-A.8, NIST-SI-10). The agent-side gate in containerd/ros2.go enforces
+// the same shape.
+var ROS2DistroPattern = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
+
+// ros2KnownDistros are the distributions this codebase has been exercised
+// against. A well-formed but unrecognized distro is allowed through — pinning the
+// list would block a new ROS 2 release until Wendy shipped support — but it is
+// worth surfacing as a warning at the CLI, hence the exported helper.
+var ros2KnownDistros = map[string]bool{
+	"foxy": true, "galactic": true, "humble": true, "iron": true,
+	"jazzy": true, "kilted": true, "rolling": true,
+}
+
+// IsKnownROS2Distro reports whether s is a ROS 2 distribution this codebase
+// recognizes. A false result is not fatal (see ros2KnownDistros).
+func IsKnownROS2Distro(s string) bool { return ros2KnownDistros[strings.ToLower(s)] }
+
+// validateROS2Config rejects an out-of-range domainId, an unsupported rmw, or a
+// malformed distro so a typo fails fast at config-parse / `wendy run` time
+// instead of silently launching a container with no ROS_DOMAIN_ID/
+// RMW_IMPLEMENTATION isolation (WDY-1701). prefix labels the source, e.g.
+// "frameworks.ros2" or `services["talker"].frameworks.ros2`.
 func validateROS2Config(prefix string, r *ROS2Config) error {
 	if r == nil {
 		return nil
@@ -67,6 +89,14 @@ func validateROS2Config(prefix string, r *ROS2Config) error {
 	}
 	if r.RMW != "" && ros2RMWAliases[strings.ToLower(r.RMW)] == "" {
 		return fmt.Errorf("%s.rmw %q is not a supported RMW implementation", prefix, r.RMW)
+	}
+	// Distro was previously unvalidated here, so a typo only surfaced much later
+	// as "invalid ROS 2 distro %q in container label" from `wendy device ros2 …`,
+	// long after `wendy run` had reported success.
+	if r.Distro != "" && !ROS2DistroPattern.MatchString(strings.ToLower(r.Distro)) {
+		return fmt.Errorf("%s.distro %q is not a valid ROS 2 distribution name "+
+			"(lowercase letters and digits, starting with a letter — e.g. %q)",
+			prefix, r.Distro, ROS2DefaultDistro)
 	}
 	if r.DiscoveryScope != "" && r.ResolvedDiscoveryScope() == "" {
 		return fmt.Errorf("%s.discoveryScope %q must be %q or %q", prefix, r.DiscoveryScope, ROS2DiscoveryScopeApp, ROS2DiscoveryScopeHost)
