@@ -342,6 +342,32 @@ func TestLockOCILayoutDir(t *testing.T) {
 	}
 }
 
+// The export-mode dispatcher: docker buildx gets the persistent layout dir;
+// backends that can only emit tars (apple-container, on-device buildctl) and
+// the escape-hatch env keep the legacy temp tar.
+func TestChunkExportPlan(t *testing.T) {
+	t.Setenv("WENDY_CHUNK_EXPORT", "")
+	if got := chunkExportPlan(""); got != "dir" {
+		t.Fatalf("default builder: got %q, want dir", got)
+	}
+	if got := chunkExportPlan("docker"); got != "dir" {
+		t.Fatalf("docker builder: got %q, want dir", got)
+	}
+	if got := chunkExportPlan("apple-container"); got != "tar" {
+		t.Fatalf("apple-container builder: got %q, want tar", got)
+	}
+	if got := chunkExportPlan("buildkit"); got != "tar" {
+		t.Fatalf("buildkit builder: got %q, want tar", got)
+	}
+	if got := chunkExportPlan("no-such-builder"); got != "tar" {
+		t.Fatalf("invalid builder: got %q, want tar (error surfaces on the tar path)", got)
+	}
+	t.Setenv("WENDY_CHUNK_EXPORT", "tar")
+	if got := chunkExportPlan("docker"); got != "tar" {
+		t.Fatalf("env override: got %q, want tar", got)
+	}
+}
+
 func TestChunkLayoutDir(t *testing.T) {
 	got := chunkLayoutDir("/cache", "Com.Wendylabs.Examples.App", "linux/arm64")
 	want := filepath.Join("/cache", "wendy", "ocilayout", "com.wendylabs.examples.app-linux_arm64")

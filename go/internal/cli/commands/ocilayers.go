@@ -424,6 +424,30 @@ func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) 
 	return layers, img.ImageConfig, nil
 }
 
+// chunkExportModeEnv forces the chunk-diff deploy's legacy temp-tar export
+// ("tar") instead of the persistent layout directory. Escape hatch only.
+const chunkExportModeEnv = "WENDY_CHUNK_EXPORT"
+
+// chunkExportPlan decides how the chunk-diff deploy exports the built image:
+// "dir" — persistent OCI layout directory (buildx tar=false, blob-deduped) —
+// for the docker backend, "tar" for backends that can only emit a tar
+// (apple-container, on-device buildctl), for the WENDY_CHUNK_EXPORT=tar
+// escape hatch, and for unknown builders (whose normalize error then surfaces
+// on the tar path exactly as before).
+func chunkExportPlan(builder string) string {
+	if os.Getenv(chunkExportModeEnv) == "tar" {
+		return "tar"
+	}
+	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
+		return "tar"
+	}
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil || normalized != imageBuilderDocker {
+		return "tar"
+	}
+	return "dir"
+}
+
 // gcOCILayoutDir deletes blobs in dir that are no longer reachable from
 // index.json. buildx's tar=false export only ever ADDS blobs, so superseded
 // manifests/configs/layers accumulate until pruned. Reachability keeps every
