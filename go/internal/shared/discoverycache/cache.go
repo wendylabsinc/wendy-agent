@@ -131,6 +131,21 @@ func (c *Cache) Fresh(now time.Time) []Entry {
 	return fresh
 }
 
+// Entries returns every cached entry regardless of age, in any order. The
+// connect fast path uses it — a stale IP is still worth one bounded dial
+// attempt, with fallback to fresh resolution — while display surfaces
+// (picker, discovery) keep using Fresh so the TTL still bounds what users
+// see as "recently seen".
+func (c *Cache) Entries() []Entry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Entry, 0, len(c.entries))
+	for _, e := range c.entries {
+		out = append(out, e)
+	}
+	return out
+}
+
 // Upsert merges e into the cache under Key(e.ID, e.DisplayName) and stamps
 // LastSeen=now. Merge rule: a non-zero incoming field replaces the stored
 // one; a zero incoming field keeps the stored value (so a browse-only upsert
