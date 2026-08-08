@@ -205,36 +205,65 @@ func TestBrowseMDNSServicesContinuousForwardsUntilCancel(t *testing.T) {
 
 // TestBrowseMDNSServicesSettlesEarlyAndDedups pins BrowseMDNSServices'
 // early-exit and dedup behavior: it must return browseSettle after the last
-// newly discovered service rather than waiting for the full timeout, and it
-// must collapse a repeated announcement of the same instance
-// (InstanceName+Hostname+Port) into a single result — the property every
-// per-platform batch browse this replaces already had.
+// *newly* discovered service — not after the last emission of any kind — and
+// it must collapse a repeated announcement of the same instance
+// (InstanceName+Hostname+Port) into a single result.
+//
+// The settle timer must only be pushed out by a new service: mdnsStreamBackend
+// deliberately does not dedup (a multi-homed device or an ordinary
+// re-announcement re-fires Add, per its own doc comment), so a version that
+// re-arms on every emission — new or repeat — would have a duplicate alone
+// keep resetting the clock, defeating the early exit this behavior exists
+// for. This test proves that by continuing to emit a duplicate of an
+// already-seen instance after the last new service and asserting the call
+// still returns close to a single browseSettle window later, not one
+// stretched out by those repeats.
 func TestBrowseMDNSServicesSettlesEarlyAndDedups(t *testing.T) {
-	shrinkDuration(t, &browseSettle, 30*time.Millisecond)
+	shrinkDuration(t, &browseSettle, 90*time.Millisecond)
 
 	fb := newFakeBrowseBackend()
 	useBrowseBackend(t, fb.fn)
 
 	orin := MDNSService{InstanceName: "orin", Hostname: "orin.local", Port: 50051}
 	nano := MDNSService{InstanceName: "nano", Hostname: "nano.local", Port: 50051}
+	lastNewCh := make(chan time.Time, 1)
 
 	go func() {
 		fb.emit(t, orin)
-		fb.emit(t, orin) // repeat announcement — must not produce a second entry
 		fb.emit(t, nano)
+		lastNewCh <- time.Now()
+
+		// Keep re-announcing an already-seen instance roughly every 1/3 of a
+		// settle window. If a repeat re-armed settle the way a new service
+		// does, this loop alone would stall BrowseMDNSServices well past a
+		// single browseSettle window; each send attempt gives up as soon as
+		// the backend stops reading, which happens the moment settle
+		// actually fires.
+		interval := browseSettle / 3
+		for i := 0; i < 6; i++ {
+			select {
+			case fb.ch <- orin:
+			case <-time.After(interval):
+				return // nobody's reading anymore — settle already fired
+			}
+			time.Sleep(interval)
+		}
 	}()
 
-	start := time.Now()
 	got, err := BrowseMDNSServices(context.Background(), "_wendyos._udp", 5*time.Second)
-	elapsed := time.Since(start)
+	settledAfter := time.Since(<-lastNewCh)
 	if err != nil {
 		t.Fatalf("BrowseMDNSServices error: %v", err)
 	}
-	if elapsed > time.Second {
-		t.Fatalf("BrowseMDNSServices took %v to settle, want well under the 5s timeout", elapsed)
-	}
 	if len(got) != 2 {
 		t.Fatalf("got %d services, want 2 (deduped): %+v", len(got), got)
+	}
+	// Correct behavior returns browseSettle after the last new service
+	// (nano) regardless of the duplicate re-announcements that follow. A
+	// version that re-arms on every emission would instead be walked
+	// forward by each repeat, landing well past this margin.
+	if want := 2 * browseSettle; settledAfter > want {
+		t.Fatalf("BrowseMDNSServices settled %v after the last new service, want <= %v — duplicate re-announcements appear to be re-arming the settle timer", settledAfter, want)
 	}
 }
 
