@@ -1180,8 +1180,15 @@ func resolveHostMDNSFallback(ctx context.Context, host string) string {
 // own resolver remains the fallback.
 func resolveAddrOnce(ctx context.Context, addr string) string {
 	host, port, err := net.SplitHostPort(addr)
-	if err != nil || net.ParseIP(host) != nil {
-		return addr // not host:port, or already a literal IP
+	if err != nil {
+		return addr // not host:port
+	}
+	hostNoZone := host
+	if i := strings.IndexByte(hostNoZone, '%'); i >= 0 {
+		hostNoZone = hostNoZone[:i] // net.ParseIP rejects zone suffixes
+	}
+	if net.ParseIP(hostNoZone) != nil {
+		return addr // already a literal IP (possibly zoned, e.g. USB link-local)
 	}
 	if ip := resolveHostMDNSFallback(ctx, host); ip != "" {
 		return net.JoinHostPort(ip, port)
