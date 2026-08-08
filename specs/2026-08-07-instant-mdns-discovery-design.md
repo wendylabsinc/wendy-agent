@@ -135,8 +135,10 @@ func StreamLAN(ctx context.Context, opts StreamOptions) <-chan LANEvent
   `ItemNew`/`ItemRemove` signals; each `ItemNew` → `ResolveService` for
   hostname/IP/port/TXT. Avahi's daemon cache answers immediately on
   subscription. The D-Bus socket dies with our process, so orphaned browsers
-  are structurally impossible. `ItemRemove` (goodbye packets) feeds
-  `Offline`.
+  are structurally impossible. `ItemRemove` (goodbye packets) is decoded — so
+  a malformed body cannot panic downstream — and then ignored: removals are
+  owned by the engine's own probe/grace logic (§3), which is the only path
+  that behaves identically on every platform.
 - **Linux fallback / Windows**: hashicorp/mdns re-query loop with
   per-interface queries **in parallel** (fixes the sequential-interface bug
   in `browseMDNSHashicorp`) and entries forwarded off the entries channel as

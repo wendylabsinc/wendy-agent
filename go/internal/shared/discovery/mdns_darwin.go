@@ -63,6 +63,7 @@ const mdnsStreamJobBuffer = 32
 // or a non-nil error if mDNSResponder itself misbehaves, restartable by the
 // engine. Either way, every resolver goroutine has exited before it returns.
 func mdnsStreamBackend(ctx context.Context, serviceType string, emit func(MDNSService)) error {
+	logMDNSBackend("dns_sd") // WENDY_MDNS_DEBUG: which backend is running
 	jobs := make(chan browseResult, mdnsStreamJobBuffer)
 
 	var wg sync.WaitGroup

@@ -20,7 +20,7 @@ func logMDNSQueryErr(iface string, err error) {
 	if err == nil || os.Getenv("WENDY_MDNS_DEBUG") == "" {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "wendy: mDNS query on %s failed: %v\n", iface, err)
+	fmt.Fprintf(mdnsDebugOut, "wendy: mDNS query on %s failed: %v\n", iface, err)
 }
 
 const (
@@ -30,6 +30,20 @@ const (
 	// defaultTimeout is the default mDNS browse duration.
 	defaultTimeout = 5 * time.Second
 )
+
+// logMDNSBackend names the mDNS backend that a stream session actually ran on
+// when WENDY_MDNS_DEBUG is set — the answer to "which path is this platform
+// taking?", which was otherwise only observable when something failed.
+func logMDNSBackend(name string) {
+	if os.Getenv("WENDY_MDNS_DEBUG") == "" {
+		return
+	}
+	fmt.Fprintf(mdnsDebugOut, "wendy: mDNS backend: %s\n", name)
+}
+
+// mdnsDebugOut is where the WENDY_MDNS_DEBUG diagnostics above go. A var so
+// tests can capture them; production never reassigns it.
+var mdnsDebugOut io.Writer = os.Stderr
 
 // silentLogger is a no-op logger used to suppress hashicorp/mdns log output.
 var silentLogger = log.New(io.Discard, "", 0)
