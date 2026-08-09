@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
 )
@@ -29,6 +30,10 @@ type buildOptions struct {
 	buildType  string
 	dockerfile string
 	builder    string
+	// gpuArch names the GPU architecture a cuda: stage is compiled for when
+	// there is no device to ask. With a device selected it is redundant —
+	// the device reports its own.
+	gpuArch string
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -132,7 +137,8 @@ func newBuildCmd() *cobra.Command {
 				// calling the provider — shows an interactive picker when multiple
 				// build files exist and no --dockerfile flag was given.
 				if projectType == "docker" && opts.dockerfile == "" {
-					resolved, resolveErr := resolveDockerfile(cwd, "", isInteractiveTerminal())
+					resolved, resolveErr := resolveDockerfile(cwd, "", isInteractiveTerminal(),
+						resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)))
 					if resolveErr != nil {
 						return resolveErr
 					}
@@ -207,13 +213,15 @@ func newBuildCmd() *cobra.Command {
 				appID = appCfg.AppID
 			}
 
-			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder)
+			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder,
+				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)))
 		},
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
+	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 
 	return cmd
 }
@@ -463,7 +471,7 @@ func detectProjectTypeWithLanguage(dir, language string) string {
 	return t
 }
 
-func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder string) error {
+func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder, gpuArch string) error {
 	imageName := strings.ToLower(appID) + ":latest"
 	normalizedBuilder, err := normalizeImageBuilder(builder)
 	if err != nil {
@@ -475,9 +483,9 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		if normalizedBuilder == imageBuilderAppleContainer {
 			return fmt.Errorf("Apple Container builder does not support Compose builds; use --builder docker")
 		}
-		return buildComposeProject(dir)
+		return buildComposeProject(dir, gpuArch)
 	case "docker":
-		resolvedFile, err := prepareDockerBuildFile(dir, option.File)
+		resolvedFile, err := prepareDockerBuildFile(dir, option.File, gpuArch)
 		if err != nil {
 			return err
 		}
@@ -503,10 +511,10 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	}
 }
 
-func buildComposeProject(dir string) error {
+func buildComposeProject(dir, gpuArch string) error {
 	cliLogln("Building Compose services...")
 	args := []string{"compose"}
-	overridePath, cleanup, err := composeStagefileOverride(dir)
+	overridePath, cleanup, err := composeStagefileOverride(dir, gpuArch)
 	if err != nil {
 		return err
 	}

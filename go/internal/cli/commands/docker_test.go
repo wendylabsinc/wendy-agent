@@ -1199,7 +1199,7 @@ func TestResolveRunDockerfile_SingleDockerfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1216,7 +1216,7 @@ func TestResolveRunDockerfile_ExplicitFlag(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1233,7 +1233,7 @@ func TestResolveRunDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2367,7 +2367,7 @@ func TestStartMTLSRegistryHTTPProxy_UntrustedClientCert(t *testing.T) {
 
 func TestResolveDockerfile_NoDockerfiles(t *testing.T) {
 	dir := t.TempDir()
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2383,7 +2383,7 @@ func TestResolveDockerfile_RequestedPassthrough(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2397,7 +2397,7 @@ func TestResolveDockerfile_SingleVariant(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.dev"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2411,7 +2411,7 @@ func TestResolveDockerfile_Containerfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2427,7 +2427,7 @@ func TestResolveDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2443,7 +2443,7 @@ func TestResolveDockerfile_MultipleNonInteractiveVariantOnlyPrefersFirst(t *test
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2635,7 +2635,7 @@ func TestResolveDockerfile_AutoSelectionRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skip("symlinks not supported:", err)
 	}
-	if _, err := resolveDockerfile(dir, "", false); err == nil {
+	if _, err := resolveDockerfile(dir, "", false, ""); err == nil {
 		t.Fatal("expected error for auto-selected symlink escape, got nil")
 	}
 }
@@ -2789,7 +2789,7 @@ func TestResolveDockerfile_CompilesStagefile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2957,7 +2957,7 @@ func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T)
 		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got, err := prepareDockerBuildFile(dir, "build.stagefile.yaml")
+		got, err := prepareDockerBuildFile(dir, "build.stagefile.yaml", "")
 		if err != nil {
 			t.Fatalf("prepareDockerBuildFile: %v", err)
 		}
@@ -2972,7 +2972,7 @@ func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T)
 			[]byte("FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		got, err := prepareDockerBuildFile(dir, "Dockerfile")
+		got, err := prepareDockerBuildFile(dir, "Dockerfile", "")
 		if err != nil {
 			t.Fatalf("prepareDockerBuildFile: %v", err)
 		}

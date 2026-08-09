@@ -24,7 +24,7 @@ func TestGenerateGoldenExampleFixture(t *testing.T) {
 	}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

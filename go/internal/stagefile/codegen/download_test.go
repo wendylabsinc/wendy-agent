@@ -15,7 +15,7 @@ var (
 
 func generateStage(t *testing.T, s spec.Stage, downloads map[string]string) string {
 	t.Helper()
-	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{s}}, baseImages, downloads, "")
+	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{s}}, baseImages, downloads, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestDownloadWithoutAnyDigestIsAnError(t *testing.T) {
 	_, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{{
 		Name: "app", From: "debian:12",
 		Download: []spec.Download{{URL: "https://example.com/model.onnx", Dest: "/app/model.onnx"}},
-	}}}, baseImages, nil, "")
+	}}}, baseImages, nil, "", nil)
 	if err == nil {
 		t.Fatal("expected an error for a download with no sha256 anywhere")
 	}
@@ -168,7 +168,7 @@ func TestDownloadWorksOnANonFinalStage(t *testing.T) {
 		{Name: "app", From: "debian:12", Copy: []spec.CopyEntry{
 			{From: "models", Paths: []string{"/models"}},
 		}},
-	}}, baseImages, nil, "")
+	}}, baseImages, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

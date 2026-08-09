@@ -32,12 +32,18 @@ type Stage struct {
 	// by key.
 	Env     map[string]string `yaml:"env,omitempty"`
 	Install *Install          `yaml:"install,omitempty"`
-	// SharedLibraries collects shared objects out of installed dependency
-	// trees into one directory and puts that directory on the dynamic
-	// loader's search path. Emitted after install: so it can see what the
-	// package managers produced, and before copy: so app source never
-	// invalidates it.
-	SharedLibraries []SharedLibrary `yaml:"sharedLibraries,omitempty"`
+	// CUDA declares that this stage runs on the GPU. It carries no options
+	// on purpose: everything a CUDA build needs — which CUDA version, which
+	// wheel index serves it, which runtime packages accompany it, where those
+	// are collected so they aren't shadowed at run time, and that the stage
+	// runs as root — follows from the GPU architecture of the device being
+	// built for, and is resolved by the compiler (internal/stagefile/gpu).
+	//
+	// What this replaces is a vendor index URL, thirteen nvidia-* package
+	// names, a collect directory, an LD_LIBRARY_PATH and a user, repeated in
+	// every GPU app and correct only for the one board whose quirks the
+	// author happened to know.
+	CUDA bool `yaml:"cuda,omitempty"`
 	// Download fetches files from the network into this stage. Every entry
 	// is content-pinned; see Download.
 	Download    []Download   `yaml:"download,omitempty"`
@@ -86,27 +92,15 @@ type Download struct {
 // adding its command, not accepting one.
 var ExtractFormats = []string{"tar.gz", "zip"}
 
-// SharedLibrary collects every shared object under the Collect trees into
-// Dir as symlinks, then registers Dir with the dynamic loader
-// (/etc/ld.so.conf.d + ldconfig).
+// LDLibraryPath is the environment variable a CUDA stage prepends its
+// collected library directory to. Registering the directory in
+// /etc/ld.so.conf.d is not enough on its own: paths injected into the
+// container at run time (CDI, on a Jetson) are searched ahead of ld.so.conf
+// entries, and only LD_LIBRARY_PATH beats them.
 //
-// This exists because a wheel can ship its own copy of a runtime whose
-// sonames collide with one the host injects at run time — the CUDA-12
-// wheels on a CUDA-13 JetPack being the case that forced it. Collecting the
-// wheel's libraries into one directory and giving that directory loader
-// precedence is the fix, and it is a specific, checkable operation rather
-// than the arbitrary `find`/`ln -sf`/`ldconfig` shell it replaces.
-//
-// Entries take loader precedence in declaration order.
-type SharedLibrary struct {
-	// Dir is the absolute directory the collected symlinks land in, and the
-	// directory added to the loader path.
-	Dir string `yaml:"dir"`
-	// Collect are absolute directory trees to search for shared objects
-	// (*.so*). A tree that does not exist is a build failure, not a silent
-	// no-op — an empty Dir would fail much later, at run time.
-	Collect []string `yaml:"collect"`
-}
+// Exported because codegen sets it and validate refuses to let a Stagefile
+// overwrite it — the two must agree on the name.
+const LDLibraryPath = "LD_LIBRARY_PATH"
 
 // Install is the set of declarative, per-ecosystem dependency installs for
 // one stage. Any subset of the fields may be set; each compiles to a fixed
@@ -209,6 +203,16 @@ type PipInstall struct {
 	// (--extra-index-url), searched alongside the primary index.
 	Index      string   `yaml:"index,omitempty"`
 	ExtraIndex []string `yaml:"extraIndex,omitempty"`
+	// CUDA resolves this group against the GPU wheel index the target
+	// architecture implies, instead of PyPI. It is how a project that
+	// deploys to more than one board names its GPU wheels without naming a
+	// board: `packages: ["torch==2.8.0"]` with `cuda: true` is a Jetson-6
+	// wheel on an Orin and whatever the profile says elsewhere, while the
+	// Stagefile stays the same.
+	//
+	// Mutually exclusive with Index/ExtraIndex, and only meaningful in a
+	// stage that declares cuda:.
+	CUDA bool `yaml:"cuda,omitempty"`
 }
 
 // NpmInstall always compiles to the ecosystem's frozen-lockfile install

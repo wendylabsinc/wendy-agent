@@ -3,8 +3,11 @@ package stagefile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/codegen"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
@@ -30,8 +33,32 @@ func TestShippedExamplesParseAndValidate(t *testing.T) {
 				t.Fatal(err)
 			}
 			// spec.Parse validates as well as parses.
-			if _, err := spec.Parse(data); err != nil {
+			f, err := spec.Parse(data)
+			if err != nil {
 				t.Fatalf("%s does not compile: %v", path, err)
+			}
+			// Validation only covers the shape. Code generation is where a
+			// stage's declarations are actually turned into instructions, and
+			// where an example that survived a schema change but no longer
+			// lowers would show up.
+			images := map[string]string{}
+			needsGPU := false
+			for _, s := range f.Stages {
+				images[s.From] = "sha256:" + strings.Repeat("a", 64)
+				needsGPU = needsGPU || s.CUDA
+			}
+			var profile *gpu.Profile
+			if needsGPU {
+				// Any real architecture will do — this asserts that the
+				// example lowers, not which board it is destined for.
+				p, err := gpu.ProfileFor(gpu.KnownArches()[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				profile = &p
+			}
+			if _, err := codegen.Generate(f, images, nil, "", profile); err != nil {
+				t.Fatalf("%s does not generate: %v", path, err)
 			}
 		})
 		return nil

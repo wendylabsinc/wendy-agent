@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/crane"
+
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 )
 
 // maxResolveConcurrency bounds how many registry lookups one Resolve issues at
@@ -89,6 +91,10 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 		if len(existing.Downloads) > 0 {
 			result.Downloads = map[string]string{}
 			maps.Copy(result.Downloads, existing.Downloads)
+		}
+		if len(existing.CUDA) > 0 {
+			result.CUDA = map[string]gpu.Profile{}
+			maps.Copy(result.CUDA, existing.CUDA)
 		}
 	}
 	pending, err := pinAll(result.Images, refs, forceUpdate, resolver)

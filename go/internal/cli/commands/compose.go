@@ -172,13 +172,28 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 	return "", "", nil, fmt.Errorf("unsupported build directive (yaml kind %d); expected a path string or a mapping", svc.Build.Kind)
 }
 
+// composeGPUArch is the GPU architecture every buildable service in a compose
+// project compiles against. The device is asked once for the whole project,
+// and only if some service actually declares a cuda: stage.
+func composeGPUArch(ctx context.Context, projectDir string, cfg *composeConfig, conn *grpcclient.AgentConnection) string {
+	var dirs []string
+	for _, svc := range cfg.Services {
+		ctxDir, _, _, err := composeBuildContext(svc, projectDir)
+		if err != nil || ctxDir == "" {
+			continue
+		}
+		dirs = append(dirs, ctxDir)
+	}
+	return resolveGPUArchForDirs(ctx, dirs, "", conn)
+}
+
 // composeStagefileOverride compiles every compose service whose build context
 // carries a Stagefile and writes a docker-compose override file pointing those
 // services at their compiled Dockerfile.generated — `docker compose build`
 // itself knows nothing about build.stagefile.yaml. Returns "" when no service
 // uses a Stagefile. The caller must invoke cleanup (when non-nil) after the
 // compose build finishes.
-func composeStagefileOverride(dir string) (path string, cleanup func(), err error) {
+func composeStagefileOverride(dir, gpuArch string) (path string, cleanup func(), err error) {
 	cfg, _, err := parseComposeFile(dir)
 	if err != nil {
 		return "", nil, err
@@ -192,7 +207,7 @@ func composeStagefileOverride(dir string) (path string, cleanup func(), err erro
 		if ctxDir == "" || dockerfile != stagefileSourceName {
 			continue
 		}
-		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile)
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch)
 		if err != nil {
 			return "", nil, fmt.Errorf("service %s: %w", name, err)
 		}
@@ -856,6 +871,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: top-level hooks.postStart.agent is ignored for compose apps (no app-level container exists); declare it under a service's x-wendy.hooks or the companion's services.<name>.hooks")
 	}
 
+	// Resolved once for the project: every service lands on this one device,
+	// so a cuda: stage in any of them compiles against its GPU architecture.
+	gpuArch := composeGPUArch(ctx, projectDir, cfg, conn)
+
 	// Build and push each service that has a build directive.
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, buildArgs, err := composeBuildContext(svc, projectDir)
@@ -868,7 +887,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
 		// same way the single-service path does — docker build itself knows
 		// nothing about build.stagefile.yaml.
-		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile); err != nil {
+		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch); err != nil {
 			return fmt.Errorf("service %s: %w", name, err)
 		}
 

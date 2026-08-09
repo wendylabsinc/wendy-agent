@@ -52,7 +52,7 @@ func TestComputeServicePlansRunsServicesConcurrently(t *testing.T) {
 	inFlight.Add(len(services))
 	orig := planResolveDockerfile
 	defer func() { planResolveDockerfile = orig }()
-	planResolveDockerfile = func(cwd, requested string, interactive bool) (string, error) {
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string) (string, error) {
 		inFlight.Done()
 		inFlight.Wait() // released only once every other service's plan has started
 		return "Dockerfile", nil
@@ -60,7 +60,7 @@ func TestComputeServicePlansRunsServicesConcurrently(t *testing.T) {
 
 	done := make(chan map[string]servicePlan, 1)
 	go func() {
-		done <- computeServicePlans(root, "linux/arm64", &appconfig.AppConfig{AppID: "app"}, services, nil)
+		done <- computeServicePlans(root, "linux/arm64", "", &appconfig.AppConfig{AppID: "app"}, services, nil)
 	}()
 
 	select {
@@ -91,14 +91,14 @@ func TestComputeServicePlansOmitsServicesItCannotPlan(t *testing.T) {
 
 	orig := planResolveDockerfile
 	defer func() { planResolveDockerfile = orig }()
-	planResolveDockerfile = func(cwd, requested string, interactive bool) (string, error) {
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string) (string, error) {
 		if filepath.Base(cwd) == "svc00" {
 			return "", fmt.Errorf("no build file")
 		}
 		return "Dockerfile", nil
 	}
 
-	plans := computeServicePlans(root, "linux/arm64", &appconfig.AppConfig{AppID: "app"}, services, nil)
+	plans := computeServicePlans(root, "linux/arm64", "", &appconfig.AppConfig{AppID: "app"}, services, nil)
 
 	if _, ok := plans["svc00"]; ok {
 		t.Error("svc00 could not be resolved; it must not get a plan")
