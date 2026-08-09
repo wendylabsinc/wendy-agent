@@ -1,0 +1,27 @@
+# Configuration for the es-fleet template. Values here override the built-in
+# defaults; environment variables override this file (either the layered form
+# WT_ES__POP or the direct form ES_POP; the direct form wins last).
+
+[es]
+# Mirrored population: pairs of perturbations per generation. Each pair costs
+# two episodes, split across the fleet by worker slice.
+pop = 32
+# Perturbation scale.
+sigma = 0.1
+# Adam learning rate, applied in maximize mode to the ES ascent direction.
+lr = 0.02
+# Seconds the coordinator waits for a generation before advancing with what
+# arrived; partial generations are recorded as such, never papered over.
+gen_timeout_s = 30.0
+
+[run]
+max_generations = 200
+# Checkpoint cadence in generations; every checkpoint carries the Adam state.
+checkpoint_every = 10
+# Seed for the initial policy parameters.
+seed = 0
+
+[policy]
+# Hidden layer sizes of the tanh Multi-Layer Perceptron. This list travels in
+# the wire metadata as the architecture; workers never infer shapes.
+hidden = [32]

@@ -6,6 +6,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
 func dev(hostname, display, ip string) models.LANDevice {
@@ -161,5 +162,47 @@ func TestValidateGroupPattern(t *testing.T) {
 		if err := validateGroupPattern(bad); err == nil {
 			t.Errorf("validateGroupPattern(%q) expected error", bad)
 		}
+	}
+}
+
+func TestTargetForDeviceCarriesAssetID(t *testing.T) {
+	// The assetid mDNS TXT record is the only way a LAN fleet can address peers
+	// by asset id or rank them deterministically; it used to be discovered and
+	// then dropped on the floor by targetForDevice.
+	withID := targetForDevice(models.LANDevice{
+		Hostname:  "spark-48fd.local",
+		IPAddress: "192.0.2.11",
+		AssetID:   211,
+	})
+	if withID.AssetID != 211 {
+		t.Fatalf("AssetID = %d, want 211", withID.AssetID)
+	}
+
+	// An unenrolled device (or an agent predating the record) reports no id;
+	// it must stay 0 rather than being invented.
+	withoutID := targetForDevice(models.LANDevice{
+		Hostname:  "spark-unenrolled.local",
+		IPAddress: "192.0.2.99",
+	})
+	if withoutID.AssetID != 0 {
+		t.Fatalf("AssetID = %d, want 0 for a device with no assetid record", withoutID.AssetID)
+	}
+}
+
+func TestCloudTargetsCarryAssetID(t *testing.T) {
+	assets := []*cloudpb.Asset{
+		{Id: 211, Name: "spark-48fd", Tags: []string{"sparks"}},
+		{Id: 283, Name: "spark-edeb", Tags: []string{"sparks"}},
+	}
+	targets := cloudTargetsForTags(nil, assets, []string{"sparks"}, "")
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want 2", len(targets))
+	}
+	byName := map[string]int32{}
+	for _, target := range targets {
+		byName[target.Name] = target.AssetID
+	}
+	if byName["spark-48fd"] != 211 || byName["spark-edeb"] != 283 {
+		t.Fatalf("asset ids not carried: %v", byName)
 	}
 }

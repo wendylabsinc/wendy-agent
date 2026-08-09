@@ -24,8 +24,9 @@ func cloudTargetsForTags(auth *config.AuthConfig, assets []*cloudpb.Asset, tags 
 	for _, asset := range matched {
 		asset := asset
 		targets = append(targets, fleetTarget{
-			Name: asset.GetName(),
-			ID:   fmt.Sprintf("%d", asset.GetId()),
+			Name:    asset.GetName(),
+			ID:      fmt.Sprintf("%d", asset.GetId()),
+			AssetID: asset.GetId(),
 			connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
 				return connectCloudAsset(ctx, auth, asset, brokerURL)
 			},
@@ -45,7 +46,18 @@ const fleetLANDiscoverTimeout = 5 * time.Second
 type fleetTarget struct {
 	Name    string // display name (LAN: normalized short name; cloud: asset name)
 	ID      string // stable id (LAN: mDNS hostname; cloud: asset id as string)
-	Address string // LAN dial address (empty for cloud targets)
+	Address string // LAN dial address, host:agentPort (empty for cloud targets)
+	// PeerHost is the bare host other devices should dial this one at: the
+	// discovered address when known, otherwise the multicast hostname. It is
+	// deliberately separate from Address, which carries the agent's own port
+	// and is for this machine's use, not for a container on another device.
+	PeerHost string
+	// AssetID is the cloud asset id: the Asset's id for cloud targets, the
+	// assetid mDNS TXT record for LAN ones. 0 when unknown, which on the LAN
+	// means the device is not enrolled (or predates the record). Callers that
+	// address peers by asset id must treat 0 as "cannot address this device"
+	// rather than substituting a default.
+	AssetID int32
 	connect func(ctx context.Context) (*grpcclient.AgentConnection, error)
 }
 
@@ -164,9 +176,11 @@ func lanDevicesForTags(ctx context.Context, tags []string, timeout time.Duration
 func targetForDevice(dev models.LANDevice) fleetTarget {
 	addr := preferredLANAddress(dev)
 	return fleetTarget{
-		Name:    deviceShortName(dev),
-		ID:      dev.Hostname,
-		Address: addr,
+		Name:     deviceShortName(dev),
+		ID:       dev.Hostname,
+		Address:  addr,
+		PeerHost: peerHost(dev),
+		AssetID:  dev.AssetID,
 		connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectWithAutoTLS(ctx, addr)
 		},
@@ -217,8 +231,9 @@ func cloudFleetTargets(ctx context.Context, group, cloudGRPC, brokerURL string) 
 	for _, asset := range assets {
 		asset := asset
 		targets = append(targets, fleetTarget{
-			Name: asset.GetName(),
-			ID:   fmt.Sprintf("%d", asset.GetId()),
+			Name:    asset.GetName(),
+			ID:      fmt.Sprintf("%d", asset.GetId()),
+			AssetID: asset.GetId(),
 			connect: func(ctx context.Context) (*grpcclient.AgentConnection, error) {
 				return connectCloudAsset(ctx, auth, asset, brokerURL)
 			},

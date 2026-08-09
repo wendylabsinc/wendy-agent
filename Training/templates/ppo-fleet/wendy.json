@@ -1,0 +1,45 @@
+{
+    "appId": "sh.wendy.training.ppo-fleet",
+    "platform": "linux",
+    "version": "0.1.0",
+    "isolation": "isolated",
+    "services": {
+        "trainer": {
+            "context": ".",
+            "entitlements": [
+                {
+                    "type": "network",
+                    "mode": "mesh",
+                    "serviceCIDR": "10.99.0.0/16",
+                    "ports": [
+                        {
+                            "host": 8080,
+                            "container": 8080
+                        }
+                    ]
+                },
+                {
+                    "type": "persist",
+                    "name": "wt-ppo-ckpt",
+                    "path": "/data/checkpoints"
+                }
+            ],
+            "env": {
+                "MESH_PEERS": "${MESH_PEERS}",
+                "MESH_SELF": "${MESH_SELF}",
+                "MESH_PORT": "${MESH_PORT}",
+                "WT_ROLE": "${WT_ROLE}",
+                "WT_RUN_ID": "${WT_RUN_ID}",
+                "WT_CKPT_DIR": "${WT_CKPT_DIR}",
+                "WT_CONFIG": "${WT_CONFIG}",
+                "PPO_STEPS": "${PPO_STEPS}",
+                "PPO_MAX_STALENESS": "${PPO_MAX_STALENESS}",
+                "PPO_LEARNER": "${PPO_LEARNER}",
+                "WT_COORDINATOR": "${WT_COORDINATOR}",
+                "WT_NODE_INDEX": "${WT_NODE_INDEX}",
+                "WT_NODE_COUNT": "${WT_NODE_COUNT}",
+                "WT_FLEET_TOKEN": "${WT_FLEET_TOKEN}"
+            }
+        }
+    }
+}

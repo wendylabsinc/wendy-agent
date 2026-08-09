@@ -30,7 +30,7 @@ func TestPlanServicePushSkipsDisabled(t *testing.T) {
 		"a": {Context: "./a"},
 		"b": {Context: "./b"},
 	}
-	skip, hashes := planServicePushSkips(context.Background(), nil, t.TempDir(), "app", "devkey", "linux/arm64", nil, services, nil)
+	skip, hashes := planServicePushSkips(context.Background(), nil, t.TempDir(), "app", "devkey", "linux/arm64", nil, services, nil, nil)
 	if len(skip) != 0 {
 		t.Fatalf("expected no skips when disabled, got %v", skip)
 	}
@@ -109,7 +109,7 @@ func TestPlanServicePushSkips_MissingLayersForcesRebuild(t *testing.T) {
 	fake := &multiSvcContainerClient{appName: appID, services: []string{"llm"}, presentLayers: map[string]bool{}}
 	conn := &grpcclient.AgentConnection{ContainerService: fake}
 
-	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
+	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil, nil)
 	if skip["llm"] {
 		t.Fatal("service skipped despite the device missing its image layers (WDY-1824)")
 	}
@@ -149,7 +149,7 @@ func TestPlanServicePushSkips_RegistryPushNeverSkips(t *testing.T) {
 	fake := &multiSvcContainerClient{appName: appID, services: []string{"llm"}, presentLayers: map[string]bool{"sha256:layer0": true}}
 	conn := &grpcclient.AgentConnection{ContainerService: fake}
 
-	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil)
+	skip, hashes := planServicePushSkips(context.Background(), conn, cwd, appID, deviceKey, platform, nil, services, nil, nil)
 	if skip["llm"] {
 		t.Fatal("registry-push service was skipped despite no verifiable recorded content (WDY-1824)")
 	}

@@ -1,0 +1,38 @@
+[
+  {
+    "target": "192.168.0.132:8080",
+    "status": "ok",
+    "run_id": "fleettrain-sweep-1",
+    "iterations": 300,
+    "final_mean_return": 499.9862034851767,
+    "best_mean_return": 499.99158007320375,
+    "sweep_index": 1,
+    "params": {
+      "run.seed": 22
+    }
+  },
+  {
+    "target": "192.168.0.46:8080",
+    "status": "ok",
+    "run_id": "fleettrain-sweep-0",
+    "iterations": 300,
+    "final_mean_return": 498.2864254957867,
+    "best_mean_return": 499.9918729959287,
+    "sweep_index": 0,
+    "params": {
+      "run.seed": 11
+    }
+  },
+  {
+    "target": "192.168.0.24:8080",
+    "status": "ok",
+    "run_id": "fleettrain-sweep-2",
+    "iterations": 300,
+    "final_mean_return": 496.84535885449475,
+    "best_mean_return": 499.9925472193718,
+    "sweep_index": 2,
+    "params": {
+      "run.seed": 33
+    }
+  }
+]
