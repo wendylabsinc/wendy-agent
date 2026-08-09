@@ -565,7 +565,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
-	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
+	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
@@ -1723,9 +1723,8 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-		// Announce + fire-and-forget post-start hook (outlives the CLI process),
-		// but only if the app passes readiness.
-		runPostStartIfReady(ctx, context.Background(), conn, appCfg)
+		// Detached returns as soon as the container is started — see
+		// runPostStartIfReady's doc comment.
 		return nil
 	}
 
@@ -1963,12 +1962,32 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 // probe reported a success that never happened — "App reachable at ..." and a
 // browser tab pointed at a container that had already exited.
 //
+// ATTACHED RUNS ONLY. Detached deploys (--detach, and --watch, which sets
+// opts.detach) never call this. The readiness probe waits out the app's own
+// boot — measured at ~500-660ms for a trivial Python app, several times the
+// CLI's entire remaining overhead — which an attached run can afford because
+// it stays to stream logs anyway, but a detached run cannot: its whole point
+// is to return once the container is started, and --watch paid that wait on
+// every single redeploy.
+//
+// The host-side hook goes with it rather than being fired early, because it
+// is only meaningful once the app is listening: an app declaring an `http`
+// entitlement gets an openURL hook synthesized automatically (see
+// synthesizedOpenURLHook), so firing it without the gate would open a browser
+// at a port nothing is bound to yet — and in watch mode, one per redeploy.
+//
+// The agent-side (in-container) hook is unaffected: it rides on the
+// RunContainer/StartContainer RPC context and still runs on the device.
+//
 // hookCtx bounds the hook's CLI child process; detached callers pass
 // context.Background() so the hook outlives the CLI. Returns the hook's cmd
 // for the caller to reap, nil when no CLI hook ran.
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
+	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
-	if err := waitForReadiness(ctx, readiness, conn.Host); err != nil {
+	err := waitForReadiness(ctx, readiness, conn.Host)
+	rp("  ↳ runcontainer: readiness wait")
+	if err != nil {
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -1995,7 +2014,9 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		clone.Hooks = hooks
 		effectiveCfg = &clone
 	}
-	return startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
+	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
+	rp("  ↳ runcontainer: announce + postStart hook")
+	return cmd
 }
 
 // startPostStartHook fires the postStart hook actions for appCfg. serviceName
@@ -2093,6 +2114,11 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 	// when the stream ends (matching startAndStreamContainer's runCtx handling).
 	// Cleanup runs in a defer so the hook is killed and reaped on every exit
 	// path, including stream errors.
+	// Splits the runcontainer phase into its device-side and host-side halves:
+	// everything up to Started is the agent creating and starting the
+	// container, everything after is the CLI waiting on the app and firing
+	// hooks. They have completely different causes when one is slow.
+	rc := phaseTimer()
 	hookCtx, hookCancel := context.WithCancel(ctx)
 	var postStartCmd *exec.Cmd
 	defer func() {
@@ -2111,17 +2137,17 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
+			rc("  ↳ runcontainer: device create+start")
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
 			}
 			if opts.detach {
 				// Mirror startAndStreamContainer's detach branch: the container
-				// is started; wait for readiness, fire the host post-start hook,
-				// then return without tailing logs. The container keeps running
-				// independently of this (now-abandoned) output stream.
+				// is started, so return without tailing logs or waiting on
+				// readiness (see runPostStartIfReady's doc comment). The container keeps
+				// running independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-				runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
@@ -2192,35 +2218,91 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // skipping a rebuild (WDY-1824).
 func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
-	tmp, err := os.MkdirTemp("", "wendy-oci-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	ociTar := filepath.Join(tmp, "image.tar")
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
-	if opts.quietBuild {
-		// wendy watch: keep the legacy quiet behavior (buffer, surface only on
-		// genuine failure) rather than rendering a live UI under the watcher.
-		var buildLog bytes.Buffer
-		if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, &buildLog, &buildLog); err != nil {
-			if ctx.Err() == nil {
-				_, _ = os.Stderr.Write(buildLog.Bytes())
+	runBuild := func(build func(stream, logw io.Writer) error) error {
+		if opts.quietBuild {
+			// wendy watch: keep the legacy quiet behavior (buffer, surface only on
+			// genuine failure) rather than rendering a live UI under the watcher.
+			var buildLog bytes.Buffer
+			if err := build(&buildLog, &buildLog); err != nil {
+				if ctx.Err() == nil {
+					_, _ = os.Stderr.Write(buildLog.Bytes())
+				}
+				return err
 			}
+			return nil
+		}
+		return runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), build)
+	}
+
+	// The docker backend exports into a persistent per-app OCI layout DIRECTORY:
+	// BuildKit skips blobs already present there, so a warm rebuild writes only
+	// the changed layers instead of re-serializing the whole image (which costs
+	// seconds per GB of image on every iteration). Tar-only backends and the
+	// WENDY_CHUNK_EXPORT=tar escape hatch keep the legacy temp tar.
+	exportMode := chunkExportPlan(opts.builder)
+	var layoutDir string
+	if exportMode == "dir" {
+		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
+			layoutDir = chunkLayoutDir(userCache, appCfg.AppID, platform)
+		} else {
+			exportMode = "tar"
+		}
+	}
+
+	var layers []localLayer
+	var imageConfig []byte
+	if exportMode == "dir" {
+		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+		if err != nil {
 			return nil, err
 		}
+		defer releaseLayout()
+		build := func(stream, logw io.Writer) error {
+			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
+		}
+		if err := runBuild(build); err != nil {
+			return nil, err
+		}
+		mark("build (oci export)")
+		layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform)
+		if err != nil {
+			// Self-heal exactly once: a corrupt or partially-written layout dir is
+			// wiped and rebuilt from scratch, which is precisely the legacy cold
+			// behavior. A second failure is a real bug and surfaces.
+			cliLogln("OCI layout cache unreadable (%v); rebuilding it from scratch", err)
+			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
+				return nil, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
+			}
+			if err := runBuild(build); err != nil {
+				return nil, err
+			}
+			if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
+				return nil, err
+			}
+		}
+		// Prune blobs superseded by this build once the deploy is done with them.
+		// Best-effort: reachable blobs are never touched, so a failed GC only
+		// leaves garbage for the next run to collect.
+		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
-		if err := runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), func(stream, logw io.Writer) error {
+		tmp, err := os.MkdirTemp("", "wendy-oci-*")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(tmp)
+		ociTar := filepath.Join(tmp, "image.tar")
+		if err := runBuild(func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return nil, err
 		}
-	}
-	mark("build (oci export)")
-	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
-	if err != nil {
-		return nil, err
+		mark("build (oci export)")
+		layers, imageConfig, err = readOCILayoutLayers(ociTar, platform)
+		if err != nil {
+			return nil, err
+		}
 	}
 	mark("read+decompress layers")
 

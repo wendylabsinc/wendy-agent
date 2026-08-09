@@ -122,8 +122,40 @@ type v4l2FrmSizeEnum struct {
 // a common Arducam module, versus the 640x480+ the same camera offers. A
 // caller asking for "no preference" wants the device's best sensible mode, not
 // its worst, so enumerate and choose rather than letting the driver clamp.
+// hasStandardAspect reports whether w:h is a normal picture aspect ratio.
+//
+// This is how we avoid picking a mode that carries non-image data. Thermal
+// modules in the TOPDON TC001 / InfiRay family advertise their sensor size AND
+// a taller variant with metadata rows stacked on top of the picture — the same
+// image plus ~100 rows of raw temperature. That variant has the LARGER area, so
+// a pure largest-area rule picks it and the caller gets a band of false-colour
+// noise across the top of every frame. Observed on wendy-box-theta and ccr1:
+// 512x484 was selected over 512x384, and the extra 100 rows rendered as a green
+// stripe in both the CLI viewer and the companion app.
+//
+// Real picture modes are 4:3, 16:9, 16:10, 3:2 or 5:4; the stacked variants land
+// on none of them (512x484 is 1.058). Tolerance is loose enough for sizes that
+// do not divide exactly (e.g. 644x384 = 1.677 is not 16:9 and is correctly
+// excluded, while 320x240 and 1280x720 match exactly).
+func hasStandardAspect(w, h uint32) bool {
+	if w == 0 || h == 0 {
+		return false
+	}
+	ratio := float64(w) / float64(h)
+	for _, std := range []float64{4.0 / 3.0, 16.0 / 9.0, 16.0 / 10.0, 3.0 / 2.0, 5.0 / 4.0} {
+		if math.Abs(ratio-std) <= 0.02 {
+			return true
+		}
+	}
+	return false
+}
+
 func bestDefaultFrameSize(fd int, pixfmt uint32) (uint32, uint32) {
-	var bestW, bestH uint32
+	// Tracked separately so a standard-aspect mode always wins, even when a
+	// non-standard one is larger. Falling back to the largest-area mode keeps
+	// behaviour unchanged for cameras that advertise nothing standard.
+	var bestW, bestH uint32         // best standard-aspect mode
+	var fallbackW, fallbackH uint32 // best of any aspect
 	for index := uint32(0); index < 64; index++ {
 		fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
@@ -136,11 +168,19 @@ func bestDefaultFrameSize(fd int, pixfmt uint32) (uint32, uint32) {
 		if fse.Width > defaultMaxDefaultWidth || fse.Height > defaultMaxDefaultHeight {
 			continue
 		}
-		if uint64(fse.Width)*uint64(fse.Height) > uint64(bestW)*uint64(bestH) {
+		area := uint64(fse.Width) * uint64(fse.Height)
+		if area > uint64(fallbackW)*uint64(fallbackH) {
+			fallbackW, fallbackH = fse.Width, fse.Height
+		}
+		if hasStandardAspect(fse.Width, fse.Height) &&
+			area > uint64(bestW)*uint64(bestH) {
 			bestW, bestH = fse.Width, fse.Height
 		}
 	}
-	return bestW, bestH
+	if bestW != 0 {
+		return bestW, bestH
+	}
+	return fallbackW, fallbackH
 }
 
 // bestDefaultFrameSizeForDevice opens path just long enough to ask what the

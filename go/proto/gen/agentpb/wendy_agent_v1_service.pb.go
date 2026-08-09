@@ -719,10 +719,21 @@ type GetAgentVersionResponse struct {
 	// Number of online logical CPU cores, from /proc/stat. Zero when the
 	// agent cannot read it.
 	CpuCount uint32 `protobuf:"varint,19,opt,name=cpu_count,json=cpuCount,proto3" json:"cpu_count,omitempty"`
+	// Hex SHA-256 of the executable this agent process was started from.
+	// Lets an updater confirm an uploaded binary is what actually runs,
+	// even when version strings cannot distinguish builds (dev builds).
+	// Empty when the agent cannot hash its own executable.
+	//
+	// Only comparable to the update payload on platforms where that payload
+	// IS the executable (linux). The darwin payload is an app-bundle zip, so
+	// its hash can never match this field — the CLI must skip the comparison
+	// there, and a future darwin implementation should instead persist and
+	// report the hash of the update payload it committed.
+	BinarySha256 string `protobuf:"bytes,20,opt,name=binary_sha256,json=binarySha256,proto3" json:"binary_sha256,omitempty"`
 	// Device hostname (gethostname(2)). The CLI uses it to identify a device
 	// reached over the USB well-known link-local address, where no mDNS TXT
 	// records are available. Empty on agents predating this field.
-	Hostname      string `protobuf:"bytes,20,opt,name=hostname,proto3" json:"hostname,omitempty"`
+	Hostname      string `protobuf:"bytes,21,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -888,6 +899,13 @@ func (x *GetAgentVersionResponse) GetCpuCount() uint32 {
 		return x.CpuCount
 	}
 	return 0
+}
+
+func (x *GetAgentVersionResponse) GetBinarySha256() string {
+	if x != nil {
+		return x.BinarySha256
+	}
+	return ""
 }
 
 func (x *GetAgentVersionResponse) GetHostname() string {
@@ -4302,7 +4320,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\xf6\a\n" +
+	"\x16GetAgentVersionRequest\"\x9b\b\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -4332,8 +4350,9 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"R\agpuArch\x88\x01\x01\x12X\n" +
 	"\x12network_interfaces\x18\x11 \x03(\v2).wendy.agent.services.v1.NetworkInterfaceR\x11networkInterfaces\x12&\n" +
 	"\x0fmem_total_bytes\x18\x12 \x01(\x03R\rmemTotalBytes\x12\x1b\n" +
-	"\tcpu_count\x18\x13 \x01(\rR\bcpuCount\x12\x1a\n" +
-	"\bhostname\x18\x14 \x01(\tR\bhostnameB\r\n" +
+	"\tcpu_count\x18\x13 \x01(\rR\bcpuCount\x12#\n" +
+	"\rbinary_sha256\x18\x14 \x01(\tR\fbinarySha256\x12\x1a\n" +
+	"\bhostname\x18\x15 \x01(\tR\bhostnameB\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +
 	"\f_device_typeB\n" +
