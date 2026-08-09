@@ -289,6 +289,8 @@ func main() {
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 
+	startROS2BatteryMonitor(ctx, logger, configPath)
+
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe

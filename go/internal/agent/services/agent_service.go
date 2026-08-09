@@ -143,9 +143,11 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 
 	resp.NetworkInterfaces = listNetworkInterfaces()
 
-	// nil on the mains-powered devices that make up most of the fleet, which
-	// leaves the field absent so `wendy device info` prints no battery line.
-	resp.Battery = batteryToProto(hoststats.SampleBattery())
+	// sysfs when the host has its own pack, else a registered fallback (a
+	// robot's BMS read over DDS). nil on the mains-powered devices that make up
+	// most of the fleet, which leaves the field absent so `wendy device info`
+	// prints no battery line.
+	resp.Battery = batteryToProto(hoststats.ResolveBattery())
 
 	return resp, nil
 }

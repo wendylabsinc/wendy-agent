@@ -4,6 +4,25 @@ The decoders in `batterystate.go` and `lowstate.go` encode these field orders.
 If a ROS distro or firmware revision changes them, the decoders must change too,
 and `TestDecodeLowState_RejectsWrongLength` is the test that should catch it.
 
+## Verified on hardware, 2026-08-09
+
+`DecodeLowState` was run against live `rt/lf/lowstate` samples on `woof.local`
+via `go/cmd/rtps-probe`, which reads DDS with the same pure-Go stack the agent
+uses — no ROS, no typesupport:
+
+```
+DECODED percent=27.0 state=discharging seconds_remaining=0
+```
+
+The 27% was confirmed correct against the robot's own reading. `seconds_remaining=0`
+is correct by design: `BmsState` has no capacity field, so no estimate is
+extrapolated.
+
+Wire size is the load-bearing check. A Go2 publishes `rt/lf/lowstate` as 1180
+bytes — a 4-byte CDR encapsulation header plus a 1176-byte body — and the
+decoder consumes it exactly. `TestLowStatePayload_MatchesObservedWireSize`
+pins that number.
+
 ## Provenance — read this before trusting the decoders
 
 These definitions came from **upstream source, not from a robot.**
