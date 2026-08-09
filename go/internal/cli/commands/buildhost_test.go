@@ -2,8 +2,92 @@ package commands
 
 import (
 	"errors"
+	"strings"
 	"testing"
+
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
+
+func TestCheckBuildHostCapabilities_NotOptedIn(t *testing.T) {
+	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    false,
+		BuildkitAvailable: true,
+		NativePlatforms:   []string{"linux/arm64"},
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("a host that has not opted in must be refused")
+	}
+	if !strings.Contains(err.Error(), "spark-office") {
+		t.Fatalf("error must name the host, got: %v", err)
+	}
+}
+
+func TestCheckBuildHostCapabilities_NoBuildkitOnMacSaysWhy(t *testing.T) {
+	err := checkBuildHostCapabilities("neo-lab", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: false,
+		Os:                "darwin",
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("a host without buildkit must be refused")
+	}
+	if !strings.Contains(err.Error(), "neo-lab") {
+		t.Fatalf("error must name the host, got: %v", err)
+	}
+	// A bare "no BuildKit" on a Mac reads as a bug rather than a design fact.
+	if !strings.Contains(err.Error(), "Apple Container") {
+		t.Fatalf("a darwin host should explain why it has no BuildKit, got: %v", err)
+	}
+}
+
+func TestCheckBuildHostCapabilities_NoBuildkitElsewhere(t *testing.T) {
+	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: false,
+		Os:                "linux",
+	}, "linux/arm64")
+	if err == nil {
+		t.Fatal("a linux host without buildkit must also be refused")
+	}
+	if strings.Contains(err.Error(), "Apple Container") {
+		t.Fatalf("the darwin explanation must not leak onto a linux host, got: %v", err)
+	}
+}
+
+func TestCheckBuildHostCapabilities_PlatformUnsupported(t *testing.T) {
+	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: true,
+		NativePlatforms:   []string{"linux/arm64"},
+	}, "linux/amd64")
+	if err == nil {
+		t.Fatal("a platform that is neither native nor emulated must be refused")
+	}
+	if !strings.Contains(err.Error(), "linux/amd64") {
+		t.Fatalf("error must name the requested platform, got: %v", err)
+	}
+}
+
+func TestCheckBuildHostCapabilities_EmulatedIsAllowed(t *testing.T) {
+	if err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: true,
+		NativePlatforms:   []string{"linux/arm64"},
+		EmulatedPlatforms: []string{"linux/amd64"},
+	}, "linux/amd64"); err != nil {
+		t.Fatalf("an emulated platform must be allowed, got: %v", err)
+	}
+}
+
+func TestCheckBuildHostCapabilities_NativePasses(t *testing.T) {
+	if err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{
+		BuilderEnabled:    true,
+		BuildkitAvailable: true,
+		NativePlatforms:   []string{"linux/arm64"},
+	}, "linux/arm64"); err != nil {
+		t.Fatalf("a native platform must pass, got: %v", err)
+	}
+}
 
 func TestResolveBuildHostName_FlagBeatsConfig(t *testing.T) {
 	loadBuildHostDefault = func() (string, error) { return "spark-office", nil }

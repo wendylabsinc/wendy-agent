@@ -3,9 +3,11 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // errBuilderWithBuildHost is returned when --builder and --build-host are both
@@ -45,4 +47,41 @@ func validateBuildHostFlags(buildHost, builder string) error {
 		return errBuilderWithBuildHost
 	}
 	return nil
+}
+
+// checkBuildHostCapabilities refuses a build host before any context is
+// transferred. Every failure names the host, and none falls back to a local
+// build: a long build the developer believed was running on the Spark is worse
+// than an error.
+func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, platform string) error {
+	if !resp.GetBuilderEnabled() {
+		return fmt.Errorf("%s is not configured as a build host; enable the builder role on that device, or omit --build-host to build locally", host)
+	}
+	if !resp.GetBuildkitAvailable() {
+		// On darwin this is a design fact, not a misconfiguration: the Mac agent
+		// runs Linux containers through Apple Container, which has no BuildKit
+		// underneath. Saying so stops it reading as a bug to be fixed.
+		if strings.EqualFold(resp.GetOs(), "darwin") {
+			return fmt.Errorf("%s has no BuildKit daemon: macOS hosts run containers through Apple Container, which has no BuildKit underneath, so a Mac cannot be a build host", host)
+		}
+		return fmt.Errorf("%s has no BuildKit daemon and cannot build", host)
+	}
+	if slices.Contains(resp.GetNativePlatforms(), platform) {
+		return nil
+	}
+	if slices.Contains(resp.GetEmulatedPlatforms(), platform) {
+		cliNotice("%s builds %s under emulation; expect it to be slower than a native build", host, platform)
+		return nil
+	}
+	return fmt.Errorf("%s cannot build %s: it builds %s natively and emulates %s",
+		host, platform,
+		formatPlatformList(resp.GetNativePlatforms()),
+		formatPlatformList(resp.GetEmulatedPlatforms()))
+}
+
+func formatPlatformList(platforms []string) string {
+	if len(platforms) == 0 {
+		return "nothing"
+	}
+	return strings.Join(platforms, ", ")
 }
