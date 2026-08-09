@@ -514,11 +514,15 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 
 			// Naming a device here is an explicit assertion that this is the one
 			// the user means, so any pin recorded for it is dropped first: that
-			// makes the connect below a first use, and makes the "re-run
-			// set-default to re-pin" advice in the identity-change refusals real
-			// (otherwise this connect would hit the same refusal and never
-			// re-pin).
-			clearDevicePinForRepin(device)
+			// makes the connect below a first use, and gives a device whose
+			// identity changed a way back (otherwise this connect would hit the
+			// same refusal and never re-pin).
+			//
+			// pinKeyForAddr, not the raw argument: `set-default my-mac.local:50051`
+			// is a legal default, and enforcement keys that host under
+			// "my-mac.local". Clearing "my-mac.local:50051" would drop nothing,
+			// leaving a host:port default with no way out of a refusal at all.
+			clearDevicePinForRepin(pinKeyForAddr(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)
 			// identity now if it is reachable, so later connections detect a

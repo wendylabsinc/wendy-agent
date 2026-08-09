@@ -1120,7 +1120,7 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
-			conn, updateErr = checkAndOfferUpdate(ctx, conn)
+			conn, updateErr = checkAndOfferUpdateFn(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
 			}
@@ -1208,6 +1208,52 @@ func pinKeyForLANDevice(d *models.LANDevice) string {
 		return ""
 	}
 	return strings.TrimSpace(d.Hostname)
+}
+
+// connectPickedLANDevice connects to the LAN half of a picked device at addr
+// and returns the selection, with the device pin enforced before anything else
+// is done over that connection. d.LAN must be non-nil.
+//
+// The ordering is the whole point. checkAndOfferUpdate can prompt "Update the
+// agent now?" and, on a yes, upload a wendy-agent binary and restart it — so it
+// must not run against a device whose identity is about to be rejected. That is
+// the invariant connectToAgent states for named targets, and the picker needs
+// it just as badly: mDNS is unauthenticated, so the row the user clicked is a
+// claim about which device answers there, not proof of it.
+//
+// A refusal is also not a reason to fall back to Bluetooth. The BLE fallback in
+// the connect-error branch is for a device that did not answer at all; a device
+// that answered as somebody else is a refusal, and reaching it over a second
+// transport instead would hand back the very device the pin just rejected.
+//
+// Note this also covers `wendy device set-default` with no argument, which
+// picks through here: a device whose identity changed can no longer be re-pinned
+// by picking it from the TUI. Naming it (`set-default <host>`, which drops the
+// pin first) or `wendy device unpin <host>` is the way back — a re-pin has to be
+// an act aimed at a specific device, not a row in a list mDNS filled in.
+func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, addr string, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	mtls := d.LAN.IsMTLS
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
+	if err != nil {
+		// LAN failed — fall back to BLE if available.
+		if d.Bluetooth != nil {
+			return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
+		}
+		return nil, err
+	}
+
+	picked := &SelectedDevice{Agent: conn, PinKey: pinKeyForLANDevice(d.LAN)}
+	if pinErr := enforceSelectedDevicePin(picked); pinErr != nil {
+		return nil, pinErr
+	}
+	if !suppressUpdateCheck {
+		updatedConn, updateErr := checkAndOfferUpdateFn(ctx, picked.Agent)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		picked.Agent = updatedConn
+	}
+	return picked, nil
 }
 
 // connectWithAutoTLS tries to connect using mTLS if the CLI has auth certs,
@@ -2205,6 +2251,12 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	return newConn, nil
 }
 
+// checkAndOfferUpdateFn is a seam over checkAndOfferUpdate. It exists for tests
+// that must prove the update check was NOT reached: it can upload and restart a
+// wendy-agent binary, so "did this run?" is a security assertion about the
+// identity gates that precede it, not an implementation detail.
+var checkAndOfferUpdateFn = checkAndOfferUpdate
+
 // performAgentUpdate downloads the latest release for the given osName/arch and
 // uploads it to conn. Pass nightly=true to fetch the latest prerelease instead
 // of stable. The agent will restart after this returns successfully.
@@ -2593,7 +2645,7 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
-			conn, updateErr = checkAndOfferUpdate(ctx, conn)
+			conn, updateErr = checkAndOfferUpdateFn(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
 			}
@@ -3197,23 +3249,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 				}
 				return nil, fmt.Errorf("selected LAN device has no usable address")
 			}
-			mtls := d.LAN.IsMTLS
-			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
-			if err == nil {
-				if !suppressUpdateCheck {
-					var updateErr error
-					conn, updateErr = checkAndOfferUpdate(ctx, conn)
-					if updateErr != nil {
-						return nil, updateErr
-					}
-				}
-				return &SelectedDevice{Agent: conn, PinKey: pinKeyForLANDevice(d.LAN)}, nil
-			}
-			// LAN failed — fall back to BLE if available.
-			if d.Bluetooth != nil {
-				return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
-			}
-			return nil, err
+			return connectPickedLANDevice(ctx, d, addr, suppressUpdateCheck)
 		}
 
 		// Wendy Lite device — set both BLE and External+Provider when

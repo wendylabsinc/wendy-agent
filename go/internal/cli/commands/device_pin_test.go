@@ -215,6 +215,48 @@ func TestClearDevicePinForRepin(t *testing.T) {
 	}
 }
 
+// TestSetDefaultClearsPinForHostPortDevice covers the escape hatch for the one
+// default shape that used to have none: `wendy device set-default
+// my-host.local:50051`. Enforcement keys that host under "my-host" (pinKeyForAddr
+// strips the port), so passing set-default's raw argument through to
+// clearDevicePinForRepin cleared a key nothing was ever filed under — the pin
+// survived, the connect that follows hit the refusal, and with the interactive
+// "trust it anyway?" prompt now gone there was no other way back.
+func TestSetDefaultClearsPinForHostPortDevice(t *testing.T) {
+	stubNonInteractive(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendy-thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+		"wendy-orin": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "9"},
+	})
+
+	// set-default connects afterwards to record a fresh pin. Keep that off the
+	// network: nothing resolves, so the dial fails and set-default ignores it
+	// (an offline device is pinned on its next successful connection instead).
+	origLookup, origBrowse, origLadder := osLookupHostFn, lanBrowseFn, dialAgentLadderFn
+	osLookupHostFn = func(context.Context, string) ([]string, error) { return nil, errors.New("no resolver in test") }
+	lanBrowseFn = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return nil, nil, errors.New("device offline in test")
+	}
+	t.Cleanup(func() { osLookupHostFn, lanBrowseFn, dialAgentLadderFn = origLookup, origBrowse, origLadder })
+
+	cmd := newDeviceSetDefaultCmd()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd.SetContext(ctx)
+	if err := cmd.RunE(cmd, []string{"wendy-thor.local:50051"}); err != nil {
+		t.Fatalf("set-default with an explicit port: %v", err)
+	}
+
+	pins := readPins()
+	if pin, ok := pins["wendy-thor"]; ok {
+		t.Errorf("pin %+v survived `set-default wendy-thor.local:50051`: the user named the device explicitly and still has no way past its refusal", pin)
+	}
+	if _, ok := pins["wendy-orin"]; !ok {
+		t.Error("set-default dropped an unrelated device's pin")
+	}
+}
+
 // TestEnforceDeviceIdentityHardFails covers the approved policy change: a
 // mismatch is refused identically in every mode, with no prompt.
 //
@@ -276,12 +318,58 @@ func TestEnforceDeviceIdentityHardFails(t *testing.T) {
 	// A function seam would only catch a prompt re-added THROUGH the seam; the
 	// likely regression — someone reaching for tui.Confirm* directly, to be
 	// helpful — is what this catches.
-	src, readErr := os.ReadFile("device_pin.go")
-	if readErr != nil {
-		t.Fatalf("reading device_pin.go: %v", readErr)
+	//
+	// The identity path is located by its function declarations across every
+	// non-test file in the package, not by filename: hardcoding "device_pin.go"
+	// would make this assertion pass while covering nothing the moment the
+	// identity code moves to another file.
+	assertNoPromptInIdentityPath(t)
+}
+
+// assertNoPromptInIdentityPath fails if whichever non-test file in this package
+// declares the identity refusals also reaches for an interactive confirmation,
+// and fails just as loudly if no file declares them at all — an assertion that
+// has quietly stopped scanning anything is worse than no assertion.
+func assertNoPromptInIdentityPath(t *testing.T) {
+	t.Helper()
+
+	// The declarations that mark a file as part of the identity path. Both
+	// refusals live behind these two.
+	decls := []string{"func enforceDeviceIdentity(", "func challengeUnprovisionedDevice("}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading package directory: %v", err)
 	}
-	if strings.Contains(string(src), "tui.Confirm") {
-		t.Error("device_pin.go calls a tui.Confirm* prompt: the identity path must refuse, never ask — a MITM warning that can be dismissed gets dismissed")
+	found := make(map[string]string, len(decls))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, readErr := os.ReadFile(name)
+		if readErr != nil {
+			t.Fatalf("reading %s: %v", name, readErr)
+		}
+		text := string(src)
+		var declared []string
+		for _, decl := range decls {
+			if strings.Contains(text, decl) {
+				declared = append(declared, decl)
+				found[decl] = name
+			}
+		}
+		if len(declared) == 0 {
+			continue
+		}
+		if strings.Contains(text, "tui.Confirm") {
+			t.Errorf("%s declares %v and calls a tui.Confirm* prompt: the identity path must refuse, never ask — a MITM warning that can be dismissed gets dismissed", name, declared)
+		}
+	}
+	for _, decl := range decls {
+		if found[decl] == "" {
+			t.Errorf("no non-test file in this package declares %q, so this check is scanning nothing; point it at wherever the identity refusals now live", decl)
+		}
 	}
 }
 
@@ -390,6 +478,144 @@ func TestPickerPinKeyMatchesDeviceFlagKey(t *testing.T) {
 	// And the trap itself: the display name must not be what keys the pin.
 	if strings.EqualFold(pinKeyForLANDevice(lan), lan.DisplayName) {
 		t.Errorf("picker pin key = %q, want the hostname %q — the display name is not a transform of the hostname", pinKeyForLANDevice(lan), lan.Hostname)
+	}
+}
+
+// TestPickerEnforcesPinBeforeAgentUpdate is the picker path's ORDERING, which
+// is a separate question from whether the pin is checked at all.
+//
+// With no default device, `wendy run` goes straight to the picker. If something
+// squats the pinned hostname and answers, every step taken between the connect
+// and the pin check is a step taken against a device the CLI is about to
+// reject — and one of those steps is the agent update check, which prompts
+// "Update the agent now?" and, on a yes, uploads a wendy-agent binary and
+// restarts it. Pushing an executable to an unverified device and only then
+// deciding not to trust it is the wrong order in the way that matters.
+//
+// The named-device path states this invariant in connectToAgent; this asserts
+// the picker path honours it too, by making the update check fail the test if
+// it is reached at all.
+func TestPickerEnforcesPinBeforeAgentUpdate(t *testing.T) {
+	stubNonInteractive(t)
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendyos-agx-orin": {OrgID: 9, CloudGRPC: "grpc.b.sh:443", AssetID: "42"},
+	})
+
+	lan := &models.LANDevice{
+		DisplayName: "Agx Orin",
+		Hostname:    "wendyos-agx-orin.local",
+		IPAddress:   "10.0.0.9",
+		Port:        50051,
+		IsMTLS:      true,
+	}
+
+	// Whoever answers there presents a certificate for org 7; the pin above says
+	// this hostname is an org 9 device. Nothing about the picker row is evidence
+	// either way — mDNS is unauthenticated, so the row is the attacker's claim.
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return &grpcclient.AgentConnection{
+			IsMTLS:   true,
+			CertInfo: &config.CertificateInfo{OrganizationID: 7},
+		}, nil, nil
+	}
+	origUpdate := checkAndOfferUpdateFn
+	checkAndOfferUpdateFn = func(_ context.Context, conn *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
+		t.Error("the agent update check ran on a picker selection whose pin refuses it: that check can upload and restart a wendy-agent binary, so reaching it means the CLI offered to push an executable to a device it had not verified")
+		return conn, nil
+	}
+	t.Cleanup(func() { dialAgentLadderFn, checkAndOfferUpdateFn = origLadder, origUpdate })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// suppressUpdateCheck is false on purpose: the update check is ENABLED here,
+	// so the only thing that can keep it from running is the pin standing in
+	// front of it.
+	picked := &models.DiscoveredDevice{DisplayName: lan.DisplayName, LAN: lan}
+	sel, err := connectPickedLANDevice(ctx, picked, preferredLANAddress(*lan), false)
+	if err == nil {
+		if sel != nil && sel.Agent != nil {
+			sel.Agent.Close()
+		}
+		t.Fatal("picker selection returned a connection to a device whose certificate contradicts its pin")
+	}
+	if sel != nil {
+		t.Errorf("refused selection = %+v, want nil — a refusal must not hand back a usable target", sel)
+	}
+	if !strings.Contains(err.Error(), `device "wendyos-agx-orin.local" identity changed`) ||
+		!strings.Contains(err.Error(), "wendy device unpin wendyos-agx-orin.local") {
+		t.Fatalf("err = %v, want the identity refusal naming the picked device and the unpin escape hatch", err)
+	}
+	if pin := readPins()["wendyos-agx-orin"]; pin.OrgID != 9 {
+		t.Errorf("pin after refusal = %+v, want the original org 9 intact", pin)
+	}
+
+	// A refusal is not "the LAN attempt failed", so it must not slide into the
+	// Bluetooth fallback: that would reach the very device the pin just
+	// rejected, over a second transport, and report success.
+	withBLE := &models.DiscoveredDevice{
+		DisplayName: lan.DisplayName,
+		LAN:         lan,
+		Bluetooth:   &models.BluetoothDevice{DisplayName: "Agx Orin"},
+	}
+	bleSel, bleErr := connectPickedLANDevice(ctx, withBLE, preferredLANAddress(*lan), false)
+	if bleErr == nil || (bleSel != nil && bleSel.Bluetooth != nil) {
+		t.Fatalf("a refused pin fell back to Bluetooth (sel=%+v, err=%v); the BLE fallback is for a device that did not answer, not one that answered as somebody else", bleSel, bleErr)
+	}
+}
+
+// TestPickerRunsUpdateCheckOnceThePinHolds is the other half of the ordering
+// assertion above: the pin gate must not have simply disabled the update check.
+// A device whose pin matches still gets the check, and the connection the check
+// hands back (a restarted agent yields a NEW connection) is the one the caller
+// receives.
+func TestPickerRunsUpdateCheckOnceThePinHolds(t *testing.T) {
+	stubNonInteractive(t)
+	writePinTestConfig(t, map[string]config.DevicePin{
+		"wendyos-agx-orin": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+
+	lan := &models.LANDevice{
+		DisplayName: "Agx Orin",
+		Hostname:    "wendyos-agx-orin.local",
+		IPAddress:   "10.0.0.9",
+		Port:        50051,
+		IsMTLS:      true,
+	}
+
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+		return &grpcclient.AgentConnection{
+			IsMTLS:   true,
+			CertInfo: &config.CertificateInfo{OrganizationID: 7},
+		}, nil, nil
+	}
+	replacement := &grpcclient.AgentConnection{IsMTLS: true, CertInfo: &config.CertificateInfo{OrganizationID: 7}}
+	updateChecked := false
+	origUpdate := checkAndOfferUpdateFn
+	checkAndOfferUpdateFn = func(context.Context, *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
+		updateChecked = true
+		return replacement, nil
+	}
+	t.Cleanup(func() { dialAgentLadderFn, checkAndOfferUpdateFn = origLadder, origUpdate })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	picked := &models.DiscoveredDevice{DisplayName: lan.DisplayName, LAN: lan}
+	sel, err := connectPickedLANDevice(ctx, picked, preferredLANAddress(*lan), false)
+	if err != nil {
+		t.Fatalf("matching pin: want the selection through, got %v", err)
+	}
+	if !updateChecked {
+		t.Error("the update check never ran for a device whose pin matches: the pin gate must order the check, not remove it")
+	}
+	if sel == nil || sel.Agent != replacement {
+		t.Errorf("selection carries %p, want the connection the update check returned (%p) — an agent that restarts hands back a new connection", sel, replacement)
+	}
+	if sel != nil && sel.PinKey != "wendyos-agx-orin.local" {
+		t.Errorf("PinKey = %q, want the hostname the pin is filed under", sel.PinKey)
 	}
 }
 
