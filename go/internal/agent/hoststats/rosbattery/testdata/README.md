@@ -23,20 +23,42 @@ Verified: the field orders and types the decoders walk match upstream.
 
 Still unverified:
 
-- That this robot's firmware/bridge uses the same `unitree_go` revision as
-  upstream master.
-- That this robot publishes either message at all. No DDS traffic has been
-  observed — the one ROS 2-labelled app (`sh.wendy.go2-network-bridge`) has no
-  source in any local repo, and `woof-console` reads `battery_soc` over its own
-  UDP/WebRTC path rather than over ROS 2.
+- That this robot's firmware uses the same `unitree_go` revision as upstream
+  master.
 - The DDS type name strings the decoders export (`TypeBatteryState`,
   `TypeLowState`). They follow the standard rosidl convention
   `<pkg>::msg::dds_::<Msg>_`, but have not been seen on the wire. Phase 2
   matches SEDP announcements against them, so they need confirming before
   discovery can work.
 
-Closing these needs a packet capture off `enP8p1s0` (192.168.123.18) rather
-than a CLI — which Phase 2 needs regardless.
+## Observed on the robot, 2026-08-08
+
+Enumerated by deploying a purpose-built `ros2` container to `woof.local`
+(`sh.wendy.ros2probe`), because the agent's own `wendy device ros2` could not
+inspect it — see the dash/`setup.bash` bug fixed alongside this work.
+
+**There is no `sensor_msgs/msg/BatteryState` on this robot.** Across ~100
+topics, every `sensor_msgs` topic is `PointCloud2` or `Imu`. The battery is
+carried only by:
+
+| topic | type |
+| --- | --- |
+| `/lowstate` | `unitree_go/msg/LowState` |
+| `/lf/lowstate` | `unitree_go/msg/LowState` (low frequency) |
+| `/lf/battery_alarm` | `std_msgs/msg/String` — an alarm, not a level |
+
+Consequences for the decoders:
+
+- `DecodeLowState` is the live path here; `DecodeBatteryState` is currently
+  exercised only by tests. The preference order (BatteryState first) still
+  stands as policy for other robots.
+- `SecondsRemaining` is **always absent on a Go2**: `BmsState` carries `soc`
+  and `current` but no capacity, so there is nothing to divide. `wendy device
+  top` shows a percentage and a direction, no countdown. The CLI formatter
+  already drops the segment when the estimate is zero.
+
+The probe also confirmed `ros2` lives at `/opt/ros/humble/bin/ros2` in the very
+image the agent reported as lacking it.
 
 ## Byte layouts the decoders assume
 
