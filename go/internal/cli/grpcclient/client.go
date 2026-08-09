@@ -91,6 +91,11 @@ type AgentConnection struct {
 	// atomic; a pointer so "never fired" is distinguishable from a zero
 	// identity. nil for connections that never install the sink.
 	observedServerIdentity *atomic.Pointer[certs.WendyIdentity]
+	// identityMismatch holds the typed rejection raised inside VerifyConnection
+	// when the peer failed ExpectedIdentity. gRPC's lazy dial mangles that error
+	// into the first RPC's status, so the ladder reads it from here instead of
+	// string-matching. nil for connections that never install the sink.
+	identityMismatch *atomic.Pointer[certs.IdentityMismatchError]
 }
 
 // verifiedIdentitySink returns the OnVerifiedServerIdentity callback that
@@ -104,6 +109,18 @@ func verifiedIdentitySink(dst *atomic.Pointer[certs.WendyIdentity]) func(certs.W
 		}
 		stored := id
 		dst.Store(&stored)
+	}
+}
+
+// identityMismatchSink returns the callback that records an ExpectedIdentity
+// rejection. dst may be nil (enforcement not requested), in which case the
+// returned sink is a no-op, so callers need no nil check.
+func identityMismatchSink(dst *atomic.Pointer[certs.IdentityMismatchError]) func(*certs.IdentityMismatchError) {
+	return func(e *certs.IdentityMismatchError) {
+		if dst == nil || e == nil {
+			return
+		}
+		dst.Store(e)
 	}
 }
 
@@ -176,6 +193,8 @@ func newAgentTLSConfig(
 	pins certs.PinChecker,
 	observedOrg *atomic.Int32,
 	observedIdentity *atomic.Pointer[certs.WendyIdentity],
+	expected *certs.WendyIdentity,
+	mismatch *atomic.Pointer[certs.IdentityMismatchError],
 ) (*tls.Config, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
@@ -194,9 +213,10 @@ func newAgentTLSConfig(
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
-		ChainPEM:      certInfo.PemCertificateChain,
-		ExpectedOrgID: int32(certInfo.OrganizationID),
-		PinStore:      pins,
+		ChainPEM:         certInfo.PemCertificateChain,
+		ExpectedOrgID:    int32(certInfo.OrganizationID),
+		PinStore:         pins,
+		ExpectedIdentity: expected,
 		OnServerIdentity: func(id certs.WendyIdentity) {
 			if id.OrgID != 0 {
 				observedOrg.Store(id.OrgID)
@@ -206,6 +226,23 @@ func newAgentTLSConfig(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
+	}
+	// Record a typed ExpectedIdentity rejection before any other wrap. gRPC's
+	// lazy dial mangles a VerifyConnection error into the first RPC's status,
+	// so the dial ladder needs this captured here rather than parsed out of
+	// that mangled error later. Placed closest to the verifier returned by
+	// BuildServerVerifyConnection — ahead of the WENDY_TLS_DEBUG and
+	// SetResumed wraps below — so it observes that verifier's own return
+	// value, not one a later wrap may have transformed.
+	sink := identityMismatchSink(mismatch)
+	verifyConnBase := verifyConn
+	verifyConn = func(cs tls.ConnectionState) error {
+		err := verifyConnBase(cs)
+		var im *certs.IdentityMismatchError
+		if errors.As(err, &im) {
+			sink(im)
+		}
+		return err
 	}
 	if os.Getenv("WENDY_TLS_DEBUG") != "" {
 		inner := verifyConn
@@ -256,9 +293,16 @@ func newAgentTLSConfig(
 }
 
 func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
+	return ConnectWithTLSExpecting(ctx, address, certInfo, pins, nil)
+}
+
+// ConnectWithTLSExpecting is ConnectWithTLSAndPins with a required peer
+// identity. A nil expected is exactly ConnectWithTLSAndPins.
+func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker, expected *certs.WendyIdentity) (*AgentConnection, error) {
 	observedOrg := new(atomic.Int32)
 	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
-	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg, observedIdentity)
+	mismatch := new(atomic.Pointer[certs.IdentityMismatchError])
+	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg, observedIdentity, expected, mismatch)
 	if err != nil {
 		return nil, err
 	}
@@ -287,6 +331,7 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	ac.CertInfo = certInfo
 	ac.observedServerOrg = observedOrg
 	ac.observedServerIdentity = observedIdentity
+	ac.identityMismatch = mismatch
 	return ac, nil
 }
 
@@ -381,9 +426,22 @@ func (c *AgentConnection) ObservedServerIdentity() (certs.WendyIdentity, bool) {
 	return *id, true
 }
 
+// IdentityMismatch reports the ExpectedIdentity rejection this connection hit,
+// if any. It is the ladder's signal that the *device* is wrong — as opposed to
+// our certificate being wrong — and therefore that retrying with other certs or
+// other ports is pointless.
+func (c *AgentConnection) IdentityMismatch() (*certs.IdentityMismatchError, bool) {
+	if c.identityMismatch == nil {
+		return nil, false
+	}
+	e := c.identityMismatch.Load()
+	return e, e != nil
+}
+
 func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 	return &AgentConnection{
 		Conn:                conn,
+		identityMismatch:    new(atomic.Pointer[certs.IdentityMismatchError]),
 		AgentService:        agentpb.NewWendyAgentServiceClient(conn),
 		ContainerService:    agentpb.NewWendyContainerServiceClient(conn),
 		ShellService:        agentpb.NewWendyShellServiceClient(conn),
