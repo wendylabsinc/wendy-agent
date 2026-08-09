@@ -3,11 +3,17 @@ package services
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
-	"time"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
@@ -47,70 +53,194 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 	}
 	defer proxy.stop()
 
-	conn, err := net.Dial("tcp", proxy.addr)
-	if err != nil {
-		t.Fatalf("dialing the proxy: %v", err)
+	req, _ := http.NewRequest(http.MethodHead, "http://"+proxy.addr+"/v2/", nil)
+	req.SetBasicAuth(pushProxyUser, proxy.credential)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
 	}
-	// Drive one request through so the proxy attempts its outbound dial.
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-	conn.Write([]byte("HEAD /v2/ HTTP/1.1\r\nHost: x\r\n\r\n"))
-	io.Copy(io.Discard, conn)
-	conn.Close()
 
 	if got := proxy.firstError(); got == nil {
 		t.Fatal("the proxy must record why the outbound dial failed, not discard it")
 	}
 }
 
-// A client that finishes sending and half-closes must still receive the whole
-// response. Tearing both connections down as soon as ONE direction finishes
-// truncates the reply, which reaches the client as "connection reset by peer" —
-// the failure buildkit hit on every concurrent push connection.
-func TestPushProxy_DeliversResponseAfterClientHalfClose(t *testing.T) {
-	const reply = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+// proxyToBackend wires a proxy whose outbound hop is a plain-TCP test backend.
+// The mesh dial and TLS wrapping are orthogonal to what these tests check.
+func proxyToBackend(t *testing.T, handler http.Handler) *pushProxy {
+	t.Helper()
+	backend := httptest.NewServer(handler)
+	t.Cleanup(backend.Close)
 
-	backend, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer backend.Close()
-	go func() {
-		c, aerr := backend.Accept()
-		if aerr != nil {
-			return
-		}
-		defer c.Close()
-		io.Copy(io.Discard, c) // read until the client half-closes
-		c.Write([]byte(reply))
-	}()
-
-	proxy, err := newPushProxy(stubPeerDialer{addr: backend.Addr().String()}, testTarget(), nil)
+	proxy, err := newPushProxy(stubPeerDialer{addr: backend.Listener.Addr().String()}, testTarget(), nil)
 	if err != nil {
 		t.Fatalf("newPushProxy: %v", err)
 	}
-	defer proxy.stop()
-	// Plain TCP for the backend hop; the TLS wrapping is orthogonal to relaying.
-	// Set before serve, so no accepting goroutine can be reading dial yet.
+	// Wrapped rather than passed directly: serve replaces stop, and t.Cleanup
+	// would otherwise capture the pre-serve value.
+	t.Cleanup(func() { proxy.stop() })
+	// Set before serve, so no goroutine can be reading dial yet.
 	proxy.dial = func(ctx context.Context) (net.Conn, error) {
-		return net.Dial("tcp", backend.Addr().String())
+		return net.Dial("tcp", backend.Listener.Addr().String())
 	}
 	proxy.serve(context.Background())
+	return proxy
+}
 
-	conn, err := net.Dial("tcp", proxy.addr)
-	if err != nil {
-		t.Fatalf("dialing proxy: %v", err)
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
-	conn.Write([]byte("HEAD /v2/x/blobs/sha256:deadbeef HTTP/1.1\r\nHost: x\r\n\r\n"))
-	conn.(*net.TCPConn).CloseWrite()
+// The whole point of WDY-2371: loopback is not a boundary on a shared build
+// host, so an unauthenticated local process must not be able to push through
+// this proxy using the agent's mesh identity and certificate.
+func TestPushProxy_RefusesUnauthenticatedLocalCaller(t *testing.T) {
+	var reached bool
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	}))
 
-	got, err := io.ReadAll(conn)
+	resp, err := http.Get("http://" + proxy.addr + "/v2/evil/blobs/uploads/")
 	if err != nil {
-		t.Fatalf("reading response through the proxy: %v", err)
+		t.Fatalf("requesting through the proxy: %v", err)
 	}
-	if string(got) != reply {
-		t.Fatalf("response truncated through the proxy:\n got: %q\nwant: %q", got, reply)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a caller with no credential", resp.StatusCode)
+	}
+	if reached {
+		t.Fatal("an unauthenticated request reached the target device's registry")
+	}
+	// containerd's authorizer only retries with credentials once it sees a
+	// challenge, so without this header a legitimate push never authenticates.
+	if got := resp.Header.Get("WWW-Authenticate"); !strings.HasPrefix(got, "Basic ") {
+		t.Fatalf("WWW-Authenticate = %q, want a Basic challenge", got)
+	}
+}
+
+func TestPushProxy_RefusesWrongCredential(t *testing.T) {
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("a request with the wrong credential reached the registry")
+	}))
+
+	req, _ := http.NewRequest(http.MethodGet, "http://"+proxy.addr+"/v2/", nil)
+	req.SetBasicAuth(pushProxyUser, "not-the-credential")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("requesting through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for a wrong credential", resp.StatusCode)
+	}
+}
+
+// Each build mints its own credential, so one leaked from a previous build is
+// not a standing key to the next one.
+func TestPushProxy_CredentialIsPerBuild(t *testing.T) {
+	first, err := newPushProxy(stubPeerDialer{}, testTarget(), nil)
+	if err != nil {
+		t.Fatalf("newPushProxy: %v", err)
+	}
+	defer first.ln.Close()
+	second, err := newPushProxy(stubPeerDialer{}, testTarget(), nil)
+	if err != nil {
+		t.Fatalf("newPushProxy: %v", err)
+	}
+	defer second.ln.Close()
+
+	if first.credential == "" {
+		t.Fatal("a proxy must mint a credential")
+	}
+	if first.credential == second.credential {
+		t.Fatal("two builds must not share a push credential")
+	}
+}
+
+// The authenticated path must reach the registry with the body and method
+// intact — and without the loopback credential, which is ours and means nothing
+// to the target (it authenticates us by client certificate).
+func TestPushProxy_ForwardsAuthenticatedRequestWithoutTheCredential(t *testing.T) {
+	var (
+		gotAuth   string
+		gotMethod string
+		gotPath   string
+		gotBody   string
+	)
+	proxy := proxyToBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("done"))
+	}))
+
+	req, _ := http.NewRequest(http.MethodPut,
+		"http://"+proxy.addr+"/v2/myapp/blobs/uploads/abc", strings.NewReader("layer-bytes"))
+	req.SetBasicAuth(pushProxyUser, proxy.credential)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("requesting through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 forwarded from the registry", resp.StatusCode)
+	}
+	if string(body) != "done" {
+		t.Fatalf("response body = %q, want the registry's %q", body, "done")
+	}
+	if gotAuth != "" {
+		t.Fatalf("the loopback credential was forwarded to the registry: %q", gotAuth)
+	}
+	if gotMethod != http.MethodPut || gotPath != "/v2/myapp/blobs/uploads/abc" {
+		t.Fatalf("request reached the registry as %s %s, want PUT /v2/myapp/blobs/uploads/abc", gotMethod, gotPath)
+	}
+	if gotBody != "layer-bytes" {
+		t.Fatalf("body reached the registry as %q, want %q", gotBody, "layer-bytes")
+	}
+}
+
+// buildctl must be able to find the credential, and must find it in a file
+// rather than anywhere argv-visible.
+func TestDockerConfigWithPushAuth_WritesUsableCredential(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "auth")
+	if err := dockerConfigWithPushAuth(dir, "127.0.0.1:41000", "s3cret"); err != nil {
+		t.Fatalf("dockerConfigWithPushAuth: %v", err)
+	}
+
+	path := filepath.Join(dir, "config.json")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config.json mode = %o, want 0600 — it holds a credential", perm)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config.json: %v", err)
+	}
+	var parsed struct {
+		Auths map[string]struct {
+			Auth string `json:"auth"`
+		} `json:"auths"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("config.json is not valid docker config: %v", err)
+	}
+	entry, ok := parsed.Auths["127.0.0.1:41000"]
+	if !ok {
+		t.Fatalf("no auth entry for the proxy address, got %v", parsed.Auths)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(entry.Auth)
+	if err != nil {
+		t.Fatalf("auth entry is not base64: %v", err)
+	}
+	if string(decoded) != pushProxyUser+":s3cret" {
+		t.Fatalf("auth entry decodes to %q, want %q", decoded, pushProxyUser+":s3cret")
 	}
 }
 

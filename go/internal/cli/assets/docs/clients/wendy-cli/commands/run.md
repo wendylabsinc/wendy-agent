@@ -251,6 +251,13 @@ other people's instructions:
   concurrently. Two people building one app id would otherwise share a context
   directory, and the second build's extraction would replace sources the first
   was still compiling.
+- **Delivery is scoped to one build.** While a build runs, the agent exposes a
+  loopback endpoint that BuildKit pushes through, and that endpoint holds the
+  credentials for reaching the target device. It requires a password minted for
+  that build alone, so other processes on the build host cannot use it to push
+  something of their own to your device. The password is passed to BuildKit in a
+  `0600` file rather than on a command line, where any local user could read it
+  out of `/proc`.
 
 ### Errors
 

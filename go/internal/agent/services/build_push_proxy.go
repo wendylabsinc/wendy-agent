@@ -2,12 +2,20 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
-	"io"
 	"net"
+	"net/http"
+	"net/http/httputil"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
@@ -34,10 +42,16 @@ type PeerDialer interface {
 // cannot distinguish an unreachable peer from a rejected certificate, which are
 // the two causes with entirely different fixes.
 type pushProxy struct {
-	addr    string
-	ln      net.Listener
-	stop    func()
-	assetID int32
+	addr string
+	ln   net.Listener
+	stop func()
+	// credential is this build's loopback password. The listener is on
+	// 127.0.0.1, which is not a boundary on a shared build host: every local
+	// user can reach it, and without a credential any of them could push an
+	// arbitrary image to the target device using the agent's mesh identity and
+	// client certificate, for as long as a build runs.
+	credential string
+	assetID    int32
 	// dial opens the outbound hop. A field so tests can relay over plain TCP;
 	// production dials the mesh peer and wraps the result in TLS. It must be set
 	// before serve, which is when the first reader of it can exist.
@@ -119,21 +133,35 @@ func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.Pu
 	return p, nil
 }
 
-// newPushProxy binds the loopback listener but accepts nothing yet.
+// pushProxyUser is the username half of the loopback credential. Only the
+// password carries entropy; the username exists because the registry credential
+// format has a slot for one.
+const pushProxyUser = "wendy-build"
+
+// newPushProxy binds the loopback listener and mints this build's credential,
+// but serves nothing yet.
 //
 // Construction is split from serve so that a caller replacing dial — a test
 // relaying over plain TCP — writes the field before any goroutine that reads it
-// exists. Overwriting it after the accept loop is running is a data race.
+// exists. Overwriting it after the server is running is a data race.
 func newPushProxy(dialer PeerDialer, target *agentpbv2.PushTarget, tlsCfg *tls.Config) (*pushProxy, error) {
+	credential, err := newPushCredential()
+	if err != nil {
+		return nil, err
+	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("starting push proxy: %w", err)
 	}
 	return &pushProxy{
-		addr:    ln.Addr().String(),
-		ln:      ln,
-		stop:    func() { _ = ln.Close() },
-		assetID: target.GetAssetId(),
+		addr: ln.Addr().String(),
+		ln:   ln,
+		// Serving replaces this with the server's own shutdown. Set here so a
+		// proxy that is constructed and never served is still closable, rather
+		// than leaking the listener through a nil func.
+		stop:       func() { _ = ln.Close() },
+		credential: credential,
+		assetID:    target.GetAssetId(),
 		dial: func(ctx context.Context) (net.Conn, error) {
 			raw, _, derr := dialer.DialDevice(ctx, target.GetAssetId(), uint16(target.GetRegistryPort()))
 			if derr != nil {
@@ -145,52 +173,118 @@ func newPushProxy(dialer PeerDialer, target *agentpbv2.PushTarget, tlsCfg *tls.C
 	}, nil
 }
 
-// serve accepts loopback connections until stop closes the listener.
+// newPushCredential mints the per-build password for the loopback hop.
+func newPushCredential() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generating the push credential: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// authorized reports whether r carries this build's credential.
+//
+// Constant-time comparison because the attacker this gate exists for is local
+// and can retry as fast as loopback allows.
+func (p *pushProxy) authorized(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(user), []byte(pushProxyUser)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(pass), []byte(p.credential)) == 1
+}
+
+// serve runs the loopback registry endpoint until stop shuts it down.
+//
+// This is an HTTP reverse proxy rather than the byte relay it replaces, because
+// a byte relay cannot tell one local connection from another: it forwards
+// whatever arrives, using credentials the caller does not have. Speaking HTTP is
+// what makes the credential check possible.
 func (p *pushProxy) serve(ctx context.Context) {
-	go func() {
-		for {
-			local, acceptErr := p.ln.Accept()
-			if acceptErr != nil {
-				return // listener closed by stop()
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			// The transport always dials the mesh peer regardless of this host,
+			// so it serves only to produce a well-formed request. The inbound
+			// Host is preserved: the target's registry names images from its own
+			// listen address, and the byte relay this replaces forwarded the
+			// header untouched.
+			pr.Out.URL.Scheme = "https"
+			pr.Out.URL.Host = pr.In.Host
+			pr.Out.Host = pr.In.Host
+			// The loopback credential is ours, not the registry's. The registry
+			// authenticates us by client certificate.
+			pr.Out.Header.Del("Authorization")
+		},
+		Transport: &http.Transport{
+			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return p.dial(ctx)
+			},
+			// Registry pushes are HTTP/1.1 with sized bodies; the byte relay this
+			// replaces never negotiated h2, so do not start now.
+			ForceAttemptHTTP2:     false,
+			MaxIdleConnsPerHost:   8,
+			ResponseHeaderTimeout: 0,
+		},
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			// Same reason the byte relay recorded its dial failure: buildkit
+			// would otherwise see only a broken loopback connection, which
+			// cannot distinguish an unreachable peer from a rejected certificate.
+			p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err))
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !p.authorized(r) {
+				// The challenge is what makes this work with an ordinary
+				// registry client: containerd's authorizer retries with the
+				// credentials it holds for this host once it sees one.
+				w.Header().Set("WWW-Authenticate", `Basic realm="wendy build push"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
 			}
-			go p.proxyOne(ctx, local)
-		}
-	}()
+			rp.ServeHTTP(w, r)
+		}),
+		BaseContext: func(net.Listener) context.Context { return ctx },
+		// A layer push can legitimately take minutes; a read/write deadline here
+		// would abort large uploads rather than protect anything.
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+	p.stop = func() { _ = srv.Close() }
+
+	go func() { _ = srv.Serve(p.ln) }()
 }
 
-func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn) {
-	defer local.Close()
-	remote, err := p.dial(ctx)
+// dockerConfigWithPushAuth writes a docker config.json holding the loopback
+// credential and returns its directory, for DOCKER_CONFIG.
+//
+// A file rather than anything on the command line, deliberately: buildctl's
+// argv is world-readable through /proc/<pid>/cmdline, so a credential passed as
+// an argument — or embedded in the image reference — would be readable by the
+// very local user this gate exists to stop. /proc/<pid>/environ is restricted to
+// the process owner, and the file itself is 0600 in a 0700 directory.
+func dockerConfigWithPushAuth(dir, registryHost, credential string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating the push credential directory: %w", err)
+	}
+	type authEntry struct {
+		Auth string `json:"auth"`
+	}
+	cfg := struct {
+		Auths map[string]authEntry `json:"auths"`
+	}{
+		Auths: map[string]authEntry{
+			registryHost: {Auth: base64.StdEncoding.EncodeToString([]byte(pushProxyUser + ":" + credential))},
+		},
+	}
+	data, err := json.Marshal(cfg)
 	if err != nil {
-		p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err))
-		return
+		return fmt.Errorf("encoding the push credential: %w", err)
 	}
-	defer remote.Close()
-	relayConns(local, remote)
-}
-
-// relayConns splices two connections until BOTH directions finish, signalling
-// end-of-stream to the far side with a half-close where the transport supports
-// one. This mirrors mesh.relayBytes, and the "both" matters: returning after
-// only the first direction completes tears down a socket that still has unread
-// data, which TCP signals as RST rather than FIN — reaching the peer as
-// "connection reset by peer" rather than a clean end of response.
-func relayConns(a, b net.Conn) {
-	done := make(chan struct{}, 2)
-	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		type closeWriter interface{ CloseWrite() error }
-		if cw, ok := dst.(closeWriter); ok {
-			_ = cw.CloseWrite()
-		} else {
-			// No half-close available: closing outright is the only way to stop
-			// the opposite copy blocking forever and leaking its goroutine.
-			_ = dst.Close()
-		}
-		done <- struct{}{}
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+		return fmt.Errorf("writing the push credential: %w", err)
 	}
-	go cp(b, a)
-	go cp(a, b)
-	<-done
-	<-done
+	return nil
 }

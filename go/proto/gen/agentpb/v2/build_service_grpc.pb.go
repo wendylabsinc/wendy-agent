@@ -31,10 +31,19 @@ const (
 // WendyBuildService lets a CLI delegate a container image build to this device,
 // so a developer's laptop does not have to be the machine that builds.
 //
-// BuildImage is remote code execution by design — that is the feature — so two
-// things are non-negotiable here: the device must be explicitly opted in as a
-// builder (see builder_enabled), and every field of a BuildSpec is re-validated
-// on the server rather than trusted from the client, even an in-org one.
+// BuildImage is remote code execution by design — that is the feature — so
+// three things are non-negotiable here: the device must be explicitly opted in
+// as a builder (see builder_enabled); every field of a BuildSpec is re-validated
+// on the server rather than trusted from the client, even an in-org one; and the
+// caller must be a *person*.
+//
+// That last one means a user certificate, or the local admin socket, whose
+// filesystem permissions are themselves the credential. A device certificate is
+// refused, and so is the unauthenticated pre-provisioning plaintext port.
+// SetBuildHostEnabled below already makes the same demand; if BuildImage did
+// not, the opt-in gate would admit the very certificate type its own toggle
+// rejects, leaving a compromised device in the org with code execution on the
+// build host.
 type WendyBuildServiceClient interface {
 	GetBuildCapabilities(ctx context.Context, in *GetBuildCapabilitiesRequest, opts ...grpc.CallOption) (*GetBuildCapabilitiesResponse, error)
 	BuildImage(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[BuildImageRequest, BuildImageProgress], error)
@@ -100,10 +109,19 @@ func (c *wendyBuildServiceClient) SetBuildHostEnabled(ctx context.Context, in *S
 // WendyBuildService lets a CLI delegate a container image build to this device,
 // so a developer's laptop does not have to be the machine that builds.
 //
-// BuildImage is remote code execution by design — that is the feature — so two
-// things are non-negotiable here: the device must be explicitly opted in as a
-// builder (see builder_enabled), and every field of a BuildSpec is re-validated
-// on the server rather than trusted from the client, even an in-org one.
+// BuildImage is remote code execution by design — that is the feature — so
+// three things are non-negotiable here: the device must be explicitly opted in
+// as a builder (see builder_enabled); every field of a BuildSpec is re-validated
+// on the server rather than trusted from the client, even an in-org one; and the
+// caller must be a *person*.
+//
+// That last one means a user certificate, or the local admin socket, whose
+// filesystem permissions are themselves the credential. A device certificate is
+// refused, and so is the unauthenticated pre-provisioning plaintext port.
+// SetBuildHostEnabled below already makes the same demand; if BuildImage did
+// not, the opt-in gate would admit the very certificate type its own toggle
+// rejects, leaving a compromised device in the org with code execution on the
+// build host.
 type WendyBuildServiceServer interface {
 	GetBuildCapabilities(context.Context, *GetBuildCapabilitiesRequest) (*GetBuildCapabilitiesResponse, error)
 	BuildImage(grpc.BidiStreamingServer[BuildImageRequest, BuildImageProgress]) error

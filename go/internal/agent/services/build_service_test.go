@@ -883,7 +883,7 @@ func TestRunBuildctl_FailsAndReapsOnOversizedLogLine(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	err := (&BuildService{}).runBuildctl(ctx, &stubBuildStream{}, nil)
+	err := (&BuildService{}).runBuildctl(ctx, &stubBuildStream{}, nil, t.TempDir())
 	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "reading buildctl output") {
 		t.Fatalf("got %v, want an Internal scanner error instead of a hang or truncated success", err)
 	}

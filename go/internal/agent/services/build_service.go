@@ -63,6 +63,11 @@ var validPlatformRe = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$`)
 // defaultBuildStateDir holds reassembled build contexts, one directory per app.
 const defaultBuildStateDir = "/var/lib/wendy/buildctx"
 
+// dockerConfigDirSuffix names the per-build credential directory beside the
+// context directory. A sibling rather than a child: anything inside the context
+// directory is build input, and the credential must not end up in the image.
+const dockerConfigDirSuffix = ".auth"
+
 // ChunkSource reads previously staged chunks back in order. It is the same
 // content store WendyContainerService.WriteChunks writes into.
 type ChunkSource interface {
@@ -470,12 +475,22 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	}
 	defer proxy.stop()
 
+	// The credential goes in a file, not in args: buildctl's argv is world
+	// readable through /proc/<pid>/cmdline, so anything secret there would be
+	// readable by the local user this gate exists to stop. See
+	// dockerConfigWithPushAuth.
+	authDir := dir + dockerConfigDirSuffix
+	if err := dockerConfigWithPushAuth(authDir, proxy.addr, proxy.credential); err != nil {
+		return status.Errorf(codes.Internal, "%v", err)
+	}
+	defer os.RemoveAll(authDir)
+
 	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), proxy.addr+"/"+target.GetRepository(), df.GetBuildArgs())
 	if err != nil {
 		return err
 	}
 
-	buildErr := s.runBuildctl(ctx, stream, args)
+	buildErr := s.runBuildctl(ctx, stream, args, authDir)
 	// A failed outbound push shows up to buildctl only as a reset loopback
 	// connection, so its error says "exit status 1" and nothing useful. When the
 	// proxy knows the real reason, report THAT — and as Unavailable, which the
@@ -537,9 +552,15 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 
 // runBuildctl streams buildctl's plain-mode output back as log lines and
 // finishes with the result event.
-func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBuildService_BuildImageServer, args []string) error {
+//
+// dockerConfigDir holds the loopback push credential. buildctl reads it into
+// the auth provider it attaches to the build session, which is how buildkitd
+// answers the proxy's 401 challenge.
+func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBuildService_BuildImageServer, args []string, dockerConfigDir string) error {
 	cmd := buildctlCommandContext(ctx, "buildctl", args...)
-	cmd.Env = append(os.Environ(), "BUILDKIT_HOST="+s.buildkitAddress)
+	cmd.Env = append(os.Environ(),
+		"BUILDKIT_HOST="+s.buildkitAddress,
+		"DOCKER_CONFIG="+dockerConfigDir)
 	if s.logger != nil {
 		// Build-arg VALUES can carry secrets, so the command line is never logged raw.
 		s.logger.Info("remote build starting", zap.Strings("args", redactBuildctlArgs(args)))
