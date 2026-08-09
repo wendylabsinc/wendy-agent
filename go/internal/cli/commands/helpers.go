@@ -1962,7 +1962,11 @@ func findCertByOrgID(authEntries []config.AuthConfig, orgID int) *config.Certifi
 // attemptBLEConnect builds a TLS config and connects to device using the
 // given certificate info and pin store.
 func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
-	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, certs.ServerVerifyOpts{
+	keyPEM, err := cert.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
+	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, keyPEM, certs.ServerVerifyOpts{
 		ChainPEM:      cert.PemCertificateChain,
 		ExpectedOrgID: int32(cert.OrganizationID),
 		PinStore:      pins,

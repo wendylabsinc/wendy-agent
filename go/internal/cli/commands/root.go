@@ -80,6 +80,14 @@ func NewRootCmd() *cobra.Command {
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
 
+			// Move plaintext credentials into the macOS Keychain (see
+			// specs/2026-08-08-client-secrets-keychain-design.md). Runs in the
+			// synchronous zone: the update-check goroutine below saves cfg too,
+			// and its Save must observe an already-migrated on-disk state.
+			if config.MigrateSecretsIfNeeded(cfg) {
+				cmd.PrintErrln("Moved wendy credentials into the macOS Keychain (older wendy versions will need 'wendy auth login' again).")
+			}
+
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
 			}
