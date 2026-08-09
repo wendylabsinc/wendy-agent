@@ -38,6 +38,9 @@ type buildOptions struct {
 	// debug builds compiled languages unoptimized (swift -c debug, cargo
 	// without --release), matching `wendy run --debug`.
 	debug bool
+	// buildHost names a WendyOS device that builds the image instead of this
+	// machine. Empty means build locally.
+	buildHost string
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -56,6 +59,9 @@ func newBuildCmd() *cobra.Command {
 				return fmt.Errorf("--dockerfile cannot be used with --build-type=%s", opts.buildType)
 			}
 			if _, err := normalizeImageBuilder(opts.builder); err != nil {
+				return err
+			}
+			if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
 				return err
 			}
 			// --dockerfile implies a Docker build; prevent the provider from
@@ -234,6 +240,7 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark)")
 
 	return cmd
 }

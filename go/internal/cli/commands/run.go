@@ -475,9 +475,13 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 }
 
 type runOptions struct {
-	buildType            string
-	dockerfile           string
-	builder              string
+	buildType  string
+	dockerfile string
+	builder    string
+	// buildHost names a WendyOS device that builds the image instead of this
+	// machine. Empty means build locally, and every existing local path must be
+	// unaffected when it is empty.
+	buildHost            string
 	debug                bool
 	deploy               bool
 	detach               bool
@@ -579,6 +583,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
@@ -768,6 +773,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
 	}
 	if err := validateChunkingMode(opts.chunking); err != nil {
+		return err
+	}
+	if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
 		return err
 	}
 
