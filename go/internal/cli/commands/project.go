@@ -29,7 +29,7 @@ var entitlementDescriptions = map[string]string{
 	appconfig.EntitlementGPIO:      "Access GPIO pins",
 	appconfig.EntitlementSPI:       "Access SPI bus devices (displays, sensors, flash - may require GPIO access)",
 	appconfig.EntitlementInput:     "Access Linux input devices (game controllers, barcode scanners, keyboards)",
-	appconfig.EntitlementService:   "Expose a unix socket to another app on the device, or connect to one",
+	appconfig.EntitlementIPC:       "Expose a unix socket to another app on the device, or connect to one",
 }
 
 // frameworkDescriptions mirrors entitlementDescriptions for the "frameworks"
@@ -579,12 +579,12 @@ func promptEntitlementFields(ent *appconfig.Entitlement) error {
 		}
 		ent.Pins = pins
 
-	case appconfig.EntitlementService:
+	case appconfig.EntitlementIPC:
 		name, err := tui.PromptText(
-			"Service name",
-			"both apps use this same name — unrelated to persist volumes",
+			"IPC name",
+			"both apps use this same name — unrelated to persist volumes and the services map",
 			func(v string) error {
-				return appconfig.ValidateServiceSocketName(strings.TrimSpace(v))
+				return appconfig.ValidateIPCName(strings.TrimSpace(v))
 			},
 		)
 		if err != nil {
@@ -594,11 +594,11 @@ func promptEntitlementFields(ent *appconfig.Entitlement) error {
 
 		role, err := tui.PromptTextWithDefault(
 			"Role",
-			fmt.Sprintf("%q binds the socket, %q only connects to it", appconfig.ServiceRoleProvide, appconfig.ServiceRoleConsume),
-			appconfig.ServiceRoleConsume,
+			fmt.Sprintf("%q binds the socket, %q only connects to it", appconfig.IPCRoleProvide, appconfig.IPCRoleConsume),
+			appconfig.IPCRoleConsume,
 			func(v string) error {
-				if !slices.Contains(appconfig.ValidServiceRoles, strings.TrimSpace(v)) {
-					return fmt.Errorf("role must be %q or %q", appconfig.ServiceRoleProvide, appconfig.ServiceRoleConsume)
+				if !slices.Contains(appconfig.ValidIPCRoles, strings.TrimSpace(v)) {
+					return fmt.Errorf("role must be %q or %q", appconfig.IPCRoleProvide, appconfig.IPCRoleConsume)
 				}
 				return nil
 			},

@@ -1,4 +1,4 @@
-# `service` entitlement: app-to-app unix sockets without sharing a data volume
+# `ipc` entitlement: app-to-app unix sockets without sharing a data volume
 
 Date: 2026-08-09
 Status: Proposed
@@ -64,24 +64,24 @@ the mount's inode survives reboot. This design reuses all of it.
 ### 1. `wendy.json`
 
 ```json
-{ "type": "service", "name": "world", "role": "provide" }
-{ "type": "service", "name": "world", "role": "consume" }
+{ "type": "ipc", "name": "world", "role": "provide" }
+{ "type": "ipc", "name": "world", "role": "consume" }
 ```
 
 - `name` — lowercase RFC 1123 label, validated by
-  `appconfig.ValidateServiceSocketName` with the same pattern as `serviceName`.
+  `appconfig.ValidateIPCName` with the same pattern as `serviceName`.
   Unlike `appID` (which permits dots and is therefore hashed before use as a
   path), a name that passes is safe to use verbatim as a directory component, so
-  `ls /var/lib/wendy/services` stays a readable list of what is registered.
+  `ls /var/lib/wendy/ipc` stays a readable list of what is registered.
 - `role` — `provide` or `consume`.
 - At most one entitlement per name per container (two entries would produce two
   bind mounts on one destination).
 
-### 2. Agent: `services.ServiceSocketManager`
+### 2. Agent: `services.IPCSocketManager`
 
 Modelled directly on `AppSystemAPISocketManager`.
 
-- Host directory `/var/lib/wendy/services/<name>`, mode `2770`, owner
+- Host directory `/var/lib/wendy/ipc/<name>`, mode `2770`, owner
   `root:2001`. Disk-backed for the same reason as `AdminAgentSocketHostPath`:
   the bind mount pins the inode and tmpfs is wiped on reboot.
 - `Ensure(name, role, appID, serviceName)` registers a container as an owner and
@@ -100,10 +100,10 @@ Modelled directly on `AppSystemAPISocketManager`.
 
 ### 3. Agent: OCI spec
 
-`applyServiceSocket` mounts `/run/wendy/services/<name>` with
+`applyIPCSocket` mounts `/run/wendy/ipc/<name>` with
 `rbind,nosuid,noexec,nodev` plus `rw` for `provide` and `ro` for `consume`, adds
 supplementary GID 2001, and injects
-`WENDY_SERVICE_<NAME>_SOCKET=/run/wendy/services/<name>/service.sock`.
+`WENDY_IPC_<NAME>_SOCKET=/run/wendy/ipc/<name>/ipc.sock`.
 
 A read-only mount still permits `connect()`: the kernel's read-only-superblock
 check (`sb_permission`) returns `EROFS` only for `S_ISREG`/`S_ISDIR`/`S_ISLNK`,
@@ -111,7 +111,7 @@ never for sockets. Read-only therefore denies a consumer exactly the right
 thing — unlinking or replacing the provider's socket — while allowing the
 connection.
 
-Only names present in `ApplyOptions.ServiceSocketDirs` are mounted, so an app
+Only names present in `ApplyOptions.IPCSocketDirs` are mounted, so an app
 cannot mount a name the manager refused by declaring it in its own `wendy.json`.
 
 ### 4. Agent: lifecycle wiring
@@ -123,7 +123,7 @@ cannot mount a name the manager refused by declaring it in its own `wendy.json`.
 | `StartContainer` | `PrepareProvider` for each provided name before the task is created. Fail-closed. |
 | `deleteOne` | Release claims *after* the container is gone — a claim released while a merely-stopped container exists would let another app take the name. |
 | `DeleteContainer` (whole app) | `ReleaseApp` sweeps claims `deleteOne` could not attribute. |
-| Agent start | `RestoreServiceSockets` rebuilds claims from container labels, never touching sockets. |
+| Agent start | `RestoreIPCSockets` rebuilds claims from container labels, never touching sockets. |
 
 Stopped containers keep their claim: they retain the bind mount and are expected
 to reclaim their socket on the next start. This matches `notifications`.
@@ -152,7 +152,7 @@ cannot fix its *mode*.
 Root-run providers and consumers — the current WendyOS default, and what the
 hardware spike exercised — are unaffected. For non-root, the provider must
 `umask(0o007)` before binding or `chmod` the socket to `0660`. This is
-documented on both doc surfaces rather than left implicit.
+documented on all three doc surfaces rather than left implicit.
 
 The clean fix is **socket activation**: the agent binds and listens, with a mode
 and owner it fully controls, and passes the listening fd into the container. That
@@ -162,13 +162,14 @@ connect before the provider is up, and the kernel queues it). It is deliberately
 (`--preserve-fds` / `LISTEN_FDS`) that is a substantial change on its own and
 should not be entangled with the entitlement's schema and lifecycle.
 
-### Naming
+## Naming
 
-`service` collides conceptually with two existing `wendy.json` concepts: the
-top-level `services` map (containers within one app) and `serviceName`. Internal
-identifiers are spelled unambiguously (`ServiceSocketManager`,
-`ValidateServiceSocketName`, `serviceSocketEnvName`) but the user-facing keyword
-is worth a second look before merge. `socket` or `ipc` would not collide.
+This was first drafted as a `service` entitlement. That collides conceptually
+with two existing `wendy.json` concepts — the top-level `services` map
+(containers within one app) and `serviceName` — and since the keyword is public
+API it was cheaper to settle before it landed. Renamed to `ipc`, which does not
+collide with anything in the schema and says what the mechanism is. The `role`
+values stay `provide`/`consume`: those read fine and collide with nothing.
 
 ## Testing
 
@@ -192,4 +193,4 @@ is worth a second look before merge. `socket` or `ipc` would not collide.
 - Cross-device service access — that is `network` mode `mesh`.
 - Any wire protocol over the socket. The platform provides the socket; what
   flows through it is the apps' business.
-- Multiple sockets per service name.
+- Multiple sockets per IPC name.
