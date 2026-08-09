@@ -2185,4 +2185,3 @@ func TestExternalProviderPickerItem(t *testing.T) {
 		}
 	})
 }
-

@@ -29,7 +29,7 @@ require (
 	github.com/google/go-containerregistry v0.21.8
 	github.com/google/gousb v1.1.3
 	github.com/google/uuid v1.6.0
-	github.com/hashicorp/mdns v1.0.6
+	github.com/hashicorp/mdns v1.0.7
 	github.com/klauspost/compress v1.19.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/miekg/dns v1.1.72

@@ -43,15 +43,16 @@ type Stage struct {
 }
 
 // Install is the set of declarative, per-ecosystem dependency installs for
-// one stage. Any subset of the fields may be set; each compiles to exactly
-// one RUN with the compiler's own correct flags baked in — there is no field
-// that accepts a raw install command.
+// one stage. Any subset of the fields may be set; each compiles to a fixed
+// instruction sequence with the compiler's own correct flags baked in — there
+// is no field that accepts a raw install command.
 type Install struct {
-	Apt *AptInstall `yaml:"apt,omitempty"`
-	Apk *ApkInstall `yaml:"apk,omitempty"`
-	Pip *PipInstall `yaml:"pip,omitempty"`
-	Npm *NpmInstall `yaml:"npm,omitempty"`
-	Uv  *UvInstall  `yaml:"uv,omitempty"`
+	Apt   *AptInstall    `yaml:"apt,omitempty"`
+	Apk   *ApkInstall    `yaml:"apk,omitempty"`
+	CMake []CMakeInstall `yaml:"cmake,omitempty"`
+	Pip   *PipInstall    `yaml:"pip,omitempty"`
+	Npm   *NpmInstall    `yaml:"npm,omitempty"`
+	Uv    *UvInstall     `yaml:"uv,omitempty"`
 }
 
 // AptInstall installs Debian/Ubuntu packages, optionally from additional
@@ -102,6 +103,29 @@ type ApkInstall struct {
 	// Repositories appends extra repository URLs to /etc/apk/repositories
 	// before the install.
 	Repositories []string `yaml:"repositories,omitempty"`
+}
+
+// CMakeInstall builds and installs one CMake project from a commit-pinned Git
+// repository. The base image must provide git, cmake, a compiler, and any
+// project-specific development packages (normally through apt or apk above).
+// Stagefile emits these installs after OS packages and before language package
+// managers, so native libraries are available while pip/npm/etc. build their
+// own dependencies. There is deliberately no raw command field.
+type CMakeInstall struct {
+	Repository string `yaml:"repository"`
+	// Commit must be the full 40-hex Git object ID. Tags and branches are not
+	// accepted because they can move without changing the Stagefile.
+	Commit string `yaml:"commit"`
+	// Prefix defaults to /usr/local.
+	Prefix string `yaml:"prefix,omitempty"`
+	// BuildType defaults to Release. Supported values are CMake's standard
+	// single-config build types.
+	BuildType string `yaml:"buildType,omitempty"`
+	// Defines becomes sorted -DKEY=value arguments.
+	Defines map[string]string `yaml:"defines,omitempty"`
+	// Jobs sets `cmake --build --parallel N`; zero leaves parallelism to the
+	// build tool's default.
+	Jobs int `yaml:"jobs,omitempty"`
 }
 
 // PipInstall installs Python dependencies from a requirements file, an

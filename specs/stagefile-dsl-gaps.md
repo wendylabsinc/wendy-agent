@@ -21,6 +21,10 @@
 > dir) are fixed in `optimize/buildcache.go`. Still open: raw RUN
 > escape hatches (deliberate), per-arch stage selection, uid/home user
 > creation, and lockfile staleness governance (separate discussion).
+> A later robot-app conversion also added `install.cmake`: a typed,
+> full-commit-pinned Git/CMake source install that runs after apt/apk and
+> before language package managers. It covers native dependencies such as
+> CycloneDDS without weakening the no-raw-shell boundary.
 
 Source: converting `Examples/*` Dockerfiles to `build.stagefile.yaml` (see
 `stagefile-integration-report.md` in this worktree for the full conversion
@@ -237,6 +241,40 @@ compiles natively instead of under QEMU. The DSL has neither per-arch
 stage selection nor a platform pin on a stage. Extends gap #1 beyond
 plain ARG/ENV passthrough. Priority: medium — multi-arch projects only,
 but those are exactly the projects WendyOS targets.
+
+## 15. No commit-pinned native source install
+
+A robotics app needed CycloneDDS installed under a conventional `/usr/local`
+prefix before its Python bindings were built. Debian's packaged CycloneDDS
+uses multiarch library directories, while the pinned Python package searches
+for `include`, `bin`, and `lib` below one prefix. The old Stagefile could
+install either the apt package or the Python package, but could neither build
+the native project from source nor place that operation between apt and pip.
+
+This is addressed by `install.cmake`, a list of typed source installs:
+
+```yaml
+install:
+  apt:
+    packages: [build-essential, ca-certificates, cmake, git]
+  cmake:
+    - repository: https://github.com/eclipse-cyclonedds/cyclonedds.git
+      commit: 2cdd114cbd18340c606573b4cc8dc20cc161ec5a
+      prefix: /usr/local
+      buildType: Release
+      defines:
+        BUILD_EXAMPLES: "OFF"
+        BUILD_TESTING: "OFF"
+      jobs: 2
+  pip:
+    packages: [cyclonedds==0.10.2]
+```
+
+The commit must be a full 40-hex object ID; branches and tags are rejected.
+Repository URLs, prefixes, and definition values are shell-quoted by the
+compiler, definition keys are restricted to CMake identifiers, and definitions
+are sorted for deterministic output. Toolchain packages remain explicit in
+apt/apk because Stagefile cannot assume what a base image already contains.
 
 ## Observation, not a gap: lockfile scope
 

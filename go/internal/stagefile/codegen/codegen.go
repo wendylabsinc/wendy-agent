@@ -58,6 +58,9 @@ func Generate(f *spec.File, images map[string]string, platform string) (string, 
 			if s.Install.Apk != nil {
 				lines = append(lines, apkInstallLines(s.Install.Apk)...)
 			}
+			if len(s.Install.CMake) > 0 {
+				lines = append(lines, cmakeInstallLines(s.Install.CMake)...)
+			}
 			if s.Install.Pip != nil {
 				lines = append(lines, pipInstallLines(s.Install.Pip)...)
 			}
@@ -269,6 +272,54 @@ func apkInstallLines(a *spec.ApkInstall) []string {
 		parts = append(parts, shellQuote(p))
 	}
 	return append(lines, "RUN "+strings.Join(parts, " "))
+}
+
+func cmakeInstallLines(installs []spec.CMakeInstall) []string {
+	lines := make([]string, 0, len(installs))
+	for i, c := range installs {
+		root := fmt.Sprintf("/tmp/stagefile-cmake-%d", i)
+		sourceDir := root + "/source"
+		buildDir := root + "/build"
+		prefix := c.Prefix
+		if prefix == "" {
+			prefix = "/usr/local"
+		}
+		buildType := c.BuildType
+		if buildType == "" {
+			buildType = "Release"
+		}
+
+		configure := []string{
+			"cmake", "-S", shellQuote(sourceDir), "-B", shellQuote(buildDir),
+			shellQuote("-DCMAKE_BUILD_TYPE=" + buildType),
+			shellQuote("-DCMAKE_INSTALL_PREFIX=" + prefix),
+		}
+		keys := make([]string, 0, len(c.Defines))
+		for k := range c.Defines {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			configure = append(configure, shellQuote("-D"+k+"="+c.Defines[k]))
+		}
+
+		build := "cmake --build " + shellQuote(buildDir)
+		if c.Jobs > 0 {
+			build += " --parallel " + strconv.Itoa(c.Jobs)
+		}
+		commands := []string{
+			"git init " + shellQuote(sourceDir),
+			"git -C " + shellQuote(sourceDir) + " remote add origin " + shellQuote(c.Repository),
+			"git -C " + shellQuote(sourceDir) + " fetch --depth 1 origin " + shellQuote(c.Commit),
+			"git -C " + shellQuote(sourceDir) + " checkout --detach FETCH_HEAD",
+			strings.Join(configure, " "),
+			build,
+			"cmake --install " + shellQuote(buildDir),
+			"rm -rf " + shellQuote(root),
+		}
+		lines = append(lines, "RUN "+strings.Join(commands, " \\\n    && "))
+	}
+	return lines
 }
 
 func pipInstallLines(p *spec.PipInstall) []string {
