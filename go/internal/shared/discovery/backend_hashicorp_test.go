@@ -250,6 +250,68 @@ func TestHashicorpSweepOnceQueriesInterfacesInParallel(t *testing.T) {
 	}
 }
 
+// TestHashicorpQueryInterfaceReadsEntriesOnlyAfterTheQueryReturns pins the
+// rule that keeps this backend free of data races, and is the regression test
+// for the one the live-advertise test hit on CI.
+//
+// hashicorp/mdns hands a *ServiceEntry over params.Entries as soon as the
+// entry looks complete, but keeps that same struct in its own in-progress map
+// and goes on writing to it — Host, Port, InfoFields, AddrV4, AddrV6 — for
+// every later packet naming it, which on a host running several interface
+// queries at once (each one's socket seeing the others' replies too) is the
+// normal case rather than the exotic one. The channel hand-off orders only the
+// writes made before the send, its send is non-blocking so it never waits for
+// the receiver, and there is no lock to share: touching any field of a
+// delivered entry before the query has returned is therefore a race no
+// consumer can synchronize away, and the only fix available here is not to
+// touch it until then.
+//
+// The fake below reproduces exactly that shape, so this test fails under
+// -race against any implementation that converts entries while the query is
+// still running — including the "forward each entry the moment it arrives"
+// one this replaced.
+func TestHashicorpQueryInterfaceReadsEntriesOnlyAfterTheQueryReturns(t *testing.T) {
+	origQuery := sweepQueryFn
+	t.Cleanup(func() { sweepQueryFn = origQuery })
+
+	sweepQueryFn = func(_ context.Context, _ *net.Interface, _ string, entriesCh chan *mdns.ServiceEntry, _ time.Duration) error {
+		entry := &mdns.ServiceEntry{
+			Name:       "wendyos-racer._wendyos._udp.local.",
+			Host:       "first.local.",
+			Port:       1111,
+			AddrV4:     net.ParseIP("10.0.0.1"),
+			InfoFields: []string{"round=first"},
+		}
+		entriesCh <- entry
+
+		// The later packets. Repeated to widen the window a concurrent reader
+		// would have to land in, so the failure is reliable rather than
+		// occasional.
+		for i := 0; i < 500; i++ {
+			entry.Host = "second.local."
+			entry.Port = 2222
+			entry.AddrV4 = net.ParseIP("10.0.0.2")
+			entry.InfoFields = []string{"round=second"}
+		}
+		return nil
+	}
+
+	var got []MDNSService
+	hashicorpQueryInterface(context.Background(), &net.Interface{Name: "eth-fake-0"}, wendyServiceType,
+		func(svc MDNSService) { got = append(got, svc) })
+
+	if len(got) != 1 {
+		t.Fatalf("emitted %d services, want 1: %+v", len(got), got)
+	}
+	// Reading after the query has returned also means reading a settled entry
+	// rather than a half-updated one, so the sweep reports what the query
+	// finished on.
+	if got[0].Hostname != "second.local" || got[0].Port != 2222 ||
+		got[0].IPAddress != "10.0.0.2" || got[0].TXTRecords["round"] != "second" {
+		t.Errorf("emitted %+v, want the entry as the query left it (second.local/2222/10.0.0.2/round=second)", got[0])
+	}
+}
+
 // ── live fixture (advertises via hashicorp/mdns's own server) ─────────────
 
 // TestHashicorpStreamBackendLiveAdvertise is the end-to-end property this
