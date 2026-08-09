@@ -158,6 +158,26 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
+// effectiveVerificationTime returns the clock used for NotBefore checks.
+// effectiveNow applies the NotBefore floor; when the device clock is behind
+// notBeforeFloor (NTP not yet synced), it additionally advances up to the
+// cert's NotBefore so a cert issued just after provisioning is not spuriously
+// rejected — capped at notBeforeFloor+maxClockSkewTolerance so a cert whose
+// NotBefore is further in the future is still rejected on a stuck clock.
+// Shared by the full ML-DSA verifier and the session-ticket re-check
+// (session_ticket.go) so the two can never drift apart.
+func effectiveVerificationTime(realNow, notBeforeFloor, certNotBefore time.Time) time.Time {
+	effectiveNow := maxTime(realNow, notBeforeFloor)
+	if realNow.Before(notBeforeFloor) {
+		advanced := certNotBefore
+		if cap := notBeforeFloor.Add(maxClockSkewTolerance); advanced.After(cap) {
+			advanced = cap
+		}
+		effectiveNow = maxTime(effectiveNow, advanced)
+	}
+	return effectiveNow
+}
+
 // buildVerifyPeerCertificate returns a VerifyPeerCertificate callback that
 // handles both standard (RSA/ECDSA) and ML-DSA-signed certificate chains.
 // logger may be nil, in which case no logging is performed.
@@ -177,22 +197,8 @@ func buildVerifyPeerCertificate(caPool *x509.CertPool, caCerts []*x509.Certifica
 			return fmt.Errorf("parsing client certificate: %w", err)
 		}
 
-		// Capture the real clock once to avoid TOCTOU between the expiry pre-check
-		// and the verification call. effectiveNow applies the NotBefore floor only.
 		realNow := time.Now()
-		effectiveNow := maxTime(realNow, notBeforeFloor)
-		// When the device clock is behind notBeforeFloor (NTP not yet synced),
-		// advance effectiveNow up to the cert's NotBefore so a cert issued just
-		// after provisioning is not spuriously rejected. Cap the advancement at
-		// notBeforeFloor+maxClockSkewTolerance: a cert whose NotBefore is further
-		// in the future than that is not accepted by a device with a stuck clock.
-		if realNow.Before(notBeforeFloor) {
-			advanced := leaf.NotBefore
-			if cap := notBeforeFloor.Add(maxClockSkewTolerance); advanced.After(cap) {
-				advanced = cap
-			}
-			effectiveNow = maxTime(effectiveNow, advanced)
-		}
+		effectiveNow := effectiveVerificationTime(realNow, notBeforeFloor, leaf.NotBefore)
 
 		// Pre-reject expired certs before any further processing. The floor must
 		// not mask real-time expiry: checking here with realNow eliminates any
