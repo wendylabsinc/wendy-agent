@@ -1,14 +1,29 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
 	"slices"
 	"strings"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
+
+// meshDomainSuffix is the domain mesh device addresses live under, matching the
+// agent's own validation of push destinations.
+const meshDomainSuffix = ".cloud.wendy.dev"
 
 // errBuilderWithBuildHost is returned when --builder and --build-host are both
 // given. --builder selects the LOCAL image builder, which the remote path never
@@ -84,4 +99,213 @@ func formatPlatformList(platforms []string) string {
 		return "nothing"
 	}
 	return strings.Join(platforms, ", ")
+}
+
+// assertNoLocalBuilderNeeded documents and enforces the neo → spark → robot
+// requirement: with --build-host, nothing on this path may look for a local
+// container builder. It exists so that guarantee is covered by a test rather
+// than left as a convention someone later breaks by adding a daemon bootstrap.
+func assertNoLocalBuilderNeeded(host string) error {
+	if strings.TrimSpace(host) == "" {
+		return errors.New("assertNoLocalBuilderNeeded called without a build host")
+	}
+	return nil
+}
+
+// classifyRemoteBuildError separates "the build failed" from "the build
+// succeeded but could not be delivered". The remedies diverge — a build-file
+// fix versus mesh reachability or registry auth — so collapsing them would send
+// the developer to debug the wrong layer.
+func classifyRemoteBuildError(host string, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return fmt.Errorf("image built on %s but could not be delivered to the device: %w", host, err)
+	default:
+		if strings.Contains(err.Error(), "push:") {
+			return fmt.Errorf("image built on %s but could not be delivered to the device: %w", host, err)
+		}
+		// Marked as an image-build failure so the caller surfaces it directly
+		// rather than masking it behind a fallback that would fail identically.
+		return &imageBuildFailedError{err: fmt.Errorf("build on %s failed: %w", host, err)}
+	}
+}
+
+// runRemoteBuild builds the image on another WendyOS device, has that device
+// push it straight into the target's registry over the mesh, and then creates
+// the container through the unchanged registry-push deploy path.
+//
+// Nothing here touches a local container builder: no ensureDockerDaemon, no
+// ensureBuildxBuilder, no ensureAppleContainerSystemForBuilder. That is the
+// point of the feature — see assertNoLocalBuilderNeeded.
+func runRemoteBuild(
+	ctx context.Context,
+	target *grpcclient.AgentConnection,
+	host, cwd string,
+	appCfg *appconfig.AppConfig,
+	platform, dockerfile string,
+	buildArgs map[string]string,
+	deployEnv []string,
+	opts runOptions,
+) error {
+	if err := assertNoLocalBuilderNeeded(host); err != nil {
+		return err
+	}
+
+	builder, err := connectBuildHost(ctx, host)
+	if err != nil {
+		return fmt.Errorf("connecting to build host %s: %w", host, err)
+	}
+	defer builder.Close()
+
+	caps, err := builder.BuildService.GetBuildCapabilities(ctx, &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		return fmt.Errorf("querying build host %s: %w", host, err)
+	}
+	if err := checkBuildHostCapabilities(host, caps, platform); err != nil {
+		return err
+	}
+
+	// Resolve the build file on THIS machine: a Stagefile compile pins digests
+	// and writes its lockfile into the project, which must happen where the repo
+	// is, not in a scratch dir on the builder.
+	resolved, err := prepareDockerBuildFile(cwd, dockerfile)
+	if err != nil {
+		return err
+	}
+	resolvedPath := filepath.Join(cwd, resolved)
+
+	tarBytes, err := packBuildContext(cwd, resolvedPath)
+	if err != nil {
+		return err
+	}
+
+	pushRef, err := targetRegistryReference(ctx, target, appCfg)
+	if err != nil {
+		return err
+	}
+
+	buildTitle := fmt.Sprintf("Building on %s for %s...", tui.Value(host), tui.Value(platform))
+	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
+		manifest, err := pushBuildContext(ctx, builder.ContainerService, tarBytes)
+		if err != nil {
+			return err
+		}
+		return streamRemoteBuild(ctx, builder, &agentpbv2.BuildSpec{
+			AppId:         appCfg.AppID,
+			Platform:      platform,
+			PushReference: pushRef,
+			Context:       manifest,
+			Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+				DockerfileBuild: &agentpbv2.DockerfileBuild{
+					Dockerfile: resolved,
+					BuildArgs:  buildArgs,
+				},
+			},
+		}, stream)
+	}); err != nil {
+		return classifyRemoteBuildError(host, err)
+	}
+
+	appConfigData, err := json.Marshal(appCfg)
+	if err != nil {
+		return fmt.Errorf("marshaling app config: %w", err)
+	}
+	createReq := &agentpb.CreateContainerRequest{
+		ImageName:     localRegistryReference(ctx, target, appCfg),
+		AppName:       appCfg.AppID,
+		AppConfig:     appConfigData,
+		RestartPolicy: resolveRestartPolicy(opts),
+		UserArgs:      opts.userArgs,
+		Env:           deployEnv,
+	}
+	return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+}
+
+// connectBuildHost resolves and connects to the build host by name, reusing the
+// same connect machinery as --device so LKG cache, mDNS and cloud fallback all
+// apply unchanged.
+func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
+	prev := deviceFlag
+	deviceFlag = host
+	defer func() { deviceFlag = prev }()
+
+	sel, err := resolveTarget(ctx, NonInteractive(), SuppressUpdateCheck())
+	if err != nil {
+		return nil, err
+	}
+	if sel.Agent == nil {
+		sel.Close()
+		return nil, fmt.Errorf("%s is not a WendyOS device with an agent; a build host must be one", host)
+	}
+	return sel.Agent, nil
+}
+
+// targetRegistryReference is the address the BUILD HOST uses to reach the
+// target's registry: the target's mesh name, which resolves LAN-direct when
+// possible and via the cloud broker otherwise.
+func targetRegistryReference(ctx context.Context, target *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (string, error) {
+	resp, err := target.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
+	if err != nil {
+		return "", fmt.Errorf("determining the target device's mesh identity: %w", err)
+	}
+	prov, ok := resp.GetResponse().(*agentpb.IsProvisionedResponse_Provisioned)
+	if !ok {
+		return "", fmt.Errorf("the target device is not provisioned, so a build host cannot reach its registry over the mesh; provision it or omit --build-host")
+	}
+	agentOS, err := targetAgentOS(ctx, target)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("device-%d%s:%d/%s:latest",
+		prov.Provisioned.GetAssetId(), meshDomainSuffix,
+		registryPort(agentOS), strings.ToLower(appCfg.AppID)), nil
+}
+
+// localRegistryReference is the same image as the target itself sees it. The
+// target's registry names images from its OWN listen address, so whatever
+// address the build host pushed to, the image lands here.
+func localRegistryReference(ctx context.Context, target *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) string {
+	agentOS, _ := targetAgentOS(ctx, target)
+	return fmt.Sprintf("localhost:%d/%s:latest", registryPort(agentOS), strings.ToLower(appCfg.AppID))
+}
+
+func targetAgentOS(ctx context.Context, target *grpcclient.AgentConnection) (string, error) {
+	resp, err := target.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		return "", fmt.Errorf("querying the target device: %w", err)
+	}
+	if os := resp.GetOs(); os != "" {
+		return os, nil
+	}
+	return "linux", nil
+}
+
+// streamRemoteBuild drives one BuildImage stream, forwarding the build host's
+// plain-mode output into the CLI's existing progress renderer.
+func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection, spec *agentpbv2.BuildSpec, out io.Writer) error {
+	stream, err := builder.BuildService.BuildImage(ctx)
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&agentpbv2.BuildImageRequest{Spec: spec}); err != nil {
+		return err
+	}
+	if err := stream.CloseSend(); err != nil {
+		return err
+	}
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if line := msg.GetLogLine(); line != "" {
+			fmt.Fprintln(out, line)
+		}
+	}
 }

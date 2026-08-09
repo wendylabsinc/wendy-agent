@@ -1681,6 +1681,23 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// values that fail build-arg validation are skipped rather than fatal.
 	applyDeviceBuildArgHints(buildArgs, versionResp)
 
+	// wendy.json env plus --env and fleet-injected env, appended last so they win
+	// on key clash. Feeds the remote-build path below, the fingerprint, and
+	// whichever local deploy path runs.
+	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
+
+	// Remote build: hand the build to another WendyOS device, which pushes the
+	// finished image straight into this device's registry over the mesh. Placed
+	// ahead of every local path because those exist to optimise a local build
+	// that is not going to happen.
+	buildHost, err := resolveBuildHostName(opts.buildHost)
+	if err != nil {
+		return err
+	}
+	if buildHost != "" {
+		return runRemoteBuild(ctx, conn, buildHost, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
+	}
+
 	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
 	// (CDC) support, so every fast-deploy attempt just probes, fails, and falls
 	// back to a registry push — wasted round trips. Skip both fast-deploy paths
@@ -1693,9 +1710,6 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	// wendy.json env plus --env and fleet-injected env, appended last so they
-	// win on key clash. Feeds both the fingerprint and whichever deploy path runs.
-	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
