@@ -213,7 +213,7 @@ make proto
 # runs scripts/generate-proto.sh
 ```
 
-The script reads `.proto` sources from `proto-defs/` at the repo root and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `otelpb`, and `cloudpb`.
+The script reads `.proto` sources from `proto-defs/` at the repo root and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `agentpb/v2`, and `cloudpb`. OpenTelemetry protos are not generated here — they map to the upstream `go.opentelemetry.io/proto/otlp/...` packages.
 
 ## Device Setup (for running the agent locally)
 

@@ -50,7 +50,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 const (
@@ -223,10 +225,18 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
 	if containerdClient != nil {
 		monitor = container.NewContainerMonitor(logger, containerdClient, logManager, 15*time.Second)
+		if ctrdClient != nil {
+			// Let the low-level client pause the monitor's restart cycle for a
+			// container it is mid-replace/stop on, so a crash-looping app's
+			// automatic restart cannot race the kill+delete (WDY debug:
+			// "cannot delete running task: failed precondition").
+			ctrdClient.SetRestartSuppressor(monitor)
+		}
 	}
 
 	containerSvcOpts := []services.ContainerServiceOption{
@@ -840,9 +850,9 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 	)
-	otelpb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
-	otelpb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
-	otelpb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
+	collogspb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
+	colmetricspb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
+	coltracepb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
 
 	otelLis, err := listenDualStackLoopback(otelPort)
 	if err != nil {

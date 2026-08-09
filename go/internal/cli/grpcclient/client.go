@@ -9,11 +9,13 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tlscache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -44,6 +46,10 @@ const (
 	grpcKeepaliveTime    = 15 * time.Minute
 	grpcKeepaliveTimeout = 10 * time.Second
 )
+
+// tlsDebugWriter is where WENDY_TLS_DEBUG resumption logging is written.
+// Overridable in tests to capture output.
+var tlsDebugWriter io.Writer = os.Stderr
 
 type AgentConnection struct {
 	Conn           *grpc.ClientConn
@@ -135,20 +141,26 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 	return ConnectWithTLSAndPins(ctx, address, certInfo, nil)
 }
 
-func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
+// newAgentTLSConfig builds the client TLS config for one agent target,
+// including the persistent session cache that lets repeat CLI invocations
+// skip the full ML-DSA handshake (see specs/2026-08-07-tls-session-resumption-design.md).
+func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins certs.PinChecker, observedOrg *atomic.Int32) (*tls.Config, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
 	// chain certs (from pki-core) cause parse failures on the agent's server.
 	// The agent's VerifyPeerCertificate callback verifies the client cert via
 	// its own ML-DSA-aware CA pool without needing the chain in the handshake.
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
 	cert, err := tls.X509KeyPair(
 		[]byte(certInfo.PemCertificate),
-		[]byte(certInfo.PemPrivateKey),
+		[]byte(keyPEM),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
-	observedOrg := new(atomic.Int32)
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
@@ -162,11 +174,59 @@ func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config
 	if err != nil {
 		return nil, fmt.Errorf("building TLS verifier: %w", err)
 	}
+	if os.Getenv("WENDY_TLS_DEBUG") != "" {
+		inner := verifyConn
+		verifyConn = func(cs tls.ConnectionState) error {
+			fmt.Fprintf(tlsDebugWriter, "[tls-debug] %s resumed=%v\n", address, cs.DidResume)
+			return inner(cs)
+		}
+	}
 	tlsCfg := &tls.Config{
 		Certificates:       []tls.Certificate{cert},
 		InsecureSkipVerify: true, //nolint:gosec — hostname bypass only; VerifyConnection validates server cert against Wendy PKI
-		VerifyConnection:   verifyConn,
 		MinVersion:         tls.VersionTLS12,
+	}
+	// Session resumption: nil means caching is disabled — leaving the field
+	// unset is required then, because a typed-nil *Cache in the interface
+	// would panic inside crypto/tls.
+	cache := tlscache.ForTarget(address, cert.Certificate[0])
+	if cache != nil {
+		tlsCfg.ClientSessionCache = cache
+	}
+	// Always-on wrapper — not gated behind WENDY_TLS_DEBUG, which only nests
+	// as an inner logging layer above (verifyConn already includes it when
+	// set). Records THIS connection's resumption outcome on every handshake
+	// (not just resumed ones), before delegating to the inner verifier, so a
+	// subsequent Put for the fresh ticket Go issues even on a resumed
+	// connection does not overwrite the ticket from the last full handshake
+	// (see tlscache.Cache.SetResumed's doc — without this, clients would
+	// chain tickets forever and never re-run the full ML-DSA verification).
+	// Calling SetResumed unconditionally (rather than only when DidResume is
+	// true) matters because a single *Cache is reused by a grpc.ClientConn
+	// across its internal reconnect handshakes: a later legitimate FULL
+	// handshake on that same connection must clear a stale resumed=true from
+	// an earlier handshake, or its fresh ticket would never persist.
+	// VerifyConnection runs synchronously inside the handshake, strictly
+	// BEFORE crypto/tls processes the server's post-handshake
+	// NewSessionTicket message (that happens lazily on a later Read), and
+	// gRPC dials/handshakes a ClientConn's transports sequentially, so
+	// marking always happens-before the Put it needs to affect for that
+	// handshake — no race between the two.
+	innerVerify := verifyConn
+	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if cache != nil {
+			cache.SetResumed(cs.DidResume)
+		}
+		return innerVerify(cs)
+	}
+	return tlsCfg, nil
+}
+
+func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
+	observedOrg := new(atomic.Int32)
+	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg)
+	if err != nil {
+		return nil, err
 	}
 
 	conn, err := grpc.NewClient(

@@ -28,7 +28,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -141,9 +144,16 @@ func newDevicePushAgentCmd() *cobra.Command {
 			addr := hostPort(conn.Host, defaultAgentPort)
 
 			h := sha256.Sum256(binaryData)
+			sha256Hex := hex.EncodeToString(h[:])
 			fmt.Fprintf(os.Stderr, "Uploading %d bytes to %s...\n", len(binaryData), conn.Host)
-			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, hex.EncodeToString(h[:])); err != nil {
-				return fmt.Errorf("uploading agent: %w", err)
+			// An unconfirmed stream is expected — the agent restarts as the
+			// binary lands — and the hash check below verifies what runs.
+			unconfirmed := false
+			if err := deviceUpdateUpload(ctx, conn.AgentService, binaryData, sha256Hex); err != nil {
+				if !errors.Is(err, errAgentUpdateUnconfirmed) {
+					return fmt.Errorf("uploading agent: %w", err)
+				}
+				unconfirmed = true
 			}
 			conn.Close()
 
@@ -155,6 +165,22 @@ func newDevicePushAgentCmd() *cobra.Command {
 			}
 			defer newConn.Close()
 			fmt.Fprintln(os.Stderr, " ready.")
+
+			verified, err := verifyAgentAfterUpdate(ctx, newConn.AgentService, sha256Hex, "", agentVerifyWaitOptions{})
+			if err != nil {
+				return err
+			}
+			if verified.HashVerified {
+				fmt.Fprintf(os.Stderr, "Verified: the device is running the uploaded binary (version %s).\n", verified.Version)
+				return nil
+			}
+			// Without a reported hash nothing was proven. If the upload was
+			// also never acked, "success" would be a guess — fail instead.
+			if unconfirmed {
+				return fmt.Errorf("the upload was never confirmed and the agent (version %s) does not report a binary hash; "+
+					"cannot tell whether the push landed — check the device", verified.Version)
+			}
+			fmt.Fprintf(os.Stderr, "Agent restarted (version %s). It does not report a binary hash, so the push could not be verified.\n", verified.Version)
 			return nil
 		},
 	}
@@ -796,10 +822,14 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	var cloudTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {
@@ -815,7 +845,10 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	}
 	defer cloudConn.Close()
 
-	tokenCtx := cloudContext(ctx, auth)
+	tokenCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
 
 	var org OrgResolution
 	if orgOverride != 0 {
@@ -992,10 +1025,14 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, keyErr := cert.PrivateKeyPEM()
+		if keyErr != nil {
+			return nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+		}
 		tlsCfg, tlsErr := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if tlsErr != nil {
@@ -1010,7 +1047,12 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}
-	return cloudConn, cloudContext(ctx, auth), nil
+	cloudCtx, ctxErr := cloudContext(ctx, auth)
+	if ctxErr != nil {
+		cloudConn.Close()
+		return nil, nil, ctxErr
+	}
+	return cloudConn, cloudCtx, nil
 }
 
 func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
@@ -1069,17 +1111,17 @@ func scanWiFiNetworks(ctx context.Context, conn *grpcclient.AgentConnection) ([]
 func parseSeverityLevel(name string) int32 {
 	switch strings.ToLower(name) {
 	case "trace":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_TRACE)
 	case "debug":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG)
 	case "info":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_INFO)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_INFO)
 	case "warn", "warning":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_WARN)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_WARN)
 	case "error":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_ERROR)
 	case "fatal":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_FATAL)
 	default:
 		return 0
 	}
@@ -1333,26 +1375,26 @@ var (
 	logMetaStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
 )
 
-func severityLabel(sev otelpb.SeverityNumber) (string, lipgloss.Style) {
+func severityLabel(sev logspb.SeverityNumber) (string, lipgloss.Style) {
 	switch {
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_FATAL:
 		return "FATAL", logFatalStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_ERROR:
 		return "ERROR", logErrorStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_WARN:
 		return "WARN ", logWarnStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_INFO:
 		return "INFO ", logInfoStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
 		return "DEBUG", logDebugStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_TRACE:
 		return "TRACE", logTraceStyle
 	default:
 		return "     ", logInfoStyle
 	}
 }
 
-func resourceServiceName(res *otelpb.Resource) string {
+func resourceServiceName(res *resourcepb.Resource) string {
 	if res == nil {
 		return ""
 	}
@@ -1364,25 +1406,25 @@ func resourceServiceName(res *otelpb.Resource) string {
 	return ""
 }
 
-func anyValueString(v *otelpb.AnyValue) string {
+func anyValueString(v *commonpb.AnyValue) string {
 	if v == nil {
 		return ""
 	}
 	switch v.Value.(type) {
-	case *otelpb.AnyValue_StringValue:
+	case *commonpb.AnyValue_StringValue:
 		return v.GetStringValue()
-	case *otelpb.AnyValue_IntValue:
+	case *commonpb.AnyValue_IntValue:
 		return fmt.Sprintf("%d", v.GetIntValue())
-	case *otelpb.AnyValue_DoubleValue:
+	case *commonpb.AnyValue_DoubleValue:
 		return fmt.Sprintf("%g", v.GetDoubleValue())
-	case *otelpb.AnyValue_BoolValue:
+	case *commonpb.AnyValue_BoolValue:
 		return fmt.Sprintf("%t", v.GetBoolValue())
 	default:
 		return fmt.Sprintf("%v", v)
 	}
 }
 
-func printLogRecordJSON(service string, lr *otelpb.LogRecord) {
+func printLogRecordJSON(service string, lr *logspb.LogRecord) {
 	entry := map[string]any{
 		"timestamp": time.Unix(0, int64(lr.GetTimeUnixNano())).UTC().Format(time.RFC3339Nano),
 		"severity":  lr.GetSeverityText(),
@@ -1404,7 +1446,7 @@ func printLogRecordJSON(service string, lr *otelpb.LogRecord) {
 	fmt.Println(string(data))
 }
 
-func printLogRecord(service string, lr *otelpb.LogRecord) {
+func printLogRecord(service string, lr *logspb.LogRecord) {
 	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05.000")
 	label, style := severityLabel(lr.GetSeverityNumber())
 
@@ -1712,7 +1754,7 @@ type telemetryTraceEntry struct {
 
 // emitMetricDataPoints extracts the latest value from a metric and emits one
 // telemetryMetricEntry per metric (using the last data point's value).
-func emitMetricDataPoints(emit func(any), m *otelpb.Metric, svc string, res map[string]string) {
+func emitMetricDataPoints(emit func(any), m *metricspb.Metric, svc string, res map[string]string) {
 	var value float64
 	var metricType string
 	var attrs map[string]string
@@ -1772,11 +1814,11 @@ func emitMetricDataPoints(emit func(any), m *otelpb.Metric, svc string, res map[
 }
 
 // numberDataPointValue extracts the numeric value from a NumberDataPoint.
-func numberDataPointValue(dp *otelpb.NumberDataPoint) float64 {
+func numberDataPointValue(dp *metricspb.NumberDataPoint) float64 {
 	switch dp.GetValue().(type) {
-	case *otelpb.NumberDataPoint_AsDouble:
+	case *metricspb.NumberDataPoint_AsDouble:
 		return dp.GetAsDouble()
-	case *otelpb.NumberDataPoint_AsInt:
+	case *metricspb.NumberDataPoint_AsInt:
 		return float64(dp.GetAsInt())
 	default:
 		return 0
@@ -1787,27 +1829,27 @@ func formatNanoUTC(nanos uint64) string {
 	return time.Unix(0, int64(nanos)).UTC().Format(time.RFC3339Nano)
 }
 
-func severityTextAndNumber(sev otelpb.SeverityNumber) (string, int32) {
+func severityTextAndNumber(sev logspb.SeverityNumber) (string, int32) {
 	num := int32(sev)
 	switch {
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_FATAL:
 		return "FATAL", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_ERROR:
 		return "ERROR", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_WARN:
 		return "WARN", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_INFO:
 		return "INFO", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
 		return "DEBUG", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_TRACE:
 		return "TRACE", num
 	default:
 		return "UNSPECIFIED", num
 	}
 }
 
-func kvMapFromResource(res *otelpb.Resource) map[string]string {
+func kvMapFromResource(res *resourcepb.Resource) map[string]string {
 	m := make(map[string]string)
 	if res == nil {
 		return m
@@ -1818,7 +1860,7 @@ func kvMapFromResource(res *otelpb.Resource) map[string]string {
 	return m
 }
 
-func kvMapFromKeyValues(kvs []*otelpb.KeyValue) map[string]string {
+func kvMapFromKeyValues(kvs []*commonpb.KeyValue) map[string]string {
 	m := make(map[string]string)
 	for _, kv := range kvs {
 		m[kv.GetKey()] = anyValueString(kv.GetValue())
@@ -2305,12 +2347,10 @@ func newDeviceUpdateCmd() *cobra.Command {
 				// An unconfirmed upload is not a failure: the agent restarts the
 				// moment the binary lands, which can drop the stream before its
 				// ack arrives. Reconnect below and verify what the device runs.
-				unconfirmed := false
 				if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil {
 					if !errors.Is(err, errAgentUpdateUnconfirmed) {
 						return err
 					}
-					unconfirmed = true
 					if !jsonOutput {
 						fmt.Println(tui.InfoMessage("The connection dropped before the agent confirmed the update — verifying what the device is running..."))
 					}
@@ -2330,25 +2370,31 @@ func newDeviceUpdateCmd() *cobra.Command {
 					return err
 				}
 
-				if unconfirmed {
-					verifyResp, verifyErr := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
-					if verifyErr != nil {
-						return fmt.Errorf("could not verify the interrupted agent update: %w", verifyErr)
-					}
-					if !agentUpdateVerified(verifyResp.GetVersion(), expectedAgentVersion) {
-						return fmt.Errorf("the device still reports agent %s after the interrupted update (expected %s); "+
-							"the upload did not apply — re-run 'wendy device update'",
-							verifyResp.GetVersion(), expectedAgentVersion)
-					}
-					if !jsonOutput {
-						fmt.Printf("%s %s\n", tui.Dim("Verified agent version:"), tui.Value(verifyResp.GetVersion()))
-					}
+				// A successful reconnect proves reachability, not that the
+				// swap landed — always check what the device actually runs
+				// before claiming success (a silent no-op or rollback still
+				// reports the old binary here). The darwin artifact is an
+				// app-bundle ZIP, so its hash can never equal a hash of the
+				// running executable: skip the hash comparison there and let
+				// the version check carry the verdict. The verify window
+				// matches the restart budget so a mismatch re-poll can
+				// outlast a lingering old agent.
+				verifySHA := sha256Hash
+				if strings.EqualFold(preUpdateVersion.GetOs(), "darwin") {
+					verifySHA = ""
 				}
+				verified, verifyErr := verifyAgentAfterUpdate(ctx, conn.AgentService, verifySHA, expectedAgentVersion,
+					agentVerifyWaitOptions{Timeout: agentRestartTimeoutFor(preUpdateVersion.GetOs())})
+				if verifyErr != nil {
+					return verifyErr
+				}
+				reportedVersion := verified.Version
 
 				if jsonOutput {
 					resp := map[string]string{
 						"status":  "success",
 						"message": "Agent updated successfully.",
+						"version": reportedVersion,
 					}
 					b, err := json.Marshal(resp)
 					if err != nil {
@@ -2358,7 +2404,11 @@ func newDeviceUpdateCmd() *cobra.Command {
 					// OS update check is skipped in JSON mode to keep output stable.
 					return nil
 				}
-				fmt.Println(tui.SuccessMessage("Agent updated successfully."))
+				successMsg := "Agent updated successfully."
+				if reportedVersion != "" {
+					successMsg = fmt.Sprintf("Agent updated successfully (agent reports %s).", reportedVersion)
+				}
+				fmt.Println(tui.SuccessMessage(successMsg))
 			}
 
 			var outcome osUpdateOutcome
@@ -2386,10 +2436,20 @@ func newDeviceUpdateCmd() *cobra.Command {
 			}
 			if shouldReapplyBinary(binaryPath != "", outcome) {
 				fmt.Println(tui.InfoMessage("Re-applying your --binary agent onto the updated OS..."))
-				if err := reapplyBinaryAfterOSUpdate(ctx, conn, preUpdateVersion.GetOs(), binaryData, sha256Hash, jsonOutput); err != nil {
+				reapplied, err := reapplyBinaryAfterOSUpdate(ctx, conn, preUpdateVersion.GetOs(), binaryData, sha256Hash, jsonOutput)
+				if err != nil {
 					return fmt.Errorf("re-applying --binary after OS update: %w", err)
 				}
-				fmt.Println(tui.SuccessMessage("Dev agent re-applied; it survived the OS update."))
+				if reapplied.HashVerified {
+					fmt.Println(tui.SuccessMessage(fmt.Sprintf(
+						"Dev agent re-applied; the device is running your binary (version %s).", reapplied.Version)))
+				} else {
+					// No hash means nothing was proven — the running agent
+					// could still be the updated image's bundled one.
+					fmt.Println(tui.InfoMessage(fmt.Sprintf(
+						"Re-applied your --binary agent, but the running agent (version %s) does not report a binary hash, "+
+							"so the re-apply could not be verified — it may still be the OS image's bundled agent.", reapplied.Version)))
+				}
 			}
 			return nil
 		},
@@ -2578,36 +2638,42 @@ func awaitAgentRestart(ctx context.Context, reconnect func(context.Context) (*gr
 // (now-stale) connection whose Host/Reconnect identifies the device; the device
 // is expected to already be back online (maybeCheckOSUpdate waited for it), so
 // the first reconnect resolves promptly. The upload restarts the agent, so it
-// then waits once more for the re-applied dev agent to return. osName is
+// then waits once more for the re-applied dev agent to return, hash-verifies
+// that the uploaded binary is what runs, and returns the version it reports.
+// osName is
 // forwarded to awaitAgentRestart for its restart-timeout selection; in
 // practice this path is unreachable for darwin (an OS update is refused on
 // Macs before reaching here), so osName is always a Linux-family value.
-func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, osName string, binaryData []byte, sha256Hash string, jsonOutput bool) error {
+func reapplyBinaryAfterOSUpdate(ctx context.Context, priorConn *grpcclient.AgentConnection, osName string, binaryData []byte, sha256Hash string, jsonOutput bool) (agentVerifyResult, error) {
 	conn, err := awaitAgentRestart(ctx, updatedAgentReconnectFunc(ctx, priorConn), osName, jsonOutput)
 	if err != nil {
-		return err
+		return agentVerifyResult{}, err
 	}
 	if conn == nil {
-		return errors.New("reconnected to a nil agent connection after the OS update")
+		return agentVerifyResult{}, errors.New("reconnected to a nil agent connection after the OS update")
 	}
 
 	// An unconfirmed upload is expected here too — the agent restarts as the
-	// binary lands — and the wait below already verifies the agent returns.
+	// binary lands — and the verification below checks what actually runs.
 	if err := uploadAgentBinary(ctx, conn.AgentService, binaryData, sha256Hash, jsonOutput); err != nil && !errors.Is(err, errAgentUpdateUnconfirmed) {
 		_ = conn.Close()
-		return err
+		return agentVerifyResult{}, err
 	}
 
 	reconnectAfter := updatedAgentReconnectFunc(ctx, conn)
 	_ = conn.Close()
 	readyConn, err := awaitAgentRestart(ctx, reconnectAfter, osName, jsonOutput)
 	if err != nil {
-		return err
+		return agentVerifyResult{}, err
 	}
-	if readyConn != nil {
-		_ = readyConn.Close()
+	if readyConn == nil {
+		return agentVerifyResult{}, errors.New("reconnected to a nil agent connection after the re-apply")
 	}
-	return nil
+	defer readyConn.Close()
+
+	// Hash verification catches the failure this path exists for: the updated
+	// image's bundled agent still running instead of the re-applied binary.
+	return verifyAgentAfterUpdate(ctx, readyConn.AgentService, sha256Hash, "", agentVerifyWaitOptions{})
 }
 
 // errAgentUpdateUnconfirmed means the update stream died before the agent
@@ -2725,9 +2791,9 @@ func agentUpdateTerminalError(recvErr error) error {
 }
 
 // agentUpdateVerified reports whether the version an agent reports after an
-// unconfirmed update proves the upload landed: the expected release version or
-// anything newer counts. An empty expectation (--binary uploads have no
-// release version) cannot be verified and is accepted.
+// update proves the upload landed: the expected release version or anything
+// newer counts. An empty expectation (--binary uploads have no release
+// version) cannot be verified and is accepted.
 func agentUpdateVerified(reported, expected string) bool {
 	if expected == "" {
 		return true
@@ -2735,7 +2801,110 @@ func agentUpdateVerified(reported, expected string) bool {
 	if reported == "" {
 		return false
 	}
+	// CompareVersions ranks dev builds newest, but a device still reporting
+	// a dev build after a RELEASE upload means the swap did not land — the
+	// vacuous pass would hide exactly the silent no-op this check exists
+	// for. A dev expectation (a workflow_dispatch publish can stamp a -dev
+	// version into the manifest) legitimately produces a dev report.
+	if version.IsDev(reported) && !version.IsDev(expected) {
+		return false
+	}
 	return version.CompareVersions(reported, expected) >= 0
+}
+
+// agentVerifyWaitOptions bounds verifyAgentAfterUpdate's retry window for
+// transient RPC errors on a freshly restarted agent. Zero values select the
+// defaults.
+type agentVerifyWaitOptions struct {
+	Timeout      time.Duration
+	PollInterval time.Duration
+}
+
+const (
+	defaultAgentVerifyTimeout      = 15 * time.Second
+	defaultAgentVerifyPollInterval = 2 * time.Second
+)
+
+// evaluateAgentUpdateOutcome judges what a freshly restarted agent reports
+// against what the update uploaded. A reported binary hash compared to the
+// uploaded one is definitive in both directions — it is what makes dev pushes
+// provable, since dev builds share identical version strings. Version
+// comparison is only the fallback for agents that cannot report a hash (the
+// mac agent, pre-hash releases), and with nothing to compare a reachable
+// agent is accepted.
+func evaluateAgentUpdateOutcome(resp *agentpb.GetAgentVersionResponse, uploadedSHA256, expectedVersion string) error {
+	reportedHash := resp.GetBinarySha256()
+	if reportedHash != "" && uploadedSHA256 != "" {
+		if strings.EqualFold(reportedHash, uploadedSHA256) {
+			return nil
+		}
+		return fmt.Errorf("the device is not running the binary that was uploaded "+
+			"(running sha256 %s, uploaded %s); the update did not apply — re-run 'wendy device update'",
+			reportedHash, uploadedSHA256)
+	}
+	if agentUpdateVerified(resp.GetVersion(), expectedVersion) {
+		return nil
+	}
+	return fmt.Errorf("the device still reports agent %s after the update (expected %s); "+
+		"the update did not apply — re-run 'wendy device update'",
+		resp.GetVersion(), expectedVersion)
+}
+
+// agentVerifyResult is what verifyAgentAfterUpdate learned about the agent
+// that answered. HashVerified reports whether the running binary's hash was
+// actually compared and matched — callers must not claim cryptographic proof
+// without it, since a hash-less agent (mac, pre-hash releases) passes the
+// version fallback vacuously.
+type agentVerifyResult struct {
+	Version      string
+	HashVerified bool
+}
+
+// verifyAgentAfterUpdate polls GetAgentVersion on the freshly restarted agent
+// and returns what it reports, with evaluateAgentUpdateOutcome's verdict as
+// the error. Both RPC errors AND failing verdicts are retried within the
+// window: an agent can accept connections a beat before it serves, and the
+// first reconnect can land on the still-alive OLD agent (it exits ~500ms
+// after committing, longer on darwin), whose response would mis-verdict a
+// successful update. Only the window expiring makes a verdict final.
+// uploadedSHA256 and expectedVersion may each be empty when unknown.
+func verifyAgentAfterUpdate(ctx context.Context, agentService agentpb.WendyAgentServiceClient, uploadedSHA256, expectedVersion string, opts agentVerifyWaitOptions) (agentVerifyResult, error) {
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaultAgentVerifyTimeout
+	}
+	if opts.PollInterval <= 0 {
+		opts.PollInterval = defaultAgentVerifyPollInterval
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
+	var lastRPCErr, lastVerdictErr error
+	for {
+		resp, err := agentService.GetAgentVersion(waitCtx, &agentpb.GetAgentVersionRequest{})
+		if err == nil {
+			if verdict := evaluateAgentUpdateOutcome(resp, uploadedSHA256, expectedVersion); verdict != nil {
+				lastVerdictErr = verdict
+			} else {
+				return agentVerifyResult{
+					Version:      resp.GetVersion(),
+					HashVerified: uploadedSHA256 != "" && resp.GetBinarySha256() != "",
+				}, nil
+			}
+		} else {
+			lastRPCErr = err
+		}
+		if waitCtx.Err() != nil {
+			break
+		}
+		if err := sleepContext(waitCtx, opts.PollInterval); err != nil {
+			break
+		}
+	}
+	if lastVerdictErr != nil {
+		return agentVerifyResult{}, lastVerdictErr
+	}
+	return agentVerifyResult{}, fmt.Errorf("could not verify the updated agent: %w", lastRPCErr)
 }
 
 func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentConnection) func(context.Context) (*grpcclient.AgentConnection, error) {
