@@ -933,8 +933,12 @@ func formatElapsedSeconds(elapsed time.Duration) string {
 // it now (rather than after the probe) keeps the observation tied to this
 // connection attempt, matching the original eager-snapshot intent.
 func deferProvisionedMTLSCheck(ctx context.Context, addr string) func() bool {
+	// Snapshot the discovery hook here, on the caller's goroutine. The browse
+	// below outlives this function, and tests swap this seam back in t.Cleanup —
+	// reading it from inside the goroutine races that restore.
+	discover := discoverLANDevices
 	ch := make(chan bool, 1)
-	go func() { ch <- provisionedAgentAdvertisedMTLS(ctx, addr) }()
+	go func() { ch <- provisionedAgentAdvertisedMTLSVia(ctx, discover, addr) }()
 	var (
 		once sync.Once
 		res  bool
@@ -2115,7 +2119,19 @@ func isCertRejectionError(err error) bool {
 // dialAgentLadderWithCerts). This snapshot is also not refreshed after a failed
 // connection attempt.
 func provisionedAgentAdvertisedMTLS(ctx context.Context, plaintextAddr string) bool {
-	devices, err := discoverLANDevices(ctx, provisionedAgentMetadataDiscoveryTimeout)
+	return provisionedAgentAdvertisedMTLSVia(ctx, discoverLANDevices, plaintextAddr)
+}
+
+// provisionedAgentAdvertisedMTLSVia is provisionedAgentAdvertisedMTLS with the
+// discovery hook passed in rather than read from the package variable.
+//
+// deferProvisionedMTLSCheck runs this browse on a goroutine that outlives the
+// call that started it, so reading the seam in here would read it at an
+// unpredictable time — which races any test that restores the seam in
+// t.Cleanup while the browse is still in flight. Callers snapshot the hook on
+// their own goroutine and hand it over instead.
+func provisionedAgentAdvertisedMTLSVia(ctx context.Context, discover func(context.Context, time.Duration) ([]models.LANDevice, error), plaintextAddr string) bool {
+	devices, err := discover(ctx, provisionedAgentMetadataDiscoveryTimeout)
 	if err != nil {
 		return false
 	}
