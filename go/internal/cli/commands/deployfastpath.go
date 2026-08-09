@@ -142,7 +142,10 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 // rebuild, never a missed change.
 func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[string]string, deployEnv []string) (string, error) {
 	h := sha256.New()
-	io.WriteString(h, "wendy-deploy-fingerprint-v1\n")
+	// v2: invalidates fingerprints recorded while the stale-manifest bug
+	// (fixed 2026-08-08 in this PR) could pair a fresh input hash with a
+	// stale deploy — forces one honest rebuild per app after upgrade.
+	io.WriteString(h, "wendy-deploy-fingerprint-v2\n")
 	io.WriteString(h, "platform="+platform+"\n")
 
 	// deployEnv arrives sorted from resolveServiceEnv; --env order is the

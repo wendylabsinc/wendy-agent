@@ -223,6 +223,7 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
 	if containerdClient != nil {
