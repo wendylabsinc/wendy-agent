@@ -769,7 +769,8 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			}
 		}
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(),
-			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)))
+			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)),
+			debugStagefileOptions(opts.debug)...)
 		if err != nil {
 			return err
 		}

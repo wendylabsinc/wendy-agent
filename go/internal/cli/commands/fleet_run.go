@@ -138,7 +138,8 @@ func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerU
 		// A fleet deploys one image to many devices, which may not share a GPU
 		// architecture, so there is no device here to read it from — a cuda:
 		// stage has to be told which board the image is for.
-		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(), opts.gpuArch)
+		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(), opts.gpuArch,
+			debugStagefileOptions(opts.debug)...)
 		if err != nil {
 			return err
 		}

@@ -21,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -193,7 +194,7 @@ func composeGPUArch(ctx context.Context, projectDir string, cfg *composeConfig, 
 // itself knows nothing about build.stagefile.yaml. Returns "" when no service
 // uses a Stagefile. The caller must invoke cleanup (when non-nil) after the
 // compose build finishes.
-func composeStagefileOverride(dir, gpuArch string) (path string, cleanup func(), err error) {
+func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (path string, cleanup func(), err error) {
 	cfg, _, err := parseComposeFile(dir)
 	if err != nil {
 		return "", nil, err
@@ -207,7 +208,7 @@ func composeStagefileOverride(dir, gpuArch string) (path string, cleanup func(),
 		if ctxDir == "" || dockerfile != stagefileSourceName {
 			continue
 		}
-		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch)
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...)
 		if err != nil {
 			return "", nil, fmt.Errorf("service %s: %w", name, err)
 		}
@@ -887,7 +888,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
 		// same way the single-service path does — docker build itself knows
 		// nothing about build.stagefile.yaml.
-		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch); err != nil {
+		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
 			return fmt.Errorf("service %s: %w", name, err)
 		}
 

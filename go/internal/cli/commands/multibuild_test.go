@@ -12,6 +12,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 )
 
 // newServiceTree writes n service directories under a fresh temp root, each
@@ -52,7 +53,7 @@ func TestComputeServicePlansRunsServicesConcurrently(t *testing.T) {
 	inFlight.Add(len(services))
 	orig := planResolveDockerfile
 	defer func() { planResolveDockerfile = orig }()
-	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string) (string, error) {
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string, _ ...stagefile.Option) (string, error) {
 		inFlight.Done()
 		inFlight.Wait() // released only once every other service's plan has started
 		return "Dockerfile", nil
@@ -91,7 +92,7 @@ func TestComputeServicePlansOmitsServicesItCannotPlan(t *testing.T) {
 
 	orig := planResolveDockerfile
 	defer func() { planResolveDockerfile = orig }()
-	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string) (string, error) {
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string, _ ...stagefile.Option) (string, error) {
 		if filepath.Base(cwd) == "svc00" {
 			return "", fmt.Errorf("no build file")
 		}
