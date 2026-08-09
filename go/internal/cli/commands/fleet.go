@@ -179,6 +179,7 @@ func runFleetGroupLs(ctx context.Context, cloudGRPC string) error {
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 
 	counts := groupCounts(assets)
 	names := make([]string, 0, len(counts))
@@ -219,6 +220,7 @@ func runFleetGroupShow(ctx context.Context, cloudGRPC, group string) error {
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	members := assetsInGroup(assets, group)
 
 	if jsonOutput || !isInteractiveTerminal() {
@@ -262,6 +264,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 
 	conn, err := dialCloudGRPC(auth)
 	if err != nil {
