@@ -6,9 +6,49 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
+// Derive cannot stat the context, so every allowlisted path also gets the
+// directory forms (!p/ and !p/**). For a plain file they are inert: BuildKit's
+// ignore-file reader runs filepath.Clean on each pattern, so "!app.py/"
+// collapses to a duplicate "!app.py", and "!app.py/**" can never match because
+// a regular file has no children.
 func TestDeriveAllowlistsGivenPaths(t *testing.T) {
 	got := Derive([]string{"app.py", "requirements.txt"})
-	want := "*\n!app.py\n!requirements.txt\n"
+	want := "*\n" +
+		"!app.py\n!app.py/\n!app.py/**\n" +
+		"!requirements.txt\n!requirements.txt/\n!requirements.txt/**\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A directory path must bring its contents back, not just the directory entry
+// itself: under the deny-all "*" base, "!src" alone does not reliably re-include
+// descendants.
+func TestDeriveAllowsDirectoryContents(t *testing.T) {
+	got := Derive([]string{"src"})
+	want := "*\n!src\n!src/\n!src/**\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A nested file is unreachable unless each parent directory is unignored too,
+// because "*" excludes the parent and the context walk would prune it.
+func TestDeriveUnignoresParentDirsOfNestedPaths(t *testing.T) {
+	got := Derive([]string{"src/app/main.go"})
+	want := "*\n" +
+		"!src/app/\n!src/\n" +
+		"!src/app/main.go\n!src/app/main.go/\n!src/app/main.go/**\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// "./x" and "x" name the same context path, so they must not produce two
+// entries.
+func TestDeriveNormalizesDotSlashAndDeduplicates(t *testing.T) {
+	got := Derive([]string{"./app.py", "app.py"})
+	want := "*\n!app.py\n!app.py/\n!app.py/**\n"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
