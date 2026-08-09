@@ -95,6 +95,39 @@ func TestDecodeBatteryState_StatusEnumMapsOneToOne(t *testing.T) {
 	}
 }
 
+// A full pack sends exactly 1.0, which sits on the boundary between the
+// spec-compliant 0-1 branch and the already-a-percent fallback. Confirmed
+// against the Go2: 0-1 on the wire, rendered 0-100% in the UI.
+func TestDecodeBatteryState_FullIsExactlyOne(t *testing.T) {
+	b, err := DecodeBatteryState(batteryStatePayload(0, 10.0, 10.0, 1.0, 4))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Percent != 100 {
+		t.Errorf("Percent = %v; want 100", b.Percent)
+	}
+	if b.State != hoststats.BatteryFull {
+		t.Errorf("State = %q; want full", b.State)
+	}
+}
+
+// The low end must not be confused for a missing reading.
+func TestDecodeBatteryState_EmptyIsZeroNotUnknown(t *testing.T) {
+	b, err := DecodeBatteryState(batteryStatePayload(-2.0, 0.0, 10.0, 0.0, 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Percent != 0 {
+		t.Errorf("Percent = %v; want 0", b.Percent)
+	}
+	if b.State != hoststats.BatteryDischarging {
+		t.Errorf("State = %q; want discharging", b.State)
+	}
+	if b.SecondsRemaining != 0 {
+		t.Errorf("SecondsRemaining = %d; want 0 — nothing left to count down", b.SecondsRemaining)
+	}
+}
+
 func TestDecodeBatteryState_PercentageAlreadyAPercent(t *testing.T) {
 	// A driver that publishes 0..100 despite the spec saying 0..1.
 	b, err := DecodeBatteryState(batteryStatePayload(-1, 5, 10, 64.0, 2))
