@@ -175,7 +175,12 @@ func runRemoteBuild(
 	// Resolve the build file on THIS machine: a Stagefile compile pins digests
 	// and writes its lockfile into the project, which must happen where the repo
 	// is, not in a scratch dir on the builder.
-	resolved, err := prepareDockerBuildFile(cwd, dockerfile)
+	//
+	// The GPU architecture comes from the TARGET, not the build host: a cuda:
+	// stage is compiled for the hardware that will RUN the image. Asking the
+	// Spark would pin the image to the Spark's GPU and quietly mis-target the
+	// robot.
+	resolved, err := prepareDockerBuildFile(cwd, dockerfile, resolveGPUArch(ctx, cwd, opts.gpuArch, target))
 	if err != nil {
 		return err
 	}
