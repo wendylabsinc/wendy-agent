@@ -80,7 +80,7 @@ func TestGeneratePipIndexFlags(t *testing.T) {
 			},
 		}}},
 	}, nil)
-	want := "RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
+	want := "RUN --mount=type=cache,sharing=locked,id=stagefile-pip-8982dbbb6e87f5f3,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}
@@ -110,7 +110,7 @@ func TestGenerateUvSync(t *testing.T) {
 	}, nil)
 	for _, want := range []string{
 		"COPY pyproject.toml uv.lock ./",
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/uv uv sync --frozen --no-dev --extra 'proxy'",
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-uv-6e340b9cffb37a98,target=/root/.cache/uv uv sync --frozen --no-dev --extra 'proxy'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
