@@ -133,6 +133,14 @@ One loop: *scan* → *subscribed* → *scan*.
 
 Scanning joins the domain, runs SPDP/SEDP, and matches a writer by type name,
 preferring `sensor_msgs::msg::BatteryState` over `unitree_go::msg::LowState`.
+
+Where several writers offer the same winning type, prefer the lowest-rate topic
+— concretely `/lf/lowstate` over `/lowstate`. Both carry `LowState`, but
+`/lowstate` is the high-rate control topic at several hundred Hz and ~1.2 KB a
+message; subscribing to it to read one byte of `soc` would cost real CPU and
+bandwidth on the device. Absent a reliable rate signal in SEDP, a topic-name
+prefix of `/lf/` is the available heuristic, and the config `topic` key is the
+escape hatch when it guesses wrong.
 Nothing found within two minutes backs off to a rescan every five, so a device
 with no ROS 2 anywhere costs one small multicast burst per five minutes.
 A subscribed writer that disappears — SEDP dispose, or silence past the

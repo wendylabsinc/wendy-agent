@@ -60,6 +60,71 @@ Consequences for the decoders:
 The probe also confirmed `ros2` lives at `/opt/ros/humble/bin/ros2` in the very
 image the agent reported as lacking it.
 
+### `/lowstate` QoS, observed
+
+```
+Publisher count: 1
+  Node name: _CREATED_BY_BARE_DDS_APP_
+  Reliability: RELIABLE
+  History:     KEEP_LAST (1)
+  Durability:  VOLATILE
+Subscription count: 2
+  (one is Reliability: BEST_EFFORT)
+```
+
+This retires the main open assumption in the Phase 2 reader design. A
+`BEST_EFFORT` reader matching a `RELIABLE` writer is not merely legal under the
+RxO rule here — the robot **already has a `BEST_EFFORT` subscriber on this
+topic**, so the match is demonstrated rather than argued. `VOLATILE` durability
+also confirms there is no history to miss.
+
+`_CREATED_BY_BARE_DDS_APP_` means the publisher is a raw `unitree_sdk2` DDS
+application, not a ROS 2 node. It participates in the DDS graph without
+registering as a ROS node, which is why `ros2 node list` shows almost nothing
+while `ros2 topic list` shows ~100 topics.
+
+### `/lf/battery_alarm` is not a battery source
+
+Worth recording because it looks like one. Full payload, `std_msgs/msg/String`
+carrying JSON, at exactly 1.000 Hz (RELIABLE / KEEP_LAST(1) / VOLATILE):
+
+```json
+{"alarm_status":0,"timestamp":"1785172863544",
+ "cell_voltages":[3617,3624,3621,3622,3621,3624,3624,3618],
+ "description":"Diff:7mV"}
+```
+
+Per-cell millivolts, a max-min spread, and a status flag — **no
+state-of-charge**. Tempting because a `std_msgs/String` needs only a CDR string
+read, with none of `LowState`'s offset-walking, but deriving a percentage from
+open-circuit cell voltage is load-dependent and wrong under draw. That is
+exactly the kind of invented number the "report absent, never extrapolate" rule
+exists to prevent, so this topic is not used.
+
+Also note the pack is 8S while `BmsState` declares `cell_vol[15]`; the extra
+slots are reserved and the wire array is fixed-size regardless, so no offsets
+move.
+
+### Subscribe to `/lf/lowstate`, not `/lowstate`
+
+Both carry `unitree_go/msg/LowState`. `/lowstate` is the high-rate control
+topic — Unitree publishes it at several hundred Hz, and the message is ~1.2 KB.
+Subscribing to that continuously to read one byte of `soc` would cost real CPU
+and bandwidth on the Orin for no benefit. `/lf/lowstate` is the same type at low
+frequency (`lf`), which is what a battery reading wants.
+
+Neither rate was measured directly: `ros2 topic hz` deserialises, so it fails on
+both with `Unknown package 'unitree_go'` just as `echo` does. The rate claim
+above comes from Unitree's documentation, not from this robot.
+
+### Deserialising LowState needs unitree_go typesupport
+
+`ros2 topic echo /lowstate` from a stock `ros:humble` container fails with
+`Unknown package 'unitree_go'`: the type is discovered over DDS, but decoding it
+needs the generated typesupport. This does not affect the Go decoder — it walks
+bytes directly and needs no typesupport — but it does mean a live sample cannot
+be captured without a `colcon build` of `unitree_ros2`.
+
 ## Byte layouts the decoders assume
 
 Derived from the definitions below plus CDR alignment rules.
