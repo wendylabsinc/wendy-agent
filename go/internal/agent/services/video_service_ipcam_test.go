@@ -73,6 +73,9 @@ func newIPTestService(t *testing.T) *VideoService {
 	}
 	s.globDevices = func() ([]string, error) { return nil, nil }
 	s.enumerateLibcamera = func(ctx context.Context) (map[string]string, error) { return nil, nil }
+	// Reachable by default so tests exercise the path under test rather than the
+	// preflight; the tests that care about reachability override this.
+	s.cameraReachable = func(string) bool { return true }
 	return s
 }
 
@@ -426,4 +429,86 @@ func TestListWithoutRegistryIsUnaffected(t *testing.T) {
 		&agentpb.SetCameraCredentialsRequest{DeviceId: 200, Username: "u"}); status.Code(err) != codes.Unavailable {
 		t.Fatalf("code = %v, want Unavailable", status.Code(err))
 	}
+}
+
+// A camera that cannot be reached must fail immediately and say so. Without the
+// preflight the RTSP connect is black-holed, takes twenty seconds to time out,
+// and reports a generic pipeline failure that names neither the camera nor the
+// address.
+func TestStreamVideoRefusesUnreachableCamera(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if _, err := s.SetCameraCredentials(context.Background(), &agentpb.SetCameraCredentialsRequest{
+		DeviceId: cam.ID, Username: "admin", Password: "hunter2",
+	}); err != nil {
+		t.Fatalf("SetCameraCredentials: %v", err)
+	}
+
+	var dialled string
+	s.cameraReachable = func(address string) bool {
+		dialled = address
+		return false
+	}
+	s.runGStreamer = func(context.Context, []string, func([]byte)) error {
+		t.Error("capture started against an unreachable camera")
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := s.StreamVideo(&agentpb.StreamVideoRequest{DeviceId: cam.ID}, newFakeVideoStream(ctx))
+	if err == nil {
+		t.Fatal("StreamVideo succeeded against an unreachable camera")
+	}
+	if got := status.Code(err); got != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", got)
+	}
+	if !strings.Contains(err.Error(), "10.98.0.50") {
+		t.Fatalf("error %q does not name the address", err)
+	}
+	if dialled != "10.98.0.50" {
+		t.Fatalf("dialled %q, want the camera's address", dialled)
+	}
+}
+
+// The reachability test uses the RTSP port, not the registry's Online flag. That
+// flag comes from a probe of port 80, which some cameras do not serve, so gating
+// on it would refuse cameras that stream perfectly well.
+func TestStreamVideoStreamsOfflineButReachableCamera(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if _, err := s.SetCameraCredentials(context.Background(), &agentpb.SetCameraCredentialsRequest{
+		DeviceId: cam.ID, Username: "admin", Password: "hunter2",
+	}); err != nil {
+		t.Fatalf("SetCameraCredentials: %v", err)
+	}
+	// Explicitly offline by the port-80 probe.
+	s.registry.MarkSeen(cam.MAC, "", false)
+	if got, _ := s.registry.Get(cam.ID); got.Online {
+		t.Fatal("camera is online, want the offline case under test")
+	}
+
+	started := make(chan struct{})
+	s.runGStreamer = func(ctx context.Context, _ []string, _ func([]byte)) error {
+		close(started)
+		<-ctx.Done()
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- s.StreamVideo(&agentpb.StreamVideoRequest{DeviceId: cam.ID}, newFakeVideoStream(ctx))
+	}()
+
+	select {
+	case <-started:
+	case err := <-done:
+		t.Fatalf("StreamVideo returned %v instead of streaming a reachable camera", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for capture to start")
+	}
+	cancel()
+	<-done
 }

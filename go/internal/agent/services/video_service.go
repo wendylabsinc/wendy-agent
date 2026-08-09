@@ -468,6 +468,10 @@ type VideoService struct {
 	// runGStreamer is the injection seam for the network capture subprocess.
 	runGStreamer func(ctx context.Context, args []string, onFrame func([]byte)) error
 
+	// cameraReachable tests a camera's RTSP port before a stream is started.
+	// Injectable so preflight is testable without a socket.
+	cameraReachable func(address string) bool
+
 	// CSI/ribbon-camera seams (injectable for tests). classifyTransport maps a
 	// /dev/videoN base to its transport (USB/CSI/Unknown); enumerateLibcamera
 	// lists libcamera-visible cameras; isJetson selects the Argus capture path.
@@ -536,6 +540,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svc.discoverer = ipcam.NewDiscoverer(svc.registry, logger)
 	svc.links = ipcam.NewLinkManager(svc.registry, logger)
 	svc.runGStreamer = svc.gstreamerFrames
+	svc.cameraReachable = ipcam.Reachable
 	return svc
 }
 
@@ -1180,14 +1185,24 @@ func (s *VideoService) streamIPCamera(stream grpc.ServerStreamingServer[agentpb.
 	return s.pumpFrames(stream, h, ch)
 }
 
-// preflightIPCamera checks the two conditions that would otherwise surface as a
-// producer dying the instant it starts: no stored login, and no known address.
+// preflightIPCamera checks the conditions that would otherwise surface as a
+// producer dying the instant it starts: no stored login, no known address, and a
+// camera that cannot be reached at all.
+//
+// The reachability test matters more than it looks. A camera whose segment has
+// lost its address is not merely absent: the request falls to the default route,
+// is black-holed on the uplink, and RTSP spends twenty seconds timing out before
+// reporting a generic pipeline failure. Testing the port first turns that into an
+// immediate message naming the address and when the camera was last seen.
 func (s *VideoService) preflightIPCamera(cam ipcam.Camera) error {
 	cred, err := s.ipCameraCredentials(cam)
 	if err != nil {
 		return err
 	}
 	if _, err := ipcam.StreamURL(cam, cred, ipcam.StreamAuto); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(cam))
+	}
+	if !s.cameraReachable(cam.Address) {
 		return status.Errorf(codes.FailedPrecondition, "%s", ipcam.FormatUnreachable(cam))
 	}
 	return nil
