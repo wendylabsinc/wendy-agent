@@ -330,6 +330,30 @@ func (c *Client) chunkLen(h [32]byte) (int64, bool) {
 	return 0, false
 }
 
+// OpenChunkStream returns a reader over the chunks named by hashes, in order,
+// verifying each chunk's SHA-256 as it is served and holding at most one chunk
+// in memory.
+//
+// AssembleLayerFromChunks is the wrong tool for a caller that wants the bytes
+// themselves: it writes a layer blob into the content store, which is right for
+// an image layer and wrong for anything else — a remote build context, say.
+// This exposes the same chunk resolution without that side effect.
+func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader {
+	nsCtx := c.withNamespace(ctx)
+	src := func(h [32]byte) ([]byte, error) {
+		if b, err := c.staging.read(h); err == nil {
+			return b, nil
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+		if loc, ok := c.chunkIndex.Has(h); ok {
+			return c.readIndexedChunk(nsCtx, loc)
+		}
+		return nil, nil
+	}
+	return &chunkStream{order: hashes, src: src}
+}
+
 func (c *Client) AssembleLayerFromChunks(ctx context.Context, diffID string, hashes [][32]byte) error {
 	nsCtx := c.withNamespace(ctx)
 

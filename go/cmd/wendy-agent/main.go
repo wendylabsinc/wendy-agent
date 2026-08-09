@@ -182,7 +182,15 @@ func main() {
 	ctrdClient, ctrdErr := agentcontainerd.NewClient(logger, containerdAddr, proxyMgr)
 	if ctrdErr != nil {
 		logger.Warn("Failed to connect to containerd (container features will be unavailable)", zap.Error(ctrdErr))
-	} else {
+	}
+	// Typed separately from containerdClient: assigning a nil *containerd.Client
+	// into an interface yields a non-nil interface holding a nil pointer, which
+	// panics on first use rather than failing the service's nil check.
+	var buildChunkSource services.ChunkSource
+	if ctrdErr == nil {
+		buildChunkSource = ctrdClient
+	}
+	if ctrdErr == nil {
 		containerdClient = ctrdClient
 		defer ctrdClient.Close()
 
@@ -491,7 +499,16 @@ func main() {
 		// check rather than reject every caller.
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 		meshSvc := services.NewMeshService(logger, configPath, orgID)
-		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{ConfigPath: configPath})
+		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
+			ConfigPath: configPath,
+			Chunks:     buildChunkSource,
+			// Read fresh per build rather than captured: a certificate rotated
+			// while the agent runs must be picked up without a restart.
+			PushTLS: func() (*tls.Config, error) {
+				certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
+				return mtls.NewClientTLSConfig(certPEM, chainPEM, string(keyData), logger)
+			},
+		})
 
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)

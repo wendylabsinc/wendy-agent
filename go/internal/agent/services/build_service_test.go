@@ -138,6 +138,75 @@ func TestBuildctlArgs_RejectsAbsoluteDockerfile(t *testing.T) {
 	}
 }
 
+func TestRedactBuildctlArgs_MasksValuesKeepsKeys(t *testing.T) {
+	out := redactBuildctlArgs([]string{"--opt", "build-arg:TOKEN=secret", "--output", "type=image,name=x"})
+	if slices.Contains(out, "build-arg:TOKEN=secret") {
+		t.Fatal("build-arg value was not redacted; these reach the agent log")
+	}
+	if !slices.Contains(out, "build-arg:TOKEN=<redacted>") {
+		t.Fatalf("the key must survive for debugging, got %v", out)
+	}
+	if !slices.Contains(out, "type=image,name=x") {
+		t.Fatalf("non-build-arg tokens must be preserved, got %v", out)
+	}
+}
+
+func enabledService(t *testing.T) *BuildService {
+	t.Helper()
+	return NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+}
+
+func TestBuildImage_RejectsSpecWithoutDefinition(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:         "app",
+		Platform:      "linux/arm64",
+		PushReference: "robot-01.acme.cloud.wendy.dev:5000/app:latest",
+	}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument for a spec with no build definition", err)
+	}
+}
+
+func TestBuildImage_RejectsMissingSpec(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument when the first message carries no spec", err)
+	}
+}
+
+// The destination is checked before the context is even reassembled, so a bad
+// one costs nothing.
+func TestBuildImage_RejectsBadPushDestinationBeforeBuilding(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:         "app",
+		Platform:      "linux/arm64",
+		PushReference: "evil.example.com:443/exfil:latest",
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument — the destination must be validated before any build runs", err)
+	}
+}
+
+func TestBuildImage_RejectsEmptyContext(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:         "app",
+		Platform:      "linux/arm64",
+		PushReference: "robot-01.acme.cloud.wendy.dev:5000/app:latest",
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument for a spec with no build context", err)
+	}
+}
+
 // stubBuildStream is a fake BuildImage server stream for unit tests.
 type stubBuildStream struct {
 	agentpbv2.WendyBuildService_BuildImageServer

@@ -2,12 +2,18 @@ package services
 
 import (
 	"archive/tar"
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -37,6 +43,12 @@ const DefaultBuildkitAddress = "unix:///run/buildkit/buildkitd.sock"
 // defaultBuildStateDir holds reassembled build contexts, one directory per app.
 const defaultBuildStateDir = "/var/lib/wendy/buildctx"
 
+// ChunkSource reads previously staged chunks back in order. It is the same
+// content store WendyContainerService.WriteChunks writes into.
+type ChunkSource interface {
+	OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader
+}
+
 // BuildServiceOptions configures the build service.
 type BuildServiceOptions struct {
 	// ConfigPath is the agent config dir searched for the opt-in marker.
@@ -45,6 +57,12 @@ type BuildServiceOptions struct {
 	BuildkitAddress string
 	// StateDir overrides defaultBuildStateDir.
 	StateDir string
+	// Chunks resolves the build context the CLI staged through WriteChunks.
+	Chunks ChunkSource
+	// PushTLS supplies the client certificate the push proxy presents to the
+	// target device's registry. A function rather than a value so a certificate
+	// rotated while the agent runs is picked up on the next build.
+	PushTLS func() (*tls.Config, error)
 }
 
 // BuildService lets a CLI delegate an image build to this device. See the
@@ -55,6 +73,8 @@ type BuildService struct {
 	buildHostEnabledPath string
 	buildkitAddress      string
 	stateDir             string
+	chunks               ChunkSource
+	pushTLS              func() (*tls.Config, error)
 }
 
 func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService {
@@ -69,6 +89,8 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		buildHostEnabledPath: filepath.Join(opts.ConfigPath, buildHostEnabledFile),
 		buildkitAddress:      opts.BuildkitAddress,
 		stateDir:             opts.StateDir,
+		chunks:               opts.Chunks,
+		pushTLS:              opts.PushTLS,
 	}
 }
 
@@ -112,7 +134,152 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 		return status.Error(codes.FailedPrecondition,
 			"this device is not configured as a build host; create the build-host-enabled marker in the agent config directory to allow remote builds")
 	}
-	return status.Error(codes.Unimplemented, "build execution lands in a later task")
+	ctx := stream.Context()
+
+	first, err := stream.Recv()
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "reading build spec: %v", err)
+	}
+	spec := first.GetSpec()
+	if spec == nil {
+		return status.Error(codes.InvalidArgument, "the first message must carry a build spec")
+	}
+	df := spec.GetDockerfileBuild()
+	if df == nil {
+		return status.Error(codes.InvalidArgument, "build spec carries no build definition")
+	}
+
+	// Validate the destination BEFORE any work: a build that cannot be delivered
+	// is wasted minutes on a machine other people are sharing.
+	host, port, repoTag, err := validatePushReference(spec.GetPushReference())
+	if err != nil {
+		return err
+	}
+
+	dir, err := s.contextDir(spec.GetAppId())
+	if err != nil {
+		return err
+	}
+	tarBytes, err := s.reassembleContext(ctx, spec.GetContext())
+	if err != nil {
+		return err
+	}
+	// Clear before extracting: a file deleted from the project must not survive
+	// in the reused context directory and keep satisfying a COPY.
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("clearing stale build context: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("recreating build context: %w", err)
+	}
+	if err := extractContextTar(bytes.NewReader(tarBytes), dir); err != nil {
+		return err
+	}
+
+	if s.pushTLS == nil {
+		return status.Error(codes.FailedPrecondition, "this build host has no client certificate for pushing to a device registry")
+	}
+	tlsCfg, err := s.pushTLS()
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "loading push credentials: %v", err)
+	}
+	localAddr, stop, err := startPushProxy(ctx, net.JoinHostPort(host, strconv.Itoa(port)), tlsCfg)
+	if err != nil {
+		return err
+	}
+	defer stop()
+
+	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), localAddr+"/"+repoTag, df.GetBuildArgs())
+	if err != nil {
+		return err
+	}
+	return s.runBuildctl(ctx, stream, args)
+}
+
+// reassembleContext rebuilds the context tar from its chunk manifest. Every
+// chunk must already be staged; a missing one is the client's error rather than
+// something to paper over with a partial context that would build the wrong
+// image.
+func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.ChunkManifest) ([]byte, error) {
+	if m == nil || len(m.GetChunkHashes()) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "build spec carries no build context")
+	}
+	if s.chunks == nil {
+		return nil, status.Error(codes.FailedPrecondition, "this build host has no chunk store configured")
+	}
+	hashes := make([][32]byte, 0, len(m.GetChunkHashes()))
+	for _, b := range m.GetChunkHashes() {
+		if len(b) != 32 {
+			return nil, status.Errorf(codes.InvalidArgument, "chunk hash must be 32 bytes, got %d", len(b))
+		}
+		var h [32]byte
+		copy(h[:], b)
+		hashes = append(hashes, h)
+	}
+
+	data, err := io.ReadAll(s.chunks.OpenChunkStream(ctx, hashes))
+	if err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"reassembling build context: %v; re-send the context", err)
+	}
+	if want := m.GetTotalSize(); want != 0 && int64(len(data)) != want {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"reassembled build context is %d bytes, manifest declares %d", len(data), want)
+	}
+	return data, nil
+}
+
+// runBuildctl streams buildctl's plain-mode output back as log lines and
+// finishes with the result event.
+func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBuildService_BuildImageServer, args []string) error {
+	cmd := exec.CommandContext(ctx, "buildctl", args...)
+	cmd.Env = append(os.Environ(), "BUILDKIT_HOST="+s.buildkitAddress)
+	if s.logger != nil {
+		// Build-arg VALUES can carry secrets, so the command line is never logged raw.
+		s.logger.Info("remote build starting", zap.Strings("args", redactBuildctlArgs(args)))
+	}
+
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stderr = cmd.Stdout
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("starting buildctl: %w", err)
+	}
+
+	sc := bufio.NewScanner(pipe)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if sendErr := stream.Send(&agentpbv2.BuildImageProgress{
+			Event: &agentpbv2.BuildImageProgress_LogLine{LogLine: sc.Text()},
+		}); sendErr != nil {
+			return sendErr
+		}
+	}
+	if err := cmd.Wait(); err != nil {
+		return status.Errorf(codes.Internal, "build failed: %v", err)
+	}
+	return stream.Send(&agentpbv2.BuildImageProgress{
+		Event: &agentpbv2.BuildImageProgress_Result{Result: &agentpbv2.BuildImageResult{}},
+	})
+}
+
+// redactBuildctlArgs masks every --opt build-arg:KEY=VALUE value, keeping the
+// key for debugging. Mirrors the CLI's redactBuildctlArgsForLog.
+func redactBuildctlArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i, a := range out {
+		rest, ok := strings.CutPrefix(a, "build-arg:")
+		if !ok {
+			continue
+		}
+		if k, _, found := strings.Cut(rest, "="); found && k != "" {
+			out[i] = "build-arg:" + k + "=<redacted>"
+		}
+	}
+	return out
 }
 
 // contextDir returns the per-app directory a build context is reassembled into.
