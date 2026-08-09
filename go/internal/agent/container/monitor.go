@@ -183,6 +183,23 @@ func (m *ContainerMonitor) Suppress(containerName string) func() {
 	}
 }
 
+// restartBlocked reports whether containerName currently has a Suppress
+// handle held on it, or is marked as explicitly stopped, and so must not be
+// (re)started. Used by restartSingle to re-check right before it would call
+// StartContainer — see the comment there for why this differs from the
+// planRestarts-time check.
+func (m *ContainerMonitor) restartBlocked(containerName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.suppressed[containerName] > 0 {
+		return true
+	}
+	if state, ok := m.states[containerName]; ok && state.ExplicitStop {
+		return true
+	}
+	return false
+}
+
 // RestartStatuses returns the monitor's per-container restart bookkeeping,
 // keyed by the monitored container name (bare appID, or "{appID}_{serviceName}"
 // for services-map apps). It implements services.RestartStatusProvider so the
@@ -324,6 +341,17 @@ func (m *ContainerMonitor) planRestartActions(ctx context.Context, toRestart []s
 					continue
 				}
 				seenGroup[appID] = true
+				if m.groupHasSuppressedMember(ctx, gr, appID) {
+					// A sibling in this group is mid-replace/stop (a Suppress
+					// handle is held on it) even though it didn't itself
+					// qualify for toRestart — e.g. still reporting RUNNING
+					// because the caller hasn't killed its task yet.
+					// RestartGroup stops/recreates every member, which would
+					// stomp on whatever that operation is doing to the
+					// suppressed one. Defer the whole group restart; the next
+					// tick retries once the handle is resumed.
+					continue
+				}
 				actions = append(actions, restartAction{groupAppID: appID})
 				continue
 			}
@@ -333,8 +361,42 @@ func (m *ContainerMonitor) planRestartActions(ctx context.Context, toRestart []s
 	return actions
 }
 
+// groupHasSuppressedMember reports whether any currently-suppressed container
+// name (see Suppress) belongs to the same shared-namespace group as appID.
+// Suppressed names are usually few (in-flight replace/stop operations), so
+// this scans them directly rather than requiring a reverse appID->members
+// index the monitor doesn't otherwise need.
+func (m *ContainerMonitor) groupHasSuppressedMember(ctx context.Context, gr services.GroupRestarter, appID string) bool {
+	m.mu.Lock()
+	names := make([]string, 0, len(m.suppressed))
+	for name := range m.suppressed {
+		names = append(names, name)
+	}
+	m.mu.Unlock()
+
+	for _, name := range names {
+		if memberAppID, grouped := gr.GroupRestartAppID(ctx, name); grouped && memberAppID == appID {
+			return true
+		}
+	}
+	return false
+}
+
 // restartSingle restarts one container and drains its output to the log manager.
 func (m *ContainerMonitor) restartSingle(ctx context.Context, name string) {
+	if m.restartBlocked(name) {
+		// This goroutine was scheduled by a tick that observed name as down
+		// and eligible, but a Suppress or MarkExplicitStop landed in the gap
+		// between that decision and this goroutine actually running (there is
+		// no blocking call in between to close the window at the scheduling
+		// point — see planRestarts/Suppress). Re-checking here, immediately
+		// before the call that would resurrect the container, is what
+		// actually closes it: a replace/stop that starts suppression after
+		// the tick fired but before this line runs still wins.
+		m.logger.Debug("Skipping restart: suppressed or explicitly stopped since being scheduled",
+			zap.String("app_name", name))
+		return
+	}
 	outputCh, err := m.containerd.StartContainer(ctx, name, "", nil)
 	if err != nil {
 		m.logger.Error("Failed to restart container",

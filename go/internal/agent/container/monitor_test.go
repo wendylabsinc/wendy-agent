@@ -267,6 +267,38 @@ func TestPlanRestartActions_CoalescesGroupMembers(t *testing.T) {
 	}
 }
 
+// TestPlanRestartActions_DefersGroupWhenMemberSuppressed is the regression
+// guard for the group-restart-bypasses-suppression gap (F2 round 1 follow-up,
+// finding 1): planRestarts/Suppress only ever gate individual member names,
+// but planRestartActions escalates any one unsuppressed, down member into a
+// whole-group restartGroup(appID) call — whose stopOne/refreshSecondaryNamespaces
+// would stop/recreate every member, including a sibling a replace/stop is
+// currently holding suppressed. A suppressed member must defer the entire
+// group action until it is resumed, even when that member itself isn't in
+// toRestart (e.g. it's still reporting RUNNING because the caller hasn't
+// killed its task yet).
+func TestPlanRestartActions_DefersGroupWhenMemberSuppressed(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+
+	resume := m.Suppress("app_talker") // e.g. a replace mid-teardown of talker
+
+	actions := m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 0 {
+		t.Errorf("planRestartActions = %+v while a group member is suppressed; want no action", actions)
+	}
+
+	resume()
+
+	actions = m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 1 || actions[0].groupAppID != "app" {
+		t.Errorf("planRestartActions after resume = %+v; want one group action for app", actions)
+	}
+}
+
 // TestPlanRestartActions_SingleForNonGroupedContainer verifies a container that
 // is not part of a shared-namespace group is restarted on its own.
 func TestPlanRestartActions_SingleForNonGroupedContainer(t *testing.T) {

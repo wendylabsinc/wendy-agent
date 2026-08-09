@@ -378,6 +378,71 @@ func TestCheckContainers_SuppressedContainer_NotRestarted(t *testing.T) {
 	}
 }
 
+// TestRestartSingle_SkipsWhenSuppressedBeforeStart is the regression guard for
+// the in-flight-resurrection gap (F2 round 1 follow-up, finding 2): a
+// restartSingle goroutine can be dispatched by a tick that observed the
+// container down and unsuppressed, and then have a Suppress land before it
+// actually reaches the StartContainer call — there is no blocking operation
+// between goroutine dispatch and that call to naturally serialize the two, so
+// the only way to close the window deterministically is a re-check
+// immediately before the call, which is what this asserts. The test invokes
+// restartSingle directly rather than via `go` + a synchronization gate:
+// restartSingle's guard runs synchronously as its very first statement with
+// nothing blocking beforehand, so there is no I/O point available to
+// interleave two goroutines on deterministically — calling it after Suppress
+// exercises the exact same code path (the guard check) that a genuinely
+// raced goroutine would hit, without relying on scheduler timing.
+func TestRestartSingle_SkipsWhenSuppressedBeforeStart(t *testing.T) {
+	fake := &fakeContainerd{started: make(chan string, 1)}
+	m := newMonitorWithClient(fake)
+	m.Register("crashloop-app", RestartUnlessStopped, 0)
+
+	resume := m.Suppress("crashloop-app")
+	defer resume()
+
+	m.restartSingle(context.Background(), "crashloop-app")
+
+	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("StartContainer called for suppressed container: %v", calls)
+	}
+}
+
+// TestRestartSingle_SkipsWhenExplicitlyStoppedBeforeStart mirrors the above
+// for MarkExplicitStop, the other piece of state a stop operation sets that
+// an already-scheduled restartSingle must honor.
+func TestRestartSingle_SkipsWhenExplicitlyStoppedBeforeStart(t *testing.T) {
+	fake := &fakeContainerd{started: make(chan string, 1)}
+	m := newMonitorWithClient(fake)
+	m.Register("crashloop-app", RestartUnlessStopped, 0)
+	m.MarkExplicitStop("crashloop-app")
+
+	m.restartSingle(context.Background(), "crashloop-app")
+
+	if calls := fake.startCallsSnapshot(); len(calls) != 0 {
+		t.Fatalf("StartContainer called for an explicitly-stopped container: %v", calls)
+	}
+}
+
+// TestRestartSingle_StartsWhenNotBlocked is the regression control for the two
+// tests above: the new re-check must not over-fire and block a legitimate,
+// unsuppressed restart.
+func TestRestartSingle_StartsWhenNotBlocked(t *testing.T) {
+	fake := &fakeContainerd{started: make(chan string, 1)}
+	m := newMonitorWithClient(fake)
+	m.Register("crashloop-app", RestartUnlessStopped, 0)
+
+	m.restartSingle(context.Background(), "crashloop-app")
+
+	select {
+	case got := <-fake.started:
+		if got != "crashloop-app" {
+			t.Fatalf("started %q, want crashloop-app", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected StartContainer(crashloop-app), got none")
+	}
+}
+
 func TestProbeExposedPortsInvokesProber(t *testing.T) {
 	f := &fakeContainerd{}
 	m := newMonitorWithClient(f)

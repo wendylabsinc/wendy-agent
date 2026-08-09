@@ -1054,8 +1054,14 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				zap.String("container_name", containerName), zap.Error(delErr))
 			if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
 				if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
-					c.logger.Error("Failed to kill racing task during replace retry",
+					// Mirror the first attempt's fallback above: if the
+					// re-kill itself fails, fall back to force-deleting the
+					// task via the runtime directly before retrying, rather
+					// than retrying the container delete against a task we
+					// know we failed to kill.
+					c.logger.Error("Failed to kill racing task during replace retry; forcing runtime delete",
 						zap.String("container_name", containerName), zap.Error(termErr))
+					c.forceDeleteTask(ctx, containerName)
 				}
 			}
 			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
@@ -2535,37 +2541,77 @@ func isMissingRuncStateDir(err error) (dir string, ok bool) {
 	return dir, true
 }
 
+// recoverMissingRuncStateDir classifies err via isMissingRuncStateDir and, if
+// it matches, delegates the actual recovery (mkdir + retry) to
+// recreateRuncStateDirAndRetry. Any other error — including nil — passes
+// through unchanged and retry is never called.
+//
+// Shared by forceDeleteTask (replace path) and terminateTask (stop path,
+// task_teardown.go): both ultimately delete a containerd task and both can
+// hit the exact same live-observed wedge, so both need the same recovery
+// rather than only the replace path having it (the stop path was the one
+// actually observed wedged on hardware).
+func (c *Client) recoverMissingRuncStateDir(containerID string, err error, retry func() error) error {
+	dir, ok := isMissingRuncStateDir(err)
+	if !ok {
+		return err
+	}
+	return c.recreateRuncStateDirAndRetry(containerID, dir, err, retry)
+}
+
+// runcStateDirMkdirAll is a seam over os.MkdirAll: recreateRuncStateDirAndRetry
+// calls through it rather than os.MkdirAll directly so tests can verify the
+// full forceDeleteTask/terminateTask recovery wiring — including
+// isMissingRuncStateDir's hardcoded /run/containerd/runc/ prefix check —
+// without needing real root-owned /run filesystem access on the test host.
+// Production code never reassigns it.
+var runcStateDirMkdirAll = os.MkdirAll
+
+// recreateRuncStateDirAndRetry recreates dir (the runc task state directory
+// isMissingRuncStateDir extracted from origErr) and, if that succeeds, calls
+// retry and returns its result. If MkdirAll fails, origErr is returned
+// unchanged and retry is never called. Split out from
+// recoverMissingRuncStateDir so it can be unit-tested directly against an
+// arbitrary writable directory, independent of isMissingRuncStateDir's
+// /run/containerd/runc/ prefix requirement (which a test can't satisfy
+// without root on a real Linux host).
+func (c *Client) recreateRuncStateDirAndRetry(containerID, dir string, origErr error, retry func() error) error {
+	// Mode 0o711 matches runc's own permissions for per-container state
+	// dirs: traversable by root, opaque to other users.
+	if mkErr := runcStateDirMkdirAll(dir, 0o711); mkErr != nil {
+		c.logger.Warn("Failed to recreate missing runc state dir",
+			zap.String("container_id", containerID),
+			zap.String("dir", dir),
+			zap.Error(mkErr),
+		)
+		return origErr
+	}
+	c.logger.Info("Recreated missing runc state dir, retrying delete",
+		zap.String("container_id", containerID),
+		zap.String("dir", dir),
+	)
+	return retry()
+}
+
 // forceDeleteTask uses the low-level containerd task service to delete a task
 // by container ID. This handles orphaned tasks where container.Task() fails
 // because the shim process is gone but task metadata remains in the runtime.
 //
 // If the delete fails because runc's state directory for the task is missing
-// (isMissingRuncStateDir), it recreates the empty directory runc expects and
-// retries once — otherwise the caller (and any subsequent `ctr tasks rm -f`)
-// would fail this exact way forever, since nothing else ever recreates it.
+// (recoverMissingRuncStateDir), it recreates the empty directory runc expects
+// and retries once — otherwise the caller (and any subsequent
+// `ctr tasks rm -f`) would fail this exact way forever, since nothing else
+// ever recreates it.
 func (c *Client) forceDeleteTask(ctx context.Context, containerID string) {
 	_, err := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
 		ContainerID: containerID,
 	})
-	if dir, missingDir := isMissingRuncStateDir(err); missingDir {
-		// Mode 0o711 matches runc's own permissions for per-container state
-		// dirs: traversable by root, opaque to other users.
-		if mkErr := os.MkdirAll(dir, 0o711); mkErr != nil {
-			c.logger.Warn("Force task delete: failed to recreate missing runc state dir",
-				zap.String("container_id", containerID),
-				zap.String("dir", dir),
-				zap.Error(mkErr),
-			)
-		} else {
-			c.logger.Info("Force task delete: recreated missing runc state dir, retrying",
-				zap.String("container_id", containerID),
-				zap.String("dir", dir),
-			)
-			_, err = c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
-				ContainerID: containerID,
-			})
-		}
-	}
+	err = c.recoverMissingRuncStateDir(containerID, err, func() error {
+		_, retryErr := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
+			ContainerID: containerID,
+		})
+		return retryErr
+	})
 	if err != nil {
 		c.logger.Debug("Force task delete attempt",
 			zap.String("container_id", containerID),
