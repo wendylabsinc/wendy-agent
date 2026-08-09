@@ -48,7 +48,9 @@ stages:
 		t.Fatalf("dockerfile:\ngot:\n%q\nwant:\n%q", dockerfile, wantDockerfile)
 	}
 
-	wantDockerignore := "*\n!app.py\n"
+	// Derive cannot know whether "app.py" is a file or a directory, so it emits
+	// the directory forms too; they are inert for a plain file.
+	wantDockerignore := "*\n!app.py\n!app.py/\n!app.py/**\n"
 	if dockerignore != wantDockerignore {
 		t.Fatalf("dockerignore:\ngot:\n%q\nwant:\n%q", dockerignore, wantDockerignore)
 	}
