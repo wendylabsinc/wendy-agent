@@ -324,7 +324,16 @@ func TestKeychainPutCommandLineSizeForSessionTicket(t *testing.T) {
 
 	var captured string
 	origRun := secretstore.RunSecurity
-	secretstore.RunSecurity = func(_ context.Context, stdin string, _ ...string) ([]byte, error) {
+	secretstore.RunSecurity = func(_ context.Context, stdin string, args ...string) ([]byte, error) {
+		// Put probes for a writable keychain before it writes (see
+		// secretstore/keychain_probe_darwin.go); answer both probes so the
+		// write this test measures is actually reached.
+		switch args[0] {
+		case "default-keychain":
+			return []byte("    \"/Users/tester/Library/Keychains/login.keychain-db\"\n"), nil
+		case "show-keychain-info":
+			return []byte("no-timeout\n"), nil
+		}
 		captured = stdin
 		return nil, nil
 	}

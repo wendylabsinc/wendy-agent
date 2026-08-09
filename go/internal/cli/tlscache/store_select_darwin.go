@@ -7,17 +7,16 @@ import "github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 // The Keychain backend (secretstore.NewKeychain, still reachable via
 // WENDY_TLS_SESSION_STORE=keychain) shells out to `/usr/bin/security`, which
 // offers no way to suppress user interaction: `add-generic-password` has no
-// no-interaction flag and `security` has no global one. In any context where
-// the keychain search list does not resolve — a sandboxed process, a non-login
-// session — macOS answers the write with a blocking "A keychain cannot be
-// found to store ..." modal. Put runs on a background goroutine and discards
-// its result, so that modal appears with no CLI context and nothing to
-// correlate it to.
+// no-interaction flag and `security` has no global one. secretstore's
+// checkWritableKeychain now closes that hole from the other side — it declines
+// the write in the states macOS would answer with a modal — but the file
+// backend remains the default here on latency grounds alone: it drops three
+// (now five, counting the probes) subprocess spawns per connection from a
+// feature whose whole point is speed.
 //
 // Session resumption is a latency optimization whose fallback is a full
 // handshake, so it must never be able to interrupt the user. The file backend
-// cannot prompt. It also drops three subprocess spawns per connection from a
-// feature whose whole point is speed.
+// cannot prompt at all.
 //
 // The security delta is small enough to accept: the ticket is a 7-day bearer
 // secret derived from a client identity whose ML-DSA private key already sits

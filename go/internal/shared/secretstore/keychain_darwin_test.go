@@ -9,6 +9,9 @@ import (
 	"testing"
 )
 
+// testKeychainPath is the path the faked `security default-keychain` reports.
+const testKeychainPath = "/Users/tester/Library/Keychains/login.keychain-db"
+
 type fakeSecurity struct {
 	calls []struct {
 		stdin string
@@ -16,6 +19,10 @@ type fakeSecurity struct {
 	}
 	out []byte
 	err error
+	// respond, when set, answers each invocation by argv and takes precedence
+	// over out/err — needed by tests that must distinguish the read-only
+	// keychain probes from the write they gate.
+	respond func(args []string) ([]byte, error)
 }
 
 func (f *fakeSecurity) run(_ context.Context, stdin string, args ...string) ([]byte, error) {
@@ -23,14 +30,50 @@ func (f *fakeSecurity) run(_ context.Context, stdin string, args ...string) ([]b
 		stdin string
 		args  []string
 	}{stdin, args})
+	if f.respond != nil {
+		return f.respond(args)
+	}
 	return f.out, f.err
+}
+
+// withProbesOK lets the two read-only keychain probes succeed and keeps
+// out/err for everything else, so tests about Put/Delete themselves do not
+// have to restate the probes.
+func (f *fakeSecurity) withProbesOK() *fakeSecurity {
+	f.respond = func(args []string) ([]byte, error) {
+		switch args[0] {
+		case "default-keychain":
+			return []byte(`    "` + testKeychainPath + `"` + "\n"), nil
+		case "show-keychain-info":
+			return []byte("no-timeout\n"), nil
+		}
+		return f.out, f.err
+	}
+	return f
+}
+
+// writeCall returns the first mutating security(1) invocation recorded, so
+// assertions skip over the probes that now precede every write.
+func (f *fakeSecurity) writeCall(t *testing.T) (stdin string, args []string) {
+	t.Helper()
+	for _, c := range f.calls {
+		if len(c.args) > 0 && (c.args[0] == "-i" || c.args[0] == "delete-generic-password") {
+			return c.stdin, c.args
+		}
+	}
+	t.Fatalf("no mutating security(1) call recorded, got %v", f.calls)
+	return "", nil
 }
 
 func withFake(t *testing.T, f *fakeSecurity) {
 	t.Helper()
 	orig := RunSecurity
 	RunSecurity = f.run
-	t.Cleanup(func() { RunSecurity = orig })
+	resetKeychainProbeForTest()
+	t.Cleanup(func() {
+		RunSecurity = orig
+		resetKeychainProbeForTest()
+	})
 }
 
 func TestKeychainGetDecodesBase64(t *testing.T) {
@@ -63,23 +106,23 @@ func TestKeychainGetBadBase64(t *testing.T) {
 }
 
 func TestKeychainPutKeepsSecretOffArgvAndReportsError(t *testing.T) {
-	fake := &fakeSecurity{}
+	fake := (&fakeSecurity{}).withProbesOK()
 	withFake(t, fake)
 	if err := NewKeychain("svc-a").Put("acct1", []byte("secret")); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	call := fake.calls[0]
-	if strings.Join(call.args, " ") != "-i" {
-		t.Fatalf("argv = %v, want [-i]", call.args)
+	stdin, args := fake.writeCall(t)
+	if strings.Join(args, " ") != "-i" {
+		t.Fatalf("argv = %v, want [-i]", args)
 	}
 	b64 := base64.StdEncoding.EncodeToString([]byte("secret"))
 	for _, frag := range []string{"add-generic-password", "-U", "-s svc-a", "-a acct1", "-w " + b64} {
-		if !strings.Contains(call.stdin, frag) {
-			t.Errorf("stdin %q missing %q", call.stdin, frag)
+		if !strings.Contains(stdin, frag) {
+			t.Errorf("stdin %q missing %q", stdin, frag)
 		}
 	}
 
-	failing := &fakeSecurity{err: errors.New("keychain locked")}
+	failing := (&fakeSecurity{err: errors.New("write refused")}).withProbesOK()
 	withFake(t, failing)
 	if err := NewKeychain("svc-a").Put("acct1", []byte("secret")); err == nil {
 		t.Error("Put with failing security = nil error, want non-nil")
@@ -91,7 +134,7 @@ func TestKeychainPutKeepsSecretOffArgvAndReportsError(t *testing.T) {
 // be refused before RunSecurity is ever invoked, never handed to it for a
 // truncated (possibly silently "successful") write.
 func TestKeychainPutRefusesOversizedCommandLine(t *testing.T) {
-	fake := &fakeSecurity{}
+	fake := (&fakeSecurity{}).withProbesOK()
 	withFake(t, fake)
 	// base64 inflates by ~4/3, so 4000 raw bytes comfortably pushes the full
 	// "add-generic-password ..." command line past the 4000-byte guard.
@@ -109,11 +152,12 @@ func TestKeychainPutRefusesOversizedCommandLine(t *testing.T) {
 }
 
 func TestKeychainDelete(t *testing.T) {
-	fake := &fakeSecurity{}
+	fake := (&fakeSecurity{}).withProbesOK()
 	withFake(t, fake)
 	NewKeychain("svc-a").Delete("acct1")
+	_, args := fake.writeCall(t)
 	want := "delete-generic-password -s svc-a -a acct1"
-	if strings.Join(fake.calls[0].args, " ") != want {
-		t.Errorf("args = %v, want %q", fake.calls[0].args, want)
+	if strings.Join(args, " ") != want {
+		t.Errorf("args = %v, want %q", args, want)
 	}
 }

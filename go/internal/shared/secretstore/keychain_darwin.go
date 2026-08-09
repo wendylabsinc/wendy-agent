@@ -45,15 +45,14 @@ func (k keychain) Get(account string) []byte {
 
 // Put carries a hazard reads do not: `security` exposes no way to suppress
 // user interaction (`add-generic-password` has no no-interaction flag and
-// `security` has no global one), so in a context where the keychain search
-// list does not resolve — a sandboxed process, a non-login session — macOS
-// answers the write with a blocking "A keychain cannot be found to store ..."
-// modal. Nothing here can prevent that, so callers that must never interrupt
-// the user cannot make this backend their default; tlscache's
-// newPlatformStore documents that reasoning for the session-ticket cache.
+// `security` has no global one), so a write macOS cannot satisfy is answered
+// with a blocking modal instead of an error. checkWritableKeychain settles
+// beforehand — using read-only probes that never draw UI — whether this
+// process is in a state where that can happen, and Put declines rather than
+// hand `security` a write it would turn into a dialog. Callers keep the
+// secret wherever it already lives (config.dehydrate leaves it inline), so a
+// refusal costs storage hardening, never the secret itself.
 func (k keychain) Put(account string, secret []byte) error {
-	ctx, cancel := context.WithTimeout(context.Background(), securityTimeout)
-	defer cancel()
 	// `security -i` reads the command from stdin so the secret never appears
 	// on argv (argv is world-readable via ps). base64 and account names
 	// contain no whitespace, so no quoting is needed.
@@ -65,15 +64,29 @@ func (k keychain) Put(account string, secret []byte) error {
 	// silently storing a corrupt value. Refuse before that can happen rather
 	// than risk it. Today's payloads (a P-256 PEM key, short tokens, TLS
 	// session-ticket blobs) are all well under this, so this is a
-	// deterministic-failure guard, not a live bug.
+	// deterministic-failure guard, not a live bug. It runs before the
+	// keychain probes because it needs no process state to decide.
 	if len(cmdLine) >= 4000 {
 		return fmt.Errorf("secret too large for security(1) stdin line (%d bytes, limit ~4096): refusing truncated write", len(cmdLine))
 	}
+	if err := checkWritableKeychain(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), securityTimeout)
+	defer cancel()
 	_, err := RunSecurity(ctx, cmdLine, "-i")
 	return err
 }
 
+// Delete is gated on the same probes as Put: deleting from a locked keychain
+// raises the unlock dialog, and tlscache calls Delete from a background
+// goroutine to evict a broken session — a prompt raised there would reach the
+// user with no CLI output to explain it. Skipping leaves an item that nothing
+// references, which is inert.
 func (k keychain) Delete(account string) {
+	if err := checkWritableKeychain(); err != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), securityTimeout)
 	defer cancel()
 	_, _ = RunSecurity(ctx, "", "delete-generic-password", "-s", k.service, "-a", account)
