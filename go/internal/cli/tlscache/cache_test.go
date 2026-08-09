@@ -2,6 +2,7 @@ package tlscache
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,9 +14,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 )
 
-// memStore is an in-memory sessionStore recording deletes.
+// memStore is an in-memory secretstore.Store recording deletes.
 type memStore struct {
 	mu      sync.Mutex
 	m       map[string][]byte
@@ -24,17 +27,18 @@ type memStore struct {
 
 func newMemStore() *memStore { return &memStore{m: map[string][]byte{}} }
 
-func (s *memStore) get(key string) []byte {
+func (s *memStore) Get(key string) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.m[key]
 }
-func (s *memStore) put(key string, blob []byte) {
+func (s *memStore) Put(key string, blob []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.m[key] = blob
+	return nil
 }
-func (s *memStore) delete(key string) {
+func (s *memStore) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, key)
@@ -153,7 +157,7 @@ func TestCacheKeyedByClientCert(t *testing.T) {
 func TestCacheCorruptBlobIsMissAndDeleted(t *testing.T) {
 	store := newMemStore()
 	c := newCache("cache-test", []byte("cert"), store)
-	store.put(c.storeKey, []byte("WTS1garbage-not-a-session"))
+	store.Put(c.storeKey, []byte("WTS1garbage-not-a-session"))
 	if _, ok := c.Get("ignored"); ok {
 		t.Fatal("corrupt blob returned a session")
 	}
@@ -165,10 +169,10 @@ func TestCacheCorruptBlobIsMissAndDeleted(t *testing.T) {
 func TestCachePutNilEvicts(t *testing.T) {
 	store := newMemStore()
 	c := newCache("cache-test", []byte("cert"), store)
-	store.put(c.storeKey, []byte("whatever"))
+	store.Put(c.storeKey, []byte("whatever"))
 	c.Put("ignored", nil)
 	c.Flush()
-	if store.get(c.storeKey) != nil {
+	if store.Get(c.storeKey) != nil {
 		t.Error("Put(nil) did not evict the stored session")
 	}
 }
@@ -194,7 +198,7 @@ func TestSetResumedSkipsOverwriteOnPut(t *testing.T) {
 	<-srvResumed
 	c.Flush()
 
-	stored := store.get(c.storeKey)
+	stored := store.Get(c.storeKey)
 	if stored == nil {
 		t.Fatal("first full handshake did not persist a session")
 	}
@@ -215,7 +219,7 @@ func TestSetResumedSkipsOverwriteOnPut(t *testing.T) {
 	<-srvResumed
 	c.Flush()
 
-	if got := store.get(c.storeKey); !bytes.Equal(got, wantUnchanged) {
+	if got := store.Get(c.storeKey); !bytes.Equal(got, wantUnchanged) {
 		t.Error("Put overwrote the full-handshake ticket after SetResumed(true); stored blob changed on a resumed connection")
 	}
 }
@@ -227,11 +231,11 @@ func TestSetResumedSkipsOverwriteOnPut(t *testing.T) {
 func TestCachePutNilEvictsEvenWhenMarkedResumed(t *testing.T) {
 	store := newMemStore()
 	c := newCache("cache-test", []byte("cert"), store)
-	store.put(c.storeKey, []byte("whatever"))
+	store.Put(c.storeKey, []byte("whatever"))
 	c.SetResumed(true)
 	c.Put("ignored", nil)
 	c.Flush()
-	if store.get(c.storeKey) != nil {
+	if store.Get(c.storeKey) != nil {
 		t.Error("Put(nil) did not evict the stored session even though SetResumed(true) had been called")
 	}
 }
@@ -268,7 +272,7 @@ func TestSetResumedFalseAllowsPutAfterLaterFullHandshake(t *testing.T) {
 	}
 	<-srvResumed
 	c.Flush()
-	if store.get(c.storeKey) == nil {
+	if store.Get(c.storeKey) == nil {
 		t.Fatal("first full handshake did not persist a session")
 	}
 
@@ -280,7 +284,7 @@ func TestSetResumedFalseAllowsPutAfterLaterFullHandshake(t *testing.T) {
 	// The ticket persisted above is evicted out-of-band here (standing in for
 	// expiry/STEK rotation) so the next dial is forced into a full handshake
 	// without needing a second real server or clock manipulation.
-	store.delete(c.storeKey)
+	store.Delete(c.storeKey)
 	c.wg.Wait() // no pending async work from the delete above; keeps ordering explicit
 
 	// Simulate the wrapper observing dial 3's full handshake — this is the
@@ -299,8 +303,47 @@ func TestSetResumedFalseAllowsPutAfterLaterFullHandshake(t *testing.T) {
 	<-srvResumed
 	c.Flush()
 
-	if store.get(c.storeKey) == nil {
+	if store.Get(c.storeKey) == nil {
 		t.Error("later full handshake's ticket was not persisted after an earlier resumed handshake on the same Cache — SetResumed did not reset")
+	}
+}
+
+// TestKeychainPutCommandLineSizeForSessionTicket measures — and permanently
+// guards — the real security(1) command-line size for a captured TLS session
+// ticket blob going through the ACTUAL darwin keychain Put path (not a fake
+// blob): it fakes secretstore.RunSecurity to capture the stdin the real
+// keychain.Put builds, then drives a real handshake so the blob is a genuine
+// encoded session ticket. This is the FINDING 1 measurement: the 4000-byte
+// truncation guard in secretstore's keychain Put protects this path too, and
+// this test proves the real ticket size stays comfortably under it.
+func TestKeychainPutCommandLineSizeForSessionTicket(t *testing.T) {
+	store := secretstore.NewKeychain(keychainService)
+	if store == nil {
+		t.Skip("no Keychain backend on this platform")
+	}
+
+	var captured string
+	origRun := secretstore.RunSecurity
+	secretstore.RunSecurity = func(_ context.Context, stdin string, _ ...string) ([]byte, error) {
+		captured = stdin
+		return nil, nil
+	}
+	t.Cleanup(func() { secretstore.RunSecurity = origRun })
+
+	addr, srvResumed := startTLSServer(t)
+	c := newCache("cache-test", []byte("client-leaf-der"), store)
+	if resumed := dialWithCache(t, addr, c); resumed {
+		t.Fatal("first connection unexpectedly resumed")
+	}
+	<-srvResumed
+	c.Flush()
+
+	if captured == "" {
+		t.Fatal("Put was never invoked through the faked security runner")
+	}
+	t.Logf("keychain Put command line for a session-ticket blob = %d bytes", len(captured))
+	if len(captured) >= 4000 {
+		t.Errorf("session-ticket keychain command line = %d bytes, at/over the 4000-byte truncation guard in secretstore's keychain Put", len(captured))
 	}
 }
 

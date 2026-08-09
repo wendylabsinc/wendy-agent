@@ -352,6 +352,75 @@ func TestGCOCILayoutDirMissingDirIsNoop(t *testing.T) {
 	}
 }
 
+// writeLayoutIndex writes an index.json with the given raw manifest entries.
+func writeLayoutIndex(t *testing.T, dir string, entries ...string) {
+	t.Helper()
+	idx := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+		strings.Join(entries, ",") + `]}`
+	if err := os.WriteFile(filepath.Join(dir, "index.json"), []byte(idx), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPruneOCILayoutDirIndexKeepsOnlyNewestPlatformManifest(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	att := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:cccc","size":1,"platform":{"architecture":"unknown","os":"unknown"},"annotations":{"vnd.docker.reference.type":"attestation-manifest"}}`
+	niu := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:bbbb","size":1,"platform":{"architecture":"arm64","os":"linux"},"annotations":{"org.opencontainers.image.created":"x"}}`
+	writeLayoutIndex(t, dir, old, niu, att)
+
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var idx struct {
+		Manifests []json.RawMessage `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &idx); err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Manifests) != 1 {
+		t.Fatalf("want exactly 1 manifest entry after prune, got %d: %s", len(idx.Manifests), data)
+	}
+	// The kept entry must be the newest platform match, raw bytes preserved
+	// (annotations intact).
+	if !strings.Contains(string(idx.Manifests[0]), "sha256:bbbb") ||
+		!strings.Contains(string(idx.Manifests[0]), "org.opencontainers.image.created") {
+		t.Fatalf("kept entry lost identity or annotations: %s", idx.Manifests[0])
+	}
+}
+
+func TestPruneOCILayoutDirIndexSingleEntryNoop(t *testing.T) {
+	dir := t.TempDir()
+	only := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	writeLayoutIndex(t, dir, only)
+	before, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatalf("single-entry index must be untouched\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
+func TestPruneOCILayoutDirIndexNoMatchErrorsAndPreservesIndex(t *testing.T) {
+	dir := t.TempDir()
+	amd := `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaa","size":1,"platform":{"architecture":"amd64","os":"linux"}}`
+	writeLayoutIndex(t, dir, amd)
+	before, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err == nil {
+		t.Fatal("want error when no manifest matches the platform")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "index.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("index must be untouched on error")
+	}
+}
+
 // The per-app layout lock must exclude a second acquirer until released. The
 // lock file lives NEXT TO the directory so self-heal's RemoveAll(dir) can
 // never delete a held lock.
@@ -765,4 +834,129 @@ func TestReadOCILayoutLayersPlatformSelection(t *testing.T) {
 	if !bytes.Equal(got, armLayer) {
 		t.Fatalf("selected wrong platform layer: got %q want %q", got, armLayer)
 	}
+}
+
+func TestPickOCIDescriptorPrefersNewestPlatformMatch(t *testing.T) {
+	arm := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "arm64", OS: "linux"}
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:aaaa", Platform: arm},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:bbbb", Platform: arm},
+	}
+	got := pickOCIDescriptor(descs, "linux", "arm64")
+	if got == nil || got.Digest != "sha256:bbbb" {
+		t.Fatalf("want newest (last) match sha256:bbbb, got %+v", got)
+	}
+}
+
+func TestPickOCIDescriptorFallbackPrefersNewest(t *testing.T) {
+	// No platform info at all: the fallback loop must also prefer the last
+	// image-manifest entry (buildx appends newest last).
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:aaaa"},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:bbbb"},
+	}
+	got := pickOCIDescriptor(descs, "linux", "arm64")
+	if got == nil || got.Digest != "sha256:bbbb" {
+		t.Fatalf("want newest (last) fallback sha256:bbbb, got %+v", got)
+	}
+}
+
+// TestPickOCIDescriptorFallbackSkipsAttestationManifest ensures that with
+// newest-last iteration, a trailing buildx attestation manifest
+// (platform os=unknown/arch=unknown) does NOT win the fallback over a real
+// image manifest when no exact platform match exists.
+func TestPickOCIDescriptorFallbackSkipsAttestationManifest(t *testing.T) {
+	arm := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "arm64", OS: "linux"}
+	unknown := &struct {
+		Architecture string `json:"architecture"`
+		OS           string `json:"os"`
+	}{Architecture: "unknown", OS: "unknown"}
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:image", Platform: arm},
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:attestation", Platform: unknown},
+	}
+	// No exact match for linux/amd64: the fallback must skip the trailing
+	// attestation manifest and return the real image manifest instead.
+	got := pickOCIDescriptor(descs, "linux", "amd64")
+	if got == nil || got.Digest != "sha256:image" {
+		t.Fatalf("want fallback to skip attestation manifest and return sha256:image, got %+v", got)
+	}
+}
+
+// TestPickOCIDescriptorFallbackNilPlatformStillWins ensures the fallback still
+// picks a platform-NIL descriptor when it is the only candidate (nil platform
+// must not be mistaken for the unknown/unknown attestation shape).
+func TestPickOCIDescriptorFallbackNilPlatformStillWins(t *testing.T) {
+	descs := []ociDescriptor{
+		{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: "sha256:onlycandidate"},
+	}
+	got := pickOCIDescriptor(descs, "linux", "amd64")
+	if got == nil || got.Digest != "sha256:onlycandidate" {
+		t.Fatalf("want the only nil-platform candidate to win the fallback, got %+v", got)
+	}
+}
+
+// writeBlob writes content under blobs/sha256/<sha256(content)> and returns
+// the digest string.
+func writeBlob(t *testing.T, dir string, content []byte) string {
+	t.Helper()
+	sum := sha256.Sum256(content)
+	hexd := hex.EncodeToString(sum[:])
+	p := filepath.Join(dir, "blobs", "sha256")
+	if err := os.MkdirAll(p, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p, hexd), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return "sha256:" + hexd
+}
+
+func TestPruneThenGCDropsSupersededBuild(t *testing.T) {
+	dir := t.TempDir()
+	// Old build: config + one layer + manifest referencing them.
+	oldCfg := writeBlob(t, dir, []byte(`{"old":"config"}`))
+	oldLayer := writeBlob(t, dir, []byte("old-layer"))
+	oldManifest := writeBlob(t, dir, []byte(`{"config":{"digest":"`+oldCfg+`"},"layers":[{"digest":"`+oldLayer+`"}]}`))
+	// New build: shares nothing with the old one.
+	newCfg := writeBlob(t, dir, []byte(`{"new":"config"}`))
+	newLayer := writeBlob(t, dir, []byte("new-layer"))
+	newManifest := writeBlob(t, dir, []byte(`{"config":{"digest":"`+newCfg+`"},"layers":[{"digest":"`+newLayer+`"}]}`))
+
+	entry := func(digest string) string {
+		return `{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + digest + `","size":1,"platform":{"architecture":"arm64","os":"linux"}}`
+	}
+	writeLayoutIndex(t, dir, entry(oldManifest), entry(newManifest))
+
+	if err := pruneOCILayoutDirIndex(dir, "linux/arm64"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gcOCILayoutDir(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	mustExist := func(digest string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))); err != nil {
+			t.Fatalf("blob %s should survive GC: %v", digest, err)
+		}
+	}
+	mustBeGone := func(digest string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(dir, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:"))); !os.IsNotExist(err) {
+			t.Fatalf("blob %s should be GC'd, stat err=%v", digest, err)
+		}
+	}
+	mustExist(newManifest)
+	mustExist(newCfg)
+	mustExist(newLayer)
+	mustBeGone(oldManifest)
+	mustBeGone(oldCfg)
+	mustBeGone(oldLayer)
 }

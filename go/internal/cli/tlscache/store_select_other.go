@@ -2,8 +2,6 @@
 
 package tlscache
 
-func newPlatformStore() sessionStore { return newFileStore() }
+import "github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 
-// newKeychainStore has no non-darwin implementation; an explicit
-// WENDY_TLS_SESSION_STORE=keychain falls back to files rather than failing.
-func newKeychainStore() sessionStore { return newFileStore() }
+func newPlatformStore() secretstore.Store { return newFileStore() }

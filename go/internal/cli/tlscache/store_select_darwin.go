@@ -1,8 +1,10 @@
 package tlscache
 
+import "github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
+
 // newPlatformStore returns the file backend on macOS, same as everywhere else.
 //
-// The Keychain backend (newKeychainStore, still reachable via
+// The Keychain backend (secretstore.NewKeychain, still reachable via
 // WENDY_TLS_SESSION_STORE=keychain) shells out to `/usr/bin/security`, which
 // offers no way to suppress user interaction: `add-generic-password` has no
 // no-interaction flag and `security` has no global one. In any context where
@@ -25,4 +27,4 @@ package tlscache
 // same-user access boundary than the file backend" — what it buys is at-rest
 // encryption while the keychain is locked plus backup exclusion. Users who
 // want that can opt in.
-func newPlatformStore() sessionStore { return newFileStore() }
+func newPlatformStore() secretstore.Store { return newFileStore() }

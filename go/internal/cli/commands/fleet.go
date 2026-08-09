@@ -270,6 +270,11 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 	defer conn.Close()
 	client := cloudpb.NewAssetServiceClient(conn)
 
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
+
 	results := make([]fleetMembershipResult, 0, len(devices))
 	failures := 0
 	for _, dev := range devices {
@@ -299,7 +304,7 @@ func runFleetGroupMembership(ctx context.Context, cloudGRPC, group string, devic
 
 		// UpdateAsset replaces the tags list with the value sent; other (optional)
 		// fields left unset are not modified.
-		if _, uErr := client.UpdateAsset(cloudContext(ctx, auth), &cloudpb.UpdateAssetRequest{
+		if _, uErr := client.UpdateAsset(cloudCtx, &cloudpb.UpdateAssetRequest{
 			Id:   asset.GetId(),
 			Tags: newTags,
 		}); uErr != nil {

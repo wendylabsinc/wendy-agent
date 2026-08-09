@@ -155,9 +155,13 @@ func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins ce
 	// chain certs (from pki-core) cause parse failures on the agent's server.
 	// The agent's VerifyPeerCertificate callback verifies the client cert via
 	// its own ML-DSA-aware CA pool without needing the chain in the handshake.
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
 	cert, err := tls.X509KeyPair(
 		[]byte(certInfo.PemCertificate),
-		[]byte(certInfo.PemPrivateKey),
+		[]byte(keyPEM),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)

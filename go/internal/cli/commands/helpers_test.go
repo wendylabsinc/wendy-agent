@@ -953,9 +953,13 @@ func TestConnectWithAutoTLSDiagnostics_CacheMissUsesOSResolver(t *testing.T) {
 }
 
 // A stale cached IP that fails to answer must never make an otherwise
-// reachable device look unreachable (spec §4): the fast path must re-resolve
-// via the same mDNS-browse fallback the cache-miss path uses and retry once.
-// (The cache self-heal that a successful retry enables is a
+// reachable device look unreachable (spec §4): the fast path must fall
+// through to the same mDNS-browse fallback the cache-miss path uses. Here the
+// TCP pre-check is the thing that fails, so the cached-IP ladder is skipped
+// outright and the fall-through is the connect's first and only resolution —
+// no second ladder pass is involved (the stale-retry-after-a-live-but-failing
+// ladder path is covered separately by the LKG connect-flow tests).
+// (The cache self-heal that a successful fall-through enables is a
 // connectAgentAtAddressWithProvisionedHint-layer concern — see
 // TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntry
 // — since connectWithAutoTLSDiagnostics's own "success" isn't proof of life
@@ -998,7 +1002,7 @@ func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 
 	// The OS resolver can't see the device (the Windows/Linux ".local" gap
 	// issue #1155 works around); only the mDNS browse fallback can — which is
-	// what the retry must use.
+	// what the post-pre-check fall-through must use to reach the device.
 	osLookupHostFn = func(context.Context, string) ([]string, error) {
 		return nil, errors.New("no such host")
 	}
@@ -2184,4 +2188,30 @@ func TestExternalProviderPickerItem(t *testing.T) {
 			t.Errorf("entry.provider = %#v, want the source provider", entry.provider)
 		}
 	})
+}
+
+func TestCachedDeviceEntryAnyAgeMostRecentWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "devices.json")
+	cache, err := discoverycache.LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	old := time.Now().Add(-3 * discoverycache.TTL)
+	newer := time.Now().Add(-2 * discoverycache.TTL)
+	// Two distinct device identities sharing one hostname (e.g. a device
+	// re-provisioned under a new id): most recent LastSeen must win.
+	cache.Upsert(discoverycache.Entry{ID: "dev-old", Hostname: "orin.local", IP: "10.0.0.8"}, old)
+	cache.Upsert(discoverycache.Entry{ID: "dev-new", Hostname: "orin.local", IP: "10.0.0.9"}, newer)
+
+	e, ok := cachedDeviceEntry(cache, "orin.local")
+	if !ok {
+		t.Fatal("stale entries not matched — connect lookup must be any-age")
+	}
+	if e.IP != "10.0.0.9" {
+		t.Errorf("matched IP %q, want most-recent 10.0.0.9", e.IP)
+	}
+	// Bare-name form matches the .local stored form.
+	if _, ok := cachedDeviceEntry(cache, "orin"); !ok {
+		t.Error("bare hostname did not match .local entry")
+	}
 }
