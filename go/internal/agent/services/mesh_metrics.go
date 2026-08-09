@@ -8,7 +8,10 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 // meshDialDurationBoundsMs are the explicit histogram bucket upper bounds (ms)
@@ -136,7 +139,7 @@ func (m *MeshMetrics) Collect(ctx context.Context) {
 // ExportMetricsServiceRequest. Snapshotting under the lock (rather than
 // holding it across PublishMetrics) keeps RecordDial/RecordBytes from ever
 // blocking on network/disk I/O in the publisher.
-func (m *MeshMetrics) publish(resource *otelpb.Resource, t time.Time) {
+func (m *MeshMetrics) publish(resource *resourcepb.Resource, t time.Time) {
 	m.mu.Lock()
 	connsSnap := make(map[meshConnKey]uint64, len(m.conns))
 	for k, v := range m.conns {
@@ -160,29 +163,29 @@ func (m *MeshMetrics) publish(resource *otelpb.Resource, t time.Time) {
 
 	nowNano := uint64(t.UnixNano())
 	startNano := uint64(m.startTime.UnixNano())
-	metrics := make([]*otelpb.Metric, 0, 3)
+	metrics := make([]*metricspb.Metric, 0, 3)
 
 	if len(connsSnap) > 0 {
-		dps := make([]*otelpb.NumberDataPoint, 0, len(connsSnap))
+		dps := make([]*metricspb.NumberDataPoint, 0, len(connsSnap))
 		for k, v := range connsSnap {
-			dps = append(dps, &otelpb.NumberDataPoint{
-				Attributes: []*otelpb.KeyValue{
+			dps = append(dps, &metricspb.NumberDataPoint{
+				Attributes: []*commonpb.KeyValue{
 					stringKV("mesh.peer", strconv.Itoa(int(k.peer))),
 					stringKV("mesh.mode", k.mode),
 					stringKV("mesh.result", k.result),
 				},
 				StartTimeUnixNano: startNano,
 				TimeUnixNano:      nowNano,
-				Value:             &otelpb.NumberDataPoint_AsInt{AsInt: int64(v)},
+				Value:             &metricspb.NumberDataPoint_AsInt{AsInt: int64(v)},
 			})
 		}
-		metrics = append(metrics, &otelpb.Metric{
+		metrics = append(metrics, &metricspb.Metric{
 			Name: "mesh.connections",
 			Unit: "1",
-			Data: &otelpb.Metric_Sum{
-				Sum: &otelpb.Sum{
+			Data: &metricspb.Metric_Sum{
+				Sum: &metricspb.Sum{
 					IsMonotonic:            true,
-					AggregationTemporality: otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+					AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
 					DataPoints:             dps,
 				},
 			},
@@ -190,25 +193,25 @@ func (m *MeshMetrics) publish(resource *otelpb.Resource, t time.Time) {
 	}
 
 	if len(bytesSnap) > 0 {
-		dps := make([]*otelpb.NumberDataPoint, 0, len(bytesSnap))
+		dps := make([]*metricspb.NumberDataPoint, 0, len(bytesSnap))
 		for k, v := range bytesSnap {
-			dps = append(dps, &otelpb.NumberDataPoint{
-				Attributes: []*otelpb.KeyValue{
+			dps = append(dps, &metricspb.NumberDataPoint{
+				Attributes: []*commonpb.KeyValue{
 					stringKV("mesh.peer", strconv.Itoa(int(k.peer))),
 					stringKV("mesh.dir", k.dir),
 				},
 				StartTimeUnixNano: startNano,
 				TimeUnixNano:      nowNano,
-				Value:             &otelpb.NumberDataPoint_AsInt{AsInt: v},
+				Value:             &metricspb.NumberDataPoint_AsInt{AsInt: v},
 			})
 		}
-		metrics = append(metrics, &otelpb.Metric{
+		metrics = append(metrics, &metricspb.Metric{
 			Name: "mesh.bytes",
 			Unit: "By",
-			Data: &otelpb.Metric_Sum{
-				Sum: &otelpb.Sum{
+			Data: &metricspb.Metric_Sum{
+				Sum: &metricspb.Sum{
 					IsMonotonic:            true,
-					AggregationTemporality: otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+					AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
 					DataPoints:             dps,
 				},
 			},
@@ -216,11 +219,11 @@ func (m *MeshMetrics) publish(resource *otelpb.Resource, t time.Time) {
 	}
 
 	if len(dialsSnap) > 0 {
-		dps := make([]*otelpb.HistogramDataPoint, 0, len(dialsSnap))
+		dps := make([]*metricspb.HistogramDataPoint, 0, len(dialsSnap))
 		for k, h := range dialsSnap {
 			sum := h.sum
-			dps = append(dps, &otelpb.HistogramDataPoint{
-				Attributes: []*otelpb.KeyValue{
+			dps = append(dps, &metricspb.HistogramDataPoint{
+				Attributes: []*commonpb.KeyValue{
 					stringKV("mesh.peer", strconv.Itoa(int(k.peer))),
 					stringKV("mesh.mode", k.mode),
 				},
@@ -232,25 +235,25 @@ func (m *MeshMetrics) publish(resource *otelpb.Resource, t time.Time) {
 				ExplicitBounds:    meshDialDurationBoundsMs,
 			})
 		}
-		metrics = append(metrics, &otelpb.Metric{
+		metrics = append(metrics, &metricspb.Metric{
 			Name: "mesh.dial.duration_ms",
 			Unit: "ms",
-			Data: &otelpb.Metric_Histogram{
-				Histogram: &otelpb.Histogram{
-					AggregationTemporality: otelpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
+			Data: &metricspb.Metric_Histogram{
+				Histogram: &metricspb.Histogram{
+					AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
 					DataPoints:             dps,
 				},
 			},
 		})
 	}
 
-	m.pub.PublishMetrics(&otelpb.ExportMetricsServiceRequest{
-		ResourceMetrics: []*otelpb.ResourceMetrics{
+	m.pub.PublishMetrics(&colmetricspb.ExportMetricsServiceRequest{
+		ResourceMetrics: []*metricspb.ResourceMetrics{
 			{
 				Resource: resource,
-				ScopeMetrics: []*otelpb.ScopeMetrics{
+				ScopeMetrics: []*metricspb.ScopeMetrics{
 					{
-						Scope:   &otelpb.InstrumentationScope{Name: "wendy.mesh"},
+						Scope:   &commonpb.InstrumentationScope{Name: "wendy.mesh"},
 						Metrics: metrics,
 					},
 				},

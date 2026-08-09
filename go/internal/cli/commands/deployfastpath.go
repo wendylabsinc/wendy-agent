@@ -340,7 +340,10 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		// The container is untouched, so the agent-side (in-container) hook can't
 		// be re-run, but fire the host-side postStart hook so `wendy run` behaves
 		// the same whether or not it took the fast path (e.g. re-opening the URL).
-		runPostStartHostHook(ctx, conn, appCfg)
+		// No host-side postStart hook: the fast path only ever runs detached
+		// (see the opts.detach gate on tryDeployFastPath's caller), and
+		// detached deploys don't block on readiness — see
+		// runPostStartIfReady's doc comment.
 		return true, nil
 	}
 
@@ -356,19 +359,9 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 	cliLogln("No changes detected; started existing %s.", containerDisplayName(appCfg))
-	runPostStartHostHook(ctx, conn, appCfg)
+	// No host-side postStart hook here either — see runPostStartIfReady's doc
+	// comment for why detached deploys skip it.
 	return true, nil
-}
-
-// runPostStartHostHook mirrors the normal detached deploy path's host-side
-// postStart handling: wait for readiness, then announce the reachable URL and
-// fire the host hook fire-and-forget on a background context so it outlives
-// the CLI process. A failed readiness probe skips both (see
-// runPostStartIfReady). The agent-side (in-container) hook is attached
-// separately to the StartContainer RPC's context, so it only runs when the
-// fast path actually (re)starts the container.
-func runPostStartHostHook(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
-	runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 }
 
 // containerExitDetail returns a short human summary of why appID's container

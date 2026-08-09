@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"sync"
 	"sync/atomic"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 )
 
 // blobMagic versions the on-disk/on-keychain blob layout:
@@ -14,7 +16,7 @@ import (
 const blobMagic = "WTS1"
 
 // Cache implements tls.ClientSessionCache for a single (target address, client
-// certificate) pair, persisting the most recent session via a sessionStore.
+// certificate) pair, persisting the most recent session via a secretstore.Store.
 //
 // The store key binds the client leaf certificate on purpose: a session ticket
 // embeds the client identity verified at the original handshake, so a ticket
@@ -22,7 +24,7 @@ const blobMagic = "WTS1"
 // another's. Go's own sessionKey (the remote address) is ignored.
 type Cache struct {
 	storeKey string
-	store    sessionStore
+	store    secretstore.Store
 	wg       sync.WaitGroup
 
 	// resumed reflects the MOST RECENT handshake performed on the connection
@@ -75,7 +77,7 @@ func ForTarget(address string, clientLeafDER []byte) *Cache {
 	return newCache(address, clientLeafDER, store)
 }
 
-func newCache(address string, clientLeafDER []byte, store sessionStore) *Cache {
+func newCache(address string, clientLeafDER []byte, store secretstore.Store) *Cache {
 	certSum := sha256.Sum256(clientLeafDER)
 	sum := sha256.Sum256(append([]byte(address+"|"), certSum[:]...))
 	return &Cache{storeKey: hex.EncodeToString(sum[:]), store: store}
@@ -84,23 +86,23 @@ func newCache(address string, clientLeafDER []byte, store sessionStore) *Cache {
 // Get implements tls.ClientSessionCache. Any decode failure evicts the entry
 // and reports a miss; the caller then performs a full handshake.
 func (c *Cache) Get(string) (*tls.ClientSessionState, bool) {
-	blob := c.store.get(c.storeKey)
+	blob := c.store.Get(c.storeKey)
 	if blob == nil {
 		return nil, false
 	}
 	ticket, stateBytes, ok := decodeSessionBlob(blob)
 	if !ok {
-		c.store.delete(c.storeKey)
+		c.store.Delete(c.storeKey)
 		return nil, false
 	}
 	state, err := tls.ParseSessionState(stateBytes)
 	if err != nil {
-		c.store.delete(c.storeKey)
+		c.store.Delete(c.storeKey)
 		return nil, false
 	}
 	cs, err := tls.NewResumptionState(ticket, state)
 	if err != nil {
-		c.store.delete(c.storeKey)
+		c.store.Delete(c.storeKey)
 		return nil, false
 	}
 	return cs, true
@@ -117,7 +119,7 @@ func (c *Cache) Get(string) (*tls.ClientSessionState, bool) {
 // doc.
 func (c *Cache) Put(_ string, cs *tls.ClientSessionState) {
 	if cs == nil {
-		c.async(func() { c.store.delete(c.storeKey) })
+		c.async(func() { c.store.Delete(c.storeKey) })
 		return
 	}
 	if c.resumed.Load() {
@@ -132,7 +134,9 @@ func (c *Cache) Put(_ string, cs *tls.ClientSessionState) {
 		return
 	}
 	blob := encodeSessionBlob(ticket, stateBytes)
-	c.async(func() { c.store.put(c.storeKey, blob) })
+	// The cache treats a lost ticket as a dropped optimization — a full
+	// handshake next time — so a persist failure is silently ignored here.
+	c.async(func() { _ = c.store.Put(c.storeKey, blob) })
 }
 
 // Flush blocks until all pending async persists complete. Tests rely on it;

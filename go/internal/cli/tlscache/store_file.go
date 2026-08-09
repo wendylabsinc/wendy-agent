@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 )
 
 // sessionFileMaxAge matches crypto/tls's maxSessionTicketLifetime: a ticket
@@ -18,7 +19,7 @@ const sessionFileMaxAge = 7 * 24 * time.Hour
 // 0600 ticket file adds no new exposure class.
 type fileStore struct{ dir string }
 
-func newFileStore() sessionStore {
+func newFileStore() secretstore.Store {
 	dir, err := config.ConfigDir()
 	if err != nil {
 		return nil
@@ -30,7 +31,7 @@ func (s *fileStore) path(key string) string {
 	return filepath.Join(s.dir, key+".tlssession")
 }
 
-func (s *fileStore) get(key string) []byte {
+func (s *fileStore) Get(key string) []byte {
 	blob, err := os.ReadFile(s.path(key))
 	if err != nil {
 		return nil
@@ -38,39 +39,40 @@ func (s *fileStore) get(key string) []byte {
 	return blob
 }
 
-func (s *fileStore) put(key string, blob []byte) {
+func (s *fileStore) Put(key string, blob []byte) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
-		return
+		return err
 	}
 	// Atomic replace: concurrent CLI processes are last-writer-wins, and a
 	// reader never observes a partial file.
 	tmp, err := os.CreateTemp(s.dir, key+".tmp*")
 	if err != nil {
-		return
+		return err
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(blob); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return
+		return err
 	}
 	if err := tmp.Chmod(0o600); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return
+		return err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return
+		return err
 	}
 	if err := os.Rename(tmpName, s.path(key)); err != nil {
 		os.Remove(tmpName)
-		return
+		return err
 	}
 	s.prune()
+	return nil
 }
 
-func (s *fileStore) delete(key string) {
+func (s *fileStore) Delete(key string) {
 	os.Remove(s.path(key))
 }
 

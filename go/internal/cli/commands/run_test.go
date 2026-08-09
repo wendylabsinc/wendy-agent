@@ -3,6 +3,8 @@ package commands
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -405,5 +407,98 @@ func TestValidateEnvFlag(t *testing.T) {
 		if err := validateEnvFlag([]string{entry}); err == nil {
 			t.Errorf("validateEnvFlag(%q) = nil, want an error", entry)
 		}
+	}
+}
+
+// TestDebugRequiresDebugpy asserts the --debug pre-deploy gate for Stagefile
+// Python projects: the agent always wraps a Python entrypoint in debugpy
+// when debug mode is requested, but nothing injects debugpy into the image
+// (removed by 70493f702, by design), so a Stagefile project must declare
+// debugpy in its pip requirements or the deploy should fail fast with an
+// actionable message instead of crash-looping on device.
+func TestDebugRequiresDebugpy(t *testing.T) {
+	const stagefileYAML = "version: 1\n" +
+		"stages:\n" +
+		"  - name: app\n" +
+		"    from: python:3.11-slim\n" +
+		"    install:\n" +
+		"      pip:\n" +
+		"        requirements: requirements.txt\n" +
+		"    entrypoint:\n" +
+		"      exec: [python, main.py]\n"
+
+	writeFile := func(t *testing.T, dir, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string)
+		appCfg     *appconfig.AppConfig
+		wantErr    bool
+		errContain string
+	}{
+		{
+			name: "stagefile python project without debugpy errors",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\n")
+			},
+			appCfg:     &appconfig.AppConfig{Language: "python"},
+			wantErr:    true,
+			errContain: "debugpy",
+		},
+		{
+			name: "stagefile python project with debugpy is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\ndebugpy>=1.8\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name: "stagefile python project with odd-cased DebugPy is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\nDebugPy==1.8.0\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name:   "non-stagefile directory is fine",
+			setup:  func(t *testing.T, dir string) {},
+			appCfg: &appconfig.AppConfig{Language: "python"},
+		},
+		{
+			name: "non-python language is fine",
+			setup: func(t *testing.T, dir string) {
+				writeFile(t, dir, "build.stagefile.yaml", stagefileYAML)
+				writeFile(t, dir, "requirements.txt", "flask==3.0\n")
+			},
+			appCfg: &appconfig.AppConfig{Language: "swift"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tt.setup(t, dir)
+			err := debugRequiresDebugpy(dir, tt.appCfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("debugRequiresDebugpy() = nil, want an error")
+				}
+				if !strings.Contains(err.Error(), tt.errContain) {
+					t.Fatalf("debugRequiresDebugpy() error = %q, want it to mention %q", err.Error(), tt.errContain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("debugRequiresDebugpy() = %v, want nil", err)
+			}
+		})
 	}
 }
