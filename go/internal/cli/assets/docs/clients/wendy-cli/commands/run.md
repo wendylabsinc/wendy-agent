@@ -150,7 +150,8 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--no-restart` | Do not restart the container on exit. |
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects (both native macOS and cross-compiled Linux container targets), builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
-| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
+| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. Cannot be combined with `--build-host`. |
+| `--build-host <device>` | Build the image on another WendyOS device instead of this machine. See [Remote build host](#remote-build-host). |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
@@ -163,6 +164,58 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
+
+## Remote build host
+
+`--build-host` delegates the image build to another WendyOS device:
+
+```bash
+wendy run --build-host spark-office
+```
+
+The build runs on that device, and it pushes the finished image straight into
+the target device's registry over the mesh — LAN-direct when possible, via the
+cloud broker otherwise. The image never travels through your machine.
+
+This is worth reaching for when your laptop is the wrong machine for the job:
+CUDA-heavy builds that want a real GPU, or an arm64 target that would otherwise
+be built under QEMU emulation on an x86 host.
+
+**Your machine needs no container builder at all.** On the `--build-host` path
+the CLI never starts Docker, Apple Container, or a local BuildKit daemon — a Mac
+with no Docker Desktop installed can still `wendy run`. Because of that,
+`--builder` (which selects a *local* builder) cannot be combined with
+`--build-host`.
+
+To set a default so you do not pass the flag every time, set `defaultBuildHost`
+in the CLI config. The flag always wins over the default. This is a
+per-developer setting rather than a project one, because the right build host
+depends on which network you are on.
+
+### Requirements
+
+- **The build host must opt in.** Create the `build-host-enabled` marker file in
+  the agent's config directory on that device. A device does not become a build
+  farm merely by being reachable.
+- **The build host must run BuildKit.** In practice that means a Linux WendyOS
+  device. A Mac cannot be a build host: the Mac agent runs Linux containers
+  through Apple Container, which has no BuildKit underneath. A Mac is still a
+  perfectly good *target*.
+- **The target device must be provisioned**, so the build host can address its
+  registry over the mesh.
+
+If any of these does not hold, `wendy run` fails immediately and names the host.
+It never quietly falls back to building locally — a twenty-minute local build
+you believed was running on the Spark is worse than an error.
+
+### Errors
+
+A failed remote build reports which half failed, because the fixes differ:
+
+- *build on `<host>` failed* — the problem is your Dockerfile or Stagefile.
+- *image built on `<host>` but could not be delivered* — the build was fine; look
+  at mesh reachability between the two devices, or registry credentials on the
+  build host.
 
 ## Watch mode
 

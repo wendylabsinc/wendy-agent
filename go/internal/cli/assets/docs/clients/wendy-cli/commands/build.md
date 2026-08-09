@@ -159,3 +159,13 @@ The fixes take effect on your **next** build; the build that just completed is u
 ## Platform support for Swift projects
 
 `wendy build` for Swift packages requires a host Swift toolchain and is supported on **macOS and Linux hosts only**. On Windows, `wendy build` returns an error for Swift projects. The recommended alternative is to provide a `Dockerfile` or `Containerfile` and use `wendy run`, which routes through the image build path on all platforms.
+
+## Remote build host
+
+`--build-host <device>` builds the image on another WendyOS device instead of this machine — useful when a build wants a GPU, or when the target's architecture would otherwise be emulated locally.
+
+The build host must have opted in (a `build-host-enabled` marker in its agent config directory) and must run BuildKit, which in practice means a Linux WendyOS device; a Mac cannot be a build host, because Apple Container has no BuildKit underneath. Failures name the host and never fall back to a local build.
+
+Because `--builder` selects a *local* image builder that the remote path never runs, the two flags cannot be combined.
+
+See [`wendy run` → Remote build host](run.md#remote-build-host) for the full description, including how the finished image reaches the target device.
