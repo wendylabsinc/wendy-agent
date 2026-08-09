@@ -1,0 +1,55 @@
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+      # /opt/cuda12/lib is registered with the loader by sharedLibraries
+      # below; LD_LIBRARY_PATH additionally beats the CDI-injected paths,
+      # which ld.so.conf alone does not.
+      LD_LIBRARY_PATH: /opt/cuda12/lib
+    install:
+      apt:
+        packages: [python3-pip, python3-dev, libopenblas-dev, libgomp1]
+      pip:
+        # ONNX Runtime GPU: NVIDIA's JetPack-6 / CUDA-12.6 ARM64 wheel.
+        #
+        # WHY CUDA 12 on a CUDA-13 (JetPack 7 / WendyOS 0.17) Orin: the
+        # CUDA-13 "sbsa" builds are compiled only for Thor (sm_110) / Spark
+        # (sm_121) and have NO kernels for Orin (sm_87), so they crash on the
+        # first GPU op ("no kernel image is available"). The CUDA-12.6 jp6
+        # wheels DO include sm_87, and CUDA 12.6 runs on the JetPack-7 GPU
+        # driver via backward compatibility.
+        - packages: [onnxruntime-gpu]
+          index: https://pypi.jetson-ai-lab.io/jp6/cu126/
+        # The matching CUDA-12 runtime, from PyPI. This is a separate group
+        # on purpose: folding it into the one above would let pip resolve
+        # onnxruntime-gpu from PyPI or these from the Jetson index.
+        - packages:
+            - nvidia-cuda-runtime-cu12
+            - nvidia-cuda-nvrtc-cu12
+            - nvidia-cublas-cu12
+            - nvidia-cudnn-cu12
+            - nvidia-cufft-cu12
+            - nvidia-curand-cu12
+        # onnx (model building helpers) and numpy from standard PyPI. NumPy
+        # pinned to 1.x — the JetPack-6 wheel was compiled against NumPy 1.x.
+        - packages: [onnx, "numpy==1.26.4"]
+    # On JetPack 7, CDI injects the CUDA *13* runtime, whose sonames
+    # (libcudart.so.13, ...) do not satisfy this CUDA-12 wheel
+    # (libcudart.so.12, ...). Collect the CUDA-12 libraries pip just
+    # installed into one directory and give it loader precedence, so ONNX
+    # Runtime uses the CUDA-12 copies consistently — not the CDI-injected
+    # CUDA-13 ones for any shared soname (e.g. libcudnn.so.9). The GPU
+    # *driver* (libcuda.so.1) still comes from CDI/host.
+    sharedLibraries:
+      - dir: /opt/cuda12/lib
+        collect: [/usr/local/lib/python3.10/dist-packages/nvidia]
+    copy:
+      - from: local
+        paths: [app.py]
+    # CUDA's memory manager needs root access to /dev/nvmap, so this stage
+    # declares root rather than taking the compiler's non-root default.
+    user: root
+    cmd: [python3, app.py]

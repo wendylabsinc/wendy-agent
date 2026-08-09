@@ -35,6 +35,27 @@
 > model weights. See `specs/2026-08-08-stagefile-download-design.md`. The
 > rest of gap #3 — arbitrary post-install shell, such as the CUDA
 > `ldconfig` + `find`/`ln -sf` loop — remains open.
+>
+> **Update (2026-08-08), gap #3 closed:** the CUDA half needed two things,
+> neither of them a raw-shell escape hatch. (a) `install.pip` is now a
+> *list*: `HelloLLM`, `HelloONNX` and `PyTorchGPU` each install a wheel from
+> the Jetson index and its matching runtime from PyPI, and those cannot be
+> merged — making the vendor index primary and PyPI extra lets pip resolve
+> either package from either source, which is the failure the split exists
+> to avoid. (b) a per-stage `sharedLibraries:` op collects `*.so*` out of
+> declared trees into one directory and gives that directory loader
+> precedence (`/etc/ld.so.conf.d` + `ldconfig`), replacing the
+> `find`/`ln -sf`/`echo`/`ldconfig` chain with a typed operation. All three
+> examples are converted and their Dockerfiles removed. What remains open is
+> only the *general* case — `ClaudeOnDevice`'s arbitrary multi-step script —
+> which is the deliberate no-RUN boundary, not a gap to close.
+>
+> Two things were dropped in conversion and are worth knowing: the
+> `RUN pip3 show torch | grep "Version: 2.8.0"` build-time assertions (the
+> `torch==2.8.0` pin already guarantees what they check), and HelloLLM's
+> `RUN mkdir -p /usr/local/bin`, commented there as a containerd overlayfs
+> snapshot workaround. If that workaround is still load-bearing it needs a
+> real home, because nothing in the Stagefile reproduces it.
 
 Source: converting `Examples/*` Dockerfiles to `build.stagefile.yaml` (see
 `stagefile-integration-report.md` in this worktree for the full conversion

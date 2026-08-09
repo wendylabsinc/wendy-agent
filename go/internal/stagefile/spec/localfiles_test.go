@@ -13,8 +13,8 @@ func TestInstallLocalFilesCoversEveryEcosystem(t *testing.T) {
 	}{
 		{"nil", nil, nil},
 		{"empty", &Install{}, nil},
-		{"pip", &Install{Pip: &PipInstall{Requirements: "requirements.txt"}}, []string{"requirements.txt"}},
-		{"pip without requirements", &Install{Pip: &PipInstall{Packages: []string{"flask"}}}, nil},
+		{"pip", &Install{Pip: []PipInstall{{Requirements: "requirements.txt"}}}, []string{"requirements.txt"}},
+		{"pip without requirements", &Install{Pip: []PipInstall{{Packages: []string{"flask"}}}}, nil},
 		{"npm", &Install{Npm: &NpmInstall{}}, []string{"package.json", "package-lock.json"}},
 		{"yarn", &Install{Npm: &NpmInstall{Manager: "yarn"}}, []string{"package.json", "yarn.lock"}},
 		{"uv", &Install{Uv: &UvInstall{}}, []string{"pyproject.toml", "uv.lock"}},

@@ -6,7 +6,7 @@ stages:
       apt:
         packages: [build-essential]
       pip:
-        requirements: requirements.txt
+        - requirements: requirements.txt
 
   - name: app
     from: python:3.12-slim

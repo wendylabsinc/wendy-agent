@@ -9,7 +9,7 @@ stages:
       apt:
         packages: [alsa-utils, ca-certificates]
       pip:
-        requirements: requirements.txt
+        - requirements: requirements.txt
     copy:
       - from: local
         paths: [app.py]

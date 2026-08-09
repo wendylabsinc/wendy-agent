@@ -78,9 +78,9 @@ func TestValidateAptRepositoryRules(t *testing.T) {
 }
 
 func TestValidatePipIndexMustBeURL(t *testing.T) {
-	wantErr(t, oneStage(Stage{Name: "app", From: "python:3.12", Install: &Install{Pip: &PipInstall{
+	wantErr(t, oneStage(Stage{Name: "app", From: "python:3.12", Install: &Install{Pip: []PipInstall{{
 		Packages: []string{"flask"}, Index: "not-a-url",
-	}}}), "http(s)")
+	}}}}), "http(s)")
 }
 
 func TestValidateBuildFieldCombinations(t *testing.T) {

@@ -50,6 +50,9 @@ func (f *File) Validate() error {
 		if err := validateInstall(s.Install); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
+		if err := validateSharedLibraries(s.SharedLibraries); err != nil {
+			return fmt.Errorf("stage %q: %w", s.Name, err)
+		}
 		if err := validateDownloads(s.Download); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
@@ -79,6 +82,50 @@ func (f *File) Validate() error {
 		if !isFinal && s.Healthcheck != nil {
 			return fmt.Errorf("stage %q: healthcheck is only allowed on the final stage (%q)", s.Name, finalName)
 		}
+	}
+	return nil
+}
+
+// validateSharedLibraries requires absolute paths on both sides. A relative
+// dir would resolve against the stage's workdir at build time but against "/"
+// in the loader config written into the image — two different directories from
+// one value, which is worth refusing outright rather than explaining.
+func validateSharedLibraries(libs []SharedLibrary) error {
+	for i, l := range libs {
+		field := fmt.Sprintf("sharedLibraries[%d]", i)
+		if err := validateAbsPath(l.Dir, field+".dir"); err != nil {
+			return err
+		}
+		if l.Dir == "/" {
+			return fmt.Errorf("%s.dir must not be \"/\"", field)
+		}
+		if len(l.Collect) == 0 {
+			return fmt.Errorf("%s.collect must be non-empty", field)
+		}
+		for _, tree := range l.Collect {
+			if err := validateAbsPath(tree, field+".collect entry"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateAbsPath is the shared shape check for a path the compiler will
+// interpolate into a command: present, absolute, and free of the characters
+// that make a path ambiguous in that position.
+func validateAbsPath(p, fieldDesc string) error {
+	if p == "" {
+		return fmt.Errorf("%s is required", fieldDesc)
+	}
+	if err := rejectNewline(p, fieldDesc); err != nil {
+		return err
+	}
+	if err := rejectWhitespace(p, fieldDesc); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%s must be an absolute path (got %q)", fieldDesc, p)
 	}
 	return nil
 }
@@ -237,7 +284,7 @@ func validateInstall(inst *Install) error {
 	if inst == nil {
 		return nil
 	}
-	if inst.Apt == nil && inst.Apk == nil && len(inst.CMake) == 0 && inst.Pip == nil && inst.Npm == nil && inst.Uv == nil {
+	if inst.Apt == nil && inst.Apk == nil && len(inst.CMake) == 0 && len(inst.Pip) == 0 && inst.Npm == nil && inst.Uv == nil {
 		return fmt.Errorf("install: at least one of apt, apk, cmake, pip, npm, uv must be set")
 	}
 	if inst.Apt != nil {
@@ -291,17 +338,18 @@ func validateInstall(inst *Install) error {
 			}
 		}
 	}
-	if inst.Pip != nil {
-		if inst.Pip.Requirements == "" && len(inst.Pip.Packages) == 0 {
-			return fmt.Errorf("install.pip: requirements or packages must be set")
+	for i, p := range inst.Pip {
+		field := fmt.Sprintf("install.pip[%d]", i)
+		if p.Requirements == "" && len(p.Packages) == 0 {
+			return fmt.Errorf("%s: requirements or packages must be set", field)
 		}
-		if inst.Pip.Index != "" {
-			if err := validateRepoURL(inst.Pip.Index, "install.pip.index"); err != nil {
+		if p.Index != "" {
+			if err := validateRepoURL(p.Index, field+".index"); err != nil {
 				return err
 			}
 		}
-		for _, u := range inst.Pip.ExtraIndex {
-			if err := validateRepoURL(u, "install.pip.extraIndex entry"); err != nil {
+		for _, u := range p.ExtraIndex {
+			if err := validateRepoURL(u, field+".extraIndex entry"); err != nil {
 				return err
 			}
 		}
@@ -586,17 +634,17 @@ func validateNoInjection(s *Stage) error {
 				}
 			}
 		}
-		if s.Install.Pip != nil {
-			if err := rejectNewline(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+		for _, pip := range s.Install.Pip {
+			if err := rejectNewline(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			if err := rejectWhitespace(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+			if err := rejectWhitespace(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			if err := rejectLeadingDash(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+			if err := rejectLeadingDash(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			for _, p := range s.Install.Pip.Packages {
+			for _, p := range pip.Packages {
 				if err := rejectNewline(p, "install.pip.packages entry"); err != nil {
 					return err
 				}

@@ -206,7 +206,7 @@ func TestNativeDepsHash(t *testing.T) {
 	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
 		Name:    "app",
 		From:    "python:3.11-slim",
-		Install: &spec.Install{Pip: &spec.PipInstall{Requirements: "requirements.txt"}},
+		Install: &spec.Install{Pip: []spec.PipInstall{{Requirements: "requirements.txt"}}},
 		Copy:    []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}}},
 	}}}
 
@@ -545,7 +545,7 @@ func TestTryNativeRebuildRefusesExternalManifestChange(t *testing.T) {
 func TestNativeBuildEligibility(t *testing.T) {
 	t.Setenv("WENDY_NATIVE_LAYERS", "")
 
-	eligibleYAML := "version: 1\nstages:\n  - name: app\n    from: python:3.11-slim\n    install:\n      pip:\n        requirements: requirements.txt\n    copy:\n      - from: local\n        paths: [main.py]\n    entrypoint:\n      exec: [python, main.py]\n"
+	eligibleYAML := "version: 1\nstages:\n  - name: app\n    from: python:3.11-slim\n    install:\n      pip:\n        - requirements: requirements.txt\n    copy:\n      - from: local\n        paths: [main.py]\n    entrypoint:\n      exec: [python, main.py]\n"
 
 	t.Run("eligible python project", func(t *testing.T) {
 		dir := t.TempDir()

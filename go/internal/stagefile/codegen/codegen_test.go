@@ -167,7 +167,7 @@ func TestGenerateApkInstallWithCache(t *testing.T) {
 func TestGeneratePipInstallFromRequirements(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Requirements: "requirements.txt"},
+			Pip: []spec.PipInstall{{Requirements: "requirements.txt"}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
@@ -188,7 +188,7 @@ func TestGeneratePipInstallFromRequirements(t *testing.T) {
 func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Requirements: "requirements.txt"},
+			Pip: []spec.PipInstall{{Requirements: "requirements.txt"}},
 		}, Copy: []spec.CopyEntry{
 			{From: "local", Paths: []string{"app.py"}},
 		}},
@@ -212,7 +212,7 @@ func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 func TestGeneratePipInstallFromPackages(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Packages: []string{"flask", "gunicorn"}},
+			Pip: []spec.PipInstall{{Packages: []string{"flask", "gunicorn"}}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
@@ -463,7 +463,7 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Packages: []string{"flask>=2.0,<3.0"}},
+			Pip: []spec.PipInstall{{Packages: []string{"flask>=2.0,<3.0"}}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
@@ -493,7 +493,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 // quietly ship without a sharing mode.
 func TestGenerateLocksEveryCacheMount(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
-		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: &spec.PipInstall{Packages: []string{"flask"}}}},
+		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: []spec.PipInstall{{Packages: []string{"flask"}}}}},
 		{Name: "npmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{}}},
 		{Name: "yarndeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "yarn"}}},
 		{Name: "pnpmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "pnpm"}}},

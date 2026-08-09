@@ -75,8 +75,8 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			if len(s.Install.CMake) > 0 {
 				lines = append(lines, cmakeInstallLines(s.Install.CMake, stagePlatform)...)
 			}
-			if s.Install.Pip != nil {
-				lines = append(lines, pipInstallLines(s.Install.Pip)...)
+			for i := range s.Install.Pip {
+				lines = append(lines, pipInstallLines(&s.Install.Pip[i])...)
 			}
 			if s.Install.Npm != nil {
 				lines = append(lines, npmInstallLines(s.Install.Npm)...)
@@ -90,6 +90,10 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		// image and this is the only position where `extract: zip` can rely
 		// on unzip having been declared in install.apt.packages.
 		lines = append(lines, downloadExtractLines(s.Download)...)
+
+		// Collection runs after every install (it reads what they produced)
+		// and before copy: (so editing app source never reruns it).
+		lines = append(lines, sharedLibraryLines(s.SharedLibraries)...)
 
 		if len(s.Copy) > 0 {
 			lines = append(lines, copyLines(s.Copy)...)
@@ -512,6 +516,37 @@ func downloadExtractLines(entries []spec.Download) []string {
 		// left to a later layer it would still be in this one, and the image
 		// would carry both the tarball and its contents.
 		lines = append(lines, fmt.Sprintf("RUN mkdir -p %s && %s && rm %s", dest, unpack, staged))
+	}
+	return lines
+}
+
+// sharedLibraryLines emits one RUN per collected directory: create it, symlink
+// every shared object found under the declared trees into it, register it with
+// the dynamic loader, and refresh the cache.
+//
+// The ld.so.conf.d filename carries the entry's index, so loader precedence is
+// declaration order and the output is deterministic. `find -exec ln -sf` is the
+// compiler's own command assembled from typed fields — every interpolated path
+// goes through shellQuote, so this stays inside the no-raw-shell boundary the
+// way aptRepositoryLines' sources.list write does.
+func sharedLibraryLines(libs []spec.SharedLibrary) []string {
+	var lines []string
+	for i, l := range libs {
+		dir := shellQuote(l.Dir)
+		commands := []string{"mkdir -p " + dir}
+		for _, tree := range l.Collect {
+			// -exec ln -sf {} dir/ ';' — the trailing slash makes ln treat the
+			// destination as a directory, so the link keeps the library's own
+			// name rather than overwriting a single file.
+			commands = append(commands, fmt.Sprintf("find %s -name '*.so*' -exec ln -sf '{}' %s ';'",
+				shellQuote(tree), shellQuote(l.Dir+"/")))
+		}
+		conf := fmt.Sprintf("/etc/ld.so.conf.d/%03d-stagefile.conf", i)
+		commands = append(commands,
+			fmt.Sprintf("printf '%%s\\n' %s > %s", dir, shellQuote(conf)),
+			"ldconfig",
+		)
+		lines = append(lines, "RUN "+strings.Join(commands, " \\\n    && "))
 	}
 	return lines
 }

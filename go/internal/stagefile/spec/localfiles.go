@@ -25,8 +25,8 @@ func (i *Install) LocalFiles() []string {
 			paths = append(paths, p)
 		}
 	}
-	if i.Pip != nil {
-		add(i.Pip.Requirements)
+	for _, p := range i.Pip {
+		add(p.Requirements)
 	}
 	if i.Npm != nil {
 		add("package.json")

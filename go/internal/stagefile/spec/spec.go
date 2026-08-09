@@ -32,6 +32,12 @@ type Stage struct {
 	// by key.
 	Env     map[string]string `yaml:"env,omitempty"`
 	Install *Install          `yaml:"install,omitempty"`
+	// SharedLibraries collects shared objects out of installed dependency
+	// trees into one directory and puts that directory on the dynamic
+	// loader's search path. Emitted after install: so it can see what the
+	// package managers produced, and before copy: so app source never
+	// invalidates it.
+	SharedLibraries []SharedLibrary `yaml:"sharedLibraries,omitempty"`
 	// Download fetches files from the network into this stage. Every entry
 	// is content-pinned; see Download.
 	Download    []Download   `yaml:"download,omitempty"`
@@ -80,6 +86,28 @@ type Download struct {
 // adding its command, not accepting one.
 var ExtractFormats = []string{"tar.gz", "zip"}
 
+// SharedLibrary collects every shared object under the Collect trees into
+// Dir as symlinks, then registers Dir with the dynamic loader
+// (/etc/ld.so.conf.d + ldconfig).
+//
+// This exists because a wheel can ship its own copy of a runtime whose
+// sonames collide with one the host injects at run time — the CUDA-12
+// wheels on a CUDA-13 JetPack being the case that forced it. Collecting the
+// wheel's libraries into one directory and giving that directory loader
+// precedence is the fix, and it is a specific, checkable operation rather
+// than the arbitrary `find`/`ln -sf`/`ldconfig` shell it replaces.
+//
+// Entries take loader precedence in declaration order.
+type SharedLibrary struct {
+	// Dir is the absolute directory the collected symlinks land in, and the
+	// directory added to the loader path.
+	Dir string `yaml:"dir"`
+	// Collect are absolute directory trees to search for shared objects
+	// (*.so*). A tree that does not exist is a build failure, not a silent
+	// no-op — an empty Dir would fail much later, at run time.
+	Collect []string `yaml:"collect"`
+}
+
 // Install is the set of declarative, per-ecosystem dependency installs for
 // one stage. Any subset of the fields may be set; each compiles to a fixed
 // instruction sequence with the compiler's own correct flags baked in — there
@@ -88,9 +116,14 @@ type Install struct {
 	Apt   *AptInstall    `yaml:"apt,omitempty"`
 	Apk   *ApkInstall    `yaml:"apk,omitempty"`
 	CMake []CMakeInstall `yaml:"cmake,omitempty"`
-	Pip   *PipInstall    `yaml:"pip,omitempty"`
-	Npm   *NpmInstall    `yaml:"npm,omitempty"`
-	Uv    *UvInstall     `yaml:"uv,omitempty"`
+	// Pip is a list because one stage often needs several pip invocations
+	// that cannot be merged: a package from a vendor index and its runtime
+	// from PyPI must stay separate, since making the vendor index primary
+	// and PyPI extra lets pip resolve either package from either source.
+	// Groups are emitted in declaration order.
+	Pip []PipInstall `yaml:"pip,omitempty"`
+	Npm *NpmInstall  `yaml:"npm,omitempty"`
+	Uv  *UvInstall   `yaml:"uv,omitempty"`
 }
 
 // AptInstall installs Debian/Ubuntu packages, optionally from additional

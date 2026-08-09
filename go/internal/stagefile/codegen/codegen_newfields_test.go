@@ -72,13 +72,13 @@ func TestGenerateEntrypointSourceWrapper(t *testing.T) {
 func TestGeneratePipIndexFlags(t *testing.T) {
 	out := genOne(t, spec.Stage{
 		Name: "app", From: "python:3.11-slim",
-		Install: &spec.Install{Pip: &spec.PipInstall{
+		Install: &spec.Install{Pip: []spec.PipInstall{{
 			Packages: []string{"torch"},
 			Index:    "https://pypi.jetson-ai-lab.io/jp6/cu126",
 			ExtraIndex: []string{
 				"https://pypi.org/simple",
 			},
-		}},
+		}}},
 	}, nil)
 	want := "RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
 	if !strings.Contains(out, want) {

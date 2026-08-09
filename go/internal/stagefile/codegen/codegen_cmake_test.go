@@ -23,7 +23,7 @@ func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
 				},
 				Jobs: 2,
 			}},
-			Pip: &spec.PipInstall{Packages: []string{"cyclonedds==0.10.2"}},
+			Pip: []spec.PipInstall{{Packages: []string{"cyclonedds==0.10.2"}}},
 		},
 	}, nil)
 

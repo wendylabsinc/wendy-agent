@@ -7,7 +7,7 @@ stages:
       PORT: "8000"
     install:
       pip:
-        requirements: requirements.txt
+        - requirements: requirements.txt
     copy:
       - from: local
         paths: [app.py]

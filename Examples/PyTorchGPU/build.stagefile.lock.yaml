@@ -1,0 +1,4 @@
+version: 1
+sourceHash: sha256:85a7639d4cb32aefd9207d28508aae1dad732e14fb33b223d7d1f5713fec2db5
+images:
+    ubuntu:22.04: sha256:3b06811b2afd352be909dd088a004166d665dc76d38b13eada33522a9d915c6f
