@@ -15,7 +15,7 @@ const (
 	// discoverWindow is how long one scan waits for SEDP announcements before
 	// deciding what it found. DDS discovery is not instant; a robot with ~120
 	// writers takes seconds to enumerate.
-	discoverWindow = 20 * time.Second
+	discoverWindow = 2 * time.Minute
 	// idleRescan is the interval between scans once a scan has come up empty.
 	// A device with no ROS 2 anywhere then costs one short burst of discovery
 	// traffic every few minutes rather than a continuous participant.
