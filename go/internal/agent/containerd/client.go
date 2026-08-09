@@ -2942,6 +2942,13 @@ func (c *Client) streamOutput(
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
 	code, exitedAt, err := exitStatus.Result()
+	// taskExited is true only once we know the process has actually
+	// terminated (see the context.Canceled branch below, where it hasn't).
+	// Gates the IO drain below: task.IO().Wait() blocks until the task's
+	// stdio FIFOs reach EOF, which only happens once the process's fds
+	// close — calling it while the container is genuinely still running
+	// would hang this goroutine forever.
+	taskExited := err == nil
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
@@ -2972,14 +2979,50 @@ func (c *Client) streamOutput(
 		cancel()
 	}
 
-	// Close the write ends to unblock readers.
-	stdoutW.Close()
-	stderrW.Close()
+	if taskExited {
+		// The exit status arriving does NOT mean containerd has finished
+		// copying the task's stdout/stderr FIFOs into stdoutW/stderrW: that
+		// copy runs on containerd's own goroutines (cio.copyIO), a path
+		// independent of the process-exit signal task.Wait() delivers here.
+		// For a container that prints one line and exits immediately — the
+		// crash-loop case — that copy can still be in flight when the exit
+		// status arrives, so closing stdoutW/stderrW right away can slam the
+		// pipe shut before the in-flight Write() lands, silently dropping
+		// the very output a crash-looping container needs most (live
+		// symptom: `wendy device logs --tail` returned zero lines for an
+		// actively crash-looping app). drainTaskIOThenClose waits for that
+		// copy to finish before closing, mirroring the same fix already
+		// applied to ExecContainer/ROS2 exec (proc.IO().Wait()) in this
+		// package.
+		drainTaskIOThenClose(task.IO(), stdoutW, stderrW)
+	} else {
+		// Task not confirmed exited (context.Canceled path, effectively
+		// unreachable since taskCtx derives from context.Background() and is
+		// never canceled): preserve prior behavior and close unconditionally
+		// rather than risk blocking forever in task.IO().Wait().
+		stdoutW.Close()
+		stderrW.Close()
+	}
 
 	// Wait for readers to finish.
 	wg.Wait()
 
 	outputCh <- services.ContainerOutput{Done: true}
+}
+
+// drainTaskIOThenClose blocks until taskIO's stdio copy goroutines (if any)
+// have finished flushing container output into stdoutW/stderrW, then closes
+// both writers. Must only be called once the task is confirmed to have
+// exited — see the taskExited gate in streamOutput's caller — since
+// taskIO.Wait() blocks until the underlying FIFOs reach EOF, which a still-
+// running task never delivers. taskIO may be nil (some cio.IO
+// implementations, e.g. NullIO, are legitimately IO-less).
+func drainTaskIOThenClose(taskIO cio.IO, stdoutW, stderrW io.Closer) {
+	if taskIO != nil {
+		taskIO.Wait()
+	}
+	stdoutW.Close()
+	stderrW.Close()
 }
 
 // resolveTargets resolves name to the containers it addresses:
