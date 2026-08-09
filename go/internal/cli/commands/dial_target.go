@@ -161,6 +161,15 @@ func pinCandidateKeys(pinKey string) []string {
 // local network presented. Among pins of equal source the earliest candidate
 // wins, which keeps the dialed name authoritative over an alias.
 //
+// That precedence yields to one invariant: an asset-less cloud pin never
+// displaces an incumbent carrying an asset id. Cloud authority decides WHICH
+// binding to believe, and applying it is worth nothing if it leaves
+// expectedIdentityFor with no binding to enforce — a host constrained to one
+// asset would become constrained to none, which is exactly the same-CA-host
+// redirect this path exists to stop. An asset-less pin is a real state, not a
+// hypothetical: config's EvaluateDevicePin carries a dedicated branch for a
+// cloud-sourced pin with no asset id.
+//
 // Because the search only ever adds keys, a host pinned under pinKey stays
 // pinned no matter what the cache says or fails to say — the property that lets
 // the cache be consulted best-effort without a cache outage quietly switching
@@ -181,7 +190,8 @@ func lookupPin(cfg *config.Config, pinKey string) (config.DevicePin, string, boo
 			best, bestKey, found = pin, key, true
 			continue
 		}
-		if best.Source != config.PinSourceCloud && pin.Source == config.PinSourceCloud {
+		if best.Source != config.PinSourceCloud && pin.Source == config.PinSourceCloud &&
+			(pin.AssetID != "" || best.AssetID == "") {
 			best, bestKey = pin, key
 		}
 	}

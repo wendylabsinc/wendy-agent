@@ -16,8 +16,17 @@ import (
 // CLI ever meets it on the network.
 //
 // An asset with no name has no key to pin under and is skipped rather than
-// filed under "". config.Save is only called when at least one pin actually
-// changed, so a roster of unnamed assets (or an empty roster) never touches
+// filed under "". An asset with no usable id is skipped for the mirror-image
+// reason: it would be pinned as AssetID "0", a non-empty asset constraint no
+// certificate can ever present, and because the pin is cloud-sourced
+// EvaluateDevicePin would then take its pin.AssetID != assetID branch and
+// hard-fail every future dial to that name, with no adoption path out. A
+// missing id is missing information, and the honest encoding of that is no pin
+// at all — which leaves trust-on-first-use, not a permanent refusal.
+//
+// Skipping is per-asset: one unusable entry never costs the rest of the roster
+// its pins. config.Save is only called when at least one pin actually changed,
+// so a roster of entirely unusable assets (or an empty roster) never touches
 // disk.
 func seedPinsFromCloudAssets(assets []*cloudpb.Asset, orgID int, cloudGRPC string) error {
 	cfg, err := loadConfigForPinFn()
@@ -27,7 +36,7 @@ func seedPinsFromCloudAssets(assets []*cloudpb.Asset, orgID int, cloudGRPC strin
 	changed := false
 	for _, a := range assets {
 		name := a.GetName()
-		if name == "" {
+		if name == "" || a.GetId() <= 0 {
 			continue
 		}
 		cfg.SetDevicePinFrom(name, orgID, cloudGRPC, strconv.Itoa(int(a.GetId())), config.PinSourceCloud)

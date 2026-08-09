@@ -118,4 +118,69 @@ func TestSeedPinsFromCloudAssets(t *testing.T) {
 			t.Fatal("an unnamed asset was pinned under the empty-string key")
 		}
 	})
+
+	// An asset with no usable id would be pinned as AssetID "0" — a non-empty
+	// asset constraint that no real certificate can ever present. Because the
+	// pin is cloud-sourced, EvaluateDevicePin's pin.AssetID != assetID branch
+	// would then hard-fail every future dial to that name, with no adoption
+	// path out. Skipping mirrors the empty-name guard: no key, no pin.
+	t.Run("skips assets with no id", func(t *testing.T) {
+		cfg := &config.Config{}
+		stubLoadConfigForPin(t, cfg)
+
+		// Same sentinel as the empty-name subtest: a HOME that cannot hold
+		// ~/.wendy, so an attempted config.Save would fail loudly. Every asset
+		// below is skipped, so "changed" must stay false and Save never run.
+		unwritableHome := t.TempDir() + "-not-a-directory"
+		if err := os.WriteFile(unwritableHome, []byte("not a directory"), 0o600); err != nil {
+			t.Fatalf("writing sentinel file: %v", err)
+		}
+		t.Setenv("HOME", unwritableHome)
+		t.Setenv("USERPROFILE", unwritableHome)
+
+		assets := []*cloudpb.Asset{
+			{Id: 0, Name: "calm-zinnia"},
+			{Id: -1, Name: "bold-fern"},
+		}
+		if err := seedPinsFromCloudAssets(assets, 7, "grpc.a.sh:443"); err != nil {
+			t.Fatalf("seedPinsFromCloudAssets: unexpected error: %v (config.Save should never have been attempted)", err)
+		}
+
+		if len(cfg.DevicePins) != 0 {
+			t.Fatalf("DevicePins = %+v, want empty — an asset with no id must not be pinned to the unmatchable asset \"0\"", cfg.DevicePins)
+		}
+		if pin, ok := cfg.DevicePinFor("calm-zinnia"); ok {
+			t.Fatalf("pinned %+v for an id-less asset; a cloud-sourced AssetID %q hard-fails every future dial to this name", pin, pin.AssetID)
+		}
+	})
+
+	// A roster is not all-or-nothing: one unusable asset must not cost the
+	// others their pins.
+	t.Run("seeds the usable assets in a mixed roster", func(t *testing.T) {
+		cfg := &config.Config{}
+		stubLoadConfigForPin(t, cfg)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		assets := []*cloudpb.Asset{
+			{Id: 0, Name: "calm-zinnia"},
+			{Id: 7, Name: ""},
+			{Id: 42, Name: "bold-fern"},
+		}
+		if err := seedPinsFromCloudAssets(assets, 7, "grpc.a.sh:443"); err != nil {
+			t.Fatalf("seedPinsFromCloudAssets: unexpected error: %v", err)
+		}
+
+		if len(cfg.DevicePins) != 1 {
+			t.Fatalf("DevicePins = %+v, want exactly the one usable asset", cfg.DevicePins)
+		}
+		pin, ok := cfg.DevicePinFor("bold-fern")
+		if !ok {
+			t.Fatal("the usable asset was not pinned; one bad roster entry must not suppress the rest")
+		}
+		if pin.AssetID != "42" || pin.Source != config.PinSourceCloud {
+			t.Fatalf("pin = %+v, want AssetID 42 from a cloud source", pin)
+		}
+	})
 }

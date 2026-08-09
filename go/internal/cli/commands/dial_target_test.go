@@ -193,6 +193,58 @@ func TestLookupPinCloudBeatsEarlierLAN(t *testing.T) {
 		}
 	})
 
+	// Where rule 2 (cloud is authority) and rule 4 (consulting more candidates
+	// can only ever FIND a pin, never discard one) collide, the invariant wins.
+	// An asset-less cloud pin displacing an asset-bearing LAN pin would leave
+	// expectedIdentityFor nil — no exact-identity constraint at all — which is
+	// precisely the same-CA-host redirect dialTarget exists to stop. The state
+	// is contemplated by the data model: EvaluateDevicePin carries a dedicated
+	// Source==cloud && AssetID=="" branch.
+	t.Run("asset-less cloud pin does not displace an asset-bearing lan pin", func(t *testing.T) {
+		setPinCache(t, entry)
+		setPinConfig(t, map[string]config.DevicePin{
+			"wendyos-calm-zinnia": {OrgID: 7, AssetID: "1", Source: config.PinSourceLAN},
+			"calm-zinnia":         {OrgID: 7, AssetID: "", Source: config.PinSourceCloud},
+		})
+		cfg, err := loadConfigForPinFn()
+		if err != nil {
+			t.Fatalf("loadConfigForPinFn: %v", err)
+		}
+
+		pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+		if !ok {
+			t.Fatal("lookupPin found nothing despite two matching pins")
+		}
+		if key != "wendyos-calm-zinnia.local" || pin.AssetID != "1" {
+			t.Fatalf("lookupPin = %+v under %q, want the LAN pin (asset 1) under the dialled key; an asset-less cloud pin must not erase an exact-identity constraint", pin, key)
+		}
+		if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got == nil || got.EntityID != "1" {
+			t.Fatalf("expectedIdentityFor = %+v, want asset 1 — consulting an extra candidate must never discard a constraint that was already there", got)
+		}
+	})
+
+	// The exception above is confined to the case where it protects a
+	// constraint: with nothing to lose, cloud precedence still applies.
+	t.Run("asset-less cloud pin still wins over an asset-less lan pin", func(t *testing.T) {
+		setPinCache(t, entry)
+		setPinConfig(t, map[string]config.DevicePin{
+			"wendyos-calm-zinnia": {OrgID: 7, CloudGRPC: "lan.example:443", Source: config.PinSourceLAN},
+			"calm-zinnia":         {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443", Source: config.PinSourceCloud},
+		})
+		cfg, err := loadConfigForPinFn()
+		if err != nil {
+			t.Fatalf("loadConfigForPinFn: %v", err)
+		}
+
+		pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+		if !ok {
+			t.Fatal("lookupPin found nothing despite two matching pins")
+		}
+		if key != "calm-zinnia" || pin.Source != config.PinSourceCloud {
+			t.Fatalf("lookupPin = %+v under %q, want the cloud pin under \"calm-zinnia\"; neither pin carries an asset, so nothing is lost and cloud is still authority", pin, key)
+		}
+	})
+
 	t.Run("first cloud pin wins over a later cloud pin", func(t *testing.T) {
 		setPinCache(t, entry)
 		setPinConfig(t, map[string]config.DevicePin{
@@ -357,6 +409,10 @@ func TestPinnedHostSkipsPlaintextRung(t *testing.T) {
 	setTempConfig(t, &config.Config{DevicePins: map[string]config.DevicePin{
 		"orin": {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443", AssetID: "42", Source: config.PinSourceLAN},
 	}})
+	// Pin lookup now consults the device cache for alias keys. Serve it an
+	// empty one explicitly rather than leaving this security test's determinism
+	// resting on setTempConfig's HOME happening to have no devices.json.
+	setPinCache(t)
 
 	addr := deadAgentAddr(t)
 
@@ -413,6 +469,9 @@ func TestPinnedHostSkipsPlaintextRung(t *testing.T) {
 // unauthenticated connection.
 func TestWrongDeviceAbortsLadder(t *testing.T) {
 	setTempConfig(t, &config.Config{}) // no pins at all
+	// As above: an explicit empty cache, so no alias key can turn this
+	// deliberately-unpinned host into a pinned one.
+	setPinCache(t)
 	if isPinned("orin.local") {
 		t.Fatal("test precondition: orin.local must be unpinned, so only the abort can refuse plaintext")
 	}
