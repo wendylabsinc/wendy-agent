@@ -34,10 +34,13 @@ type PeerDialer interface {
 // cannot distinguish an unreachable peer from a rejected certificate, which are
 // the two causes with entirely different fixes.
 type pushProxy struct {
-	addr string
-	stop func()
+	addr    string
+	ln      net.Listener
+	stop    func()
+	assetID int32
 	// dial opens the outbound hop. A field so tests can relay over plain TCP;
-	// production dials the mesh peer and wraps the result in TLS.
+	// production dials the mesh peer and wraps the result in TLS. It must be set
+	// before serve, which is when the first reader of it can exist.
 	dial func(ctx context.Context) (net.Conn, error)
 
 	mu  sync.Mutex
@@ -97,13 +100,29 @@ func validatePushTarget(t *agentpbv2.PushTarget) error {
 // its image prefix from its own listen address, so the image lands there as
 // localhost:<regPort>/<repo>:<tag> regardless of how the pusher reached it.
 func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.PushTarget, tlsCfg *tls.Config) (*pushProxy, error) {
+	p, err := newPushProxy(dialer, target, tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	p.serve(ctx)
+	return p, nil
+}
+
+// newPushProxy binds the loopback listener but accepts nothing yet.
+//
+// Construction is split from serve so that a caller replacing dial — a test
+// relaying over plain TCP — writes the field before any goroutine that reads it
+// exists. Overwriting it after the accept loop is running is a data race.
+func newPushProxy(dialer PeerDialer, target *agentpbv2.PushTarget, tlsCfg *tls.Config) (*pushProxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("starting push proxy: %w", err)
 	}
-	p := &pushProxy{
-		addr: ln.Addr().String(),
-		stop: func() { _ = ln.Close() },
+	return &pushProxy{
+		addr:    ln.Addr().String(),
+		ln:      ln,
+		stop:    func() { _ = ln.Close() },
+		assetID: target.GetAssetId(),
 		dial: func(ctx context.Context) (net.Conn, error) {
 			raw, _, derr := dialer.DialDevice(ctx, target.GetAssetId(), uint16(target.GetRegistryPort()))
 			if derr != nil {
@@ -112,24 +131,27 @@ func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.Pu
 			// The mesh carries bytes; the registry still speaks mTLS on top.
 			return tls.Client(raw, tlsCfg), nil
 		},
-	}
+	}, nil
+}
+
+// serve accepts loopback connections until stop closes the listener.
+func (p *pushProxy) serve(ctx context.Context) {
 	go func() {
 		for {
-			local, acceptErr := ln.Accept()
+			local, acceptErr := p.ln.Accept()
 			if acceptErr != nil {
 				return // listener closed by stop()
 			}
-			go p.proxyOne(ctx, local, target.GetAssetId())
+			go p.proxyOne(ctx, local)
 		}
 	}()
-	return p, nil
 }
 
-func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, assetID int32) {
+func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn) {
 	defer local.Close()
 	remote, err := p.dial(ctx)
 	if err != nil {
-		p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", assetID, err))
+		p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", p.assetID, err))
 		return
 	}
 	defer remote.Close()

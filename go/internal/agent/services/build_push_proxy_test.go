@@ -84,16 +84,17 @@ func TestPushProxy_DeliversResponseAfterClientHalfClose(t *testing.T) {
 		c.Write([]byte(reply))
 	}()
 
-	proxy, err := startPushProxy(context.Background(),
-		stubPeerDialer{addr: backend.Addr().String()}, testTarget(), nil)
+	proxy, err := newPushProxy(stubPeerDialer{addr: backend.Addr().String()}, testTarget(), nil)
 	if err != nil {
-		t.Fatalf("startPushProxy: %v", err)
+		t.Fatalf("newPushProxy: %v", err)
 	}
 	defer proxy.stop()
 	// Plain TCP for the backend hop; the TLS wrapping is orthogonal to relaying.
+	// Set before serve, so no accepting goroutine can be reading dial yet.
 	proxy.dial = func(ctx context.Context) (net.Conn, error) {
 		return net.Dial("tcp", backend.Addr().String())
 	}
+	proxy.serve(context.Background())
 
 	conn, err := net.Dial("tcp", proxy.addr)
 	if err != nil {
