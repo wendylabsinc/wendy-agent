@@ -281,6 +281,40 @@ func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailur
 	}
 }
 
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection
+// locks in that a rejected SPKI pin (devicepin.PinMismatchError, or any other
+// PinChecker error) also keeps the trust-grade sink from firing. Device
+// pinning is a security control that trusts OnVerifiedServerIdentity's
+// output, so a pin failure must behave exactly like a chain or org failure
+// here: reject the connection and never reach this sink.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	pinErr := errors.New("simulated pin mismatch")
+	pin := &fakePinChecker{onCheck: func(leaf *x509.Certificate, name string) error {
+		return pinErr
+	}}
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		PinStore:                 pin,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); !errors.Is(err, pinErr) {
+		t.Fatalf("verifyConn error = %v, want the pin error to propagate", err)
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (pin check rejected)", calls)
+	}
+}
+
 func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnOrgMismatch(t *testing.T) {
 	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
 

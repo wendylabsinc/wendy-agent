@@ -296,9 +296,7 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 				displayName = identity.IdentityKey()
 			}
 			if pinErr := opts.PinStore.CheckAndUpdate(leaf, displayName); pinErr != nil {
-				// Log but don't block — pin I/O failure is not a security failure
-				// when the chain has already been verified above.
-				_ = pinErr // callers that care about pinning use a Store that logs internally
+				return pinErr
 			}
 		}
 
