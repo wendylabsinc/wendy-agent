@@ -159,6 +159,118 @@ func TestContainerMonitor_ShouldRestart_OnFailure(t *testing.T) {
 	}
 }
 
+// TestContainerMonitor_ShouldRestart_Always verifies RestartAlways restarts
+// even when the container has been explicitly stopped. This is pre-existing
+// behavior (restarting after an explicit stop is the entire point of
+// "always") that fix round 2 exists specifically to preserve: restartBlocked
+// must agree with it, or an explicitly-stopped RestartAlways app gets stuck
+// in a perpetual scheduled-by-planRestarts-then-silently-skipped-by-
+// restartSingle loop.
+func TestContainerMonitor_ShouldRestart_Always(t *testing.T) {
+	m := newTestMonitor()
+
+	state := &containerState{RestartPolicy: RestartAlways}
+	if !m.shouldRestart(state) {
+		t.Error("shouldRestart() = false for RestartAlways (not stopped), want true")
+	}
+
+	state.ExplicitStop = true
+	if !m.shouldRestart(state) {
+		t.Error("shouldRestart() = false for RestartAlways (explicitly stopped), want true — RestartAlways ignores ExplicitStop by design")
+	}
+}
+
+// TestRestartPolicyHonorsExplicitStop is a direct table test of the shared
+// predicate shouldRestart and restartBlocked both derive from, so the two
+// cannot silently drift on which policies treat an explicit stop as binding.
+func TestRestartPolicyHonorsExplicitStop(t *testing.T) {
+	tests := []struct {
+		policy RestartPolicy
+		want   bool
+	}{
+		{RestartNo, false},
+		{RestartUnlessStopped, true},
+		{RestartOnFailure, true},
+		{RestartAlways, false},
+		{RestartPolicy(99), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.policy.String(), func(t *testing.T) {
+			if got := restartPolicyHonorsExplicitStop(tt.policy); got != tt.want {
+				t.Errorf("restartPolicyHonorsExplicitStop(%v) = %v, want %v", tt.policy, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRestartBlocked_AlwaysPolicyIgnoresExplicitStop is the regression guard
+// for the fix round 2 finding: restartBlocked's ExplicitStop arm must not
+// block a RestartAlways container just because it was explicitly stopped.
+func TestRestartBlocked_AlwaysPolicyIgnoresExplicitStop(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	if m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = true for RestartAlways + ExplicitStop + not suppressed; want false (old semantics: RestartAlways restarts even after explicit stop)")
+	}
+}
+
+// TestRestartBlocked_OnFailurePolicyHonorsExplicitStop is the paired case: a
+// policy shouldRestart does honor ExplicitStop for must still be blocked.
+func TestRestartBlocked_OnFailurePolicyHonorsExplicitStop(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartOnFailure, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for RestartOnFailure + ExplicitStop; want true")
+	}
+}
+
+// TestRestartBlocked_SuppressedAlwaysStillBlocked verifies the suppression
+// arm stays unconditional: suppression means a replace/stop operation is
+// actively tearing the task down right now, which blocks every policy
+// including RestartAlways — it is orthogonal to whether the policy honors
+// ExplicitStop.
+func TestRestartBlocked_SuppressedAlwaysStillBlocked(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	resume := m.Suppress("com.example.app")
+	defer resume()
+
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for suppressed RestartAlways container; want true (suppression is unconditional)")
+	}
+}
+
+// TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStillScheduled locks in
+// pre-round-1 behavior for RestartAlways: even explicitly stopped, a down
+// RestartAlways container must still be scheduled by planRestarts — matching
+// shouldRestart, which never gated RestartAlways on ExplicitStop — with no
+// skip and no double count of FailureCount.
+func TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStillScheduled(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartAlways, 0)
+	m.MarkExplicitStop("com.example.app")
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	got := m.planRestarts(stopped)
+	if len(got) != 1 || got[0] != "com.example.app" {
+		t.Errorf("planRestarts = %v; want [com.example.app] (RestartAlways ignores ExplicitStop)", got)
+	}
+
+	m.mu.Lock()
+	fc := m.states["com.example.app"].FailureCount
+	m.mu.Unlock()
+	if fc != 1 {
+		t.Errorf("FailureCount = %d after one planRestarts call; want 1 (no double count)", fc)
+	}
+}
+
 func TestContainerMonitor_ExplicitStop(t *testing.T) {
 	m := newTestMonitor()
 

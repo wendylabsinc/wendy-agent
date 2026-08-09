@@ -443,6 +443,37 @@ func TestRestartSingle_StartsWhenNotBlocked(t *testing.T) {
 	}
 }
 
+// TestCheckContainers_ExplicitlyStoppedAlwaysPolicyStillRestarts is the full
+// round-trip regression guard for fix round 2: an explicitly-stopped
+// RestartAlways app must still be started by a tick. Before this round,
+// restartBlocked's ExplicitStop arm was unconditional, so this exact
+// scenario would loop forever — planRestarts schedules it every tick (it
+// never gated RestartAlways on ExplicitStop) while restartSingle's guard
+// silently swallowed every attempt, so `StartContainer` was never called.
+func TestCheckContainers_ExplicitlyStoppedAlwaysPolicyStillRestarts(t *testing.T) {
+	fake := &fakeContainerd{
+		started: make(chan string, 1),
+		containers: []*agentpb.AppContainer{{
+			AppName:      "always-app",
+			RunningState: agentpb.AppRunningState_STOPPED,
+		}},
+	}
+	m := newMonitorWithClient(fake)
+	m.Register("always-app", RestartAlways, 0)
+	m.MarkExplicitStop("always-app")
+
+	m.checkContainers(context.Background())
+
+	select {
+	case got := <-fake.started:
+		if got != "always-app" {
+			t.Fatalf("started %q, want always-app", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected StartContainer(always-app) despite ExplicitStop (RestartAlways policy), got none")
+	}
+}
+
 func TestProbeExposedPortsInvokesProber(t *testing.T) {
 	f := &fakeContainerd{}
 	m := newMonitorWithClient(f)

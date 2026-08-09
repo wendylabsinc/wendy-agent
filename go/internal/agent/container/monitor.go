@@ -184,17 +184,27 @@ func (m *ContainerMonitor) Suppress(containerName string) func() {
 }
 
 // restartBlocked reports whether containerName currently has a Suppress
-// handle held on it, or is marked as explicitly stopped, and so must not be
-// (re)started. Used by restartSingle to re-check right before it would call
-// StartContainer — see the comment there for why this differs from the
-// planRestarts-time check.
+// handle held on it, or is marked as explicitly stopped under a policy that
+// honors that mark, and so must not be (re)started. Used by restartSingle to
+// re-check right before it would call StartContainer — see the comment there
+// for why this differs from the planRestarts-time check.
+//
+// The ExplicitStop arm is policy-aware (via restartPolicyHonorsExplicitStop)
+// rather than unconditional: shouldRestart deliberately restarts
+// RestartAlways containers even after an explicit stop, and an unconditional
+// block here would fight that — planRestarts schedules the restart every
+// tick (log churn, unbounded FailureCount, RestartStatuses misreporting
+// WillRestart=true as if it were crash-looping) while this guard silently
+// swallowed every attempt forever. The suppression arm stays unconditional:
+// suppression means a replace/stop operation is actively tearing the task
+// down right now, which is orthogonal to restart policy.
 func (m *ContainerMonitor) restartBlocked(containerName string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.suppressed[containerName] > 0 {
 		return true
 	}
-	if state, ok := m.states[containerName]; ok && state.ExplicitStop {
+	if state, ok := m.states[containerName]; ok && state.ExplicitStop && restartPolicyHonorsExplicitStop(state.RestartPolicy) {
 		return true
 	}
 	return false
@@ -540,20 +550,45 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 }
 
 // shouldRestart determines whether a container should be restarted based on its policy.
+// restartPolicyHonorsExplicitStop reports whether policy's restart decision
+// is gated by containerState.ExplicitStop. RestartUnlessStopped and
+// RestartOnFailure honor it — a user-initiated stop is meant to stick.
+// RestartAlways deliberately does not: restarting even after an explicit
+// stop is the entire point of "always" (that's the pre-existing, unreviewed-
+// here behavior shouldRestart already implements below). RestartNo never
+// restarts regardless, so the question doesn't apply to it either way.
+//
+// Shared by shouldRestart (the tick-time restart decision) and
+// restartBlocked (restartSingle's just-before-the-call re-check) so the two
+// cannot drift on which policies treat an explicit stop as binding — that
+// drift is exactly what caused an explicitly-stopped RestartAlways app to
+// get stuck in a perpetual scheduled-then-silently-skipped loop before this
+// helper existed.
+func restartPolicyHonorsExplicitStop(policy RestartPolicy) bool {
+	switch policy {
+	case RestartUnlessStopped, RestartOnFailure:
+		return true
+	default: // RestartNo, RestartAlways, and any future/unknown policy.
+		return false
+	}
+}
+
 func (m *ContainerMonitor) shouldRestart(state *containerState) bool {
+	if restartPolicyHonorsExplicitStop(state.RestartPolicy) && state.ExplicitStop {
+		return false
+	}
 	switch state.RestartPolicy {
 	case RestartNo:
 		return false
 	case RestartUnlessStopped:
-		return !state.ExplicitStop
+		return true
 	case RestartOnFailure:
 		// The monitor detects only whether a container has stopped; it has no
 		// exit-code signal from containerd. Until exit-code detection is added,
 		// ON_FAILURE behaves like UNLESS_STOPPED: it restarts on any exit, not
-		// only non-zero ones. MaxRetries is still enforced.
-		if state.ExplicitStop {
-			return false
-		}
+		// only non-zero ones. MaxRetries is still enforced. The ExplicitStop
+		// check above already ran for this policy (restartPolicyHonorsExplicitStop
+		// includes it), so reaching here means it wasn't set.
 		if state.MaxRetries > 0 && state.FailureCount >= state.MaxRetries {
 			return false
 		}
