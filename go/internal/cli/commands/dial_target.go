@@ -35,6 +35,15 @@ var loadConfigForPinFn = config.Load
 // unauthenticated rung — so a test can prove that rung was never reached.
 var plaintextConnectFn = grpcclient.Connect
 
+// identityMismatchFn is a seam over the ladder's reading of a wrong-device
+// rejection. The flag itself can only be set by a real TLS handshake — the
+// VerifyConnection sink owns the unexported field — so seaming the ladder's
+// CONSUMPTION of it is what puts the abort under test without a live ML-DSA
+// peer. That abort matters on its own: once a cloud-seeded Expected can exist
+// for a host with no config pin, it is the only thing standing between a wrong
+// device and the plaintext rung.
+var identityMismatchFn = (*grpcclient.AgentConnection).IdentityMismatch
+
 // newDialTarget resolves the pin for pinKey and returns a target constrained by
 // it. Key resolution deliberately may read discovery-derived names: choosing
 // the wrong key can only ever produce a mismatch — a stricter outcome — never

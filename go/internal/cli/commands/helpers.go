@@ -1844,7 +1844,7 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 						return conn, nil, nil
 					}
 					recordMTLSErr(mtlsAddr, probeErr)
-					if im, mismatched := conn.IdentityMismatch(); mismatched {
+					if im, mismatched := identityMismatchFn(conn); mismatched {
 						conn.Close()
 						// The device is wrong, not our certificate — every
 						// remaining cert and port would fail the same way, and

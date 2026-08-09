@@ -139,6 +139,73 @@ func TestPinnedHostSkipsPlaintextRung(t *testing.T) {
 	}
 }
 
+// TestWrongDeviceAbortsLadder covers the other half of the enforcement: a peer
+// that proves it is the WRONG device ends the ladder there and then.
+//
+// The pin key here is deliberately UNPINNED, so isPinned cannot be what
+// suppresses the plaintext rung — only the abort can. That is the configuration
+// Task 8 introduces for real: a cloud-seeded Expected with no config pin behind
+// it, where this abort is the single thing between a wrong device and an
+// unauthenticated connection.
+func TestWrongDeviceAbortsLadder(t *testing.T) {
+	setTempConfig(t, &config.Config{}) // no pins at all
+	if isPinned("orin.local") {
+		t.Fatal("test precondition: orin.local must be unpinned, so only the abort can refuse plaintext")
+	}
+
+	origMismatch := identityMismatchFn
+	mismatchReads := 0
+	identityMismatchFn = func(*grpcclient.AgentConnection) (*certs.IdentityMismatchError, bool) {
+		mismatchReads++
+		return &certs.IdentityMismatchError{WantOrg: 7, WantAsset: "42", GotOrg: 7, GotAsset: "43"}, true
+	}
+	plaintextCalls := 0
+	origPlaintext := plaintextConnectFn
+	plaintextConnectFn = func(ctx context.Context, address string) (*grpcclient.AgentConnection, error) {
+		plaintextCalls++
+		return grpcclient.NewFromConn(nil), nil
+	}
+	t.Cleanup(func() {
+		identityMismatchFn = origMismatch
+		plaintextConnectFn = origPlaintext
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Two certs × two ports = four rungs if the ladder kept going.
+	allCerts := []config.CertificateInfo{selfSignedCLICert(t, 7), selfSignedCLICert(t, 9)}
+	target := dialTarget{
+		PinKey:   "orin.local",
+		Addr:     deadAgentAddr(t),
+		Expected: &certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"},
+	}
+	conn, mtlsErr, err := dialAgentLadderWithCerts(ctx, target, allCerts)
+	if conn != nil {
+		conn.Close()
+	}
+
+	if mismatchReads != 1 {
+		t.Fatalf("ladder examined %d rungs after a wrong-device rejection, want exactly 1; every remaining cert and port would fail identically", mismatchReads)
+	}
+	if plaintextCalls != 0 {
+		t.Fatalf("plaintext rung attempted %d times after a wrong-device rejection", plaintextCalls)
+	}
+	if conn != nil {
+		t.Fatalf("ladder returned a connection (%v) to a device that proved it was the wrong one", conn)
+	}
+	if err == nil {
+		t.Fatal("ladder returned no error for a wrong-device rejection")
+	}
+	want := `device "orin.local" is pinned to asset 42 in organization 7, but the host answering presented asset 43 in organization 7`
+	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "wendy device unpin orin.local") {
+		t.Fatalf("err = %v, want the identity refusal naming both identities and the unpin escape hatch", err)
+	}
+	if mtlsErr == nil {
+		t.Fatal("mtlsErr = nil, want the mTLS probe failure preserved alongside the refusal")
+	}
+}
+
 // deadAgentAddr returns a 127.0.0.1 address whose port AND port+1 both refuse
 // connections, so every rung of the ladder (which tries both) fails with a
 // transport error rather than anything cert-shaped.
