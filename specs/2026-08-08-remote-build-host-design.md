@@ -87,17 +87,34 @@ wiring, not invention.
 - **No native-layer splice for remote builds** (`nativeBuildEligibility`,
   `nativelayers.go:235`, is local-only).
 
-### Mac hosts cannot be build hosts in v1
+### The developer's machine needs no local builder
 
-A Mac NEO is a fine *target* and remains one. It is **not** a build host in v1: the Mac
-agent runs Linux containers through Apple `container`, and PR #1606's own constraints
-record that `apple-container` has no BuildKit underneath and is permanently out of scope
-for the LLB backend. There is no buildkitd on a Mac WendyOS host to solve against.
+The motivating topology is `neo → (code) → spark → (binary) → robot`: the developer codes
+on a Mac, the Spark builds, the robot runs. The Mac is the *client*, and the point of the
+feature is that it stops being a build machine at all.
 
-This is handled gracefully rather than mysteriously — `GetBuildCapabilities` reports no
-BuildKit and the CLI refuses up front, naming the host. Supporting Mac build hosts would
-mean standing up a buildkitd there (in a Linux VM) and is deliberately deferred; it does
-not block the Spark case, which is the motivating one.
+So `--build-host` must require **no local container builder** — no Docker Desktop, no
+Apple Container, no buildkitd on the developer's machine. This is achievable today: the
+only CLI-side build work is `llbgen.Emit`, which #1606 documents as pure (it "opens no
+sockets and resolves nothing"), plus base-image digest resolution in package `lock`,
+which speaks to registries over the network. Neither needs a local daemon.
+
+That makes it a hard requirement rather than a happy accident, because the current build
+path is littered with daemon bootstraps that must not run on the remote path:
+`ensureAppleContainerSystemForBuilder` (`run.go:1522`), `ensureDockerDaemon`,
+`ensureBuildxBuilder`, and `solve.Address` — the last of which fails outright on macOS
+without Docker, since buildx's daemon lives inside a container reached via `docker exec`
+(`solve/addr.go:68-72`).
+
+Consequently `--builder` and `--build-host` are mutually exclusive: `--builder` selects
+the *local* image builder, which the remote path does not use. Passing both explicitly is
+an error rather than a silently ignored flag.
+
+**Mac hosts as builders.** Symmetrically, a Mac cannot be the *build host*: the Mac agent
+runs Linux containers through Apple `container`, and #1606's constraints record that
+`apple-container` has no BuildKit underneath and is permanently out of scope for the LLB
+backend. `GetBuildCapabilities` reports no BuildKit and the CLI refuses up front, naming
+the host. This does not affect the topology above, where the Mac is the client.
 
 ## Architecture
 
@@ -314,7 +331,11 @@ During or after the build:
 **CLI unit tests**
 
 - `--build-host` takes precedence over the persisted default.
-- Capability gating, including arch mismatch and the no-BuildKit (Mac) rejection.
+- `--builder` together with `--build-host` is rejected, not silently ignored.
+- The remote path reaches a build with Docker, Apple Container, and buildkitd all absent
+  from the developer's machine — the `neo → spark → robot` case. Asserted by stubbing
+  `imageBuilderLookPath` to find nothing and checking no daemon bootstrap is attempted.
+- Capability gating, including arch mismatch and the no-BuildKit (Mac host) rejection.
 - Context packing matches `dockerignore.LocalPathsFromGraph` for a Stagefile project.
 - Context packing honours `<dockerfile>.dockerignore` in preference to `.dockerignore`
   for a Dockerfile project, using the resolved dockerfile name.
