@@ -128,6 +128,8 @@ func NewRootCmd() *cobra.Command {
 	// command can only be attached to one parent.
 	installCmd := newOSInstallCmd()
 	installCmd.GroupID = "develop"
+	docsCmd := newDocsCmd()
+	docsCmd.GroupID = "develop"
 
 	// Manage
 	projectCmd := newProjectCmd()
@@ -212,6 +214,7 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		installCmd,
+		docsCmd,
 		// Manage
 		projectCmd,
 		deviceCmd,
