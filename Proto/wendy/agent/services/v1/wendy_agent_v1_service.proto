@@ -231,6 +231,14 @@ message GetAgentVersionResponse {
     // there, and a future darwin implementation should instead persist and
     // report the hash of the update payload it committed.
     string binary_sha256 = 20;
+    // Aggregate system-battery state, from /sys/class/power_supply. Absent on
+    // mains-powered devices and on agents predating this field, so `wendy
+    // device info` shows no battery line for either.
+    //
+    // Field 21 is left free for the in-flight hostname field on PR #1621,
+    // which currently claims 20 and must be renumbered when it merges; starting
+    // here guarantees no wire-number collision on either merge order.
+    optional BatteryStats battery = 22;
 }
 
 // A network interface on the device and the IP addresses assigned to it.

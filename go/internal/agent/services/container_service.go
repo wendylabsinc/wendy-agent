@@ -1204,6 +1204,7 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 	}
 	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
 	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
+	host.Battery = batteryToProto(hoststats.ResolveBattery())
 
 	return &agentpb.GetResourceStatsResponse{
 		Host:       host,
@@ -1221,6 +1222,42 @@ func thermalZonesToProto(zones []hoststats.ThermalZone) []*agentpb.ThermalZone {
 		out[i] = &agentpb.ThermalZone{Name: z.Name, TempC: z.TempC}
 	}
 	return out
+}
+
+// batteryToProto converts a sampled battery to its proto form, passing nil
+// through: a device without a battery reports no BatteryStats at all, which is
+// what lets the CLI show nothing rather than a misleading 0%. Shared by
+// GetResourceStats and GetAgentVersion.
+func batteryToProto(b *hoststats.Battery) *agentpb.BatteryStats {
+	if b == nil {
+		return nil
+	}
+	out := &agentpb.BatteryStats{
+		Percent: b.Percent,
+		State:   batteryStateToProto(b.State),
+	}
+	// Zero means "no usable rate" — leave the optional field absent rather than
+	// claiming zero seconds remaining.
+	if b.SecondsRemaining > 0 {
+		secs := b.SecondsRemaining
+		out.SecondsRemaining = &secs
+	}
+	return out
+}
+
+func batteryStateToProto(s hoststats.BatteryState) agentpb.BatteryState {
+	switch s {
+	case hoststats.BatteryCharging:
+		return agentpb.BatteryState_BATTERY_STATE_CHARGING
+	case hoststats.BatteryDischarging:
+		return agentpb.BatteryState_BATTERY_STATE_DISCHARGING
+	case hoststats.BatteryFull:
+		return agentpb.BatteryState_BATTERY_STATE_FULL
+	case hoststats.BatteryNotCharging:
+		return agentpb.BatteryState_BATTERY_STATE_NOT_CHARGING
+	default:
+		return agentpb.BatteryState_BATTERY_STATE_UNKNOWN
+	}
 }
 
 // GetContainerPorts returns the listening TCP and bound UDP sockets for the

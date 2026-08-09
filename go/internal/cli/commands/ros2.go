@@ -34,7 +34,11 @@ func newROS2Cmd() *cobra.Command {
 
 The agent discovers ROS 2 app containers (deployed with a "frameworks.ros2"
 config in wendy.json), starts a CLI sidecar in the same DDS domain, and runs
-ros2 commands there — no SSH and no setup.bash sourcing required.`,
+ros2 commands there — no SSH and no setup.bash sourcing required.
+
+To add ROS 2 to a project: wendy project frameworks add ros2
+For the full "frameworks.ros2" config shape (domainId, rmw, distro,
+discoveryScope) and how it's used: wendy docs ros2`,
 	}
 
 	cmd.AddCommand(
