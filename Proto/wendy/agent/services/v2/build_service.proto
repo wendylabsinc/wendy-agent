@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package wendy.agent.services.v2;
+
+option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2";
+
+// WendyBuildService lets a CLI delegate a container image build to this device,
+// so a developer's laptop does not have to be the machine that builds.
+//
+// BuildImage is remote code execution by design — that is the feature — so two
+// things are non-negotiable here: the device must be explicitly opted in as a
+// builder (see builder_enabled), and every field of a BuildSpec is re-validated
+// on the server rather than trusted from the client, even an in-org one.
+service WendyBuildService {
+  rpc GetBuildCapabilities(GetBuildCapabilitiesRequest) returns (GetBuildCapabilitiesResponse);
+  rpc BuildImage(stream BuildImageRequest) returns (stream BuildImageProgress);
+}
+
+message GetBuildCapabilitiesRequest {}
+
+message GetBuildCapabilitiesResponse {
+  // False when buildkitd is absent — notably on a Mac agent, where containers
+  // run under Apple Container, which has no BuildKit underneath.
+  bool buildkit_available = 1;
+  string buildkit_version = 2;
+  string os = 3;
+  string cpu_architecture = 4;
+  // Platforms this host builds without emulation, e.g. "linux/arm64".
+  repeated string native_platforms = 5;
+  // Platforms reachable only through binfmt/QEMU. Building these works but is
+  // slow enough that the CLI says so rather than letting it look like a hang.
+  repeated string emulated_platforms = 6;
+  // False unless this device is configured as a build host. Default off: being
+  // reachable must not be the same as volunteering to run other people's builds.
+  bool builder_enabled = 7;
+}
+
+// ChunkManifest reconstructs a byte stream from chunks already written through
+// WendyContainerService.WriteChunks, which is a generic sha256-addressed store.
+// Order is significant.
+message ChunkManifest {
+  repeated bytes chunk_hashes = 1;  // raw 32-byte sha256 digests, in order
+  int64 total_size = 2;             // expected reassembled size, for validation
+}
+
+// DockerfileBuild builds through BuildKit's dockerfile.v0 frontend.
+message DockerfileBuild {
+  // Filename within the context, e.g. "Dockerfile" or "Dockerfile.generated".
+  // Must not escape the context root.
+  string dockerfile = 1;
+  map<string, string> build_args = 2;
+}
+
+message BuildSpec {
+  // App identifier. Also selects the stable per-app context directory, whose
+  // path BuildKit uses as its local-source cache key — see the agent's
+  // contextDir for why that path must not vary between builds.
+  string app_id = 1;
+  // Target platform, e.g. "linux/arm64".
+  string platform = 2;
+  // Registry reference the finished image is pushed to, e.g.
+  // "robot-01.acme.cloud.wendy.dev:5000/myapp:latest". Validated against the
+  // mesh-address + registry-port form and never used verbatim as a dial target:
+  // an unconstrained destination would make this RPC a way to push an image
+  // anywhere, authenticated by this device's credentials.
+  string push_reference = 3;
+  // The build context as an uncompressed tar, addressed by chunk.
+  ChunkManifest context = 4;
+
+  oneof definition {
+    DockerfileBuild dockerfile_build = 5;
+    // Field 6 is reserved for LlbBuild — the Stagefile path, which compiles to
+    // LLB on the CLI and solves here. It depends on the Stagefile LLB backend
+    // (PR #1606). Reserving it now means that path needs no protocol change.
+  }
+  reserved 6;
+}
+
+message BuildImageRequest {
+  // The first message on the stream carries the spec. Later messages are
+  // reserved for future incremental input and are rejected today.
+  BuildSpec spec = 1;
+}
+
+message BuildImageProgress {
+  oneof event {
+    // One line of BuildKit plain-mode progress output, forwarded verbatim so
+    // the CLI's existing renderer consumes it unchanged.
+    string log_line = 1;
+    BuildImageResult result = 2;
+  }
+}
+
+message BuildImageResult {
+  // Digest of the pushed image, e.g. "sha256:...".
+  string image_digest = 1;
+}
