@@ -8,9 +8,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +21,264 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 )
+
+// setPinCache installs a deviceCacheLoadFn serving exactly entries, so a pin
+// lookup test controls the alias names (mesh/display) its candidate list can
+// see instead of reading whatever the developer's real ~/.wendy/devices.json
+// happens to hold.
+func setPinCache(t *testing.T, entries ...discoverycache.Entry) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "devices.json")
+	seedDeviceCache(t, path, entries...)
+	orig := deviceCacheLoadFn
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) { return discoverycache.LoadFrom(path) }
+	t.Cleanup(func() { deviceCacheLoadFn = orig })
+}
+
+// setFailingPinCache installs a deviceCacheLoadFn that cannot open the cache at
+// all — the degradation path every pin lookup must survive.
+func setFailingPinCache(t *testing.T) {
+	t.Helper()
+	orig := deviceCacheLoadFn
+	deviceCacheLoadFn = func() (*discoverycache.Cache, error) {
+		return nil, errors.New("device cache unavailable")
+	}
+	t.Cleanup(func() { deviceCacheLoadFn = orig })
+}
+
+// setPinConfig installs a config through the loadConfigForPinFn seam so a pin
+// lookup test never touches the real config file.
+func setPinConfig(t *testing.T, pins map[string]config.DevicePin) {
+	t.Helper()
+	cfg := &config.Config{DevicePins: pins}
+	orig := loadConfigForPinFn
+	loadConfigForPinFn = func() (*config.Config, error) { return cfg, nil }
+	t.Cleanup(func() { loadConfigForPinFn = orig })
+}
+
+// TestPinCandidateKeysSingleKeyWithoutCache: with nothing cached under the
+// dialled hostname there are no aliases to add, so the candidate list is
+// exactly today's single key. This is the shape every legacy caller sees.
+func TestPinCandidateKeysSingleKeyWithoutCache(t *testing.T) {
+	setPinCache(t) // empty cache, no entries at all
+
+	got := pinCandidateKeys("wendyos-calm-zinnia.local")
+	want := []string{"wendyos-calm-zinnia.local"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinCandidateKeys = %q, want %q — an empty cache must degrade to the single dialled key", got, want)
+	}
+
+	if keys := pinCandidateKeys(""); len(keys) != 0 {
+		t.Fatalf("pinCandidateKeys(\"\") = %q, want none — an empty key disables pin enforcement", keys)
+	}
+}
+
+// TestPinCandidateKeysAddsMeshThenDisplayName: the cache entry matched by
+// hostname contributes its mesh name and then its display name, in that order,
+// after the dialled key. Deduplication is by the same normalisation the pin
+// store uses, so a display name that is only a cosmetic variant of the dialled
+// host does not produce a second, redundant candidate.
+func TestPinCandidateKeysAddsMeshThenDisplayName(t *testing.T) {
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "calm-zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+		MeshName:    "calm-zinnia.acme.cloud.wendy.dev",
+	})
+
+	got := pinCandidateKeys("wendyos-calm-zinnia.local")
+	want := []string{"wendyos-calm-zinnia.local", "calm-zinnia.acme.cloud.wendy.dev", "calm-zinnia"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinCandidateKeys = %q, want %q (dialled key, then mesh name, then display name)", got, want)
+	}
+
+	// Dedup: a display name that normalises onto the dialled key must not
+	// repeat it, and an empty mesh name must not become an empty candidate.
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-2",
+		DisplayName: "WendyOS-Calm-Zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+	})
+	got = pinCandidateKeys("wendyos-calm-zinnia.local")
+	want = []string{"wendyos-calm-zinnia.local"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pinCandidateKeys = %q, want %q — empties dropped and the dialled key never repeated", got, want)
+	}
+}
+
+// TestExpectedIdentityForFindsPinUnderMeshName is the defect this task closes:
+// a pin recorded under a name that is not the mDNS hostname — cloud seeding
+// writes the asset name, and mesh addressing uses the mesh name — was inert
+// because every dial path looked up the hostname alone.
+func TestExpectedIdentityForFindsPinUnderMeshName(t *testing.T) {
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "calm-zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+		MeshName:    "calm-zinnia.acme.cloud.wendy.dev",
+	})
+	setPinConfig(t, map[string]config.DevicePin{
+		"calm-zinnia.acme.cloud.wendy.dev": {OrgID: 7, AssetID: "42", Source: config.PinSourceCloud},
+	})
+
+	got := expectedIdentityFor("wendyos-calm-zinnia.local")
+	if got == nil {
+		t.Fatal("expectedIdentityFor = nil for a host pinned under its mesh name; the pin is inert and enforcement is off")
+	}
+	want := certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"}
+	if *got != want {
+		t.Fatalf("expectedIdentityFor = %+v, want %+v", *got, want)
+	}
+	if !isPinned("wendyos-calm-zinnia.local") {
+		t.Fatal("isPinned = false for a host pinned under its mesh name; the ladder would offer it the plaintext rung")
+	}
+}
+
+// TestLookupPinCloudBeatsEarlierLAN: cloud spoke to the org over an
+// authenticated session, a LAN sighting did not — so a cloud pin under a later
+// candidate outranks a LAN pin under an earlier one. Among equal sources the
+// earliest candidate still wins.
+func TestLookupPinCloudBeatsEarlierLAN(t *testing.T) {
+	entry := discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "calm-zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+		MeshName:    "calm-zinnia.acme.cloud.wendy.dev",
+	}
+
+	t.Run("cloud under display name beats lan under the dialled key", func(t *testing.T) {
+		setPinCache(t, entry)
+		setPinConfig(t, map[string]config.DevicePin{
+			"wendyos-calm-zinnia":              {OrgID: 7, AssetID: "1", Source: config.PinSourceLAN},
+			"calm-zinnia.acme.cloud.wendy.dev": {OrgID: 7, AssetID: "2", Source: config.PinSourceLAN},
+			"calm-zinnia":                      {OrgID: 7, AssetID: "42", Source: config.PinSourceCloud},
+		})
+		cfg, err := loadConfigForPinFn()
+		if err != nil {
+			t.Fatalf("loadConfigForPinFn: %v", err)
+		}
+
+		pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+		if !ok {
+			t.Fatal("lookupPin found nothing despite three matching pins")
+		}
+		if key != "calm-zinnia" || pin.AssetID != "42" {
+			t.Fatalf("lookupPin = %+v under %q, want the cloud pin (asset 42) under \"calm-zinnia\"; cloud is authority regardless of candidate position", pin, key)
+		}
+		if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got == nil || got.EntityID != "42" {
+			t.Fatalf("expectedIdentityFor = %+v, want the cloud pin's asset 42", got)
+		}
+	})
+
+	t.Run("equal sources keep the earliest candidate", func(t *testing.T) {
+		setPinCache(t, entry)
+		setPinConfig(t, map[string]config.DevicePin{
+			"wendyos-calm-zinnia":              {OrgID: 7, AssetID: "1", Source: config.PinSourceLAN},
+			"calm-zinnia.acme.cloud.wendy.dev": {OrgID: 7, AssetID: "2", Source: config.PinSourceLAN},
+			"calm-zinnia":                      {OrgID: 7, AssetID: "3", Source: config.PinSourceLAN},
+		})
+		cfg, err := loadConfigForPinFn()
+		if err != nil {
+			t.Fatalf("loadConfigForPinFn: %v", err)
+		}
+
+		pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+		if !ok {
+			t.Fatal("lookupPin found nothing despite three matching pins")
+		}
+		if key != "wendyos-calm-zinnia.local" || pin.AssetID != "1" {
+			t.Fatalf("lookupPin = %+v under %q, want the dialled key's pin (asset 1); among equal sources the earliest candidate wins", pin, key)
+		}
+	})
+
+	t.Run("first cloud pin wins over a later cloud pin", func(t *testing.T) {
+		setPinCache(t, entry)
+		setPinConfig(t, map[string]config.DevicePin{
+			"calm-zinnia.acme.cloud.wendy.dev": {OrgID: 7, AssetID: "2", Source: config.PinSourceCloud},
+			"calm-zinnia":                      {OrgID: 7, AssetID: "3", Source: config.PinSourceCloud},
+		})
+		cfg, err := loadConfigForPinFn()
+		if err != nil {
+			t.Fatalf("loadConfigForPinFn: %v", err)
+		}
+
+		pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+		if !ok {
+			t.Fatal("lookupPin found nothing despite two matching cloud pins")
+		}
+		if key != "calm-zinnia.acme.cloud.wendy.dev" || pin.AssetID != "2" {
+			t.Fatalf("lookupPin = %+v under %q, want the mesh-name cloud pin (asset 2); it is the earlier candidate", pin, key)
+		}
+	})
+}
+
+// TestLookupPinCacheFailureDegradesToSingleKey is the regression that matters
+// most: an unreadable cache must fall back to today's single-key behaviour. If
+// it instead reported the host unpinned, enforcement would silently switch off
+// and the ladder would offer a pinned host the plaintext rung.
+func TestLookupPinCacheFailureDegradesToSingleKey(t *testing.T) {
+	setFailingPinCache(t)
+	setPinConfig(t, map[string]config.DevicePin{
+		"wendyos-calm-zinnia": {OrgID: 7, AssetID: "42", Source: config.PinSourceLAN},
+		// Reachable only via the cache's aliases, which are unavailable here.
+		"calm-zinnia": {OrgID: 7, AssetID: "43", Source: config.PinSourceCloud},
+	})
+	cfg, err := loadConfigForPinFn()
+	if err != nil {
+		t.Fatalf("loadConfigForPinFn: %v", err)
+	}
+
+	if got := pinCandidateKeys("wendyos-calm-zinnia.local"); !reflect.DeepEqual(got, []string{"wendyos-calm-zinnia.local"}) {
+		t.Fatalf("pinCandidateKeys = %q, want just the dialled key when the cache cannot be opened", got)
+	}
+
+	pin, key, ok := lookupPin(cfg, "wendyos-calm-zinnia.local")
+	if !ok {
+		t.Fatal("lookupPin reported UNPINNED because the cache could not be opened; a cache failure must never disable enforcement for a host that is pinned under its own key")
+	}
+	if key != "wendyos-calm-zinnia.local" || pin.AssetID != "42" {
+		t.Fatalf("lookupPin = %+v under %q, want the dialled key's pin (asset 42)", pin, key)
+	}
+	if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got == nil || got.EntityID != "42" {
+		t.Fatalf("expectedIdentityFor = %+v, want asset 42 — the constraint must survive a cache failure", got)
+	}
+	if !isPinned("wendyos-calm-zinnia.local") {
+		t.Fatal("isPinned = false after a cache failure; the pinned host would be offered the plaintext rung")
+	}
+}
+
+// TestIsPinnedAnyCandidate: a pin under any candidate makes the host pinned,
+// even when it carries no asset id (so it constrains nothing) — the pin's mere
+// existence is what forbids the plaintext rung.
+func TestIsPinnedAnyCandidate(t *testing.T) {
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "calm-zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+		MeshName:    "calm-zinnia.acme.cloud.wendy.dev",
+	})
+
+	for _, key := range []string{"wendyos-calm-zinnia", "calm-zinnia.acme.cloud.wendy.dev", "calm-zinnia"} {
+		t.Run("pinned under "+key, func(t *testing.T) {
+			setPinConfig(t, map[string]config.DevicePin{key: {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443"}})
+			if !isPinned("wendyos-calm-zinnia.local") {
+				t.Fatalf("isPinned = false with a pin recorded under %q, want true", key)
+			}
+			if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got != nil {
+				t.Fatalf("expectedIdentityFor = %+v, want nil — an asset-less pin constrains nothing", *got)
+			}
+		})
+	}
+
+	t.Run("no candidate pinned", func(t *testing.T) {
+		setPinConfig(t, map[string]config.DevicePin{"some-other-device": {OrgID: 7}})
+		if isPinned("wendyos-calm-zinnia.local") {
+			t.Fatal("isPinned = true with no pin under any candidate key")
+		}
+	})
+}
 
 func TestExpectedIdentityFor(t *testing.T) {
 	cases := []struct {
@@ -45,6 +305,10 @@ func TestExpectedIdentityFor(t *testing.T) {
 	// normalisation the ladder depends on.
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// An empty cache contributes no alias candidates, so this case
+			// stays a pure single-key lookup and never reads the developer's
+			// real ~/.wendy/devices.json.
+			setPinCache(t)
 			cfg := &config.Config{}
 			if tc.pin != nil {
 				cfg.DevicePins = map[string]config.DevicePin{"orin": *tc.pin}

@@ -70,6 +70,9 @@ func pinKeyForAddr(addr string) string {
 // the host is unpinned or its pin predates asset ids. Nil means "first contact
 // is permissive" — the posture that keeps legacy and unprovisioned devices
 // working; the pin is written on the first successful connect.
+//
+// The lookup goes through lookupPin, so a pin recorded under any of the
+// device's names — hostname, mesh name, or display name — is honoured here.
 func expectedIdentityFor(pinKey string) *certs.WendyIdentity {
 	if pinKey == "" {
 		return nil
@@ -78,15 +81,16 @@ func expectedIdentityFor(pinKey string) *certs.WendyIdentity {
 	if err != nil {
 		return nil
 	}
-	pin, ok := cfg.DevicePinFor(pinKey)
+	pin, _, ok := lookupPin(cfg, pinKey)
 	if !ok || pin.AssetID == "" {
 		return nil
 	}
 	return &certs.WendyIdentity{OrgID: int32(pin.OrgID), EntityType: "asset", EntityID: pin.AssetID}
 }
 
-// isPinned reports whether pinKey has any recorded pin. A pinned host has been
-// reached over mTLS before, so the ladder must not offer it the plaintext rung.
+// isPinned reports whether pinKey has any recorded pin under any of its
+// candidate keys. A pinned host has been reached over mTLS before, so the
+// ladder must not offer it the plaintext rung.
 //
 // This deliberately asks local state a question with a yes/no answer instead of
 // inspecting the dial errors: the previous refusal was an accident of
@@ -100,8 +104,88 @@ func isPinned(pinKey string) bool {
 	if err != nil {
 		return false
 	}
-	_, ok := cfg.DevicePinFor(pinKey)
+	_, _, ok := lookupPin(cfg, pinKey)
 	return ok
+}
+
+// pinCandidateKeys returns the keys a pin for pinKey may have been recorded
+// under, most-specific first: the name the caller dialed, then — from the
+// discovery-cache entry whose hostname matches it — that device's mesh name and
+// display name. One device answers to all three, and different surfaces record
+// under different ones: enforceDevicePin records the dialed mDNS hostname
+// (wendyos-calm-zinnia), cloud seeding records the asset name the roster
+// carries (calm-zinnia, which is the cache's display name), and mesh dials name
+// the device by its mesh name. A cloud Asset carries only {Id, Name} — no
+// hostname — so the cloud side cannot record under the dial key, and the
+// reconciliation has to happen here on lookup.
+//
+// Duplicates are dropped under the same normalisation the pin store applies, so
+// an alias that is only a cosmetic variant of the dialed name never produces a
+// second, redundant candidate, and empty names are never looked up.
+//
+// Reading discovery-derived names to pick a key is safe in a way that reading
+// them to make a trust decision would not be: consulting an extra candidate can
+// only ever FIND a pin, never discard one, so an attacker-chosen alias can at
+// most impose a constraint that the real device fails — a stricter outcome, not
+// a bypass. The trust decision itself stays on the certificate.
+func pinCandidateKeys(pinKey string) []string {
+	if pinKey == "" {
+		return nil
+	}
+	candidates := []string{pinKey}
+	// Best effort by construction: cachedDeviceHostEntry reports false for an
+	// unopenable cache, an unreadable one, and a plain miss alike, and every
+	// one of those degrades to exactly the single-key list above.
+	entry, ok := cachedDeviceHostEntry(pinKey)
+	if !ok {
+		return candidates
+	}
+	seen := map[string]bool{normalizeMDNSHost(pinKey): true}
+	for _, alias := range []string{entry.MeshName, entry.DisplayName} {
+		norm := normalizeMDNSHost(alias)
+		if norm == "" || seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		candidates = append(candidates, alias)
+	}
+	return candidates
+}
+
+// lookupPin resolves the pin governing pinKey across every candidate key,
+// returning it, the key it was found under, and whether there was one.
+//
+// A cloud-sourced pin outranks a LAN-sourced one wherever each sits in the
+// candidate order: cloud learned the binding from the org's cloud over an
+// authenticated session, while a LAN pin records only what some host on the
+// local network presented. Among pins of equal source the earliest candidate
+// wins, which keeps the dialed name authoritative over an alias.
+//
+// Because the search only ever adds keys, a host pinned under pinKey stays
+// pinned no matter what the cache says or fails to say — the property that lets
+// the cache be consulted best-effort without a cache outage quietly switching
+// enforcement off.
+func lookupPin(cfg *config.Config, pinKey string) (config.DevicePin, string, bool) {
+	if cfg == nil {
+		return config.DevicePin{}, "", false
+	}
+	var best config.DevicePin
+	var bestKey string
+	found := false
+	for _, key := range pinCandidateKeys(pinKey) {
+		pin, ok := cfg.DevicePinFor(key)
+		if !ok {
+			continue
+		}
+		if !found {
+			best, bestKey, found = pin, key, true
+			continue
+		}
+		if best.Source != config.PinSourceCloud && pin.Source == config.PinSourceCloud {
+			best, bestKey = pin, key
+		}
+	}
+	return best, bestKey, found
 }
 
 // identityRefusal renders a wrong-device rejection. Same text in interactive,
