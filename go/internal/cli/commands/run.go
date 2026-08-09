@@ -2192,35 +2192,91 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // skipping a rebuild (WDY-1824).
 func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
-	tmp, err := os.MkdirTemp("", "wendy-oci-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	ociTar := filepath.Join(tmp, "image.tar")
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
-	if opts.quietBuild {
-		// wendy watch: keep the legacy quiet behavior (buffer, surface only on
-		// genuine failure) rather than rendering a live UI under the watcher.
-		var buildLog bytes.Buffer
-		if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, &buildLog, &buildLog); err != nil {
-			if ctx.Err() == nil {
-				_, _ = os.Stderr.Write(buildLog.Bytes())
+	runBuild := func(build func(stream, logw io.Writer) error) error {
+		if opts.quietBuild {
+			// wendy watch: keep the legacy quiet behavior (buffer, surface only on
+			// genuine failure) rather than rendering a live UI under the watcher.
+			var buildLog bytes.Buffer
+			if err := build(&buildLog, &buildLog); err != nil {
+				if ctx.Err() == nil {
+					_, _ = os.Stderr.Write(buildLog.Bytes())
+				}
+				return err
 			}
+			return nil
+		}
+		return runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), build)
+	}
+
+	// The docker backend exports into a persistent per-app OCI layout DIRECTORY:
+	// BuildKit skips blobs already present there, so a warm rebuild writes only
+	// the changed layers instead of re-serializing the whole image (which costs
+	// seconds per GB of image on every iteration). Tar-only backends and the
+	// WENDY_CHUNK_EXPORT=tar escape hatch keep the legacy temp tar.
+	exportMode := chunkExportPlan(opts.builder)
+	var layoutDir string
+	if exportMode == "dir" {
+		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
+			layoutDir = chunkLayoutDir(userCache, appCfg.AppID, platform)
+		} else {
+			exportMode = "tar"
+		}
+	}
+
+	var layers []localLayer
+	var imageConfig []byte
+	if exportMode == "dir" {
+		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+		if err != nil {
 			return nil, err
 		}
+		defer releaseLayout()
+		build := func(stream, logw io.Writer) error {
+			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
+		}
+		if err := runBuild(build); err != nil {
+			return nil, err
+		}
+		mark("build (oci export)")
+		layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform)
+		if err != nil {
+			// Self-heal exactly once: a corrupt or partially-written layout dir is
+			// wiped and rebuilt from scratch, which is precisely the legacy cold
+			// behavior. A second failure is a real bug and surfaces.
+			cliLogln("OCI layout cache unreadable (%v); rebuilding it from scratch", err)
+			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
+				return nil, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
+			}
+			if err := runBuild(build); err != nil {
+				return nil, err
+			}
+			if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
+				return nil, err
+			}
+		}
+		// Prune blobs superseded by this build once the deploy is done with them.
+		// Best-effort: reachable blobs are never touched, so a failed GC only
+		// leaves garbage for the next run to collect.
+		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
-		if err := runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), func(stream, logw io.Writer) error {
+		tmp, err := os.MkdirTemp("", "wendy-oci-*")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(tmp)
+		ociTar := filepath.Join(tmp, "image.tar")
+		if err := runBuild(func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return nil, err
 		}
-	}
-	mark("build (oci export)")
-	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
-	if err != nil {
-		return nil, err
+		mark("build (oci export)")
+		layers, imageConfig, err = readOCILayoutLayers(ociTar, platform)
+		if err != nil {
+			return nil, err
+		}
 	}
 	mark("read+decompress layers")
 

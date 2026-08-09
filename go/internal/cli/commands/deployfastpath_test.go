@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -158,5 +159,32 @@ func TestComputeBuildInputHash_EnvChangesHash(t *testing.T) {
 	}
 	if withEnv == changed {
 		t.Error("changing an env value did not change the hash")
+	}
+}
+
+func TestBuildInputHashSaltIsV2(t *testing.T) {
+	// The v1→v2 bump deliberately invalidates fingerprints recorded while
+	// the stale-manifest bug (2026-08-08) could pair a current input hash
+	// with a stale deploy. Do not revert to v1; bump again only with a
+	// matching migration rationale.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := computeBuildInputHash(dir, "Dockerfile", "linux/arm64", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recompute what v1 would have produced by checking the source constant
+	// is gone: the simplest stable assertion is on the salt itself.
+	data, err := os.ReadFile("deployfastpath.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"wendy-deploy-fingerprint-v2\n"`) {
+		t.Fatalf("deploy fingerprint salt must be v2 (see comment); hash was %s", h)
+	}
+	if strings.Contains(string(data), `"wendy-deploy-fingerprint-v1\n"`) {
+		t.Fatal("v1 salt string still present in deployfastpath.go")
 	}
 }
