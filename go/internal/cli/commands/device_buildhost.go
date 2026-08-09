@@ -90,7 +90,11 @@ func newDeviceBuildHostStatusCmd() *cobra.Command {
 				cliLogln("Builder role: %s (run `wendy device build-host enable`)", tui.Value("disabled"))
 			}
 			if caps.GetBuildkitAvailable() {
-				cliLogln("BuildKit:     %s", tui.Value("available"))
+				if v := caps.GetBuildkitVersion(); v != "" {
+					cliLogln("BuildKit:     %s (%s)", tui.Value("available"), v)
+				} else {
+					cliLogln("BuildKit:     %s", tui.Value("available"))
+				}
 			} else {
 				// Say why on darwin: a bare "unavailable" on a Mac reads as a bug
 				// rather than a property of how the Mac agent runs containers.

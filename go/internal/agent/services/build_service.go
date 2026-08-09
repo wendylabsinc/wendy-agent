@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -176,8 +177,30 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		// empty until binfmt detection lands: over-claiming here would turn a
 		// fast CLI refusal into a slow, mysterious remote failure.
 		resp.NativePlatforms = []string{runtime.GOOS + "/" + runtime.GOARCH}
+		resp.BuildkitVersion = buildctlVersion()
 	}
 	return resp, nil
+}
+
+// buildctlVersion reports the installed buildctl's version, empty when it
+// cannot be determined. Worth surfacing because a build host's buildkit is
+// installed out-of-band — distro package, tarball, or none — so "which version
+// is on that box" is otherwise invisible from the CLI, and the Stagefile LLB
+// path will care.
+func buildctlVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "buildctl", "--version").Output()
+	if err != nil {
+		return ""
+	}
+	// "buildctl github.com/moby/buildkit v0.32.2 <sha>" → "v0.32.2"
+	for _, f := range strings.Fields(string(out)) {
+		if strings.HasPrefix(f, "v") {
+			return f
+		}
+	}
+	return ""
 }
 
 // buildkitSocketPresent reports whether a unix-socket buildkitd address points
