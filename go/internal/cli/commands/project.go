@@ -31,6 +31,14 @@ var entitlementDescriptions = map[string]string{
 	appconfig.EntitlementInput:     "Access Linux input devices (game controllers, barcode scanners, keyboards)",
 }
 
+// frameworkDescriptions mirrors entitlementDescriptions for the "frameworks"
+// key in wendy.json, so `wendy project frameworks list --show-all` gives the
+// same quality of discoverability `wendy project entitlements list --show-all`
+// already gives for entitlements.
+var frameworkDescriptions = map[string]string{
+	appconfig.FrameworkROS2: "ROS 2 runtime config (RMW implementation, distro, domain ID, discovery scope) — see `wendy docs ros2`",
+}
+
 func newProjectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "project",
@@ -38,6 +46,7 @@ func newProjectCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newEntitlementsCmd())
+	cmd.AddCommand(newFrameworksCmd())
 	cmd.AddCommand(newOptimizeCmd())
 	return cmd
 }
@@ -74,7 +83,13 @@ func newEntitlementsListCmd() *cobra.Command {
 	return cmd
 }
 
+// listAllEntitlementTypes and its output siblings below write to
+// cmd.OutOrStdout() rather than cobra's cmd.Print*, which — despite the name
+// — writes to OutOrStderr(). Using cmd.Print* here would mean `wendy project
+// entitlements list --show-all --json | jq` silently sees nothing on stdout,
+// while OutOrStdout() defaults to os.Stdout and still honors cmd.SetOut.
 func listAllEntitlementTypes(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	types := appconfig.ValidEntitlementTypes
 
 	if jsonOutput {
@@ -82,18 +97,19 @@ func listAllEntitlementTypes(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		cmd.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
-	cmd.Println("Available entitlement types:")
+	fmt.Fprintln(out, "Available entitlement types:")
 	for _, t := range types {
-		cmd.Printf("  %s\n", t)
+		fmt.Fprintf(out, "  %s\n", t)
 	}
 	return nil
 }
 
 func listProjectEntitlements(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	cfg, _, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -104,18 +120,18 @@ func listProjectEntitlements(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		cmd.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
 	if len(cfg.Entitlements) == 0 {
-		cmd.Println("No entitlements configured.")
+		fmt.Fprintln(out, "No entitlements configured.")
 		return nil
 	}
 
-	cmd.Println("Project entitlements:")
+	fmt.Fprintln(out, "Project entitlements:")
 	for _, e := range cfg.Entitlements {
-		cmd.Printf("  %s\n", e.Type)
+		fmt.Fprintf(out, "  %s\n", e.Type)
 	}
 	return nil
 }
@@ -157,6 +173,16 @@ func newEntitlementsAddCmd() *cobra.Command {
 					return err
 				}
 				entType = selected
+			}
+
+			// ROS 2 (and any future framework) is a common guess here, since
+			// nothing else in the CLI names "frameworks" as the place device
+			// integrations live. Redirect before falling into the generic
+			// "unknown type" error, which would otherwise say nothing about
+			// where "ros2" actually belongs.
+			if slices.Contains(appconfig.ValidFrameworkTypes, entType) {
+				return fmt.Errorf("%q is a framework, not an entitlement — configure it with `wendy project frameworks add %s`",
+					entType, entType)
 			}
 
 			if !slices.Contains(appconfig.ValidEntitlementTypes, entType) {
@@ -240,6 +266,242 @@ func newEntitlementsRemoveCmd() *cobra.Command {
 			}
 
 			cliSuccess("Removed %q entitlement", entType)
+			return nil
+		},
+	}
+}
+
+// newFrameworksCmd builds the `wendy project frameworks` command group. It
+// mirrors `wendy project entitlements` (list/add/remove, same error quality
+// for an unknown type) for the "frameworks" key in wendy.json, which
+// previously had no CLI-native way to discover its valid values or shape —
+// unlike entitlements, whose `add` command already lists valid types on a bad
+// guess.
+func newFrameworksCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "frameworks",
+		Short: "Manage project framework configuration (e.g. ROS 2)",
+	}
+
+	cmd.AddCommand(
+		newFrameworksListCmd(),
+		newFrameworksAddCmd(),
+		newFrameworksRemoveCmd(),
+	)
+	return cmd
+}
+
+// configuredFrameworkTypes returns the framework keys actually set in fw, in
+// the same order as appconfig.ValidFrameworkTypes.
+func configuredFrameworkTypes(fw *appconfig.FrameworksConfig) []string {
+	if fw == nil {
+		return nil
+	}
+	var types []string
+	if fw.ROS2 != nil {
+		types = append(types, appconfig.FrameworkROS2)
+	}
+	return types
+}
+
+func newFrameworksListCmd() *cobra.Command {
+	var showAll bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List project framework configuration",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if showAll {
+				return listAllFrameworkTypes(cmd)
+			}
+			return listProjectFrameworks(cmd)
+		},
+	}
+
+	cmd.Flags().BoolVar(&showAll, "show-all", false, "Show all available framework types")
+	return cmd
+}
+
+func listAllFrameworkTypes(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
+	types := appconfig.ValidFrameworkTypes
+
+	if jsonOutput {
+		data, err := json.Marshal(types)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	fmt.Fprintln(out, "Available framework types:")
+	for _, t := range types {
+		if desc := frameworkDescriptions[t]; desc != "" {
+			fmt.Fprintf(out, "  %s — %s\n", t, desc)
+		} else {
+			fmt.Fprintf(out, "  %s\n", t)
+		}
+	}
+	return nil
+}
+
+func listProjectFrameworks(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
+	cfg, _, err := loadProjectConfig()
+	if err != nil {
+		return err
+	}
+
+	configured := configuredFrameworkTypes(cfg.Frameworks)
+
+	if jsonOutput {
+		data, err := json.Marshal(configured)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	if len(configured) == 0 {
+		fmt.Fprintln(out, "No frameworks configured.")
+		return nil
+	}
+
+	fmt.Fprintln(out, "Project frameworks:")
+	for _, t := range configured {
+		fmt.Fprintf(out, "  %s\n", t)
+	}
+	return nil
+}
+
+func newFrameworksAddCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "add [type]",
+		Short: "Add a framework to the project",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, cfgPath, err := loadProjectConfig()
+			if err != nil {
+				return err
+			}
+
+			existing := configuredFrameworkTypes(cfg.Frameworks)
+			existingSet := make(map[string]bool, len(existing))
+			for _, t := range existing {
+				existingSet[t] = true
+			}
+
+			var fwType string
+			if len(args) > 0 {
+				fwType = args[0]
+			} else {
+				var items []tui.PickerItem
+				for _, t := range appconfig.ValidFrameworkTypes {
+					if !existingSet[t] {
+						items = append(items, tui.PickerItem{Name: t, Description: frameworkDescriptions[t], Value: t})
+					}
+				}
+				if len(items) == 0 {
+					cliLogln("All framework types are already added.")
+					return nil
+				}
+
+				selected, err := pickFromItems("Select a framework to add", items)
+				if err != nil {
+					return err
+				}
+				fwType = selected
+			}
+
+			if !slices.Contains(appconfig.ValidFrameworkTypes, fwType) {
+				return fmt.Errorf("unknown framework type %q\nValid types: %s",
+					fwType, strings.Join(appconfig.ValidFrameworkTypes, ", "))
+			}
+
+			if existingSet[fwType] {
+				return fmt.Errorf("framework %q already exists", fwType)
+			}
+
+			if cfg.Frameworks == nil {
+				cfg.Frameworks = &appconfig.FrameworksConfig{}
+			}
+			switch fwType {
+			case appconfig.FrameworkROS2:
+				// All ROS2Config fields are optional with sensible defaults
+				// (humble, CycloneDDS, a stable per-app domain ID), so unlike
+				// persist/i2c/gpio entitlements there is nothing required to
+				// prompt for here — an empty config already enables it.
+				cfg.Frameworks.ROS2 = &appconfig.ROS2Config{}
+			}
+
+			if err := saveProjectConfig(cfg, cfgPath); err != nil {
+				return err
+			}
+
+			cliSuccess("Added %q framework", fwType)
+			if fwType == appconfig.FrameworkROS2 {
+				cliLogln("Using defaults (distro %q, rmw %q, domain ID derived from appId). "+
+					"Edit \"frameworks.ros2\" in wendy.json to customize, or see `wendy docs ros2`.",
+					appconfig.ROS2DefaultDistro, appconfig.ROS2DefaultRMW)
+			}
+			return nil
+		},
+	}
+}
+
+func newFrameworksRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove [type]",
+		Short: "Remove a framework from the project",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, cfgPath, err := loadProjectConfig()
+			if err != nil {
+				return err
+			}
+
+			existing := configuredFrameworkTypes(cfg.Frameworks)
+
+			var fwType string
+			if len(args) > 0 {
+				fwType = args[0]
+			} else {
+				if len(existing) == 0 {
+					cliLogln("No frameworks configured.")
+					return nil
+				}
+
+				var items []tui.PickerItem
+				for _, t := range existing {
+					items = append(items, tui.PickerItem{Name: t, Description: frameworkDescriptions[t], Value: t})
+				}
+
+				selected, err := pickFromItems("Select a framework to remove", items)
+				if err != nil {
+					return err
+				}
+				fwType = selected
+			}
+
+			if !slices.Contains(existing, fwType) {
+				return fmt.Errorf("framework %q not found in project", fwType)
+			}
+
+			switch fwType {
+			case appconfig.FrameworkROS2:
+				cfg.Frameworks.ROS2 = nil
+			}
+			if cfg.Frameworks != nil && cfg.Frameworks.ROS2 == nil {
+				cfg.Frameworks = nil
+			}
+
+			if err := saveProjectConfig(cfg, cfgPath); err != nil {
+				return err
+			}
+
+			cliSuccess("Removed %q framework", fwType)
 			return nil
 		},
 	}

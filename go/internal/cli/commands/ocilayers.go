@@ -154,17 +154,27 @@ func resolveOCIImageManifest(descs []ociDescriptor, getBlob func(hex string) ([]
 }
 
 // pickOCIDescriptor chooses the best descriptor for the target platform:
-// an exact os/arch match if present, otherwise the first image manifest or
-// image index (skipping attestation/unknown entries).
+// the NEWEST exact os/arch match if present, otherwise the newest image
+// manifest or image index (skipping attestation/unknown entries).
+//
+// Newest means LAST in slice order: buildx's tar=false dir export APPENDS
+// each build's manifest to index.json, so several entries can match the
+// platform and the current build is always the final one. Resolving the
+// first match shipped the layout dir's first-ever build forever (stale
+// deps bug, on-device pass 2026-08-08).
 func pickOCIDescriptor(descs []ociDescriptor, wantOS, wantArch string) *ociDescriptor {
-	for i := range descs {
+	for i := len(descs) - 1; i >= 0; i-- {
 		d := &descs[i]
 		if d.Platform != nil && d.Platform.OS == wantOS && d.Platform.Architecture == wantArch {
 			return d
 		}
 	}
-	for i := range descs {
+	for i := len(descs) - 1; i >= 0; i-- {
 		d := &descs[i]
+		if d.Platform != nil && d.Platform.OS == "unknown" && d.Platform.Architecture == "unknown" {
+			// buildx attestation manifest — never a deployable image.
+			continue
+		}
 		if isOCIImageManifestMediaType(d.MediaType) || isOCIImageIndexMediaType(d.MediaType) {
 			return d
 		}
@@ -548,6 +558,93 @@ func gcOCILayoutDir(dir string) error {
 	return nil
 }
 
+// pruneOCILayoutDirIndex rewrites dir's index.json to reference only the
+// newest image manifest matching platform. buildx's tar=false export
+// appends manifests, so without pruning the index accumulates one entry
+// per build; older entries (and attestation manifests) keep superseded
+// blobs GC-reachable and — before pickOCIDescriptor preferred the newest
+// — pinned every reader to the first build. Runs under the caller's
+// layout-dir flock. A single already-pruned index is left byte-identical.
+func pruneOCILayoutDirIndex(dir, platform string) error {
+	indexPath := filepath.Join(dir, "index.json")
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return fmt.Errorf("reading index.json for prune: %w", err)
+	}
+	var typed struct {
+		Manifests []ociDescriptor `json:"manifests"`
+	}
+	var raw struct {
+		Manifests []json.RawMessage `json:"manifests"`
+	}
+	if err := json.Unmarshal(data, &typed); err != nil {
+		return fmt.Errorf("parsing index.json for prune: %w", err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parsing index.json for prune: %w", err)
+	}
+	if len(typed.Manifests) != len(raw.Manifests) {
+		return fmt.Errorf("index.json manifest parse mismatch (%d vs %d)", len(typed.Manifests), len(raw.Manifests))
+	}
+
+	wantOS, wantArch := parseOCIPlatform(platform)
+	chosen := pickOCIDescriptor(typed.Manifests, wantOS, wantArch)
+	// pickOCIDescriptor falls back to the newest manifest/index of ANY
+	// platform when no exact match exists (the right call for best-effort
+	// resolution). Pruning must not inherit that permissiveness: keeping a
+	// wrong-platform entry because it merely LOOKED like a manifest would
+	// silently discard the layout's only real candidate for wantOS/wantArch.
+	if chosen == nil || chosen.Platform == nil || chosen.Platform.OS != wantOS || chosen.Platform.Architecture != wantArch {
+		return fmt.Errorf("no manifest for %s in index.json; refusing to prune", platform)
+	}
+	chosenIdx := -1
+	for i := range typed.Manifests {
+		if &typed.Manifests[i] == chosen {
+			chosenIdx = i
+			break
+		}
+	}
+	if chosenIdx < 0 {
+		return fmt.Errorf("internal: chosen descriptor not found in index")
+	}
+	if len(typed.Manifests) == 1 && chosenIdx == 0 {
+		return nil
+	}
+
+	out := map[string]any{
+		"schemaVersion": 2,
+		"mediaType":     "application/vnd.oci.image.index.v1+json",
+		"manifests":     []json.RawMessage{raw.Manifests[chosenIdx]},
+	}
+	pruned, err := json.Marshal(out)
+	if err != nil {
+		return fmt.Errorf("marshaling pruned index.json: %w", err)
+	}
+	tmp, err := os.CreateTemp(dir, ".index-*.json")
+	if err != nil {
+		return fmt.Errorf("staging pruned index.json: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(pruned); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing pruned index.json: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("closing pruned index.json: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("chmod pruned index.json: %w", err)
+	}
+	if err := os.Rename(tmpName, indexPath); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("replacing index.json: %w", err)
+	}
+	return nil
+}
+
 // lockOCILayoutDir serializes use of a persistent layout directory across
 // wendy processes (build → read → push → GC). The lock file sits NEXT TO the
 // directory (dir+".lock") so a self-heal RemoveAll(dir) never deletes a held
@@ -822,7 +919,21 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("creating OCI layout directory: %w", err)
 	}
-	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr)
+	if err := buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr); err != nil {
+		return err
+	}
+	// The export appended this build's manifest; drop every older entry so
+	// readers and GC see exactly one current image. Prune is hygiene, not
+	// correctness: pickOCIDescriptor (newest-last) and gcOCILayoutDir (keeps
+	// everything index-reachable) are both correct even without pruning, and
+	// prune is strictly LESS tolerant than either (exact top-level platform
+	// match only, no nested indexes). A buildx environment whose index shapes
+	// prune refuses must not lose the ability to build, so a prune failure is
+	// only a warning here.
+	if err := pruneOCILayoutDirIndex(destDir, platform); err != nil {
+		fmt.Fprintf(stderr, "warning: could not prune OCI layout index (continuing; superseded entries accumulate until a successful prune): %v\n", err)
+	}
+	return nil
 }
 
 // chunkLayoutDir is the persistent per-app OCI layout directory used by the

@@ -41,8 +41,29 @@ func LocalPaths(f *spec.File) []string {
 // given paths.
 func Derive(paths []string) string {
 	lines := []string{"*"}
-	for _, p := range paths {
+	seen := map[string]bool{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
 		lines = append(lines, "!"+p)
+	}
+	for _, raw := range paths {
+		p := strings.TrimPrefix(raw, "./")
+		// Ensure parent dirs are reachable when unignoring nested files.
+		for dir := p; ; {
+			i := strings.LastIndex(dir, "/")
+			if i <= 0 {
+				break
+			}
+			add(dir[:i+1])
+			dir = dir[:i]
+		}
+		add(p)
+		// Also allow directory contents when p refers to a directory.
+		add(p + "/")
+		add(p + "/**")
 	}
 	return strings.Join(lines, "\n") + "\n"
 }

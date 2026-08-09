@@ -346,3 +346,121 @@ func TestFormatGPUMem(t *testing.T) {
 		t.Errorf("formatGPUMem(unset) = %q, want %q", got, "shared")
 	}
 }
+
+// --- battery ---
+
+// batterySample builds a top sample whose host carries the given battery (nil
+// for a mains-powered device).
+func batterySample(b *agentpb.BatteryStats) topSample {
+	return topSample{
+		host: &agentpb.HostStats{CpuCount: 2, MemTotalBytes: 200, MemAvailableBytes: 140, Battery: b},
+	}
+}
+
+func dischargingBattery() *agentpb.BatteryStats {
+	remaining := int64(8040)
+	return &agentpb.BatteryStats{
+		Percent:          78,
+		State:            agentpb.BatteryState_BATTERY_STATE_DISCHARGING,
+		SecondsRemaining: &remaining,
+	}
+}
+
+func TestBuildTopJSON_BatteryOmittedWithoutOne(t *testing.T) {
+	out := buildTopJSON(batterySample(nil), batterySample(nil), nil)
+	if out.Host.Battery != nil {
+		t.Fatalf("mains-powered device must report no battery, got %+v", out.Host.Battery)
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "battery") {
+		t.Errorf("JSON must omit the battery key entirely: %s", data)
+	}
+}
+
+func TestBuildTopJSON_Battery(t *testing.T) {
+	out := buildTopJSON(batterySample(dischargingBattery()), batterySample(dischargingBattery()), nil)
+	if out.Host.Battery == nil {
+		t.Fatal("expected battery in JSON output")
+	}
+	if out.Host.Battery.Percent != 78 {
+		t.Errorf("percent = %v, want 78", out.Host.Battery.Percent)
+	}
+	if out.Host.Battery.State != "discharging" {
+		t.Errorf("state = %q, want discharging", out.Host.Battery.State)
+	}
+	if out.Host.Battery.SecondsRemaining == nil || *out.Host.Battery.SecondsRemaining != 8040 {
+		t.Errorf("secondsRemaining = %v, want 8040", out.Host.Battery.SecondsRemaining)
+	}
+}
+
+func TestBuildTopJSON_BatteryEstimateOmittedWhenUnknown(t *testing.T) {
+	b := &agentpb.BatteryStats{Percent: 64, State: agentpb.BatteryState_BATTERY_STATE_DISCHARGING}
+	out := buildTopJSON(batterySample(b), batterySample(b), nil)
+	if out.Host.Battery == nil {
+		t.Fatal("expected battery in JSON output")
+	}
+	if out.Host.Battery.SecondsRemaining != nil {
+		t.Errorf("secondsRemaining = %v, want absent", *out.Host.Battery.SecondsRemaining)
+	}
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "secondsRemaining") {
+		t.Errorf("JSON must omit an unknown estimate rather than send 0: %s", data)
+	}
+}
+
+func TestWriteTopPlainSnapshot_BatteryLine(t *testing.T) {
+	var out bytes.Buffer
+	s := batterySample(dischargingBattery())
+	if err := writeTopPlainSnapshot(&out, s, s, nil); err != nil {
+		t.Fatal(err)
+	}
+	if want := "BAT: 78% (discharging, 2h14m left)"; !strings.Contains(out.String(), want) {
+		t.Errorf("plain snapshot missing %q:\n%s", want, out.String())
+	}
+}
+
+func TestWriteTopPlainSnapshot_NoBatteryNoLine(t *testing.T) {
+	var out bytes.Buffer
+	s := batterySample(nil)
+	if err := writeTopPlainSnapshot(&out, s, s, nil); err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(strings.ToUpper(text), "BAT") {
+		t.Errorf("mains-powered device must add nothing to the snapshot:\n%s", text)
+	}
+	// The rest of the snapshot is untouched.
+	if !strings.Contains(text, "CPU:") || !strings.Contains(text, "MEM:") {
+		t.Errorf("snapshot lost its existing host lines:\n%s", text)
+	}
+}
+
+func TestTopView_ShowsBatteryMeter(t *testing.T) {
+	m := topModel{width: 100, height: 24, havePrev: true, cur: batterySample(dischargingBattery())}
+	m.rebuildRows()
+	view := m.View()
+	for _, want := range []string{"Bat", "78%", "discharging", "2h14m"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("top view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTopView_NoBatteryMeterWithoutOne(t *testing.T) {
+	m := topModel{width: 100, height: 24, havePrev: true, cur: batterySample(nil)}
+	m.rebuildRows()
+	view := m.View()
+	if strings.Contains(view, "Bat[") {
+		t.Fatalf("mains-powered device must show no battery meter:\n%s", view)
+	}
+	// The CPU and Mem meters still render.
+	if !strings.Contains(view, "CPU") || !strings.Contains(view, "Mem[") {
+		t.Fatalf("top view lost its existing meters:\n%s", view)
+	}
+}

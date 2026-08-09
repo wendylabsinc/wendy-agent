@@ -28,7 +28,7 @@ func newHardwareListCmd() *cobra.Command {
 		Short: "List hardware capabilities",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}

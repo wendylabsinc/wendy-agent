@@ -44,6 +44,26 @@ The CLI verifies device server certificates on all mTLS connections (BLE, LAN gR
 
 3. **SPKI pinning (BLE)** — On first BLE connection to a device, its SPKI fingerprint is pinned in `~/.config/wendy/known_devices.json`. Subsequent connections verify the device presents the same fingerprint. If the fingerprint differs, a warning is printed to stderr (potential MITM or legitimate rotation).
 
+## Device identity pinning (default device)
+
+On the first successful connection to your default device, the CLI records that hostname's identity in `~/.wendy/config.json` under `devicePins`: the **organisation**, the **cloud host** that issued its certificate, and the **asset id** from the device certificate's `urn:wendy:org:<org>:asset:<assetID>` URI SAN. Every later connection to that hostname is checked against the pin.
+
+The pin is deliberately not a certificate fingerprint — a device legitimately rotates and re-enrolls certificates, and that must not look like an attack. What trips it is a change of *who* is answering:
+
+| Observed | Result |
+| --- | --- |
+| Same org + cloud + asset (renewed or re-enrolled cert) | Connects normally |
+| Different org or cloud host | Refused; prompts to trust and re-pin |
+| Same org + cloud, **different asset id** | Refused; the hostname now resolves to a different machine, or the device was wiped and re-enrolled as a new asset |
+| **No mTLS identity at all**, on a hostname that was pinned | Refused; an enrolled device does not drop its certificate on its own — it has been reflashed or factory reset, or another machine has taken its name |
+| No mTLS identity, hostname never pinned | Connects normally (ordinary out-of-the-box device) |
+
+The asset id is read only from a certificate that passed chain and org verification, so an impostor cannot assert its way past the pin.
+
+In an interactive terminal each refusal offers a prompt to accept the new identity. Under `--json` or a non-TTY the connection is refused outright. To re-pin deliberately, run `wendy device set-default <hostname>` — naming the device explicitly clears its pin so the next connection records a fresh one.
+
+Pins that predate asset pinning carry no asset id; the first connection whose org and cloud still match backfills it silently. Agents whose certificates carry no asset identity are never treated as swapped devices.
+
 ## CA key rollover
 
 The trust bundle may contain multiple CA certificates sharing the same subject DN. This is normal during a CA key rollover, where an old CA and a new CA temporarily coexist in the bundle. The agent's ML-DSA client certificate verifier (`verifyMLDSAClientCert`) tries every CA whose subject DN matches the client certificate's issuer DN. Verification succeeds as soon as any matching CA validates the certificate. If all matching CAs fail, the error from the last attempted CA is returned. If no CA in the pool has a matching subject DN, the verifier returns a "client certificate issuer not found in trusted CA pool" error.

@@ -86,7 +86,10 @@ exists.
 - **Serialization:** `ClientSessionState.ResumptionState()` →
   `SessionState.Bytes()` on `Put`; `tls.ParseSessionState` +
   `tls.NewResumptionState` on `Get` (Go 1.21+ APIs; module is on Go 1.26).
-- **macOS backend (default on darwin): Keychain**, via
+- **macOS backend: file, same as every other platform.** *(Revised
+  2026-08-09; this bullet originally made the Keychain the darwin default.
+  See "Why the Keychain is not the default" below.)*
+- **Keychain backend (opt-in, `WENDY_TLS_SESSION_STORE=keychain`)**, via
   `/usr/bin/security add-generic-password -U` / `find-generic-password -w` /
   `delete-generic-password` — the same subprocess pattern
   `wifi_scan_darwin.go` already uses. Service name `wendy-tls-session`,
@@ -106,7 +109,25 @@ exists.
   while the keychain is locked (screen-locked/powered-off device) plus
   exclusion from Time Machine and iCloud backups; it is not a stronger
   same-user access boundary than the file backend.
-- **Linux/Windows backend (default): file**,
+- **Why the Keychain is not the default.** `/usr/bin/security` offers no way
+  to suppress user interaction — `add-generic-password` has no
+  no-interaction flag and `security` has no global one (checked against
+  `security help`). In any context where the keychain search list does not
+  resolve (a sandboxed process, a non-login session), macOS answers the write
+  with a blocking **"A keychain cannot be found to store …"** modal. Because
+  `Put` runs on a background goroutine that discards its result, that modal
+  surfaces with no CLI context and nothing to correlate it to, and the user's
+  only obvious escape ("Reset To Defaults") rewrites their keychain search
+  list. A latency optimization whose fallback is a full handshake must never
+  be able to interrupt the user, so the prompting path cannot be the one
+  people get by default. Dropping it also removes three subprocess spawns per
+  connection from a feature whose whole point is speed. The security delta is
+  acceptable on the reasoning already stated two bullets up: the ticket is a
+  7-day bearer secret derived from a client identity whose ML-DSA private key
+  is itself unencrypted in `~/.wendy/config.json` on macOS too. Anyone who
+  wants at-rest encryption while the keychain is locked can opt in, accepting
+  that the write may prompt.
+- **Linux/Windows backend: file**,
   `~/.wendy/tls-sessions/<hex(storeKey)>.tlssession`, mode `0600`, directory
   `0700`, atomic temp-file + rename writes (concurrent CLI processes are
   last-writer-wins, which is safe), opportunistic pruning of files older
@@ -181,7 +202,8 @@ in-memory is sufficient there and reconnects benefit for free.
 | Failure | Outcome |
 | --- | --- |
 | No/corrupt/unreadable session entry | Full handshake (today's path) |
-| Keychain read prompts, is denied, or `security` fails | Treated as cache miss → full handshake |
+| Keychain read prompts, is denied, or `security` fails (opt-in backend only) | Treated as cache miss → full handshake |
+| Keychain *write* in a context with no resolvable keychain (opt-in backend only) | macOS raises a blocking modal; unavoidable via `security`, which is why this backend is not the default |
 | Process exits before async `Put` persists | Ticket lost → full handshake next time |
 | Agent restarted (ticket keys rotated) | Ticket undecryptable → full handshake |
 | Client cert window lapsed inside ticket | Server declines → full handshake → normal cert errors if genuinely expired |
@@ -196,10 +218,11 @@ in-memory is sufficient there and reconnects benefit for free.
 separate CLI processes); cert-fingerprint keying isolation (cert A's ticket
 invisible when bound to cert B); corrupt blob → nil + entry deleted; async
 `Put` completion. File backend: pruning of >7-day files, `0600`/`0700`
-permissions, atomic write. Keychain backend: unit-tested against a faked
-`security` runner (argument construction, miss/denial handling); real
-Keychain behavior — including **zero prompts on the hot path** — is part of
-the on-device/manual verification gate below.
+permissions, atomic write, and that the darwin default resolves to the file
+backend rather than the Keychain. Keychain backend: unit-tested against a
+faked `security` runner (argument construction, miss/denial handling) and
+asserted to require an explicit opt-in; its real prompting behavior is no
+longer on the hot path, so it is not part of the verification gate below.
 
 **Integration (in-process TLS client + `mtls.NewTLSConfig` server over a real
 listener, plus a gRPC-level pass using `mtls.NewServer`):**

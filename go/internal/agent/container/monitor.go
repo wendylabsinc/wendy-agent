@@ -78,8 +78,15 @@ type ContainerMonitor struct {
 	// tick would otherwise see the siblings stopped and launch a second,
 	// overlapping restart that races on the primary PID. Guarded by mu.
 	groupRestarting map[string]bool
-	mu              sync.Mutex
-	interval        time.Duration
+	// suppressed counts in-flight Suppress handles per container name (see
+	// Suppress). While a name's count is > 0, planRestarts will not schedule a
+	// restart for it. A counter rather than a bool so two independent
+	// operations racing on the same name (e.g. a stop overlapping a replace of
+	// the same service) don't have the first resume() re-enable restarts while
+	// the second is still tearing the task down. Guarded by mu.
+	suppressed map[string]int
+	mu         sync.Mutex
+	interval   time.Duration
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -92,6 +99,7 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		logManager:      logManager,
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
+		suppressed:      make(map[string]int),
 		interval:        interval,
 	}
 }
@@ -141,6 +149,65 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	if state, ok := m.states[appName]; ok {
 		state.ExplicitStop = false
 	}
+}
+
+// Suppress pauses automatic restarts for containerName until the returned
+// resume func is called. The containerd client holds this for the duration of
+// a replace or stop operation's kill+delete sequence so the monitor's
+// periodic tick cannot launch a competing restartSingle while the task is
+// being torn down — observed live as a crash-looping app's restart racing a
+// replace/stop ("cannot delete running task: failed precondition"), and a
+// half-dead task left behind wedging the follow-up delete entirely.
+//
+// The returned func is idempotent: calling it more than once only decrements
+// the count on the first call. containerName uses the same keying as
+// Register/states — bare appID for single-container apps, "{appID}_{service}"
+// for services-map apps.
+func (m *ContainerMonitor) Suppress(containerName string) func() {
+	m.mu.Lock()
+	m.suppressed[containerName]++
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			if m.suppressed[containerName] > 0 {
+				m.suppressed[containerName]--
+			}
+			if m.suppressed[containerName] <= 0 {
+				delete(m.suppressed, containerName)
+			}
+			m.mu.Unlock()
+		})
+	}
+}
+
+// restartBlocked reports whether containerName currently has a Suppress
+// handle held on it, or is marked as explicitly stopped under a policy that
+// honors that mark, and so must not be (re)started. Used by restartSingle to
+// re-check right before it would call StartContainer — see the comment there
+// for why this differs from the planRestarts-time check.
+//
+// The ExplicitStop arm is policy-aware (via restartPolicyHonorsExplicitStop)
+// rather than unconditional: shouldRestart deliberately restarts
+// RestartAlways containers even after an explicit stop, and an unconditional
+// block here would fight that — planRestarts schedules the restart every
+// tick (log churn, unbounded FailureCount, RestartStatuses misreporting
+// WillRestart=true as if it were crash-looping) while this guard silently
+// swallowed every attempt forever. The suppression arm stays unconditional:
+// suppression means a replace/stop operation is actively tearing the task
+// down right now, which is orthogonal to restart policy.
+func (m *ContainerMonitor) restartBlocked(containerName string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.suppressed[containerName] > 0 {
+		return true
+	}
+	if state, ok := m.states[containerName]; ok && state.ExplicitStop && restartPolicyHonorsExplicitStop(state.RestartPolicy) {
+		return true
+	}
+	return false
 }
 
 // RestartStatuses returns the monitor's per-container restart bookkeeping,
@@ -284,6 +351,17 @@ func (m *ContainerMonitor) planRestartActions(ctx context.Context, toRestart []s
 					continue
 				}
 				seenGroup[appID] = true
+				if m.groupHasSuppressedMember(ctx, gr, appID) {
+					// A sibling in this group is mid-replace/stop (a Suppress
+					// handle is held on it) even though it didn't itself
+					// qualify for toRestart — e.g. still reporting RUNNING
+					// because the caller hasn't killed its task yet.
+					// RestartGroup stops/recreates every member, which would
+					// stomp on whatever that operation is doing to the
+					// suppressed one. Defer the whole group restart; the next
+					// tick retries once the handle is resumed.
+					continue
+				}
 				actions = append(actions, restartAction{groupAppID: appID})
 				continue
 			}
@@ -293,8 +371,42 @@ func (m *ContainerMonitor) planRestartActions(ctx context.Context, toRestart []s
 	return actions
 }
 
+// groupHasSuppressedMember reports whether any currently-suppressed container
+// name (see Suppress) belongs to the same shared-namespace group as appID.
+// Suppressed names are usually few (in-flight replace/stop operations), so
+// this scans them directly rather than requiring a reverse appID->members
+// index the monitor doesn't otherwise need.
+func (m *ContainerMonitor) groupHasSuppressedMember(ctx context.Context, gr services.GroupRestarter, appID string) bool {
+	m.mu.Lock()
+	names := make([]string, 0, len(m.suppressed))
+	for name := range m.suppressed {
+		names = append(names, name)
+	}
+	m.mu.Unlock()
+
+	for _, name := range names {
+		if memberAppID, grouped := gr.GroupRestartAppID(ctx, name); grouped && memberAppID == appID {
+			return true
+		}
+	}
+	return false
+}
+
 // restartSingle restarts one container and drains its output to the log manager.
 func (m *ContainerMonitor) restartSingle(ctx context.Context, name string) {
+	if m.restartBlocked(name) {
+		// This goroutine was scheduled by a tick that observed name as down
+		// and eligible, but a Suppress or MarkExplicitStop landed in the gap
+		// between that decision and this goroutine actually running (there is
+		// no blocking call in between to close the window at the scheduling
+		// point — see planRestarts/Suppress). Re-checking here, immediately
+		// before the call that would resurrect the container, is what
+		// actually closes it: a replace/stop that starts suppression after
+		// the tick fired but before this line runs still wins.
+		m.logger.Debug("Skipping restart: suppressed or explicitly stopped since being scheduled",
+			zap.String("app_name", name))
+		return
+	}
 	outputCh, err := m.containerd.StartContainer(ctx, name, "", nil)
 	if err != nil {
 		m.logger.Error("Failed to restart container",
@@ -413,6 +525,13 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 		if running[appName] {
 			continue
 		}
+		if m.suppressed[appName] > 0 {
+			// A replace/stop operation is mid-teardown of this container; see
+			// Suppress. Skip it this tick — the caller will resume suppression
+			// once it is done, and the container's next observed state (running
+			// again, or still down) drives the following tick normally.
+			continue
+		}
 		if !m.shouldRestart(state) {
 			continue
 		}
@@ -430,21 +549,46 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 	return toRestart
 }
 
+// restartPolicyHonorsExplicitStop reports whether policy's restart decision
+// is gated by containerState.ExplicitStop. RestartUnlessStopped and
+// RestartOnFailure honor it — a user-initiated stop is meant to stick.
+// RestartAlways deliberately does not: restarting even after an explicit
+// stop is the entire point of "always" (that's the pre-existing, unreviewed-
+// here behavior shouldRestart already implements below). RestartNo never
+// restarts regardless, so the question doesn't apply to it either way.
+//
+// Shared by shouldRestart (the tick-time restart decision) and
+// restartBlocked (restartSingle's just-before-the-call re-check) so the two
+// cannot drift on which policies treat an explicit stop as binding — that
+// drift is exactly what caused an explicitly-stopped RestartAlways app to
+// get stuck in a perpetual scheduled-then-silently-skipped loop before this
+// helper existed.
+func restartPolicyHonorsExplicitStop(policy RestartPolicy) bool {
+	switch policy {
+	case RestartUnlessStopped, RestartOnFailure:
+		return true
+	default: // RestartNo, RestartAlways, and any future/unknown policy.
+		return false
+	}
+}
+
 // shouldRestart determines whether a container should be restarted based on its policy.
 func (m *ContainerMonitor) shouldRestart(state *containerState) bool {
+	if restartPolicyHonorsExplicitStop(state.RestartPolicy) && state.ExplicitStop {
+		return false
+	}
 	switch state.RestartPolicy {
 	case RestartNo:
 		return false
 	case RestartUnlessStopped:
-		return !state.ExplicitStop
+		return true
 	case RestartOnFailure:
 		// The monitor detects only whether a container has stopped; it has no
 		// exit-code signal from containerd. Until exit-code detection is added,
 		// ON_FAILURE behaves like UNLESS_STOPPED: it restarts on any exit, not
-		// only non-zero ones. MaxRetries is still enforced.
-		if state.ExplicitStop {
-			return false
-		}
+		// only non-zero ones. MaxRetries is still enforced. The ExplicitStop
+		// check above already ran for this policy (restartPolicyHonorsExplicitStop
+		// includes it), so reaching here means it wasn't set.
 		if state.MaxRetries > 0 && state.FailureCount >= state.MaxRetries {
 			return false
 		}

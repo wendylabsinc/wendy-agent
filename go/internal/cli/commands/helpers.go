@@ -1086,6 +1086,17 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, connErr
 			}
 		}
+		// WDY-1149: verify the resolved default device is still the same device,
+		// in the same organisation and cloud, that was pinned here (and pin it on
+		// first use). This runs BEFORE the update check on purpose: that check can
+		// offer to upload an agent binary, which must never happen against a
+		// device whose identity we are about to reject.
+		if isDefault {
+			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
+				conn.Close()
+				return nil, pinErr
+			}
+		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
 		}
@@ -1094,14 +1105,6 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			conn, updateErr = checkAndOfferUpdate(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
-			}
-		}
-		// WDY-1149: verify the resolved default device still belongs to the
-		// organisation + cloud it was pinned to (and pin it on first use).
-		if isDefault {
-			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
-				conn.Close()
-				return nil, pinErr
 			}
 		}
 		return conn, nil
@@ -1405,11 +1408,15 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 	if err != nil || conn == nil || !conn.IsMTLS {
 		// The entry advertised mTLS; a plaintext downgrade here would be
 		// surprising, so route it through the ordinary path instead.
+		// Describe the reason before closing conn — two of the three cases
+		// carry no err at all, and reading conn.IsMTLS after Close would be
+		// reading a torn-down connection.
+		reason := lkgDialFailureReason(conn, mtlsErr, err)
 		if conn != nil {
 			conn.Close()
 		}
 		if tlsDebug {
-			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %v\n", addr, err)
+			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %s\n", addr, reason)
 		}
 		return nil, mtlsErr, lkgHandshakeFailed
 	}
@@ -1417,6 +1424,27 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 		fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: connected\n", addr)
 	}
 	return conn, mtlsErr, lkgConnected
+}
+
+// lkgDialFailureReason describes, for WENDY_TLS_DEBUG output, why the LKG
+// ladder attempt didn't yield a usable mTLS connection. Only one of the three
+// failure modes actually carries a ladder error: a nil conn and a plaintext
+// downgrade both come back with err == nil, so formatting err alone printed a
+// bare "<nil>" for exactly the two cases whose cause is least obvious. The
+// downgrade case reports mtlsErr — the mTLS-probe diagnostic explaining why
+// the ladder fell back to plaintext — since that, not the (absent) ladder
+// error, is the reason the entry's advertised mTLS endpoint wasn't usable.
+func lkgDialFailureReason(conn *grpcclient.AgentConnection, mtlsErr, err error) string {
+	switch {
+	case err != nil:
+		return err.Error()
+	case conn == nil:
+		return "ladder returned no connection"
+	case mtlsErr != nil:
+		return fmt.Sprintf("ladder downgraded to plaintext though the cache entry advertised mTLS: %v", mtlsErr)
+	default:
+		return "ladder downgraded to plaintext though the cache entry advertised mTLS"
+	}
 }
 
 // dialAgentLKGFn is a seam over dialAgentLKG for connect-flow tests.
@@ -2202,7 +2230,11 @@ func findCertByOrgID(authEntries []config.AuthConfig, orgID int) *config.Certifi
 // attemptBLEConnect builds a TLS config and connects to device using the
 // given certificate info and pin store.
 func attemptBLEConnect(device *models.BluetoothDevice, cert config.CertificateInfo, pins certs.PinChecker) (*ble.AgentClient, error) {
-	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, cert.PemPrivateKey, certs.ServerVerifyOpts{
+	keyPEM, err := cert.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
+	tlsCfg, err := ble.NewClientTLSConfig(cert.PemCertificate, keyPEM, certs.ServerVerifyOpts{
 		ChainPEM:      cert.PemCertificateChain,
 		ExpectedOrgID: int32(cert.OrganizationID),
 		PinStore:      pins,

@@ -1467,7 +1467,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
 	certInfo := loadCLICert()
-	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
+	if certInfo == nil || certInfo.PemCertificate == "" || !certInfo.HasPrivateKey() {
 		return "", fmt.Errorf("mTLS connection but no CLI certificates available")
 	}
 
@@ -1492,7 +1492,11 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	if err := os.WriteFile(certPath, []byte(leafCertPEM), 0o644); err != nil {
 		return "", fmt.Errorf("writing client cert: %w", err)
 	}
-	if err := os.WriteFile(keyPath, []byte(certInfo.PemPrivateKey), 0o600); err != nil {
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return "", fmt.Errorf("loading client key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(keyPEM), 0o600); err != nil {
 		return "", fmt.Errorf("writing client key: %w", err)
 	}
 	if certInfo.PemCertificateChain != "" {
@@ -2455,7 +2459,11 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 				return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 			}
 			target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
-			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain)
+			keyPEM, keyErr := certInfo.PrivateKeyPEM()
+			if keyErr != nil {
+				return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+			}
+			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain)
 			if proxyErr != nil {
 				return "", false, nil, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
 			}
@@ -2483,7 +2491,11 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		if certInfo == nil {
 			return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 		}
-		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain, dial)
+		keyPEM, keyErr := certInfo.PrivateKeyPEM()
+		if keyErr != nil {
+			return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+		}
+		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain, dial)
 		if tlsErr != nil {
 			return "", false, nil, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
 		}
@@ -2764,7 +2776,11 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 	if err != nil {
 		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
 	}
-	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(certInfo.PemPrivateKey))
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}

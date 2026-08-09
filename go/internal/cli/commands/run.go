@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"gopkg.in/yaml.v3"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
@@ -626,6 +627,75 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 	return &SelectedDevice{Agent: cloudConn}, nil
 }
 
+// debugRequiresDebugpy fails fast when a --debug deploy would crash-loop for
+// want of debugpy. The agent unconditionally rewrites a Python entrypoint to
+// run under debugpy when debug mode is requested (wrapWithDebugpy), but
+// nothing injects debugpy into the image itself: 70493f702 ("Remove debugpy
+// injection") deliberately deleted that step from the registry-push path,
+// so an image that doesn't already bundle debugpy fails immediately on
+// device with "No module named debugpy".
+//
+// This check only has enough information to catch that failure mode for
+// Stagefile projects, where the CLI knows which pip requirements file(s)
+// feed the build. It is a no-op (returns nil) for anything else: non-python
+// apps, and non-Stagefile projects (Dockerfile-authored Python images are
+// covered by the printed note below instead, since the CLI cannot inspect
+// an opaque Dockerfile's installed packages).
+//
+// stagefileSourceName ("build.stagefile.yaml") is not defined on this
+// branch — that constant lives on the not-yet-merged Stagefile-native-layers
+// work — so the literal filename is used here instead.
+func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
+	if appCfg == nil || appCfg.Language != "python" {
+		return nil
+	}
+
+	data, err := os.ReadFile(filepath.Join(cwd, "build.stagefile.yaml"))
+	if err != nil {
+		// Not a Stagefile project (or unreadable) — nothing more to check here.
+		return nil
+	}
+
+	var stagefile struct {
+		Stages []struct {
+			Install struct {
+				Pip struct {
+					Requirements string `yaml:"requirements"`
+				} `yaml:"pip"`
+			} `yaml:"install"`
+		} `yaml:"stages"`
+	}
+	if err := yaml.Unmarshal(data, &stagefile); err != nil {
+		// Malformed Stagefile: let the normal build path surface the real
+		// parse error instead of failing here on an unrelated check.
+		return nil
+	}
+
+	var reqFiles []string
+	for _, stage := range stagefile.Stages {
+		if req := strings.TrimSpace(stage.Install.Pip.Requirements); req != "" {
+			reqFiles = append(reqFiles, req)
+		}
+	}
+	if len(reqFiles) == 0 {
+		return nil
+	}
+
+	for _, req := range reqFiles {
+		content, err := os.ReadFile(filepath.Join(cwd, req))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "debugpy") {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf(`--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
+}
+
 func runCommand(ctx context.Context, opts runOptions) error {
 	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
@@ -741,6 +811,12 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Debug mode requires host networking for remote debugger access.
 	if opts.debug {
+		// Fail fast, before any build/deploy work starts, when this is a
+		// Stagefile Python project whose pip requirements don't include
+		// debugpy. See debugRequiresDebugpy.
+		if err := debugRequiresDebugpy(cwd, appCfg); err != nil {
+			return err
+		}
 		appCfg.Debug = true
 		foundNetwork := false
 		for i, e := range appCfg.Entitlements {
