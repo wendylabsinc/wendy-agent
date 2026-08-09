@@ -1,13 +1,17 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	wendymcp "github.com/wendylabsinc/wendy/go/internal/cli/mcp"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 func newMCPCmd() *cobra.Command {
@@ -33,6 +37,9 @@ func newMCPServeCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			srv := wendymcp.New(cfg, connectWithAutoTLS)
+			srv.SetLANDiscoverer(func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error) {
+				return discovery.CollectLAN(ctx, cliLANStreamOptions(), timeout)
+			})
 			address := deviceFlag
 			if address == "" {
 				address = cfg.DefaultDevice
