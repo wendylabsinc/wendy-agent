@@ -44,6 +44,56 @@ func TestPushProxy_SurfacesDialFailure(t *testing.T) {
 	}
 }
 
+// A client that finishes sending and half-closes must still receive the whole
+// response. Tearing both connections down as soon as ONE direction finishes
+// truncates the reply, which reaches the client as "connection reset by peer" —
+// the failure buildkit hit on every concurrent push connection.
+func TestPushProxy_DeliversResponseAfterClientHalfClose(t *testing.T) {
+	const reply = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer backend.Close()
+	go func() {
+		c, aerr := backend.Accept()
+		if aerr != nil {
+			return
+		}
+		defer c.Close()
+		io.Copy(io.Discard, c) // read until the client half-closes
+		c.Write([]byte(reply))
+	}()
+
+	proxy, err := startPushProxy(context.Background(), backend.Addr().String(), nil)
+	if err != nil {
+		t.Fatalf("startPushProxy: %v", err)
+	}
+	defer proxy.stop()
+	// Plain TCP for the backend hop; the TLS wrapping is orthogonal to relaying.
+	proxy.dial = func(ctx context.Context, addr string) (net.Conn, error) {
+		return net.Dial("tcp", addr)
+	}
+
+	conn, err := net.Dial("tcp", proxy.addr)
+	if err != nil {
+		t.Fatalf("dialing proxy: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	conn.Write([]byte("HEAD /v2/x/blobs/sha256:deadbeef HTTP/1.1\r\nHost: x\r\n\r\n"))
+	conn.(*net.TCPConn).CloseWrite()
+
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("reading response through the proxy: %v", err)
+	}
+	if string(got) != reply {
+		t.Fatalf("response truncated through the proxy:\n got: %q\nwant: %q", got, reply)
+	}
+}
+
 func TestPushProxy_NoErrorWhenNothingConnects(t *testing.T) {
 	proxy, err := startPushProxy(context.Background(), "127.0.0.1:1", &tls.Config{MinVersion: tls.VersionTLS12})
 	if err != nil {

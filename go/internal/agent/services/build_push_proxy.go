@@ -54,6 +54,9 @@ func validatePushReference(ref string) (string, int, string, error) {
 type pushProxy struct {
 	addr string
 	stop func()
+	// dial opens the outbound hop. A field so tests can relay over plain TCP;
+	// production always uses the mTLS dialer set in startPushProxy.
+	dial func(ctx context.Context, addr string) (net.Conn, error)
 
 	mu  sync.Mutex
 	err error
@@ -93,6 +96,9 @@ func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pu
 	p := &pushProxy{
 		addr: ln.Addr().String(),
 		stop: func() { _ = ln.Close() },
+		dial: func(ctx context.Context, addr string) (net.Conn, error) {
+			return (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, "tcp", addr)
+		},
 	}
 	go func() {
 		for {
@@ -100,24 +106,45 @@ func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pu
 			if acceptErr != nil {
 				return // listener closed by stop()
 			}
-			go p.proxyOne(ctx, local, target, tlsCfg)
+			go p.proxyOne(ctx, local, target)
 		}
 	}()
 	return p, nil
 }
 
-func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, target string, tlsCfg *tls.Config) {
+func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, target string) {
 	defer local.Close()
-	d := &tls.Dialer{Config: tlsCfg}
-	remote, err := d.DialContext(ctx, "tcp", target)
+	remote, err := p.dial(ctx, target)
 	if err != nil {
 		p.recordError(fmt.Errorf("reaching device registry %s: %w", target, err))
 		return
 	}
 	defer remote.Close()
+	relayConns(local, remote)
+}
 
+// relayConns splices two connections until BOTH directions finish, signalling
+// end-of-stream to the far side with a half-close where the transport supports
+// one. This mirrors mesh.relayBytes, and the "both" matters: returning after
+// only the first direction completes tears down a socket that still has unread
+// data, which TCP signals as RST rather than FIN — reaching the peer as
+// "connection reset by peer" rather than a clean end of response.
+func relayConns(a, b net.Conn) {
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(remote, local); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(local, remote); done <- struct{}{} }()
+	cp := func(dst, src net.Conn) {
+		_, _ = io.Copy(dst, src)
+		type closeWriter interface{ CloseWrite() error }
+		if cw, ok := dst.(closeWriter); ok {
+			_ = cw.CloseWrite()
+		} else {
+			// No half-close available: closing outright is the only way to stop
+			// the opposite copy blocking forever and leaking its goroutine.
+			_ = dst.Close()
+		}
+		done <- struct{}{}
+	}
+	go cp(b, a)
+	go cp(a, b)
+	<-done
 	<-done
 }
