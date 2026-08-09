@@ -203,7 +203,8 @@ depends on which network you are on.
 
   A device does not become a build farm merely by being reachable. Enabling takes
   effect immediately, with no agent restart. The RPC requires a *user*
-  certificate, so one device cannot opt another in on your behalf.
+  certificate, so one device cannot opt another in on your behalf. See
+  [`wendy device build-host`](device/build-host.md).
 
 - **The build host must run BuildKit**, listening on
   `/run/buildkit/buildkitd.sock`. WendyOS devices have it. An adopted Linux host —
@@ -224,6 +225,27 @@ depends on which network you are on.
 If any of these does not hold, `wendy run` fails immediately and names the host.
 It never quietly falls back to building locally — a twenty-minute local build
 you believed was running on the Spark is worse than an error.
+
+### What enabling a build host means
+
+Worth being deliberate about, because a build host is a shared machine running
+other people's instructions:
+
+- **Anyone in your organisation can build on it.** A remote build executes the
+  Dockerfile it was handed, which is the feature — but it means the builder role
+  grants code execution on that device to every holder of a valid organisation
+  certificate. Cross-organisation callers are rejected by the agent's mTLS
+  organisation check. Enable the role on machines you would already trust that
+  way, not on a robot in the field.
+- **Build contexts land on its disk.** Sources are reassembled under
+  `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
+  builds so BuildKit's local-source cache stays warm. They are cleared and
+  rewritten at the start of each build of that app, but they are not deleted
+  afterwards.
+- **Builds of the same app are serialised** on a given host; different apps build
+  concurrently. Two people building one app id would otherwise share a context
+  directory, and the second build's extraction would replace sources the first
+  was still compiling.
 
 ### Errors
 

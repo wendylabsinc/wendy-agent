@@ -162,10 +162,8 @@ The fixes take effect on your **next** build; the build that just completed is u
 
 ## Remote build host
 
-`--build-host <device>` builds the image on another WendyOS device instead of this machine — useful when a build wants a GPU, or when the target's architecture would otherwise be emulated locally.
+Delegating a build to another device is a [`wendy run`](run.md#remote-build-host) feature, not a `wendy build` one, and `wendy build --build-host` returns an error saying so.
 
-The build host must have opted in (a `build-host-enabled` marker in its agent config directory) and must run BuildKit, which in practice means a Linux WendyOS device; a Mac cannot be a build host, because Apple Container has no BuildKit underneath. Failures name the host and never fall back to a local build.
+The reason is that the two commands mean different things by "build". `wendy run --build-host` has a target device: the build host builds the image and pushes it straight into *that* device's registry over the mesh. `wendy build` has no target — it leaves an image behind on the machine that built it — so a remote build would deposit the image on the build host and nowhere useful, which is worse than not offering the flag.
 
-Because `--builder` selects a *local* image builder that the remote path never runs, the two flags cannot be combined.
-
-See [`wendy run` → Remote build host](run.md#remote-build-host) for the full description, including how the finished image reaches the target device.
+Use `wendy run --build-host <device>` instead. To make a device willing to accept builds in the first place, see [`wendy device build-host`](device/build-host.md).
