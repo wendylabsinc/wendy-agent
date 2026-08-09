@@ -1015,6 +1015,14 @@ git commit -m "feat(rosbattery): decode sensor_msgs/BatteryState"
 to match them.** A wrong offset here decodes to a plausible wrong number rather
 than an error, which is exactly why Step 1 pins the exact-consumption guard.
 
+> **Superseded by the implementation.** `lowStateTrailerBytes = 76` below is
+> wrong — walking the trailer with real alignment gives 96. The shipped
+> decoder therefore has no such constant: `skipLowStateTrailer` walks every
+> field individually so alignment is computed rather than baked in, and the
+> exact-consumption check can actually detect drift. Read
+> `go/internal/agent/hoststats/rosbattery/lowstate.go` rather than the code
+> block below.
+
 Provisional layout:
 
 ```
