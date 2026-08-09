@@ -87,6 +87,51 @@ If `brewfile` is omitted and a `Brewfile.wendy` exists at the project root, `wen
 
 Array of capabilities the app requires. See [Entitlements](#entitlements-1) below.
 
+### `frameworks`
+
+Framework-level configuration, separate from `entitlements`. Where an entitlement grants access to a device capability, `frameworks` configures how a framework the app is built on is wired up on the device. ROS 2 is the only framework today.
+
+```json
+{
+  "frameworks": {
+    "ros2": {
+      "domainId": 42,
+      "rmw": "cyclonedds",
+      "distro": "humble",
+      "discoveryScope": "host"
+    }
+  }
+}
+```
+
+Every field is optional — `"frameworks": { "ros2": {} }` is a valid way to say "this is a ROS 2 app, use the defaults". The presence of `frameworks.ros2` is what marks a container as a ROS 2 app: the agent labels it, joins it to the right DDS domain, and starts the CLI sidecar that backs [`wendy device ros2`](/docs/integrations/ros2).
+
+#### `frameworks.ros2`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `domainId` | integer (0–232) | derived from `appId` | `ROS_DOMAIN_ID` for the app. Omit it to get a stable value hashed from the app ID, which keeps the domain constant across restarts without colliding with unrelated apps. |
+| `rmw` | string | `cyclonedds` | RMW middleware implementation. Accepts short names (`cyclonedds`, `fastrtps`/`fastdds`, `connextdds`, `gurumdds`) or full identifiers (`rmw_cyclonedds_cpp`, `rmw_fastrtps_cpp`, `rmw_connextdds`, `rmw_gurumdds_cpp`). |
+| `distro` | string | `humble` | ROS 2 distribution the app targets, e.g. `humble`, `iron`, `jazzy`. Lowercase letters and digits, starting with a letter. Selects the matching CLI sidecar image. Only the shape is enforced, not a fixed list, so a new ROS 2 release is usable before Wendy ships explicit support for it. |
+| `discoveryScope` | string | `app` | `app` restricts DDS discovery to the app group's own network namespace (`ROS_LOCALHOST_ONLY=1`), so unrelated apps and robots do not discover each other. `host` lets discovery use the device's host network — pair it with `{ "type": "network", "mode": "host" }`. |
+
+An out-of-range `domainId`, an unsupported `rmw`, a malformed `distro`, or an unknown `discoveryScope` is rejected when the config is parsed, rather than silently starting a container with no domain or middleware isolation.
+
+For multi-service apps, declare `frameworks` per service under `services.<name>.frameworks` to give a service its own ROS 2 settings. A service without its own `frameworks` inherits the top-level one, so a stack of talker/listener services shares a domain by default.
+
+```json
+{
+  "appId": "robot",
+  "frameworks": { "ros2": { "rmw": "cyclonedds" } },
+  "services": {
+    "talker":   { "context": "./talker" },
+    "bridge":   { "context": "./bridge", "frameworks": { "ros2": { "discoveryScope": "host" } } }
+  }
+}
+```
+
+Use [`wendy init --framework ros2`](../clients/wendy-cli/commands/init.md#frameworks) to scaffold this block, or add it by hand — `wendy run` picks it up on the next deploy. See [Wendy for ROS 2](/docs/integrations/ros2) for inspecting and debugging the running system.
+
 ### `readiness`
 
 Configures how the CLI determines when the app is ready after starting.

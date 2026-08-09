@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -84,18 +85,28 @@ type initOptions struct {
 	persistPath         string
 	assistant           string
 	installClaudeSkills bool
+	frameworks          []string
+	ros2DomainID        int
+	ros2RMW             string
+	ros2Distro          string
+	ros2DiscoveryScope  string
 
-	appIDSet        bool
-	targetSet       bool
-	languageSet     bool
-	templateSet     bool
-	gitInitSet      bool
-	entitlementsSet bool
-	gpioPinsSet     bool
-	i2cDeviceSet    bool
-	persistNameSet  bool
-	persistPathSet  bool
-	assistantSet    bool
+	appIDSet              bool
+	targetSet             bool
+	languageSet           bool
+	templateSet           bool
+	gitInitSet            bool
+	entitlementsSet       bool
+	gpioPinsSet           bool
+	i2cDeviceSet          bool
+	persistNameSet        bool
+	persistPathSet        bool
+	assistantSet          bool
+	frameworksSet         bool
+	ros2DomainIDSet       bool
+	ros2RMWSet            bool
+	ros2DistroSet         bool
+	ros2DiscoveryScopeSet bool
 }
 
 // Questions for WendyOS devices.
@@ -118,7 +129,11 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init [app-id]",
 		Short: "Initialize a new Wendy project",
-		Long:  "Interactively create a new Wendy project with scaffolding, entitlements, and optional AI assistant setup.",
+		Long: "Interactively create a new Wendy project with scaffolding, entitlements, and optional AI assistant setup.\n\n" +
+			"wendy.json also supports a separate, top-level \"frameworks\" key for framework-level config " +
+			"(currently ROS 2: domain ID, RMW middleware, discovery scope). Enable it with --framework " +
+			"(see the ROS 2 example below), through the interactive prompt on a WendyOS target, or by hand-editing " +
+			"\"frameworks\" in wendy.json afterwards.",
 		Example: `  # Interactive wizard
   wendy init
 
@@ -185,7 +200,17 @@ func newInitCmd() *cobra.Command {
     --language python \
     --entitlement gpu,audio \
     --assistant claude \
-    --install-claude-skills`,
+    --install-claude-skills
+
+  # ROS 2 app: enable the "frameworks" key with the ros2 framework
+  wendy init \
+    --app-id go2-network-bridge \
+    --target wendyos \
+    --language swift \
+    --framework ros2 \
+    --ros2-rmw cyclonedds \
+    --ros2-discovery-scope host \
+    --assistant skip`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.appIDSet = cmd.Flags().Changed("app-id")
@@ -199,6 +224,11 @@ func newInitCmd() *cobra.Command {
 			opts.persistNameSet = cmd.Flags().Changed("persist-name")
 			opts.persistPathSet = cmd.Flags().Changed("persist-path")
 			opts.assistantSet = cmd.Flags().Changed("assistant")
+			opts.frameworksSet = cmd.Flags().Changed("framework")
+			opts.ros2DomainIDSet = cmd.Flags().Changed("ros2-domain-id")
+			opts.ros2RMWSet = cmd.Flags().Changed("ros2-rmw")
+			opts.ros2DistroSet = cmd.Flags().Changed("ros2-distro")
+			opts.ros2DiscoveryScopeSet = cmd.Flags().Changed("ros2-discovery-scope")
 
 			err := runInitWizard(args, opts)
 			if errors.Is(err, tui.ErrCancelled) {
@@ -224,6 +254,11 @@ func newInitCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.persistPath, "persist-path", "", "Mount path for the persist entitlement (e.g. /data)")
 	cmd.Flags().StringVar(&opts.assistant, "assistant", "", "AI assistant to launch after init: claude, codex, or skip")
 	cmd.Flags().BoolVar(&opts.installClaudeSkills, "install-claude-skills", false, "Install Wendy Claude skills before launching Claude")
+	cmd.Flags().StringSliceVar(&opts.frameworks, "framework", nil, "App framework to enable in wendy.json's top-level \"frameworks\" key (repeatable or comma-separated; currently: ros2)")
+	cmd.Flags().IntVar(&opts.ros2DomainID, "ros2-domain-id", -1, fmt.Sprintf("ROS 2 domain ID, %d-%d (default: derived from the app ID)", appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax))
+	cmd.Flags().StringVar(&opts.ros2RMW, "ros2-rmw", "", "ROS 2 middleware implementation: cyclonedds (default), fastrtps, connextdds, or gurumdds")
+	cmd.Flags().StringVar(&opts.ros2Distro, "ros2-distro", "", fmt.Sprintf("ROS 2 distribution (default: %s)", appconfig.ROS2DefaultDistro))
+	cmd.Flags().StringVar(&opts.ros2DiscoveryScope, "ros2-discovery-scope", "", fmt.Sprintf("ROS 2 discovery scope: %s (default, isolated) or %s (shared with the device's host network)", appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost))
 
 	// Allow bare `--template` (no value) by rewriting os.Args before cobra
 	// parses flags. When --template appears as the last arg or is followed by
@@ -305,6 +340,15 @@ func runInitWizard(args []string, opts initOptions) error {
 		return err
 	}
 
+	// Step 3b: Framework support (currently ROS 2), via --framework/--ros2-*
+	// flags or, on a WendyOS target with no entitlement flags, an interactive
+	// prompt. wendy.json's top-level "frameworks" key otherwise has no
+	// discovery path from `wendy init` (WDY frameworks discoverability).
+	frameworks, err := resolveInitFrameworks(target, opts)
+	if err != nil {
+		return err
+	}
+
 	// Step 4: Generate wendy.json.
 	// WendyOS is Linux, so the WendyOS target writes the plain "linux"
 	// platform. wendy-lite and darwin need distinct values.
@@ -322,6 +366,7 @@ func runInitWizard(args []string, opts initOptions) error {
 		Platform:     platform,
 		Language:     language,
 		Entitlements: entitlements,
+		Frameworks:   frameworks,
 	}
 
 	if language == langPython {
@@ -339,6 +384,9 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	cliSuccess("\nCreated wendy.json for %s", appID)
+	if frameworks != nil && frameworks.ROS2 != nil {
+		cliLogln("  Framework: ros2 (edit the \"frameworks\" key in wendy.json to change domain ID, RMW, or discovery scope)")
+	}
 
 	// Step 5: Scaffold project files.
 	if err := scaffoldProject(cwd, appID, target, language); err != nil {
@@ -368,7 +416,7 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 
 		if tmpl == "_pick" {
 			// Bare --template (no value): show interactive picker filtered by target.
-			name, err := pickTemplateNameForTarget(target, meta)
+			name, err := resolveBareTemplatePick(target, meta)
 			return name, meta, err
 		}
 
@@ -421,9 +469,10 @@ func templateTargetMatch(t repoMetaTemplate, target string) bool {
 	return false
 }
 
-// pickTemplateNameForTarget shows a picker with templates available for the given target.
-func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
-	fmt.Println()
+// templateItemsForTarget builds the picker items for the templates available
+// for target, shared by the interactive picker and its non-interactive
+// plain-text fallback.
+func templateItemsForTarget(target string, meta *repoMeta) []tui.PickerItem {
 	var items []tui.PickerItem
 	for _, t := range meta.Templates {
 		if templateTargetMatch(t, target) {
@@ -434,10 +483,38 @@ func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
 			})
 		}
 	}
+	return items
+}
+
+// pickTemplateNameForTarget shows a picker with templates available for the given target.
+func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
+	fmt.Println()
+	items := templateItemsForTarget(target, meta)
 	if len(items) == 0 {
 		return "", fmt.Errorf("no templates available for %s", target)
 	}
 	return pickFromItems("Choose a template", items)
+}
+
+// resolveBareTemplatePick handles a bare `--template` (rewritten to the
+// "_pick" sentinel by rewriteBareTemplateFlag): it shows the interactive
+// picker filtered by target, or — with no TTY attached — prints the same
+// list as plain text instead of failing on the picker's TTY open. Without
+// this, a headless caller (script, CI, or an AI agent) hit
+// "picker: could not open a new TTY" with no way to discover what templates
+// exist at all.
+func resolveBareTemplatePick(target string, meta *repoMeta) (string, error) {
+	if !isInteractiveTerminal() {
+		// Report "no templates" the same way the picker path does rather than
+		// printing an empty list and then blaming the missing --template value.
+		items := templateItemsForTarget(target, meta)
+		if len(items) == 0 {
+			return "", fmt.Errorf("no templates available for %s", target)
+		}
+		printPickerItemsPlainText("Available templates for "+target, items)
+		return "", fmt.Errorf("--template requires a value when running non-interactively; pass --template=<name> using one of the templates listed above")
+	}
+	return pickTemplateNameForTarget(target, meta)
 }
 
 // pickTemplateOrSkipForTarget shows templates for the given target plus a "No template" option.
@@ -650,6 +727,12 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	// Resolve --framework/--ros2-* flags up front for the same reason.
+	requestedFrameworks, err := templateFrameworksFromFlags(target, opts)
+	if err != nil {
+		return err
+	}
+
 	// Parse --var overrides.
 	varOverrides, err := parseVarFlags(opts.vars)
 	if err != nil {
@@ -696,12 +779,20 @@ func runTemplateFlow(cwd, destDir, appID, tmpl, target string, meta *repoMeta, o
 		return err
 	}
 
+	addedFrameworks, err := mergeTemplateFrameworks(filepath.Join(destDir, "wendy.json"), requestedFrameworks)
+	if err != nil {
+		return err
+	}
+
 	cliSuccess("\nScaffolded %s project from template %q", language, tmpl)
 	cliLogln("  Directory: %s", tui.Path(destDir+"/"))
 	for _, v := range manifest.Variables {
 		if val, ok := vals[v.Name]; ok {
 			cliLogln("  %s: %v", v.Name, val)
 		}
+	}
+	if addedFrameworks {
+		cliLogln("  Frameworks added from flags: ros2")
 	}
 	if len(addedEntitlements) > 0 {
 		cliLogln("  Entitlements added from flags: %s", strings.Join(addedEntitlements, ", "))
@@ -908,6 +999,15 @@ func resolveInitAppID(cwd string, args []string, opts initOptions) (string, erro
 	return "", nil
 }
 
+// initTargetItems is the shared source of truth for the target picker (TTY)
+// and its non-interactive plain-text fallback (see resolveInitTarget), so the
+// two can never drift out of sync.
+var initTargetItems = []tui.PickerItem{
+	{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
+	{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
+	{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
+}
+
 func resolveInitTarget(opts initOptions) (string, error) {
 	if opts.targetSet {
 		target := normalizeInitTarget(opts.target)
@@ -917,12 +1017,36 @@ func resolveInitTarget(opts initOptions) (string, error) {
 		return target, nil
 	}
 
+	if !isInteractiveTerminal() {
+		printPickerItemsPlainText("Available targets", initTargetItems)
+		return "", fmt.Errorf("--target is required when running non-interactively (valid: %s, %s, %s)", targetWendyOS, targetDarwin, targetWendyLite)
+	}
+
 	fmt.Println()
-	return pickFromItems("What is your target device?", []tui.PickerItem{
-		{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
-		{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
-		{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
-	})
+	return pickFromItems("What is your target device?", initTargetItems)
+}
+
+// printPickerItemsPlainText renders picker items as a plain-text list. Used
+// as the non-interactive fallback for choices that would otherwise require a
+// Bubble Tea picker, which fails ungracefully ("could not open a new TTY")
+// when stdin/stdout are not real terminals (WDY frameworks/template
+// discoverability follow-up).
+func printPickerItemsPlainText(title string, items []tui.PickerItem) {
+	cliLogln("%s:", title)
+	if len(items) == 0 {
+		// Defensive: callers are expected to handle "nothing to choose from"
+		// with a specific error, but a bare title with no list under it reads
+		// as a rendering bug.
+		cliLogln("  (none)")
+		return
+	}
+	for _, item := range items {
+		if item.Description != "" {
+			cliLogln("  %s - %s", item.Name, item.Description)
+		} else {
+			cliLogln("  %s", item.Name)
+		}
+	}
 }
 
 func resolveInitLanguage(target string, opts initOptions) (string, error) {
@@ -948,6 +1072,25 @@ func resolveInitEntitlements(target, language string, opts initOptions) ([]appco
 
 	fmt.Println()
 	return askEntitlementQuestions(target, language)
+}
+
+// resolveInitFrameworks determines the "frameworks" config (currently just
+// ROS 2) for the non-template flow: explicit --framework/--ros2-* flags win;
+// otherwise, on a WendyOS target with no entitlement flags either (i.e. the
+// caller is answering questions interactively, not scripting the whole
+// setup), ask. wendy-lite and darwin targets don't run the ROS 2 container
+// image, so frameworks are WendyOS-only.
+func resolveInitFrameworks(target string, opts initOptions) (*appconfig.FrameworksConfig, error) {
+	if initFrameworksProvided(opts) {
+		return buildInitFrameworksFromFlags(target, opts)
+	}
+
+	if initEntitlementsProvided(opts) || target != targetWendyOS {
+		return nil, nil
+	}
+
+	fmt.Println()
+	return askFrameworkQuestions()
 }
 
 func resolveInitAssistant(appID, target, language string, entitlements []appconfig.Entitlement, opts initOptions) error {
@@ -1027,6 +1170,160 @@ var askEntitlementQuestions = func(target, language string) ([]appconfig.Entitle
 	}
 
 	return entitlements, nil
+}
+
+// ros2RMWPickerItems lists the RMW implementations offered by the interactive
+// ROS 2 setup prompt. Values are the short aliases appconfig.ROS2Config
+// accepts (see ResolvedRMW) alongside their full identifiers.
+var ros2RMWPickerItems = []tui.PickerItem{
+	{Name: "CycloneDDS", Description: "Default; lightweight and widely used", Value: "cyclonedds", SortKey: "0"},
+	{Name: "Fast DDS", Description: "eProsima's RMW, ROS 2's historical default", Value: "fastrtps", SortKey: "1"},
+	{Name: "Connext DDS", Description: "RTI's commercial-grade RMW", Value: "connextdds", SortKey: "2"},
+	{Name: "GurumDDS", Description: "Gurum Networks RMW", Value: "gurumdds", SortKey: "3"},
+}
+
+// askFrameworkQuestions interactively offers ROS 2 support for a WendyOS
+// app (WDY frameworks discoverability: `wendy init` gave no hint that a
+// separate top-level "frameworks" key exists in wendy.json). Domain ID and
+// discovery scope are surfaced; the distro is left at its default and can be
+// changed by hand afterwards.
+var askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) {
+	wantROS2, err := tui.Confirm("Does your app use ROS 2 (Robot Operating System)?")
+	if err != nil {
+		return nil, err
+	}
+	if !wantROS2 {
+		return nil, nil
+	}
+
+	rmw, err := pickFromItems("Which ROS 2 middleware (RMW) implementation?", ros2RMWPickerItems)
+	if err != nil {
+		return nil, err
+	}
+
+	scope, err := pickFromItems("ROS 2 discovery scope?", []tui.PickerItem{
+		{Name: "App-local (default)", Description: "Isolated to this app's own containers", Value: appconfig.ROS2DiscoveryScopeApp, SortKey: "0"},
+		{Name: "Host network", Description: "Discoverable across the device's host network", Value: appconfig.ROS2DiscoveryScopeHost, SortKey: "1"},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	domainIDInput, err := tui.PromptText(
+		"ROS 2 domain ID",
+		fmt.Sprintf("%d-%d, leave empty to auto-derive from the app ID", appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax),
+		func(v string) error {
+			v = strings.TrimSpace(v)
+			if v == "" {
+				return nil
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return fmt.Errorf("must be a number")
+			}
+			if n < appconfig.ROS2DomainIDMin || n > appconfig.ROS2DomainIDMax {
+				return fmt.Errorf("must be between %d and %d", appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	ros2 := &appconfig.ROS2Config{RMW: rmw, DiscoveryScope: scope}
+	if domainIDInput = strings.TrimSpace(domainIDInput); domainIDInput != "" {
+		domainID, err := strconv.Atoi(domainIDInput)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ROS 2 domain ID %q: %w", domainIDInput, err)
+		}
+		ros2.DomainID = &domainID
+	}
+
+	cliLogln("ROS 2 distro left at the default (%q) — edit \"frameworks.ros2.distro\" in wendy.json to change it.", appconfig.ROS2DefaultDistro)
+
+	return &appconfig.FrameworksConfig{ROS2: ros2}, nil
+}
+
+// initFrameworksProvided reports whether the user supplied any
+// --framework/--ros2-* flag, mirroring initEntitlementsProvided.
+func initFrameworksProvided(opts initOptions) bool {
+	return opts.frameworksSet || opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2DiscoveryScopeSet
+}
+
+// buildInitFrameworksFromFlags resolves --framework/--ros2-* into a
+// FrameworksConfig, or nil when no framework was requested. Field values are
+// validated with the same rules appconfig.AppConfig.Validate enforces on
+// wendy.json (see validateROS2Config), so a typo fails fast here with a
+// --flag-specific message instead of surfacing later from `wendy run` or
+// `wendy device ros2`.
+func buildInitFrameworksFromFlags(target string, opts initOptions) (*appconfig.FrameworksConfig, error) {
+	ros2Requested := opts.ros2DomainIDSet || opts.ros2RMWSet || opts.ros2DistroSet || opts.ros2DiscoveryScopeSet
+
+	if opts.frameworksSet {
+		var unknown []string
+		requestedROS2 := false
+		for _, raw := range opts.frameworks {
+			name := normalizeInitChoice(raw)
+			if name == "" {
+				continue
+			}
+			if name == "ros2" {
+				requestedROS2 = true
+				continue
+			}
+			unknown = append(unknown, name)
+		}
+		if len(unknown) > 0 {
+			return nil, fmt.Errorf("invalid framework %q (valid: ros2)", strings.Join(unknown, ", "))
+		}
+		if !requestedROS2 && !ros2Requested {
+			return nil, fmt.Errorf("--framework requires at least one valid framework")
+		}
+		ros2Requested = ros2Requested || requestedROS2
+	}
+
+	if !ros2Requested {
+		return nil, nil
+	}
+
+	if target == targetWendyLite || target == targetDarwin {
+		return nil, fmt.Errorf("%s does not support the ros2 framework", target)
+	}
+
+	ros2 := &appconfig.ROS2Config{}
+
+	if opts.ros2DomainIDSet {
+		if opts.ros2DomainID < appconfig.ROS2DomainIDMin || opts.ros2DomainID > appconfig.ROS2DomainIDMax {
+			return nil, fmt.Errorf("--ros2-domain-id must be between %d and %d, got %d", appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax, opts.ros2DomainID)
+		}
+		domainID := opts.ros2DomainID
+		ros2.DomainID = &domainID
+	}
+
+	if opts.ros2RMWSet {
+		ros2.RMW = strings.TrimSpace(opts.ros2RMW)
+		if ros2.ResolvedRMW() == "" {
+			return nil, fmt.Errorf("invalid --ros2-rmw %q (valid: cyclonedds, fastrtps, connextdds, gurumdds)", opts.ros2RMW)
+		}
+	}
+
+	if opts.ros2DistroSet {
+		distro := strings.TrimSpace(opts.ros2Distro)
+		if !appconfig.ROS2DistroPattern.MatchString(strings.ToLower(distro)) {
+			return nil, fmt.Errorf("invalid --ros2-distro %q (lowercase letters and digits, starting with a letter — e.g. %q)", opts.ros2Distro, appconfig.ROS2DefaultDistro)
+		}
+		ros2.Distro = distro
+	}
+
+	if opts.ros2DiscoveryScopeSet {
+		ros2.DiscoveryScope = strings.TrimSpace(opts.ros2DiscoveryScope)
+		if ros2.ResolvedDiscoveryScope() == "" {
+			return nil, fmt.Errorf("invalid --ros2-discovery-scope %q (valid: %s, %s)", opts.ros2DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
+		}
+	}
+
+	return &appconfig.FrameworksConfig{ROS2: ros2}, nil
 }
 
 func initEntitlementsProvided(opts initOptions) bool {
@@ -1206,6 +1503,82 @@ func mergeTemplateEntitlements(cfgPath string, requested []appconfig.Entitlement
 		return nil, fmt.Errorf("writing scaffolded wendy.json: %w", err)
 	}
 	return added, nil
+}
+
+// templateFrameworksFromFlags resolves --framework/--ros2-* flags for the
+// template flow, mirroring templateEntitlementsFromFlags.
+func templateFrameworksFromFlags(target string, opts initOptions) (*appconfig.FrameworksConfig, error) {
+	if !initFrameworksProvided(opts) {
+		return nil, nil
+	}
+	return buildInitFrameworksFromFlags(target, opts)
+}
+
+// mergeTemplateFrameworks writes requested into the scaffolded wendy.json's
+// top-level "frameworks" key, reporting whether it made a change. Unlike
+// mergeTemplateEntitlements (a list, deduplicated entry by entry),
+// "frameworks" is a single nested object: if the template already sets one,
+// it wins outright and requested is dropped, matching the "template's more
+// specific config wins" rule mergeTemplateEntitlements documents.
+func mergeTemplateFrameworks(cfgPath string, requested *appconfig.FrameworksConfig) (bool, error) {
+	if requested == nil {
+		return false, nil
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return false, fmt.Errorf("reading scaffolded wendy.json to merge framework flags: %w", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing scaffolded wendy.json: %w", err)
+	}
+
+	if existing, ok := raw["frameworks"]; ok && templateFrameworksAreSet(existing) {
+		return false, nil
+	}
+
+	frameworksRaw, err := json.Marshal(requested)
+	if err != nil {
+		return false, fmt.Errorf("marshaling frameworks: %w", err)
+	}
+	raw["frameworks"] = frameworksRaw
+
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshaling scaffolded wendy.json: %w", err)
+	}
+	out = append(out, '\n')
+	if err := os.WriteFile(cfgPath, out, 0o644); err != nil {
+		return false, fmt.Errorf("writing scaffolded wendy.json: %w", err)
+	}
+	return true, nil
+}
+
+// templateFrameworksAreSet reports whether a template's "frameworks" value
+// actually configures a framework. `null`, `{}`, and an object whose every
+// member is null (e.g. `{"ros2": null}`) configure nothing, so they must not
+// suppress the caller's --framework/--ros2-* flags — "the template's more
+// specific config wins" only applies when the template is in fact more
+// specific. A non-object (malformed or a scalar) counts as set: it is not
+// this function's job to silently overwrite something it cannot interpret.
+func templateFrameworksAreSet(existing json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(existing))
+	if trimmed == "" || trimmed == "null" {
+		return false
+	}
+
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &members); err != nil {
+		return true
+	}
+	for _, member := range members {
+		if strings.TrimSpace(string(member)) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // templateEntitlementCovers reports whether the template's entitlements
