@@ -8,12 +8,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"time"
 
@@ -63,6 +61,8 @@ type BuildServiceOptions struct {
 	StateDir string
 	// Chunks resolves the build context the CLI staged through WriteChunks.
 	Chunks ChunkSource
+	// Peers dials another device in this org to deliver the finished image.
+	Peers PeerDialer
 	// PushTLS supplies the client certificate the push proxy presents to the
 	// target device's registry. A function rather than a value so a certificate
 	// rotated while the agent runs is picked up on the next build.
@@ -78,6 +78,7 @@ type BuildService struct {
 	buildkitAddress      string
 	stateDir             string
 	chunks               ChunkSource
+	peers                PeerDialer
 	pushTLS              func() (*tls.Config, error)
 }
 
@@ -94,6 +95,7 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		buildkitAddress:      opts.BuildkitAddress,
 		stateDir:             opts.StateDir,
 		chunks:               opts.Chunks,
+		peers:                opts.Peers,
 		pushTLS:              opts.PushTLS,
 	}
 }
@@ -237,9 +239,12 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 
 	// Validate the destination BEFORE any work: a build that cannot be delivered
 	// is wasted minutes on a machine other people are sharing.
-	host, port, repoTag, err := validatePushReference(spec.GetPushReference())
-	if err != nil {
+	target := spec.GetPushTarget()
+	if err := validatePushTarget(target); err != nil {
 		return err
+	}
+	if s.peers == nil {
+		return status.Error(codes.FailedPrecondition, "this build host has no mesh dialer and cannot deliver an image to another device")
 	}
 
 	dir, err := s.contextDir(spec.GetAppId())
@@ -269,13 +274,13 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "loading push credentials: %v", err)
 	}
-	proxy, err := startPushProxy(ctx, net.JoinHostPort(host, strconv.Itoa(port)), tlsCfg)
+	proxy, err := startPushProxy(ctx, s.peers, target, tlsCfg)
 	if err != nil {
 		return err
 	}
 	defer proxy.stop()
 
-	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), proxy.addr+"/"+repoTag, df.GetBuildArgs())
+	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), proxy.addr+"/"+target.GetRepository(), df.GetBuildArgs())
 	if err != nil {
 		return err
 	}

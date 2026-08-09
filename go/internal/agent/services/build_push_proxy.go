@@ -6,57 +6,39 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"sync"
 
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-// meshRegistrySuffix is the domain mesh device addresses live under.
-// Constraining push destinations to this form is what stops BuildImage from
-// becoming a general-purpose "push an image anywhere" primitive authenticated
-// by this device's credentials.
-const meshRegistrySuffix = ".cloud.wendy.dev"
-
-// validatePushReference splits a push reference into registry host, port and
-// repository:tag, rejecting anything that is not a mesh device registry.
-func validatePushReference(ref string) (string, int, string, error) {
-	registry, repoTag, ok := strings.Cut(ref, "/")
-	if !ok || repoTag == "" {
-		return "", 0, "", status.Errorf(codes.InvalidArgument, "push reference %q has no repository", ref)
-	}
-	host, portStr, err := net.SplitHostPort(registry)
-	if err != nil {
-		return "", 0, "", status.Errorf(codes.InvalidArgument, "push reference %q must name an explicit registry port", ref)
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 {
-		return "", 0, "", status.Errorf(codes.InvalidArgument, "push reference %q has an invalid registry port", ref)
-	}
-	// HasSuffix, not Contains: "evil-cloud.wendy.dev.attacker.com" contains the
-	// mesh domain but is not in it.
-	if !strings.HasSuffix(host, meshRegistrySuffix) {
-		return "", 0, "", status.Errorf(codes.InvalidArgument,
-			"refusing to push to %q: a build host may only push to a mesh device registry (*%s)", host, meshRegistrySuffix)
-	}
-	return host, port, repoTag, nil
+// PeerDialer opens a byte stream to a port on another device in this org,
+// LAN-direct when possible and via the cloud broker otherwise. Satisfied by
+// services.MeshDialer.
+//
+// Declared here rather than taking *MeshDialer so the build service can be
+// tested without a broker, matching how mesh.Proxy declares its own dialer.
+type PeerDialer interface {
+	DialDevice(ctx context.Context, deviceID int32, port uint16) (net.Conn, string, error)
 }
 
-// pushProxy forwards loopback connections to a device registry over mTLS.
+// pushProxy forwards loopback connections to a peer device's registry over
+// mTLS, so buildkitd can push plaintext to localhost and needs no per-registry
+// client certificates of its own.
 //
 // It records the FIRST outbound failure. Without that, a proxy that cannot
 // reach its target still accepts the local connection and then closes it, so
 // the pusher sees only "connection reset by peer" on 127.0.0.1 — a message that
-// cannot distinguish an unreachable mesh from a rejected certificate, which are
+// cannot distinguish an unreachable peer from a rejected certificate, which are
 // the two causes with entirely different fixes.
 type pushProxy struct {
 	addr string
 	stop func()
 	// dial opens the outbound hop. A field so tests can relay over plain TCP;
-	// production always uses the mTLS dialer set in startPushProxy.
-	dial func(ctx context.Context, addr string) (net.Conn, error)
+	// production dials the mesh peer and wraps the result in TLS.
+	dial func(ctx context.Context) (net.Conn, error)
 
 	mu  sync.Mutex
 	err error
@@ -78,17 +60,43 @@ func (p *pushProxy) recordError(err error) {
 	}
 }
 
-// startPushProxy listens on loopback and forwards each accepted connection to
-// target over mTLS, presenting this host's client certificate.
+// validatePushTarget checks a push destination before any build runs.
 //
-// buildkitd pushes plaintext to the returned address, which means it needs one
-// static loopback allowance in its config rather than per-registry client
-// certificates rewritten for whichever device this build happens to target.
+// There is no hostname to constrain here: an asset id can only ever address a
+// device in this org through the peer dialer, so the "push an image anywhere"
+// hazard a free-form registry string carried is structurally absent. What is
+// left is shape — a positive id, a real port, and a repository that is a bare
+// "repo:tag" with no host smuggled into it.
+func validatePushTarget(t *agentpbv2.PushTarget) error {
+	if t == nil {
+		return status.Error(codes.InvalidArgument, "build spec carries no push target")
+	}
+	if t.GetAssetId() <= 0 {
+		return status.Errorf(codes.InvalidArgument, "push target has an invalid asset id %d", t.GetAssetId())
+	}
+	if p := t.GetRegistryPort(); p == 0 || p > 65535 {
+		return status.Errorf(codes.InvalidArgument, "push target has an invalid registry port %d", p)
+	}
+	repo := t.GetRepository()
+	if repo == "" {
+		return status.Error(codes.InvalidArgument, "push target has no repository")
+	}
+	// A slash would make the first element a registry host once joined to the
+	// proxy address, quietly redirecting the push somewhere else.
+	if strings.ContainsAny(repo, "/ ") {
+		return status.Errorf(codes.InvalidArgument, "push target repository %q must be a bare repository:tag", repo)
+	}
+	return nil
+}
+
+// startPushProxy listens on loopback and forwards each accepted connection to
+// the target device's registry, dialed through the mesh by asset id and then
+// wrapped in mTLS with this host's client certificate.
 //
 // This does not change how the image is named: the target's registry derives
 // its image prefix from its own listen address, so the image lands there as
-// localhost:<regPort>/<repo>:<tag> regardless of the address the pusher used.
-func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pushProxy, error) {
+// localhost:<regPort>/<repo>:<tag> regardless of how the pusher reached it.
+func startPushProxy(ctx context.Context, dialer PeerDialer, target *agentpbv2.PushTarget, tlsCfg *tls.Config) (*pushProxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("starting push proxy: %w", err)
@@ -96,8 +104,13 @@ func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pu
 	p := &pushProxy{
 		addr: ln.Addr().String(),
 		stop: func() { _ = ln.Close() },
-		dial: func(ctx context.Context, addr string) (net.Conn, error) {
-			return (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, "tcp", addr)
+		dial: func(ctx context.Context) (net.Conn, error) {
+			raw, _, derr := dialer.DialDevice(ctx, target.GetAssetId(), uint16(target.GetRegistryPort()))
+			if derr != nil {
+				return nil, derr
+			}
+			// The mesh carries bytes; the registry still speaks mTLS on top.
+			return tls.Client(raw, tlsCfg), nil
 		},
 	}
 	go func() {
@@ -106,17 +119,17 @@ func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pu
 			if acceptErr != nil {
 				return // listener closed by stop()
 			}
-			go p.proxyOne(ctx, local, target)
+			go p.proxyOne(ctx, local, target.GetAssetId())
 		}
 	}()
 	return p, nil
 }
 
-func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, target string) {
+func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, assetID int32) {
 	defer local.Close()
-	remote, err := p.dial(ctx, target)
+	remote, err := p.dial(ctx)
 	if err != nil {
-		p.recordError(fmt.Errorf("reaching device registry %s: %w", target, err))
+		p.recordError(fmt.Errorf("reaching device %d's registry over the mesh: %w", assetID, err))
 		return
 	}
 	defer remote.Close()

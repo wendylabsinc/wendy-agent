@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net/url"
 	"os"
@@ -161,14 +162,38 @@ func enabledService(t *testing.T) *BuildService {
 	return NewBuildService(zap.NewNop(), BuildServiceOptions{
 		ConfigPath: enabledConfigDir(t),
 		StateDir:   t.TempDir(),
+		// A dialer that never gets used by these tests, but must be present:
+		// BuildImage refuses up front when it has no way to deliver, which
+		// would otherwise mask the errors under test.
+		Peers: stubPeerDialer{err: errors.New("not dialed in this test")},
 	})
+}
+
+// A build host with no way to reach peers must say so rather than build first
+// and discover it at push time.
+func TestBuildImage_RejectsWhenNoPeerDialer(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+	err := svc.BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("got %v, want FailedPrecondition when the host cannot dial peers", err)
+	}
 }
 
 func TestBuildImage_RejectsSpecWithoutDefinition(t *testing.T) {
 	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
-		AppId:         "app",
-		Platform:      "linux/arm64",
-		PushReference: "robot-01.acme.cloud.wendy.dev:5000/app:latest",
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
 	}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want InvalidArgument for a spec with no build definition", err)
@@ -186,9 +211,9 @@ func TestBuildImage_RejectsMissingSpec(t *testing.T) {
 // one costs nothing.
 func TestBuildImage_RejectsBadPushDestinationBeforeBuilding(t *testing.T) {
 	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
-		AppId:         "app",
-		Platform:      "linux/arm64",
-		PushReference: "evil.example.com:443/exfil:latest",
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "evil.example.com/exfil:latest"},
 		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
 			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
 		},
@@ -295,9 +320,9 @@ func TestSetBuildHostEnabled_DisableIsIdempotent(t *testing.T) {
 
 func TestBuildImage_RejectsEmptyContext(t *testing.T) {
 	err := enabledService(t).BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
-		AppId:         "app",
-		Platform:      "linux/arm64",
-		PushReference: "robot-01.acme.cloud.wendy.dev:5000/app:latest",
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
 		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
 			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
 		},

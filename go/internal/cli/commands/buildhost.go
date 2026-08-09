@@ -21,10 +21,6 @@ import (
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
-// meshDomainSuffix is the domain mesh device addresses live under, matching the
-// agent's own validation of push destinations.
-const meshDomainSuffix = ".cloud.wendy.dev"
-
 // errBuilderWithBuildHost is returned when --builder and --build-host are both
 // given. --builder selects the LOCAL image builder, which the remote path never
 // runs, so honouring either one silently means ignoring the other.
@@ -182,7 +178,7 @@ func runRemoteBuild(
 		return err
 	}
 
-	pushRef, err := targetRegistryReference(ctx, target, appCfg)
+	pushTarget, err := targetPushTarget(ctx, target, appCfg)
 	if err != nil {
 		return err
 	}
@@ -194,10 +190,10 @@ func runRemoteBuild(
 			return err
 		}
 		return streamRemoteBuild(ctx, builder, &agentpbv2.BuildSpec{
-			AppId:         appCfg.AppID,
-			Platform:      platform,
-			PushReference: pushRef,
-			Context:       manifest,
+			AppId:      appCfg.AppID,
+			Platform:   platform,
+			PushTarget: pushTarget,
+			Context:    manifest,
 			Definition: &agentpbv2.BuildSpec_DockerfileBuild{
 				DockerfileBuild: &agentpbv2.DockerfileBuild{
 					Dockerfile: resolved,
@@ -253,25 +249,31 @@ func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnec
 	return sel.Agent, nil
 }
 
-// targetRegistryReference is the address the BUILD HOST uses to reach the
-// target's registry: the target's mesh name, which resolves LAN-direct when
-// possible and via the cloud broker otherwise.
-func targetRegistryReference(ctx context.Context, target *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (string, error) {
+// targetPushTarget describes where the BUILD HOST should push, as a mesh peer
+// rather than a hostname.
+//
+// The asset id is deliberate: a name like device-<id>.cloud.wendy.dev only
+// resolves where the mesh DNS server runs, which excludes adopted Linux hosts
+// whose resolver already owns 127.0.0.53 — so a reachable peer looked
+// unreachable. The build host's peer dialer needs only the id (WDY-2356).
+func targetPushTarget(ctx context.Context, target *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (*agentpbv2.PushTarget, error) {
 	resp, err := target.ProvisioningService.IsProvisioned(ctx, &agentpb.IsProvisionedRequest{})
 	if err != nil {
-		return "", fmt.Errorf("determining the target device's mesh identity: %w", err)
+		return nil, fmt.Errorf("determining the target device's mesh identity: %w", err)
 	}
 	prov, ok := resp.GetResponse().(*agentpb.IsProvisionedResponse_Provisioned)
 	if !ok {
-		return "", fmt.Errorf("the target device is not provisioned, so a build host cannot reach its registry over the mesh; provision it or omit --build-host")
+		return nil, fmt.Errorf("the target device is not provisioned, so a build host cannot reach its registry; provision it or omit --build-host")
 	}
 	agentOS, err := targetAgentOS(ctx, target)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return fmt.Sprintf("device-%d%s:%d/%s:latest",
-		prov.Provisioned.GetAssetId(), meshDomainSuffix,
-		registryPort(agentOS), strings.ToLower(appCfg.AppID)), nil
+	return &agentpbv2.PushTarget{
+		AssetId:      prov.Provisioned.GetAssetId(),
+		RegistryPort: uint32(registryPort(agentOS)),
+		Repository:   strings.ToLower(appCfg.AppID) + ":latest",
+	}, nil
 }
 
 // localRegistryReference is the same image as the target itself sees it. The

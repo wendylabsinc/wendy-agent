@@ -74,6 +74,23 @@ message DockerfileBuild {
   map<string, string> build_args = 2;
 }
 
+// PushTarget names where a finished image goes, as a mesh peer rather than a
+// hostname.
+//
+// It is an asset id and not a name on purpose. Resolving
+// "device-<id>.cloud.wendy.dev" requires the mesh DNS server, which only exists
+// on WendyOS hosts — an adopted Linux box (where systemd-resolved owns
+// 127.0.0.53) cannot resolve it, so a perfectly reachable peer looked
+// unreachable. The agent's peer dialer needs only the id, and it is also a
+// tighter capability: an id can only ever address a device in this org, whereas
+// a free-form host could address anything. See WDY-2356.
+message PushTarget {
+  int32 asset_id = 1;
+  uint32 registry_port = 2;
+  // "repository:tag" only — never a host component.
+  string repository = 3;
+}
+
 message BuildSpec {
   // App identifier. Also selects the stable per-app context directory, whose
   // path BuildKit uses as its local-source cache key — see the agent's
@@ -81,14 +98,14 @@ message BuildSpec {
   string app_id = 1;
   // Target platform, e.g. "linux/arm64".
   string platform = 2;
-  // Registry reference the finished image is pushed to, e.g.
-  // "robot-01.acme.cloud.wendy.dev:5000/myapp:latest". Validated against the
-  // mesh-address + registry-port form and never used verbatim as a dial target:
-  // an unconstrained destination would make this RPC a way to push an image
-  // anywhere, authenticated by this device's credentials.
-  string push_reference = 3;
   // The build context as an uncompressed tar, addressed by chunk.
   ChunkManifest context = 4;
+  // Where the finished image is pushed.
+  PushTarget push_target = 7;
+
+  // Field 3 was push_reference, a "host:port/repo:tag" string resolved through
+  // DNS. Replaced by push_target — see that message for why.
+  reserved 3;
 
   oneof definition {
     DockerfileBuild dockerfile_build = 5;

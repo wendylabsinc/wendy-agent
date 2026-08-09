@@ -483,6 +483,13 @@ func main() {
 	var mtlsServer *grpc.Server
 	var mtlsMu sync.Mutex
 
+	// Declared here, assigned further down once the provisioning identity is
+	// available, because registerAllServices closes over it: the build service
+	// dials peers through it to deliver a finished image. Every call site of
+	// registerAllServices runs after the assignment; if that ever stops being
+	// true, BuildImage reports "no mesh dialer" rather than panicking.
+	var meshDialer *services.MeshDialer
+
 	registerAllServices := func(srv *grpc.Server) {
 		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
 		// must reflect this device's *current* org, not a value captured once
@@ -502,6 +509,7 @@ func main() {
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
 			ConfigPath: configPath,
 			Chunks:     buildChunkSource,
+			Peers:      meshDialer,
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
 			PushTLS: func() (*tls.Config, error) {
@@ -661,7 +669,7 @@ func main() {
 		defer wg.Done()
 		meshMetrics.Collect(ctx)
 	}()
-	meshDialer := services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
+	meshDialer = services.NewMeshDialer(logger, brokerURL, orgID, assetID, certPEM, keyPEM, chainPEM, meshMetrics)
 	meshProxy := mesh.NewProxy(logger, meshDialer, meshMetrics)
 	if err := meshProxy.Start(fmt.Sprintf(":%d", mesh.ProxyPort)); err != nil {
 		logger.Warn("mesh proxy failed to start; mesh egress disabled", zap.Error(err))
