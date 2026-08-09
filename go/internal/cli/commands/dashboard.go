@@ -15,7 +15,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 )
 
 func newDeviceDashboardCmd() *cobra.Command {
@@ -49,7 +50,7 @@ func newDeviceDashboardCmd() *cobra.Command {
 
 type dashboardLogMsg struct {
 	service string
-	record  *otelpb.LogRecord
+	record  *logspb.LogRecord
 }
 
 type dashboardMetricMsg struct {
@@ -536,7 +537,7 @@ func (m dashboardModel) View() string {
 // --- Background stream goroutines ---
 
 func (m dashboardModel) runLogStream() {
-	infoSev := int32(otelpb.SeverityNumber_SEVERITY_NUMBER_INFO)
+	infoSev := int32(logspb.SeverityNumber_SEVERITY_NUMBER_INFO)
 	req := &agentpb.StreamLogsRequest{MinSeverity: &infoSev}
 	if m.appName != "" {
 		req.AppName = &m.appName
@@ -653,8 +654,8 @@ func (m dashboardModel) runAppsPoll() {
 	}
 }
 
-func extractMetricValue(m *otelpb.Metric) (string, time.Time) {
-	var pts []*otelpb.NumberDataPoint
+func extractMetricValue(m *metricspb.Metric) (string, time.Time) {
+	var pts []*metricspb.NumberDataPoint
 	switch {
 	case m.GetGauge() != nil:
 		pts = m.GetGauge().GetDataPoints()
@@ -672,9 +673,9 @@ func extractMetricValue(m *otelpb.Metric) (string, time.Time) {
 	dp := pts[len(pts)-1]
 	ts := time.Unix(0, int64(dp.GetTimeUnixNano()))
 	switch dp.GetValue().(type) {
-	case *otelpb.NumberDataPoint_AsDouble:
+	case *metricspb.NumberDataPoint_AsDouble:
 		return fmt.Sprintf("%g", dp.GetAsDouble()), ts
-	case *otelpb.NumberDataPoint_AsInt:
+	case *metricspb.NumberDataPoint_AsInt:
 		return fmt.Sprintf("%d", dp.GetAsInt()), ts
 	default:
 		return "?", ts
@@ -801,7 +802,7 @@ func visibleWidth(s string) int {
 // multiline body is split into separate rows; continuation rows are indented to
 // align under the body so the timestamp/severity prefix stays readable.
 // Attributes are appended to the final row.
-func formatLogLines(service string, lr *otelpb.LogRecord) []string {
+func formatLogLines(service string, lr *logspb.LogRecord) []string {
 	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05")
 	label, style := severityLabel(lr.GetSeverityNumber())
 
