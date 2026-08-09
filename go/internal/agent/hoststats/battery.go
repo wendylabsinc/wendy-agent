@@ -189,6 +189,14 @@ func estimateBatterySeconds(state BatteryState, now, full, rate float64) int64 {
 	return int64(remaining / rate * 3600)
 }
 
+// EstimateSecondsRemaining is the exported form of estimateBatterySeconds, for
+// sibling packages that build a Battery from a source other than sysfs. now,
+// full, and rate must share a unit family; the result is seconds, or 0 for
+// "unknown" under exactly the same rules the sysfs path uses.
+func EstimateSecondsRemaining(state BatteryState, now, full, rate float64) int64 {
+	return estimateBatterySeconds(state, now, full, rate)
+}
+
 // aggregateBatteryState reduces per-pack states to one. Discharging wins over
 // charging so a device drawing down overall is never shown as charging, and
 // Full is only reported when every pack agrees.

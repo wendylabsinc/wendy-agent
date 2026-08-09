@@ -387,3 +387,24 @@ func TestParseBatteryState(t *testing.T) {
 		}
 	}
 }
+
+func TestEstimateSecondsRemaining_MatchesUnexported(t *testing.T) {
+	cases := []struct {
+		name            string
+		state           BatteryState
+		now, full, rate float64
+		want            int64
+	}{
+		{"discharging", BatteryDischarging, 39, 50, 5, 28080},
+		{"charging", BatteryCharging, 20, 50, 6, 18000},
+		{"full has no countdown", BatteryFull, 50, 50, 5, 0},
+		{"zero rate is unknown", BatteryDischarging, 39, 50, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := EstimateSecondsRemaining(tc.state, tc.now, tc.full, tc.rate); got != tc.want {
+				t.Errorf("EstimateSecondsRemaining = %d; want %d", got, tc.want)
+			}
+		})
+	}
+}
