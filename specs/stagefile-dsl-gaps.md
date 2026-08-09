@@ -126,3 +126,193 @@ registry can hand back.
   unsupported by design — only auto-detection paths compile a Stagefile.
   Not a DSL gap; a deliberate, disclosed scope limit in the wendyos
   integration (`go/internal/cli/commands/docker.go`).
+
+---
+
+# Addendum: gaps found mirroring in-the-wild Dockerfiles (2026-08-07)
+
+Source: a benchmark mirroring six non-Wendy Dockerfiles into Stagefiles
+(stevemar/sample-python-app, deis/example-dockerfile-python,
+Mintplex-Labs/anything-llm, BerriAI/litellm, osrf `ros:humble-ros-core`,
+and the Docker getting-started tutorial). Three mirrored; three could not
+be. Timing result for the mirrored pairs: cold builds ~25–50% faster and
+source-touched rebuilds ~10x faster than the originals (the compiler's
+install-before-copy ordering fixes the wild files' `COPY . .`-before-install
+layer mistake, which flag-level `wendy project optimize` fixes cannot
+reorder). The mirror Stagefiles are in the appendix below.
+
+## 7. No custom apt/apk repository setup (the apt sibling of gap #3)
+
+Wild images bootstrap third-party repos before installing: anything-llm
+adds NodeSource (GPG key dearmor + sources.list entry), ros-core installs
+`ros2-apt-source_*.deb` (with a sha256 check) before
+`apt-get install ros-humble-ros-core`. `install.apt` has no repository
+field, so the closest mirror compiles and validates cleanly, then dies at
+docker build with `E: Unable to locate package ros-humble-ros-core`
+(reproduced). **This blocks effectively every ROS/robotics and
+Node-on-Debian image in the wild** — same silent-trap shape as gap #5:
+valid Stagefile, guaranteed build failure. Priority: high if wild-project
+adoption matters; a declarative `repositories:` (url + signing key + pin)
+would cover the common cases without a shell escape hatch.
+
+## 8. No `WORKDIR` — and its absence can be *behavioral*, not cosmetic
+
+The compiler emits no `WORKDIR`, so entrypoints run at `/`. For anything
+that resolves paths from CWD this changes behavior: the deis mirror's
+`python -m SimpleHTTPServer` would serve `/` instead of `/app`. Also
+forces absolute paths (or careful dest choices) in every mirrored
+entrypoint. A per-stage `workdir:` field is cheap and closes it.
+
+## 9. No `CMD` / no ENTRYPOINT+CMD default-args split
+
+`entrypoint.exec` is the only process field. The common wild pattern
+`ENTRYPOINT ["/entry.sh"]` + `CMD ["bash"]` (ros-core) — overridable
+default args behind a fixed wrapper — is not expressible; folding CMD's
+args into `exec:` changes `docker run <image> <args>` override semantics.
+
+## 10. No install-flag control on `install.npm` (dev-dependency scope)
+
+`install.npm` always compiles to bare `npm ci` (or
+`yarn install --frozen-lockfile`). The tutorial Dockerfile's
+`yarn install --production` is not expressible: the mirror installs
+devDependencies too. (The mirrored image was *still* 37MB smaller than
+the original for unrelated reasons, but a `production: true` /
+`omitDev:` knob is the honest fix.) Same family: no `--network-timeout`
+or registry override (anything-llm, litellm).
+
+## 11. No package-manager script execution (`npm run build`)
+
+Frontend images build assets at image-build time (`yarn build` /
+`npm run build` — anything-llm, litellm). There's no field for "run this
+package.json script", which is narrower and safer than a raw RUN escape
+hatch but still absent. Blocks essentially every bundled-frontend image.
+
+## 12. No non-pip Python tooling (`uv`)
+
+litellm's whole dependency step is `uv sync --frozen ...` against a
+`uv.lock`. `install.pip` cannot express it. uv is rapidly becoming the
+default in new Python projects; an `install.uv` (sync against the
+lockfile, flags curated like pip's) may age better than more pip knobs.
+
+## 13. No file ownership/permissions (`COPY --chown`, `chmod`, uid-specific users)
+
+anything-llm creates a *specific* uid/gid user with a real home dir
+(`useradd -u $UID -m -d /app`), `chown`s trees, `chmod +x`'s entrypoint
+scripts, and uses `COPY --chown`. The `user:` field covers "run as
+non-root" but not "these files must be writable by that user" — the gap
+the earlier "non-gaps" note about `useradd` under-counted: with
+`USER 65532` and no home, anything writing to `$HOME` or its workdir
+fails. A `copy: { owner: }` and/or `user: { uid:, home: }` shape would
+cover most of it. (Executable-bit loss on copied scripts is the sharpest
+sub-case: an `ENTRYPOINT [script]` mirror silently depends on the exec
+bit surviving the local checkout.)
+
+## 14. Arch-conditional builds (`ARG TARGETARCH`, `--platform=$BUILDPLATFORM`)
+
+anything-llm selects `FROM build-${TARGETARCH}`; litellm and anything-llm
+pin asset-building stages to `$BUILDPLATFORM` so arch-independent output
+compiles natively instead of under QEMU. The DSL has neither per-arch
+stage selection nor a platform pin on a stage. Extends gap #1 beyond
+plain ARG/ENV passthrough. Priority: medium — multi-arch projects only,
+but those are exactly the projects WendyOS targets.
+
+## Observation, not a gap: lockfile scope
+
+The Stagefile lockfile pins *base images* only. The stevemar mirror
+builds fine and fails identically to its Dockerfile original at runtime
+(`jinja2` removed `escape`; unpinned flask 1.x) — image pinning cannot
+save an unpinned requirements.txt. Worth stating in docs so the pinning
+guarantee isn't over-read.
+
+## wendyos-side analyzer blind spots (found via the same exercise)
+
+- `build-cache` matches the literal `pip install`, so `pip3 install`
+  lines (stevemar, and common in wild files) get no cache-mount fix.
+- The yarn rule mounts `/root/.npm` — npm's cache dir, which yarn 1 never
+  reads — so the auto-applied mount on yarn Dockerfiles is dead weight;
+  yarn's cache lives under `~/.cache/yarn`.
+
+## Appendix: mirror Stagefiles used for the benchmark
+
+`stevemar/sample-python-app` (builds; dropped: `WORKDIR`, debug `RUN`s,
+`pip install --upgrade pip`, `EXPOSE` comment):
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: python:3.8.0-alpine3.10
+    install:
+      pip:
+        requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [src]
+        dest: /app/src/
+    entrypoint:
+      exec: [python3, /app/src/app.py]
+    user: "1001"
+```
+
+`deis/example-dockerfile-python` (compiles; fails identically to the
+original — dead 2016 gliderlabs apk mirror; note the CWD behavior change
+from gap #8):
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: gliderlabs/alpine:3.4
+    install:
+      apk:
+        packages: [python]
+    copy:
+      - from: local
+        paths: [.]
+        dest: /app/
+    entrypoint:
+      exec: [python, -m, SimpleHTTPServer, "5000"]
+```
+
+Docker getting-started tutorial (builds; `npm ci` instead of
+`yarn install --production` per gap #10 — which also *fixes* the
+tutorial's latent flaw of ignoring its own committed package-lock.json):
+
+```yaml
+version: 1
+stages:
+  - name: app
+    from: node:lts-alpine
+    install:
+      npm: {}
+    copy:
+      - from: local
+        paths: [src]
+        dest: src/
+    entrypoint:
+      exec: [node, src/index.js]
+```
+
+osrf `ros:humble-ros-core` closest attempt (validates + compiles, then
+`E: Unable to locate package ros-humble-ros-core` at build — gap #7; also
+drops `ENV LANG/LC_ALL/ROS_DISTRO` and the ENTRYPOINT+CMD split, gap #9):
+
+```yaml
+version: 1
+stages:
+  - name: core
+    from: ubuntu:jammy
+    install:
+      apt:
+        packages: [tzdata, ca-certificates, curl, dirmngr, gnupg2, "ros-humble-ros-core=0.10.0-1*"]
+    copy:
+      - from: local
+        paths: [ros_entrypoint.sh]
+        dest: /ros_entrypoint.sh
+    entrypoint:
+      exec: [/ros_entrypoint.sh, bash]
+```
+
+anything-llm and litellm were not mirrorable (gaps #7, #10–#14 plus the
+existing #1–#3 all at once); see the PR discussion for the line-by-line
+inventory.
