@@ -163,3 +163,51 @@ against a provisioned device post-migration.
 - Removing the buildx registry-proxy temp key file (`docker.go` writes the
   key to a `0600` temp file for the proxy); it now sources the key via the
   accessor but the temp-file mechanism itself is out of scope.
+
+## Amendment (2026-08-09): writes must never raise a system dialog
+
+Shipped behaviour missed a case: the design reasoned about *reads* being
+promptless (the item ACL trusts `/usr/bin/security`) but treated writes as
+merely fallible. They are not. `security` has no way to suppress user
+interaction — `add-generic-password` has no no-interaction flag and there is
+no global one — so a write macOS cannot satisfy becomes a blocking dialog
+rather than a non-zero exit.
+
+Two states do that:
+
+1. **The user default keychain does not resolve.** `SecKeychainCopyDefault`
+   reads `~/Library/Preferences/com.apple.security.plist` and falls back to
+   `$HOME/Library/Keychains/login.keychain-db`, so any invocation whose HOME
+   has neither — `sudo wendy …` (`HOME=/var/root`), a launchd job, a
+   sandboxed or non-login session — hits it. macOS shows *"A keychain cannot
+   be found to store `key-<hex>`"*, whose **"Reset To Defaults"** button
+   rewrites the user's keychain search list. Reproduce the underlying
+   failure without the dialog: `HOME=$(mktemp -d) security default-keychain`.
+2. **The target keychain is locked**, which a write answers with the unlock
+   prompt.
+
+Both compound badly with the surrounding design. `dehydrate` keeps a secret
+inline when `Put` fails, and `MigrateSecretsIfNeeded` retries on every
+invocation, so one bad environment yields the dialog on *every* `wendy`
+command. `tlscache` calls `Delete` from a background goroutine, so a prompt
+raised there arrives with no CLI output to explain it.
+
+**Resolution.** `secretstore.checkWritableKeychain` settles the question up
+front with commands that only read and therefore cannot draw UI —
+`default-keychain -d user` (a plist read) and `show-keychain-info` (returns
+"User interaction is not allowed." on a locked keychain) — and `Put`/`Delete`
+decline rather than hand `security` a write it would turn into a dialog. The
+default-keychain answer is memoized per process (HOME cannot change under a
+running CLI); lock state deliberately is not, since a keychain can lock
+mid-run.
+
+`security(1)` stays the executor: items it creates carry an ACL naming
+`security` itself, which is what keeps every rebuilt `wendy` binary able to
+read them. Talking to `SecItem*` directly via cgo would let us set
+`SecKeychainSetUserInteractionAllowed(false)` instead, but it would also
+re-own those ACLs against a code signature that changes on every build.
+
+A refusal costs storage hardening, never the secret: the value stays wherever
+it already lives, exactly as an ordinary `Put` failure already did.
+`WENDY_SECRET_STORE=file` remains the way to opt out of the Keychain path
+entirely.
