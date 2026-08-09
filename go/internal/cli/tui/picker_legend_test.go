@@ -111,3 +111,23 @@ func TestDeviceWarningLegend(t *testing.T) {
 		t.Errorf("legend %q documents markers this table cannot render", got)
 	}
 }
+
+// An offline row renders "offline" in the Agent cell and its version is
+// cached metadata no live probe has confirmed — the spec's trust boundary
+// says update hints must never fire from that alone.
+func TestDeviceTableLegend_SkipsOutdatedWhileOffline(t *testing.T) {
+	items := []PickerItem{{
+		Name:          "alpha",
+		AgentVersion:  "2026.07.27-003050",
+		AgentOutdated: true,
+		Probe:         ProbeOffline,
+	}}
+
+	if legend := DeviceTableLegend(items); strings.Contains(legend, LegendOutdated) {
+		t.Fatalf("legend documents staleness for an offline device: %q", legend)
+	}
+	_, rows := PickerDeviceTableData(items, "", true)
+	if got := strings.Join(rows[0], " "); strings.Contains(got, GlyphOutdated) {
+		t.Fatalf("row marks staleness for an offline device: %q", got)
+	}
+}

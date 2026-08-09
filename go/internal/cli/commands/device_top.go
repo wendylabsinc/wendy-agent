@@ -243,11 +243,21 @@ type topJSONHost struct {
 	MemTotalBytes int64            `json:"memTotalBytes"`
 	GPUs          []topJSONGPU     `json:"gpus,omitempty"`
 	ThermalZones  []topJSONThermal `json:"thermalZones,omitempty"`
+	// Absent on mains-powered devices. Consumers must read "no battery key" as
+	// "no battery", never as a flat one.
+	Battery *topJSONBattery `json:"battery,omitempty"`
 }
 
 type topJSONThermal struct {
 	Name  string  `json:"name"`
 	TempC float64 `json:"tempC"`
+}
+
+type topJSONBattery struct {
+	Percent float64 `json:"percent"`
+	State   string  `json:"state"`
+	// Absent when the device reports no usable charge/discharge rate.
+	SecondsRemaining *int64 `json:"secondsRemaining,omitempty"`
 }
 
 type topJSONGPU struct {
@@ -298,6 +308,13 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				Name:  z.GetName(),
 				TempC: z.GetTempC(),
 			})
+		}
+		if b := cur.host.GetBattery(); b != nil {
+			out.Host.Battery = &topJSONBattery{
+				Percent:          b.GetPercent(),
+				State:            batteryStateLabel(b.GetState()),
+				SecondsRemaining: b.SecondsRemaining,
+			}
 		}
 	}
 	cpuCount := uint32(1)
@@ -377,6 +394,9 @@ func writeTopPlainSnapshot(w io.Writer, prev, cur topSample, containers []*agent
 		}
 		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
 			fmt.Fprintf(w, "TEMP: %s\n", formatThermalZones(zones))
+		}
+		if b := cur.host.GetBattery(); b != nil {
+			fmt.Fprintf(w, "BAT: %s\n", formatBatterySummary(b))
 		}
 	}
 	cpuByID := map[string]float64{}
@@ -781,6 +801,36 @@ var (
 // The fill is colored green/amber/red by load, and value is right-aligned
 // inside the bracket.
 func topMeter(label string, ratio float64, value string, width int) string {
+	return topMeterColored(label, ratio, value, width, loadMeterColor(ratio))
+}
+
+// loadMeterColor grades a utilization ratio, where more is worse.
+func loadMeterColor(ratio float64) lipgloss.Color {
+	switch {
+	case ratio < 0.5:
+		return tui.Emerald500
+	case ratio < 0.85:
+		return tui.Amber500
+	default:
+		return tui.Red500
+	}
+}
+
+// chargeMeterColor grades a battery charge ratio, where *less* is worse — the
+// inverse of every other meter here, so a nearly flat pack reads red rather
+// than the reassuring green a load meter would paint it.
+func chargeMeterColor(ratio float64) lipgloss.Color {
+	switch {
+	case ratio < 0.15:
+		return tui.Red500
+	case ratio < 0.30:
+		return tui.Amber500
+	default:
+		return tui.Emerald500
+	}
+}
+
+func topMeterColored(label string, ratio float64, value string, width int, c lipgloss.Color) string {
 	if ratio < 0 {
 		ratio = 0
 	}
@@ -799,15 +849,6 @@ func topMeter(label string, ratio float64, value string, width int) string {
 	filled := int(ratio * float64(barArea))
 	if filled > barArea {
 		filled = barArea
-	}
-	var c lipgloss.Color
-	switch {
-	case ratio < 0.5:
-		c = tui.Emerald500
-	case ratio < 0.85:
-		c = tui.Amber500
-	default:
-		c = tui.Red500
 	}
 	bars := lipgloss.NewStyle().Foreground(c).Render(strings.Repeat("|", filled))
 	gap := strings.Repeat(" ", barArea-filled)
@@ -880,6 +921,13 @@ func (m topModel) View() string {
 		}
 		top = append(top, topMeter("Mem", memRatio,
 			fmt.Sprintf("%s/%s", formatBytes(used), formatBytes(h.GetMemTotalBytes())), meterW))
+
+		// Only devices that actually have a battery get this row; a
+		// mains-powered device shows nothing where it would be.
+		if b := h.GetBattery(); b != nil {
+			ratio := batteryMeterRatio(b)
+			top = append(top, topMeterColored("Bat", ratio, formatBatteryMeterValue(b), meterW, chargeMeterColor(ratio)))
+		}
 
 		for _, g := range h.GetGpus() {
 			val := fmt.Sprintf("%.0f%%", g.GetUtilPercent())
