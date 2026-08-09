@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -240,5 +241,33 @@ func TestSegmentIndexFor(t *testing.T) {
 		if ok != tc.ok || index != tc.index {
 			t.Errorf("SegmentIndexFor(%q) = %d, %v; want %d, %v", tc.address, index, ok, tc.index, tc.ok)
 		}
+	}
+}
+
+// The relay must not pace or buffer the stream on its own account. Both of these
+// were costing a frame's worth of delay or more on every frame, on a path whose
+// only job is to move bytes.
+func TestPipelineArgsAddsNoLatencyOfItsOwn(t *testing.T) {
+	args := PipelineArgs("rtsp://admin:p@10.98.0.50:554/x")
+	joined := strings.Join(args, " ")
+
+	// A jitter buffer only earns its delay on a reordering transport, and this
+	// pipeline forces TCP.
+	if !strings.Contains(joined, "latency=0") {
+		t.Errorf("jitter buffer adds delay on an ordered transport: %s", joined)
+	}
+	// fdsink is a GstBaseSink, so without this it holds every buffer until its
+	// presentation time — clock-pacing a relay.
+	fdsinkAt := -1
+	for i, arg := range args {
+		if arg == "fdsink" {
+			fdsinkAt = i
+		}
+	}
+	if fdsinkAt < 0 {
+		t.Fatalf("pipeline has no fdsink: %s", joined)
+	}
+	if !slices.Contains(args[fdsinkAt:], "sync=false") {
+		t.Errorf("fdsink paces output to the clock: %s", joined)
 	}
 }

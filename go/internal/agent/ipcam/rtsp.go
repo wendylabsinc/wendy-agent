@@ -189,17 +189,31 @@ func SecretsIn(args []string) []string {
 // start decoding, and what the command-line interface's keyframe buffer relies
 // on. TCP interleaving is forced so UDP loss does not surface as decode
 // corruption.
+//
+// Two settings exist purely to keep the relay from adding latency of its own:
+//
+// latency=0 — a jitter buffer absorbs reordering and variable delay, both of
+// which are properties of RTP over UDP. This pipeline forces TCP, where the
+// transport already guarantees ordered delivery, so any jitter buffer depth is
+// delay added to every frame in exchange for nothing. drop-on-latency stays at
+// its default of false, so a depth of zero delays rather than discards.
+//
+// sync=false — fdsink inherits GstBaseSink, which by default holds each buffer
+// until its presentation time. That is right for a sink that renders and wrong
+// for one that relays: it paces the byte stream to the pipeline clock, adding
+// the pipeline's latency a second time on top of the jitter buffer's. Whatever
+// eventually displays these frames does its own timing.
 func PipelineArgs(streamURL string) []string {
 	return []string{
 		"rtspsrc",
 		"location=" + streamURL,
 		"protocols=tcp",
-		"latency=200",
+		"latency=0",
 		"timeout=5000000",
 		"!", "rtph264depay",
 		"!", "h264parse", "config-interval=-1",
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
-		"!", "fdsink", "fd=1",
+		"!", "fdsink", "fd=1", "sync=false",
 	}
 }
 
