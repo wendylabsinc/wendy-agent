@@ -1387,8 +1387,10 @@ const (
 // first. The returned lkgOutcome tells the caller how to fall through —
 // dialAgentLKG never surfaces its own failures as the connect's outcome.
 // Trust is unchanged: the same certs, verifiers, and pins run here as on
-// the ordinary path; the cache contributes routing only.
-func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+// the ordinary path; the cache contributes routing only — pinKey is the name
+// the caller was asked for, NOT the entry's IP or display name, so a poisoned
+// cache row cannot pick which identity this dial is allowed to accept.
+func dialAgentLKG(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 	addr := hostPort(e.IP, e.Port)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	if !lkgTCPAlive(addr) {
@@ -1404,7 +1406,7 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 		// treating it like a dead IP.
 		return nil, nil, lkgHandshakeFailed
 	}
-	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, addr, certs)
+	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, newDialTarget(pinKey, addr), certs)
 	if err != nil || conn == nil || !conn.IsMTLS {
 		// The entry advertised mTLS; a plaintext downgrade here would be
 		// surprising, so route it through the ordinary path instead.
@@ -1531,6 +1533,11 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	originalAddr := plaintextAddr
+	// The pin key is the host the caller was ASKED to reach, captured before
+	// any resolution, cache lookup, or retry can substitute an address for it.
+	// Every rung below dials with this same key, so which device is acceptable
+	// never depends on what discovery answered.
+	pinKey := pinKeyForAddr(originalAddr)
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
 		if e, ok := cachedDeviceHostEntry(plainHost); ok && e.IP != "" {
@@ -1540,7 +1547,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				// Last-known-good direct dial: the advertised mTLS endpoint
 				// with the entry's org's cert first, TCP-bounded so a dead
 				// IP costs at most lkgTCPConnectTimeout.
-				switch conn, mtlsErr, outcome := dialAgentLKGFn(ctx, e); outcome {
+				switch conn, mtlsErr, outcome := dialAgentLKGFn(ctx, e, pinKey); outcome {
 				case lkgConnected:
 					return conn, mtlsErr, nil
 				case lkgHandshakeFailed:
@@ -1575,7 +1582,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	}
 
-	conn, mtlsErr, err := dialAgentLadderFn(ctx, plaintextAddr)
+	conn, mtlsErr, err := dialAgentLadderFn(ctx, newDialTarget(pinKey, plaintextAddr))
 	if fromCache && !cacheFastPathReachableFn(ctx, conn, err) {
 		switch {
 		case ctx.Err() != nil:
@@ -1599,7 +1606,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				if conn != nil {
 					conn.Close()
 				}
-				conn, mtlsErr, err = dialAgentLadderFn(ctx, retryAddr)
+				conn, mtlsErr, err = dialAgentLadderFn(ctx, newDialTarget(pinKey, retryAddr))
 			}
 		}
 	}
@@ -1750,7 +1757,14 @@ func cacheHostnameForStorage(host string) string {
 // its own. connectWithAutoTLSDiagnostics calls it for every connect —
 // resolved-address and device-cache fast path alike, including the fast
 // path's stale-cache retry — so all three share this exact same ladder.
-func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+//
+// target.Addr is that address; target.PinKey and target.Expected are what the
+// user asked for, and they make this the single point where the two identity
+// rules hold: a peer that is the wrong device aborts the whole ladder (no
+// further cert, no further port), and a host with any pin is never offered the
+// plaintext rung.
+func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+	plaintextAddr := target.Addr
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	var lastMTLSErr error
 	recordMTLSErr := func(addr string, err error) {
@@ -1808,7 +1822,7 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for pos := range probeOrder {
 					i := probeOrder[pos]
-					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
+					conn, tlsErr := grpcclient.ConnectWithTLSExpecting(ctx, mtlsAddr, &allCerts[i], pins, target.Expected)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
 						if tlsDebug {
@@ -1830,6 +1844,13 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 						return conn, nil, nil
 					}
 					recordMTLSErr(mtlsAddr, probeErr)
+					if im, mismatched := conn.IdentityMismatch(); mismatched {
+						conn.Close()
+						// The device is wrong, not our certificate — every
+						// remaining cert and port would fail the same way, and
+						// the plaintext rung below must not be reached at all.
+						return nil, lastMTLSErr, identityRefusal(target.PinKey, im)
+					}
 					if tlsDebug {
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
@@ -1873,14 +1894,20 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 			}
 		}
 	}
-	conn, err := grpcclient.Connect(ctx, plaintextAddr)
+	if isPinned(target.PinKey) {
+		// A host we have already reached over mTLS must never be reached
+		// unauthenticated. Unlike provisionedAgentAdvertisedMTLS this reads
+		// local state, not a TXT record the attacker also controls.
+		return nil, lastMTLSErr, pinnedHostWentUnauthenticatedError(target.PinKey)
+	}
+	conn, err := plaintextConnectFn(ctx, plaintextAddr)
 	return conn, lastMTLSErr, err
 }
 
 // dialAgentLadder is dialAgentLadderWithCerts with the CLI's stored certs
 // in config order — the shape every non-fast-path caller wants.
-func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
-	return dialAgentLadderWithCerts(ctx, plaintextAddr, loadAllCLICerts())
+func dialAgentLadder(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+	return dialAgentLadderWithCerts(ctx, target, loadAllCLICerts())
 }
 
 // dialAgentLadderWithCertsFn is a seam over dialAgentLadderWithCerts for
@@ -1942,8 +1969,15 @@ func isCertRejectionError(err error) bool {
 
 // provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery
 // snapshot and checks whether the target address was already advertised as an
-// mTLS-only agent. Callers pass this result into the dial path; it is not
-// refreshed after a failed connection attempt.
+// mTLS-only agent.
+//
+// This is a PHRASING HINT FOR ERROR MESSAGES ONLY and must never be used as a
+// guard. What it reports comes from the device's own mDNS TXT records, which
+// whoever answered the address controls — so "it didn't advertise mTLS" is not
+// evidence that plaintext is safe. The rule that actually withholds the
+// plaintext rung is isPinned, which reads local pin state (see
+// dialAgentLadderWithCerts). This snapshot is also not refreshed after a failed
+// connection attempt.
 func provisionedAgentAdvertisedMTLS(ctx context.Context, plaintextAddr string) bool {
 	devices, err := discoverLANDevices(ctx, provisionedAgentMetadataDiscoveryTimeout)
 	if err != nil {

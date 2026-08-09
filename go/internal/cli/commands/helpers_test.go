@@ -1099,7 +1099,7 @@ func TestConnectWithAutoTLSDiagnostics_RejectionClassNotRetried(t *testing.T) {
 
 	calls := 0
 	rejectionErr := newTLSHandshakeRejectedError(errors.New("cert rejected"))
-	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		calls++
 		return nil, nil, rejectionErr
 	}
@@ -1150,7 +1150,7 @@ func TestConnectWithAutoTLSDiagnostics_OrgMismatchNotRetried(t *testing.T) {
 	calls := 0
 	certs := []config.CertificateInfo{{OrganizationID: 3}}
 	orgErr := chooseRejectionError(context.Background(), 42, certs, errors.New("boom"))
-	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		calls++
 		return nil, nil, orgErr
 	}
@@ -1208,7 +1208,7 @@ func TestConnectWithAutoTLSDiagnostics_SameAddressRetrySkipped(t *testing.T) {
 	}
 
 	calls := 0
-	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		calls++
 		return nil, nil, errors.New("connection refused")
 	}
@@ -1255,7 +1255,7 @@ func TestConnectWithAutoTLSDiagnostics_SkipsRetryWhenContextExpired(t *testing.T
 	}
 
 	calls := 0
-	dialAgentLadderFn = func(context.Context, string) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
 		calls++
 		return nil, nil, errors.New("connection refused")
 	}
@@ -1512,13 +1512,13 @@ func TestDialAgentLKGSkipsOnTCPPrecheckFailure(t *testing.T) {
 	}
 	ladderCalled := false
 	origLadder := dialAgentLadderWithCertsFn
-	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderWithCertsFn = func(ctx context.Context, target dialTarget, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
 		ladderCalled = true
 		return nil, nil, errors.New("must not be reached")
 	}
 	t.Cleanup(func() { tcpDialTimeoutFn = origTCP; dialAgentLadderWithCertsFn = origLadder })
 
-	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2}, "orin.local")
 	if outcome != lkgDeadTCP {
 		t.Fatalf("dialAgentLKG outcome = %v, want lkgDeadTCP", outcome)
 	}
@@ -1534,11 +1534,12 @@ func TestDialAgentLKGRotatesCertsAndDialsMTLSPort(t *testing.T) {
 		go c2.Close()
 		return c1, nil
 	}
-	var gotAddr string
+	var gotAddr, gotPinKey string
 	var gotOrgs []int
 	origLadder := dialAgentLadderWithCertsFn
-	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
-		gotAddr = addr
+	dialAgentLadderWithCertsFn = func(ctx context.Context, target dialTarget, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+		gotAddr = target.Addr
+		gotPinKey = target.PinKey
 		for _, c := range certs {
 			gotOrgs = append(gotOrgs, c.OrganizationID)
 		}
@@ -1554,12 +1555,15 @@ func TestDialAgentLKGRotatesCertsAndDialsMTLSPort(t *testing.T) {
 		loadAllCLICertsFn = origCerts
 	})
 
-	conn, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2})
+	conn, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true, OrgID: 2}, "orin.local")
 	if outcome != lkgConnected || conn == nil {
 		t.Fatalf("dialAgentLKG outcome = %v, conn = %v; want lkgConnected with a connection", outcome, conn)
 	}
 	if gotAddr != "10.0.0.9:50052" {
 		t.Errorf("dialed %q, want the entry's mTLS endpoint 10.0.0.9:50052", gotAddr)
+	}
+	if gotPinKey != "orin.local" {
+		t.Errorf("pin key = %q, want the caller's requested name orin.local (never the cached IP)", gotPinKey)
 	}
 	if fmt.Sprint(gotOrgs) != fmt.Sprint([]int{2, 1}) {
 		t.Errorf("cert org order = %v, want entry-org-first [2 1]", gotOrgs)
@@ -1574,7 +1578,7 @@ func TestDialAgentLKGFallsThroughOnPlaintextDowngrade(t *testing.T) {
 		return c1, nil
 	}
 	origLadder := dialAgentLadderWithCertsFn
-	dialAgentLadderWithCertsFn = func(ctx context.Context, addr string, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+	dialAgentLadderWithCertsFn = func(ctx context.Context, target dialTarget, certs []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
 		return grpcclient.NewFromConn(nil), nil, nil // IsMTLS=false: ladder fell to plaintext
 	}
 	origCerts := loadAllCLICertsFn
@@ -1585,7 +1589,7 @@ func TestDialAgentLKGFallsThroughOnPlaintextDowngrade(t *testing.T) {
 		loadAllCLICertsFn = origCerts
 	})
 
-	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true})
+	_, _, outcome := dialAgentLKG(context.Background(), discoverycache.Entry{IP: "10.0.0.9", Port: 50052, MTLS: true}, "orin.local")
 	if outcome != lkgHandshakeFailed {
 		t.Fatalf("LKG outcome = %v, want lkgHandshakeFailed for a plaintext downgrade of an entry advertised as mTLS", outcome)
 	}
