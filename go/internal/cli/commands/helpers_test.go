@@ -953,9 +953,13 @@ func TestConnectWithAutoTLSDiagnostics_CacheMissUsesOSResolver(t *testing.T) {
 }
 
 // A stale cached IP that fails to answer must never make an otherwise
-// reachable device look unreachable (spec §4): the fast path must re-resolve
-// via the same mDNS-browse fallback the cache-miss path uses and retry once.
-// (The cache self-heal that a successful retry enables is a
+// reachable device look unreachable (spec §4): the fast path must fall
+// through to the same mDNS-browse fallback the cache-miss path uses. Here the
+// TCP pre-check is the thing that fails, so the cached-IP ladder is skipped
+// outright and the fall-through is the connect's first and only resolution —
+// no second ladder pass is involved (the stale-retry-after-a-live-but-failing
+// ladder path is covered separately by the LKG connect-flow tests).
+// (The cache self-heal that a successful fall-through enables is a
 // connectAgentAtAddressWithProvisionedHint-layer concern — see
 // TestConnectAgentAtAddressWithProvisionedHint_SelfHealsExistingDiscoveryEntry
 // — since connectWithAutoTLSDiagnostics's own "success" isn't proof of life
@@ -998,7 +1002,7 @@ func TestConnectWithAutoTLSDiagnostics_StaleCacheRetriesViaMDNS(t *testing.T) {
 
 	// The OS resolver can't see the device (the Windows/Linux ".local" gap
 	// issue #1155 works around); only the mDNS browse fallback can — which is
-	// what the retry must use.
+	// what the post-pre-check fall-through must use to reach the device.
 	osLookupHostFn = func(context.Context, string) ([]string, error) {
 		return nil, errors.New("no such host")
 	}

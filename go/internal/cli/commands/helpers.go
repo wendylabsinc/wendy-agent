@@ -1384,11 +1384,15 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 	if err != nil || conn == nil || !conn.IsMTLS {
 		// The entry advertised mTLS; a plaintext downgrade here would be
 		// surprising, so route it through the ordinary path instead.
+		// Describe the reason before closing conn — two of the three cases
+		// carry no err at all, and reading conn.IsMTLS after Close would be
+		// reading a torn-down connection.
+		reason := lkgDialFailureReason(conn, mtlsErr, err)
 		if conn != nil {
 			conn.Close()
 		}
 		if tlsDebug {
-			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %v\n", addr, err)
+			fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: direct dial failed: %s\n", addr, reason)
 		}
 		return nil, mtlsErr, lkgHandshakeFailed
 	}
@@ -1396,6 +1400,27 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 		fmt.Fprintf(os.Stderr, "[tls-debug] lkg %s: connected\n", addr)
 	}
 	return conn, mtlsErr, lkgConnected
+}
+
+// lkgDialFailureReason describes, for WENDY_TLS_DEBUG output, why the LKG
+// ladder attempt didn't yield a usable mTLS connection. Only one of the three
+// failure modes actually carries a ladder error: a nil conn and a plaintext
+// downgrade both come back with err == nil, so formatting err alone printed a
+// bare "<nil>" for exactly the two cases whose cause is least obvious. The
+// downgrade case reports mtlsErr — the mTLS-probe diagnostic explaining why
+// the ladder fell back to plaintext — since that, not the (absent) ladder
+// error, is the reason the entry's advertised mTLS endpoint wasn't usable.
+func lkgDialFailureReason(conn *grpcclient.AgentConnection, mtlsErr, err error) string {
+	switch {
+	case err != nil:
+		return err.Error()
+	case conn == nil:
+		return "ladder returned no connection"
+	case mtlsErr != nil:
+		return fmt.Sprintf("ladder downgraded to plaintext though the cache entry advertised mTLS: %v", mtlsErr)
+	default:
+		return "ladder downgraded to plaintext though the cache entry advertised mTLS"
+	}
 }
 
 // dialAgentLKGFn is a seam over dialAgentLKG for connect-flow tests.
