@@ -1,10 +1,13 @@
 package services
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"go.uber.org/zap"
@@ -13,6 +16,127 @@ import (
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
+
+// tarWith builds a one-entry tar with the given entry name, used to probe the
+// extractor's path handling.
+func tarWith(t *testing.T, name string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: 1}); err != nil {
+		t.Fatalf("writing header: %v", err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatalf("writing body: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestContextDir_StableAcrossCalls(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+
+	first, err := svc.contextDir("myapp")
+	if err != nil {
+		t.Fatalf("contextDir: %v", err)
+	}
+	second, err := svc.contextDir("myapp")
+	if err != nil {
+		t.Fatalf("contextDir: %v", err)
+	}
+	if first != second {
+		t.Fatalf("context dir must be stable per app (%q vs %q): BuildKit keys its local-source cache on this path, so a fresh temp dir re-transfers the whole context every build", first, second)
+	}
+}
+
+func TestContextDir_RejectsTraversalInAppID(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+
+	// After sanitising, "../.." has no legal characters left, so it must be
+	// rejected rather than resolving to the state dir's parent.
+	if _, err := svc.contextDir("../.."); err == nil {
+		t.Fatal("an app id that sanitises to nothing must be rejected")
+	}
+}
+
+func TestExtractContextTar_RejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	if err := extractContextTar(bytes.NewReader(tarWith(t, "../escape.txt")), dir); err == nil {
+		t.Fatal("a tar entry escaping the context root must be rejected, not written")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape.txt")); err == nil {
+		t.Fatal("the escaping entry was actually written outside the context root")
+	}
+}
+
+func TestExtractContextTar_RejectsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	if err := extractContextTar(bytes.NewReader(tarWith(t, "/etc/passwd")), dir); err == nil {
+		t.Fatal("an absolute tar entry must be rejected")
+	}
+}
+
+func TestExtractContextTar_WritesOrdinaryEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := extractContextTar(bytes.NewReader(tarWith(t, "sub/app.py")), dir); err != nil {
+		t.Fatalf("extractContextTar: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sub", "app.py")); err != nil {
+		t.Fatalf("ordinary nested entry was not written: %v", err)
+	}
+}
+
+func TestBuildctlArgs_SortedAndPushing(t *testing.T) {
+	args, err := buildctlArgs("/ctx", "Dockerfile", "linux/arm64",
+		"127.0.0.1:41000/myapp:latest", map[string]string{"FOO": "bar", "ABC": "1"})
+	if err != nil {
+		t.Fatalf("buildctlArgs: %v", err)
+	}
+	want := []string{
+		"build",
+		"--frontend", "dockerfile.v0",
+		"--local", "context=/ctx",
+		"--local", "dockerfile=/ctx",
+		"--opt", "filename=Dockerfile",
+		"--opt", "platform=linux/arm64",
+		"--opt", "build-arg:ABC=1",
+		"--opt", "build-arg:FOO=bar",
+		"--output", "type=image,name=127.0.0.1:41000/myapp:latest,push=true",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("buildctlArgs mismatch:\n got: %v\nwant: %v", args, want)
+	}
+}
+
+// The agent re-validates rather than trusting the CLI's validation.
+func TestBuildctlArgs_RejectsFlagInjectionBuildArg(t *testing.T) {
+	if _, err := buildctlArgs("/ctx", "Dockerfile", "linux/arm64", "127.0.0.1:41000/a:latest",
+		map[string]string{"FOO": "-rm-rf"}); err == nil {
+		t.Fatal("the agent must re-validate build args, not trust the client's validation")
+	}
+}
+
+func TestBuildctlArgs_RejectsDockerfileEscapingContext(t *testing.T) {
+	if _, err := buildctlArgs("/ctx", "../../etc/shadow", "linux/arm64",
+		"127.0.0.1:41000/a:latest", nil); err == nil {
+		t.Fatal("a dockerfile name escaping the context must be rejected")
+	}
+}
+
+func TestBuildctlArgs_RejectsAbsoluteDockerfile(t *testing.T) {
+	if _, err := buildctlArgs("/ctx", "/etc/shadow", "linux/arm64",
+		"127.0.0.1:41000/a:latest", nil); err == nil {
+		t.Fatal("an absolute dockerfile path must be rejected")
+	}
+}
 
 // stubBuildStream is a fake BuildImage server stream for unit tests.
 type stubBuildStream struct {
