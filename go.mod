@@ -22,13 +22,13 @@ require (
 	github.com/diskfs/go-diskfs v1.9.3
 	github.com/distribution/reference v0.6.0
 	github.com/dustin/go-humanize v1.0.1
-	github.com/ebitengine/purego v0.9.0
 	github.com/ebitengine/oto/v3 v3.4.0
+	github.com/ebitengine/purego v0.9.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/gousb v1.1.3
 	github.com/google/uuid v1.6.0
-	github.com/hashicorp/mdns v1.0.6
+	github.com/hashicorp/mdns v1.0.7
 	github.com/klauspost/compress v1.18.6
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/miekg/dns v1.1.72
