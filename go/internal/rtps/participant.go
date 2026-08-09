@@ -28,7 +28,7 @@ func spdpMulticastPort(domainID int) int { return portBase + domainIDGain*domain
 // duration advertised is comfortably longer so a dropped packet does not evict
 // us from a peer's participant table.
 const (
-	announceInterval = 3 * time.Second
+	announceInterval = 30 * time.Second
 	leaseSeconds     = 30
 )
 
