@@ -549,7 +549,6 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 	return toRestart
 }
 
-// shouldRestart determines whether a container should be restarted based on its policy.
 // restartPolicyHonorsExplicitStop reports whether policy's restart decision
 // is gated by containerState.ExplicitStop. RestartUnlessStopped and
 // RestartOnFailure honor it — a user-initiated stop is meant to stick.
@@ -573,6 +572,7 @@ func restartPolicyHonorsExplicitStop(policy RestartPolicy) bool {
 	}
 }
 
+// shouldRestart determines whether a container should be restarted based on its policy.
 func (m *ContainerMonitor) shouldRestart(state *containerState) bool {
 	if restartPolicyHonorsExplicitStop(state.RestartPolicy) && state.ExplicitStop {
 		return false
