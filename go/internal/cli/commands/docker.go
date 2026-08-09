@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -31,11 +32,69 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// stagefileSourceName is the conventional filename for a Stagefile source,
+// matching the standalone stagefile tool's own CLI default.
+const stagefileSourceName = "build.stagefile.yaml"
+
+// stagefileLockName is the lockfile the Stagefile compiler maintains next to
+// its source (digest pins; see go/internal/stagefile/lock).
+const stagefileLockName = "build.stagefile.lock.yaml"
+
+// generatedDockerfileName is the internal build artifact prepareDockerBuildFile
+// writes (compiled Stagefile or auto-fixed Dockerfile copy). The writer, the
+// build-file-detection exclusion, and the watch ignore list all key off this
+// one name so they can't drift.
+const generatedDockerfileName = "Dockerfile.generated"
+
+// generatedDockerignoreName is the ignore file BuildKit pairs with
+// generatedDockerfileName (per-Dockerfile <name>.dockerignore precedence),
+// letting the Stagefile compiler's derived allowlist apply without touching a
+// user-authored .dockerignore.
+const generatedDockerignoreName = generatedDockerfileName + ".dockerignore"
+
+// writeGeneratedFile writes data to path only when the current content
+// differs, via a same-directory temp file + rename. The rename keeps
+// concurrent readers (parallel service builds sharing a context dir, buildx
+// reading .dockerignore at context-send time) from ever observing a
+// truncated file, and skipping the no-op write matters for `wendy watch`:
+// these files live inside the watched root, and rewriting identical bytes on
+// every build would re-trigger the watcher mid-deploy.
+func writeGeneratedFile(path string, data []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
 // used by neighbor-table helpers. Tests can replace this variable to stub
@@ -198,13 +257,16 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
+// Precedence: compose > Stagefile/Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return "compose", nil
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return "docker", nil
 	}
 	// Check base build files first (fast path), then any variant.
 	for _, name := range []string{"Dockerfile", "Containerfile"} {
@@ -265,11 +327,18 @@ func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
 		return false
 	}
+	// Never a user-authored build file — it's the internal artifact
+	// prepareDockerBuildFile writes and deliberately never deletes, so no
+	// detection path (project-type, build options, provider fallback) may
+	// treat it as a rival candidate on later runs.
+	if name == generatedDockerfileName {
+		return false
+	}
 	return validDockerfileNameRe.MatchString(name)
 }
 
 func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
-	for _, preferred := range []string{"Dockerfile", "Containerfile"} {
+	for _, preferred := range []string{stagefileSourceName, "Dockerfile", "Containerfile"} {
 		for i := range options {
 			if options[i].Type == "docker" && options[i].File == preferred {
 				return &options[i]
@@ -458,6 +527,120 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 	return resolved, nil
 }
 
+// prepareDockerBuildFile makes sure dockerfile is ready to hand to the
+// actual image builder, without ever modifying a real, user-authored
+// Dockerfile on disk:
+//
+//   - If dockerfile is stagefileSourceName, it's compiled via the stagefile
+//     package into "Dockerfile.generated" (plus ".dockerignore").
+//   - Otherwise, if any purely-additive `wendy project optimize` fix
+//     applies to it (see optimize.SafeAutoApplyFindings), the fixed text is
+//     written to "Dockerfile.generated" and that name is returned instead.
+//   - If neither applies, dockerfile is returned unchanged.
+//
+// Both branches write to the same generated filename — detectBuildOptions
+// already excludes it from re-entering detection as a rival build file, so
+// this covers both origins with one exclusion.
+func prepareDockerBuildFile(dir, dockerfile string) (string, error) {
+	if dockerfile == stagefileSourceName {
+		return compileStagefile(dir)
+	}
+	return applySafeOptimizeFixes(dir, dockerfile)
+}
+
+// hasContainerBuildFile reports whether dir holds any docker build source
+// (Stagefile, Dockerfile/Containerfile, or a variant) without the compile /
+// write side effects resolveDockerfile now has — for callers that only need
+// existence, not a build-ready filename.
+func hasContainerBuildFile(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && isContainerBuildFileName(e.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+// compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
+// "Dockerfile.generated" and ".dockerignore" into dir and returning the
+// generated Dockerfile's filename.
+func compileStagefile(dir string) (string, error) {
+	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "")
+	if err != nil {
+		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
+	}
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
+	}
+	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
+	// file passed via -f, so the derived allowlist rides along without ever
+	// touching (or destroying) a user-authored .dockerignore in the project.
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
+	}
+	return generatedDockerfileName, nil
+}
+
+// applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
+// the Dockerfile at dir/dockerfile and, if any purely-additive fix applies
+// (see optimize.SafeAutoApplyFindings — never npm-ci or a debug->release
+// swap, both of which can change build outcome or behavior), writes the
+// fixed text to "Dockerfile.generated" and returns that name. The real
+// dockerfile on disk is never modified. Returns dockerfile unchanged if
+// there's nothing to fix, or on any analysis error — this never blocks a
+// build over a static-analysis problem.
+func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
+	cfg, _ := loadOptConfig(dir)
+	targets, err := optimize.DiscoverTargets(dir, cfg, "arm64")
+	if err != nil {
+		return dockerfile, nil
+	}
+	dockerfilePath := filepath.Join(dir, dockerfile)
+	var target *optimize.Target
+	for i := range targets {
+		if targets[i].Dockerfile != nil && targets[i].Dockerfile.Path == dockerfilePath {
+			target = &targets[i]
+			break
+		}
+	}
+	if target == nil {
+		return dockerfile, nil // e.g. a named variant like Dockerfile.prod — optimize doesn't scan those today.
+	}
+
+	findings := optimize.SafeAutoApplyFindings(optimize.Analyze([]optimize.Target{*target}, optimize.DefaultAnalyzers()))
+	if len(findings) == 0 {
+		return dockerfile, nil
+	}
+	fixedLines, applied := optimize.ApplyFixesToLines(target.Dockerfile.Lines, findings)
+	anyApplied := false
+	for _, a := range applied {
+		if a.Applied {
+			anyApplied = true
+			break
+		}
+	}
+	if !anyApplied {
+		return dockerfile, nil
+	}
+	fixedText := strings.Join(fixedLines, "\n") + "\n"
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(fixedText)); err != nil {
+		return dockerfile, nil
+	}
+	// A leftover Stagefile-derived allowlist (from a since-deleted
+	// build.stagefile.yaml) would silently shrink this build's context via
+	// BuildKit's per-Dockerfile ignore precedence — the auto-fixed copy must
+	// build with the same ignore rules as the original Dockerfile.
+	_ = os.Remove(filepath.Join(dir, generatedDockerignoreName))
+	return generatedDockerfileName, nil
+}
+
 func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
 	if requested != "" {
 		if err := validateDockerfileName(requested); err != nil {
@@ -480,7 +663,7 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return file, nil
+		return prepareDockerBuildFile(cwd, file)
 	}
 
 	if len(dockerfiles) <= 1 {
@@ -537,6 +720,17 @@ func detectBuildOptions(dir string) []BuildOption {
 			})
 			break
 		}
+	}
+
+	// Stagefile — the most specific, most intentional signal in a project
+	// (nobody has one by accident), so detected ahead of any plain
+	// Dockerfile/Containerfile that also happens to be present.
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		options = append(options, BuildOption{
+			Label: stagefileSourceName + " (Stagefile)",
+			Type:  "docker",
+			File:  stagefileSourceName,
+		})
 	}
 
 	// Find all container build files.

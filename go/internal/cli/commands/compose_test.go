@@ -1064,3 +1064,158 @@ services:
 		t.Errorf("expected no warnings for clean service, got %v", warnings)
 	}
 }
+
+func TestComposeBuildContext_PrefersStagefile(t *testing.T) {
+	parse := func(t *testing.T, body string) composeService {
+		t.Helper()
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Services["svc"]
+	}
+
+	t.Run("scalar build path with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "api")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build: ./api\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("mapping without dockerfile with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("explicit dockerfile wins over stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string]string{
+			stagefileSourceName: "version: 1\n",
+			"Dockerfile.dev":    "FROM alpine\n",
+		} {
+			if err := os.WriteFile(filepath.Join(svcDir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: Dockerfile.dev\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != "Dockerfile.dev" {
+			t.Fatalf("got %q, want %q", df, "Dockerfile.dev")
+		}
+	})
+}
+
+func TestComposeStagefileOverride(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seeded pin so the compile never touches a live registry.
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(svcDir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n  cached:\n    image: alpine\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, cleanup, err := composeStagefileOverride(proj)
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected an override file, got none")
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Build struct {
+				Context    string `yaml:"context"`
+				Dockerfile string `yaml:"dockerfile"`
+			} `yaml:"build"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parsing override: %v\n%s", err, data)
+	}
+	ov, ok := doc.Services["server"]
+	if !ok || ov.Build.Context != "server" || ov.Build.Dockerfile != "Dockerfile.generated" {
+		t.Fatalf("override = %+v\n%s", doc, data)
+	}
+	if _, hasCached := doc.Services["cached"]; hasCached {
+		t.Fatalf("image-only service must not be overridden:\n%s", data)
+	}
+	generated, err := os.ReadFile(filepath.Join(svcDir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("expected compiled Dockerfile.generated: %v", err)
+	}
+	if !strings.Contains(string(generated), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing pinned digest:\n%s", generated)
+	}
+}
+
+func TestComposeStagefileOverride_NoStagefiles(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := composeStagefileOverride(proj)
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path != "" || cleanup != nil {
+		t.Fatalf("expected no override for a Dockerfile-only project, got %q", path)
+	}
+}

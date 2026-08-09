@@ -95,6 +95,65 @@ func TestComputeBuildInputHash_HonorsDockerignore(t *testing.T) {
 	}
 }
 
+// The fingerprint must hash the build's REAL input set: when the resolved
+// dockerfile carries its own <dockerfile>.dockerignore (BuildKit's
+// per-Dockerfile precedence — the Stagefile flow derives a deny-all allowlist
+// there), that file governs the walk, not the context's .dockerignore.
+// Otherwise editing a README invalidates the fingerprint and forces a rebuild
+// of an identical image.
+func TestComputeBuildInputHash_PerDockerfileIgnoreAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python:3.11-slim\nCOPY main.py main.py\n")
+	writeFile(t, dir, "Dockerfile.generated.dockerignore", "*\n!main.py\n!requirements.txt\n")
+	writeFile(t, dir, "main.py", "print('v1')\n")
+	writeFile(t, dir, "requirements.txt", "mcp\n")
+	writeFile(t, dir, "README.md", "docs v1\n")
+
+	hash := func() string {
+		t.Helper()
+		h, err := computeBuildInputHash(dir, "Dockerfile.generated", "linux/arm64", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "README.md", "docs v2\n")
+	if got := hash(); got != base {
+		t.Fatal("hash changed after editing a file excluded by the per-Dockerfile allowlist")
+	}
+	writeFile(t, dir, "main.py", "print('v2')\n")
+	if got := hash(); got == base {
+		t.Fatal("hash unchanged after editing an allowlisted file")
+	}
+}
+
+// A directory with a re-included descendant must stay walkable: with
+// "*" + "!src/app.py", the walk may not SkipDir at src/ or the allowlisted
+// file's changes would be missed entirely (stale-skip, the unsafe direction).
+func TestComputeBuildInputHash_NestedNegationDescends(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python:3.11-slim\nCOPY src/app.py app.py\n")
+	writeFile(t, dir, "Dockerfile.generated.dockerignore", "*\n!src/app.py\n")
+	writeFile(t, dir, "src/app.py", "print('v1')\n")
+
+	hash := func() string {
+		t.Helper()
+		h, err := computeBuildInputHash(dir, "Dockerfile.generated", "linux/arm64", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "src/app.py", "print('v2')\n")
+	if got := hash(); got == base {
+		t.Fatal("hash unchanged after editing a re-included file inside an excluded directory")
+	}
+}
+
 func TestDockerIgnoreMatcher(t *testing.T) {
 	di := &dockerIgnore{patterns: []string{"node_modules", "*.pyc", "dist", "secrets/key.pem"}}
 	cases := []struct {

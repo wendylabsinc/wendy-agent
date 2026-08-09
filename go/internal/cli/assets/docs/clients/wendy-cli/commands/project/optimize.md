@@ -8,7 +8,7 @@ It runs locally and is read-only by default. It works on a single Dockerfile, a 
 - **Release vs. debug** — debug builds shipped to production (`swift build` without `-c release`, `cargo build` without `--release`), and whether `WENDY_DEBUG` is wired to toggle the optimization level. For Swift apps cross-compiled via `wendy run`/`wendy build` (the swift-container-plugin path), the CLI passes `-c release` automatically; no manual `wendy.json` or Dockerfile change is needed for that path.
 - **CUDA / ML** — a CPU-only ML wheel (e.g. `torch==…+cpu`) paired with the `gpu` entitlement (or a CUDA wheel without it), and x86 `nvidia/cuda` base images on an arm64 (Jetson) target.
 - **Architecture & image** — an `amd64` base image on an arm64 device (which runs under slow QEMU emulation or fails), a missing `.dockerignore`, and single-stage builds that ship their full build toolchain.
-- **Dockerfile hygiene** — `apt-get install` split into a separate `RUN` from `apt-get update` (a stale-package-index trap) or missing `--no-install-recommends`; `pip install` without `--no-cache-dir`; `npm install` used despite a `package-lock.json` (should be `npm ci`); `ADD` used where a plain `COPY` would do; an unpinned or `:latest` `FROM` tag; shell-form `CMD`/`ENTRYPOINT` (breaks signal forwarding on `docker stop`); and `COPY --from` that drags in an entire build stage instead of just the artifact it needs.
+- **Dockerfile hygiene** — `apt-get install` split into a separate `RUN` from `apt-get update` (a stale-package-index trap) or missing `--no-install-recommends`; `pip install` without `--no-cache-dir`; `npm install` used despite a `package-lock.json` (consider `npm ci`); `ADD` used where a plain `COPY` would do; an unpinned or `:latest` `FROM` tag; shell-form `CMD`/`ENTRYPOINT` (breaks signal forwarding on `docker stop`); and `COPY --from` that drags in an entire build stage instead of just the artifact it needs.
 
 ## Usage
 
@@ -21,7 +21,7 @@ wendy project optimize --agentic  # emit a context bundle for an AI agent
 
 ## Flags
 
-- `--fix` — apply the safe fixes only: add a build-cache mount, add the release flag (`swift`/`cargo`), create a default `.dockerignore`, add `--no-install-recommends`/`--no-cache-dir`, swap `npm install` for `npm ci`, and swap a plain-file `ADD` for `COPY`. Fixes are idempotent; contextual changes (multi-stage refactors, choosing the right CUDA wheel, retagging a `:latest` base image, converting shell-form `CMD` to exec form) are left to you or the `--agentic` flow.
+- `--fix` — apply the safe fixes only: add a build-cache mount, add the release flag (`swift`/`cargo`), create a default `.dockerignore`, add `--no-install-recommends`/`--no-cache-dir`, and swap a plain-file `ADD` for `COPY`. Fixes are idempotent; contextual changes (multi-stage refactors, choosing the right CUDA wheel, retagging a `:latest` base image, converting shell-form `CMD` to exec form) are left to you or the `--agentic` flow. `npm install` → `npm ci` is reported but never auto-fixed, even here — a drifted lockfile makes `npm ci` fail outright where `npm install` would have quietly updated it, so it's a suggestion, not a fix.
 - `--agentic` — instead of a report, emit a JSON bundle (static findings plus the verbatim project files and a prompt) designed to be piped into Claude Code or the Wendy MCP server.
 - `--severity <info|warning|error>` — the minimum severity that causes a non-zero exit. Defaults to `warning`.
 - `--arch <arch>` — override the target architecture (defaults to `arm64`).
@@ -35,7 +35,11 @@ wendy project optimize --agentic  # emit a context bundle for an AI agent
 
 ## At build time
 
-After a slow incremental build (one that reused cached layers and still took more than ~50s), `wendy run` / `wendy build` will run this scan automatically in an interactive terminal, show the findings, and offer to apply the safe fixes for your next build. This never runs in CI or non-interactive shells.
+Every time `wendy run` / `wendy build` builds a plain Dockerfile or Containerfile (not a Stagefile), it first runs a subset of this scan and, if any *purely additive* fix applies — a build-cache mount, `--no-install-recommends`, `--no-cache-dir`, or a plain-file `ADD` → `COPY` swap — applies it **in memory** and builds that instead. Your real Dockerfile on disk is never touched; nothing is written unless a fix actually applies, and even then only a sibling `Dockerfile.generated` is created. This runs unconditionally (interactive or not, every build) since it's pure static analysis over an already-in-memory file — sub-millisecond overhead, nothing you'd notice next to the build itself.
+
+Fixes that change build *outcome* or *behavior* — `npm install` → `npm ci` (can turn a passing build into a failing one on a drifted lockfile) and the `swift`/`cargo` release flag (changes the shipped binary's runtime behavior) — are deliberately excluded from this silent path. They still show up as findings, and the release flag is still available via an explicit `--fix`.
+
+Separately: after a slow *incremental* build (one that reused cached layers and still took more than ~50s), `wendy run` / `wendy build` also runs the full scan interactively, shows every finding, and offers to apply the remaining safe fixes to disk for your next build. This part never runs in CI or non-interactive shells.
 
 ## Sample projects
 

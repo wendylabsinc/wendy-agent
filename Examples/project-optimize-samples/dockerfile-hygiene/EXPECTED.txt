@@ -5,7 +5,7 @@ Expected findings (wendy project optimize):
   warning  build-cache     pip install without --mount=type=cache            (Dockerfile:13) [fixable]
   warning  pip-flags       pip install without --no-cache-dir                (Dockerfile:13) [fixable]
   warning  build-cache     npm install without --mount=type=cache            (Dockerfile:16) [fixable]
-  warning  node-ci         npm install ignores package-lock.json             (Dockerfile:16) [fixable]
+  warning  node-ci         npm install ignores package-lock.json             (Dockerfile:16)
   info     add-copy        ADD used where COPY would do                      (Dockerfile:18) [fixable]
   warning  image-hygiene   FROM node:latest not pinned to a version          (Dockerfile:20)
   warning  image-hygiene   COPY --from copies the entire build stage         (Dockerfile:21)

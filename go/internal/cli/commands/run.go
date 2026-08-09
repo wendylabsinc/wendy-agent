@@ -1286,6 +1286,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
+		if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+			return "docker", nil
+		}
 		// Accept Dockerfile/Containerfile and dot/hyphen variants.
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
@@ -1512,11 +1515,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if projectType == "swift" {
 		targetIsDarwin := platformOS(platform) == "darwin"
 		explicitSwift := normalizeBuildType(opts.buildType) == "swift"
-		resolvedBuildFile, dockerfileResolveErr := resolveDockerfile(cwd, "", false)
-		if dockerfileResolveErr != nil {
-			return dockerfileResolveErr
-		}
-		needsHostSwift := explicitSwift || resolvedBuildFile == ""
+		// Read-only existence probe: resolveDockerfile would compile a
+		// Stagefile (registry resolution, lockfile write) or write an
+		// auto-fixed Dockerfile.generated just to answer a yes/no question
+		// whose result is discarded on the host-swift path.
+		needsHostSwift := explicitSwift || !hasContainerBuildFile(cwd)
 
 		if needsHostSwift {
 			if targetIsDarwin && runtime.GOOS != "darwin" {
@@ -2338,24 +2341,64 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		build := func(stream, logw io.Writer) error {
 			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
 		}
-		if err := runBuild(build); err != nil {
-			return nil, err
+
+		// Native fast path: for a Stagefile project whose deps inputs are
+		// unchanged since the layout dir's last build, rebuild only the app COPY
+		// layer(s) in-process and splice them into the layout — no Docker at
+		// all. Every guard failure silently falls through to buildx.
+		sf, nativeEligible := nativeBuildEligibility(cwd, dockerfile)
+		var depsHash string
+		if nativeEligible {
+			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+				depsHash = h
+			} else {
+				nativeEligible = false
+			}
 		}
-		mark("build (oci export)")
+		nativeDone := false
+		if nativeEligible {
+			if st, ok := loadNativeState(layoutDir); ok && st.DepsHash == depsHash {
+				if done, rebuildErr := tryNativeRebuild(layoutDir, platform, cwd, sf, st); rebuildErr == nil && done {
+					nativeDone = true
+					cliLogln("App layer(s) rebuilt natively (deps unchanged; buildx skipped)")
+				}
+			}
+		}
+
+		if nativeDone {
+			mark("build (native layers)")
+		} else {
+			if err := runBuild(build); err != nil {
+				return nil, err
+			}
+			mark("build (oci export)")
+		}
 		layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform)
 		if err != nil {
 			// Self-heal exactly once: a corrupt or partially-written layout dir is
 			// wiped and rebuilt from scratch, which is precisely the legacy cold
-			// behavior. A second failure is a real bug and surfaces.
+			// behavior. A second failure is a real bug and surfaces. The wipe also
+			// removes state.json, so the native path stays off until re-adoption.
 			cliLogln("OCI layout cache unreadable (%v); rebuilding it from scratch", err)
 			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
 				return nil, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
 			}
+			nativeDone = false
 			if err := runBuild(build); err != nil {
 				return nil, err
 			}
 			if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
 				return nil, err
+			}
+		}
+		if nativeEligible && !nativeDone {
+			// After a buildx build, take ownership of the app layers: replace them
+			// with deterministic native rebuilds (verified against the buildx
+			// layers' file sets) so every following iteration can skip buildx.
+			if adopted, adoptErr := adoptNativeLayers(layoutDir, platform, cwd, sf, depsHash); adoptErr == nil && adopted {
+				if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
+					return nil, err
+				}
 			}
 		}
 		// Prune blobs superseded by this build once the deploy is done with them.

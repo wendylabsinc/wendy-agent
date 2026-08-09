@@ -14,6 +14,12 @@ func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
 		return false
 	}
+	// Internal artifact the CLI's prepareDockerBuildFile writes (compiled
+	// Stagefile or auto-fixed Dockerfile copy) and never deletes — it must
+	// not be picked up as a user build file (mirrors the commands package).
+	if name == "Dockerfile.generated" {
+		return false
+	}
 	return providerBuildFileNameRe.MatchString(name)
 }
 

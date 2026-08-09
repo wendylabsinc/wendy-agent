@@ -123,6 +123,70 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 // parallel scheduling, skip handling, and failure-map collection without Docker.
 var buildServiceImage = buildAndPushImageForAgent
 
+// planResolveDockerfile is the build-file resolution step used while planning.
+// Like buildServiceImage it is a package var so concurrency tests can substitute
+// a stub and exercise the parallel scheduling without a real project on disk.
+var planResolveDockerfile = resolveDockerfile
+
+// maxConcurrentPlans bounds how many services are planned at once. Planning is
+// local work — a build-file resolve (a Stagefile compile, for a Stagefile
+// project) plus a full walk-and-hash of the build context — so unlike
+// maxConcurrentBuilds this is not throttled to protect the device registry
+// tunnel; it only keeps a very large group from opening every context at once.
+const maxConcurrentPlans = 8
+
+// servicePlan is the per-service work that has to happen before we can decide
+// whether a service's build+push can be skipped: which build file it builds
+// from, and the hash of everything that could change its image.
+type servicePlan struct {
+	dockerfile string
+	inputHash  string
+}
+
+// computeServicePlans resolves each service's build file and build-input hash.
+//
+// Both halves are independent per-service work with no shared state, and both
+// are expensive: resolving a build file compiles a Stagefile (parse, registry
+// digest resolution, codegen, two file writes) and hashing the build context
+// walks and reads every file in it. Running them one service at a time put that
+// cost on the critical path before the first build even started, and it scaled
+// with the size of the group.
+//
+// A service whose resolve or hash fails is simply absent from the result — the
+// same outcome the serial loop produced by `continue`ing. Callers read a missing
+// plan as "don't skip this service, and don't reuse anything for it", so the
+// real error surfaces from the build path instead of aborting the whole group
+// during planning.
+func computeServicePlans(cwd, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) map[string]servicePlan {
+	var mu sync.Mutex
+	plans := make(map[string]servicePlan, len(services))
+
+	sem := make(chan struct{}, maxConcurrentPlans)
+	var wg sync.WaitGroup
+	for name, svc := range services {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			contextDir := filepath.Join(cwd, svc.Context)
+			dockerfile, err := planResolveDockerfile(contextDir, "", false)
+			if err != nil {
+				return
+			}
+			hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs, expandServiceEnv(appCfg, svc))
+			if err != nil {
+				return
+			}
+
+			mu.Lock()
+			plans[name] = servicePlan{dockerfile: dockerfile, inputHash: hash}
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return plans
+}
+
 // serviceFingerprintKey namespaces a deploy fingerprint per service within an
 // app group, so each service's build inputs are tracked independently.
 func serviceFingerprintKey(appID, service string) string {
@@ -195,28 +259,32 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 //
 // Best-effort throughout: any error for a service (or WENDY_PUSH_SKIP=0) just
 // means "don't skip it".
-func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes map[string]string) {
+//
+// The expensive half — resolving each service's build file and hashing its build
+// context — runs concurrently in computeServicePlans; only the cheap decisions
+// that consult the device happen here. The resolved build files are returned
+// alongside so the build path can reuse them instead of resolving (and, for a
+// Stagefile, recompiling) every service a second time in the same run.
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes, dockerfiles map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
+	dockerfiles = map[string]string{}
 	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
-		return skip, hashes
+		return skip, hashes, dockerfiles
 	}
 
+	plans := computeServicePlans(cwd, platform, appCfg, services, buildArgs)
 	present := deviceContainerNames(ctx, conn)
-	for name, svc := range services {
-		contextDir := filepath.Join(cwd, svc.Context)
-		dockerfile, err := resolveDockerfile(contextDir, "", false)
-		if err != nil {
+	for name := range services {
+		plan, planned := plans[name]
+		if !planned {
 			continue
 		}
-		hash, err := computeBuildInputHash(contextDir, dockerfile, platform, buildArgs, expandServiceEnv(appCfg, svc))
-		if err != nil {
-			continue
-		}
-		hashes[name] = hash
+		hashes[name] = plan.inputHash
+		dockerfiles[name] = plan.dockerfile
 
 		fp, ok := loadDeployFingerprint(serviceFingerprintKey(appID, name), deviceKey)
-		if !ok || fp.InputHash != hash {
+		if !ok || fp.InputHash != plan.inputHash {
 			continue
 		}
 		if !present[strings.ToLower(multiServiceContainerName(appID, name))] {
@@ -230,7 +298,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		}
 		skip[name] = true
 	}
-	return skip, hashes
+	return skip, hashes, dockerfiles
 }
 
 // contentPresentForService reports whether the device is confirmed to still hold
@@ -309,13 +377,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// presence, so this currently skips nothing for multi-service; see
 	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
-	skip, hashes := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
+	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
 	if n := len(skip); n > 0 {
 		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -458,6 +526,13 @@ func droppedSummary(dropped map[string]string) string {
 // unchanged inputs, so their build+push is skipped (WDY-1692). Progress is shown
 // via a Bubbletea multi-spinner in interactive terminals and via plain log lines
 // otherwise.
+//
+// dockerfiles carries the build file planning already resolved per service, so a
+// Stagefile project is not compiled twice in the same run. It is best-effort:
+// planning bails out entirely under WENDY_PUSH_SKIP=0 and drops any service it
+// could not plan, so a service missing from the map resolves its own build file
+// here — which is also where that resolution's error belongs, since this is the
+// path that reports per-service failures.
 func buildServicesParallel(
 	ctx context.Context,
 	conn *grpcclient.AgentConnection,
@@ -469,6 +544,7 @@ func buildServicesParallel(
 	buildArgs map[string]string,
 	builder string,
 	skip map[string]bool,
+	dockerfiles map[string]string,
 	maxConcurrency int,
 ) (map[string]error, error) {
 	names := make([]string, 0, len(services))
@@ -540,7 +616,11 @@ func buildServicesParallel(
 			start := time.Now()
 			contextDir := filepath.Join(cwd, svc.Context)
 			repo := fmt.Sprintf("%s-%s", strings.ToLower(appID), strings.ToLower(name))
-			dockerfile, dockerfileErr := resolveDockerfile(contextDir, "", false)
+			dockerfile, planned := dockerfiles[name]
+			var dockerfileErr error
+			if !planned {
+				dockerfile, dockerfileErr = planResolveDockerfile(contextDir, "", false)
+			}
 
 			var buildOut io.Writer
 			var logBuf bytes.Buffer
