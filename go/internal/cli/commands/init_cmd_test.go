@@ -27,6 +27,11 @@ func TestNewInitCmd_Flags(t *testing.T) {
 		"persist-path",
 		"assistant",
 		"install-claude-skills",
+		"framework",
+		"ros2-domain-id",
+		"ros2-rmw",
+		"ros2-distro",
+		"ros2-discovery-scope",
 	}
 
 	for _, name := range expectedFlags {
@@ -55,6 +60,10 @@ func TestInitCommand_HelpIncludesExamples(t *testing.T) {
 		"--no-extra-entitlements",
 		"--assistant claude",
 		"--install-claude-skills",
+		// WDY frameworks discoverability: `wendy init --help` must at least
+		// mention that a "frameworks" key exists and how to reach it.
+		"frameworks",
+		"--framework ros2",
 	}
 	for _, want := range expected {
 		if !strings.Contains(output, want) {
@@ -651,6 +660,12 @@ func TestInitCommand_NoExtraEntitlementsFalseStillPrompts(t *testing.T) {
 	}
 	t.Cleanup(func() { askEntitlementQuestions = origAsk })
 
+	// Also replace the (equally interactive) ROS 2 framework prompt this test
+	// doesn't care about, so it doesn't try to open a real TTY.
+	origAskFrameworks := askFrameworkQuestions
+	askFrameworkQuestions = func() (*appconfig.FrameworksConfig, error) { return nil, nil }
+	t.Cleanup(func() { askFrameworkQuestions = origAskFrameworks })
+
 	cmd := newInitCmd()
 	cmd.SetArgs([]string{
 		"--app-id", "demo-app",
@@ -1048,5 +1063,455 @@ func TestTemplateEntitlementsFromFlags_DarwinRejectsEntitlementFlags(t *testing.
 	})
 	if err == nil {
 		t.Fatal("expected darwin + --entitlement to fail")
+	}
+}
+
+// ── Problem B: `wendy init --template` (and the target picker upstream of
+// it) must degrade to a plain-text list instead of crashing on TTY open when
+// no TTY is attached. ────────────────────────────────────────────────────
+
+func TestResolveInitTarget_NonInteractiveWithoutFlagFails(t *testing.T) {
+	orig := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = orig })
+
+	_, err := resolveInitTarget(initOptions{})
+	if err == nil {
+		t.Fatal("expected non-interactive target resolution without --target to fail")
+	}
+	if !strings.Contains(err.Error(), "--target is required") {
+		t.Fatalf("error = %q, want mention of --target", err)
+	}
+}
+
+func TestResolveInitTarget_NonInteractiveWithFlagSucceeds(t *testing.T) {
+	orig := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = orig })
+
+	target, err := resolveInitTarget(initOptions{target: "wendyos", targetSet: true})
+	if err != nil {
+		t.Fatalf("resolveInitTarget: %v", err)
+	}
+	if target != targetWendyOS {
+		t.Fatalf("target = %q, want %q", target, targetWendyOS)
+	}
+}
+
+// The WDY-init-template-tty repro: `wendy init --template` with no TTY must
+// print the available templates instead of crashing with
+// "picker: could not open a new TTY".
+func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T) {
+	orig := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = orig })
+
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{
+			{Name: "simple-api", Description: "Minimal HTTP API"},
+			{Name: "mac-llm", Description: "macOS-only template", Targets: []string{targetDarwin}},
+		},
+	}
+
+	_, err := resolveBareTemplatePick(targetWendyOS, meta)
+	if err == nil {
+		t.Fatal("expected non-interactive bare --template to fail")
+	}
+	if !strings.Contains(err.Error(), "--template requires a value") {
+		t.Fatalf("error = %q, want mention of --template", err)
+	}
+}
+
+func TestTemplateItemsForTarget_FiltersByTarget(t *testing.T) {
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{
+			{Name: "simple-api", Description: "Minimal HTTP API"},
+			{Name: "mac-llm", Description: "macOS-only template", Targets: []string{targetDarwin}},
+		},
+	}
+
+	items := templateItemsForTarget(targetWendyOS, meta)
+	if len(items) != 1 || items[0].Value.(string) != "simple-api" {
+		t.Fatalf("templateItemsForTarget(wendyos) = %+v, want only simple-api", items)
+	}
+
+	items = templateItemsForTarget(targetDarwin, meta)
+	if len(items) != 1 || items[0].Value.(string) != "mac-llm" {
+		t.Fatalf("templateItemsForTarget(darwin) = %+v, want only mac-llm", items)
+	}
+}
+
+// ── Problem A: `frameworks`/ROS 2 support must be discoverable from
+// `wendy init` via --framework/--ros2-* flags or an interactive prompt. ────
+
+func TestBuildInitFrameworksFromFlags_NoFlagsIsNoOp(t *testing.T) {
+	frameworks, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{})
+	if err != nil {
+		t.Fatalf("buildInitFrameworksFromFlags: %v", err)
+	}
+	if frameworks != nil {
+		t.Fatalf("frameworks = %+v, want nil", frameworks)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_FrameworkROS2CreatesDefaultConfig(t *testing.T) {
+	frameworks, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		frameworksSet: true,
+		frameworks:    []string{"ros2"},
+	})
+	if err != nil {
+		t.Fatalf("buildInitFrameworksFromFlags: %v", err)
+	}
+	if frameworks == nil || frameworks.ROS2 == nil {
+		t.Fatalf("frameworks = %+v, want a ros2 config", frameworks)
+	}
+	if frameworks.ROS2.DomainID != nil || frameworks.ROS2.RMW != "" || frameworks.ROS2.Distro != "" || frameworks.ROS2.DiscoveryScope != "" {
+		t.Fatalf("ros2 config = %+v, want all fields left at their zero value (defaults apply)", frameworks.ROS2)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsUnknownFramework(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		frameworksSet: true,
+		frameworks:    []string{"ros1"},
+	})
+	if err == nil {
+		t.Fatal("expected unknown framework to fail")
+	}
+	if !strings.Contains(err.Error(), `"ros1"`) {
+		t.Fatalf("error = %q, want mention of ros1", err)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_EmptyFrameworkFlagFails(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		frameworksSet: true,
+		frameworks:    []string{"", "  "},
+	})
+	if err == nil {
+		t.Fatal("expected --framework with no valid entries to fail")
+	}
+}
+
+// Ros2-specific flags imply the ros2 framework even without --framework ros2,
+// mirroring how --gpio-pins implies the gpio entitlement.
+func TestBuildInitFrameworksFromFlags_ROS2FlagsImplyFramework(t *testing.T) {
+	domainID := 42
+	frameworks, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		ros2DomainIDSet:       true,
+		ros2DomainID:          domainID,
+		ros2RMWSet:            true,
+		ros2RMW:               "fastrtps",
+		ros2DistroSet:         true,
+		ros2Distro:            "jazzy",
+		ros2DiscoveryScopeSet: true,
+		ros2DiscoveryScope:    "host",
+	})
+	if err != nil {
+		t.Fatalf("buildInitFrameworksFromFlags: %v", err)
+	}
+	if frameworks == nil || frameworks.ROS2 == nil {
+		t.Fatal("expected ros2-specific flags to produce a ros2 config")
+	}
+	ros2 := frameworks.ROS2
+	if ros2.DomainID == nil || *ros2.DomainID != domainID {
+		t.Fatalf("DomainID = %v, want %d", ros2.DomainID, domainID)
+	}
+	if ros2.RMW != "fastrtps" {
+		t.Fatalf("RMW = %q, want fastrtps", ros2.RMW)
+	}
+	if ros2.Distro != "jazzy" {
+		t.Fatalf("Distro = %q, want jazzy", ros2.Distro)
+	}
+	if ros2.DiscoveryScope != "host" {
+		t.Fatalf("DiscoveryScope = %q, want host", ros2.DiscoveryScope)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsOutOfRangeDomainID(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		ros2DomainIDSet: true,
+		ros2DomainID:    9999,
+	})
+	if err == nil {
+		t.Fatal("expected out-of-range --ros2-domain-id to fail")
+	}
+	if !strings.Contains(err.Error(), "--ros2-domain-id") {
+		t.Fatalf("error = %q, want mention of --ros2-domain-id", err)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsInvalidRMW(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		ros2RMWSet: true,
+		ros2RMW:    "not-a-real-rmw",
+	})
+	if err == nil {
+		t.Fatal("expected invalid --ros2-rmw to fail")
+	}
+	if !strings.Contains(err.Error(), "--ros2-rmw") {
+		t.Fatalf("error = %q, want mention of --ros2-rmw", err)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsInvalidDistro(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		ros2DistroSet: true,
+		ros2Distro:    "Not_Valid!",
+	})
+	if err == nil {
+		t.Fatal("expected invalid --ros2-distro to fail")
+	}
+	if !strings.Contains(err.Error(), "--ros2-distro") {
+		t.Fatalf("error = %q, want mention of --ros2-distro", err)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsInvalidDiscoveryScope(t *testing.T) {
+	_, err := buildInitFrameworksFromFlags(targetWendyOS, initOptions{
+		ros2DiscoveryScopeSet: true,
+		ros2DiscoveryScope:    "everywhere",
+	})
+	if err == nil {
+		t.Fatal("expected invalid --ros2-discovery-scope to fail")
+	}
+	if !strings.Contains(err.Error(), "--ros2-discovery-scope") {
+		t.Fatalf("error = %q, want mention of --ros2-discovery-scope", err)
+	}
+}
+
+func TestBuildInitFrameworksFromFlags_RejectsUnsupportedTargets(t *testing.T) {
+	for _, target := range []string{targetWendyLite, targetDarwin} {
+		t.Run(target, func(t *testing.T) {
+			_, err := buildInitFrameworksFromFlags(target, initOptions{
+				frameworksSet: true,
+				frameworks:    []string{"ros2"},
+			})
+			if err == nil {
+				t.Fatalf("expected %s + ros2 framework to fail", target)
+			}
+		})
+	}
+}
+
+func TestResolveInitFrameworks_SkipsInteractivePromptWhenEntitlementFlagsProvided(t *testing.T) {
+	// If askFrameworkQuestions were invoked here, it would try to open a real
+	// TTY (it isn't stubbed in this test) and fail; a nil, nil result proves
+	// resolveInitFrameworks took the flag-driven no-op path instead.
+	frameworks, err := resolveInitFrameworks(targetWendyOS, initOptions{noExtraEntitlements: true})
+	if err != nil {
+		t.Fatalf("resolveInitFrameworks: %v", err)
+	}
+	if frameworks != nil {
+		t.Fatalf("frameworks = %+v, want nil", frameworks)
+	}
+}
+
+func TestResolveInitFrameworks_SkipsInteractivePromptForUnsupportedTargets(t *testing.T) {
+	for _, target := range []string{targetWendyLite, targetDarwin} {
+		t.Run(target, func(t *testing.T) {
+			frameworks, err := resolveInitFrameworks(target, initOptions{})
+			if err != nil {
+				t.Fatalf("resolveInitFrameworks: %v", err)
+			}
+			if frameworks != nil {
+				t.Fatalf("frameworks = %+v, want nil", frameworks)
+			}
+		})
+	}
+}
+
+func TestResolveInitFrameworks_UsesFlagsWhenProvided(t *testing.T) {
+	frameworks, err := resolveInitFrameworks(targetWendyOS, initOptions{
+		frameworksSet: true,
+		frameworks:    []string{"ros2"},
+	})
+	if err != nil {
+		t.Fatalf("resolveInitFrameworks: %v", err)
+	}
+	if frameworks == nil || frameworks.ROS2 == nil {
+		t.Fatal("expected --framework ros2 to produce a ros2 config")
+	}
+}
+
+func TestTemplateFrameworksFromFlags_NoFlagsIsNoOp(t *testing.T) {
+	frameworks, err := templateFrameworksFromFlags(targetWendyOS, initOptions{})
+	if err != nil {
+		t.Fatalf("templateFrameworksFromFlags: %v", err)
+	}
+	if frameworks != nil {
+		t.Fatalf("frameworks = %+v, want nil", frameworks)
+	}
+}
+
+func TestMergeTemplateFrameworks_AddsROS2ToTemplateConfig(t *testing.T) {
+	cfgPath := writeTemplateWendyJSON(t, `{
+  "appId": "ros2-app",
+  "version": "0.1.0",
+  "platform": "linux",
+  "language": "swift",
+  "entitlements": [{"type": "network"}]
+}`)
+
+	requested, err := templateFrameworksFromFlags(targetWendyOS, initOptions{
+		frameworksSet: true,
+		frameworks:    []string{"ros2"},
+	})
+	if err != nil {
+		t.Fatalf("templateFrameworksFromFlags: %v", err)
+	}
+
+	added, err := mergeTemplateFrameworks(cfgPath, requested)
+	if err != nil {
+		t.Fatalf("mergeTemplateFrameworks: %v", err)
+	}
+	if !added {
+		t.Fatal("expected mergeTemplateFrameworks to report a change")
+	}
+
+	cfg, err := appconfig.LoadFromFile(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
+		t.Fatalf("Frameworks = %+v, want a ros2 config", cfg.Frameworks)
+	}
+}
+
+func TestMergeTemplateFrameworks_NoFlagsIsNoOp(t *testing.T) {
+	added, err := mergeTemplateFrameworks(filepath.Join(t.TempDir(), "missing", "wendy.json"), nil)
+	if err != nil {
+		t.Fatalf("mergeTemplateFrameworks: %v", err)
+	}
+	if added {
+		t.Fatal("expected no-op when nothing was requested")
+	}
+}
+
+// The template's own "frameworks" config wins over --framework/--ros2-*
+// flags, mirroring how a template's more specific entitlement config wins in
+// mergeTemplateEntitlements.
+func TestMergeTemplateFrameworks_TemplateConfigWins(t *testing.T) {
+	content := `{
+  "appId": "ros2-app",
+  "frameworks": {"ros2": {"distro": "iron"}},
+  "entitlements": [{"type": "network"}]
+}`
+	cfgPath := writeTemplateWendyJSON(t, content)
+
+	domainID := 5
+	requested := &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domainID}}
+	added, err := mergeTemplateFrameworks(cfgPath, requested)
+	if err != nil {
+		t.Fatalf("mergeTemplateFrameworks: %v", err)
+	}
+	if added {
+		t.Fatal("expected template's existing frameworks config to win")
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("wendy.json was rewritten:\n%s", data)
+	}
+}
+
+func TestMergeTemplateFrameworks_MissingConfigFails(t *testing.T) {
+	_, err := mergeTemplateFrameworks(
+		filepath.Join(t.TempDir(), "wendy.json"),
+		&appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
+	)
+	if err == nil {
+		t.Fatal("expected merge into a missing wendy.json to fail")
+	}
+}
+
+// End-to-end: --framework ros2 plus --ros2-* flags on a non-template `wendy
+// init` must produce a wendy.json with a populated "frameworks" key — the
+// concrete, scriptable path around the discoverability gap in Problem A.
+func TestInitCommand_FrameworkFlagsCreateROS2Config(t *testing.T) {
+	tempDir := t.TempDir()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(prevWD)
+	})
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{
+		"--app-id", "go2-network-bridge",
+		"--target", "wendyos",
+		"--language", "swift",
+		"--no-extra-entitlements",
+		"--framework", "ros2",
+		"--ros2-rmw", "fastrtps",
+		"--ros2-discovery-scope", "host",
+		"--ros2-domain-id", "17",
+		"--assistant", "skip",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := appconfig.LoadFromFile(filepath.Join(tempDir, "wendy.json"))
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+
+	if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil {
+		t.Fatalf("Frameworks = %+v, want a ros2 config", cfg.Frameworks)
+	}
+	ros2 := cfg.Frameworks.ROS2
+	if ros2.RMW != "fastrtps" {
+		t.Fatalf("RMW = %q, want fastrtps", ros2.RMW)
+	}
+	if ros2.DiscoveryScope != "host" {
+		t.Fatalf("DiscoveryScope = %q, want host", ros2.DiscoveryScope)
+	}
+	if ros2.DomainID == nil || *ros2.DomainID != 17 {
+		t.Fatalf("DomainID = %v, want 17", ros2.DomainID)
+	}
+}
+
+func TestInitCommand_NoFrameworkFlagsLeavesFrameworksNil(t *testing.T) {
+	tempDir := t.TempDir()
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(prevWD)
+	})
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{
+		"--app-id", "plain-app",
+		"--target", "wendyos",
+		"--language", "swift",
+		"--no-extra-entitlements",
+		"--assistant", "skip",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	cfg, err := appconfig.LoadFromFile(filepath.Join(tempDir, "wendy.json"))
+	if err != nil {
+		t.Fatalf("LoadFromFile: %v", err)
+	}
+	if cfg.Frameworks != nil {
+		t.Fatalf("Frameworks = %+v, want nil when no --framework flags were passed", cfg.Frameworks)
 	}
 }
