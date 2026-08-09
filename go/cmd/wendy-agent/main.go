@@ -223,10 +223,18 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
 	if containerdClient != nil {
 		monitor = container.NewContainerMonitor(logger, containerdClient, logManager, 15*time.Second)
+		if ctrdClient != nil {
+			// Let the low-level client pause the monitor's restart cycle for a
+			// container it is mid-replace/stop on, so a crash-looping app's
+			// automatic restart cannot race the kill+delete (WDY debug:
+			// "cannot delete running task: failed precondition").
+			ctrdClient.SetRestartSuppressor(monitor)
+		}
 	}
 
 	containerSvcOpts := []services.ContainerServiceOption{

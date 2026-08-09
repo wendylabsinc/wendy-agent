@@ -1270,6 +1270,13 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 	if len(allCerts) > 0 {
 		pins := openPinStore()
 		host, portStr, _ := net.SplitHostPort(plaintextAddr)
+		// Probe the organisation that last authenticated against this host
+		// first. With certs for several orgs loaded, the default order makes
+		// every command pay a doomed handshake per non-matching org (see
+		// certorder.go). Purely a reordering — the remaining certs still follow
+		// in their original order, so a stale hint costs nothing extra.
+		preferredOrg, havePreferredOrg := preferredCertOrg(host)
+		allCerts = orderCertsByOrg(allCerts, preferredOrg, havePreferredOrg)
 		if port, err := strconv.Atoi(portStr); err == nil {
 			// Try the given port first (covers explicit tunnel ports that already
 			// point at the mTLS port), then fall back to port+1 (the normal case
@@ -1310,6 +1317,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 					_, probeErr := conn.AgentService.GetAgentVersion(probeCtx, &agentpb.GetAgentVersionRequest{})
 					cancel()
 					if probeErr == nil {
+						rememberCertOrg(host, allCerts[i].OrganizationID)
 						return conn, nil, nil
 					}
 					recordMTLSErr(mtlsAddr, probeErr)
@@ -2468,7 +2476,10 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, excludeBl
 		return nil, fmt.Errorf("device picker: %w", err)
 	}
 
-	pm := finalModel.(tui.PickerModel)
+	pm, ok := finalModel.(tui.PickerModel)
+	if !ok {
+		return nil, fmt.Errorf("device picker returned unexpected model %T", finalModel)
+	}
 	if pm.Cancelled() {
 		return nil, ErrUserCancelled
 	}

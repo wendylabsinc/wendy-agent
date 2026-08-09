@@ -9,10 +9,13 @@ import app
 from app import (
     AlsaMixer,
     Config,
+    PipewireAudio,
+    PulseMixer,
     VoiceAssistant,
     card_from_device,
     describe_weather_code,
     extract_output_text,
+    select_audio_backend,
     strip_citations,
     parse_alsa_cards,
     pick_alsa_device,
@@ -459,6 +462,136 @@ class AlsaMixerTests(unittest.IsolatedAsyncioTestCase):
         mixer = AlsaMixer("9", run=runner)
         with self.assertRaises(RuntimeError):
             await mixer.set_volume(50)
+
+
+PACTL_GET_SINK_VOLUME_60 = """\
+Volume: front-left: 39322 /  60% / -13.31 dB,   front-right: 39322 /  60% / -13.31 dB
+        balance 0.00
+"""
+
+
+class FakePactl:
+    """Injectable runner mimicking `pactl <subcommand> <args...>`."""
+
+    def __init__(self, responses):
+        self.responses = responses  # subcommand -> callable(args) or (rc, out)
+        self.calls = []
+
+    async def __call__(self, *args):
+        self.calls.append(args)
+        response = self.responses[args[0]]
+        if callable(response):
+            return response(args)
+        return response
+
+
+class BackendSelectionTests(unittest.TestCase):
+    def test_without_a_pipewire_socket_alsa_is_used(self):
+        with patch.dict(
+            os.environ, {"PIPEWIRE_RUNTIME_DIR": "", "XDG_RUNTIME_DIR": ""}
+        ):
+            self.assertEqual(select_audio_backend(which=lambda _: "/usr/bin/x"), "alsa")
+
+    def test_mounted_socket_with_tools_selects_pipewire(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            open(os.path.join(runtime_dir, "pipewire-0"), "w").close()
+            with patch.dict(os.environ, {"PIPEWIRE_RUNTIME_DIR": runtime_dir}):
+                self.assertEqual(
+                    select_audio_backend(which=lambda _: "/usr/bin/x"), "pipewire"
+                )
+
+    def test_mounted_socket_without_pw_tools_falls_back_to_alsa(self):
+        # The HelloAudio failure mode: entitlement mounted the socket but the
+        # image was built without pipewire-bin. Must not crash-loop on ENOENT.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            open(os.path.join(runtime_dir, "pipewire-0"), "w").close()
+            with patch.dict(os.environ, {"PIPEWIRE_RUNTIME_DIR": runtime_dir}):
+                self.assertEqual(select_audio_backend(which=lambda _: None), "alsa")
+
+    def test_env_set_but_socket_missing_falls_back_to_alsa(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            with patch.dict(
+                os.environ,
+                {"PIPEWIRE_RUNTIME_DIR": runtime_dir, "XDG_RUNTIME_DIR": ""},
+            ):
+                self.assertEqual(
+                    select_audio_backend(which=lambda _: "/usr/bin/x"), "alsa"
+                )
+
+
+class PipewireAudioTests(unittest.TestCase):
+    def test_default_targets_use_wireplumber_routing(self):
+        bridge = PipewireAudio(Config(api_key="k"), None, None)
+        self.assertEqual(
+            bridge.capture_command(),
+            [
+                "pw-record",
+                "--rate", "24000",
+                "--channels", "1",
+                "--format", "s16",
+                "--raw",
+                "-",
+            ],
+        )
+        self.assertEqual(bridge.playback_command()[0], "pw-play")
+        self.assertNotIn("--target", bridge.playback_command())
+
+    def test_explicit_devices_become_pipewire_targets(self):
+        bridge = PipewireAudio(
+            Config(api_key="k"), "bluez_input.00_7F_1D_51_A9_6E", "bluez_output.speaker"
+        )
+        capture = bridge.capture_command()
+        playback = bridge.playback_command()
+        self.assertIn("bluez_input.00_7F_1D_51_A9_6E", capture)
+        self.assertEqual(capture[capture.index("--target") + 1], "bluez_input.00_7F_1D_51_A9_6E")
+        self.assertEqual(playback[playback.index("--target") + 1], "bluez_output.speaker")
+        # Raw streams on stdio, matching the agent's own pw-record invocation.
+        self.assertEqual(capture[-1], "-")
+        self.assertIn("--raw", playback)
+
+
+class PulseMixerTests(unittest.IsolatedAsyncioTestCase):
+    def test_parse_volume_reads_the_first_percentage(self):
+        self.assertEqual(PulseMixer.parse_volume(PACTL_GET_SINK_VOLUME_60), 60)
+        self.assertIsNone(PulseMixer.parse_volume("balance 0.00"))
+        self.assertIsNone(PulseMixer.parse_volume(""))
+
+    async def test_set_volume_clamps_unmutes_and_rereads(self):
+        runner = FakePactl(
+            {
+                "get-sink-volume": (0, PACTL_GET_SINK_VOLUME_60),
+                "set-sink-volume": (0, ""),
+                "set-sink-mute": (0, ""),
+            }
+        )
+        mixer = PulseMixer(run=runner)
+        self.assertEqual(await mixer.set_volume(150), 60)
+        self.assertIn(("set-sink-volume", "@DEFAULT_SINK@", "100%"), runner.calls)
+        self.assertIn(("set-sink-mute", "@DEFAULT_SINK@", "0"), runner.calls)
+
+    async def test_adjust_volume_steps_from_current(self):
+        runner = FakePactl(
+            {
+                "get-sink-volume": (0, PACTL_GET_SINK_VOLUME_60),
+                "set-sink-volume": (0, ""),
+                "set-sink-mute": (0, ""),
+            }
+        )
+        mixer = PulseMixer(run=runner)
+        await mixer.adjust_volume("down", step=25)
+        self.assertIn(("set-sink-volume", "@DEFAULT_SINK@", "35%"), runner.calls)
+
+    async def test_pactl_failure_raises_runtime_error(self):
+        runner = FakePactl({"get-sink-volume": (1, "Connection refused")})
+        mixer = PulseMixer(run=runner)
+        with self.assertRaises(RuntimeError):
+            await mixer.get_volume()
 
 
 class FakeMixer:

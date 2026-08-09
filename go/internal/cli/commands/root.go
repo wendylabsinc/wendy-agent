@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
@@ -44,9 +43,11 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			// Provider availability is probed lazily on first use (see
+			// providers.ensureAvailable) rather than here: the probes shell out
+			// to `docker`/`container` and most commands never consult a
+			// provider at all.
 			premark := phaseTimer()
-			providers.Initialize(cmd.Context())
-			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
