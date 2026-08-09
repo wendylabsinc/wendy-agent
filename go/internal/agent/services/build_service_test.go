@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
@@ -57,6 +58,29 @@ func TestContextDir_StableAcrossCalls(t *testing.T) {
 	}
 	if first != second {
 		t.Fatalf("context dir must be stable per app (%q vs %q): BuildKit keys its local-source cache on this path, so a fresh temp dir re-transfers the whole context every build", first, second)
+	}
+}
+
+// Sanitising drops characters, so distinct app ids can reduce to the same name.
+// Two unrelated apps sharing one context directory would clear and re-extract
+// over each other.
+func TestContextDir_DistinctAppIDsDoNotCollide(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+
+	dotted, err := svc.contextDir("sh.wendy.app")
+	if err != nil {
+		t.Fatalf("contextDir: %v", err)
+	}
+	// Sanitises to the identical string "shwendyapp".
+	squashed, err := svc.contextDir("shwendyapp")
+	if err != nil {
+		t.Fatalf("contextDir: %v", err)
+	}
+	if dotted == squashed {
+		t.Fatalf("app ids that sanitise alike must still get separate context directories, both got %q", dotted)
 	}
 }
 
@@ -329,6 +353,119 @@ func TestBuildImage_RejectsEmptyContext(t *testing.T) {
 	}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want InvalidArgument for a spec with no build context", err)
+	}
+}
+
+// oversizedChunkSource pretends to hold a context larger than the ceiling,
+// without allocating one: it streams zeros forever, which is exactly the shape
+// of the hazard — the agent must stop reading rather than read until it dies.
+type oversizedChunkSource struct{ read *int64 }
+
+func (o oversizedChunkSource) OpenChunkStream(context.Context, [][32]byte) io.Reader {
+	return &countingReader{n: o.read}
+}
+
+type countingReader struct{ n *int64 }
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	*c.n += int64(len(p))
+	return len(p), nil
+}
+
+// A build context is reassembled into memory in one piece on a device that may
+// have only a few GiB of it, so an unbounded read is an OOM the client chooses.
+func TestReassembleContext_BoundsMemoryAgainstUndeclaredSize(t *testing.T) {
+	var read int64
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+		Chunks:     oversizedChunkSource{read: &read},
+	})
+
+	// TotalSize 0 means "undeclared", so the declared-size check cannot be what
+	// stops this — the read itself has to be bounded.
+	_, err := svc.reassembleContext(context.Background(), &agentpbv2.ChunkManifest{
+		ChunkHashes: [][]byte{make([]byte, 32)},
+		TotalSize:   0,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument for a context past the ceiling", err)
+	}
+	if read > maxContextBytes+int64(64<<10) {
+		t.Fatalf("read %d bytes for a %d-byte ceiling: the read is not bounded", read, int64(maxContextBytes))
+	}
+}
+
+// A declared oversize is refused before any I/O, so the pathological case is
+// cheap rather than merely survivable.
+func TestReassembleContext_RejectsDeclaredOversizeWithoutReading(t *testing.T) {
+	var read int64
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+		Chunks:     oversizedChunkSource{read: &read},
+	})
+
+	_, err := svc.reassembleContext(context.Background(), &agentpbv2.ChunkManifest{
+		ChunkHashes: [][]byte{make([]byte, 32)},
+		TotalSize:   maxContextBytes + 1,
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument for a declared oversize", err)
+	}
+	if read != 0 {
+		t.Fatalf("read %d bytes; a declared oversize must cost no I/O at all", read)
+	}
+}
+
+// Two builds sharing a context directory must not overlap: BuildImage clears
+// and re-extracts that directory while buildctl reads it for the whole build,
+// so an interleaving hands one developer's sources to another's image.
+func TestLockContextDir_SerialisesSameDirectory(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+
+	unlock := svc.lockContextDir("/ctx/app")
+	acquired := make(chan struct{})
+	go func() {
+		defer close(acquired)
+		svc.lockContextDir("/ctx/app")()
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("a second build acquired the same context directory while the first still held it")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the lock was never released to the waiting build")
+	}
+}
+
+// Different apps must still build concurrently; the lock is per context
+// directory, not a global build queue.
+func TestLockContextDir_DoesNotSerialiseDifferentDirectories(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+	})
+
+	defer svc.lockContextDir("/ctx/one")()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.lockContextDir("/ctx/two")()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an unrelated app's build was blocked; the lock must be per context directory")
 	}
 }
 

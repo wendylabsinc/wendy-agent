@@ -5,7 +5,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -30,6 +33,16 @@ import (
 // fill the build host's disk. 2 GiB is far above any plausible source file
 // while still being a real ceiling.
 const maxContextEntryBytes = 2 << 30
+
+// maxContextBytes bounds a whole reassembled build context.
+//
+// This is a memory bound, not a disk one: the context is reassembled into RAM
+// in one piece before extraction, and a build host may be an edge device with a
+// few GiB of it. QueryChunks/WriteChunks is a generic sha256 blob store with no
+// notion of what it is holding, so this is the only layer that can say how big
+// a *build context* is allowed to be. 2 GiB is far past any real source tree —
+// large blobs belong in an image layer, not in the context.
+const maxContextBytes = 2 << 30
 
 // buildHostEnabledFile, when present in the agent config dir, opts this device
 // in as a build host. Unlike meshDisabledFile this is opt-IN, and deliberately
@@ -80,6 +93,11 @@ type BuildService struct {
 	chunks               ChunkSource
 	peers                PeerDialer
 	pushTLS              func() (*tls.Config, error)
+
+	// contextLocks serialises builds that share a context directory. See
+	// lockContextDir; the mutex guards the map, not the builds.
+	contextLocksMu sync.Mutex
+	contextLocks   map[string]*sync.Mutex
 }
 
 func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService {
@@ -97,7 +115,38 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		chunks:               opts.Chunks,
 		peers:                opts.Peers,
 		pushTLS:              opts.PushTLS,
+		contextLocks:         map[string]*sync.Mutex{},
 	}
+}
+
+// lockContextDir serialises builds that reassemble into the same directory,
+// returning the unlock function.
+//
+// A build host is shared by design, so two builds of the same app can overlap —
+// two developers, or one developer's re-run racing their own previous build.
+// The context directory is deliberately stable per app (see contextDir), and
+// BuildImage clears and re-extracts it, while buildctl reads it as
+// --local context= for the entire build. Without this lock the second build's
+// RemoveAll deletes the first build's sources mid-build, so the first developer
+// gets an image built from the second's code — and it is pushed to the first
+// developer's device. That is a wrong image and a source disclosure, not merely
+// a failed build.
+//
+// Entries are never deleted: one zero-size mutex per app id ever built on this
+// host is unbounded only in the sense that the set of app ids is, and dropping
+// an entry would need a use count to avoid handing out two mutexes for one
+// directory.
+func (s *BuildService) lockContextDir(dir string) func() {
+	s.contextLocksMu.Lock()
+	mu, ok := s.contextLocks[dir]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.contextLocks[dir] = mu
+	}
+	s.contextLocksMu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
 }
 
 // builderEnabled reports whether this device has opted in to serving builds.
@@ -220,7 +269,7 @@ func buildkitSocketPresent(addr string) bool {
 func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageServer) error {
 	if !s.builderEnabled() {
 		return status.Error(codes.FailedPrecondition,
-			"this device is not configured as a build host; create the build-host-enabled marker in the agent config directory to allow remote builds")
+			"this device is not configured as a build host; run `wendy device build-host enable --device <this device>` to allow remote builds")
 	}
 	ctx := stream.Context()
 
@@ -251,6 +300,11 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if err != nil {
 		return err
 	}
+	// Held for the whole build, not just the extraction: buildctl reads this
+	// directory from start to finish. See lockContextDir.
+	unlockContext := s.lockContextDir(dir)
+	defer unlockContext()
+
 	tarBytes, err := s.reassembleContext(ctx, spec.GetContext())
 	if err != nil {
 		return err
@@ -307,6 +361,14 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 	if s.chunks == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this build host has no chunk store configured")
 	}
+	// Refuse an oversized context before reading a byte of it. The declared size
+	// is not trusted — the LimitReader below is what actually holds the line —
+	// but checking it first turns a pathological request into a cheap error
+	// instead of a gigabyte of I/O.
+	if want := m.GetTotalSize(); want > maxContextBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"build context declares %d bytes, above the %d-byte maximum", want, int64(maxContextBytes))
+	}
 	hashes := make([][32]byte, 0, len(m.GetChunkHashes()))
 	for _, b := range m.GetChunkHashes() {
 		if len(b) != 32 {
@@ -317,10 +379,18 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 		hashes = append(hashes, h)
 	}
 
-	data, err := io.ReadAll(s.chunks.OpenChunkStream(ctx, hashes))
+	// Read one byte past the ceiling so exceeding it is detectable rather than
+	// silently truncated into a context that would build the wrong image. A
+	// manifest may declare total_size 0, so the limit — not the declaration — is
+	// what bounds the agent's memory.
+	data, err := io.ReadAll(io.LimitReader(s.chunks.OpenChunkStream(ctx, hashes), maxContextBytes+1))
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"reassembling build context: %v; re-send the context", err)
+	}
+	if int64(len(data)) > maxContextBytes {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"build context exceeds the %d-byte maximum", int64(maxContextBytes))
 	}
 	if want := m.GetTotalSize(); want != 0 && int64(len(data)) != want {
 		return nil, status.Errorf(codes.InvalidArgument,
@@ -391,7 +461,13 @@ func (s *BuildService) contextDir(appID string) (string, error) {
 	if clean == "" {
 		return "", status.Errorf(codes.InvalidArgument, "app id %q contains no usable characters", appID)
 	}
-	dir := filepath.Join(s.stateDir, clean)
+	// Sanitising DROPS characters, so it is not injective: "sh.wendy.app" and
+	// "shwendyapp" both reduce to the same name and would then share one context
+	// directory — two unrelated apps clearing and re-extracting over each other.
+	// The digest of the original id restores the distinction the sanitiser threw
+	// away, while keeping the readable part readable.
+	sum := sha256.Sum256([]byte(appID))
+	dir := filepath.Join(s.stateDir, clean+"-"+hex.EncodeToString(sum[:4]))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("creating build context directory: %w", err)
 	}
