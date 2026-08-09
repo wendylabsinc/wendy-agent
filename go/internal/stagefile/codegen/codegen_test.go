@@ -494,6 +494,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 func TestGenerateLocksEveryCacheMount(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: &spec.PipInstall{Packages: []string{"flask"}}}},
+		{Name: "uvdeps", From: "debian:12", Install: &spec.Install{Uv: &spec.UvInstall{}}},
 		{Name: "npmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{}}},
 		{Name: "yarndeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "yarn"}}},
 		{Name: "pnpmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "pnpm"}}},

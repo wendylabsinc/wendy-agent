@@ -564,8 +564,8 @@ func buildLines(b *spec.Build) ([]string, error) {
 		if b.Product != "" {
 			// -o with a trailing slash writes the package's binary (named
 			// after the package) into that directory.
-			return []string{cacheRun("/root/.cache/go-build",
-				"go build -o /usr/local/bin/ "+shellQuote(b.Product))}, nil
+			return []string{cacheRun("/root/.cache/go-build", fmt.Sprintf(
+				"go build -o /usr/local/bin/ %s", shellQuote(b.Product)))}, nil
 		}
 		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
@@ -587,7 +587,8 @@ func buildLines(b *spec.Build) ([]string, error) {
 			"yarn": "/root/.cache/yarn",
 			"pnpm": "/root/.local/share/pnpm/store",
 		}[b.Lang]
-		return []string{cacheRun(cacheDir, fmt.Sprintf("%s run %s", b.Lang, shellQuote(script)))}, nil
+		return []string{cacheRun(cacheDir, fmt.Sprintf("%s run %s",
+			b.Lang, shellQuote(script)))}, nil
 	default:
 		return nil, fmt.Errorf("unsupported build.lang %q (supported: rust, go, swift, npm, yarn, pnpm)", b.Lang)
 	}

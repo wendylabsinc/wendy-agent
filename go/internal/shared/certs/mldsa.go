@@ -64,7 +64,19 @@ type ServerVerifyOpts struct {
 	// org mismatch, and before any client-cert rejection). Best-effort: it is
 	// not called when the cert carries no Wendy identity or identity parsing
 	// fails, and it never affects the verification result.
+	//
+	// Because it fires before verification, what it reports is UNTRUSTED — any
+	// host can assert any identity. It is for diagnostics only; use
+	// OnVerifiedServerIdentity for anything that makes a trust decision.
 	OnServerIdentity func(WendyIdentity)
+	// OnVerifiedServerIdentity, when non-nil, is called with the server leaf's
+	// Wendy identity only AFTER the chain and org checks have both passed —
+	// i.e. only for a certificate this verifier accepted. That is what makes it
+	// safe to pin against (see config.DevicePin): an impostor presenting an
+	// unsigned or cross-org cert never reaches it. Not called when the cert
+	// carries no Wendy identity. Like OnServerIdentity it never affects the
+	// verification result.
+	OnVerifiedServerIdentity func(WendyIdentity)
 }
 
 // ParseCertsFromPEM parses all CERTIFICATE blocks from a PEM bundle, handling
@@ -236,6 +248,16 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 				// when the chain has already been verified above.
 				_ = pinErr // callers that care about pinning use a Store that logs internally
 			}
+		}
+
+		// Step 4: surface the VERIFIED identity. Everything that could reject
+		// this certificate has already run, so unlike OnServerIdentity above,
+		// callers may base a trust decision on what this reports.
+		if opts.OnVerifiedServerIdentity != nil && hasIdentity {
+			func() {
+				defer func() { _ = recover() }()
+				opts.OnVerifiedServerIdentity(identity)
+			}()
 		}
 
 		return nil

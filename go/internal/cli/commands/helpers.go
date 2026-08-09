@@ -1086,6 +1086,17 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, connErr
 			}
 		}
+		// WDY-1149: verify the resolved default device is still the same device,
+		// in the same organisation and cloud, that was pinned here (and pin it on
+		// first use). This runs BEFORE the update check on purpose: that check can
+		// offer to upload an agent binary, which must never happen against a
+		// device whose identity we are about to reject.
+		if isDefault {
+			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
+				conn.Close()
+				return nil, pinErr
+			}
+		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
 		}
@@ -1094,14 +1105,6 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 			conn, updateErr = checkAndOfferUpdate(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
-			}
-		}
-		// WDY-1149: verify the resolved default device still belongs to the
-		// organisation + cloud it was pinned to (and pin it on first use).
-		if isDefault {
-			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
-				conn.Close()
-				return nil, pinErr
 			}
 		}
 		return conn, nil
