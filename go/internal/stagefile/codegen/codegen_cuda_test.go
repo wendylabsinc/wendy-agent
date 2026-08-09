@@ -130,6 +130,19 @@ func TestGenerateCUDARuntimeEmittedWithoutAnyCUDAPipGroup(t *testing.T) {
 	}
 }
 
+// A cuda: stage with no install: block at all is the same case: the collection
+// step imports the nvidia package, so a stage that got the collection but not
+// the runtime would fail at build time on a Stagefile validation accepts.
+func TestGenerateCUDARuntimeEmittedWithoutAnyInstallBlock(t *testing.T) {
+	out := mustGenerateCUDA(t, spec.Stage{CUDA: true, Cmd: []string{"./app"}})
+	if !strings.Contains(out, "nvidia-cuda-runtime-cu12") {
+		t.Errorf("Generate: GPU stage without an install: block got no runtime\n%s", out)
+	}
+	if strings.Index(out, "nvidia-cuda-runtime-cu12") > strings.Index(out, "import nvidia, os") {
+		t.Errorf("Generate: collection runs before the runtime it imports\n%s", out)
+	}
+}
+
 // The pip cache mount is scoped by the index a group resolves from. A cuda:
 // group's index comes from the profile, not the Stagefile, so it must not land
 // in the same cache as the PyPI groups beside it — sharing one directory

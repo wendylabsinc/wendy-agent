@@ -76,23 +76,30 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 		lines = append(lines, fetches...)
 
-		if s.Install != nil {
-			if s.Install.Apt != nil {
-				lines = append(lines, aptInstallLines(s.Install.Apt)...)
-			}
-			if s.Install.Apk != nil {
-				lines = append(lines, apkInstallLines(s.Install.Apk)...)
-			}
-			if len(s.Install.CMake) > 0 {
-				lines = append(lines, cmakeInstallLines(s.Install.CMake, stagePlatform)...)
-			}
-			lines = append(lines, pipGroupLines(s.Install.Pip, s.CUDA, cudaProfile, stagePlatform)...)
-			if s.Install.Npm != nil {
-				lines = append(lines, npmInstallLines(s.Install.Npm)...)
-			}
-			if s.Install.Uv != nil {
-				lines = append(lines, uvInstallLines(s.Install.Uv, stagePlatform)...)
-			}
+		// An absent install: is compiled as an empty one rather than skipped,
+		// because pipGroupLines is also where a GPU stage's CUDA runtime is
+		// spliced in, and that stage needs the runtime whether or not it
+		// declares any install of its own — the collection below imports it.
+		// With no fields set, nothing else here emits a line.
+		install := s.Install
+		if install == nil {
+			install = &spec.Install{}
+		}
+		if install.Apt != nil {
+			lines = append(lines, aptInstallLines(install.Apt)...)
+		}
+		if install.Apk != nil {
+			lines = append(lines, apkInstallLines(install.Apk)...)
+		}
+		if len(install.CMake) > 0 {
+			lines = append(lines, cmakeInstallLines(install.CMake, stagePlatform)...)
+		}
+		lines = append(lines, pipGroupLines(install.Pip, s.CUDA, cudaProfile, stagePlatform)...)
+		if install.Npm != nil {
+			lines = append(lines, npmInstallLines(install.Npm)...)
+		}
+		if install.Uv != nil {
+			lines = append(lines, uvInstallLines(install.Uv, stagePlatform)...)
 		}
 
 		// Unpacking comes after install, because it needs a tool in the
