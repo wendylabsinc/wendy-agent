@@ -170,7 +170,13 @@ func ConnectWithTLS(ctx context.Context, address string, certInfo *config.Certif
 // newAgentTLSConfig builds the client TLS config for one agent target,
 // including the persistent session cache that lets repeat CLI invocations
 // skip the full ML-DSA handshake (see specs/2026-08-07-tls-session-resumption-design.md).
-func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins certs.PinChecker, observedOrg *atomic.Int32) (*tls.Config, error) {
+func newAgentTLSConfig(
+	address string,
+	certInfo *config.CertificateInfo,
+	pins certs.PinChecker,
+	observedOrg *atomic.Int32,
+	observedIdentity *atomic.Pointer[certs.WendyIdentity],
+) (*tls.Config, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
 	// chain certs (from pki-core) cause parse failures on the agent's server.
@@ -187,8 +193,6 @@ func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins ce
 	if err != nil {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
-	observedOrg := new(atomic.Int32)
-	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
 		ChainPEM:      certInfo.PemCertificateChain,
 		ExpectedOrgID: int32(certInfo.OrganizationID),
@@ -253,7 +257,8 @@ func newAgentTLSConfig(address string, certInfo *config.CertificateInfo, pins ce
 
 func ConnectWithTLSAndPins(ctx context.Context, address string, certInfo *config.CertificateInfo, pins certs.PinChecker) (*AgentConnection, error) {
 	observedOrg := new(atomic.Int32)
-	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg)
+	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
+	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg, observedIdentity)
 	if err != nil {
 		return nil, err
 	}
