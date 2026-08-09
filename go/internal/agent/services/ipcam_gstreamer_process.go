@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 )
 
 const ipCameraGStreamerUtility = "ipcam-gstreamer"
@@ -22,8 +25,13 @@ func newIPCameraGStreamerCommand(ctx context.Context, executable string) *exec.C
 // gstreamerFrames runs the in-process GStreamer API inside a short-lived copy of
 // the agent executable. This keeps plugins isolated from the server process while
 // moving the credential-bearing pipeline over a private stdin pipe instead of a
-// process argument. Raw helper stderr is never returned or logged because a
-// GStreamer diagnostic may repeat element property values.
+// process argument.
+//
+// Helper stderr is returned, but only after redaction: a GStreamer diagnostic may
+// repeat element property values, and the location property carries the camera
+// password. Discarding it instead, as this did originally, collapses every
+// distinct failure — no route to the camera, wrong password, missing plugin —
+// into one message that names none of them.
 func (s *VideoService) gstreamerFrames(ctx context.Context, args []string, onFrame func([]byte)) error {
 	executable, err := os.Executable()
 	if err != nil {
@@ -38,9 +46,9 @@ func (s *VideoService) gstreamerFrames(ctx context.Context, args []string, onFra
 	if err != nil {
 		return fmt.Errorf("creating GStreamer output pipe: %w", err)
 	}
-	// Capture a bounded amount solely to keep the child from blocking if a
-	// library writes diagnostics. It is intentionally discarded on every path.
-	cmd.Stderr = &limitedBuffer{limit: maxStderrBytes}
+	// Bounded so a misbehaving child cannot exhaust the heap through stderr.
+	diagnostics := &limitedBuffer{limit: maxStderrBytes}
+	cmd.Stderr = diagnostics
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting GStreamer helper: %w", err)
 	}
@@ -80,7 +88,20 @@ func (s *VideoService) gstreamerFrames(ctx context.Context, args []string, onFra
 		return nil
 	}
 	if waitErr != nil {
-		return errors.New("GStreamer capture pipeline failed")
+		return gstreamerFailure(diagnostics, args)
 	}
 	return nil
+}
+
+// gstreamerFailure builds the capture error, carrying the helper's own
+// diagnostic when there is one and it survives redaction.
+func gstreamerFailure(diagnostics *limitedBuffer, args []string) error {
+	detail := ipcam.RedactText(strings.TrimSpace(diagnostics.buf.String()), ipcam.SecretsIn(args)...)
+	// Collapse to a single line: this is joined into a gRPC status message, and a
+	// multi-line status renders badly wherever it is finally printed.
+	detail = strings.Join(strings.Fields(detail), " ")
+	if detail == "" {
+		return errors.New("GStreamer capture pipeline failed")
+	}
+	return fmt.Errorf("GStreamer capture pipeline failed: %s", detail)
 }

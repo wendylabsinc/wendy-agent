@@ -63,8 +63,24 @@ type Interface struct {
 	Carrier   bool
 	Up        bool
 	HasIPv4   bool
+	IPv4s     []net.IP
 	Loopback  bool
 	PointToPo bool // point-to-point, e.g. a tunnel; never a camera link
+}
+
+// HasAddress reports whether ip is currently configured on the link.
+//
+// HasIPv4 is not enough to answer this: a claimed link that has had our segment
+// address stripped by whatever else manages the interface can still hold some
+// other IPv4 address, and treating that as "still configured" is exactly how the
+// camera segment goes silently dead.
+func (i Interface) HasAddress(ip net.IP) bool {
+	for _, have := range i.IPv4s {
+		if have.Equal(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // Eligible reports whether a link could host a camera segment. This is the check
@@ -206,6 +222,28 @@ func (g *LinkGuard) ShouldClaim(link string, now time.Time) bool {
 	return true
 }
 
+// RestoreClaim moves a link straight to serving, for a segment this agent is
+// known to have served before an restart. It records the claim the same way
+// ShouldClaim does and refuses for the same reasons.
+//
+// The unanswered-DISCOVER window is not required here because the evidence it
+// gathers has already been gathered: the link was claimed in an earlier process
+// and a camera holds a lease on it. Waiting for the camera to speak again would
+// mean waiting up to LeaseWindow, during which the segment has no address and
+// the camera is unreachable. Callers still listen for a competing server first;
+// a disqualifying reply seen in that window leaves the state non-Observing and
+// this returns false.
+func (g *LinkGuard) RestoreClaim(link string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	d := g.decision(link)
+	if d.state != LinkObserving {
+		return false
+	}
+	d.state = LinkServing
+	return true
+}
+
 // Disqualify marks a link as never servable, for reasons outside DHCP traffic
 // such as failing to configure an address on it.
 func (g *LinkGuard) Disqualify(link string) {
@@ -261,6 +299,18 @@ func SegmentFor(index int) CameraSegment {
 	}
 }
 
+// SegmentIndexFor returns the camera segment an address belongs to, and whether
+// it belongs to one at all. It is how a lease recorded in the registry names the
+// segment that must be restored after a restart, rather than whichever segment
+// happens to be free.
+func SegmentIndexFor(ip net.IP) (int, bool) {
+	v4 := ip.To4()
+	if v4 == nil || v4[0] != 10 || v4[1] != 98 {
+		return 0, false
+	}
+	return int(v4[2]), true
+}
+
 // CIDR renders the server address in the form `ip addr add` expects.
 func (s CameraSegment) CIDR() string {
 	ones, _ := s.Mask.Size()
@@ -273,12 +323,13 @@ func InterfacesFrom(ifaces []net.Interface, carrier func(name string) bool) []In
 	out := make([]Interface, 0, len(ifaces))
 	for _, iface := range ifaces {
 		addrs, err := iface.Addrs()
-		hasIPv4 := false
+		var ipv4s []net.IP
 		if err == nil {
 			for _, addr := range addrs {
-				if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-					hasIPv4 = true
-					break
+				if ipnet, ok := addr.(*net.IPNet); ok {
+					if v4 := ipnet.IP.To4(); v4 != nil {
+						ipv4s = append(ipv4s, v4)
+					}
 				}
 			}
 		}
@@ -287,7 +338,8 @@ func InterfacesFrom(ifaces []net.Interface, carrier func(name string) bool) []In
 			MAC:       iface.HardwareAddr,
 			Carrier:   carrier(iface.Name),
 			Up:        iface.Flags&net.FlagUp != 0,
-			HasIPv4:   hasIPv4,
+			HasIPv4:   len(ipv4s) > 0,
+			IPv4s:     ipv4s,
 			Loopback:  iface.Flags&net.FlagLoopback != 0,
 			PointToPo: iface.Flags&net.FlagPointToPoint != 0,
 		})
