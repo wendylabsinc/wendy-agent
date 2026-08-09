@@ -231,13 +231,18 @@ message GetAgentVersionResponse {
     // there, and a future darwin implementation should instead persist and
     // report the hash of the update payload it committed.
     string binary_sha256 = 20;
+    // Device hostname (gethostname(2)). The CLI uses it to identify a device
+    // reached over the USB well-known link-local address, where no mDNS TXT
+    // records are available. Empty on agents predating this field.
+    //
+    // Numbered 21, not 20: this field was authored on PR #1621 against 20,
+    // which binary_sha256 above had already taken on main. The battery field
+    // below was deliberately started at 22 to leave 21 free for exactly this
+    // renumber, so no wire number is reused across the two merges.
+    string hostname = 21;
     // Aggregate system-battery state, from /sys/class/power_supply. Absent on
     // mains-powered devices and on agents predating this field, so `wendy
     // device info` shows no battery line for either.
-    //
-    // Field 21 is left free for the in-flight hostname field on PR #1621,
-    // which currently claims 20 and must be renumbered when it merges; starting
-    // here guarantees no wire-number collision on either merge order.
     optional BatteryStats battery = 22;
 }
 

@@ -93,6 +93,10 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		BinarySha256:    s.binarySHA256(),
 	}
 
+	if hn, err := os.Hostname(); err == nil {
+		resp.Hostname = hn
+	}
+
 	if v, ok := wendyOSVersion(); ok {
 		resp.OsVersion = &v
 	} else if _, distroVer := detectDistro(); distroVer != "" {

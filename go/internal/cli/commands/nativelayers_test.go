@@ -247,6 +247,46 @@ func TestNativeDepsHash(t *testing.T) {
 
 // Local copies in NON-final stages feed deps layers and must be part of the
 // deps hash (only the final stage's local copies are app inputs).
+// A uv install's dependency set lives entirely in pyproject.toml and uv.lock.
+// Neither appears in the generated Dockerfile — `COPY pyproject.toml uv.lock ./`
+// and `RUN uv sync --frozen` are the same bytes whatever the lock says — so if
+// the deps hash does not read them, editing a dependency leaves the native path
+// splicing new app layers onto STALE dependency layers and shipping an image
+// that never contains the change.
+func TestNativeDepsHashCoversUvManifests(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python@sha256:abc\nCOPY pyproject.toml uv.lock ./\nRUN uv sync --frozen --no-dev\nCOPY main.py main.py\n")
+	writeFile(t, dir, "pyproject.toml", "[project]\nname = \"app\"\n")
+	writeFile(t, dir, "uv.lock", "version = 1\n")
+	writeFile(t, dir, "main.py", "print('v1')\n")
+	sf := &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name:    "app",
+		From:    "python:3.11-slim",
+		Install: &spec.Install{Uv: &spec.UvInstall{}},
+		Copy:    []spec.CopyEntry{{From: "local", Paths: []string{"main.py"}}},
+	}}}
+
+	hash := func() string {
+		t.Helper()
+		h, err := nativeDepsHash(dir, "Dockerfile.generated", "linux/arm64", nil, sf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "uv.lock", "version = 1\n# pinned httpx 0.28\n")
+	afterLock := hash()
+	if afterLock == base {
+		t.Fatal("deps hash unchanged after uv.lock edit: native path would ship stale dependencies")
+	}
+	writeFile(t, dir, "pyproject.toml", "[project]\nname = \"app\"\ndependencies = [\"httpx\"]\n")
+	if got := hash(); got == afterLock {
+		t.Fatal("deps hash unchanged after pyproject.toml edit: native path would ship stale dependencies")
+	}
+}
+
 func TestNativeDepsHashIncludesNonFinalCopies(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "Dockerfile.generated", "FROM base\n")

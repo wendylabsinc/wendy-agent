@@ -15,8 +15,10 @@ const keychainService = "wendy-tls-session"
 
 // newDefaultStore picks the ticket store backend. WENDY_TLS_SESSION_STORE
 // forces one: "off" disables caching (right for CI), "file"/"keychain" force a
-// backend. Anything else gets the platform default (Keychain on macOS, files
-// elsewhere). A nil return disables session caching entirely.
+// backend. Anything else gets the platform default, which is the file backend
+// on every platform — "keychain" is opt-in only, because it can raise a
+// blocking macOS modal (see newPlatformStore in store_select_darwin.go). A nil
+// return disables session caching entirely.
 func newDefaultStore() secretstore.Store {
 	switch os.Getenv("WENDY_TLS_SESSION_STORE") {
 	case "off":

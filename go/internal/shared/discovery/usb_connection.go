@@ -104,6 +104,8 @@ func looksLikeUSBConnection(interfaceName, displayName string) bool {
 		return true
 	case strings.Contains(combined, "ecm"):
 		return true
+	case strings.Contains(combined, "ncm"):
+		return true
 	case strings.Contains(combined, "gadget"):
 		return true
 	case strings.HasPrefix(name, "enx"):

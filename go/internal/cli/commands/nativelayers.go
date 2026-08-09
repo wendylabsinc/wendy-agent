@@ -99,6 +99,14 @@ func nativeDepsPaths(sf *spec.File) []string {
 				add("package.json")
 				add(spec.NpmLockfile(s.Install.Npm.Manager))
 			}
+			if s.Install.Uv != nil {
+				// uv's whole dependency set is in these two files and in
+				// neither the Dockerfile nor the lockfile, so missing them here
+				// means an edited dependency never invalidates the deps layers.
+				for _, p := range spec.UvLocalFiles {
+					add(p)
+				}
+			}
 		}
 		if i == lastIdx {
 			continue

@@ -23,6 +23,11 @@ import (
 // sharedResolver without touching a live registry.
 var baseResolver lock.Resolver = lock.CraneResolver
 
+// baseHasher is the underlying download hash every CompileFile ultimately
+// reaches, and a package var for the same reason baseResolver is: so tests
+// can exercise the memoization without fetching anything.
+var baseHasher lock.Hasher = lock.HTTPHasher
+
 // sharedResolver is the process-wide resolver CompileFile uses. Memoizing here
 // rather than per-call is what makes a compose project cheap: its services each
 // compile their own Stagefile, they typically share a base image, and those
@@ -34,6 +39,29 @@ var sharedResolver = lock.Memoize(func(ref string) (string, error) {
 	return baseResolver(ref)
 })
 
+// sharedHasher memoizes download hashing for the same reason sharedResolver
+// memoizes registry lookups, and it matters more here: the compose services
+// of one project can declare the same model URL, and hashing it twice means
+// downloading it twice.
+var sharedHasher = lock.Hasher(lock.Memoize(func(url string) (string, error) {
+	return baseHasher(url)
+}))
+
+// Option configures a CompileFile call.
+type Option func(*options)
+
+type options struct {
+	progress func(url string)
+}
+
+// WithProgress registers a callback invoked before each download that has to
+// be fetched to be pinned. Without it a first build hashing a few hundred
+// megabytes of model weights is indistinguishable from a hang: resolution
+// runs inline inside CompileFile, which otherwise prints nothing at all.
+func WithProgress(f func(url string)) Option {
+	return func(o *options) { o.progress = f }
+}
+
 // CompileFile reads build.stagefile.yaml from dir, resolves any missing
 // lockfile image refs against a live registry (existing pins are never
 // touched — only an explicit re-lock changes them), writes/updates
@@ -43,14 +71,25 @@ var sharedResolver = lock.Memoize(func(ref string) (string, error) {
 // Safe to call concurrently for different directories: the lockfile and both
 // generated files are written via temp-file + rename, and the registry lookups
 // behind sharedResolver are deduplicated across callers.
-func CompileFile(dir, platform string) (dockerfile, dockerignore string, err error) {
-	return compileFile(dir, platform, sharedResolver)
+func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore string, err error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	hasher := sharedHasher
+	if o.progress != nil {
+		hasher = func(url string) (string, error) {
+			o.progress(url)
+			return sharedHasher(url)
+		}
+	}
+	return compileFile(dir, platform, sharedResolver, hasher)
 }
 
 // compileFile is the resolver-injectable implementation behind
-// CompileFile, allowing tests to exercise it with a fake resolver instead
-// of a live registry.
-func compileFile(dir, platform string, resolver lock.Resolver) (dockerfile, dockerignore string, err error) {
+// CompileFile, allowing tests to exercise it with a fake resolver and hasher
+// instead of a live registry and live URLs.
+func compileFile(dir, platform string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
 	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -70,11 +109,14 @@ func compileFile(dir, platform string, resolver lock.Resolver) (dockerfile, dock
 	if err != nil {
 		return "", "", err
 	}
+	if _, err := updated.ResolveDownloads(downloadURLs(f), nil, hasher); err != nil {
+		return "", "", err
+	}
 	if err := updated.Save(lockPath); err != nil {
 		return "", "", err
 	}
 
-	dockerfile, err = codegen.Generate(f, updated.Images, platform)
+	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform)
 	if err != nil {
 		return "", "", err
 	}
@@ -86,6 +128,25 @@ func compileFile(dir, platform string, resolver lock.Resolver) (dockerfile, dock
 // file order, without duplicates. Stages that opt out of digest pinning
 // (pin: false — local-only images with no registry digest) are skipped so
 // the resolver never tries to look them up.
+// downloadURLs collects every download url across f's stages that needs
+// resolving, in file order, without duplicates. A download that carries its
+// own sha256 is skipped: it is already pinned, and fetching it here would
+// download the file just to confirm what the Stagefile already states.
+func downloadURLs(f *spec.File) []string {
+	seen := map[string]bool{}
+	var urls []string
+	for _, s := range f.Stages {
+		for _, d := range s.Download {
+			if d.SHA256 != "" || seen[d.URL] {
+				continue
+			}
+			seen[d.URL] = true
+			urls = append(urls, d.URL)
+		}
+	}
+	return urls
+}
+
 func imageRefs(f *spec.File) []string {
 	seen := map[string]bool{}
 	var refs []string

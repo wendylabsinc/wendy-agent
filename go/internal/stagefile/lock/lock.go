@@ -16,6 +16,11 @@ type File struct {
 	Version    int               `yaml:"version"`
 	SourceHash string            `yaml:"sourceHash"`
 	Images     map[string]string `yaml:"images"`
+	// Downloads pins each download URL to the sha256 of the bytes it served
+	// when it was first resolved. Omitted from the file entirely when a
+	// Stagefile declares no downloads, so existing lockfiles don't grow an
+	// empty key on their next build.
+	Downloads map[string]string `yaml:"downloads,omitempty"`
 }
 
 // Load reads and parses the lockfile at path. A missing file is not an

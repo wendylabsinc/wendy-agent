@@ -128,7 +128,7 @@ func shouldIncludeExternal(opts discovery.DiscoveryOptions) bool {
 }
 
 func discoverJSON(ctx context.Context, opts discovery.DiscoveryOptions) error {
-	collection, err := discovery.Discover(ctx, opts)
+	collection, err := discoverWithUSBDirect(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("discovery failed: %w", err)
 	}
@@ -157,7 +157,7 @@ func discoverOnce(ctx context.Context, opts discovery.DiscoveryOptions, includeL
 	includeExternal := shouldIncludeExternal(opts)
 
 	work := func() tea.Msg {
-		collection, err := discovery.Discover(ctx, opts)
+		collection, err := discoverWithUSBDirect(ctx, opts)
 		if err == nil {
 			annotateLANUSBFromEthernet(collection)
 			sortLANDevicesForDiscover(collection.LANDevices)

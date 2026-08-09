@@ -165,3 +165,154 @@ func TestPreferredCertOrgEmptyHost(t *testing.T) {
 	// Must not panic or write a bogus entry.
 	rememberCertOrg("", 9)
 }
+
+// withDevicePins redirects the device-pin lookup at its config seam so the test
+// never reads the developer's real ~/.wendy/config.json.
+func withDevicePins(t *testing.T, pins map[string]config.DevicePin) {
+	t.Helper()
+	prev := certOrderConfigLoad
+	certOrderConfigLoad = func() (*config.Config, error) {
+		return &config.Config{DevicePins: pins}, nil
+	}
+	t.Cleanup(func() { certOrderConfigLoad = prev })
+}
+
+// TestPreferredCertOrgForHostFallsBackToDevicePin is the case this exists for:
+// an agent too old to advertise an mDNS orgid, on a machine whose cache
+// directory was wiped, still has a durable org record in the config directory.
+func TestPreferredCertOrgForHostFallsBackToDevicePin(t *testing.T) {
+	withTempCertOrderCache(t) // empty memo
+	withDevicePins(t, map[string]config.DevicePin{"orin": {OrgID: 9, CloudGRPC: "cloud.wendy.dev:443"}})
+
+	got, ok := preferredCertOrgForHost("orin.local")
+	if !ok || got != 9 {
+		t.Fatalf("preferredCertOrgForHost = (%d, %v), want (9, true) — the pin is stored normalised, so a %q dial must hit it", got, ok, "orin.local")
+	}
+}
+
+// TestPreferredCertOrgForHostMemoWinsOverPin pins the precedence: the memo
+// records the org that last actually completed a probe against this exact host,
+// so it must outrank the older, coarser device pin.
+func TestPreferredCertOrgForHostMemoWinsOverPin(t *testing.T) {
+	withTempCertOrderCache(t)
+	withDevicePins(t, map[string]config.DevicePin{"orin": {OrgID: 9}})
+	rememberCertOrg("orin.local", 2)
+
+	got, ok := preferredCertOrgForHost("orin.local")
+	if !ok || got != 2 {
+		t.Fatalf("preferredCertOrgForHost = (%d, %v), want (2, true) — the memo must outrank the device pin", got, ok)
+	}
+}
+
+func TestPreferredCertOrgForHostNoHint(t *testing.T) {
+	withTempCertOrderCache(t)
+	withDevicePins(t, nil)
+
+	if org, ok := preferredCertOrgForHost("unknown.local"); ok {
+		t.Errorf("preferredCertOrgForHost = (%d, true), want no hit when neither source knows the host", org)
+	}
+	// A pin recorded with no org carries no hint and must not read as org 0.
+	withDevicePins(t, map[string]config.DevicePin{"orin": {CloudGRPC: "cloud.wendy.dev:443"}})
+	if org, ok := preferredCertOrgForHost("orin.local"); ok {
+		t.Errorf("preferredCertOrgForHost = (%d, true), want no hit for a pin with no org", org)
+	}
+}
+
+func TestPreferredCertOrgForHostSurvivesUnreadableConfig(t *testing.T) {
+	withTempCertOrderCache(t)
+	prev := certOrderConfigLoad
+	certOrderConfigLoad = func() (*config.Config, error) { return nil, os.ErrPermission }
+	t.Cleanup(func() { certOrderConfigLoad = prev })
+
+	// Must read as "no hint" rather than panic on the nil config: an ordering
+	// hint is never worth failing a connection over.
+	if org, ok := preferredCertOrgForHost("orin.local"); ok {
+		t.Errorf("preferredCertOrgForHost = (%d, true), want no hit when the config cannot be read", org)
+	}
+}
+
+func TestPromoteOrgNext(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		certs []int
+		order []int
+		pos   int
+		org   int32
+		want  []int
+		moved bool
+	}{
+		{
+			// The case this exists for: an agent advertising no orgid TXT record.
+			// The first probe fails but the device's server cert names org 9, so
+			// org 9 is tried next instead of last.
+			name:  "promotes the observed org to the next position",
+			certs: []int{2, 5, 7, 9}, order: []int{0, 1, 2, 3}, pos: 0, org: 9,
+			want: []int{0, 3, 1, 2}, moved: true,
+		},
+		{
+			name:  "defers skipped certs without reordering them among themselves",
+			certs: []int{2, 5, 7, 3, 9}, order: []int{0, 1, 2, 3, 4}, pos: 0, org: 9,
+			want: []int{0, 4, 1, 2, 3}, moved: true,
+		},
+		{
+			// Same-org failure (clock skew, expired cert): the only cert for the
+			// observed org is the one that just failed, so there is nothing left
+			// to promote and the caller's diagnostics must stand.
+			name:  "no-op when the observed org was already probed",
+			certs: []int{9, 2, 5}, order: []int{0, 1, 2}, pos: 0, org: 9,
+			want: []int{0, 1, 2}, moved: false,
+		},
+		{
+			// A genuine cross-org device we hold no cert for.
+			name:  "no-op when we hold no cert for the observed org",
+			certs: []int{2, 5}, order: []int{0, 1}, pos: 0, org: 42,
+			want: []int{0, 1}, moved: false,
+		},
+		{
+			name:  "no-op at the last position",
+			certs: []int{2, 9}, order: []int{0, 1}, pos: 1, org: 9,
+			want: []int{0, 1}, moved: false,
+		},
+		{
+			name:  "already next is reported as acted on and changes nothing",
+			certs: []int{2, 9, 5}, order: []int{0, 1, 2}, pos: 0, org: 9,
+			want: []int{0, 1, 2}, moved: true,
+		},
+		{
+			name:  "promotes relative to a mid-scan position",
+			certs: []int{2, 5, 7, 9}, order: []int{0, 1, 2, 3}, pos: 1, org: 9,
+			want: []int{0, 1, 3, 2}, moved: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			certs := certsForOrgs(tc.certs...)
+			order := append([]int(nil), tc.order...)
+			moved := promoteOrgNext(order, tc.pos, certs, tc.org)
+			if moved != tc.moved {
+				t.Errorf("promoteOrgNext(...) = %v, want %v", moved, tc.moved)
+			}
+			if !equalOrgs(order, tc.want) {
+				t.Errorf("order = %v, want %v", order, tc.want)
+			}
+			// The reorder must stay a permutation: the ladder still has to reach
+			// every cert the user holds, or a jump could strand the right one.
+			seen := make(map[int]bool, len(order))
+			for _, idx := range order {
+				if seen[idx] {
+					t.Fatalf("order %v repeats index %d; a cert was dropped", order, idx)
+				}
+				seen[idx] = true
+			}
+			if len(seen) != len(tc.order) {
+				t.Errorf("order holds %d distinct indices, want %d", len(seen), len(tc.order))
+			}
+			// Entries at or before pos are already probed; moving them would
+			// re-probe a cert and could loop.
+			for i := 0; i <= tc.pos && i < len(order); i++ {
+				if order[i] != tc.order[i] {
+					t.Errorf("order[%d] = %d, want %d: already-probed entries must not move", i, order[i], tc.order[i])
+				}
+			}
+		})
+	}
+}

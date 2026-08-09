@@ -43,6 +43,14 @@ func (k keychain) Get(account string) []byte {
 	return blob
 }
 
+// Put carries a hazard reads do not: `security` exposes no way to suppress
+// user interaction (`add-generic-password` has no no-interaction flag and
+// `security` has no global one), so in a context where the keychain search
+// list does not resolve — a sandboxed process, a non-login session — macOS
+// answers the write with a blocking "A keychain cannot be found to store ..."
+// modal. Nothing here can prevent that, so callers that must never interrupt
+// the user cannot make this backend their default; tlscache's
+// newPlatformStore documents that reasoning for the session-ticket cache.
 func (k keychain) Put(account string, secret []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), securityTimeout)
 	defer cancel()

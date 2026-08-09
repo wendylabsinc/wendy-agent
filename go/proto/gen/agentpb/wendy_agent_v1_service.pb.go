@@ -730,13 +730,18 @@ type GetAgentVersionResponse struct {
 	// there, and a future darwin implementation should instead persist and
 	// report the hash of the update payload it committed.
 	BinarySha256 string `protobuf:"bytes,20,opt,name=binary_sha256,json=binarySha256,proto3" json:"binary_sha256,omitempty"`
+	// Device hostname (gethostname(2)). The CLI uses it to identify a device
+	// reached over the USB well-known link-local address, where no mDNS TXT
+	// records are available. Empty on agents predating this field.
+	//
+	// Numbered 21, not 20: this field was authored on PR #1621 against 20,
+	// which binary_sha256 above had already taken on main. The battery field
+	// below was deliberately started at 22 to leave 21 free for exactly this
+	// renumber, so no wire number is reused across the two merges.
+	Hostname string `protobuf:"bytes,21,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	// Aggregate system-battery state, from /sys/class/power_supply. Absent on
 	// mains-powered devices and on agents predating this field, so `wendy
 	// device info` shows no battery line for either.
-	//
-	// Field 21 is left free for the in-flight hostname field on PR #1621,
-	// which currently claims 20 and must be renumbered when it merges; starting
-	// here guarantees no wire-number collision on either merge order.
 	Battery       *BatteryStats `protobuf:"bytes,22,opt,name=battery,proto3,oneof" json:"battery,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -908,6 +913,13 @@ func (x *GetAgentVersionResponse) GetCpuCount() uint32 {
 func (x *GetAgentVersionResponse) GetBinarySha256() string {
 	if x != nil {
 		return x.BinarySha256
+	}
+	return ""
+}
+
+func (x *GetAgentVersionResponse) GetHostname() string {
+	if x != nil {
+		return x.Hostname
 	}
 	return ""
 }
@@ -4324,7 +4336,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\aupdated\x18\x01 \x01(\v24.wendy.agent.services.v1.UpdateAgentResponse.UpdatedH\x00R\aupdated\x1a\t\n" +
 	"\aUpdatedB\x0f\n" +
 	"\rresponse_type\"\x18\n" +
-	"\x16GetAgentVersionRequest\"\xb9\b\n" +
+	"\x16GetAgentVersionRequest\"\xd5\b\n" +
 	"\x17GetAgentVersionResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\"\n" +
 	"\n" +
@@ -4355,7 +4367,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_service_proto_rawDesc = "" +
 	"\x12network_interfaces\x18\x11 \x03(\v2).wendy.agent.services.v1.NetworkInterfaceR\x11networkInterfaces\x12&\n" +
 	"\x0fmem_total_bytes\x18\x12 \x01(\x03R\rmemTotalBytes\x12\x1b\n" +
 	"\tcpu_count\x18\x13 \x01(\rR\bcpuCount\x12#\n" +
-	"\rbinary_sha256\x18\x14 \x01(\tR\fbinarySha256\x12,\n" +
+	"\rbinary_sha256\x18\x14 \x01(\tR\fbinarySha256\x12\x1a\n" +
+	"\bhostname\x18\x15 \x01(\tR\bhostname\x12,\n" +
 	"\abattery\x18\x16 \x01(\v2\r.BatteryStatsH\vR\abattery\x88\x01\x01B\r\n" +
 	"\v_os_versionB\r\n" +
 	"\v_public_keyB\x0e\n" +

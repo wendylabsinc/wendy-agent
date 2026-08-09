@@ -35,7 +35,7 @@ stages:
 		return "", fmt.Errorf("no fake digest for %q", ref)
 	}
 
-	dockerfile, dockerignore, err := compileFile(dir, "linux/arm64", fakeResolver)
+	dockerfile, dockerignore, err := compileFile(dir, "linux/arm64", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -48,7 +48,9 @@ stages:
 		t.Fatalf("dockerfile:\ngot:\n%q\nwant:\n%q", dockerfile, wantDockerfile)
 	}
 
-	wantDockerignore := "*\n!app.py\n"
+	// Derive cannot know whether "app.py" is a file or a directory, so it emits
+	// the directory forms too; they are inert for a plain file.
+	wantDockerignore := "*\n!app.py\n!app.py/\n!app.py/**\n"
 	if dockerignore != wantDockerignore {
 		t.Fatalf("dockerignore:\ngot:\n%q\nwant:\n%q", dockerignore, wantDockerignore)
 	}
@@ -79,7 +81,7 @@ func TestCompileFileReusesExistingLockPin(t *testing.T) {
 		return "sha256:shouldnothappen", nil
 	}
 
-	dockerfile, _, err := compileFile(dir, "", fakeResolver)
+	dockerfile, _, err := compileFile(dir, "", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -96,14 +98,14 @@ func TestCompileFileReturnsErrorForInvalidSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := compileFile(dir, "", func(string) (string, error) { return "", nil }); err == nil {
+	if _, _, err := compileFile(dir, "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error for an unsupported version, got nil")
 	}
 }
 
 func TestCompileFileReturnsErrorWhenSourceMissing(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := compileFile(dir, "", func(string) (string, error) { return "", nil }); err == nil {
+	if _, _, err := compileFile(dir, "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error when build.stagefile.yaml is missing, got nil")
 	}
 }
@@ -164,7 +166,7 @@ func TestCompileFileSkipsResolutionForUnpinnedStage(t *testing.T) {
 		t.Fatalf("resolver must not be called for an unpinned ref, got %q", ref)
 		return "", nil
 	}
-	dockerfile, _, err := compileFile(dir, "", resolver)
+	dockerfile, _, err := compileFile(dir, "", resolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}

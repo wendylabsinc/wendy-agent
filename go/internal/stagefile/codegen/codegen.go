@@ -7,6 +7,8 @@
 package codegen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -21,11 +23,13 @@ import (
 const defaultUser = "65532"
 
 // Generate compiles f into Dockerfile text. images maps every pinned from:
-// value in f to its resolved "sha256:..." digest (see internal/lock).
-// platform, if non-empty (e.g. "linux/arm64"), is applied to every FROM via
-// --platform; pass "" to omit it and let the builder decide. A stage's own
-// `platform: build` overrides it with $BUILDPLATFORM for that stage.
-func Generate(f *spec.File, images map[string]string, platform string) (string, error) {
+// value in f to its resolved "sha256:..." digest, and downloads maps every
+// download url that declared no sha256 of its own to the one resolved for it
+// (see internal/lock). platform, if non-empty (e.g. "linux/arm64"), is
+// applied to every FROM via --platform; pass "" to omit it and let the
+// builder decide. A stage's own `platform: build` overrides it with
+// $BUILDPLATFORM for that stage.
+func Generate(f *spec.File, images, downloads map[string]string, platform string) (string, error) {
 	var blocks []string
 	lastIdx := len(f.Stages) - 1
 
@@ -51,12 +55,25 @@ func Generate(f *spec.File, images map[string]string, platform string) (string, 
 			lines = append(lines, "WORKDIR "+s.Workdir)
 		}
 
+		// Fetches come before install: a download is the largest and most
+		// stable thing in a stage, and behind the install step a bumped pip
+		// package would re-fetch every model. Nothing invalidates an ADD but
+		// its own url and checksum.
+		fetches, err := downloadFetchLines(s.Download, downloads)
+		if err != nil {
+			return "", fmt.Errorf("stage %q: %w", s.Name, err)
+		}
+		lines = append(lines, fetches...)
+
 		if s.Install != nil {
 			if s.Install.Apt != nil {
 				lines = append(lines, aptInstallLines(s.Install.Apt)...)
 			}
 			if s.Install.Apk != nil {
 				lines = append(lines, apkInstallLines(s.Install.Apk)...)
+			}
+			if len(s.Install.CMake) > 0 {
+				lines = append(lines, cmakeInstallLines(s.Install.CMake, stagePlatform)...)
 			}
 			if s.Install.Pip != nil {
 				lines = append(lines, pipInstallLines(s.Install.Pip)...)
@@ -68,6 +85,11 @@ func Generate(f *spec.File, images map[string]string, platform string) (string, 
 				lines = append(lines, uvInstallLines(s.Install.Uv)...)
 			}
 		}
+
+		// Unpacking comes after install, because it needs a tool in the
+		// image and this is the only position where `extract: zip` can rely
+		// on unzip having been declared in install.apt.packages.
+		lines = append(lines, downloadExtractLines(s.Download)...)
 
 		if len(s.Copy) > 0 {
 			lines = append(lines, copyLines(s.Copy)...)
@@ -201,7 +223,33 @@ func shellQuote(s string) string {
 // or npm. sharing=locked moves the queueing to the mount, where BuildKit
 // reports it as part of the build graph.
 func cacheRun(dir, cmd string) string {
-	return fmt.Sprintf("RUN --mount=type=cache,sharing=locked,target=%s %s", dir, cmd)
+	return cacheRunID("", dir, cmd)
+}
+
+// cacheRunID is cacheRun with an explicit BuildKit cache id. Without one a
+// mount is scoped by its target path, which is fine for the package-manager
+// caches (their contents are self-describing — a wheel names its own platform)
+// but not for a build tree, where the same path in two different builds holds
+// object files that must never meet. An id lets the caller say exactly what
+// may share.
+func cacheRunID(id, dir, cmd string) string {
+	mount := "type=cache,sharing=locked"
+	if id != "" {
+		mount += ",id=" + id
+	}
+	return fmt.Sprintf("RUN --mount=%s,target=%s %s", mount, dir, cmd)
+}
+
+// cmakeCacheID scopes a cmake build tree to the project and the architecture
+// it is compiled for, and deliberately to nothing else. Commit is excluded so
+// bumping a pin recompiles only what changed — the reason the cache exists.
+// Everything else the Stagefile can set (build type, prefix, defines) is an
+// ordinary CMake cache variable that CMake reconfigures in place; the target
+// platform is the one input it cannot detect, because the compiler sits at the
+// same path in either rootfs.
+func cmakeCacheID(repository, platform string) string {
+	sum := sha256.Sum256([]byte(repository + "\x00" + platform))
+	return "stagefile-cmake-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // aptRepositoryLines emits the declared extra apt sources: ca-certificates
@@ -271,6 +319,59 @@ func apkInstallLines(a *spec.ApkInstall) []string {
 	return append(lines, "RUN "+strings.Join(parts, " "))
 }
 
+func cmakeInstallLines(installs []spec.CMakeInstall, platform string) []string {
+	lines := make([]string, 0, len(installs))
+	for i, c := range installs {
+		root := fmt.Sprintf("/tmp/stagefile-cmake-%d", i)
+		sourceDir := root + "/source"
+		buildDir := root + "/build"
+		prefix := c.Prefix
+		if prefix == "" {
+			prefix = "/usr/local"
+		}
+		buildType := c.BuildType
+		if buildType == "" {
+			buildType = "Release"
+		}
+
+		configure := []string{
+			"cmake", "-S", shellQuote(sourceDir), "-B", shellQuote(buildDir),
+			shellQuote("-DCMAKE_BUILD_TYPE=" + buildType),
+			shellQuote("-DCMAKE_INSTALL_PREFIX=" + prefix),
+		}
+		keys := make([]string, 0, len(c.Defines))
+		for k := range c.Defines {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			configure = append(configure, shellQuote("-D"+k+"="+c.Defines[k]))
+		}
+
+		build := "cmake --build " + shellQuote(buildDir)
+		if c.Jobs > 0 {
+			build += " --parallel " + strconv.Itoa(c.Jobs)
+		}
+		commands := []string{
+			"git init " + shellQuote(sourceDir),
+			"git -C " + shellQuote(sourceDir) + " remote add origin " + shellQuote(c.Repository),
+			"git -C " + shellQuote(sourceDir) + " fetch --depth 1 origin " + shellQuote(c.Commit),
+			"git -C " + shellQuote(sourceDir) + " checkout --detach FETCH_HEAD",
+			strings.Join(configure, " "),
+			build,
+			"cmake --install " + shellQuote(buildDir),
+			// Only the source tree is removed. The build tree is a cache mount
+			// and never enters the layer, so deleting it would throw away the
+			// object files the next commit bump wants — while removing nothing
+			// from the image.
+			"rm -rf " + shellQuote(sourceDir),
+		}
+		lines = append(lines, cacheRunID(cmakeCacheID(c.Repository, platform), buildDir,
+			strings.Join(commands, " \\\n    && ")))
+	}
+	return lines
+}
+
 func pipInstallLines(p *spec.PipInstall) []string {
 	var lines []string
 	if p.Requirements != "" {
@@ -337,6 +438,82 @@ func uvInstallLines(u *spec.UvInstall) []string {
 		"COPY " + strings.Join(spec.UvLocalFiles, " ") + " ./",
 		cacheRun("/root/.cache/uv", strings.Join(parts, " ")),
 	}
+}
+
+// downloadStagingPath is where an archive lands before it is unpacked. It is
+// keyed to the download's index within its stage, so identical source always
+// compiles to identical bytes — nothing here is random or time-derived.
+func downloadStagingPath(i int, extract string) string {
+	return fmt.Sprintf("/tmp/stagefile-download-%d.%s", i, extract)
+}
+
+// downloadChecksum returns the sha256 to pin d with: the one written in the
+// Stagefile, or failing that the one resolved into the lockfile. An
+// unpinned download is not representable in the output, so a download with
+// neither is an error rather than a plain ADD.
+func downloadChecksum(d spec.Download, resolved map[string]string) (string, error) {
+	digest := d.SHA256
+	if digest == "" {
+		digest = resolved[d.URL]
+	}
+	if digest == "" {
+		return "", fmt.Errorf("download %q: no resolved sha256; run a build with network access to pin it, or write sha256: in the Stagefile", d.URL)
+	}
+	return "sha256:" + strings.TrimPrefix(digest, "sha256:"), nil
+}
+
+// downloadFetchLines emits one ADD per download. BuildKit performs the fetch
+// and verifies the checksum before any layer can read the bytes, so nothing
+// here runs a shell inside the container.
+func downloadFetchLines(entries []spec.Download, resolved map[string]string) ([]string, error) {
+	var lines []string
+	for i, d := range entries {
+		checksum, err := downloadChecksum(d, resolved)
+		if err != nil {
+			return nil, err
+		}
+		flags := ""
+		if d.Owner != "" {
+			flags += "--chown=" + d.Owner + " "
+		}
+		if d.Mode != "" {
+			flags += "--chmod=" + d.Mode + " "
+		}
+		dest := d.Dest
+		if d.Extract != "" {
+			dest = downloadStagingPath(i, d.Extract)
+		}
+		lines = append(lines, fmt.Sprintf("ADD %s--checksum=%s %s %s", flags, checksum, d.URL, dest))
+	}
+	return lines, nil
+}
+
+// downloadExtractLines emits the unpack step for every download that declared
+// one. A remote ADD never auto-extracts the way a local tarball does, so this
+// is forced by BuildKit rather than chosen. The command is assembled from
+// typed fields through shellQuote — the compiler writes the shell line, never
+// the Stagefile's author.
+func downloadExtractLines(entries []spec.Download) []string {
+	var lines []string
+	for i, d := range entries {
+		if d.Extract == "" {
+			continue
+		}
+		staged := shellQuote(downloadStagingPath(i, d.Extract))
+		dest := shellQuote(d.Dest)
+		var unpack string
+		switch d.Extract {
+		case "zip":
+			unpack = fmt.Sprintf("unzip -q %s -d %s", staged, dest)
+		default:
+			unpack = fmt.Sprintf("tar -xzf %s -C %s", staged, dest)
+		}
+		// The staged archive is removed in the same RUN that unpacks it:
+		// left to a later layer it would still be in this one, and the image
+		// would carry both the tarball and its contents.
+		lines = append(lines, fmt.Sprintf("RUN mkdir -p %s && %s && rm %s", dest, unpack, staged))
+	}
+	return lines
 }
 
 func copyLines(entries []spec.CopyEntry) []string {

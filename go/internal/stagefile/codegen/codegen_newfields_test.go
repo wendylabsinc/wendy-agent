@@ -12,7 +12,7 @@ func genOne(t *testing.T, s spec.Stage, images map[string]string) string {
 	if images == nil {
 		images = map[string]string{s.From: "sha256:abc123"}
 	}
-	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{s}}, images, "")
+	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{s}}, images, nil, "")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestGenerateUnpinnedStage(t *testing.T) {
 	no := false
 	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "mlx-server:0.1", Pin: &no},
-	}}, map[string]string{}, "")
+	}}, map[string]string{}, nil, "")
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

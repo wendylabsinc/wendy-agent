@@ -82,6 +82,51 @@ func preferredCertOrg(host string) (int, bool) {
 	return org, ok
 }
 
+// certOrderConfigLoad is a seam over config.Load so tests can supply device
+// pins without touching the developer's real ~/.wendy/config.json.
+var certOrderConfigLoad = config.Load
+
+// devicePinOrg returns the organisation pinned for host, if any. The pin is
+// written by enforceDevicePin after every successful mTLS connect, so its
+// presence means that org genuinely authenticated here at some point.
+// Best-effort: an unreadable config is simply "no hint".
+func devicePinOrg(host string) (int, bool) {
+	if host == "" {
+		return 0, false
+	}
+	cfg, err := certOrderConfigLoad()
+	if err != nil || cfg == nil {
+		return 0, false
+	}
+	pin, ok := cfg.DevicePinFor(host)
+	if !ok || pin.OrgID == 0 {
+		return 0, false
+	}
+	return pin.OrgID, true
+}
+
+// preferredCertOrgForHost is the pre-dial org hint, drawn from two local
+// records of what has actually authenticated against host, most specific first:
+//
+//  1. certorder.json — the org that last authenticated against this exact host
+//     string. Most recent and most precise, but it lives in the cache directory
+//     (wipeable) and keys on the raw host, so "orin" and "orin.local" are
+//     separate entries.
+//  2. config.DevicePins — the org+cloud pin enforceDevicePin records on every
+//     successful mTLS connect. It lives in the config directory, so it survives
+//     a cache wipe, and its key is normalised ("orin.local" → "orin"), so a
+//     dial by either spelling benefits from a connect made via the other.
+//
+// Both describe an org that provably authenticated, which is why they outrank
+// the advertised mDNS orgid dialAgentLKG rotates by. Like every hint on this
+// path it is pure ordering: a wrong answer costs exactly what no answer costs.
+func preferredCertOrgForHost(host string) (int, bool) {
+	if org, ok := preferredCertOrg(host); ok {
+		return org, true
+	}
+	return devicePinOrg(host)
+}
+
 // rememberCertOrg records that org authenticated against host. Best-effort:
 // the memo is a cache, so a write failure only costs the next command the
 // wasted probe it would have paid anyway.
@@ -127,6 +172,38 @@ func rememberCertOrg(host string, org int) {
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
 	}
+}
+
+// promoteOrgNext moves the first not-yet-probed cert belonging to org to the
+// position immediately after pos in order, so it is probed next instead of
+// whenever its original position came up. order holds indices into certs and is
+// rewritten in place; the entries at and before pos (already probed) are
+// untouched, and nothing is dropped — every cert is still tried.
+//
+// This is the correction the dial ladder applies when the device's own server
+// certificate names its org (see dialAgentLadderWithCerts), which is what saves
+// an agent too old to advertise an mDNS `orgid` TXT record from a full linear
+// scan on a cold memo.
+//
+// Reports whether it acted on the hint. False means org names nothing worth
+// trying next: either we hold no cert for that org, or the only ones we hold
+// were already probed — the same-org failure case (clock skew, expired cert),
+// where reordering changes nothing and the caller's existing rejection
+// diagnostics should stand.
+func promoteOrgNext(order []int, pos int, certs []config.CertificateInfo, org int32) bool {
+	for j := pos + 1; j < len(order); j++ {
+		if int32(certs[order[j]].OrganizationID) != org {
+			continue
+		}
+		target := pos + 1
+		promoted := order[j]
+		// Shift the skipped-over entries right by one rather than swapping, so
+		// the certs this jump defers keep their relative order behind it.
+		copy(order[target+1:j+1], order[target:j])
+		order[target] = promoted
+		return true
+	}
+	return false
 }
 
 // orderCertsByOrg returns certs with those belonging to org moved to the

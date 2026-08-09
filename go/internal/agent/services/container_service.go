@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
+	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -315,6 +316,14 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	// digest, or any other derived value. When the verifier is disabled (no
 	// pinned key embedded yet), Verify is a fail-safe no-op and RunContainer
 	// proceeds exactly as before this check existed.
+	// Phase timings for the chunk-diff deploy's device-side half. The CLI sees
+	// this whole RPC as a single number (its "runcontainer: device
+	// create+start" mark), which is the largest remaining block of a warm
+	// deploy; these fields say which part of it actually costs.
+	runStartedAt := time.Now()
+	phaseStart := runStartedAt
+	var verifyDur, layerAssembleDur, imageAssembleDur, createDur time.Duration
+
 	imageDigest := sha256.Sum256(req.GetImageConfig())
 	if err := s.imageVerifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
 		switch {
@@ -326,6 +335,9 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 			return status.Errorf(codes.Internal, "container image signature verification error: %v", err)
 		}
 	}
+
+	verifyDur = time.Since(phaseStart)
+	phaseStart = time.Now()
 
 	if layers := req.GetLayers(); len(layers) > 0 {
 		for _, l := range layers {
@@ -347,10 +359,14 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 				}
 			}
 		}
+		layerAssembleDur = time.Since(phaseStart)
+		phaseStart = time.Now()
 		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers, req.GetImageConfig()); err != nil {
 			return status.Errorf(codes.Internal, "failed to assemble image: %v", err)
 		}
+		imageAssembleDur = time.Since(phaseStart)
 	}
+	phaseStart = time.Now()
 
 	// Same CreateContainer call the registry path makes, so both transports
 	// apply caller env identically and through the same validateUserEnv checks.
@@ -368,6 +384,16 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {
 		return status.Errorf(codes.Internal, "failed to create container: %v", err)
 	}
+	createDur = time.Since(phaseStart)
+
+	s.logger.Info("RunContainer phase timings",
+		zap.String(logfields.AppID, req.GetAppName()),
+		zap.Int("layers", len(req.GetLayers())),
+		zap.Duration("verify_signature", verifyDur),
+		zap.Duration("assemble_layers", layerAssembleDur),
+		zap.Duration("assemble_image", imageAssembleDur),
+		zap.Duration("create_container", createDur),
+		zap.Duration("total_before_start", time.Since(runStartedAt)))
 
 	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
 }

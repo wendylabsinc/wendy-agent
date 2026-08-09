@@ -159,6 +159,30 @@ func TestGetAgentVersion(t *testing.T) {
 	}
 }
 
+func TestGetAgentVersionReportsHostname(t *testing.T) {
+	// Goes through startAgentServer rather than a bare &AgentService{}: the
+	// handler now resolves and hashes its own executable (binarySHA256), which
+	// calls the execPathResolver a zero-value struct leaves nil.
+	client, cleanup := startAgentServer(t,
+		&mockNetworkManager{},
+		&mockHardwareDiscoverer{},
+		&mockBluetoothManager{},
+	)
+	defer cleanup()
+
+	resp, err := client.GetAgentVersion(context.Background(), &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		t.Fatalf("GetAgentVersion: %v", err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skipf("os.Hostname unavailable: %v", err)
+	}
+	if resp.GetHostname() != host {
+		t.Fatalf("Hostname = %q, want %q", resp.GetHostname(), host)
+	}
+}
+
 func TestReadWendyOSVersionFromPrefersCurrentPath(t *testing.T) {
 	dir := t.TempDir()
 	current := filepath.Join(dir, "etc", "wendyos", "version.txt")
