@@ -233,10 +233,15 @@ other people's instructions:
 
 - **Anyone in your organisation can build on it.** A remote build executes the
   Dockerfile it was handed, which is the feature — but it means the builder role
-  grants code execution on that device to every holder of a valid organisation
-  certificate. Cross-organisation callers are rejected by the agent's mTLS
-  organisation check. Enable the role on machines you would already trust that
-  way, not on a robot in the field.
+  grants code execution on that device to every *person* in your organisation.
+  Enable it on machines you would already trust that way, not on a robot in the
+  field.
+
+  Three things sit outside that grant. Cross-organisation callers are rejected by
+  the agent's mTLS organisation check. **Devices** are rejected too — submitting a
+  build requires a user certificate, so one compromised device cannot conscript
+  its peers into building for it. And the unauthenticated port the agent serves
+  before provisioning does not accept builds at all.
 - **Build contexts land on its disk.** Sources are reassembled under
   `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
   builds so BuildKit's local-source cache stays warm. They are cleared and

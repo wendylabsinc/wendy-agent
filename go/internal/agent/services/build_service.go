@@ -213,7 +213,7 @@ func (s *BuildService) builderEnabled() bool {
 // comment in build_service.proto: without that split the opt-in gate would be
 // decorative, because anything able to call BuildImage could call this first.
 func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.SetBuildHostEnabledRequest) (*agentpbv2.SetBuildHostEnabledResponse, error) {
-	actor, err := userIdentityFromContext(ctx)
+	actor, err := userIdentityFromContext(ctx, "changing the builder role")
 	if err != nil {
 		return nil, err
 	}
@@ -243,32 +243,53 @@ func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.S
 	return &agentpbv2.SetBuildHostEnabledResponse{Enabled: req.GetEnabled()}, nil
 }
 
+// onLocalAdminSocket reports whether the caller arrived over the agent's local
+// unix socket rather than a network listener.
+//
+// That socket carries no TLS, so it has no certificate to inspect — but it is
+// not therefore untrusted: access to it IS the credential. It lives at 0660
+// under a root-owned directory that oci.applyAdmin bind-mounts only into
+// containers holding the admin entitlement, so reaching it already means
+// full-agent authority.
+//
+// The distinction matters because "no TLS" alone does not imply the local
+// socket. The pre-provisioning plaintext TCP server on the agent port also has
+// no TLS and is reachable by anyone on the LAN, and registerAllServices puts
+// this service on both. The listener's network is what separates them.
+func onLocalAdminSocket(p *peer.Peer) bool {
+	return p != nil && p.Addr != nil && p.Addr.Network() == "unix"
+}
+
 // userIdentityFromContext admits only a caller presenting a wendy USER
 // certificate, and returns that identity so the caller can name it in an audit
 // log. Mirrors MeshService.assetIdentityFromContext, which makes the opposite
 // demand: mesh dials are device-to-device, this is human-to-device.
+//
+// action names the operation being gated, so the refusal tells the caller what
+// they were denied rather than naming whichever RPC happened to define the
+// helper.
 //
 // Org equality is deliberately left to the server's mTLS interceptors here.
 // Unlike MeshDial — which must reject cross-org callers even when
 // WENDY_MTLS_ORG_ENFORCEMENT is off — this device has no independent notion of
 // which org "owns" it beyond the certificate chain that already admitted the
 // connection.
-func userIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) {
+func userIdentityFromContext(ctx context.Context, action string) (certs.WendyIdentity, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "changing the builder role requires mTLS")
+		return certs.WendyIdentity{}, status.Errorf(codes.PermissionDenied, "%s requires mTLS", action)
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "changing the builder role requires a client certificate")
+		return certs.WendyIdentity{}, status.Errorf(codes.PermissionDenied, "%s requires a client certificate", action)
 	}
 	ident, found, err := certs.IdentityFromCert(tlsInfo.State.PeerCertificates[0])
 	if err != nil || !found {
 		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "client certificate carries no wendy identity")
 	}
 	if ident.EntityType != "user" {
-		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied,
-			"changing the builder role requires a user certificate; a device certificate cannot opt this host in")
+		return certs.WendyIdentity{}, status.Errorf(codes.PermissionDenied,
+			"%s requires a user certificate; a device certificate is not accepted", action)
 	}
 	return ident, nil
 }
@@ -326,7 +347,45 @@ func buildkitSocketPresent(addr string) bool {
 	return err == nil
 }
 
+// authorizeBuildSubmission decides whether this caller may submit a build.
+//
+// BuildImage executes client-supplied instructions under buildkitd, so this is
+// the boundary that decides who gets code execution on the build host.
+// registerAllServices puts this service on three listeners, which are not
+// equally trusted:
+//
+//   - The mTLS TCP server — a developer's CLI presenting a user certificate.
+//     This covers the cloud tunnel too: the broker relays bytes, so the CLI's
+//     own certificate is what terminates at the agent (see connectCloudAsset).
+//     Allowed.
+//   - The local unix socket — an on-device container holding the admin
+//     entitlement. No TLS, but reaching the socket is already full-agent
+//     authority. Allowed; see onLocalAdminSocket.
+//   - The pre-provisioning plaintext TCP server — anyone on the LAN, no
+//     credential whatsoever. Refused. It only runs before provisioning, when a
+//     build host has nothing to build with, so this closes a hole rather than
+//     removing a capability.
+//
+// A DEVICE certificate is refused everywhere. Builds are submitted by people;
+// nothing in the design has one device build for another. SetBuildHostEnabled
+// already makes exactly this demand, and without the same demand here the gate
+// it protects would admit the certificate type it rejects — leaving a
+// compromised device in the org with arbitrary code execution on the build
+// host, which is the whole thing the opt-in was meant to prevent.
+func authorizeBuildSubmission(ctx context.Context) error {
+	if p, ok := peer.FromContext(ctx); ok && onLocalAdminSocket(p) {
+		return nil
+	}
+	_, err := userIdentityFromContext(ctx, "submitting a build")
+	return err
+}
+
 func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageServer) error {
+	// Before the opt-in check, so an unauthorized caller cannot use this RPC to
+	// probe whether a device is a build host.
+	if err := authorizeBuildSubmission(stream.Context()); err != nil {
+		return err
+	}
 	if !s.builderEnabled() {
 		return status.Error(codes.FailedPrecondition,
 			"this device is not configured as a build host; run `wendy device build-host enable --device <this device>` to allow remote builds")

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -727,6 +728,85 @@ func (s staticChunkSource) OpenChunkStream(context.Context, [][32]byte) io.Reade
 	return bytes.NewReader(s.data)
 }
 
+// buildSpecForAuthTest is a spec that would get well past the authorization
+// check if it were allowed to, so a PermissionDenied can only have come from
+// the gate rather than from a malformed request.
+func buildSpecForAuthTest() *agentpbv2.BuildSpec {
+	return &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}
+}
+
+// A device certificate must not be able to submit a build. SetBuildHostEnabled
+// already refuses one; if BuildImage did not, the gate would admit the very
+// certificate type its own opt-in rejects, and any compromised device in the
+// org would have code execution on the build host.
+func TestBuildImage_RefusesDeviceCertificate(t *testing.T) {
+	svc := enabledService(t)
+	err := svc.BuildImage(&stubBuildStream{
+		ctx:  ctxWithURN("urn:wendy:org:2:asset:345"),
+		spec: buildSpecForAuthTest(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v, want PermissionDenied for a device certificate", err)
+	}
+}
+
+// The pre-provisioning plaintext TCP server carries no credential at all, and
+// registerAllServices puts this service on it.
+func TestBuildImage_RefusesPlaintextTCPCaller(t *testing.T) {
+	plaintext := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 9), Port: 50051},
+	})
+	err := enabledService(t).BuildImage(&stubBuildStream{ctx: plaintext, spec: buildSpecForAuthTest()})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v, want PermissionDenied for an unauthenticated LAN caller", err)
+	}
+}
+
+// The local unix socket has no TLS, but reaching it means holding the admin
+// entitlement, which is already full-agent authority. It must not be lumped in
+// with the plaintext TCP server just because neither has a certificate.
+func TestBuildImage_AllowsLocalAdminSocket(t *testing.T) {
+	local := peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.UnixAddr{Name: "/var/lib/wendy/agent.sock", Net: "unix"},
+	})
+	// Reaches the push-credential step, which is well past authorization: the
+	// service has no PushTLS, so it fails there rather than at the gate.
+	err := enabledService(t).BuildImage(&stubBuildStream{ctx: local, spec: buildSpecForAuthTest()})
+	if status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("the local admin socket must not be refused: %v", err)
+	}
+}
+
+// A user certificate is the ordinary case, on the LAN and through the cloud
+// tunnel alike — the broker relays bytes, so the CLI's own cert terminates here.
+func TestBuildImage_AllowsUserCertificate(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{spec: buildSpecForAuthTest()})
+	if status.Code(err) == codes.PermissionDenied {
+		t.Fatalf("a user certificate must be able to submit a build: %v", err)
+	}
+}
+
+// Authorization runs before the opt-in check, so an unauthorized caller cannot
+// use this RPC to discover whether a device is a build host.
+func TestBuildImage_AuthorizesBeforeDisclosingBuilderRole(t *testing.T) {
+	notABuilder := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: t.TempDir()})
+	err := notABuilder.BuildImage(&stubBuildStream{
+		ctx:  ctxWithURN("urn:wendy:org:2:asset:345"),
+		spec: buildSpecForAuthTest(),
+	})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v, want PermissionDenied — an unauthorized caller must not learn the builder role's state", err)
+	}
+}
+
 // stubBuildStream is a fake BuildImage server stream for unit tests.
 type stubBuildStream struct {
 	agentpbv2.WendyBuildService_BuildImageServer
@@ -734,9 +814,41 @@ type stubBuildStream struct {
 	extra []*agentpbv2.BuildImageRequest
 	sent  []*agentpbv2.BuildImageProgress
 	recvd bool
+	// ctx overrides the caller identity. Zero value means an ordinary developer
+	// with a user certificate, which is what every test that is not about
+	// authorization wants.
+	ctx context.Context
 }
 
-func (s *stubBuildStream) Context() context.Context { return context.Background() }
+func (s *stubBuildStream) Context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return userCtx()
+}
+
+// userCtx is a context carrying a wendy USER certificate — the identity a
+// developer's CLI presents, on the LAN path and through the cloud tunnel alike.
+func userCtx() context.Context {
+	return ctxWithURN("urn:wendy:org:2:user:alice")
+}
+
+// ctxWithURN builds a gRPC context whose mTLS peer leaf carries urn. Unlike
+// ctxWithIdentity it takes no *testing.T, so it can be used in struct literals
+// and package-level helpers.
+func ctxWithURN(urn string) context.Context {
+	uri, err := url.Parse(urn)
+	if err != nil {
+		panic("test urn does not parse: " + urn)
+	}
+	leaf := &x509.Certificate{URIs: []*url.URL{uri}}
+	return peer.NewContext(context.Background(), &peer.Peer{
+		Addr: &net.TCPAddr{IP: net.IPv4(10, 0, 0, 2), Port: 4242},
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}},
+		},
+	})
+}
 
 func (s *stubBuildStream) Recv() (*agentpbv2.BuildImageRequest, error) {
 	if s.recvd {

@@ -23,7 +23,18 @@ Enabling takes effect on the next build. There is no agent restart.
 certificate. Without that split the opt-in would be decorative: anything able to
 call `BuildImage` could call `enable` first and let itself in.
 
-Cross-organisation callers are rejected before the command is reached, by the
+Submitting a build makes the same demand. A device certificate cannot build even
+on a host that has opted in — nothing in the design has one device build for
+another, and allowing it would leave a single compromised device with code
+execution on every build host in the organisation. The unauthenticated port the
+agent serves before provisioning does not accept builds either.
+
+The one caller without a certificate is an on-device container holding the
+**admin entitlement**, which reaches the agent over a local unix socket. There
+the socket's own permissions are the credential, and that entitlement already
+carries full agent authority.
+
+Cross-organisation callers are rejected before any of this is reached, by the
 agent's mTLS organisation check.
 
 ## `status`
