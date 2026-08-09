@@ -106,3 +106,22 @@ func TestCompileFileReturnsErrorWhenSourceMissing(t *testing.T) {
 		t.Fatal("expected an error when build.stagefile.yaml is missing, got nil")
 	}
 }
+
+func TestCompileFileSkipsResolutionForUnpinnedStage(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: mlx-server:0.1\n    pin: false\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolver := func(ref string) (string, error) {
+		t.Fatalf("resolver must not be called for an unpinned ref, got %q", ref)
+		return "", nil
+	}
+	dockerfile, _, err := compileFile(dir, "", resolver)
+	if err != nil {
+		t.Fatalf("compileFile: %v", err)
+	}
+	if !strings.Contains(dockerfile, "FROM mlx-server:0.1 AS app") {
+		t.Fatalf("unpinned FROM must have no digest:\n%s", dockerfile)
+	}
+}

@@ -21,11 +21,17 @@ var cacheRules = []cacheRule{
 	{"go build", "/root/.cache/go-build"},
 	{"go mod download", "/root/.cache/go-build"},
 	{"swift build", "/root/.swiftpm"},
+	// yarn 1 and pnpm never read npm's cache dir; mounting /root/.npm for
+	// them is dead weight. These targets mirror the stagefile compiler's
+	// own cache dirs (go/internal/stagefile/codegen). pnpm must precede
+	// npm: "pnpm install" contains "npm install" as a substring and
+	// matchCacheRule returns the first hit.
+	{"pnpm install", "/root/.local/share/pnpm/store"},
+	{"yarn install", "/root/.cache/yarn"},
 	{"npm install", "/root/.npm"},
 	{"npm ci", "/root/.npm"},
-	{"yarn install", "/root/.npm"},
-	{"pnpm install", "/root/.npm"},
 	{"pip install", "/root/.cache/pip"},
+	{"pip3 install", "/root/.cache/pip"},
 }
 
 func (a buildCacheAnalyzer) Analyze(t *Target) []Finding {
