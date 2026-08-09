@@ -190,6 +190,20 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
+// cacheRun renders a RUN backed by a BuildKit cache mount at dir.
+//
+// Every cache mount goes through here so none can be emitted without a sharing
+// mode. BuildKit treats an unqualified cache mount as sharing=shared, meaning
+// concurrent builds may use the same directory at once — and Wendy builds up to
+// four services concurrently, on top of BuildKit's own parallel execution of
+// independent stages within a single Dockerfile. Package managers survive that
+// (they lock internally), but the waiting then happens invisibly inside cargo
+// or npm. sharing=locked moves the queueing to the mount, where BuildKit
+// reports it as part of the build graph.
+func cacheRun(dir, cmd string) string {
+	return fmt.Sprintf("RUN --mount=type=cache,sharing=locked,target=%s %s", dir, cmd)
+}
+
 // aptRepositoryLines emits the declared extra apt sources: ca-certificates
 // bootstrap (an https sources.list URL fails apt-get update without it —
 // stock ubuntu/debian images don't ship it), the pinned signing key fetched
@@ -278,7 +292,7 @@ func pipInstallLines(p *spec.PipInstall) []string {
 	for _, pkg := range p.Packages {
 		parts = append(parts, shellQuote(pkg))
 	}
-	lines = append(lines, "RUN --mount=type=cache,target=/root/.cache/pip "+strings.Join(parts, " "))
+	lines = append(lines, cacheRun("/root/.cache/pip", strings.Join(parts, " ")))
 	return lines
 }
 
@@ -307,7 +321,7 @@ func npmInstallLines(n *spec.NpmInstall) []string {
 	}
 	return []string{
 		fmt.Sprintf("COPY package.json %s ./", spec.NpmLockfile(n.Manager)),
-		fmt.Sprintf("RUN --mount=type=cache,target=%s %s", cacheDir, cmd),
+		cacheRun(cacheDir, cmd),
 	}
 }
 
@@ -321,7 +335,7 @@ func uvInstallLines(u *spec.UvInstall) []string {
 	}
 	return []string{
 		"COPY " + strings.Join(spec.UvLocalFiles, " ") + " ./",
-		"RUN --mount=type=cache,target=/root/.cache/uv " + strings.Join(parts, " "),
+		cacheRun("/root/.cache/uv", strings.Join(parts, " ")),
 	}
 }
 
@@ -368,16 +382,15 @@ func buildLines(b *spec.Build) ([]string, error) {
 		if b.Product != "" {
 			cmd += " --bin " + shellQuote(b.Product)
 		}
-		return []string{"RUN --mount=type=cache,target=/root/.cargo " + cmd}, nil
+		return []string{cacheRun("/root/.cargo", cmd)}, nil
 	case "go":
 		if b.Product != "" {
 			// -o with a trailing slash writes the package's binary (named
 			// after the package) into that directory.
-			return []string{fmt.Sprintf(
-				"RUN --mount=type=cache,target=/root/.cache/go-build go build -o /usr/local/bin/ %s",
-				shellQuote(b.Product))}, nil
+			return []string{cacheRun("/root/.cache/go-build", fmt.Sprintf(
+				"go build -o /usr/local/bin/ %s", shellQuote(b.Product)))}, nil
 		}
-		return []string{"RUN --mount=type=cache,target=/root/.cache/go-build go build ./..."}, nil
+		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
 		cmd := "swift build"
 		if profile == "release" {
@@ -386,7 +399,7 @@ func buildLines(b *spec.Build) ([]string, error) {
 		if b.Product != "" {
 			cmd += " --product " + shellQuote(b.Product)
 		}
-		return []string{"RUN --mount=type=cache,target=/root/.swiftpm " + cmd}, nil
+		return []string{cacheRun("/root/.swiftpm", cmd)}, nil
 	case "npm", "yarn", "pnpm":
 		script := b.Script
 		if script == "" {
@@ -397,8 +410,8 @@ func buildLines(b *spec.Build) ([]string, error) {
 			"yarn": "/root/.cache/yarn",
 			"pnpm": "/root/.local/share/pnpm/store",
 		}[b.Lang]
-		return []string{fmt.Sprintf("RUN --mount=type=cache,target=%s %s run %s",
-			cacheDir, b.Lang, shellQuote(script))}, nil
+		return []string{cacheRun(cacheDir, fmt.Sprintf("%s run %s",
+			b.Lang, shellQuote(script)))}, nil
 	default:
 		return nil, fmt.Errorf("unsupported build.lang %q (supported: rust, go, swift, npm, yarn, pnpm)", b.Lang)
 	}

@@ -80,7 +80,7 @@ func TestGeneratePipIndexFlags(t *testing.T) {
 			},
 		}},
 	}, nil)
-	want := "RUN --mount=type=cache,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
+	want := "RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}
@@ -110,7 +110,7 @@ func TestGenerateUvSync(t *testing.T) {
 	}, nil)
 	for _, want := range []string{
 		"COPY pyproject.toml uv.lock ./",
-		"RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra 'proxy'",
+		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/uv uv sync --frozen --no-dev --extra 'proxy'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
@@ -183,8 +183,8 @@ func TestGenerateBuildProducts(t *testing.T) {
 		{&spec.Build{Lang: "swift", Product: "camserver"}, "swift build -c release --product 'camserver'"},
 		{&spec.Build{Lang: "rust", Product: "serve"}, "cargo build --release --bin 'serve'"},
 		{&spec.Build{Lang: "go", Product: "./cmd/serve"}, "go build -o /usr/local/bin/ './cmd/serve'"},
-		{&spec.Build{Lang: "npm"}, "RUN --mount=type=cache,target=/root/.npm npm run 'build'"},
-		{&spec.Build{Lang: "yarn", Script: "bundle"}, "RUN --mount=type=cache,target=/root/.cache/yarn yarn run 'bundle'"},
+		{&spec.Build{Lang: "npm"}, "RUN --mount=type=cache,sharing=locked,target=/root/.npm npm run 'build'"},
+		{&spec.Build{Lang: "yarn", Script: "bundle"}, "RUN --mount=type=cache,sharing=locked,target=/root/.cache/yarn yarn run 'bundle'"},
 	}
 	for _, c := range cases {
 		out := genOne(t, spec.Stage{Name: "app", From: "debian:12", Build: c.build}, nil)
