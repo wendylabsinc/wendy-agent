@@ -282,12 +282,12 @@ func main() {
 
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
-	serviceSocketManager := services.NewServiceSocketManager(logger)
+	ipcSocketManager := services.NewIPCSocketManager(logger)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
-		ctrdClient.SetServiceSocketProvider(serviceSocketManager)
-		ctrdClient.RestoreServiceSockets(ctx)
+		ctrdClient.SetIPCSocketProvider(ipcSocketManager)
+		ctrdClient.RestoreIPCSockets(ctx)
 	}
 
 	go timesyncMgr.RunDirect(ctx)

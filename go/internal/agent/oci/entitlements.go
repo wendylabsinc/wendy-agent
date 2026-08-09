@@ -34,13 +34,13 @@ const (
 	// appSystemAPIGroupGID is reserved by WendyOS for private app System API
 	// sockets, allowing non-root workloads to connect without world access.
 	appSystemAPIGroupGID uint32 = 2000
-	// appServiceGroupGID is reserved by WendyOS for app-provided service sockets
-	// (the `service` entitlement), the analogue of appSystemAPIGroupGID for
-	// agent-provided ones. It owns the per-service directory, which is setgid,
-	// so a socket the provider binds inside it inherits this group without the
-	// app having to know the GID exists. Kept in sync with the agent-side
-	// constant of the same name in internal/agent/services.
-	appServiceGroupGID uint32 = 2001
+	// appIPCGroupGID is reserved by WendyOS for app-provided IPC sockets (the
+	// `ipc` entitlement), the analogue of appSystemAPIGroupGID for
+	// agent-provided ones. It owns the per-name directory, which is setgid, so a
+	// socket the provider binds inside it inherits this group without the app
+	// having to know the GID exists. Kept in sync with the agent-side constant
+	// of the same name in internal/agent/services.
+	appIPCGroupGID uint32 = 2001
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -61,12 +61,12 @@ type ApplyOptions struct {
 	// SystemAPISocketDir is the app-specific host directory prepared by
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
-	// ServiceSocketDirs maps a `service` entitlement name to the host directory
-	// ServiceSocketManager prepared for it. Only names present here are mounted:
+	// IPCSocketDirs maps an `ipc` entitlement name to the host directory
+	// IPCSocketManager prepared for it. Only names present here are mounted:
 	// the caller, not this package, decides which claims were granted, so an
 	// entitlement the manager refused (e.g. a name another app already provides)
 	// cannot smuggle a mount in via the app's own config.
-	ServiceSocketDirs map[string]string
+	IPCSocketDirs map[string]string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -131,8 +131,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
 			applyBuild(spec)
-		case appconfig.EntitlementService:
-			applyServiceSocket(spec, ent, opts.ServiceSocketDirs)
+		case appconfig.EntitlementIPC:
+			applyIPCSocket(spec, ent, opts.IPCSocketDirs)
 		}
 	}
 	return nil
@@ -480,16 +480,16 @@ func applyAdmin(spec *Spec) {
 	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET="+ctrAgentSocketPath)
 }
 
-// ServiceSocketContainerRoot is the in-container parent of every `service`
-// entitlement mount. One directory per service name is bind-mounted beneath it.
-const ServiceSocketContainerRoot = "/run/wendy/services"
+// IPCSocketContainerRoot is the in-container parent of every `ipc` entitlement
+// mount. One directory per IPC name is bind-mounted beneath it.
+const IPCSocketContainerRoot = "/run/wendy/ipc"
 
-// ServiceSocketFilename is the socket inside each service directory. Fixed by
+// IPCSocketFilename is the socket inside each IPC directory. Fixed by
 // the platform so both sides of the entitlement agree on the path without an
 // out-of-band convention.
-const ServiceSocketFilename = "service.sock"
+const IPCSocketFilename = "ipc.sock"
 
-// applyServiceSocket mounts one app-provided service socket directory.
+// applyIPCSocket mounts one app-provided IPC socket directory.
 //
 // This is the same trust-boundary shape as applyAdmin and applySystemAPI —
 // an entitlement-gated bind mount of an agent-owned directory — generalized
@@ -506,9 +506,9 @@ const ServiceSocketFilename = "service.sock"
 // whole point of the entitlement.
 //
 // A name absent from hostDirs is skipped rather than mounted from a guessed
-// path: only claims the ServiceSocketManager actually granted are honoured.
-func applyServiceSocket(spec *Spec, ent appconfig.Entitlement, hostDirs map[string]string) {
-	if appconfig.ValidateServiceSocketName(ent.Name) != nil {
+// path: only claims the IPCSocketManager actually granted are honoured.
+func applyIPCSocket(spec *Spec, ent appconfig.Entitlement, hostDirs map[string]string) {
+	if appconfig.ValidateIPCName(ent.Name) != nil {
 		return
 	}
 	hostDirectory := hostDirs[ent.Name]
@@ -520,32 +520,32 @@ func applyServiceSocket(spec *Spec, ent appconfig.Entitlement, hostDirs map[stri
 	}
 
 	options := []string{"rbind", "nosuid", "noexec", "nodev"}
-	if ent.Role == appconfig.ServiceRoleProvide {
+	if ent.Role == appconfig.IPCRoleProvide {
 		options = append(options, "rw")
 	} else {
 		options = append(options, "ro")
 	}
-	containerDirectory := path.Join(ServiceSocketContainerRoot, ent.Name)
+	containerDirectory := path.Join(IPCSocketContainerRoot, ent.Name)
 	spec.Mounts = append(spec.Mounts, Mount{
 		Destination: containerDirectory,
 		Source:      hostDirectory,
 		Type:        "bind",
 		Options:     options,
 	})
-	// The directory is mode 2770 root:appServiceGroupGID, so without this GID a
+	// The directory is mode 2770 root:appIPCGroupGID, so without this GID a
 	// non-root process cannot even traverse into it. Membership on its own
 	// reaches nothing — the bind mount is what makes the directory visible.
-	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, appServiceGroupGID)
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, appIPCGroupGID)
 	spec.Process.Env = append(spec.Process.Env,
-		serviceSocketEnvName(ent.Name)+"="+path.Join(containerDirectory, ServiceSocketFilename))
+		ipcSocketEnvName(ent.Name)+"="+path.Join(containerDirectory, IPCSocketFilename))
 }
 
-// serviceSocketEnvName maps a service name to the environment variable that
-// carries its socket path, e.g. "world-model" → "WENDY_SERVICE_WORLD_MODEL_SOCKET".
-// The name is already restricted to [a-z0-9-] by ValidateServiceSocketName, so
-// upper-casing and replacing hyphens always yields a valid POSIX variable name.
-func serviceSocketEnvName(name string) string {
-	return "WENDY_SERVICE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_SOCKET"
+// ipcSocketEnvName maps an IPC name to the environment variable that carries
+// its socket path, e.g. "world-model" → "WENDY_IPC_WORLD_MODEL_SOCKET". The
+// name is already restricted to [a-z0-9-] by ValidateIPCName, so upper-casing
+// and replacing hyphens always yields a valid POSIX variable name.
+func ipcSocketEnvName(name string) string {
+	return "WENDY_IPC_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_SOCKET"
 }
 
 // applyNetwork configures the network namespace.

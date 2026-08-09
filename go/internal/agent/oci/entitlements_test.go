@@ -1966,27 +1966,27 @@ func TestApplyAdmin_NonAdminAppUnchanged(t *testing.T) {
 	}
 }
 
-// TestApplyService_ProviderGetsWritableMount covers the provider side: it must
+// TestApplyIPC_ProviderGetsWritableMount covers the provider side: it must
 // be able to bind() a socket in the directory, so the mount is read-write, and
-// it gets the service group so a non-root provider can traverse the setgid
+// it gets the ipc group so a non-root provider can traverse the setgid
 // directory the manager created.
-func TestApplyService_ProviderGetsWritableMount(t *testing.T) {
+func TestApplyIPC_ProviderGetsWritableMount(t *testing.T) {
 	dir := t.TempDir()
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "test",
 		Entitlements: []appconfig.Entitlement{
-			{Type: appconfig.EntitlementService, Name: "world", Role: appconfig.ServiceRoleProvide},
+			{Type: appconfig.EntitlementIPC, Name: "world", Role: appconfig.IPCRoleProvide},
 		},
 	}
-	opts := ApplyOptions{ServiceSocketDirs: map[string]string{"world": dir}}
+	opts := ApplyOptions{IPCSocketDirs: map[string]string{"world": dir}}
 	if err := ApplyEntitlements(spec, cfg, opts); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
 
-	mount, ok := mountForDest(spec, "/run/wendy/services/world")
+	mount, ok := mountForDest(spec, "/run/wendy/ipc/world")
 	if !ok {
-		t.Fatal("provider did not get a service socket mount")
+		t.Fatal("provider did not get an ipc socket mount")
 	}
 	if mount.Source != dir {
 		t.Errorf("mount source = %q, want %q", mount.Source, dir)
@@ -2002,35 +2002,35 @@ func TestApplyService_ProviderGetsWritableMount(t *testing.T) {
 			t.Errorf("provider mount options = %v, missing %q", mount.Options, want)
 		}
 	}
-	if !hasEnv(spec, "WENDY_SERVICE_WORLD_SOCKET=/run/wendy/services/world/service.sock") {
-		t.Error("provider did not get WENDY_SERVICE_WORLD_SOCKET")
+	if !hasEnv(spec, "WENDY_IPC_WORLD_SOCKET=/run/wendy/ipc/world/ipc.sock") {
+		t.Error("provider did not get WENDY_IPC_WORLD_SOCKET")
 	}
-	if !hasGID(spec, appServiceGroupGID) {
-		t.Error("provider did not get the service socket group")
+	if !hasGID(spec, appIPCGroupGID) {
+		t.Error("provider did not get the ipc socket group")
 	}
 }
 
-// TestApplyService_ConsumerGetsReadOnlyMountAndNothingElse is the whole point
+// TestApplyIPC_ConsumerGetsReadOnlyMountAndNothingElse is the whole point
 // of the entitlement: a consumer receives the socket directory and no access to
 // the provider's data. Read-only still permits connect() (the kernel's
 // read-only-superblock check exempts sockets) while denying unlink/replace.
-func TestApplyService_ConsumerGetsReadOnlyMountAndNothingElse(t *testing.T) {
+func TestApplyIPC_ConsumerGetsReadOnlyMountAndNothingElse(t *testing.T) {
 	dir := t.TempDir()
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "consumer",
 		Entitlements: []appconfig.Entitlement{
-			{Type: appconfig.EntitlementService, Name: "world-model", Role: appconfig.ServiceRoleConsume},
+			{Type: appconfig.EntitlementIPC, Name: "world-model", Role: appconfig.IPCRoleConsume},
 		},
 	}
-	opts := ApplyOptions{ServiceSocketDirs: map[string]string{"world-model": dir}}
+	opts := ApplyOptions{IPCSocketDirs: map[string]string{"world-model": dir}}
 	if err := ApplyEntitlements(spec, cfg, opts); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
 
-	mount, ok := mountForDest(spec, "/run/wendy/services/world-model")
+	mount, ok := mountForDest(spec, "/run/wendy/ipc/world-model")
 	if !ok {
-		t.Fatal("consumer did not get a service socket mount")
+		t.Fatal("consumer did not get an ipc socket mount")
 	}
 	if !slices.Contains(mount.Options, "ro") {
 		t.Errorf("consumer mount options = %v, want ro", mount.Options)
@@ -2039,8 +2039,8 @@ func TestApplyService_ConsumerGetsReadOnlyMountAndNothingElse(t *testing.T) {
 		t.Errorf("consumer mount options = %v, must not be writable", mount.Options)
 	}
 	// Hyphens become underscores so the variable name stays POSIX-portable.
-	if !hasEnv(spec, "WENDY_SERVICE_WORLD_MODEL_SOCKET=/run/wendy/services/world-model/service.sock") {
-		t.Error("consumer did not get WENDY_SERVICE_WORLD_MODEL_SOCKET")
+	if !hasEnv(spec, "WENDY_IPC_WORLD_MODEL_SOCKET=/run/wendy/ipc/world-model/ipc.sock") {
+		t.Error("consumer did not get WENDY_IPC_WORLD_MODEL_SOCKET")
 	}
 	// The over-granting this entitlement exists to avoid: a consumer must not
 	// receive the provider's data volume, agent socket, or System API socket.
@@ -2050,27 +2050,27 @@ func TestApplyService_ConsumerGetsReadOnlyMountAndNothingElse(t *testing.T) {
 		}
 	}
 	if hasGID(spec, appSystemAPIGroupGID) {
-		t.Error("service entitlement must not grant the System API socket group")
+		t.Error("ipc entitlement must not grant the System API socket group")
 	}
 }
 
-func TestApplyService_MultipleNamesGetSeparateMounts(t *testing.T) {
+func TestApplyIPC_MultipleNamesGetSeparateMounts(t *testing.T) {
 	worldDir, plannerDir := t.TempDir(), t.TempDir()
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "consumer",
 		Entitlements: []appconfig.Entitlement{
-			{Type: appconfig.EntitlementService, Name: "world", Role: appconfig.ServiceRoleConsume},
-			{Type: appconfig.EntitlementService, Name: "planner", Role: appconfig.ServiceRoleConsume},
+			{Type: appconfig.EntitlementIPC, Name: "world", Role: appconfig.IPCRoleConsume},
+			{Type: appconfig.EntitlementIPC, Name: "planner", Role: appconfig.IPCRoleConsume},
 		},
 	}
-	opts := ApplyOptions{ServiceSocketDirs: map[string]string{"world": worldDir, "planner": plannerDir}}
+	opts := ApplyOptions{IPCSocketDirs: map[string]string{"world": worldDir, "planner": plannerDir}}
 	if err := ApplyEntitlements(spec, cfg, opts); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
 	for dest, want := range map[string]string{
-		"/run/wendy/services/world":   worldDir,
-		"/run/wendy/services/planner": plannerDir,
+		"/run/wendy/ipc/world":   worldDir,
+		"/run/wendy/ipc/planner": plannerDir,
 	} {
 		mount, ok := mountForDest(spec, dest)
 		if !ok {
@@ -2082,80 +2082,80 @@ func TestApplyService_MultipleNamesGetSeparateMounts(t *testing.T) {
 	}
 }
 
-// A name the manager did not grant (absent from ServiceSocketDirs) must not be
+// A name the manager did not grant (absent from IPCSocketDirs) must not be
 // mounted from a guessed path: only claims the agent actually granted count, so
 // an app cannot mount a name another app provides by declaring it in its own
 // wendy.json.
-func TestApplyService_UngrantedNameIsNotMounted(t *testing.T) {
+func TestApplyIPC_UngrantedNameIsNotMounted(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID: "squatter",
 		Entitlements: []appconfig.Entitlement{
-			{Type: appconfig.EntitlementService, Name: "world", Role: appconfig.ServiceRoleConsume},
+			{Type: appconfig.EntitlementIPC, Name: "world", Role: appconfig.IPCRoleConsume},
 		},
 	}
 	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/services/world") {
-		t.Error("an ungranted service name was mounted")
+	if hasMount(spec, "/run/wendy/ipc/world") {
+		t.Error("an ungranted ipc name was mounted")
 	}
-	if hasGID(spec, appServiceGroupGID) {
-		t.Error("an ungranted service name granted the service socket group")
+	if hasGID(spec, appIPCGroupGID) {
+		t.Error("an ungranted ipc name granted the ipc socket group")
 	}
-	if hasEnv(spec, "WENDY_SERVICE_WORLD_SOCKET=/run/wendy/services/world/service.sock") {
-		t.Error("an ungranted service name injected its socket env var")
+	if hasEnv(spec, "WENDY_IPC_WORLD_SOCKET=/run/wendy/ipc/world/ipc.sock") {
+		t.Error("an ungranted ipc name injected its socket env var")
 	}
 }
 
 // Defence in depth: even if a malformed name reached the OCI layer (labels are
 // external state), it must never become a mount destination.
-func TestApplyService_RejectsMalformedName(t *testing.T) {
+func TestApplyIPC_RejectsMalformedName(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"../etc", "..", "a/b", "World", ""} {
 		spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 		cfg := &appconfig.AppConfig{
 			AppID: "test",
 			Entitlements: []appconfig.Entitlement{
-				{Type: appconfig.EntitlementService, Name: name, Role: appconfig.ServiceRoleProvide},
+				{Type: appconfig.EntitlementIPC, Name: name, Role: appconfig.IPCRoleProvide},
 			},
 		}
-		opts := ApplyOptions{ServiceSocketDirs: map[string]string{name: dir}}
+		opts := ApplyOptions{IPCSocketDirs: map[string]string{name: dir}}
 		if err := ApplyEntitlements(spec, cfg, opts); err != nil {
 			t.Fatalf("ApplyEntitlements(%q): %v", name, err)
 		}
 		for _, m := range spec.Mounts {
-			if strings.HasPrefix(m.Destination, ServiceSocketContainerRoot) {
-				t.Errorf("malformed service name %q produced mount %q", name, m.Destination)
+			if strings.HasPrefix(m.Destination, IPCSocketContainerRoot) {
+				t.Errorf("malformed ipc name %q produced mount %q", name, m.Destination)
 			}
 		}
 	}
 }
 
-func TestApplyService_AbsentWithoutEntitlement(t *testing.T) {
+func TestApplyIPC_AbsentWithoutEntitlement(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{
 		AppID:        "test",
 		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementPersist, Name: "data", Path: "/data"}},
 	}
-	opts := ApplyOptions{ServiceSocketDirs: map[string]string{"world": t.TempDir()}}
+	opts := ApplyOptions{IPCSocketDirs: map[string]string{"world": t.TempDir()}}
 	if err := ApplyEntitlements(spec, cfg, opts); err != nil {
 		t.Fatalf("ApplyEntitlements: %v", err)
 	}
-	if hasMount(spec, "/run/wendy/services/world") || hasGID(spec, appServiceGroupGID) {
-		t.Error("app without a service entitlement received service socket access")
+	if hasMount(spec, "/run/wendy/ipc/world") || hasGID(spec, appIPCGroupGID) {
+		t.Error("app without an ipc entitlement received ipc socket access")
 	}
 }
 
-func TestServiceSocketEnvName(t *testing.T) {
+func TestIPCSocketEnvName(t *testing.T) {
 	for in, want := range map[string]string{
-		"world":            "WENDY_SERVICE_WORLD_SOCKET",
-		"world-model":      "WENDY_SERVICE_WORLD_MODEL_SOCKET",
-		"a-b-c9":           "WENDY_SERVICE_A_B_C9_SOCKET",
-		"telemetry-bridge": "WENDY_SERVICE_TELEMETRY_BRIDGE_SOCKET",
+		"world":            "WENDY_IPC_WORLD_SOCKET",
+		"world-model":      "WENDY_IPC_WORLD_MODEL_SOCKET",
+		"a-b-c9":           "WENDY_IPC_A_B_C9_SOCKET",
+		"telemetry-bridge": "WENDY_IPC_TELEMETRY_BRIDGE_SOCKET",
 	} {
-		if got := serviceSocketEnvName(in); got != want {
-			t.Errorf("serviceSocketEnvName(%q) = %q, want %q", in, got, want)
+		if got := ipcSocketEnvName(in); got != want {
+			t.Errorf("ipcSocketEnvName(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
