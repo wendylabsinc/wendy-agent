@@ -41,11 +41,17 @@ func lowStatePayload(soc uint8, current int32) []byte {
 	w.arr(4, 13*4)
 	w.u8(0)
 
-	// MotorState[20]: mode(u8) pad(3) 7×float32 temperature(i8) pad(3)
-	// lost(u32) reserve[2](u32) = 48 bytes each.
+	// MotorState[20]. Note the struct is NOT 4-aligned at its start: its first
+	// member is uint8 mode, so it begins wherever IMUState left off (offset 77,
+	// an odd address). motor_state[0] is therefore 47 bytes and the rest 48.
 	for range 20 {
-		w.align(4)
-		w.pad(48)
+		w.u8(0)      // mode
+		w.align(4)   //
+		w.pad(7 * 4) // q..ddq_raw
+		w.u8(0)      // temperature
+		w.align(4)   //
+		w.u32(0)     // lost
+		w.arr(4, 8)  // reserve[2]
 	}
 
 	// BmsState: version_high, version_low, status, soc, current, cycle,
@@ -119,8 +125,25 @@ func TestDecodeLowState_ZeroCurrentIsUnknownDirection(t *testing.T) {
 	}
 }
 
-// The guard that makes this decoder safe: if the layout assumption is wrong,
-// the decoder will not land exactly on the end of the payload.
+// The wire size is the strongest evidence the layout is right, and it is a
+// single number that can be checked against reality. A Go2 publishes
+// rt/lf/lowstate as 1180 bytes: a 4-byte CDR encapsulation header plus a
+// 1176-byte body. Measured on woof.local across 900 samples.
+//
+// Getting this wrong is not hypothetical: forcing 4-alignment at the start of
+// each MotorState — rather than letting its uint8 first member sit where it
+// falls — inserts three phantom bytes, predicts 1180 body bytes, and shifts
+// bms_state far enough that soc reads 255.
+func TestLowStatePayload_MatchesObservedWireSize(t *testing.T) {
+	const observedOnGo2 = 1180
+	if got := len(lowStatePayload(84, -3200)); got != observedOnGo2 {
+		t.Errorf("payload = %d bytes; want %d as published by a Go2", got, observedOnGo2)
+	}
+}
+
+// The guard that makes this decoder safe: a mis-sized field earlier in the
+// message shifts everything after it, so the remainder lands somewhere other
+// than the 0 or 4 bytes the optional trailing word accounts for.
 func TestDecodeLowState_RejectsWrongLength(t *testing.T) {
 	long := append(lowStatePayload(84, -3200), make([]byte, 8)...)
 	if _, err := DecodeLowState(long); err == nil {
@@ -128,6 +151,7 @@ func TestDecodeLowState_RejectsWrongLength(t *testing.T) {
 	}
 
 	p := lowStatePayload(84, -3200)
+	// 8 short is one word past the tolerated variance.
 	if _, err := DecodeLowState(p[:len(p)-8]); err == nil {
 		t.Error("expected an error when the payload is shorter than the layout predicts")
 	}

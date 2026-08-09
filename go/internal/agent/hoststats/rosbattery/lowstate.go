@@ -11,9 +11,34 @@ import (
 // advertises over SEDP.
 const TypeLowState = "unitree_go::msg::dds_::LowState_"
 
-// motorStateBytes is one MotorState once CDR alignment is applied:
-// mode(u8) pad(3) 7×float32 temperature(i8) pad(3) lost(u32) reserve[2](u32).
-const motorStateBytes = 48
+// skipMotorState walks one MotorState field by field.
+//
+// It must not be skipped as a fixed 48-byte block aligned to 4. CDR aligns per
+// field, not per struct, and MotorState's first member is `uint8 mode` — so the
+// struct begins wherever the previous field left off. IMUState ends on an odd
+// offset (13 float32 then an int8, ending at 77), so motor_state[0] starts at
+// 77 and occupies 47 bytes; only the following 19 are 48 each. Forcing
+// 4-alignment at the start inserts three phantom bytes and shifts bms_state —
+// which reads as soc=255 rather than as an error.
+func skipMotorState(d *cdr.Decoder) error {
+	if _, err := d.Uint8(); err != nil { // mode
+		return fmt.Errorf("mode: %w", err)
+	}
+	// q, dq, ddq, tau_est, q_raw, dq_raw, ddq_raw
+	if err := d.SkipBytes(4, 7*4); err != nil {
+		return fmt.Errorf("q..ddq_raw: %w", err)
+	}
+	if _, err := d.Int8(); err != nil { // temperature
+		return fmt.Errorf("temperature: %w", err)
+	}
+	if _, err := d.Uint32(); err != nil { // lost
+		return fmt.Errorf("lost: %w", err)
+	}
+	if err := d.SkipBytes(4, 8); err != nil { // reserve[2]
+		return fmt.Errorf("reserve: %w", err)
+	}
+	return nil
+}
 
 // lowStateMotors is the fixed motor_state array length.
 const lowStateMotors = 20
@@ -55,7 +80,7 @@ func DecodeLowState(payload []byte) (*hoststats.Battery, error) {
 	}
 
 	for i := range lowStateMotors {
-		if err := d.SkipBytes(4, motorStateBytes); err != nil {
+		if err := skipMotorState(d); err != nil {
 			return nil, fmt.Errorf("motor_state[%d]: %w", i, err)
 		}
 	}
