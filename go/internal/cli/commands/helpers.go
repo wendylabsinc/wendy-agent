@@ -2034,10 +2034,13 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 			}
 		}
 	}
-	if isPinned(target.PinKey) {
+	if target.pinned() {
 		// A host we have already reached over mTLS must never be reached
-		// unauthenticated. Unlike provisionedAgentAdvertisedMTLS this reads
-		// local state, not a TXT record the attacker also controls.
+		// unauthenticated. Unlike provisionedAgentAdvertisedMTLS this rests on
+		// local state, not a TXT record the attacker also controls — and on the
+		// SAME resolution of that state that produced target.Expected and
+		// target.refusalKey, so the three can never disagree about which pin
+		// they are talking about (see dialTarget.pinned).
 		return nil, lastMTLSErr, pinnedHostWentUnauthenticatedError(target.refusalKey())
 	}
 	conn, err := plaintextConnectFn(ctx, plaintextAddr)
@@ -2115,9 +2118,9 @@ func isCertRejectionError(err error) bool {
 // guard. What it reports comes from the device's own mDNS TXT records, which
 // whoever answered the address controls — so "it didn't advertise mTLS" is not
 // evidence that plaintext is safe. The rule that actually withholds the
-// plaintext rung is isPinned, which reads local pin state (see
-// dialAgentLadderWithCerts). This snapshot is also not refreshed after a failed
-// connection attempt.
+// plaintext rung is dialTarget.pinned, which rests on the pin state resolved
+// for this dial (see dialAgentLadderWithCerts). This snapshot is also not
+// refreshed after a failed connection attempt.
 func provisionedAgentAdvertisedMTLS(ctx context.Context, plaintextAddr string) bool {
 	return provisionedAgentAdvertisedMTLSVia(ctx, discoverLANDevices, plaintextAddr)
 }

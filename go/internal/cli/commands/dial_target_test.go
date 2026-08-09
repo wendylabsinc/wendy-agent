@@ -132,8 +132,8 @@ func TestExpectedIdentityForFindsPinUnderMeshName(t *testing.T) {
 	if *got != want {
 		t.Fatalf("expectedIdentityFor = %+v, want %+v", *got, want)
 	}
-	if !isPinned("wendyos-calm-zinnia.local") {
-		t.Fatal("isPinned = false for a host pinned under its mesh name; the ladder would offer it the plaintext rung")
+	if !newDialTarget("wendyos-calm-zinnia.local", "10.0.0.9:50051").pinned() {
+		t.Fatal("dialTarget.pinned = false for a host pinned under its mesh name; the ladder would offer it the plaintext rung")
 	}
 }
 
@@ -297,15 +297,15 @@ func TestLookupPinCacheFailureDegradesToSingleKey(t *testing.T) {
 	if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got == nil || got.EntityID != "42" {
 		t.Fatalf("expectedIdentityFor = %+v, want asset 42 — the constraint must survive a cache failure", got)
 	}
-	if !isPinned("wendyos-calm-zinnia.local") {
-		t.Fatal("isPinned = false after a cache failure; the pinned host would be offered the plaintext rung")
+	if !newDialTarget("wendyos-calm-zinnia.local", "10.0.0.9:50051").pinned() {
+		t.Fatal("dialTarget.pinned = false after a cache failure; the pinned host would be offered the plaintext rung")
 	}
 }
 
-// TestIsPinnedAnyCandidate: a pin under any candidate makes the host pinned,
+// TestPinnedAnyCandidate: a pin under any candidate makes the host pinned,
 // even when it carries no asset id (so it constrains nothing) — the pin's mere
 // existence is what forbids the plaintext rung.
-func TestIsPinnedAnyCandidate(t *testing.T) {
+func TestPinnedAnyCandidate(t *testing.T) {
 	setPinCache(t, discoverycache.Entry{
 		ID:          "dev-1",
 		DisplayName: "calm-zinnia",
@@ -316,8 +316,8 @@ func TestIsPinnedAnyCandidate(t *testing.T) {
 	for _, key := range []string{"wendyos-calm-zinnia", "calm-zinnia.acme.cloud.wendy.dev", "calm-zinnia"} {
 		t.Run("pinned under "+key, func(t *testing.T) {
 			setPinConfig(t, map[string]config.DevicePin{key: {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443"}})
-			if !isPinned("wendyos-calm-zinnia.local") {
-				t.Fatalf("isPinned = false with a pin recorded under %q, want true", key)
+			if !newDialTarget("wendyos-calm-zinnia.local", "10.0.0.9:50051").pinned() {
+				t.Fatalf("dialTarget.pinned = false with a pin recorded under %q, want true", key)
 			}
 			if got := expectedIdentityFor("wendyos-calm-zinnia.local"); got != nil {
 				t.Fatalf("expectedIdentityFor = %+v, want nil — an asset-less pin constrains nothing", *got)
@@ -327,8 +327,8 @@ func TestIsPinnedAnyCandidate(t *testing.T) {
 
 	t.Run("no candidate pinned", func(t *testing.T) {
 		setPinConfig(t, map[string]config.DevicePin{"some-other-device": {OrgID: 7}})
-		if isPinned("wendyos-calm-zinnia.local") {
-			t.Fatal("isPinned = true with no pin under any candidate key")
+		if newDialTarget("wendyos-calm-zinnia.local", "10.0.0.9:50051").pinned() {
+			t.Fatal("dialTarget.pinned = true with no pin under any candidate key")
 		}
 	})
 }
@@ -388,8 +388,8 @@ func TestExpectedIdentityFor(t *testing.T) {
 			if (target.Expected == nil) != (tc.want == nil) {
 				t.Fatalf("newDialTarget Expected = %v, want the same constraint as expectedIdentityFor (%v)", target.Expected, tc.want)
 			}
-			if want := tc.pin != nil; isPinned("orin.local") != want {
-				t.Fatalf("isPinned = %v, want %v", !want, want)
+			if want := tc.pin != nil; target.pinned() != want {
+				t.Fatalf("dialTarget.pinned = %v, want %v", !want, want)
 			}
 			if target.Addr != "10.0.0.9:50051" || target.PinKey != "orin.local" {
 				t.Fatalf("newDialTarget = %+v, want the requested name and the dialled address", target)
@@ -460,11 +460,70 @@ func TestPinnedHostSkipsPlaintextRung(t *testing.T) {
 	}
 }
 
+// TestPlaintextGuardUsesTheTargetsResolvedPin locks in that one connect makes
+// ONE decision about what the pin says.
+//
+// The guard used to re-read pin state at the bottom of the ladder, independently
+// of the read that produced target.Expected and target.refusalKey. Those two
+// reads can disagree: every `wendy` invocation shares one config file, so a
+// cloud seeding or an `unpin` landing in another process while the mTLS rungs
+// are being tried changes the answer mid-connect. Disagreeing in the unpinned
+// direction is the dangerous one — it hands a host that was pinned when the
+// connect started an unauthenticated connection.
+//
+// The seam swap below stands in for that concurrent write. It is the honest
+// shape of the bug: nothing about the target changed, only the state a second
+// read would observe.
+func TestPlaintextGuardUsesTheTargetsResolvedPin(t *testing.T) {
+	setTempConfig(t, &config.Config{DevicePins: map[string]config.DevicePin{
+		"orin": {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443", AssetID: "42", Source: config.PinSourceLAN},
+	}})
+	setPinCache(t)
+
+	target := newDialTarget("orin.local", deadAgentAddr(t))
+	if !target.pinned() {
+		t.Fatal("test precondition: orin.local must be pinned at the moment the target is built")
+	}
+
+	// The pin vanishes after the target is resolved and before the ladder
+	// reaches its last rung.
+	origLoad := loadConfigForPinFn
+	loadConfigForPinFn = func() (*config.Config, error) { return &config.Config{}, nil }
+	t.Cleanup(func() { loadConfigForPinFn = origLoad })
+
+	plaintextCalls := 0
+	origPlaintext := plaintextConnectFn
+	plaintextConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		plaintextCalls++
+		return grpcclient.NewFromConn(nil), nil
+	}
+	t.Cleanup(func() { plaintextConnectFn = origPlaintext })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, _, err := dialAgentLadderWithCerts(ctx, target, []config.CertificateInfo{selfSignedCLICert(t, 7)})
+	if conn != nil {
+		conn.Close()
+	}
+
+	if plaintextCalls != 0 {
+		t.Fatalf("plaintext rung attempted %d times for a target that was pinned when the connect started; the guard re-read pin state instead of using the dial's own resolution", plaintextCalls)
+	}
+	if err == nil || !strings.Contains(err.Error(), "refusing to fall back to an unauthenticated connection") {
+		t.Fatalf("err = %v, want the pinned-host refusal", err)
+	}
+	// The refusal still names the key the governing pin was filed under, from
+	// the same resolution — not a key looked up again against the new state.
+	if !strings.Contains(err.Error(), "wendy device unpin orin.local") {
+		t.Fatalf("err = %v, want the refusal to name the resolved pin key", err)
+	}
+}
+
 // TestWrongDeviceAbortsLadder covers the other half of the enforcement: a peer
 // that proves it is the WRONG device ends the ladder there and then.
 //
-// The pin key here is deliberately UNPINNED, so isPinned cannot be what
-// suppresses the plaintext rung — only the abort can. That is the configuration
+// The pin key here is deliberately UNPINNED, so the pinned-host guard cannot be
+// what suppresses the plaintext rung — only the abort can. That is the configuration
 // Task 8 introduces for real: a cloud-seeded Expected with no config pin behind
 // it, where this abort is the single thing between a wrong device and an
 // unauthenticated connection.
@@ -473,7 +532,7 @@ func TestWrongDeviceAbortsLadder(t *testing.T) {
 	// As above: an explicit empty cache, so no alias key can turn this
 	// deliberately-unpinned host into a pinned one.
 	setPinCache(t)
-	if isPinned("orin.local") {
+	if newDialTarget("orin.local", "10.0.0.9:50051").pinned() {
 		t.Fatal("test precondition: orin.local must be unpinned, so only the abort can refuse plaintext")
 	}
 
@@ -627,12 +686,12 @@ func TestRefusalNamesTheKeyTheGoverningPinIsFiledUnder(t *testing.T) {
 // message naming neither the host as the user knows it nor any way out. The
 // pin key here is deliberately UNPINNED in config, which is the real shape of
 // the problem: `wendy device list` SPKI-pins every device the prober enumerates
-// without writing a single config pin, so isPinned cannot be what refuses the
-// plaintext rung here — only the abort can.
+// without writing a single config pin, so the pinned-host guard cannot be what
+// refuses the plaintext rung here — only the abort can.
 func TestSPKIMismatchAbortsLadderAndNamesUnpin(t *testing.T) {
 	setTempConfig(t, &config.Config{}) // no config pins at all
 	setPinCache(t)
-	if isPinned("orin.local") {
+	if newDialTarget("orin.local", "10.0.0.9:50051").pinned() {
 		t.Fatal("test precondition: orin.local must be unpinned in config")
 	}
 

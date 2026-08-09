@@ -146,6 +146,15 @@ func (f *fakePinChecker) CheckAndUpdate(leaf *x509.Certificate, displayName stri
 	return f.onCheck(leaf, displayName)
 }
 
+// blockingPinError stands in for devicepin.PinMismatchError, which this package
+// cannot import (that circular import is the reason PinChecker is an interface
+// here). What it models is the only thing the verifier looks at: the error says
+// its rejection is about the peer.
+type blockingPinError struct{ msg string }
+
+func (e *blockingPinError) Error() string         { return e.msg }
+func (e *blockingPinError) BlockingPinRejection() {}
+
 func TestBuildServerVerifyConnection_OnServerIdentityFiresOnSuccess(t *testing.T) {
 	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
 
@@ -282,15 +291,21 @@ func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailur
 }
 
 // TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection
-// locks in that a rejected SPKI pin (devicepin.PinMismatchError, or any other
-// PinChecker error) also keeps the trust-grade sink from firing. Device
-// pinning is a security control that trusts OnVerifiedServerIdentity's
-// output, so a pin failure must behave exactly like a chain or org failure
-// here: reject the connection and never reach this sink.
+// locks in that a rejected SPKI pin (devicepin.PinMismatchError) also keeps the
+// trust-grade sink from firing. Device pinning is a security control that
+// trusts OnVerifiedServerIdentity's output, so a pin REJECTION must behave
+// exactly like a chain or org failure here: reject the connection and never
+// reach this sink.
+//
+// The fake used to return a bare errors.New, back when the verifier failed on
+// any PinChecker error at all. It now returns a blocking one — the same
+// assertions, narrowed to the case they were always about. A pin store that
+// merely failed to WRITE is not a rejection of the device, and is covered by
+// TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock below.
 func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection(t *testing.T) {
 	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
 
-	pinErr := errors.New("simulated pin mismatch")
+	pinErr := error(&blockingPinError{msg: "simulated pin mismatch"})
 	pin := &fakePinChecker{onCheck: func(leaf *x509.Certificate, name string) error {
 		return pinErr
 	}}
@@ -312,6 +327,48 @@ func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejectio
 	}
 	if calls != 0 {
 		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (pin check rejected)", calls)
+	}
+}
+
+// TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock is the
+// other half of the rule, and the one with the operational teeth: a pin store
+// that cannot WRITE must not cost the user a device.
+//
+// The verifier used to return whatever CheckAndUpdate returned, so a read-only
+// config directory, a full disk, or a stale lock aborted every mTLS connection
+// the CLI made — a total loss of access with no security question anywhere
+// behind it. The store is bookkeeping; the certificate already verified. So the
+// connection must be accepted and the trust-grade sink must still fire, because
+// the identity it reports was verified by exactly the same checks as always.
+func TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	called := false
+	pin := &fakePinChecker{onCheck: func(leaf *x509.Certificate, name string) error {
+		called = true
+		return errors.New("writing pin store: open /ro/known_devices.json: read-only file system")
+	}}
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		PinStore:                 pin,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("verifyConn = %v, want nil: a pin-store WRITE failure must never abort a certificate that verified", err)
+	}
+	if !called {
+		t.Error("PinStore.CheckAndUpdate was not called")
+	}
+	if calls != 1 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 1 (the cert verified; only the bookkeeping failed)", calls)
 	}
 }
 

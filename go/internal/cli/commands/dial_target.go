@@ -52,6 +52,28 @@ func (t dialTarget) refusalKey() string {
 	return t.PinKey
 }
 
+// pinned reports whether a pin governs this dial, answered entirely from what
+// newDialTarget already resolved. A pinned host has been reached over mTLS
+// before, so the ladder must not offer it the plaintext rung.
+//
+// It reads the target rather than re-reading pin state because one connect must
+// make ONE decision about what the pin says. The guard used to call back into
+// the config for a second, independent answer, which could disagree with the
+// first — a cloud seeding or an unpin landing from another process mid-ladder
+// would have the plaintext rung consult a pin state that never produced this
+// target's Expected or refusalKey. Deriving both from the same resolution makes
+// that disagreement unrepresentable.
+//
+// PinnedKey is non-empty for exactly the dials lookupPin found a pin for, and
+// never empty when it did: the key comes from pinCandidateKeys, which drops
+// empty candidates, so "a pin governs" and "we know the key it is filed under"
+// are the same fact. Expected is deliberately NOT consulted — it is set only
+// when a pin names an asset, so a pin without one would read as unpinned, and
+// the constraint Expected carries is enforced in VerifyConnection, not here.
+func (t dialTarget) pinned() bool {
+	return t.PinnedKey != ""
+}
+
 // loadConfigForPinFn is a seam over config.Load for tests.
 var loadConfigForPinFn = config.Load
 
@@ -135,19 +157,6 @@ func expectedIdentityFor(pinKey string) *certs.WendyIdentity {
 		return nil
 	}
 	return &certs.WendyIdentity{OrgID: int32(pin.OrgID), EntityType: "asset", EntityID: pin.AssetID}
-}
-
-// isPinned reports whether pinKey has any recorded pin under any of its
-// candidate keys. A pinned host has been reached over mTLS before, so the
-// ladder must not offer it the plaintext rung.
-//
-// This deliberately asks local state a question with a yes/no answer instead of
-// inspecting the dial errors: the previous refusal was an accident of
-// isCertRejectionError happening to match gRPC's "authentication handshake
-// failed" wrapper, which any change to gRPC's error text would silently undo.
-func isPinned(pinKey string) bool {
-	_, _, ok := governingPin(pinKey)
-	return ok
 }
 
 // pinCandidateKeys returns the keys a pin for pinKey may have been recorded

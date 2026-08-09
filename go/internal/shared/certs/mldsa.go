@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"time"
 
@@ -71,6 +72,29 @@ func (e *IdentityMismatchError) Error() string {
 // so shared/certs does not import shared/devicepin (which would be circular).
 type PinChecker interface {
 	CheckAndUpdate(leaf *x509.Certificate, displayName string) error
+}
+
+// BlockingPinError marks the subset of PinChecker errors that must fail the TLS
+// handshake. Only a rejection of the PEER — the pinned key changed while the
+// pinned certificate was still valid — is one; everything else a pin store can
+// fail at is about the store, not the device.
+//
+// The distinction has to be expressed here rather than by type-switching on
+// devicepin's error, because shared/certs cannot import shared/devicepin (that
+// is why PinChecker exists at all). Making it an interface the error opts into
+// keeps the direction of the dependency intact — devicepin already imports
+// certs — and states the rule in the one place that applies it: a PinChecker
+// error aborts a verified connection only if it says it is about the peer.
+//
+// Anything that does NOT implement this is treated as best-effort. A read-only
+// config directory or a full disk is an operational fault in local bookkeeping;
+// failing every mTLS connection over it would take a fleet offline for a reason
+// that has nothing to do with whether the device is who it claims to be.
+type BlockingPinError interface {
+	error
+	// BlockingPinRejection distinguishes this error from a persistence
+	// failure. It is a marker; it does nothing.
+	BlockingPinRejection()
 }
 
 // ServerVerifyOpts configures the server certificate verification callback
@@ -195,7 +219,8 @@ func verifyMLDSASignature(issuer, cert *x509.Certificate) error {
 //  1. Verifies the server cert chain with ML-DSA fallback (see mldsa.go)
 //  2. Extracts the server's Wendy org identity (IdentityFromCert)
 //  3. Returns OrgMismatchError if opts.ExpectedOrgID != 0 and orgs differ
-//  4. Calls opts.PinStore.CheckAndUpdate if PinStore is non-nil
+//  4. Calls opts.PinStore.CheckAndUpdate if PinStore is non-nil, failing the
+//     handshake only on a BlockingPinError
 //
 // InsecureSkipVerify must be true on the tls.Config — this callback is the
 // actual verification. Go's built-in verifier cannot parse ML-DSA chain certs
@@ -289,14 +314,21 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 			}
 		}
 
-		// Step 3: SPKI pin check/update.
+		// Step 3: SPKI pin check/update. Only a rejection of the peer aborts
+		// the handshake — see BlockingPinError. A pin store that cannot record
+		// what it just verified has failed at bookkeeping, and dropping an
+		// otherwise fully verified connection over that would turn a read-only
+		// config directory into a total loss of device access.
 		if opts.PinStore != nil && hasIdentity && identity.EntityType == "asset" {
 			displayName := leaf.Subject.CommonName
 			if displayName == "" {
 				displayName = identity.IdentityKey()
 			}
 			if pinErr := opts.PinStore.CheckAndUpdate(leaf, displayName); pinErr != nil {
-				return pinErr
+				var blocking BlockingPinError
+				if errors.As(pinErr, &blocking) {
+					return pinErr
+				}
 			}
 		}
 

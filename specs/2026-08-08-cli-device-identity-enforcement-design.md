@@ -172,6 +172,15 @@ key, the plaintext fallback is not attempted at all.** No dependence on the `tls
 TXT record, the cache's `MTLS` flag, or `isCertRejectionError`'s string matching
 — all three are attacker-influenced or fragile.
 
+The guard reads the pin state the dial already resolved (`dialTarget.pinned`,
+backed by `PinnedKey`), never a fresh lookup. One connect makes one decision
+about what the pin says: a second, independent read can observe a different
+answer — every `wendy` invocation shares one config file, so a cloud seeding or
+an `unpin` from another process lands mid-ladder — and disagreeing in the
+unpinned direction would hand a host that was pinned when the connect started an
+unauthenticated connection. Deriving the guard, `Expected`, and the refusal key
+from one resolution makes that disagreement unrepresentable.
+
 `provisionedAgentAdvertisedMTLS` (`helpers.go:1893` on #1619) loses its security role and
 survives only as a phrasing hint for the error message; its doc comment is
 updated to say so, because today it reads like a guard.
@@ -193,6 +202,17 @@ all.
 `devicepin.Store.CheckAndUpdate` returns a real error on key change, and
 `BuildServerVerifyConnection` step 3 propagates it instead of discarding it
 (`mldsa.go:234-238`).
+
+What propagates is the *rejection*, not every error the store can raise. Only a
+`PinMismatchError` — the peer's key changed inside the pinned certificate's
+validity window — aborts the handshake; a failure to WRITE the store does not.
+The store is local bookkeeping, and dropping an otherwise fully verified
+connection because `~/.wendy` is read-only or the disk is full is an outage with
+no security question behind it. Because `shared/certs` cannot import
+`shared/devicepin` (the reason `PinChecker` is an interface), the distinction is
+carried by a marker interface `certs.BlockingPinError` that the rejection
+implements and a write failure does not; a compile-time assertion in `devicepin`
+keeps the two halves from drifting apart silently.
 
 To keep that from breaking ordinary certificate renewal, the store records the
 pinned leaf's `NotAfter`. A key change is accepted silently — and re-pinned —
