@@ -1231,8 +1231,46 @@ Base it on `ed/lkg-connect-cache`. The body must state plainly: the trust gap is
 
 ---
 
+### Task 10: Multi-key pin lookup
+
+**Added after Task 8 revealed a plan defect.** Design §3 requires that pin "lookup tries hostname, then display name, then mesh name", and §Testing requires a test for that lookup order — but no task implemented it. `expectedIdentityFor` and `isPinned` each do a single `DevicePinFor(pinKey)`. Consequence: Task 8's cloud seeding writes pins keyed by the cloud asset name (`calm-zinnia`) while every dial path looks up the mDNS hostname (`wendyos-calm-zinnia`), so those pins are inert. `cloudpb.Asset` carries only `{Id, Name}` — no hostname — so cloud cannot supply the dial key directly; the lookup side has to reconcile.
+
+**Files:**
+- Modify: `go/internal/cli/commands/dial_target.go` (`expectedIdentityFor`, `isPinned`)
+- Test: `go/internal/cli/commands/dial_target_test.go`
+
+**Interfaces:**
+- Consumes: `discoverycache.Entry{Hostname, DisplayName, MeshName string}`; `cachedDeviceEntry(cache *discoverycache.Cache, host string) (discoverycache.Entry, bool)` in `helpers.go`; `(*config.Config).DevicePinFor`; `config.PinSourceCloud`.
+- Produces: `pinCandidateKeys(pinKey string) []string`; `lookupPin(cfg *config.Config, pinKey string) (config.DevicePin, string, bool)` returning the winning pin, the key it was found under, and whether one was found.
+
+**Rules:**
+1. Candidates are `pinKey` first, then — from the discovery-cache entry whose hostname matches `pinKey` — its `MeshName` and `DisplayName`. Deduplicated, empties dropped, `pinKey` never repeated.
+2. **A cloud-sourced pin wins over a LAN-sourced one** regardless of position, since cloud is authority. Among pins of equal source, the earliest candidate wins.
+3. Cache access is best-effort: any failure degrades to the single-key behaviour. A cache miss must never make a host that *was* pinned read as unpinned.
+4. The safety property that licenses reading discovery data here: consulting more keys can only ever *find* a pin, never discard one, so a wrong candidate produces a stricter outcome — never a bypass. Trust decisions stay on the certificate.
+
+- [ ] **Step 1: Write the failing tests**
+
+Cover, with real assertions: single-key match still works with no cache; a pin written under the mesh name is found when dialing the hostname; a cloud pin under one candidate beats a LAN pin under an earlier candidate; a cache read failure degrades to single-key rather than reporting unpinned; and `isPinned` returns true when any candidate is pinned. Reuse `setTempConfig` and the cache helpers already in this package's tests.
+
+- [ ] **Step 2: Run them to confirm they fail**
+
+Run: `cd go && go test ./internal/cli/commands/ -run 'PinCandidate|LookupPin|ExpectedIdentityFor|IsPinned' -v`
+
+- [ ] **Step 3: Implement `pinCandidateKeys` and `lookupPin`, and route both accessors through them**
+
+- [ ] **Step 4: Run the suite**
+
+Run: `cd go && go test ./internal/cli/commands/ -count=1`
+
+- [ ] **Step 5: Commit**
+
+---
+
 ## Self-Review
 
-**Spec coverage:** §1 enforcement → Tasks 1–2; §2 pin record → Tasks 0, 3; §3 pin key → Task 5; §4 plaintext → Task 5; §5 SPKI → Task 4; §6 surface → Tasks 6–8; §7 scope → Task 6; Sequencing → Task 0; Testing → distributed across all tasks; docs → Task 9. No section is unimplemented.
+**Spec coverage:** §1 enforcement → Tasks 1–2; §2 pin record → Tasks 0, 3; §3 pin key → Tasks 5 and 10; §4 plaintext → Task 5; §5 SPKI → Task 4; §6 surface → Tasks 6–8; §7 scope → Task 6; Sequencing → Task 0; Testing → distributed across all tasks; docs → Task 9. No section is unimplemented.
+
+**Correction (2026-08-09):** the original coverage claim above was wrong — it mapped design §3 to Task 5 alone, but §3's multi-key lookup requirement had no task. Task 10 was added to close it after Task 8 surfaced the gap.
 
 **Known softness:** Tasks 5–8 describe several test bodies as arrangements against existing seams rather than quoting them in full, because the seams they must use (`device_pin_test.go`'s config/terminal stubs) arrive with Task 0's commit and cannot be quoted accurately until that merge lands. The implementer must write real assertions there, not skip them. Task 5 Step 4 also requires a grep-driven sweep of call sites rather than an exhaustive list, since #1619's callers move as it evolves.
