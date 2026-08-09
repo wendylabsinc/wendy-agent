@@ -435,7 +435,7 @@ class PulseMixer:
                 continue
             match = cls._PERCENT.search(line)
             if match:
-                return int(match.group(1))
+                return min(int(match.group(1)), 100)
         return None
 
     async def _pactl(self, *args: str) -> str:
