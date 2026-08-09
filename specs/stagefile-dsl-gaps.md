@@ -35,6 +35,52 @@
 > model weights. See `specs/2026-08-08-stagefile-download-design.md`. The
 > rest of gap #3 — arbitrary post-install shell, such as the CUDA
 > `ldconfig` + `find`/`ln -sf` loop — remains open.
+>
+> **Update (2026-08-08), gap #3 closed:** the CUDA half needed two things,
+> neither of them a raw-shell escape hatch. (a) `install.pip` is now a
+> *list*: `HelloLLM`, `HelloONNX` and `PyTorchGPU` each install a wheel from
+> the Jetson index and its matching runtime from PyPI, and those cannot be
+> merged — making the vendor index primary and PyPI extra lets pip resolve
+> either package from either source, which is the failure the split exists
+> to avoid. (b) a per-stage `sharedLibraries:` op collects `*.so*` out of
+> declared trees into one directory and gives that directory loader
+> precedence (`/etc/ld.so.conf.d` + `ldconfig`), replacing the
+> `find`/`ln -sf`/`echo`/`ldconfig` chain with a typed operation. All three
+> examples are converted and their Dockerfiles removed. What remains open is
+> only the *general* case — `ClaudeOnDevice`'s arbitrary multi-step script —
+> which is the deliberate no-RUN boundary, not a gap to close.
+>
+> Two things were dropped in conversion and are worth knowing: the
+> `RUN pip3 show torch | grep "Version: 2.8.0"` build-time assertions (the
+> `torch==2.8.0` pin already guarantees what they check), and HelloLLM's
+> `RUN mkdir -p /usr/local/bin`, commented there as a containerd overlayfs
+> snapshot workaround. If that workaround is still load-bearing it needs a
+> real home, because nothing in the Stagefile reproduces it.
+>
+> **Update (2026-08-09), gap #3 made domain-specific:** the closure above was
+> mechanically sufficient and pedagogically useless. It left an author who
+> wants a GPU app writing five coupled things by hand — a vendor index URL,
+> thirteen `nvidia-*-cu12` package names, a `sharedLibraries` collect
+> directory, an `LD_LIBRARY_PATH`, and `user: root` — with the reasoning for
+> all of it living in YAML comments a new file would not have. Worse, every
+> one of those values is correct only for Orin, so a project that also
+> deploys to Thor had no way to say so.
+>
+> That is replaced by `cuda: true` on the stage and `cuda: true` on the pip
+> groups holding GPU wheels. Everything else is resolved from the *device
+> being built for* — `wendy device info` already reports `gpu_arch`, so the
+> CLI reads it and the compiler looks up a profile
+> (`internal/stagefile/gpu`) giving the CUDA version, wheel index, runtime
+> package set and collect directory. `sharedLibraries` is gone from the
+> public schema; it survives as the internal lowering of `cuda:`, which is
+> the only thing that ever needed it.
+>
+> Consequences worth knowing: the resolved profile is pinned per architecture
+> in the lockfile, so a CLI upgrade cannot silently move an app to a
+> different CUDA runtime; `wendy run` on a GPU project now resolves its
+> device *before* compiling (only GPU projects pay this); and `wendy build`
+> or `wendy fleet run`, which have no single device to ask, require
+> `--gpu-arch`. See `specs/2026-08-09-stagefile-cuda-domain-specific.md`.
 
 Source: converting `Examples/*` Dockerfiles to `build.stagefile.yaml` (see
 `stagefile-integration-report.md` in this worktree for the full conversion

@@ -23,7 +23,7 @@ func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
 				},
 				Jobs: 2,
 			}},
-			Pip: &spec.PipInstall{Packages: []string{"cyclonedds==0.10.2"}},
+			Pip: []spec.PipInstall{{Packages: []string{"cyclonedds==0.10.2"}}},
 		},
 	}, nil)
 
@@ -89,7 +89,7 @@ func TestGenerateCMakeCacheIDSeparatesPlatformsAndProjects(t *testing.T) {
 			Install: &spec.Install{CMake: []spec.CMakeInstall{{
 				Repository: repo, Commit: strings.Repeat("a", 40),
 			}}},
-		}}}, map[string]string{"debian:12": "sha256:abc123"}, nil, platform)
+		}}}, map[string]string{"debian:12": "sha256:abc123"}, nil, platform, nil)
 		if err != nil {
 			t.Fatalf("Generate: %v", err)
 		}
@@ -119,7 +119,7 @@ func TestGenerateCMakeCacheIDSeparatesPlatformsAndProjects(t *testing.T) {
 			Repository: "https://github.com/opencv/opencv.git",
 			Commit:     strings.Repeat("b", 40),
 		}}},
-	}}}, map[string]string{"debian:12": "sha256:abc123"}, nil, "linux/arm64")
+	}}}, map[string]string{"debian:12": "sha256:abc123"}, nil, "linux/arm64", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/codegen"
 	dockerignorepkg "github.com/wendylabsinc/wendy/go/internal/stagefile/dockerignore"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/lock"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
@@ -52,6 +54,16 @@ type Option func(*options)
 
 type options struct {
 	progress func(url string)
+	gpuArch  string
+}
+
+// WithGPUArch names the GPU architecture (the gpu_arch a device reports, e.g.
+// "sm_87") this build targets. It is required if any stage declares cuda: and
+// ignored otherwise, which is why it is an option rather than a parameter:
+// the overwhelming majority of builds have no GPU stage and should not have to
+// answer the question.
+func WithGPUArch(arch string) Option {
+	return func(o *options) { o.gpuArch = arch }
 }
 
 // WithProgress registers a callback invoked before each download that has to
@@ -83,13 +95,66 @@ func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore
 			return sharedHasher(url)
 		}
 	}
-	return compileFile(dir, platform, sharedResolver, hasher)
+	return compileFile(dir, platform, o.gpuArch, sharedResolver, hasher)
+}
+
+// NeedsGPUTarget reports whether dir's Stagefile declares a cuda: stage, and
+// therefore cannot be compiled without knowing the GPU architecture it is
+// being built for.
+//
+// The CLI asks before it compiles: a GPU project has to resolve its target
+// device first, while every other project keeps the cheaper ordering that
+// compiles without connecting to anything. A missing or unparseable Stagefile
+// is not this function's error to report — it answers false and lets the
+// compile produce the real diagnostic.
+func NeedsGPUTarget(dir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, "build.stagefile.yaml"))
+	if err != nil {
+		return false
+	}
+	f, err := spec.Parse(raw)
+	if err != nil {
+		return false
+	}
+	for _, s := range f.Stages {
+		if s.CUDA {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveCUDAProfile returns the GPU profile the stages in f need, or nil if
+// none declares cuda:. A GPU stage with no target is an error here rather
+// than a CPU-only image, because the difference would only show up on the
+// device.
+func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, error) {
+	needed := false
+	for _, s := range f.Stages {
+		if s.CUDA {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+	if arch == "" {
+		return nil, fmt.Errorf(
+			"a stage declares cuda: but this build has no GPU target; run against a device (`wendy run --device ...`), which reads its gpu_arch, or pass --gpu-arch (known: %s)",
+			strings.Join(gpu.KnownArches(), ", "))
+	}
+	p, err := l.ResolveCUDA(arch)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // compileFile is the resolver-injectable implementation behind
 // CompileFile, allowing tests to exercise it with a fake resolver and hasher
 // instead of a live registry and live URLs.
-func compileFile(dir, platform string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+func compileFile(dir, platform, gpuArch string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
 	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -112,11 +177,18 @@ func compileFile(dir, platform string, resolver lock.Resolver, hasher lock.Hashe
 	if _, err := updated.ResolveDownloads(downloadURLs(f), nil, hasher); err != nil {
 		return "", "", err
 	}
+	// Resolved before Save so a first GPU build records its profile in the
+	// same write as its image digests, and after Resolve so it can reuse a
+	// profile an earlier build already pinned.
+	cudaProfile, err := resolveCUDAProfile(f, gpuArch, updated)
+	if err != nil {
+		return "", "", err
+	}
 	if err := updated.Save(lockPath); err != nil {
 		return "", "", err
 	}
 
-	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform)
+	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile)
 	if err != nil {
 		return "", "", err
 	}

@@ -123,6 +123,17 @@ func serviceTopoOrder(services map[string]*appconfig.ServiceConfig) ([]string, e
 // parallel scheduling, skip handling, and failure-map collection without Docker.
 var buildServiceImage = buildAndPushImageForAgent
 
+// serviceGPUArch is the GPU architecture every service in a multi-service
+// project builds against: one device, so one answer, resolved once for the
+// whole group rather than per service.
+func serviceGPUArch(ctx context.Context, cwd string, services map[string]*appconfig.ServiceConfig, conn *grpcclient.AgentConnection) string {
+	dirs := make([]string, 0, len(services))
+	for _, svc := range services {
+		dirs = append(dirs, filepath.Join(cwd, svc.Context))
+	}
+	return resolveGPUArchForDirs(ctx, dirs, "", conn)
+}
+
 // planResolveDockerfile is the build-file resolution step used while planning.
 // Like buildServiceImage it is a package var so concurrency tests can substitute
 // a stub and exercise the parallel scheduling without a real project on disk.
@@ -157,7 +168,7 @@ type servicePlan struct {
 // plan as "don't skip this service, and don't reuse anything for it", so the
 // real error surfaces from the build path instead of aborting the whole group
 // during planning.
-func computeServicePlans(cwd, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) map[string]servicePlan {
+func computeServicePlans(cwd, platform, gpuArch string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) map[string]servicePlan {
 	var mu sync.Mutex
 	plans := make(map[string]servicePlan, len(services))
 
@@ -169,7 +180,7 @@ func computeServicePlans(cwd, platform string, appCfg *appconfig.AppConfig, serv
 			defer func() { <-sem }()
 
 			contextDir := filepath.Join(cwd, svc.Context)
-			dockerfile, err := planResolveDockerfile(contextDir, "", false)
+			dockerfile, err := planResolveDockerfile(contextDir, "", false, gpuArch)
 			if err != nil {
 				return
 			}
@@ -273,7 +284,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		return skip, hashes, dockerfiles
 	}
 
-	plans := computeServicePlans(cwd, platform, appCfg, services, buildArgs)
+	plans := computeServicePlans(cwd, platform, serviceGPUArch(ctx, cwd, services, conn), appCfg, services, buildArgs)
 	present := deviceContainerNames(ctx, conn)
 	for name := range services {
 		plan, planned := plans[name]
@@ -553,6 +564,10 @@ func buildServicesParallel(
 	}
 	sort.Strings(names)
 
+	// Resolved once for the group: every service deploys to this one device,
+	// so they share its GPU architecture.
+	gpuArch := serviceGPUArch(ctx, cwd, services, conn)
+
 	type result struct {
 		name string
 		err  error
@@ -619,7 +634,7 @@ func buildServicesParallel(
 			dockerfile, planned := dockerfiles[name]
 			var dockerfileErr error
 			if !planned {
-				dockerfile, dockerfileErr = planResolveDockerfile(contextDir, "", false)
+				dockerfile, dockerfileErr = planResolveDockerfile(contextDir, "", false, gpuArch)
 			}
 
 			var buildOut io.Writer

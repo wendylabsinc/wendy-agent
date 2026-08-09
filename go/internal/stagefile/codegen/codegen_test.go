@@ -13,7 +13,7 @@ func TestGenerateFromOnly(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestGenerateAppliesPlatform(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "linux/arm64")
+	out, err := Generate(f, images, nil, "linux/arm64", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestGenerateErrorsOnMissingDigest(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "debian:12"},
 	}}
-	if _, err := Generate(f, map[string]string{}, nil, ""); err == nil {
+	if _, err := Generate(f, map[string]string{}, nil, "", nil); err == nil {
 		t.Fatal("expected an error for an unresolved image, got nil")
 	}
 }
@@ -54,7 +54,7 @@ func TestGenerateExplicitUserOverridesDefault(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestGenerateEntrypointOnFinalStage(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestGenerateAptInstall(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestGenerateApkInstall(t *testing.T) {
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestGenerateApkInstallWithCache(t *testing.T) {
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -167,18 +167,18 @@ func TestGenerateApkInstallWithCache(t *testing.T) {
 func TestGeneratePipInstallFromRequirements(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Requirements: "requirements.txt"},
+			Pip: []spec.PipInstall{{Requirements: "requirements.txt"}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -188,20 +188,20 @@ func TestGeneratePipInstallFromRequirements(t *testing.T) {
 func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Requirements: "requirements.txt"},
+			Pip: []spec.PipInstall{{Requirements: "requirements.txt"}},
 		}, Copy: []spec.CopyEntry{
 			{From: "local", Paths: []string{"app.py"}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
 		"COPY app.py app.py\n" +
 		"USER 65532\n"
 	if out != want {
@@ -212,17 +212,17 @@ func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 func TestGeneratePipInstallFromPackages(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Packages: []string{"flask", "gunicorn"}},
+			Pip: []spec.PipInstall{{Packages: []string{"flask", "gunicorn"}}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install 'flask' 'gunicorn'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask' 'gunicorn'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -235,7 +235,7 @@ func TestGenerateNpmInstallDefaultsToNpm(t *testing.T) {
 	}}
 	images := map[string]string{"node:20-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestGenerateNpmInstallYarn(t *testing.T) {
 	}}
 	images := map[string]string{"node:20-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestGenerateNpmInstallPnpm(t *testing.T) {
 	}}
 	images := map[string]string{"node:20-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestGenerateCopyFromStageAndLocal(t *testing.T) {
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -318,7 +318,7 @@ func TestGenerateCopyWithExplicitDest(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestGenerateBuildRustDefaultsToRelease(t *testing.T) {
 	}}
 	images := map[string]string{"rust:1": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestGenerateBuildRustDebugIsExplicit(t *testing.T) {
 	}}
 	images := map[string]string{"rust:1": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestGenerateBuildGo(t *testing.T) {
 	}}
 	images := map[string]string{"golang:1.22": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestGenerateBuildSwiftReleaseByDefault(t *testing.T) {
 	}}
 	images := map[string]string{"swift:6.0": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestGenerateBuildSwiftDebugIsExplicit(t *testing.T) {
 	}}
 	images := map[string]string{"swift:6.0": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -426,7 +426,7 @@ func TestGenerateBuildRejectsUnsupportedLang(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	if _, err := Generate(f, images, nil, ""); err == nil {
+	if _, err := Generate(f, images, nil, "", nil); err == nil {
 		t.Fatal("expected an error for an unsupported build.lang, got nil")
 	}
 }
@@ -447,7 +447,7 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 	}}
 	images := map[string]string{"debian:12": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -463,17 +463,17 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Packages: []string{"flask>=2.0,<3.0"}},
+			Pip: []spec.PipInstall{{Packages: []string{"flask>=2.0,<3.0"}}},
 		}},
 	}}
 	images := map[string]string{"python:3.12-slim": "sha256:abc123"}
 
-	out, err := Generate(f, images, nil, "")
+	out, err := Generate(f, images, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install 'flask>=2.0,<3.0'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask>=2.0,<3.0'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -493,7 +493,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 // quietly ship without a sharing mode.
 func TestGenerateLocksEveryCacheMount(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
-		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: &spec.PipInstall{Packages: []string{"flask"}}}},
+		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: []spec.PipInstall{{Packages: []string{"flask"}}}}},
 		{Name: "uvdeps", From: "debian:12", Install: &spec.Install{Uv: &spec.UvInstall{}}},
 		{Name: "npmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{}}},
 		{Name: "yarndeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "yarn"}}},
@@ -503,7 +503,7 @@ func TestGenerateLocksEveryCacheMount(t *testing.T) {
 		{Name: "swiftbuild", From: "debian:12", Build: &spec.Build{Lang: "swift"}},
 	}}
 
-	out, err := Generate(f, map[string]string{"debian:12": "sha256:abc123"}, nil, "")
+	out, err := Generate(f, map[string]string{"debian:12": "sha256:abc123"}, nil, "", nil)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}

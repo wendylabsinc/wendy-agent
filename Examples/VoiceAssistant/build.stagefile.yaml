@@ -14,7 +14,7 @@ stages:
         # PipeWire socket is mounted but these binaries are missing.
         packages: [alsa-utils, ca-certificates, pipewire-bin, pulseaudio-utils]
       pip:
-        requirements: requirements.txt
+        - requirements: requirements.txt
     copy:
       - from: local
         paths: [app.py]

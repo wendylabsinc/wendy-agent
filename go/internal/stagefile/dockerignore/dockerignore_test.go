@@ -98,7 +98,7 @@ func TestLocalPathsIgnoresCrossStageCopies(t *testing.T) {
 func TestLocalPathsIncludesPipRequirements(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Requirements: "requirements.txt"},
+			Pip: []spec.PipInstall{{Requirements: "requirements.txt"}},
 		}},
 	}}
 	got := LocalPaths(f)
@@ -110,7 +110,7 @@ func TestLocalPathsIncludesPipRequirements(t *testing.T) {
 func TestLocalPathsPipPackagesOnlyAddsNothing(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "python:3.12-slim", Install: &spec.Install{
-			Pip: &spec.PipInstall{Packages: []string{"flask"}},
+			Pip: []spec.PipInstall{{Packages: []string{"flask"}}},
 		}},
 	}}
 	if got := LocalPaths(f); len(got) != 0 {

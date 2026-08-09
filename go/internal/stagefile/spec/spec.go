@@ -32,6 +32,18 @@ type Stage struct {
 	// by key.
 	Env     map[string]string `yaml:"env,omitempty"`
 	Install *Install          `yaml:"install,omitempty"`
+	// CUDA declares that this stage runs on the GPU. It carries no options
+	// on purpose: everything a CUDA build needs — which CUDA version, which
+	// wheel index serves it, which runtime packages accompany it, where those
+	// are collected so they aren't shadowed at run time, and that the stage
+	// runs as root — follows from the GPU architecture of the device being
+	// built for, and is resolved by the compiler (internal/stagefile/gpu).
+	//
+	// What this replaces is a vendor index URL, thirteen nvidia-* package
+	// names, a collect directory, an LD_LIBRARY_PATH and a user, repeated in
+	// every GPU app and correct only for the one board whose quirks the
+	// author happened to know.
+	CUDA bool `yaml:"cuda,omitempty"`
 	// Download fetches files from the network into this stage. Every entry
 	// is content-pinned; see Download.
 	Download    []Download   `yaml:"download,omitempty"`
@@ -80,6 +92,16 @@ type Download struct {
 // adding its command, not accepting one.
 var ExtractFormats = []string{"tar.gz", "zip"}
 
+// LDLibraryPath is the environment variable a CUDA stage prepends its
+// collected library directory to. Registering the directory in
+// /etc/ld.so.conf.d is not enough on its own: paths injected into the
+// container at run time (CDI, on a Jetson) are searched ahead of ld.so.conf
+// entries, and only LD_LIBRARY_PATH beats them.
+//
+// Exported because codegen sets it and validate refuses to let a Stagefile
+// overwrite it — the two must agree on the name.
+const LDLibraryPath = "LD_LIBRARY_PATH"
+
 // Install is the set of declarative, per-ecosystem dependency installs for
 // one stage. Any subset of the fields may be set; each compiles to a fixed
 // instruction sequence with the compiler's own correct flags baked in — there
@@ -88,9 +110,14 @@ type Install struct {
 	Apt   *AptInstall    `yaml:"apt,omitempty"`
 	Apk   *ApkInstall    `yaml:"apk,omitempty"`
 	CMake []CMakeInstall `yaml:"cmake,omitempty"`
-	Pip   *PipInstall    `yaml:"pip,omitempty"`
-	Npm   *NpmInstall    `yaml:"npm,omitempty"`
-	Uv    *UvInstall     `yaml:"uv,omitempty"`
+	// Pip is a list because one stage often needs several pip invocations
+	// that cannot be merged: a package from a vendor index and its runtime
+	// from PyPI must stay separate, since making the vendor index primary
+	// and PyPI extra lets pip resolve either package from either source.
+	// Groups are emitted in declaration order.
+	Pip []PipInstall `yaml:"pip,omitempty"`
+	Npm *NpmInstall  `yaml:"npm,omitempty"`
+	Uv  *UvInstall   `yaml:"uv,omitempty"`
 }
 
 // AptInstall installs Debian/Ubuntu packages, optionally from additional
@@ -176,6 +203,16 @@ type PipInstall struct {
 	// (--extra-index-url), searched alongside the primary index.
 	Index      string   `yaml:"index,omitempty"`
 	ExtraIndex []string `yaml:"extraIndex,omitempty"`
+	// CUDA resolves this group against the GPU wheel index the target
+	// architecture implies, instead of PyPI. It is how a project that
+	// deploys to more than one board names its GPU wheels without naming a
+	// board: `packages: ["torch==2.8.0"]` with `cuda: true` is a Jetson-6
+	// wheel on an Orin and whatever the profile says elsewhere, while the
+	// Stagefile stays the same.
+	//
+	// Mutually exclusive with Index/ExtraIndex, and only meaningful in a
+	// stage that declares cuda:.
+	CUDA bool `yaml:"cuda,omitempty"`
 }
 
 // NpmInstall always compiles to the ecosystem's frozen-lockfile install

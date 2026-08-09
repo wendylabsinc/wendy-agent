@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 )
 
 // File is the on-disk lockfile: a record of every floating reference a
@@ -21,6 +23,37 @@ type File struct {
 	// Stagefile declares no downloads, so existing lockfiles don't grow an
 	// empty key on their next build.
 	Downloads map[string]string `yaml:"downloads,omitempty"`
+	// CUDA pins, per GPU architecture, the profile a `cuda:` stage was built
+	// against — CUDA version, wheel index and runtime package set.
+	//
+	// This is the one input to a GPU build that lives in the CLI rather than
+	// in the project, so without a pin, upgrading the CLI could rebuild an
+	// app against a different CUDA runtime with nothing in the project
+	// changing. Recording it puts that on the same footing as a base image
+	// digest: visible in the diff, and changed only deliberately.
+	//
+	// Keyed by gpu_arch ("sm_87"), so one project that deploys to several
+	// boards accumulates one entry per board rather than fighting over one.
+	CUDA map[string]gpu.Profile `yaml:"cuda,omitempty"`
+}
+
+// ResolveCUDA returns the profile to build arch against: the one already
+// pinned in the lockfile if there is one, otherwise the compiler's current
+// profile for arch, recorded into f so later builds reuse it.
+func (f *File) ResolveCUDA(arch string) (gpu.Profile, error) {
+	if pinned, ok := f.CUDA[arch]; ok {
+		pinned.Arch = arch
+		return pinned, nil
+	}
+	p, err := gpu.ProfileFor(arch)
+	if err != nil {
+		return gpu.Profile{}, err
+	}
+	if f.CUDA == nil {
+		f.CUDA = map[string]gpu.Profile{}
+	}
+	f.CUDA[arch] = p
+	return p, nil
 }
 
 // Load reads and parses the lockfile at path. A missing file is not an

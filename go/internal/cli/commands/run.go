@@ -34,6 +34,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -497,6 +499,10 @@ type runOptions struct {
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
+	// gpuArch overrides the GPU architecture a Stagefile cuda: stage compiles
+	// against. Normally the selected device answers this; the flag exists for
+	// building against a board that isn't the one in front of you.
+	gpuArch string
 	// chunking controls the content-defined chunking (CBC) deploy path:
 	// chunkingAuto (default/empty) tries chunk-diff and falls back to a registry
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
@@ -564,6 +570,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
+	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
@@ -735,11 +742,34 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
+	// The CLI owns the selected connection lifetime for both the preflight and
+	// normal run paths; lower-level run helpers do not close it. Declared here
+	// because a GPU project resolves its target earlier than the rest do — see
+	// below.
+	var target *SelectedDevice
+	defer func() {
+		if target != nil && target.Agent != nil {
+			target.Agent.Close()
+		}
+	}()
+
 	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
 	// we end up on the agent path or a provider path (Docker, etc.).
 	if projectType == "docker" && opts.dockerfile == "" {
-		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
+		// Exception: a Stagefile with a cuda: stage compiles against the GPU
+		// architecture of the device it is being deployed to, so for those
+		// projects the device has to come first. Only they pay for it, and
+		// only when --gpu-arch didn't already answer the question. Step 2
+		// below reuses whatever is resolved here.
+		if opts.gpuArch == "" && stagefile.NeedsGPUTarget(cwd) {
+			target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
+			if err != nil {
+				return err
+			}
+		}
+		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(),
+			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)))
 		if err != nil {
 			return err
 		}
@@ -754,19 +784,13 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// If wendy.json is missing, resolve the target before prompting to create
 	// one. That lets Mac beta targets reject container-only project shapes with
-	// the real project/target mismatch instead of first asking about config. The
-	// CLI owns the selected connection lifetime for both the preflight and normal
-	// run paths; lower-level run helpers do not close it.
-	var target *SelectedDevice
-	defer func() {
-		if target != nil && target.Agent != nil {
-			target.Agent.Close()
-		}
-	}()
+	// the real project/target mismatch instead of first asking about config.
 	if cfgMissing {
-		target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
-		if err != nil {
-			return err
+		if target == nil {
+			target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
+			if err != nil {
+				return err
+			}
 		}
 		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
 			return err

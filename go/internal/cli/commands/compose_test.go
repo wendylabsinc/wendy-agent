@@ -1158,7 +1158,7 @@ func TestComposeStagefileOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, cleanup, err := composeStagefileOverride(proj)
+	path, cleanup, err := composeStagefileOverride(proj, "")
 	if err != nil {
 		t.Fatalf("composeStagefileOverride: %v", err)
 	}
@@ -1211,7 +1211,7 @@ func TestComposeStagefileOverride_NoStagefiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	path, cleanup, err := composeStagefileOverride(proj)
+	path, cleanup, err := composeStagefileOverride(proj, "")
 	if err != nil {
 		t.Fatalf("composeStagefileOverride: %v", err)
 	}

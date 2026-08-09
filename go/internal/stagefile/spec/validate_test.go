@@ -86,7 +86,7 @@ func TestValidateAcceptsAptWithPackages(t *testing.T) {
 
 func TestValidateRejectsPipWithNothingSet(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for pip with neither requirements nor packages, got nil")
@@ -189,7 +189,7 @@ func TestValidateRejectsLeadingDashInAptPackage(t *testing.T) {
 
 func TestValidateRejectsNewlineInPipPackage(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Packages: []string{"flask\nUSER root\nENV LEAK=1"}}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Packages: []string{"flask\nUSER root\nENV LEAK=1"}}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for a newline embedded in a pip package name, got nil")
@@ -225,7 +225,7 @@ func TestValidateRejectsNewlineInStageName(t *testing.T) {
 
 func TestValidateAcceptsPipVersionSpecifiers(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Packages: []string{"flask>=2.0,<3.0", "requests[security]"}}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Packages: []string{"flask>=2.0,<3.0", "requests[security]"}}}}},
 	}}
 	if err := f.Validate(); err != nil {
 		t.Fatalf("expected no error for legitimate pip version specifiers, got %v", err)
@@ -270,7 +270,7 @@ func TestValidateRejectsLeadingDashInApkPackage(t *testing.T) {
 
 func TestValidateRejectsNewlineInPipRequirements(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Requirements: "requirements.txt\nUSER root"}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Requirements: "requirements.txt\nUSER root"}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for a newline embedded in install.pip.requirements, got nil")
@@ -298,7 +298,7 @@ func TestValidateRejectsNewlineInCopyPaths(t *testing.T) {
 
 func TestValidateRejectsLeadingDashInPipPackage(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Packages: []string{"--index-url"}}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Packages: []string{"--index-url"}}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for a pip package entry starting with \"-\", got nil")
@@ -316,9 +316,9 @@ func TestValidateRejectsWhitespaceInCopyPaths(t *testing.T) {
 
 func TestValidateAcceptsPipEnvironmentMarker(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{
 			Packages: []string{"flask>=2.0; python_version>='3.8'"},
-		}}},
+		}}}},
 	}}
 	if err := f.Validate(); err != nil {
 		t.Fatalf("expected no error for a PEP 508 environment marker, got %v", err)
@@ -361,7 +361,7 @@ func TestValidateRejectsLeadingDashInCopyDest(t *testing.T) {
 
 func TestValidateRejectsLeadingDashInPipRequirements(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Requirements: "--index-url"}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Requirements: "--index-url"}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for install.pip.requirements starting with \"-\", got nil")
@@ -370,7 +370,7 @@ func TestValidateRejectsLeadingDashInPipRequirements(t *testing.T) {
 
 func TestValidateRejectsWhitespaceInPipRequirements(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: &PipInstall{Requirements: "req.txt sub/secret.txt"}}},
+		{Name: "app", From: "python:3.12-slim", Install: &Install{Pip: []PipInstall{{Requirements: "req.txt sub/secret.txt"}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for a space embedded in install.pip.requirements, got nil")

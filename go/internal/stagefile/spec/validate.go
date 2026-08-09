@@ -50,6 +50,9 @@ func (f *File) Validate() error {
 		if err := validateInstall(s.Install); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
+		if err := validateCUDA(&s); err != nil {
+			return fmt.Errorf("stage %q: %w", s.Name, err)
+		}
 		if err := validateDownloads(s.Download); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
@@ -79,6 +82,69 @@ func (f *File) Validate() error {
 		if !isFinal && s.Healthcheck != nil {
 			return fmt.Errorf("stage %q: healthcheck is only allowed on the final stage (%q)", s.Name, finalName)
 		}
+	}
+	return nil
+}
+
+// validateCUDA ties the stage-level cuda: declaration to the pip groups that
+// depend on it, and keeps the compiler's own settings from being contradicted
+// by hand.
+//
+// The errors here are the whole point of the feature: each one names the fix
+// rather than describing a schema violation, because the reader is someone
+// who does not already know that a GPU wheel needs a different index from the
+// runtime that goes with it.
+func validateCUDA(s *Stage) error {
+	for i, p := range pipGroups(s) {
+		if !p.CUDA {
+			continue
+		}
+		field := fmt.Sprintf("install.pip[%d]", i)
+		if !s.CUDA {
+			return fmt.Errorf("%s sets cuda: but the stage does not — add `cuda: true` to the stage so the CUDA runtime is installed and put on the loader path", field)
+		}
+		if p.Index != "" || len(p.ExtraIndex) > 0 {
+			return fmt.Errorf("%s sets both cuda: and index/extraIndex — cuda: resolves the index from the GPU architecture being built for; drop the explicit one, or drop cuda: to pin the index by hand", field)
+		}
+	}
+	if !s.CUDA {
+		return nil
+	}
+	// The collected directory has to win against the loader paths a Jetson
+	// injects at run time, which means the compiler owns LD_LIBRARY_PATH's
+	// leading entry. A Stagefile may still extend it — codegen prepends
+	// rather than replaces — but a value that starts with something else
+	// would be silently rewritten, so say so instead.
+	if _, ok := s.Env[LDLibraryPath]; ok {
+		return fmt.Errorf("stage sets env.%s and cuda: — a CUDA stage's collected libraries must come first on that path, so the compiler prepends its own directory; remove the env entry, or drop cuda: and set up the loader path by hand", LDLibraryPath)
+	}
+	return nil
+}
+
+// pipGroups is nil-safe access to a stage's pip install groups, so validation
+// can iterate them without repeating the two nil checks.
+func pipGroups(s *Stage) []PipInstall {
+	if s.Install == nil {
+		return nil
+	}
+	return s.Install.Pip
+}
+
+// validateAbsPath is the shared shape check for a path the compiler will
+// interpolate into a command: present, absolute, and free of the characters
+// that make a path ambiguous in that position.
+func validateAbsPath(p, fieldDesc string) error {
+	if p == "" {
+		return fmt.Errorf("%s is required", fieldDesc)
+	}
+	if err := rejectNewline(p, fieldDesc); err != nil {
+		return err
+	}
+	if err := rejectWhitespace(p, fieldDesc); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(p, "/") {
+		return fmt.Errorf("%s must be an absolute path (got %q)", fieldDesc, p)
 	}
 	return nil
 }
@@ -237,7 +303,7 @@ func validateInstall(inst *Install) error {
 	if inst == nil {
 		return nil
 	}
-	if inst.Apt == nil && inst.Apk == nil && len(inst.CMake) == 0 && inst.Pip == nil && inst.Npm == nil && inst.Uv == nil {
+	if inst.Apt == nil && inst.Apk == nil && len(inst.CMake) == 0 && len(inst.Pip) == 0 && inst.Npm == nil && inst.Uv == nil {
 		return fmt.Errorf("install: at least one of apt, apk, cmake, pip, npm, uv must be set")
 	}
 	if inst.Apt != nil {
@@ -291,17 +357,18 @@ func validateInstall(inst *Install) error {
 			}
 		}
 	}
-	if inst.Pip != nil {
-		if inst.Pip.Requirements == "" && len(inst.Pip.Packages) == 0 {
-			return fmt.Errorf("install.pip: requirements or packages must be set")
+	for i, p := range inst.Pip {
+		field := fmt.Sprintf("install.pip[%d]", i)
+		if p.Requirements == "" && len(p.Packages) == 0 {
+			return fmt.Errorf("%s: requirements or packages must be set", field)
 		}
-		if inst.Pip.Index != "" {
-			if err := validateRepoURL(inst.Pip.Index, "install.pip.index"); err != nil {
+		if p.Index != "" {
+			if err := validateRepoURL(p.Index, field+".index"); err != nil {
 				return err
 			}
 		}
-		for _, u := range inst.Pip.ExtraIndex {
-			if err := validateRepoURL(u, "install.pip.extraIndex entry"); err != nil {
+		for _, u := range p.ExtraIndex {
+			if err := validateRepoURL(u, field+".extraIndex entry"); err != nil {
 				return err
 			}
 		}
@@ -586,17 +653,17 @@ func validateNoInjection(s *Stage) error {
 				}
 			}
 		}
-		if s.Install.Pip != nil {
-			if err := rejectNewline(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+		for _, pip := range s.Install.Pip {
+			if err := rejectNewline(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			if err := rejectWhitespace(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+			if err := rejectWhitespace(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			if err := rejectLeadingDash(s.Install.Pip.Requirements, "install.pip.requirements"); err != nil {
+			if err := rejectLeadingDash(pip.Requirements, "install.pip.requirements"); err != nil {
 				return err
 			}
-			for _, p := range s.Install.Pip.Packages {
+			for _, p := range pip.Packages {
 				if err := rejectNewline(p, "install.pip.packages entry"); err != nil {
 					return err
 				}

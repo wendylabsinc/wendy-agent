@@ -4,7 +4,7 @@ stages:
     from: python:3.11-slim
     install:
       pip:
-        requirements: requirements.txt
+        - requirements: requirements.txt
     copy:
       - from: local
         paths: [main.py]

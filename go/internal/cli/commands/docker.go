@@ -541,9 +541,9 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 // Both branches write to the same generated filename — detectBuildOptions
 // already excludes it from re-entering detection as a rival build file, so
 // this covers both origins with one exclusion.
-func prepareDockerBuildFile(dir, dockerfile string) (string, error) {
+func prepareDockerBuildFile(dir, dockerfile, gpuArch string) (string, error) {
 	if dockerfile == stagefileSourceName {
-		return compileStagefile(dir)
+		return compileStagefile(dir, gpuArch)
 	}
 	return applySafeOptimizeFixes(dir, dockerfile)
 }
@@ -568,15 +568,71 @@ func hasContainerBuildFile(dir string) bool {
 	return false
 }
 
+// agentConn is nil-safe access to a selected device's agent connection, so
+// callers that may not have resolved a device can still ask for one.
+func agentConn(target *SelectedDevice) *grpcclient.AgentConnection {
+	if target == nil {
+		return nil
+	}
+	return target.Agent
+}
+
+// resolveGPUArch answers which GPU architecture a build in dir targets, or ""
+// when the question doesn't arise.
+//
+// The device is the authority. A project deploys to whatever board is in front
+// of it, so the architecture is a property of this build and not something a
+// Stagefile could state without pinning itself to one board. flagArch is the
+// escape hatch for building with no device attached (CI, plain `wendy build`).
+//
+// Nothing is asked of the device unless dir's Stagefile actually declares a
+// cuda: stage — an ordinary build must not pay an RPC for a question it does
+// not have.
+func resolveGPUArch(ctx context.Context, dir, flagArch string, conn *grpcclient.AgentConnection) string {
+	return resolveGPUArchForDirs(ctx, []string{dir}, flagArch, conn)
+}
+
+// resolveGPUArchForDirs is resolveGPUArch across several build contexts — the
+// services of a multi-service or compose project, which share one device and
+// therefore one architecture. The device is asked at most once no matter how
+// many services there are, and not at all unless one of them declares cuda:.
+func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, conn *grpcclient.AgentConnection) string {
+	if flagArch != "" {
+		return flagArch
+	}
+	if conn == nil {
+		return ""
+	}
+	needed := false
+	for _, d := range dirs {
+		if stagefile.NeedsGPUTarget(d) {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return ""
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		// Deliberately not fatal. The compiler is where "a GPU stage needs a
+		// target" is enforced, and its error names the fix; failing here would
+		// replace that with a transport error that doesn't.
+		return ""
+	}
+	return resp.GetGpuArch()
+}
+
 // compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
 // "Dockerfile.generated" and ".dockerignore" into dir and returning the
 // generated Dockerfile's filename.
-func compileStagefile(dir string) (string, error) {
+func compileStagefile(dir, gpuArch string) (string, error) {
 	// A download with no sha256 in the Stagefile is pinned by fetching it
 	// once, here, inline in the build. For model weights that is minutes of
 	// silence on the first build, so say which URL is being pinned rather
 	// than let it look like a hang.
 	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "",
+		stagefile.WithGPUArch(gpuArch),
 		stagefile.WithProgress(func(url string) {
 			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
 		}))
@@ -648,7 +704,7 @@ func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
 	return generatedDockerfileName, nil
 }
 
-func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
+func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string) (string, error) {
 	if requested != "" {
 		if err := validateDockerfileName(requested); err != nil {
 			return "", err
@@ -670,7 +726,7 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return prepareDockerBuildFile(cwd, file)
+		return prepareDockerBuildFile(cwd, file, gpuArch)
 	}
 
 	if len(dockerfiles) <= 1 {
