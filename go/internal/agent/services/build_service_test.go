@@ -407,14 +407,20 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// testMaxContextBytes is small on purpose. Proving the read is bounded means
+// reading right up to the ceiling, so testing at the real 2 GiB would allocate
+// 2 GiB — fine on a workstation, an out-of-memory kill on a CI runner.
+const testMaxContextBytes = 1 << 20
+
 // A build context is reassembled into memory in one piece on a device that may
 // have only a few GiB of it, so an unbounded read is an OOM the client chooses.
 func TestReassembleContext_BoundsMemoryAgainstUndeclaredSize(t *testing.T) {
 	var read int64
 	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
-		ConfigPath: enabledConfigDir(t),
-		StateDir:   t.TempDir(),
-		Chunks:     oversizedChunkSource{read: &read},
+		ConfigPath:      enabledConfigDir(t),
+		StateDir:        t.TempDir(),
+		MaxContextBytes: testMaxContextBytes,
+		Chunks:          oversizedChunkSource{read: &read},
 	})
 
 	// TotalSize 0 means "undeclared", so the declared-size check cannot be what
@@ -426,8 +432,19 @@ func TestReassembleContext_BoundsMemoryAgainstUndeclaredSize(t *testing.T) {
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want InvalidArgument for a context past the ceiling", err)
 	}
-	if read > maxContextBytes+int64(64<<10) {
-		t.Fatalf("read %d bytes for a %d-byte ceiling: the read is not bounded", read, int64(maxContextBytes))
+	// Slack for io.ReadAll's growth: it reads in chunks and may overshoot the
+	// limit by one buffer before the LimitReader reports EOF.
+	if read > testMaxContextBytes+int64(1<<20) {
+		t.Fatalf("read %d bytes for a %d-byte ceiling: the read is not bounded", read, int64(testMaxContextBytes))
+	}
+}
+
+// The default must be the real ceiling, not whatever a test injected — the
+// option exists for tests, and a zero value must not disable the bound.
+func TestNewBuildService_DefaultsToRealContextCeiling(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: t.TempDir()})
+	if svc.maxContextBytes != maxContextBytes {
+		t.Fatalf("maxContextBytes = %d, want the %d-byte default", svc.maxContextBytes, int64(maxContextBytes))
 	}
 }
 
@@ -436,14 +453,15 @@ func TestReassembleContext_BoundsMemoryAgainstUndeclaredSize(t *testing.T) {
 func TestReassembleContext_RejectsDeclaredOversizeWithoutReading(t *testing.T) {
 	var read int64
 	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
-		ConfigPath: enabledConfigDir(t),
-		StateDir:   t.TempDir(),
-		Chunks:     oversizedChunkSource{read: &read},
+		ConfigPath:      enabledConfigDir(t),
+		StateDir:        t.TempDir(),
+		MaxContextBytes: testMaxContextBytes,
+		Chunks:          oversizedChunkSource{read: &read},
 	})
 
 	_, err := svc.reassembleContext(context.Background(), &agentpbv2.ChunkManifest{
 		ChunkHashes: [][]byte{make([]byte, 32)},
-		TotalSize:   maxContextBytes + 1,
+		TotalSize:   testMaxContextBytes + 1,
 	})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want InvalidArgument for a declared oversize", err)

@@ -77,6 +77,13 @@ type BuildServiceOptions struct {
 	BuildkitAddress string
 	// StateDir overrides defaultBuildStateDir.
 	StateDir string
+	// MaxContextBytes overrides maxContextBytes. Zero means the default.
+	//
+	// Injectable so a test can exercise the ceiling without allocating one.
+	// Proving the read is bounded means reading right up to the limit, and a
+	// test doing that at 2 GiB is an out-of-memory kill on a modest CI runner —
+	// which is exactly how this option came to exist.
+	MaxContextBytes int64
 	// Chunks resolves the build context the CLI staged through WriteChunks.
 	Chunks ChunkSource
 	// Peers dials another device in this org to deliver the finished image.
@@ -107,6 +114,7 @@ type BuildService struct {
 	chunks               ChunkSource
 	peers                PeerDialer
 	pushTLS              func(targetAssetID int32) (*tls.Config, error)
+	maxContextBytes      int64
 
 	// contextLocks serialises builds that share a context directory. See
 	// lockContextDir; the mutex guards the map, not the builds.
@@ -121,6 +129,9 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 	if opts.StateDir == "" {
 		opts.StateDir = defaultBuildStateDir
 	}
+	if opts.MaxContextBytes <= 0 {
+		opts.MaxContextBytes = maxContextBytes
+	}
 	return &BuildService{
 		logger:               logger,
 		buildHostEnabledPath: filepath.Join(opts.ConfigPath, buildHostEnabledFile),
@@ -129,6 +140,7 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		chunks:               opts.Chunks,
 		peers:                opts.Peers,
 		pushTLS:              opts.PushTLS,
+		maxContextBytes:      opts.MaxContextBytes,
 		contextLocks:         map[string]*sync.Mutex{},
 	}
 }
@@ -390,9 +402,9 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 	// is not trusted — the LimitReader below is what actually holds the line —
 	// but checking it first turns a pathological request into a cheap error
 	// instead of a gigabyte of I/O.
-	if want := m.GetTotalSize(); want > maxContextBytes {
+	if want := m.GetTotalSize(); want > s.maxContextBytes {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"build context declares %d bytes, above the %d-byte maximum", want, int64(maxContextBytes))
+			"build context declares %d bytes, above the %d-byte maximum", want, s.maxContextBytes)
 	}
 	hashes := make([][32]byte, 0, len(m.GetChunkHashes()))
 	for _, b := range m.GetChunkHashes() {
@@ -408,14 +420,14 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 	// silently truncated into a context that would build the wrong image. A
 	// manifest may declare total_size 0, so the limit — not the declaration — is
 	// what bounds the agent's memory.
-	data, err := io.ReadAll(io.LimitReader(s.chunks.OpenChunkStream(ctx, hashes), maxContextBytes+1))
+	data, err := io.ReadAll(io.LimitReader(s.chunks.OpenChunkStream(ctx, hashes), s.maxContextBytes+1))
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition,
 			"reassembling build context: %v; re-send the context", err)
 	}
-	if int64(len(data)) > maxContextBytes {
+	if int64(len(data)) > s.maxContextBytes {
 		return nil, status.Errorf(codes.InvalidArgument,
-			"build context exceeds the %d-byte maximum", int64(maxContextBytes))
+			"build context exceeds the %d-byte maximum", s.maxContextBytes)
 	}
 	if want := m.GetTotalSize(); want != 0 && int64(len(data)) != want {
 		return nil, status.Errorf(codes.InvalidArgument,
