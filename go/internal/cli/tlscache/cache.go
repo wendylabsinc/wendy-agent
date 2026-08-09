@@ -107,8 +107,9 @@ func (c *Cache) Get(string) (*tls.ClientSessionState, bool) {
 }
 
 // Put implements tls.ClientSessionCache. crypto/tls calls it from the
-// connection's record-processing path, so persistence (a Keychain subprocess
-// on macOS) happens on a background goroutine; a ticket lost to process exit
+// connection's record-processing path, so persistence (a file write, or a
+// `security` subprocess under WENDY_TLS_SESSION_STORE=keychain) happens on a
+// background goroutine; a ticket lost to process exit
 // just means a full handshake next time. Put(nil) evicts (crypto/tls uses
 // that on certain handshake failures) and always runs, even when the most
 // recent SetResumed call reported true — a broken session must still be

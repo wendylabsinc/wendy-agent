@@ -24,11 +24,17 @@ var runSecurity = func(ctx context.Context, stdin string, args ...string) ([]byt
 	return cmd.Output()
 }
 
-// keychainStore keeps session tickets in the user's login Keychain. A ticket
-// is a bearer resumption secret, so it goes in the platform secret store
-// rather than a file. Items are created by (and read back through)
-// /usr/bin/security itself, whose default ACL covers it — reads must never
-// prompt; any prompt/denial surfaces as a plain cache miss.
+// keychainStore keeps session tickets in the user's login Keychain. It is
+// OPT-IN ONLY (WENDY_TLS_SESSION_STORE=keychain), not the macOS default — see
+// newPlatformStore in store_select_darwin.go for why.
+//
+// Items are created by (and read back through) /usr/bin/security itself, whose
+// default ACL covers it — reads must never prompt; any prompt/denial surfaces
+// as a plain cache miss. put carries the residual hazard that motivated the
+// default flip: `security` exposes no way to suppress user interaction, so
+// where the keychain search list does not resolve, macOS answers the write
+// with a blocking "A keychain cannot be found to store ..." modal. Nothing
+// here can prevent that, which is why callers have to ask for this backend.
 type keychainStore struct{}
 
 func newKeychainStore() sessionStore { return keychainStore{} }

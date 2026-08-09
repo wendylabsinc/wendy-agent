@@ -98,9 +98,24 @@ func TestKeychainDelete(t *testing.T) {
 	}
 }
 
-func TestDarwinDefaultIsKeychain(t *testing.T) {
+// The darwin default must not be the Keychain: `security add-generic-password`
+// has no no-interaction flag (verified against `security help`), so a context
+// with no resolvable keychain — a sandboxed or non-login session — makes macOS
+// throw a blocking "A keychain cannot be found to store ..." modal from Put's
+// background goroutine. A latency cache must never be able to do that.
+func TestDarwinDefaultIsFileStore(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // keep newFileStore off the real ~/.wendy
 	t.Setenv("WENDY_TLS_SESSION_STORE", "")
+	if _, ok := newDefaultStore().(*fileStore); !ok {
+		t.Errorf("darwin default = %T, want *fileStore", newDefaultStore())
+	}
+}
+
+// The Keychain backend stays reachable for anyone who wants at-rest encryption
+// while the keychain is locked, but only by opting in explicitly.
+func TestDarwinKeychainRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("WENDY_TLS_SESSION_STORE", "keychain")
 	if _, ok := newDefaultStore().(keychainStore); !ok {
-		t.Errorf("darwin default = %T, want keychainStore", newDefaultStore())
+		t.Errorf("store=keychain: got %T, want keychainStore", newDefaultStore())
 	}
 }
