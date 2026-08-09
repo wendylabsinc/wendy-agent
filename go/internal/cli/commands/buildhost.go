@@ -232,6 +232,16 @@ func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnec
 	deviceFlag = host
 	defer func() { deviceFlag = prev }()
 
+	// resolveTarget short-circuits to the cloud when the context carries a cloud
+	// device config, and that path reads the config's DeviceName rather than
+	// deviceFlag. Left alone, a cloud-routed invocation would silently connect
+	// to the TARGET again and "build on the build host" would quietly become
+	// "build on the target" — repoint it at the build host instead.
+	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
+		cloudCfg.DeviceName = host
+		ctx = context.WithValue(ctx, cloudDeviceContextKey{}, cloudCfg)
+	}
+
 	sel, err := resolveTarget(ctx, NonInteractive(), SuppressUpdateCheck())
 	if err != nil {
 		return nil, err
