@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -54,6 +55,11 @@ type AgentService struct {
 	// settable within-package so tests exercising a successful install don't
 	// kill the test process.
 	restartFn func()
+
+	// binaryHashOnce/binaryHash cache the hex SHA-256 of the executable this
+	// process was started from; see binarySHA256.
+	binaryHashOnce sync.Once
+	binaryHash     string
 }
 
 func NewAgentService(
@@ -83,6 +89,7 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 		Os:              detectOS(),
 		CpuArchitecture: runtime.GOARCH,
 		Featureset:      detectFeatureset(),
+		BinarySha256:    s.binarySHA256(),
 	}
 
 	if v, ok := wendyOSVersion(); ok {
@@ -136,6 +143,44 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	resp.NetworkInterfaces = listNetworkInterfaces()
 
 	return resp, nil
+}
+
+// WarmBinaryHash starts computing the executable hash in the background so
+// the first GetAgentVersion — which doubles as the CLI's liveness probe with
+// a ~3s budget — doesn't pay a full read of the binary (tens of MB, possibly
+// off cold SD-card storage) inside that window. Call once at startup, after
+// any execPathResolver override; GetAgentVersion still blocks on (or itself
+// performs) the same one-time computation.
+func (s *AgentService) WarmBinaryHash() {
+	go s.binarySHA256()
+}
+
+// binarySHA256 returns the hex SHA-256 of the executable this process was
+// started from, computed once and cached: after an update commits, the file
+// at the exec path is already the NEW binary while this process still runs
+// the old one, so re-hashing on demand would misreport until the restart.
+// Empty when the executable cannot be resolved or read.
+func (s *AgentService) binarySHA256() string {
+	s.binaryHashOnce.Do(func() {
+		path, _, err := s.execPathResolver()
+		if err != nil {
+			s.logger.Warn("could not resolve own executable for hashing", zap.Error(err))
+			return
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			s.logger.Warn("could not open own executable for hashing", zap.Error(err))
+			return
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			s.logger.Warn("could not hash own executable", zap.Error(err))
+			return
+		}
+		s.binaryHash = hex.EncodeToString(h.Sum(nil))
+	})
+	return s.binaryHash
 }
 
 // SetHostname sets the device's hostname (and mDNS name) to a literal value,
