@@ -91,22 +91,11 @@ func nativeDepsPaths(sf *spec.File) []string {
 	lastIdx := len(sf.Stages) - 1
 	for i := range sf.Stages {
 		s := &sf.Stages[i]
-		if s.Install != nil {
-			if s.Install.Pip != nil {
-				add(s.Install.Pip.Requirements)
-			}
-			if s.Install.Npm != nil {
-				add("package.json")
-				add(spec.NpmLockfile(s.Install.Npm.Manager))
-			}
-			if s.Install.Uv != nil {
-				// uv's whole dependency set is in these two files and in
-				// neither the Dockerfile nor the lockfile, so missing them here
-				// means an edited dependency never invalidates the deps layers.
-				for _, p := range spec.UvLocalFiles {
-					add(p)
-				}
-			}
+		// Shared with the .dockerignore allowlist, deliberately: these two
+		// answers must never disagree about which context files an install
+		// reads, and they did once (see spec.Install.LocalFiles).
+		for _, p := range s.Install.LocalFiles() {
+			add(p)
 		}
 		if i == lastIdx {
 			continue

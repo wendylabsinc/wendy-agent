@@ -30,19 +30,8 @@ func LocalPaths(f *spec.File) []string {
 				add(p)
 			}
 		}
-		if s.Install != nil {
-			if s.Install.Pip != nil {
-				add(s.Install.Pip.Requirements)
-			}
-			if s.Install.Npm != nil {
-				add("package.json")
-				add(spec.NpmLockfile(s.Install.Npm.Manager))
-			}
-			if s.Install.Uv != nil {
-				for _, p := range spec.UvLocalFiles {
-					add(p)
-				}
-			}
+		for _, p := range s.Install.LocalFiles() {
+			add(p)
 		}
 	}
 	return paths
