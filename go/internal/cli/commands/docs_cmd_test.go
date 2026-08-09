@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -154,7 +155,7 @@ func TestRenderDocsMDX_PreservesPlaceholderSyntax(t *testing.T) {
 
 func TestPrintDocsTopic_UnknownTopic(t *testing.T) {
 	topics := []docsTopic{{Path: "integrations/ros2.mdx", Slug: "ros2", Title: "Wendy for ROS 2"}}
-	err := printDocsTopic(topics, "does-not-exist")
+	err := printDocsTopic(io.Discard, topics, "does-not-exist")
 	if err == nil {
 		t.Fatal("expected an error for an unknown topic")
 	}
@@ -172,7 +173,7 @@ func TestPrintDocsTopic_AmbiguousSlug(t *testing.T) {
 		{Path: "guides/tutorials/python/hello-world.mdx", Slug: "hello-world", Title: "Hello World in Python"},
 		{Path: "guides/tutorials/rust/hello-world.mdx", Slug: "hello-world", Title: "Hello World in Rust"},
 	}
-	err := printDocsTopic(topics, "hello-world")
+	err := printDocsTopic(io.Discard, topics, "hello-world")
 	if err == nil {
 		t.Fatal("expected an ambiguity error")
 	}
@@ -182,8 +183,6 @@ func TestPrintDocsTopic_AmbiguousSlug(t *testing.T) {
 		}
 	}
 }
-
-// captureStdout is defined in filesync_test.go and reused here.
 
 // TestPrintDocsTopic_RendersROS2ViaSlug exercises `wendy docs ros2` end to
 // end against the real embedded content: the short slug must resolve to
@@ -196,11 +195,11 @@ func TestPrintDocsTopic_RendersROS2ViaSlug(t *testing.T) {
 		t.Fatalf("docsTopics: %v", err)
 	}
 
-	out := captureStdout(t, func() {
-		if err := printDocsTopic(topics, "ros2"); err != nil {
-			t.Errorf("printDocsTopic(ros2): %v", err)
-		}
-	})
+	var buf bytes.Buffer
+	if err := printDocsTopic(&buf, topics, "ros2"); err != nil {
+		t.Errorf("printDocsTopic(ros2): %v", err)
+	}
+	out := buf.String()
 
 	if !strings.Contains(out, "Wendy for ROS 2") {
 		t.Errorf("output missing title, got: %q", out)
@@ -220,7 +219,9 @@ func TestPrintDocsTopicList_NonJSON(t *testing.T) {
 		{Path: "hardware/camera.mdx", Slug: "camera", Title: "Camera Access"},
 	}
 
-	out := captureStdout(t, func() { printDocsTopicList(topics) })
+	var buf bytes.Buffer
+	printDocsTopicList(&buf, topics)
+	out := buf.String()
 
 	for _, want := range []string{"integrations/ros2", "Wendy for ROS 2", "hardware/camera", "Camera Access"} {
 		if !strings.Contains(out, want) {
@@ -236,15 +237,42 @@ func TestPrintDocsTopicList_JSON(t *testing.T) {
 
 	topics := []docsTopic{{Path: "integrations/ros2.mdx", Slug: "ros2", Title: "Wendy for ROS 2"}}
 
-	out := captureStdout(t, func() { printDocsTopicList(topics) })
+	var buf bytes.Buffer
+	printDocsTopicList(&buf, topics)
+	out := buf.String()
 
 	if !strings.Contains(out, `"slug":"ros2"`) {
 		t.Errorf("expected JSON output to contain the slug field, got: %q", out)
 	}
-
-	var buf bytes.Buffer
-	buf.WriteString(out)
 	if buf.Len() == 0 {
 		t.Error("expected non-empty JSON output")
+	}
+}
+
+// TestNewDocsCmd_RespectsSetOut is the regression test for the output
+// plumbing: `wendy docs` must render into cmd.SetOut's writer rather than
+// unconditionally into the process's stdout.
+func TestNewDocsCmd_RespectsSetOut(t *testing.T) {
+	prevJSON := jsonOutput
+	jsonOutput = false
+	defer func() { jsonOutput = prevJSON }()
+
+	cmd := newDocsCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"ros2"})
+
+	stdout := captureStdout(t, func() {
+		if err := cmd.Execute(); err != nil {
+			t.Errorf("Execute: %v", err)
+		}
+	})
+
+	if !strings.Contains(buf.String(), "Wendy for ROS 2") {
+		t.Errorf("redirected output missing the topic title, got: %q", buf.String())
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Errorf("nothing should have leaked to the process stdout, got: %q", stdout)
 	}
 }

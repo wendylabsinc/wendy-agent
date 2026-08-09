@@ -1120,7 +1120,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		))
 	}
 
-	ros2Raw, ok := fw["ros2"]
+	ros2Raw, ok := fw[FrameworkROS2]
 	if !ok || len(ros2Raw) == 0 {
 		return warnings
 	}
@@ -1139,7 +1139,7 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		return warnings
 	}
 	sort.Strings(unknown)
-	warnings = append(warnings, fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, strings.Join(unknown, ", ")))
+	warnings = append(warnings, fmt.Sprintf("Unknown key(s) in %s.%s: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, FrameworkROS2, strings.Join(unknown, ", ")))
 	return warnings
 }
 

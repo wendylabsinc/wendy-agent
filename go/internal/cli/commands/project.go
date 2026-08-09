@@ -83,11 +83,13 @@ func newEntitlementsListCmd() *cobra.Command {
 	return cmd
 }
 
-// listAllEntitlementTypes and its output siblings below use fmt.Print* (real
-// stdout) rather than cobra's cmd.Print*, which — despite the name — writes
-// to OutOrStderr(). Using cmd.Print* here would mean `wendy project
-// entitlements list --show-all --json | jq` silently sees nothing on stdout.
+// listAllEntitlementTypes and its output siblings below write to
+// cmd.OutOrStdout() rather than cobra's cmd.Print*, which — despite the name
+// — writes to OutOrStderr(). Using cmd.Print* here would mean `wendy project
+// entitlements list --show-all --json | jq` silently sees nothing on stdout,
+// while OutOrStdout() defaults to os.Stdout and still honors cmd.SetOut.
 func listAllEntitlementTypes(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	types := appconfig.ValidEntitlementTypes
 
 	if jsonOutput {
@@ -95,18 +97,19 @@ func listAllEntitlementTypes(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
-	fmt.Println("Available entitlement types:")
+	fmt.Fprintln(out, "Available entitlement types:")
 	for _, t := range types {
-		fmt.Printf("  %s\n", t)
+		fmt.Fprintf(out, "  %s\n", t)
 	}
 	return nil
 }
 
 func listProjectEntitlements(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	cfg, _, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -117,18 +120,18 @@ func listProjectEntitlements(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
 	if len(cfg.Entitlements) == 0 {
-		fmt.Println("No entitlements configured.")
+		fmt.Fprintln(out, "No entitlements configured.")
 		return nil
 	}
 
-	fmt.Println("Project entitlements:")
+	fmt.Fprintln(out, "Project entitlements:")
 	for _, e := range cfg.Entitlements {
-		fmt.Printf("  %s\n", e.Type)
+		fmt.Fprintf(out, "  %s\n", e.Type)
 	}
 	return nil
 }
@@ -320,6 +323,7 @@ func newFrameworksListCmd() *cobra.Command {
 }
 
 func listAllFrameworkTypes(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	types := appconfig.ValidFrameworkTypes
 
 	if jsonOutput {
@@ -327,22 +331,23 @@ func listAllFrameworkTypes(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
-	fmt.Println("Available framework types:")
+	fmt.Fprintln(out, "Available framework types:")
 	for _, t := range types {
 		if desc := frameworkDescriptions[t]; desc != "" {
-			fmt.Printf("  %s — %s\n", t, desc)
+			fmt.Fprintf(out, "  %s — %s\n", t, desc)
 		} else {
-			fmt.Printf("  %s\n", t)
+			fmt.Fprintf(out, "  %s\n", t)
 		}
 	}
 	return nil
 }
 
 func listProjectFrameworks(cmd *cobra.Command) error {
+	out := cmd.OutOrStdout()
 	cfg, _, err := loadProjectConfig()
 	if err != nil {
 		return err
@@ -355,18 +360,18 @@ func listProjectFrameworks(cmd *cobra.Command) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(out, string(data))
 		return nil
 	}
 
 	if len(configured) == 0 {
-		fmt.Println("No frameworks configured.")
+		fmt.Fprintln(out, "No frameworks configured.")
 		return nil
 	}
 
-	fmt.Println("Project frameworks:")
+	fmt.Fprintln(out, "Project frameworks:")
 	for _, t := range configured {
-		fmt.Printf("  %s\n", t)
+		fmt.Fprintf(out, "  %s\n", t)
 	}
 	return nil
 }

@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"path"
 	"regexp"
@@ -40,11 +41,15 @@ its short name (e.g. "ros2") or its full path under the docs tree (e.g.
 			if err != nil {
 				return fmt.Errorf("listing docs: %w", err)
 			}
+			// cmd.OutOrStdout() (not cobra's cmd.Print*, which despite the
+			// name writes to OutOrStderr) keeps `wendy docs --json | jq`
+			// working while still honoring cmd.SetOut in tests.
+			out := cmd.OutOrStdout()
 			if len(args) == 0 {
-				printDocsTopicList(topics)
+				printDocsTopicList(out, topics)
 				return nil
 			}
-			return printDocsTopic(topics, args[0])
+			return printDocsTopic(out, topics, args[0])
 		},
 	}
 	return cmd
@@ -103,9 +108,13 @@ func docsTopics() ([]docsTopic, error) {
 			return nil
 		}
 		rel := strings.TrimPrefix(p, "docs/")
+		// WalkDir already found this entry in the embedded FS, so a read
+		// failure here means the embed itself is broken. Fail loudly rather
+		// than dropping the topic — a silently missing page looks identical
+		// to one that was never embedded.
 		data, rerr := assets.FS.ReadFile(p)
 		if rerr != nil {
-			return nil
+			return fmt.Errorf("reading embedded doc %q: %w", p, rerr)
 		}
 		title, _, _ := parseDocFrontmatter(data)
 		if title == "" {
@@ -199,7 +208,7 @@ func renderDocsMDX(body []byte) string {
 
 // printDocsTopicList prints every available doc topic grouped by directory,
 // or a JSON array of {path,slug,title} with --json.
-func printDocsTopicList(topics []docsTopic) {
+func printDocsTopicList(w io.Writer, topics []docsTopic) {
 	if jsonOutput {
 		type jsonTopic struct {
 			Path  string `json:"path"`
@@ -214,7 +223,7 @@ func printDocsTopicList(topics []docsTopic) {
 		if err != nil {
 			return
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(w, string(data))
 		return
 	}
 
@@ -229,12 +238,12 @@ func printDocsTopicList(topics []docsTopic) {
 	}
 	sort.Strings(dirs)
 
-	fmt.Printf("Available doc topics (%d) — run `wendy docs <topic>` to read one:\n", len(topics))
+	fmt.Fprintf(w, "Available doc topics (%d) — run `wendy docs <topic>` to read one:\n", len(topics))
 	for _, dir := range dirs {
 		if dir == "." {
-			fmt.Println()
+			fmt.Fprintln(w)
 		} else {
-			fmt.Printf("\n%s/\n", dir)
+			fmt.Fprintf(w, "\n%s/\n", dir)
 		}
 		items := groups[dir]
 		sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
@@ -246,7 +255,7 @@ func printDocsTopicList(topics []docsTopic) {
 			if label == "" {
 				label = t.Slug
 			}
-			fmt.Printf("  %-40s %s\n", label, t.Title)
+			fmt.Fprintf(w, "  %-40s %s\n", label, t.Title)
 		}
 	}
 }
@@ -255,13 +264,13 @@ func printDocsTopicList(topics []docsTopic) {
 // a short slug or the full path (with or without extension). An unresolvable
 // or ambiguous arg returns an error that lists the way out, matching the
 // quality of feedback `wendy project entitlements add <bad-type>` gives.
-func printDocsTopic(topics []docsTopic, arg string) error {
+func printDocsTopic(w io.Writer, topics []docsTopic, arg string) error {
 	needle := strings.Trim(strings.TrimSpace(arg), "/")
 	needle = strings.TrimSuffix(needle, path.Ext(needle))
 
 	for _, t := range topics {
 		if t.urlPath() == needle {
-			return renderDocsTopic(t)
+			return renderDocsTopic(w, t)
 		}
 	}
 
@@ -273,7 +282,7 @@ func printDocsTopic(topics []docsTopic, arg string) error {
 	}
 	switch len(matches) {
 	case 1:
-		return renderDocsTopic(matches[0])
+		return renderDocsTopic(w, matches[0])
 	case 0:
 		names := make([]string, 0, len(topics))
 		for _, t := range topics {
@@ -291,7 +300,7 @@ func printDocsTopic(topics []docsTopic, arg string) error {
 	}
 }
 
-func renderDocsTopic(t docsTopic) error {
+func renderDocsTopic(w io.Writer, t docsTopic) error {
 	data, err := assets.FS.ReadFile("docs/" + t.Path)
 	if err != nil {
 		return err
@@ -313,21 +322,21 @@ func renderDocsTopic(t docsTopic) error {
 		if err != nil {
 			return err
 		}
-		fmt.Println(string(data))
+		fmt.Fprintln(w, string(data))
 		return nil
 	}
 
 	if title != "" {
-		fmt.Println(title)
-		fmt.Println(strings.Repeat("=", len(title)))
-		fmt.Println()
+		fmt.Fprintln(w, title)
+		fmt.Fprintln(w, strings.Repeat("=", len(title)))
+		fmt.Fprintln(w)
 	}
 	if description != "" {
-		fmt.Println(description)
-		fmt.Println()
+		fmt.Fprintln(w, description)
+		fmt.Fprintln(w)
 	}
-	fmt.Print(renderDocsMDX(body))
-	fmt.Println()
-	fmt.Printf("View online: %s\n", t.publicURL())
+	fmt.Fprint(w, renderDocsMDX(body))
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "View online: %s\n", t.publicURL())
 	return nil
 }
