@@ -1122,6 +1122,29 @@ func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T)
 	}
 }
 
+func TestResolveBareTemplatePick_NonInteractiveWithNoTemplatesReportsNoTemplates(t *testing.T) {
+	orig := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = orig })
+
+	// Only a darwin template exists, so the wendyos list is empty. The error
+	// must name the real problem instead of blaming the missing --template
+	// value and printing an empty list.
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{
+			{Name: "mac-llm", Description: "macOS-only template", Targets: []string{targetDarwin}},
+		},
+	}
+
+	_, err := resolveBareTemplatePick(targetWendyOS, meta)
+	if err == nil {
+		t.Fatal("expected non-interactive bare --template with no templates to fail")
+	}
+	if !strings.Contains(err.Error(), "no templates available for "+targetWendyOS) {
+		t.Fatalf("error = %q, want %q", err, "no templates available for "+targetWendyOS)
+	}
+}
+
 func TestTemplateItemsForTarget_FiltersByTarget(t *testing.T) {
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
@@ -1407,6 +1430,68 @@ func TestMergeTemplateFrameworks_TemplateConfigWins(t *testing.T) {
 	}
 	if added {
 		t.Fatal("expected template's existing frameworks config to win")
+	}
+
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != content {
+		t.Fatalf("wendy.json was rewritten:\n%s", data)
+	}
+}
+
+func TestMergeTemplateFrameworks_EmptyTemplateObjectDoesNotWin(t *testing.T) {
+	// A template that writes "frameworks": {} (or a null member) configures
+	// nothing, so it must not silently swallow --framework/--ros2-* flags.
+	for name, content := range map[string]string{
+		"emptyObject": `{"appId": "ros2-app", "frameworks": {}}`,
+		"nullMember":  `{"appId": "ros2-app", "frameworks": {"ros2": null}}`,
+		"nullValue":   `{"appId": "ros2-app", "frameworks": null}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfgPath := writeTemplateWendyJSON(t, content)
+
+			domainID := 5
+			requested := &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{DomainID: &domainID}}
+			added, err := mergeTemplateFrameworks(cfgPath, requested)
+			if err != nil {
+				t.Fatalf("mergeTemplateFrameworks: %v", err)
+			}
+			if !added {
+				t.Fatal("expected requested frameworks to be merged into an unset template frameworks key")
+			}
+
+			data, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			var cfg appconfig.AppConfig
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if cfg.Frameworks == nil || cfg.Frameworks.ROS2 == nil || cfg.Frameworks.ROS2.DomainID == nil {
+				t.Fatalf("frameworks.ros2.domainId missing:\n%s", data)
+			}
+			if *cfg.Frameworks.ROS2.DomainID != domainID {
+				t.Fatalf("domainId = %d, want %d", *cfg.Frameworks.ROS2.DomainID, domainID)
+			}
+		})
+	}
+}
+
+func TestMergeTemplateFrameworks_MalformedFrameworksValueLeavesFileUntouched(t *testing.T) {
+	// A scalar under "frameworks" is not something this merge can interpret,
+	// so it is left alone rather than silently overwritten.
+	content := `{"appId": "ros2-app", "frameworks": "ros2"}`
+	cfgPath := writeTemplateWendyJSON(t, content)
+
+	added, err := mergeTemplateFrameworks(cfgPath, &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}})
+	if err != nil {
+		t.Fatalf("mergeTemplateFrameworks: %v", err)
+	}
+	if added {
+		t.Fatal("expected an uninterpretable frameworks value to be left untouched")
 	}
 
 	data, err := os.ReadFile(cfgPath)

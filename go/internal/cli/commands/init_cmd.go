@@ -505,7 +505,13 @@ func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
 // exist at all.
 func resolveBareTemplatePick(target string, meta *repoMeta) (string, error) {
 	if !isInteractiveTerminal() {
-		printPickerItemsPlainText("Available templates for "+target, templateItemsForTarget(target, meta))
+		// Report "no templates" the same way the picker path does rather than
+		// printing an empty list and then blaming the missing --template value.
+		items := templateItemsForTarget(target, meta)
+		if len(items) == 0 {
+			return "", fmt.Errorf("no templates available for %s", target)
+		}
+		printPickerItemsPlainText("Available templates for "+target, items)
 		return "", fmt.Errorf("--template requires a value when running non-interactively; pass --template=<name> using one of the templates listed above")
 	}
 	return pickTemplateNameForTarget(target, meta)
@@ -1027,6 +1033,13 @@ func resolveInitTarget(opts initOptions) (string, error) {
 // discoverability follow-up).
 func printPickerItemsPlainText(title string, items []tui.PickerItem) {
 	cliLogln("%s:", title)
+	if len(items) == 0 {
+		// Defensive: callers are expected to handle "nothing to choose from"
+		// with a specific error, but a bare title with no list under it reads
+		// as a rendering bug.
+		cliLogln("  (none)")
+		return
+	}
 	for _, item := range items {
 		if item.Description != "" {
 			cliLogln("  %s - %s", item.Name, item.Description)
@@ -1522,7 +1535,7 @@ func mergeTemplateFrameworks(cfgPath string, requested *appconfig.FrameworksConf
 		return false, fmt.Errorf("parsing scaffolded wendy.json: %w", err)
 	}
 
-	if existing, ok := raw["frameworks"]; ok && len(existing) > 0 && string(existing) != "null" {
+	if existing, ok := raw["frameworks"]; ok && templateFrameworksAreSet(existing) {
 		return false, nil
 	}
 
@@ -1541,6 +1554,31 @@ func mergeTemplateFrameworks(cfgPath string, requested *appconfig.FrameworksConf
 		return false, fmt.Errorf("writing scaffolded wendy.json: %w", err)
 	}
 	return true, nil
+}
+
+// templateFrameworksAreSet reports whether a template's "frameworks" value
+// actually configures a framework. `null`, `{}`, and an object whose every
+// member is null (e.g. `{"ros2": null}`) configure nothing, so they must not
+// suppress the caller's --framework/--ros2-* flags — "the template's more
+// specific config wins" only applies when the template is in fact more
+// specific. A non-object (malformed or a scalar) counts as set: it is not
+// this function's job to silently overwrite something it cannot interpret.
+func templateFrameworksAreSet(existing json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(existing))
+	if trimmed == "" || trimmed == "null" {
+		return false
+	}
+
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(existing, &members); err != nil {
+		return true
+	}
+	for _, member := range members {
+		if strings.TrimSpace(string(member)) != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // templateEntitlementCovers reports whether the template's entitlements
