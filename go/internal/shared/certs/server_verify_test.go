@@ -224,6 +224,85 @@ func TestBuildServerVerifyConnection_OnServerIdentityFiresOnChainFailure(t *test
 	}
 }
 
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentityFiresOnSuccess covers
+// the trust-grade sink: unlike OnServerIdentity (best-effort, fires before any
+// verification so diagnostics work on failure), this one fires only once the
+// chain and org checks have passed, so its identity is safe to pin against.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentityFiresOnSuccess(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var got certs.WendyIdentity
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { got = id; calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnVerifiedServerIdentity calls = %d, want 1", calls)
+	}
+	if got.OrgID != 7 || got.EntityType != "asset" || got.EntityID != "42" {
+		t.Errorf("captured identity = %+v, want org 7 asset 42", got)
+	}
+}
+
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailure
+// is the whole point of a separate sink: an unverified certificate must never
+// reach a pin decision, or an impostor could rewrite the pin by presenting an
+// unsigned cert.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailure(t *testing.T) {
+	serverCert, _ := selfSignedCert(t, "device", "urn:wendy:org:9:asset:1")
+	_, unrelatedChain := selfSignedCert(t, "other-ca", "")
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(unrelatedChain),
+		ExpectedOrgID:            9,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err == nil {
+		t.Fatal("expected chain-verification error, got nil")
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (chain never verified)", calls)
+	}
+}
+
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnOrgMismatch(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            5,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err == nil {
+		t.Fatal("expected OrgMismatchError, got nil")
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (org check rejected)", calls)
+	}
+}
+
 func TestBuildServerVerifyConnection_OnServerIdentitySilentWhenNoIdentity(t *testing.T) {
 	// CN carries no Wendy identity → sink must not be called.
 	serverCert, chainPEM := selfSignedCert(t, "plain-cn", "")
