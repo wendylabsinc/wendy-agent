@@ -2,6 +2,14 @@ package config
 
 import "strings"
 
+// Pin sources. A pin's source records how much the CLI knows about it, which
+// decides who may overwrite it: cloud spoke to the org's cloud over an
+// authenticated session, lan only observed a certificate on the local network.
+const (
+	PinSourceLAN   = "lan"
+	PinSourceCloud = "cloud"
+)
+
 // DevicePin binds a device hostname to the organisation, cloud host, and asset
 // its TLS identity must belong to (WDY-1149). It is deliberately NOT a
 // certificate fingerprint: a device legitimately rotates or re-enrolls its
@@ -15,10 +23,14 @@ import "strings"
 // "urn:wendy:org:<org>:asset:<assetID>" URI SAN, kept as a string because that
 // is how the URN carries it. It is empty for pins written before asset ids were
 // pinned, and for devices whose certificate carries no asset identity at all.
+//
+// Source records where the pin came from: empty means a pin written before
+// sources were recorded, read as PinSourceLAN.
 type DevicePin struct {
 	OrgID     int    `json:"orgId"`
 	CloudGRPC string `json:"cloudGRPC"`
 	AssetID   string `json:"assetId,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // PinVerdict is the result of comparing an observed device identity against the
@@ -71,6 +83,11 @@ func (c *Config) EvaluateDevicePin(hostname string, orgID int, cloudGRPC, assetI
 	case assetID == "":
 		return PinMatch
 	case pin.AssetID == "":
+		if pin.Source == PinSourceCloud {
+			// Cloud said this device has no asset identity; a LAN sighting is
+			// not evidence to the contrary.
+			return PinMatch
+		}
 		return PinAdoptAsset
 	case pin.AssetID != assetID:
 		return PinMismatch
@@ -79,12 +96,30 @@ func (c *Config) EvaluateDevicePin(hostname string, orgID int, cloudGRPC, assetI
 	}
 }
 
-// SetDevicePin records (or replaces) the pin for a hostname.
-func (c *Config) SetDevicePin(hostname string, orgID int, cloudGRPC, assetID string) {
+// PinSource returns the recorded source for a hostname's pin, defaulting to
+// PinSourceLAN for pins written before sources existed and for unpinned hosts.
+func (c *Config) PinSource(hostname string) string {
+	pin, ok := c.DevicePinFor(hostname)
+	if !ok || pin.Source == "" {
+		return PinSourceLAN
+	}
+	return pin.Source
+}
+
+// SetDevicePinFrom records a pin and where it came from. A cloud-sourced write
+// is authoritative and overwrites whatever was there.
+func (c *Config) SetDevicePinFrom(hostname string, orgID int, cloudGRPC, assetID, source string) {
 	if c.DevicePins == nil {
 		c.DevicePins = make(map[string]DevicePin)
 	}
-	c.DevicePins[normalizePinHost(hostname)] = DevicePin{OrgID: orgID, CloudGRPC: cloudGRPC, AssetID: assetID}
+	c.DevicePins[normalizePinHost(hostname)] = DevicePin{
+		OrgID: orgID, CloudGRPC: cloudGRPC, AssetID: assetID, Source: source,
+	}
+}
+
+// SetDevicePin records (or replaces) the pin for a hostname.
+func (c *Config) SetDevicePin(hostname string, orgID int, cloudGRPC, assetID string) {
+	c.SetDevicePinFrom(hostname, orgID, cloudGRPC, assetID, PinSourceLAN)
 }
 
 // ClearDevicePin drops the pin for a hostname. It is for the case where the

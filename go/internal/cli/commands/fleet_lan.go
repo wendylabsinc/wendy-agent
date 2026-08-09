@@ -210,6 +210,7 @@ func cloudFleetTargets(ctx context.Context, group, cloudGRPC, brokerURL string) 
 	if err != nil {
 		return nil, err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	if group != "" {
 		assets = assetsInGroup(assets, group)
 	}

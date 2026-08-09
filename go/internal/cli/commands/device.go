@@ -78,6 +78,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceSetDefaultCmd(),
 		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
+		newDeviceUnpinCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
@@ -514,11 +515,15 @@ func newDeviceSetDefaultCmd() *cobra.Command {
 
 			// Naming a device here is an explicit assertion that this is the one
 			// the user means, so any pin recorded for it is dropped first: that
-			// makes the connect below a first use, and makes the "re-run
-			// set-default to re-pin" advice in the identity-change refusals real
-			// (otherwise this connect would hit the same refusal and never
-			// re-pin).
-			clearDevicePinForRepin(device)
+			// makes the connect below a first use, and gives a device whose
+			// identity changed a way back (otherwise this connect would hit the
+			// same refusal and never re-pin).
+			//
+			// pinKeyForAddr, not the raw argument: `set-default my-mac.local:50051`
+			// is a legal default, and enforcement keys that host under
+			// "my-mac.local". Clearing "my-mac.local:50051" would drop nothing,
+			// leaving a host:port default with no way out of a refusal at all.
+			clearDevicePinForRepin(pinKeyForAddr(device))
 
 			// WDY-1149: pin the device's (organisation, cloud host, asset)
 			// identity now if it is reachable, so later connections detect a
@@ -573,7 +578,33 @@ func pickDeviceForDefault(ctx context.Context) (string, error) {
 	}
 	defer selected.Close()
 
+	return defaultDeviceNameFor(selected)
+}
+
+// defaultDeviceNameFor is the name a picker selection should be saved as the
+// default device under.
+//
+// PinKey, not Agent.Host, whenever there is one. Agent.Host is the address the
+// picker actually dialled, which on a LAN row is an IP: saving that would make
+// the default device a DHCP lease, and — worse — would file every later
+// connection's pin under the IP while the picker had just pinned the device
+// under its hostname seconds earlier. pinCandidateKeys cannot map an IP back to
+// a hostname row, so the hostname pin would never be consulted again and
+// enforcement would be off for what is probably the most common configuration.
+// It is also the failure pinKeyForAddr's own comment warns about, arriving by a
+// different door.
+//
+// Agent.Host remains the fallback for a selection with no pin key at all
+// (nothing else identifies it) — that is exactly today's behaviour for those,
+// and they are already left unenforced by enforceSelectedDevicePin.
+func defaultDeviceNameFor(selected *SelectedDevice) (string, error) {
+	if selected == nil {
+		return "", fmt.Errorf("no device selected")
+	}
 	if selected.Agent != nil {
+		if selected.PinKey != "" {
+			return selected.PinKey, nil
+		}
 		return selected.Agent.Host, nil
 	}
 	if selected.External != nil {
@@ -2932,11 +2963,7 @@ func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentCo
 		}
 	}
 
-	if addr, _, err := resolveDeviceAddress(); err == nil {
-		hostname := addr
-		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-			hostname = host
-		}
+	if addr, hostname, _, err := resolveDeviceAddress(); err == nil {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectResolvedAgentWithProvisionedHint(waitCtx, hostname, addr, false, deferProvisionedMTLSCheck(waitCtx, addr))
 		}

@@ -753,6 +753,13 @@ type SelectedDevice struct {
 	Bluetooth *models.BluetoothDevice
 	External  *models.ExternalDevice
 	Provider  providers.DeviceProvider
+	// PinKey is the name the device pin for this selection is filed under: the
+	// hostname behind the picker row the user chose. It is the only part of a
+	// picker selection that identifies a device durably — the address came from
+	// discovery, and a pin keyed on a DHCP lease would be worthless. Empty for
+	// selections with no hostname to key on, which are left unenforced (see
+	// enforceSelectedDevicePin).
+	PinKey string
 }
 
 // Close releases any resources held by this SelectedDevice.
@@ -762,24 +769,34 @@ func (s *SelectedDevice) Close() {
 	}
 }
 
-func resolveDeviceAddress() (addr string, isDefault bool, err error) {
+// resolveDeviceAddress turns --device (or the saved default) into the address to
+// dial and the key its pin is filed under.
+//
+// pinKey is derived from addr by pinKeyForAddr — the very function the dial
+// ladder uses on the address it is handed — so the key a connection is CHECKED
+// against and the key it is DIALLED with are the same function of the same
+// input, and cannot drift apart. That matters more than it looks: a host pinned
+// under one key and verified under another would leave enforcement switched off
+// while every log line and config entry said it was on.
+func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err error) {
 	hostname := deviceFlag
 	if hostname == "" {
 		cfg, loadErr := config.Load()
 		if loadErr != nil {
-			return "", false, fmt.Errorf("loading config: %w", loadErr)
+			return "", "", false, fmt.Errorf("loading config: %w", loadErr)
 		}
 		hostname = cfg.DefaultDevice
 		isDefault = hostname != ""
 	}
 	if hostname == "" {
-		return "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return "", "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 	// If the hostname already contains a port, use it as-is.
-	if _, _, splitErr := net.SplitHostPort(hostname); splitErr == nil {
-		return hostname, isDefault, nil
+	addr = hostname
+	if _, _, splitErr := net.SplitHostPort(hostname); splitErr != nil {
+		addr = hostPort(hostname, defaultAgentPort)
 	}
-	return hostPort(hostname, defaultAgentPort), isDefault, nil
+	return addr, pinKeyForAddr(addr), isDefault, nil
 }
 
 // recoveryChoice represents the user's selection in the default-device recovery menu.
@@ -916,8 +933,12 @@ func formatElapsedSeconds(elapsed time.Duration) string {
 // it now (rather than after the probe) keeps the observation tied to this
 // connection attempt, matching the original eager-snapshot intent.
 func deferProvisionedMTLSCheck(ctx context.Context, addr string) func() bool {
+	// Snapshot the discovery hook here, on the caller's goroutine. The browse
+	// below outlives this function, and tests swap this seam back in t.Cleanup —
+	// reading it from inside the goroutine races that restore.
+	discover := discoverLANDevices
 	ch := make(chan bool, 1)
-	go func() { ch <- provisionedAgentAdvertisedMTLS(ctx, addr) }()
+	go func() { ch <- provisionedAgentAdvertisedMTLSVia(ctx, discover, addr) }()
 	var (
 		once sync.Once
 		res  bool
@@ -1027,13 +1048,12 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return conn, nil
 	}
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err == nil {
 		startedAt := time.Now()
-		hostname := addr
-		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-			hostname = host
-		}
+		// The name the user asked for, used both to talk about this device and
+		// to decide which device is acceptable — see resolveDeviceAddress.
+		hostname := pinKey
 		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
 		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 		if connErr != nil {
@@ -1086,23 +1106,25 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, connErr
 			}
 		}
-		// WDY-1149: verify the resolved default device is still the same device,
-		// in the same organisation and cloud, that was pinned here (and pin it on
-		// first use). This runs BEFORE the update check on purpose: that check can
-		// offer to upload an agent binary, which must never happen against a
-		// device whose identity we are about to reject.
-		if isDefault {
-			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
-				conn.Close()
-				return nil, pinErr
-			}
+		// WDY-1149: verify the device that answered is still the same device, in
+		// the same organisation and cloud, that was pinned under this name (and
+		// pin it on first use). Every named target is checked, not just the saved
+		// default: --device is exactly as spoofable as a default, and a check that
+		// only covers the device you did not name is not a check.
+		//
+		// This runs BEFORE the update check on purpose: that check can offer to
+		// upload an agent binary, which must never happen against a device whose
+		// identity we are about to reject.
+		if pinErr := enforceDevicePin(pinKey, conn); pinErr != nil {
+			conn.Close()
+			return nil, pinErr
 		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
-			conn, updateErr = checkAndOfferUpdate(ctx, conn)
+			conn, updateErr = checkAndOfferUpdateFn(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
 			}
@@ -1128,6 +1150,9 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 // support gRPC.
 func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpcclient.AgentConnection, error) {
 	if target.Agent != nil {
+		if pinErr := enforceSelectedDevicePin(target); pinErr != nil {
+			return nil, pinErr
+		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(target.Agent)
 		}
@@ -1147,6 +1172,108 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 	}
 
 	return nil, fmt.Errorf("selected device does not support gRPC agent commands")
+}
+
+// enforceSelectedDevicePin applies the device pin to a picker selection, and
+// closes the connection if it is refused.
+//
+// The dial ladder could not do this itself: the picker dials an address
+// discovery handed it, so by the time a certificate arrives the only record of
+// WHICH device the user chose is on the row they selected. A selection with no
+// key is left unenforced rather than pinned under a substitute — pinning device
+// A's certificate under device B's name is worse than not pinning at all,
+// because it looks like enforcement while checking nothing.
+func enforceSelectedDevicePin(target *SelectedDevice) error {
+	if target == nil || target.Agent == nil || target.PinKey == "" {
+		return nil
+	}
+	if err := enforceDevicePin(target.PinKey, target.Agent); err != nil {
+		target.Agent.Close()
+		target.Agent = nil
+		return err
+	}
+	return nil
+}
+
+// pinKeyForLANDevice is the pin key for a picker row: the device's HOSTNAME.
+//
+// Not its DisplayName, which is the tempting choice and the wrong one. On
+// WendyOS that is a Title-Cased friendly name from the `displayname` TXT record
+// ("Agx Orin") built from the device name, while the hostname is "wendyos-" +
+// that name ("wendyos-agx-orin.local") — one is not a transform of the other.
+// Keying picker pins on the display name would file them where the --device and
+// default-device paths (which key on the hostname, via pinKeyForAddr) never
+// look: the same device pinned twice under two names, each path blind to what
+// the other recorded, with nothing in the config or the output to show for it.
+// The hostname is also exactly what a user types for --device, which is what
+// makes it the one name every path can agree on.
+func pinKeyForLANDevice(d *models.LANDevice) string {
+	if d == nil {
+		return ""
+	}
+	return strings.TrimSpace(d.Hostname)
+}
+
+// connectPickedLANDevice connects to the LAN half of a picked device at addr
+// and returns the selection, with the device pin enforced before anything else
+// is done over that connection. d.LAN must be non-nil.
+//
+// The ordering is the whole point. checkAndOfferUpdate can prompt "Update the
+// agent now?" and, on a yes, upload a wendy-agent binary and restart it — so it
+// must not run against a device whose identity is about to be rejected. That is
+// the invariant connectToAgent states for named targets, and the picker needs
+// it just as badly: mDNS is unauthenticated, so the row the user clicked is a
+// claim about which device answers there, not proof of it.
+//
+// A refusal is also not a reason to fall back to Bluetooth. The BLE fallback in
+// the connect-error branch is for a device that did not answer at all; a device
+// that answered as somebody else is a refusal, and reaching it over a second
+// transport instead would hand back the very device the pin just rejected. That
+// holds for both refusals that can reach here — the post-connect one below, and
+// the dial ladder's own, which arrives as a connect ERROR and so has to be
+// recognised before the fallback, not after it.
+//
+// Note this also covers `wendy device set-default` with no argument, which
+// picks through here: a device whose identity changed can no longer be re-pinned
+// by picking it from the TUI. Naming it (`set-default <host>`, which drops the
+// pin first) or `wendy device unpin <host>` is the way back — a re-pin has to be
+// an act aimed at a specific device, not a row in a list mDNS filled in.
+func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, addr string, suppressUpdateCheck bool) (*SelectedDevice, error) {
+	mtls := d.LAN.IsMTLS
+	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
+	if err != nil {
+		// An identity refusal is not "the LAN attempt failed". The dial ladder
+		// raises one when the host answering proved it is somebody else, or when
+		// a pinned host offered only an unauthenticated endpoint — and the BLE
+		// half of this row is named by the same unauthenticated advertisement
+		// that named the LAN half. Falling back would reach the very peer the
+		// refusal just rejected, over a transport where nothing enforces the pin
+		// at all (attemptBLEConnect sets no ExpectedIdentity, and
+		// enforceSelectedDevicePin is a no-op for a Bluetooth selection), and
+		// report success. Typed, not text-matched: the wording of these refusals
+		// is not a contract, and a message rewrite must not silently reopen this.
+		if errors.Is(err, errDeviceIdentityRefused) {
+			return nil, err
+		}
+		// LAN failed — fall back to BLE if available.
+		if d.Bluetooth != nil {
+			return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
+		}
+		return nil, err
+	}
+
+	picked := &SelectedDevice{Agent: conn, PinKey: pinKeyForLANDevice(d.LAN)}
+	if pinErr := enforceSelectedDevicePin(picked); pinErr != nil {
+		return nil, pinErr
+	}
+	if !suppressUpdateCheck {
+		updatedConn, updateErr := checkAndOfferUpdateFn(ctx, picked.Agent)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		picked.Agent = updatedConn
+	}
+	return picked, nil
 }
 
 // connectWithAutoTLS tries to connect using mTLS if the CLI has auth certs,
@@ -1387,8 +1514,10 @@ const (
 // first. The returned lkgOutcome tells the caller how to fall through —
 // dialAgentLKG never surfaces its own failures as the connect's outcome.
 // Trust is unchanged: the same certs, verifiers, and pins run here as on
-// the ordinary path; the cache contributes routing only.
-func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+// the ordinary path; the cache contributes routing only — pinKey is the name
+// the caller was asked for, NOT the entry's IP or display name, so a poisoned
+// cache row cannot pick which identity this dial is allowed to accept.
+func dialAgentLKG(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 	addr := hostPort(e.IP, e.Port)
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	if !lkgTCPAlive(addr) {
@@ -1404,7 +1533,7 @@ func dialAgentLKG(ctx context.Context, e discoverycache.Entry) (*grpcclient.Agen
 		// treating it like a dead IP.
 		return nil, nil, lkgHandshakeFailed
 	}
-	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, addr, certs)
+	conn, mtlsErr, err := dialAgentLadderWithCertsFn(ctx, newDialTarget(pinKey, addr), certs)
 	if err != nil || conn == nil || !conn.IsMTLS {
 		// The entry advertised mTLS; a plaintext downgrade here would be
 		// surprising, so route it through the ordinary path instead.
@@ -1531,6 +1660,11 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	originalAddr := plaintextAddr
+	// The pin key is the host the caller was ASKED to reach, captured before
+	// any resolution, cache lookup, or retry can substitute an address for it.
+	// Every rung below dials with this same key, so which device is acceptable
+	// never depends on what discovery answered.
+	pinKey := pinKeyForAddr(originalAddr)
 	fromCache := false
 	if plainHost, plainPort, splitErr := net.SplitHostPort(plaintextAddr); splitErr == nil && net.ParseIP(plainHost) == nil {
 		if e, ok := cachedDeviceHostEntry(plainHost); ok && e.IP != "" {
@@ -1540,7 +1674,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				// Last-known-good direct dial: the advertised mTLS endpoint
 				// with the entry's org's cert first, TCP-bounded so a dead
 				// IP costs at most lkgTCPConnectTimeout.
-				switch conn, mtlsErr, outcome := dialAgentLKGFn(ctx, e); outcome {
+				switch conn, mtlsErr, outcome := dialAgentLKGFn(ctx, e, pinKey); outcome {
 				case lkgConnected:
 					return conn, mtlsErr, nil
 				case lkgHandshakeFailed:
@@ -1575,7 +1709,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 		plaintextAddr = resolveAddrOnce(ctx, plaintextAddr)
 	}
 
-	conn, mtlsErr, err := dialAgentLadderFn(ctx, plaintextAddr)
+	conn, mtlsErr, err := dialAgentLadderFn(ctx, newDialTarget(pinKey, plaintextAddr))
 	if fromCache && !cacheFastPathReachableFn(ctx, conn, err) {
 		switch {
 		case ctx.Err() != nil:
@@ -1599,7 +1733,7 @@ func connectWithAutoTLSDiagnostics(ctx context.Context, plaintextAddr string) (*
 				if conn != nil {
 					conn.Close()
 				}
-				conn, mtlsErr, err = dialAgentLadderFn(ctx, retryAddr)
+				conn, mtlsErr, err = dialAgentLadderFn(ctx, newDialTarget(pinKey, retryAddr))
 			}
 		}
 	}
@@ -1750,7 +1884,14 @@ func cacheHostnameForStorage(host string) string {
 // its own. connectWithAutoTLSDiagnostics calls it for every connect —
 // resolved-address and device-cache fast path alike, including the fast
 // path's stale-cache retry — so all three share this exact same ladder.
-func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+//
+// target.Addr is that address; target.PinKey and target.Expected are what the
+// user asked for, and they make this the single point where the two identity
+// rules hold: a peer that is the wrong device aborts the whole ladder (no
+// further cert, no further port), and a host with any pin is never offered the
+// plaintext rung.
+func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts []config.CertificateInfo) (*grpcclient.AgentConnection, error, error) {
+	plaintextAddr := target.Addr
 	tlsDebug := os.Getenv("WENDY_TLS_DEBUG") != ""
 	var lastMTLSErr error
 	recordMTLSErr := func(addr string, err error) {
@@ -1808,7 +1949,7 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 			for addrIdx, mtlsAddr := range mtlsAddrs {
 				for pos := range probeOrder {
 					i := probeOrder[pos]
-					conn, tlsErr := grpcclient.ConnectWithTLSAndPins(ctx, mtlsAddr, &allCerts[i], pins)
+					conn, tlsErr := grpcclient.ConnectWithTLSExpecting(ctx, mtlsAddr, &allCerts[i], pins, target.Expected)
 					if tlsErr != nil {
 						recordMTLSErr(mtlsAddr, tlsErr)
 						if tlsDebug {
@@ -1830,6 +1971,26 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 						return conn, nil, nil
 					}
 					recordMTLSErr(mtlsAddr, probeErr)
+					if im, mismatched := identityMismatchFn(conn); mismatched {
+						conn.Close()
+						// The device is wrong, not our certificate — every
+						// remaining cert and port would fail the same way, and
+						// the plaintext rung below must not be reached at all.
+						// refusalKey, not PinKey: the pin that produced this
+						// constraint may be filed under one of the device's
+						// other names, and that is the key `wendy device unpin`
+						// has to be handed to clear it.
+						return nil, lastMTLSErr, identityRefusal(target.refusalKey(), im)
+					}
+					if pm, mismatched := pinMismatchFn(conn); mismatched {
+						conn.Close()
+						// The SPKI store rejected the peer's public key. Same
+						// reasoning as above — the key belongs to the device,
+						// not to our certificate — but this refusal also has to
+						// exist because gRPC's handshake wrapper is otherwise
+						// the only thing the user sees, and it names no way out.
+						return nil, lastMTLSErr, spkiRefusal(target.refusalKey(), pm)
+					}
 					if tlsDebug {
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
 					}
@@ -1873,14 +2034,23 @@ func dialAgentLadderWithCerts(ctx context.Context, plaintextAddr string, allCert
 			}
 		}
 	}
-	conn, err := grpcclient.Connect(ctx, plaintextAddr)
+	if target.pinned() {
+		// A host we have already reached over mTLS must never be reached
+		// unauthenticated. Unlike provisionedAgentAdvertisedMTLS this rests on
+		// local state, not a TXT record the attacker also controls — and on the
+		// SAME resolution of that state that produced target.Expected and
+		// target.refusalKey, so the three can never disagree about which pin
+		// they are talking about (see dialTarget.pinned).
+		return nil, lastMTLSErr, pinnedHostWentUnauthenticatedError(target.refusalKey())
+	}
+	conn, err := plaintextConnectFn(ctx, plaintextAddr)
 	return conn, lastMTLSErr, err
 }
 
 // dialAgentLadder is dialAgentLadderWithCerts with the CLI's stored certs
 // in config order — the shape every non-fast-path caller wants.
-func dialAgentLadder(ctx context.Context, plaintextAddr string) (*grpcclient.AgentConnection, error, error) {
-	return dialAgentLadderWithCerts(ctx, plaintextAddr, loadAllCLICerts())
+func dialAgentLadder(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+	return dialAgentLadderWithCerts(ctx, target, loadAllCLICerts())
 }
 
 // dialAgentLadderWithCertsFn is a seam over dialAgentLadderWithCerts for
@@ -1942,10 +2112,29 @@ func isCertRejectionError(err error) bool {
 
 // provisionedAgentAdvertisedMTLS takes a short pre-connection LAN discovery
 // snapshot and checks whether the target address was already advertised as an
-// mTLS-only agent. Callers pass this result into the dial path; it is not
+// mTLS-only agent.
+//
+// This is a PHRASING HINT FOR ERROR MESSAGES ONLY and must never be used as a
+// guard. What it reports comes from the device's own mDNS TXT records, which
+// whoever answered the address controls — so "it didn't advertise mTLS" is not
+// evidence that plaintext is safe. The rule that actually withholds the
+// plaintext rung is dialTarget.pinned, which rests on the pin state resolved
+// for this dial (see dialAgentLadderWithCerts). This snapshot is also not
 // refreshed after a failed connection attempt.
 func provisionedAgentAdvertisedMTLS(ctx context.Context, plaintextAddr string) bool {
-	devices, err := discoverLANDevices(ctx, provisionedAgentMetadataDiscoveryTimeout)
+	return provisionedAgentAdvertisedMTLSVia(ctx, discoverLANDevices, plaintextAddr)
+}
+
+// provisionedAgentAdvertisedMTLSVia is provisionedAgentAdvertisedMTLS with the
+// discovery hook passed in rather than read from the package variable.
+//
+// deferProvisionedMTLSCheck runs this browse on a goroutine that outlives the
+// call that started it, so reading the seam in here would read it at an
+// unpredictable time — which races any test that restores the seam in
+// t.Cleanup while the browse is still in flight. Callers snapshot the hook on
+// their own goroutine and hand it over instead.
+func provisionedAgentAdvertisedMTLSVia(ctx context.Context, discover func(context.Context, time.Duration) ([]models.LANDevice, error), plaintextAddr string) bool {
+	devices, err := discover(ctx, provisionedAgentMetadataDiscoveryTimeout)
 	if err != nil {
 		return false
 	}
@@ -2109,6 +2298,12 @@ func checkAndOfferUpdate(ctx context.Context, conn *grpcclient.AgentConnection) 
 	fmt.Fprintf(os.Stderr, " ready.\n")
 	return newConn, nil
 }
+
+// checkAndOfferUpdateFn is a seam over checkAndOfferUpdate. It exists for tests
+// that must prove the update check was NOT reached: it can upload and restart a
+// wendy-agent binary, so "did this run?" is a security assertion about the
+// identity gates that precede it, not an implementation detail.
+var checkAndOfferUpdateFn = checkAndOfferUpdate
 
 // performAgentUpdate downloads the latest release for the given osName/arch and
 // uploads it to conn. Pass nightly=true to fetch the latest prerelease instead
@@ -2475,16 +2670,30 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				conn = refreshedConn
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
-				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+				recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+				if recErr != nil {
+					return nil, recErr
+				}
+				if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
+					return nil, pinErr
+				}
+				return recovered, nil
 			} else if isDefault {
 				return nil, defaultDeviceUnreachableError(device, err)
 			} else {
 				return nil, err
 			}
 		}
+		// Same pin key as connectToAgent's: the host of the address dialled, via
+		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
+		// connectToAgent never sees, and an unchecked path is the whole attack.
+		if pinErr := enforceDevicePin(pinKeyForAddr(addr), conn); pinErr != nil {
+			conn.Close()
+			return nil, pinErr
+		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
-			conn, updateErr = checkAndOfferUpdate(ctx, conn)
+			conn, updateErr = checkAndOfferUpdateFn(ctx, conn)
 			if updateErr != nil {
 				return nil, updateErr
 			}
@@ -2498,7 +2707,14 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	return pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	if pickErr != nil {
+		return nil, pickErr
+	}
+	if pinErr := enforceSelectedDevicePin(picked); pinErr != nil {
+		return nil, pinErr
+	}
+	return picked, nil
 }
 
 // findDeviceByID searches all available providers for a device whose ID
@@ -3081,23 +3297,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 				}
 				return nil, fmt.Errorf("selected LAN device has no usable address")
 			}
-			mtls := d.LAN.IsMTLS
-			conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
-			if err == nil {
-				if !suppressUpdateCheck {
-					var updateErr error
-					conn, updateErr = checkAndOfferUpdate(ctx, conn)
-					if updateErr != nil {
-						return nil, updateErr
-					}
-				}
-				return &SelectedDevice{Agent: conn}, nil
-			}
-			// LAN failed — fall back to BLE if available.
-			if d.Bluetooth != nil {
-				return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
-			}
-			return nil, err
+			return connectPickedLANDevice(ctx, d, addr, suppressUpdateCheck)
 		}
 
 		// Wendy Lite device — set both BLE and External+Provider when

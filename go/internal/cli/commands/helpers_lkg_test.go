@@ -49,15 +49,20 @@ func TestConnectFastPathStaleEntryZeroResolution(t *testing.T) {
 	}
 	want := &grpcclient.AgentConnection{IsMTLS: true}
 	origLKG := dialAgentLKGFn
-	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 		if e.IP != "10.0.0.9" || e.Port != 50052 {
 			t.Errorf("LKG got entry %s:%d, want 10.0.0.9:50052", e.IP, e.Port)
+		}
+		// The pin key must be the name the caller asked for, not anything the
+		// cache row supplied.
+		if pinKey != "orin.local" {
+			t.Errorf("LKG pin key = %q, want the requested name %q", pinKey, "orin.local")
 		}
 		return want, nil, lkgConnected
 	}
 	origLadder := dialAgentLadderFn
-	dialAgentLadderFn = func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error, error) {
-		t.Errorf("general ladder ran despite LKG success (addr %s)", addr)
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		t.Errorf("general ladder ran despite LKG success (addr %s)", target.Addr)
 		return nil, nil, errors.New("unreachable")
 	}
 	t.Cleanup(func() {
@@ -85,14 +90,14 @@ func TestConnectFastPathLKGHandshakeFailedFallsThroughToLadder(t *testing.T) {
 	}, 0)
 
 	origLKG := dialAgentLKGFn
-	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 		return nil, nil, lkgHandshakeFailed // host alive, handshake didn't pan out
 	}
 	want := &grpcclient.AgentConnection{IsMTLS: true}
 	var ladderAddr string
 	origLadder := dialAgentLadderFn
-	dialAgentLadderFn = func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error, error) {
-		ladderAddr = addr
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		ladderAddr = target.Addr
 		return want, nil, nil
 	}
 	origReach := cacheFastPathReachableFn
@@ -121,7 +126,7 @@ func TestConnectFastPathLKGDeadTCPFallsThroughToFreshResolution(t *testing.T) {
 	}, 0)
 
 	origLKG := dialAgentLKGFn
-	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 		return nil, nil, lkgDeadTCP // cached IP is dead
 	}
 	origLookup, origBrowse := osLookupHostFn, lanBrowseFn
@@ -135,8 +140,8 @@ func TestConnectFastPathLKGDeadTCPFallsThroughToFreshResolution(t *testing.T) {
 	want := &grpcclient.AgentConnection{IsMTLS: true}
 	var ladderAddrs []string
 	origLadder := dialAgentLadderFn
-	dialAgentLadderFn = func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error, error) {
-		ladderAddrs = append(ladderAddrs, addr)
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		ladderAddrs = append(ladderAddrs, target.Addr)
 		return want, nil, nil
 	}
 	origReach := cacheFastPathReachableFn
@@ -170,7 +175,7 @@ func TestConnectFastPathLKGIneligibleDeadTCPFallsThroughToFreshResolution(t *tes
 		ID: "dev-1", Hostname: "pi.local", IP: "10.0.0.7", Port: 50051, MTLS: false,
 	}, 0)
 	origLKG := dialAgentLKGFn
-	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 		t.Error("LKG ran for a non-mTLS entry")
 		return nil, nil, lkgDeadTCP
 	}
@@ -189,8 +194,8 @@ func TestConnectFastPathLKGIneligibleDeadTCPFallsThroughToFreshResolution(t *tes
 	want := &grpcclient.AgentConnection{IsMTLS: true}
 	var ladderAddr string
 	origLadder := dialAgentLadderFn
-	dialAgentLadderFn = func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error, error) {
-		ladderAddr = addr
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		ladderAddr = target.Addr
 		return want, nil, nil
 	}
 	origReach := cacheFastPathReachableFn
@@ -219,7 +224,7 @@ func TestConnectFastPathLKGIneligibleLiveTCPUsesCachedIP(t *testing.T) {
 		ID: "dev-1", Hostname: "pi.local", IP: "10.0.0.7", Port: 50051, MTLS: false,
 	}, 0)
 	origLKG := dialAgentLKGFn
-	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry) (*grpcclient.AgentConnection, error, lkgOutcome) {
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
 		t.Error("LKG ran for a non-mTLS entry")
 		return nil, nil, lkgDeadTCP
 	}
@@ -232,8 +237,8 @@ func TestConnectFastPathLKGIneligibleLiveTCPUsesCachedIP(t *testing.T) {
 	want := &grpcclient.AgentConnection{IsMTLS: true}
 	var ladderAddr string
 	origLadder := dialAgentLadderFn
-	dialAgentLadderFn = func(ctx context.Context, addr string) (*grpcclient.AgentConnection, error, error) {
-		ladderAddr = addr
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		ladderAddr = target.Addr
 		return want, nil, nil
 	}
 	origReach := cacheFastPathReachableFn
