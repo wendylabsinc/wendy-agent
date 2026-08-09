@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
 	"github.com/wendylabsinc/wendy/go/internal/agent/oshealth"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -141,6 +142,10 @@ func (s *AgentService) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVer
 	}
 
 	resp.NetworkInterfaces = listNetworkInterfaces()
+
+	// nil on the mains-powered devices that make up most of the fleet, which
+	// leaves the field absent so `wendy device info` prints no battery line.
+	resp.Battery = batteryToProto(hoststats.SampleBattery())
 
 	return resp, nil
 }

@@ -227,6 +227,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
 			var providerInfo *providers.ProviderDeviceInfo
+			// nil for mains-powered devices, for agents predating the field,
+			// and for the BLE/provider paths that never report one.
+			var battery *agentpb.BatteryStats
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
@@ -265,6 +268,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
+				battery = resp.GetBattery()
 			} else if target.External != nil && target.Provider != nil {
 				info, infoErr := target.Provider.GetDeviceInfo(ctx, *target.External)
 				if infoErr != nil {
@@ -364,6 +368,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					}
 					out["networkInterfaces"] = ifaces
 				}
+				if b := batteryJSON(battery); b != nil {
+					out["battery"] = b
+				}
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
@@ -391,6 +398,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			if memTotalBytes > 0 {
 				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
+			if battery != nil {
+				fmt.Printf("%s %s\n", tui.Dim("Battery:"), tui.Value(formatBatterySummary(battery)))
 			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
