@@ -7,6 +7,8 @@
 package codegen
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
@@ -71,7 +73,7 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 				lines = append(lines, apkInstallLines(s.Install.Apk)...)
 			}
 			if len(s.Install.CMake) > 0 {
-				lines = append(lines, cmakeInstallLines(s.Install.CMake)...)
+				lines = append(lines, cmakeInstallLines(s.Install.CMake, stagePlatform)...)
 			}
 			if s.Install.Pip != nil {
 				lines = append(lines, pipInstallLines(s.Install.Pip)...)
@@ -221,7 +223,33 @@ func shellQuote(s string) string {
 // or npm. sharing=locked moves the queueing to the mount, where BuildKit
 // reports it as part of the build graph.
 func cacheRun(dir, cmd string) string {
-	return fmt.Sprintf("RUN --mount=type=cache,sharing=locked,target=%s %s", dir, cmd)
+	return cacheRunID("", dir, cmd)
+}
+
+// cacheRunID is cacheRun with an explicit BuildKit cache id. Without one a
+// mount is scoped by its target path, which is fine for the package-manager
+// caches (their contents are self-describing — a wheel names its own platform)
+// but not for a build tree, where the same path in two different builds holds
+// object files that must never meet. An id lets the caller say exactly what
+// may share.
+func cacheRunID(id, dir, cmd string) string {
+	mount := "type=cache,sharing=locked"
+	if id != "" {
+		mount += ",id=" + id
+	}
+	return fmt.Sprintf("RUN --mount=%s,target=%s %s", mount, dir, cmd)
+}
+
+// cmakeCacheID scopes a cmake build tree to the project and the architecture
+// it is compiled for, and deliberately to nothing else. Commit is excluded so
+// bumping a pin recompiles only what changed — the reason the cache exists.
+// Everything else the Stagefile can set (build type, prefix, defines) is an
+// ordinary CMake cache variable that CMake reconfigures in place; the target
+// platform is the one input it cannot detect, because the compiler sits at the
+// same path in either rootfs.
+func cmakeCacheID(repository, platform string) string {
+	sum := sha256.Sum256([]byte(repository + "\x00" + platform))
+	return "stagefile-cmake-" + hex.EncodeToString(sum[:])[:16]
 }
 
 // aptRepositoryLines emits the declared extra apt sources: ca-certificates
@@ -291,7 +319,7 @@ func apkInstallLines(a *spec.ApkInstall) []string {
 	return append(lines, "RUN "+strings.Join(parts, " "))
 }
 
-func cmakeInstallLines(installs []spec.CMakeInstall) []string {
+func cmakeInstallLines(installs []spec.CMakeInstall, platform string) []string {
 	lines := make([]string, 0, len(installs))
 	for i, c := range installs {
 		root := fmt.Sprintf("/tmp/stagefile-cmake-%d", i)
@@ -332,9 +360,14 @@ func cmakeInstallLines(installs []spec.CMakeInstall) []string {
 			strings.Join(configure, " "),
 			build,
 			"cmake --install " + shellQuote(buildDir),
-			"rm -rf " + shellQuote(root),
+			// Only the source tree is removed. The build tree is a cache mount
+			// and never enters the layer, so deleting it would throw away the
+			// object files the next commit bump wants — while removing nothing
+			// from the image.
+			"rm -rf " + shellQuote(sourceDir),
 		}
-		lines = append(lines, "RUN "+strings.Join(commands, " \\\n    && "))
+		lines = append(lines, cacheRunID(cmakeCacheID(c.Repository, platform), buildDir,
+			strings.Join(commands, " \\\n    && ")))
 	}
 	return lines
 }
