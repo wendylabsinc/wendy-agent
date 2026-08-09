@@ -535,6 +535,15 @@ func validateChunkingMode(mode string) error {
 	}
 }
 
+// chunkDeployEligible reports whether this run may use the chunk-diff (CDC)
+// deploy path. --debug is excluded: only the registry-push path wraps the
+// image with debugpy (injectDebugpy), and deploying an unwrapped image with
+// the agent-side debug entrypoint rewrite crash-loops any image that does
+// not bundle debugpy (every Stagefile Python app).
+func chunkDeployEligible(opts runOptions, isDarwinAgent bool) bool {
+	return !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff && !opts.debug
+}
+
 func newRunCmd() *cobra.Command {
 	var opts runOptions
 	var watch bool
@@ -1506,7 +1515,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// win on key clash. Feeds both the fingerprint and whichever deploy path runs.
 	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
-	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
+	// The fast path just restarts the existing container, so it must not fire
+	// under --debug: only the registry-push path wraps the image with debugpy
+	// (injectDebugpy), so a container fast-started here could be running the
+	// wrong (unwrapped) entrypoint for the requested debug mode.
+	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil && !opts.debug {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
 			mark("fast-path (skipped build)")
 			return nil
@@ -1526,8 +1539,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// starts; that mode stays on the registry path via startAndStreamContainer.
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
-	// while "force" uses it with no registry-push fallback on failure.
-	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
+	// while "force" uses it with no registry-push fallback on failure. --debug
+	// also excludes it: see chunkDeployEligible.
+	if chunkDeployEligible(opts, isDarwinAgent) {
 		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
