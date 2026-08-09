@@ -178,7 +178,7 @@ func TestGeneratePipInstallFromRequirements(t *testing.T) {
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -201,7 +201,7 @@ func TestGeneratePipInstallCopyPrecedesExplicitCopy(t *testing.T) {
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +
 		"COPY app.py app.py\n" +
 		"USER 65532\n"
 	if out != want {
@@ -222,7 +222,7 @@ func TestGeneratePipInstallFromPackages(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install 'flask' 'gunicorn'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask' 'gunicorn'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -473,7 +473,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.cache/pip pip install 'flask>=2.0,<3.0'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install 'flask>=2.0,<3.0'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)

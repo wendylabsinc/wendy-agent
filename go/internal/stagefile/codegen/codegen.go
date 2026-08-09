@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,12 +86,12 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			if len(s.Install.CMake) > 0 {
 				lines = append(lines, cmakeInstallLines(s.Install.CMake, stagePlatform)...)
 			}
-			lines = append(lines, pipGroupLines(s.Install.Pip, s.CUDA, cudaProfile)...)
+			lines = append(lines, pipGroupLines(s.Install.Pip, s.CUDA, cudaProfile, stagePlatform)...)
 			if s.Install.Npm != nil {
 				lines = append(lines, npmInstallLines(s.Install.Npm)...)
 			}
 			if s.Install.Uv != nil {
-				lines = append(lines, uvInstallLines(s.Install.Uv)...)
+				lines = append(lines, uvInstallLines(s.Install.Uv, stagePlatform)...)
 			}
 		}
 
@@ -263,6 +264,38 @@ func cacheRunID(id, dir, cmd string) string {
 	return fmt.Sprintf("RUN --mount=%s,target=%s %s", mount, dir, cmd)
 }
 
+// scopedCacheID hashes the parts that decide whether two builds can share a
+// cache into an opaque BuildKit mount id. Callers pass every input that changes
+// what lands in the cache and nothing else: too narrow a scope makes builds
+// contend for no benefit, too wide a scope makes them miss each other's work.
+func scopedCacheID(kind string, parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		io.WriteString(h, p)
+		h.Write([]byte{0})
+	}
+	return "stagefile-" + kind + "-" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// pipCacheID scopes pip's wheel cache to the index set it can download from and
+// the platform whose wheels it stores.
+//
+// Both matter because the mount stays sharing=locked: without an id, BuildKit
+// scopes by target path, so every pip install in every concurrently-built
+// service queues on ONE lock — including installs that could never share a
+// wheel because they pull from different indexes or build for different
+// architectures. Scoping removes that false contention while keeping the real
+// sharing: same index, same platform still means one mount, so the second build
+// gets the first one's downloads instead of re-fetching them.
+// index is the group's effective index, which for a cuda: group comes from the
+// resolved GPU profile rather than the Stagefile — scoping on p.Index would put
+// every GPU group in the one unnamed-index cache alongside PyPI wheels, which
+// is exactly the mixing this ID exists to prevent.
+func pipCacheID(p *spec.PipInstall, index, platform string) string {
+	parts := append([]string{platform, index}, p.ExtraIndex...)
+	return scopedCacheID("pip", parts...)
+}
+
 // cmakeCacheID scopes a cmake build tree to the project and the architecture
 // it is compiled for, and deliberately to nothing else. Commit is excluded so
 // bumping a pin recompiles only what changed — the reason the cache exists.
@@ -271,8 +304,7 @@ func cacheRunID(id, dir, cmd string) string {
 // platform is the one input it cannot detect, because the compiler sits at the
 // same path in either rootfs.
 func cmakeCacheID(repository, platform string) string {
-	sum := sha256.Sum256([]byte(repository + "\x00" + platform))
-	return "stagefile-cmake-" + hex.EncodeToString(sum[:])[:16]
+	return scopedCacheID("cmake", repository, platform)
 }
 
 // aptRepositoryLines emits the declared extra apt sources: ca-certificates
@@ -398,7 +430,7 @@ func cmakeInstallLines(installs []spec.CMakeInstall, platform string) []string {
 // pipInstallLines emits one pip group. A group marked cuda: takes its index
 // from cudaProfile instead of the Stagefile, which is what lets the same
 // source resolve GPU wheels for whichever board it is being built for.
-func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile) []string {
+func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform string) []string {
 	var lines []string
 	if p.Requirements != "" {
 		lines = append(lines, fmt.Sprintf("COPY %s %s", p.Requirements, p.Requirements))
@@ -423,7 +455,7 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile) []string {
 	for _, pkg := range p.Packages {
 		parts = append(parts, shellQuote(pkg))
 	}
-	lines = append(lines, cacheRun("/root/.cache/pip", strings.Join(parts, " ")))
+	lines = append(lines, cacheRunID(pipCacheID(p, index, platform), "/root/.cache/pip", strings.Join(parts, " ")))
 	return lines
 }
 
@@ -456,7 +488,7 @@ func npmInstallLines(n *spec.NpmInstall) []string {
 	}
 }
 
-func uvInstallLines(u *spec.UvInstall) []string {
+func uvInstallLines(u *spec.UvInstall, platform string) []string {
 	parts := []string{"uv", "sync", "--frozen"}
 	if !u.Dev {
 		parts = append(parts, "--no-dev")
@@ -466,7 +498,7 @@ func uvInstallLines(u *spec.UvInstall) []string {
 	}
 	return []string{
 		"COPY " + strings.Join(spec.UvLocalFiles, " ") + " ./",
-		cacheRun("/root/.cache/uv", strings.Join(parts, " ")),
+		cacheRunID(scopedCacheID("uv", platform), "/root/.cache/uv", strings.Join(parts, " ")),
 	}
 }
 
@@ -615,7 +647,7 @@ func stageEnv(s *spec.Stage, cudaProfile *gpu.Profile) map[string]string {
 // the runtime changes only when the profile does, while app dependencies
 // change constantly, and a later group's edit must not invalidate the layer
 // holding several hundred megabytes of CUDA libraries.
-func pipGroupLines(groups []spec.PipInstall, stageCUDA bool, cudaProfile *gpu.Profile) []string {
+func pipGroupLines(groups []spec.PipInstall, stageCUDA bool, cudaProfile *gpu.Profile, platform string) []string {
 	runtimeAfter := -1
 	for i, g := range groups {
 		if g.CUDA {
@@ -634,11 +666,11 @@ func pipGroupLines(groups []spec.PipInstall, stageCUDA bool, cudaProfile *gpu.Pr
 		// free to satisfy either package from either source — resolving torch
 		// from PyPI, which is the wrong-architecture wheel this whole feature
 		// exists to avoid.
-		lines = append(lines, pipInstallLines(&spec.PipInstall{Packages: cudaProfile.Runtime}, nil)...)
+		lines = append(lines, pipInstallLines(&spec.PipInstall{Packages: cudaProfile.Runtime}, nil, platform)...)
 	}
 
 	for i := range groups {
-		lines = append(lines, pipInstallLines(&groups[i], cudaProfile)...)
+		lines = append(lines, pipInstallLines(&groups[i], cudaProfile, platform)...)
 		if i == runtimeAfter {
 			emitRuntime()
 		}

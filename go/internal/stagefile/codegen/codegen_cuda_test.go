@@ -130,6 +130,44 @@ func TestGenerateCUDARuntimeEmittedWithoutAnyCUDAPipGroup(t *testing.T) {
 	}
 }
 
+// The pip cache mount is scoped by the index a group resolves from. A cuda:
+// group's index comes from the profile, not the Stagefile, so it must not land
+// in the same cache as the PyPI groups beside it — sharing one directory
+// between a vendor index and PyPI is the mixing that scoping exists to stop.
+func TestGenerateCUDAPipCacheScopedByTheResolvedIndex(t *testing.T) {
+	out := mustGenerateCUDA(t, spec.Stage{
+		CUDA: true,
+		Install: &spec.Install{Pip: []spec.PipInstall{
+			{Packages: []string{"torch==2.8.0"}, CUDA: true},
+			{Packages: []string{"flask"}},
+		}},
+	})
+
+	var ids []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "/root/.cache/pip") {
+			continue
+		}
+		start := strings.Index(line, ",id=")
+		if start < 0 {
+			t.Fatalf("pip cache mount with no id:\n%s", line)
+		}
+		rest := line[start+len(",id="):]
+		ids = append(ids, rest[:strings.Index(rest, ",")])
+	}
+	if len(ids) != 3 {
+		t.Fatalf("expected 3 pip installs (wheels, runtime, app), got %d\n%s", len(ids), out)
+	}
+	// The GPU wheels resolve from the profile's index; the runtime and the app
+	// dependencies both resolve from PyPI and may share.
+	if ids[0] == ids[1] {
+		t.Errorf("GPU wheel group shares a cache with the PyPI runtime group (id %q)", ids[0])
+	}
+	if ids[1] != ids[2] {
+		t.Errorf("two PyPI groups landed in different caches: %q vs %q", ids[1], ids[2])
+	}
+}
+
 // An explicit user: is a deliberate statement and outranks the root a GPU
 // stage would otherwise take.
 func TestGenerateCUDAExplicitUserWins(t *testing.T) {
