@@ -104,6 +104,16 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 	return s.flush()
 }
 
+// Has reports whether a pin is recorded for an identity key. Remove treats an
+// absent key as success, which is right for the caller's contract but leaves it
+// unable to say what it actually removed — and an unpin that reports clearing
+// entries it never held is exactly the kind of vague reporting that let
+// over-broad clearing go unnoticed.
+func (s *Store) Has(key string) bool {
+	_, ok := s.devices[key]
+	return ok
+}
+
 // Remove drops the pin for an identity key, so the next connection is a first
 // use. Removing an absent key is not an error.
 func (s *Store) Remove(key string) error {

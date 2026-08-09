@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
@@ -18,12 +20,21 @@ import (
 // bug in the test fixture, not in the store.
 func seedSPKIPin(t *testing.T, key string) {
 	t.Helper()
+	seedSPKIPins(t, key)
+}
+
+// seedSPKIPins is seedSPKIPin for more than one device, which is what the
+// blast-radius tests need: proving an unpin left another device's entry alone
+// requires another device's entry to exist.
+func seedSPKIPins(t *testing.T, keys ...string) {
+	t.Helper()
 	dir, err := config.ConfigDir()
 	if err != nil {
 		t.Fatalf("config dir: %v", err)
 	}
-	devices := map[string]devicepin.PinnedDevice{
-		key: {SPKIFingerprint: "sha256:deadbeef", DisplayName: "thor", LastSeen: "2026-01-01T00:00:00Z"},
+	devices := map[string]devicepin.PinnedDevice{}
+	for _, key := range keys {
+		devices[key] = devicepin.PinnedDevice{SPKIFingerprint: "sha256:deadbeef", DisplayName: "thor", LastSeen: "2026-01-01T00:00:00Z"}
 	}
 	data, err := json.Marshal(devices)
 	if err != nil {
@@ -203,6 +214,199 @@ func TestDeviceUnpinAcceptsHostPortAddress(t *testing.T) {
 	}
 	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
 		t.Error("SPKI pin survived unpin with an explicit port")
+	}
+}
+
+// runUnpin runs the command with its stdout captured, so a test can assert on
+// the report as well as on the stores.
+func runUnpin(t *testing.T, arg string) string {
+	t.Helper()
+	cmd := newDeviceUnpinCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.RunE(cmd, []string{arg}); err != nil {
+		t.Fatalf("unpin %q: %v", arg, err)
+	}
+	return out.String()
+}
+
+// TestDeviceUnpinAcceptsAnIdentityURN closes the escape hatch's other dead end.
+//
+// spkiRefusal fires with the SPKI store's key in hand and nothing else: the
+// picker and `wendy device list` dial lanAgentAddresses, whose first entry is
+// the IP, so the refusal names an IP that keys no config pin and whose asset no
+// cache lookup can derive (cachedDeviceHostEntry matches on Hostname). Agents
+// that never advertise `orgid` — the Swift macOS agent, Linux agents before
+// 2026-07-18 — leave the same gap even when a hostname is dialed. For both
+// populations the hostname-keyed unpin cleared nothing at all, and recovery
+// meant hand-editing known_devices.json.
+//
+// Given the URN the refusal prints, unpin must clear the SPKI entry AND any
+// config pin naming the same identity, so the two stores do not drift apart
+// into a second refusal under a different message.
+func TestDeviceUnpinAcceptsAnIdentityURN(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	setPinCache(t) // no cache entry: exactly the IP-dial / no-orgid shape
+	seedSPKIPins(t, "urn:wendy:org:7:asset:42", "urn:wendy:org:7:asset:99")
+
+	out := runUnpin(t, "urn:wendy:org:7:asset:42")
+
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("SPKI pin survived an unpin by its own store key: the refusal that named it has no other way out")
+	}
+	if pin, ok := readPins()["thor"]; ok {
+		t.Errorf("config pin naming the same identity survived (%+v): the stores drift and the next dial refuses under the other one", pin)
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:99"]; !ok {
+		t.Error("unpinning one identity removed another device's SPKI pin")
+	}
+	if !strings.Contains(out, "urn:wendy:org:7:asset:42") || !strings.Contains(out, "thor") {
+		t.Errorf("unpin reported %q, want it to name both entries it cleared", out)
+	}
+}
+
+// TestSPKIRefusalNamesAnArgumentUnpinCanActOn is the round trip the two halves
+// of Finding A only make sense together: the exact string spkiRefusal tells the
+// user to run must clear the entry that caused the refusal. Asserting the
+// message text and the command's behaviour separately would let them drift.
+func TestSPKIRefusalNamesAnArgumentUnpinCanActOn(t *testing.T) {
+	writePinTestConfig(t, nil)
+	setPinCache(t)
+	seedSPKIPin(t, "urn:wendy:org:7:asset:42")
+
+	// The IP-dial shape: the ladder knows only the address it dialed.
+	err := spkiRefusal("192.168.1.9", &devicepin.PinMismatchError{
+		Key: "urn:wendy:org:7:asset:42", DisplayName: "orin",
+		Want: "sha256:aaa", Got: "sha256:bbb",
+	})
+
+	arg := unpinArgumentFrom(t, err.Error())
+	runUnpin(t, arg)
+
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Errorf("running the refusal's own suggested command (%q) cleared nothing; the refusal is a dead end", arg)
+	}
+}
+
+// unpinArgumentFrom extracts the argument a refusal told the user to pass to
+// `wendy device unpin`.
+func unpinArgumentFrom(t *testing.T, msg string) string {
+	t.Helper()
+	const marker = "wendy device unpin "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		t.Fatalf("refusal %q names no unpin command at all", msg)
+	}
+	rest := msg[i+len(marker):]
+	return strings.TrimRight(strings.Fields(rest)[0], "'\"")
+}
+
+// TestDeviceUnpinLeavesAnotherDevicesPinsAlone is the adversarial case for the
+// blast radius, and the reason the "clear every candidate key" rule could not
+// stand.
+//
+// pinCandidateKeys' aliases come from the discovery cache, which Cache.Replace
+// fills verbatim from unauthenticated mDNS TXT records. An attacker who can
+// answer for the hostname the user is about to unpin chooses that entry's
+// displayname, mesh name, assetid and orgid — so pointing them at a victim
+// device made `wendy device unpin thor.local` delete the victim's config pin
+// and its SPKI entry too. The victim's next connect then started from a
+// permissive first use: an escape hatch turned into a downgrade primitive.
+//
+// Unpinning thor must clear thor's pins and nothing else.
+func TestDeviceUnpinLeavesAnotherDevicesPinsAlone(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"thor":   {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+		"victim": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "99"},
+	})
+	// A hostile answer for thor.local claiming the victim's names and asset.
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		Hostname:    "thor.local",
+		DisplayName: "victim",
+		MeshName:    "victim",
+		AssetID:     99,
+		OrgID:       7,
+	})
+	seedSPKIPins(t, "urn:wendy:org:7:asset:42", "urn:wendy:org:7:asset:99")
+
+	runUnpin(t, "thor.local")
+
+	pins := readPins()
+	if pin, ok := pins["thor"]; ok {
+		t.Errorf("the pin the user asked to clear survived: %+v", pin)
+	}
+	if _, ok := pins["victim"]; !ok {
+		t.Error("unpinning thor.local dropped another device's config pin, because an unauthenticated TXT record said the two were the same device; that device's next connect is now a permissive first use")
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:99"]; !ok {
+		t.Error("unpinning thor.local dropped another device's SPKI pin, from an asset id an attacker chose")
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("the SPKI pin for the device actually being unpinned survived")
+	}
+}
+
+// TestDeviceUnpinClearsEveryAliasOfTheSameDevice guards the property narrowing
+// the blast radius must not cost: unpinning by either name a device
+// legitimately answers to has to finish the job.
+//
+// `wendy cloud discover` files a pin under the roster's asset name while dials
+// name the device by its mDNS hostname, so one device really is pinned twice.
+// Both pins name the same asset, so both are this device's — clearing only the
+// governing one would refuse again under the other, and a command that has to
+// be run twice reads as a command that does not work.
+func TestDeviceUnpinClearsEveryAliasOfTheSameDevice(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendyos-calm-zinnia": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceLAN},
+		"calm-zinnia":         {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceCloud},
+	})
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		Hostname:    "wendyos-calm-zinnia.local",
+		DisplayName: "calm-zinnia",
+	})
+	seedSPKIPin(t, "urn:wendy:org:7:asset:42")
+
+	runUnpin(t, "wendyos-calm-zinnia.local")
+
+	for _, key := range []string{"wendyos-calm-zinnia", "calm-zinnia"} {
+		if pin, ok := readPins()[key]; ok {
+			t.Errorf("pin %q for the same asset survived (%+v); the next dial refuses under it and the user has to unpin twice", key, pin)
+		}
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("SPKI pin survived")
+	}
+}
+
+// TestDeviceUnpinIgnoresACacheThatDisagreesWithThePin covers the other half of
+// cachedIdentityKey's narrowing. The cache is consulted only where it agrees
+// with the governing config pin, or where there is no config pin at all (the
+// `wendy device list` case TestDeviceUnpinClearsSPKIPinWithNoConfigPin covers).
+// A cache that names a different asset for a pinned host is stale or hostile,
+// and either way it is not this device's SPKI entry to remove.
+func TestDeviceUnpinIgnoresACacheThatDisagreesWithThePin(t *testing.T) {
+	writePinTestConfig(t, map[string]config.DevicePin{
+		"thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	setPinCache(t, discoverycache.Entry{
+		ID:       "dev-1",
+		Hostname: "thor.local",
+		AssetID:  99,
+		OrgID:    7,
+	})
+	seedSPKIPins(t, "urn:wendy:org:7:asset:42", "urn:wendy:org:7:asset:99")
+
+	runUnpin(t, "thor.local")
+
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:99"]; !ok {
+		t.Error("an SPKI entry the discovery cache named — and the governing pin did not — was removed; that asset id is attacker-chosen")
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("the SPKI entry the governing pin names survived")
 	}
 }
 

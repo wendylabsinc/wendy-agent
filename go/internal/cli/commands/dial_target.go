@@ -165,11 +165,17 @@ func isPinned(pinKey string) bool {
 // an alias that is only a cosmetic variant of the dialed name never produces a
 // second, redundant candidate, and empty names are never looked up.
 //
-// Reading discovery-derived names to pick a key is safe in a way that reading
-// them to make a trust decision would not be: consulting an extra candidate can
-// only ever FIND a pin, never discard one, so an attacker-chosen alias can at
-// most impose a constraint that the real device fails — a stricter outcome, not
-// a bypass. The trust decision itself stays on the certificate.
+// Reading discovery-derived names to pick a key is safe FOR LOOKUP in a way
+// that reading them to make a trust decision would not be: consulting an extra
+// candidate can only ever FIND a pin, never discard one, so an attacker-chosen
+// alias can at most impose a constraint that the real device fails — a stricter
+// outcome, not a bypass. The trust decision itself stays on the certificate.
+//
+// That justification is about lookup and does not carry to clearing. A caller
+// that DELETES every candidate turns the same attacker-chosen alias into a way
+// to drop another device's pin, which is a bypass — see clearPinsGoverning,
+// which consumes this list but removes an alias's pin only when it names the
+// same device as the governing one.
 func pinCandidateKeys(pinKey string) []string {
 	if pinKey == "" {
 		return nil
@@ -296,12 +302,29 @@ func pinnedHostWentUnauthenticatedError(pinKey string) error {
 // known_devices.json as the only recovery. The SPKI store has no hostname in
 // it, so the key comes from the dial: pinKey when there is one, the store's own
 // display name otherwise.
+//
+// The command it prints names pm.Key — the SPKI store's own key — not the
+// hostname, even though the hostname is what the user recognises. Naming the
+// hostname is what made this refusal a dead end for the two populations that
+// hit it most: the picker and `wendy device list` dial the IP first, so the
+// message named an IP that keys nothing and whose asset nothing in local state
+// can derive; and agents that never advertise `orgid` (the Swift macOS agent,
+// Linux agents before 2026-07-18) leave the discovery cache with no identity to
+// derive it from either. pm.Key is in hand at the moment of refusal and is
+// exactly what the store is keyed by, so `wendy device unpin <urn>` reaches the
+// entry directly — and clears any config pin naming the same identity with it.
 func spkiRefusal(pinKey string, pm *devicepin.PinMismatchError) error {
 	named := pinKey
 	if named == "" {
 		named = pm.DisplayName
 	}
+	// A store key is always present in a real mismatch; fall back to the name
+	// only so a hand-built error still points at something.
+	unpinArg := pm.Key
+	if unpinArg == "" {
+		unpinArg = named
+	}
 	return refuseIdentity(
 		"device %q presented a different certificate key than the one pinned for %s (pinned %s, now %s); refusing to connect — if its certificate was legitimately reissued, run 'wendy device unpin %s'",
-		named, pm.Key, pm.Want, pm.Got, named)
+		named, pm.Key, pm.Want, pm.Got, unpinArg)
 }

@@ -166,14 +166,20 @@ func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 // it that missed the SPKI store would make that promise false for exactly the
 // refusal that has no other way out. Best-effort; a config read/write failure
 // just leaves the old pin in place.
+//
+// It reports what it cleared on stderr for the same reason unpin does on
+// stdout: set-default deleting trust state is a side effect of a command whose
+// name does not mention pins, and the user is the only one who can notice it
+// touched something they did not mean. Stderr keeps it out of any JSON output.
 func clearDevicePinForRepin(hostname string) {
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
-	// The SPKI half is cleared inside clearPinsGoverning whether or not a config
-	// pin existed, so a false return means only "nothing to save".
-	if !clearPinsGoverning(cfg, hostname) {
+	cleared := clearPinsGoverning(cfg, hostname)
+	printClearedPins(os.Stderr, cleared)
+	// The SPKI half flushes itself, so only a config-store clear needs a save.
+	if !clearedAnyConfigPin(cleared) {
 		return
 	}
 	_ = config.Save(cfg)

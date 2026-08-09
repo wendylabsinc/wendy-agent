@@ -66,9 +66,14 @@ The asset id is read only from a certificate that passed chain and org verificat
 
 ```sh
 wendy device unpin <hostname>
+wendy device unpin urn:wendy:org:<org>:asset:<id>
 ```
 
 This clears the local pin only — it never dials the device, so it works even when the device is offline, wiped, or gone. The next successful connection to that hostname records a fresh pin from scratch. Naming a device explicitly with `wendy device set-default <hostname>` has the same clearing effect, since typing the hostname is itself the user asserting "I mean that device."
+
+Both forms are accepted because the two stores are keyed differently. The identity-change refusals above name a hostname, and the hostname form clears it. The **SPKI** refusal (point 4 above) can only name the certificate identity URN, because that is what `known_devices.json` is keyed by and there is often no hostname to offer: `wendy device list` and the device picker dial the device's IP, and an agent that never advertises `orgid` in its mDNS records leaves nothing locally that maps a name to an asset. Copy the URN out of the refusal and pass it back — it clears the SPKI entry and any `devicePins` entry naming the same asset.
+
+Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its mesh name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
 
 ## Pin sources and precedence
 

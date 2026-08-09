@@ -672,8 +672,19 @@ func TestSPKIMismatchAbortsLadderAndNamesUnpin(t *testing.T) {
 	if err == nil {
 		t.Fatal("ladder returned no error for an SPKI pin rejection")
 	}
-	if !strings.Contains(err.Error(), "wendy device unpin orin.local") {
-		t.Fatalf("err = %v, want the SPKI refusal naming the unpin escape hatch; without it recovery means hand-editing known_devices.json", err)
+	// The command named must be one that clears the entry that caused THIS
+	// refusal. It used to assert "unpin orin.local", which reads right and does
+	// nothing: this test's own setup has no config pin and an empty discovery
+	// cache — the `wendy device list` shape — so a hostname-keyed unpin finds no
+	// key and no derivable asset, and the very next dial refuses identically.
+	// The store's key is the only name that reaches the entry.
+	if !strings.Contains(err.Error(), "wendy device unpin urn:wendy:org:7:asset:42") {
+		t.Fatalf("err = %v, want the SPKI refusal naming an unpin argument that actually clears the entry; naming the host leaves hand-editing known_devices.json as the only recovery", err)
+	}
+	// The host is still what the user recognises, so the refusal must keep
+	// naming it — the URN tells them what to run, not what broke.
+	if !strings.Contains(err.Error(), "orin.local") {
+		t.Fatalf("err = %v no longer names the host the user dialed", err)
 	}
 	if !errors.Is(err, errDeviceIdentityRefused) {
 		t.Fatalf("err = %v does not read as an identity refusal; the picker's BLE fallback would take it for an unreachable device", err)
