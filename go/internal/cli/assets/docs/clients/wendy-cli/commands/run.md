@@ -194,15 +194,32 @@ depends on which network you are on.
 
 ### Requirements
 
-- **The build host must opt in.** Create the `build-host-enabled` marker file in
-  the agent's config directory on that device. A device does not become a build
-  farm merely by being reachable.
-- **The build host must run BuildKit.** In practice that means a Linux WendyOS
-  device. A Mac cannot be a build host: the Mac agent runs Linux containers
-  through Apple Container, which has no BuildKit underneath. A Mac is still a
-  perfectly good *target*.
-- **The target device must be provisioned**, so the build host can address its
-  registry over the mesh.
+- **The build host must opt in:**
+
+  ```bash
+  wendy device build-host enable --device spark-office
+  wendy device build-host status --device spark-office
+  ```
+
+  A device does not become a build farm merely by being reachable. Enabling takes
+  effect immediately, with no agent restart. The RPC requires a *user*
+  certificate, so one device cannot opt another in on your behalf.
+
+- **The build host must run BuildKit**, listening on
+  `/run/buildkit/buildkitd.sock`. WendyOS devices have it. An adopted Linux host —
+  a DGX Spark running Ubuntu, say — does not, and Ubuntu ships no `buildkit`
+  package, so install the release tarball and symlink `buildctl` into `/usr/bin`
+  (the agent runs it by name, and systemd units get a minimal PATH).
+  `build-host status` reports the version it finds.
+
+  A Mac cannot be a build host: the Mac agent runs Linux containers through Apple
+  Container, which has no BuildKit underneath. A Mac remains a perfectly good
+  *target*, and a perfectly good machine to run `wendy run` from.
+
+- **The target device must be provisioned**, so the build host can address it by
+  asset id. Delivery goes through the mesh dialer — LAN first, cloud broker
+  otherwise — and never resolves a hostname, so a build host that cannot resolve
+  `device-<id>.cloud.wendy.dev` still delivers.
 
 If any of these does not hold, `wendy run` fails immediately and names the host.
 It never quietly falls back to building locally — a twenty-minute local build
