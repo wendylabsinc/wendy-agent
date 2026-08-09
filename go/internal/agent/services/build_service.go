@@ -246,17 +246,26 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "loading push credentials: %v", err)
 	}
-	localAddr, stop, err := startPushProxy(ctx, net.JoinHostPort(host, strconv.Itoa(port)), tlsCfg)
+	proxy, err := startPushProxy(ctx, net.JoinHostPort(host, strconv.Itoa(port)), tlsCfg)
 	if err != nil {
 		return err
 	}
-	defer stop()
+	defer proxy.stop()
 
-	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), localAddr+"/"+repoTag, df.GetBuildArgs())
+	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), proxy.addr+"/"+repoTag, df.GetBuildArgs())
 	if err != nil {
 		return err
 	}
-	return s.runBuildctl(ctx, stream, args)
+
+	buildErr := s.runBuildctl(ctx, stream, args)
+	// A failed outbound push shows up to buildctl only as a reset loopback
+	// connection, so its error says "exit status 1" and nothing useful. When the
+	// proxy knows the real reason, report THAT — and as Unavailable, which the
+	// CLI reads as "built fine, could not deliver" rather than a build failure.
+	if proxyErr := proxy.firstError(); proxyErr != nil {
+		return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", proxyErr)
+	}
+	return buildErr
 }
 
 // reassembleContext rebuilds the context tar from its chunk manifest. Every

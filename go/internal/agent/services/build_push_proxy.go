@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -43,6 +44,37 @@ func validatePushReference(ref string) (string, int, string, error) {
 	return host, port, repoTag, nil
 }
 
+// pushProxy forwards loopback connections to a device registry over mTLS.
+//
+// It records the FIRST outbound failure. Without that, a proxy that cannot
+// reach its target still accepts the local connection and then closes it, so
+// the pusher sees only "connection reset by peer" on 127.0.0.1 — a message that
+// cannot distinguish an unreachable mesh from a rejected certificate, which are
+// the two causes with entirely different fixes.
+type pushProxy struct {
+	addr string
+	stop func()
+
+	mu  sync.Mutex
+	err error
+}
+
+// firstError returns the first outbound failure seen, or nil if the proxy never
+// failed (including the case where nothing ever connected to it).
+func (p *pushProxy) firstError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.err
+}
+
+func (p *pushProxy) recordError(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.err == nil {
+		p.err = err
+	}
+}
+
 // startPushProxy listens on loopback and forwards each accepted connection to
 // target over mTLS, presenting this host's client certificate.
 //
@@ -53,10 +85,14 @@ func validatePushReference(ref string) (string, int, string, error) {
 // This does not change how the image is named: the target's registry derives
 // its image prefix from its own listen address, so the image lands there as
 // localhost:<regPort>/<repo>:<tag> regardless of the address the pusher used.
-func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (string, func(), error) {
+func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (*pushProxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return "", nil, fmt.Errorf("starting push proxy: %w", err)
+		return nil, fmt.Errorf("starting push proxy: %w", err)
+	}
+	p := &pushProxy{
+		addr: ln.Addr().String(),
+		stop: func() { _ = ln.Close() },
 	}
 	go func() {
 		for {
@@ -64,17 +100,18 @@ func startPushProxy(ctx context.Context, target string, tlsCfg *tls.Config) (str
 			if acceptErr != nil {
 				return // listener closed by stop()
 			}
-			go proxyOne(ctx, local, target, tlsCfg)
+			go p.proxyOne(ctx, local, target, tlsCfg)
 		}
 	}()
-	return ln.Addr().String(), func() { _ = ln.Close() }, nil
+	return p, nil
 }
 
-func proxyOne(ctx context.Context, local net.Conn, target string, tlsCfg *tls.Config) {
+func (p *pushProxy) proxyOne(ctx context.Context, local net.Conn, target string, tlsCfg *tls.Config) {
 	defer local.Close()
 	d := &tls.Dialer{Config: tlsCfg}
 	remote, err := d.DialContext(ctx, "tcp", target)
 	if err != nil {
+		p.recordError(fmt.Errorf("reaching device registry %s: %w", target, err))
 		return
 	}
 	defer remote.Close()
