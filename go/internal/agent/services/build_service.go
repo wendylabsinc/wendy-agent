@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -55,6 +56,10 @@ const buildHostEnabledFile = "build-host-enabled"
 // same socket the on-device buildctl path already uses.
 const DefaultBuildkitAddress = "unix:///run/buildkit/buildkitd.sock"
 
+// validPlatformRe matches the OCI platform strings buildctl accepts:
+// os/arch with an optional variant, e.g. linux/arm64 or linux/arm/v7.
+var validPlatformRe = regexp.MustCompile(`^[a-z0-9]+/[a-z0-9]+(/[a-z0-9]+)?$`)
+
 // defaultBuildStateDir holds reassembled build contexts, one directory per app.
 const defaultBuildStateDir = "/var/lib/wendy/buildctx"
 
@@ -76,10 +81,19 @@ type BuildServiceOptions struct {
 	Chunks ChunkSource
 	// Peers dials another device in this org to deliver the finished image.
 	Peers PeerDialer
-	// PushTLS supplies the client certificate the push proxy presents to the
-	// target device's registry. A function rather than a value so a certificate
-	// rotated while the agent runs is picked up on the next build.
-	PushTLS func() (*tls.Config, error)
+	// PushTLS supplies the TLS config for the registry hop, PINNED to the asset
+	// it is meant to reach.
+	//
+	// Taking the target asset id is the point of the signature. A config that
+	// only validates the certificate chain proves the far end holds an
+	// org-issued certificate, not that it is the device this image was built
+	// for — and the mesh's LAN path selects its peer from an unauthenticated
+	// mDNS TXT record. Image layers can carry proprietary code, so the wrong
+	// peer terminating this hop is a disclosure, not just a misdelivery.
+	//
+	// A function rather than a value so a certificate rotated while the agent
+	// runs is picked up on the next build.
+	PushTLS func(targetAssetID int32) (*tls.Config, error)
 }
 
 // BuildService lets a CLI delegate an image build to this device. See the
@@ -92,7 +106,7 @@ type BuildService struct {
 	stateDir             string
 	chunks               ChunkSource
 	peers                PeerDialer
-	pushTLS              func() (*tls.Config, error)
+	pushTLS              func(targetAssetID int32) (*tls.Config, error)
 
 	// contextLocks serialises builds that share a context directory. See
 	// lockContextDir; the mutex guards the map, not the builds.
@@ -164,7 +178,8 @@ func (s *BuildService) builderEnabled() bool {
 // comment in build_service.proto: without that split the opt-in gate would be
 // decorative, because anything able to call BuildImage could call this first.
 func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.SetBuildHostEnabledRequest) (*agentpbv2.SetBuildHostEnabledResponse, error) {
-	if err := requireUserIdentity(ctx); err != nil {
+	actor, err := userIdentityFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 
@@ -181,13 +196,21 @@ func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.S
 	}
 
 	if s.logger != nil {
-		s.logger.Info("builder role changed", zap.Bool("enabled", req.GetEnabled()))
+		// Names the actor: this grants code execution on the device to the whole
+		// org, so "who turned it on" is the one question an audit of it asks. Org
+		// and entity id only — both are ints, and the CN may carry a username,
+		// which the mTLS interceptor already declines to log per call.
+		s.logger.Info("builder role changed",
+			zap.Bool("enabled", req.GetEnabled()),
+			zap.Int32("actorOrg", actor.OrgID),
+			zap.String("actorUser", actor.EntityID))
 	}
 	return &agentpbv2.SetBuildHostEnabledResponse{Enabled: req.GetEnabled()}, nil
 }
 
-// requireUserIdentity admits only a caller presenting a wendy USER certificate.
-// Mirrors MeshService.assetIdentityFromContext, which makes the opposite
+// userIdentityFromContext admits only a caller presenting a wendy USER
+// certificate, and returns that identity so the caller can name it in an audit
+// log. Mirrors MeshService.assetIdentityFromContext, which makes the opposite
 // demand: mesh dials are device-to-device, this is human-to-device.
 //
 // Org equality is deliberately left to the server's mTLS interceptors here.
@@ -195,24 +218,24 @@ func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.S
 // WENDY_MTLS_ORG_ENFORCEMENT is off — this device has no independent notion of
 // which org "owns" it beyond the certificate chain that already admitted the
 // connection.
-func requireUserIdentity(ctx context.Context) error {
+func userIdentityFromContext(ctx context.Context) (certs.WendyIdentity, error) {
 	p, ok := peer.FromContext(ctx)
 	if !ok {
-		return status.Error(codes.PermissionDenied, "changing the builder role requires mTLS")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "changing the builder role requires mTLS")
 	}
 	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
 	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
-		return status.Error(codes.PermissionDenied, "changing the builder role requires a client certificate")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "changing the builder role requires a client certificate")
 	}
 	ident, found, err := certs.IdentityFromCert(tlsInfo.State.PeerCertificates[0])
 	if err != nil || !found {
-		return status.Error(codes.PermissionDenied, "client certificate carries no wendy identity")
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied, "client certificate carries no wendy identity")
 	}
 	if ident.EntityType != "user" {
-		return status.Error(codes.PermissionDenied,
+		return certs.WendyIdentity{}, status.Error(codes.PermissionDenied,
 			"changing the builder role requires a user certificate; a device certificate cannot opt this host in")
 	}
-	return nil
+	return ident, nil
 }
 
 func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetBuildCapabilitiesRequest) (*agentpbv2.GetBuildCapabilitiesResponse, error) {
@@ -324,7 +347,9 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if s.pushTLS == nil {
 		return status.Error(codes.FailedPrecondition, "this build host has no client certificate for pushing to a device registry")
 	}
-	tlsCfg, err := s.pushTLS()
+	// Pinned to the push target's asset id, so only that device can terminate
+	// the registry hop.
+	tlsCfg, err := s.pushTLS(target.GetAssetId())
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "loading push credentials: %v", err)
 	}
@@ -518,6 +543,16 @@ func extractContextTar(r io.Reader, dir string) error {
 			}
 			continue
 		}
+		// Link entries are rejected rather than written. The name checks above
+		// constrain where an entry LANDS, not where it POINTS, and whether a
+		// symlink out of the context is then followed is BuildKit's decision,
+		// not ours. The CLI's packer never emits one (it skips non-regular
+		// files), so refusing costs nothing and beats the current silent
+		// behaviour of writing an empty regular file in its place.
+		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+			return status.Errorf(codes.InvalidArgument,
+				"build context entry %q is a link, which is not accepted in a remote build context", hdr.Name)
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
@@ -541,6 +576,14 @@ func extractContextTar(r io.Reader, dir string) error {
 // buildkitOCIArgs, differing only in the output: an image export that pushes,
 // rather than an OCI tar on disk.
 func buildctlArgs(contextDir, dockerfile, platform, pushRef string, buildArgs map[string]string) ([]string, error) {
+	// Shape-checked like everything else the client sends. Injection is not the
+	// hazard — it becomes one argv element and no shell is involved — but an
+	// unconstrained string here would reach the streamed build log, where
+	// control characters can forge lines or emit terminal escapes.
+	if !validPlatformRe.MatchString(platform) {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"platform %q must be os/arch or os/arch/variant", platform)
+	}
 	if filepath.IsAbs(dockerfile) {
 		return nil, status.Errorf(codes.InvalidArgument, "dockerfile %q must be relative to the build context", dockerfile)
 	}

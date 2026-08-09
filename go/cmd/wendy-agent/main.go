@@ -512,9 +512,18 @@ func main() {
 			Peers:      meshDialer,
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
-			PushTLS: func() (*tls.Config, error) {
+			//
+			// ExpectingPeer, not the plain client config: the plain one validates
+			// the chain but skips hostname verification (device certs carry wendy
+			// URN SANs, not DNS names), so any org-issued certificate could
+			// terminate the registry hop and receive the image. The mesh LAN path
+			// picks its peer from an unauthenticated mDNS TXT record, which is the
+			// spoofing gap this helper was written for.
+			PushTLS: func(targetAssetID int32) (*tls.Config, error) {
 				certPEM, chainPEM, keyData := provisioningSvc.ProvisioningCerts()
-				return mtls.NewClientTLSConfig(certPEM, chainPEM, string(keyData), logger)
+				_, pushOrgID, _, _ := provisioningSvc.ProvisioningInfo()
+				return mtls.NewClientTLSConfigExpectingPeer(certPEM, chainPEM, string(keyData), logger,
+					pushOrgID, strconv.FormatInt(int64(targetAssetID), 10))
 			},
 		})
 

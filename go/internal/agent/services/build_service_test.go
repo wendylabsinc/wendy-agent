@@ -154,6 +154,41 @@ func TestBuildctlArgs_RejectsFlagInjectionBuildArg(t *testing.T) {
 	}
 }
 
+// The platform is client-supplied like everything else, and reaches the
+// streamed build log, where control characters can forge lines.
+func TestBuildctlArgs_RejectsMalformedPlatform(t *testing.T) {
+	for _, platform := range []string{"", "linux", "linux/arm64\nFAKE LOG LINE", "linux/arm64/v8/extra", "LINUX/ARM64"} {
+		if _, err := buildctlArgs("/ctx", "Dockerfile", platform, "127.0.0.1:41000/a:latest", nil); err == nil {
+			t.Errorf("platform %q must be rejected", platform)
+		}
+	}
+	for _, platform := range []string{"linux/arm64", "linux/amd64", "linux/arm/v7"} {
+		if _, err := buildctlArgs("/ctx", "Dockerfile", platform, "127.0.0.1:41000/a:latest", nil); err != nil {
+			t.Errorf("platform %q must be accepted, got: %v", platform, err)
+		}
+	}
+}
+
+// The name checks constrain where an entry lands, not where a link points, and
+// whether BuildKit follows one out of the context is not ours to decide.
+func TestExtractContextTar_RejectsSymlinkEntries(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "escape", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o777,
+	}); err != nil {
+		t.Fatalf("writing symlink header: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := extractContextTar(bytes.NewReader(buf.Bytes()), dir); err == nil {
+		t.Fatal("a symlink entry must be rejected, not silently written as an empty file")
+	}
+}
+
 func TestBuildctlArgs_RejectsDockerfileEscapingContext(t *testing.T) {
 	if _, err := buildctlArgs("/ctx", "../../etc/shadow", "linux/arm64",
 		"127.0.0.1:41000/a:latest", nil); err == nil {
@@ -467,6 +502,49 @@ func TestLockContextDir_DoesNotSerialiseDifferentDirectories(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("an unrelated app's build was blocked; the lock must be per context directory")
 	}
+}
+
+// The registry hop must be pinned to the asset the image was built for. A
+// config that only validates the chain would let any org-issued certificate
+// terminate it, and the mesh LAN path picks its peer from an unauthenticated
+// mDNS record — so the target's asset id has to reach the TLS config.
+func TestBuildImage_PinsPushCredentialsToTheTargetAsset(t *testing.T) {
+	var gotAssetID int32 = -1
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+		Peers:      stubPeerDialer{err: errors.New("not dialed in this test")},
+		// A real tar: extraction runs before the push credentials are loaded, so
+		// a bogus context would fail earlier and the assertion would never run.
+		Chunks: staticChunkSource{data: tarWith(t, "Dockerfile")},
+		PushTLS: func(targetAssetID int32) (*tls.Config, error) {
+			gotAssetID = targetAssetID
+			// Failing here stops the build before it shells out to buildctl; the
+			// assertion under test is the argument, not what follows.
+			return nil, errors.New("stop here")
+		},
+	})
+
+	_ = svc.BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+
+	if gotAssetID != 214 {
+		t.Fatalf("push credentials were requested for asset %d, want the push target's 214: an unpinned config lets any org-issued cert receive the image", gotAssetID)
+	}
+}
+
+// staticChunkSource returns fixed bytes as the reassembled context.
+type staticChunkSource struct{ data []byte }
+
+func (s staticChunkSource) OpenChunkStream(context.Context, [][32]byte) io.Reader {
+	return bytes.NewReader(s.data)
 }
 
 // stubBuildStream is a fake BuildImage server stream for unit tests.
