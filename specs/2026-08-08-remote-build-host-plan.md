@@ -24,14 +24,29 @@ implements it and does not restate its reasoning.
 ## Scope
 
 This plan covers the **Dockerfile / Containerfile / generated-Python-Dockerfile** path
-end to end. The Stagefile path compiles to LLB and depends on PR #1606, which is not on
-`main`; its tasks are in **Appendix A** and must not be started until #1606 lands. Task 2
+end to end. The Stagefile path compiles to LLB and depends on PR #1606, which is not
+merged; its tasks are in **Appendix A** and must not be started until #1606 lands. Task 2
 provisions the `oneof` that Appendix A slots into, so no protocol change is needed later.
 
 ## Global Constraints
 
 - **Branch:** `jo/remote-build-host`, worktree `~/git/wendy/wendyos-remote-build`, based
-  on `origin/main`.
+  on **`jo/fast`**, not `main`. `main` lacks `loadDockerIgnoreForBuild`,
+  `prepareDockerBuildFile`, `compileStagefile`, and the whole `go/internal/stagefile`
+  package — the Stagefile integration is unmerged. Building on `main` would mean
+  reimplementing the ignore-precedence helper that already exists, guaranteeing a
+  conflict. Retarget to `main` once the stagefile stack lands.
+- **Pre-resolved lookups** (the three the plan flagged; verified before execution):
+  - `chunk.Ref` is `{Hash [32]byte; Offset uint64; Len uint64}` — Task 6 must use
+    `r.Len`, not `r.Length`, and `Offset` is `uint64`.
+  - `isImageBuildFailure` matches `*imageBuildFailedError{err error}`
+    (`ocilayers.go:697`). Same package, so Task 10 constructs it directly as
+    `&imageBuildFailedError{err: ...}` — no new constructor.
+  - The agent chunk store is `*containerd.Client` (`StageChunk`, `MissingChunks`). It has
+    **no ordered-read path**: `AssembleLayerFromChunks` writes a content-store blob, which
+    a build context is not. Task 9 therefore adds a small exported reader over the
+    existing internal `chunkStream` (`internal/agent/containerd/chunkstore.go:116`), which
+    already resolves and hash-verifies chunks in order.
 - **No behaviour change when `--build-host` is absent.** Every existing local path —
   chunk-diff fast deploy, registry push, the `--detach` no-build fast path — must be
   byte-for-byte unaffected. A task that changes a local-path test is wrong.
