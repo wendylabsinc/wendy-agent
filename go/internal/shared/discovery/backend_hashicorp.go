@@ -15,11 +15,34 @@ import (
 
 // hashicorpRequeryDelay is how long hashicorpStreamBackend waits between
 // sweeps.
-var hashicorpRequeryDelay = 2 * time.Second
+//
+// Paired with hashicorpSweepTimeout below it holds the worst case — a device
+// that appears just after a sweep's queries closed — at the 2s it already was
+// under a 3s window and a 2s delay, while asking the LAN for as little extra
+// multicast as that allows: a sweep every 2s rather than every 5s.
+var hashicorpRequeryDelay = 1250 * time.Millisecond
 
 // hashicorpSweepTimeout bounds how long a single interface's mDNS query may
 // run within one sweep.
-var hashicorpSweepTimeout = 3 * time.Second
+//
+// hashicorp/mdns's query never returns early: it listens for the full window
+// even after it has already answered. Since an entry cannot be converted until
+// that query has returned (see hashicorpQueryInterface), this window — not the
+// multicast round trip — is what the latency of a sighting is made of. So it
+// is kept short: a device already on the network when a sweep starts is
+// reported well inside the ~1.3s of mDNS resolution the surrounding work
+// exists to avoid, and one that has not answered within the window is picked
+// up by the next sweep rather than missed.
+var hashicorpSweepTimeout = 750 * time.Millisecond
+
+// hashicorpQueryGrace is the headroom hashicorpQueryInterface adds on top of
+// hashicorpSweepTimeout when deriving a query's context deadline. Without it
+// the context deadline and hashicorp/mdns's own internal timeout expire at the
+// same instant, so which of the library's two teardown paths runs first — its
+// deferred Close or the Close its context watcher fires — is a coin flip on
+// every single sweep. The grace lets the internal timeout win normally, and
+// leaves the context purely as the shutdown/parent-cancellation path.
+const hashicorpQueryGrace = 500 * time.Millisecond
 
 // ifaceListFn returns the network interfaces hashicorpStreamBackend
 // considers eligible for a sweep. A var, not a direct eligibleMDNSInterfaces
@@ -52,9 +75,13 @@ func eligibleMDNSInterfaces() []net.Interface {
 
 // hashicorpStreamBackend is the Windows-primary, Linux-fallback
 // implementation of the lanBackendFn seam (stream.go): it re-queries mDNS in
-// a loop until ctx ends, forwarding each entry to emit as soon as it is
-// converted rather than buffering until a sweep completes — the property the
-// streaming engine depends on for "instant" discovery.
+// a loop until ctx ends, emitting each sweep's sightings as soon as that
+// sweep's queries return rather than accumulating them across sweeps.
+//
+// Its approximation of the "instant" discovery the streaming engine wants is
+// a short query window repeated often (hashicorpSweepTimeout,
+// hashicorpRequeryDelay) rather than per-entry forwarding mid-query, which
+// hashicorp/mdns cannot safely support — see hashicorpQueryInterface.
 //
 // hashicorp/mdns keeps no persistent daemon connection to lose (unlike
 // darwin's mDNSResponder session), so there is no runtime failure mode here
@@ -127,23 +154,38 @@ var sweepQueryFn = func(ctx context.Context, iface *net.Interface, serviceType s
 	return mdns.QueryContext(ctx, params)
 }
 
-// hashicorpQueryInterface runs one interface's query for a sweep, converting
-// and emitting each entry as it arrives on entriesCh rather than after the
-// query completes — sweepQueryFn (real or faked) sends entries while it
-// runs, and this drains them concurrently with that call.
+// hashicorpQueryInterface runs one interface's query for a sweep, then
+// converts and emits everything that query collected.
+//
+// The collector goroutine deliberately only appends the *mdns.ServiceEntry
+// pointers it receives and never reads through them. hashicorp/mdns keeps
+// every entry it has already sent in its own in-progress map and goes on
+// mutating it in place as further packets for the same name arrive: its query
+// loop assigns Host, Port, InfoFields, AddrV4 and AddrV6 on every matching
+// record, and the guard it applies once an entry is complete suppresses only a
+// second send, not those writes. Handing the pointer over the channel orders
+// the writes made before the send; the ones after it are unsynchronized, so
+// reading any field while the query is still running is a data race — and one
+// no consumer can synchronize away, because the library's send is
+// non-blocking and it never waits for the receiver. Conversion therefore waits
+// until sweepQueryFn has returned and that query goroutine is gone.
+//
+// The collector still has to exist rather than the query writing into a
+// buffer we drain afterwards: that same non-blocking send drops entries on the
+// floor whenever the channel is full, which an undrained buffer would
+// eventually be on a busy LAN.
 func hashicorpQueryInterface(ctx context.Context, iface *net.Interface, serviceType string, emit func(MDNSService)) {
-	queryCtx, cancel := context.WithTimeout(ctx, hashicorpSweepTimeout)
+	queryCtx, cancel := context.WithTimeout(ctx, hashicorpSweepTimeout+hashicorpQueryGrace)
 	defer cancel()
 
 	entriesCh := make(chan *mdns.ServiceEntry, 16)
-	done := make(chan struct{})
+	collected := make(chan []*mdns.ServiceEntry, 1)
 	go func() {
-		defer close(done)
+		var entries []*mdns.ServiceEntry
 		for entry := range entriesCh {
-			if svc, ok := hashicorpEntryToService(entry, iface, serviceType); ok {
-				emit(svc)
-			}
+			entries = append(entries, entry)
 		}
+		collected <- entries
 	}()
 
 	ifName := "default"
@@ -152,7 +194,12 @@ func hashicorpQueryInterface(ctx context.Context, iface *net.Interface, serviceT
 	}
 	logMDNSQueryErr(ifName, sweepQueryFn(queryCtx, iface, serviceType, entriesCh, hashicorpSweepTimeout))
 	close(entriesCh)
-	<-done
+
+	for _, entry := range <-collected {
+		if svc, ok := hashicorpEntryToService(entry, iface, serviceType); ok {
+			emit(svc)
+		}
+	}
 }
 
 // hashicorpEntryToService converts one hashicorp/mdns ServiceEntry into an
