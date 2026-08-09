@@ -1,5 +1,27 @@
 # Stagefile DSL gaps found while converting `Examples/*`
 
+> **Status (2026-08-08, follow-up PR `ed/stagefile-dsl-gaps`):** most gaps
+> below are now addressed. Per gap: #1 ARG/ENV → `args:`/`env:` stage maps;
+> #2 shell-sourcing entrypoints → `entrypoint.source` (a bash
+> source-then-exec wrapper; argv still never shell-parsed — general raw
+> shell remains deliberately unsupported); #3 pip indexes →
+> `install.pip.index`/`extraIndex` (post-install shell steps remain
+> unsupported by design); #4 → `healthcheck:`; #5 → `build.product`
+> (also gives go builds a kept artifact); #6 → `pin: false`;
+> #7 apt/apk repositories → `install.apt.repositories` (sha256-pinned
+> signing keys fetched by BuildKit) and `install.apk.repositories`;
+> #8 → `workdir:`; #9 → `cmd:`; #10 → `install.npm.production`;
+> #11 package scripts → `build.lang: npm|yarn|pnpm` + `build.script`;
+> #12 → `install.uv`; #13 → `copy.owner`/`copy.mode` (uid-with-home user
+> creation still out of scope); #14 → per-stage `platform: build`
+> ($BUILDPLATFORM; per-arch `from:` selection still open). The apk
+> `recommends` field mis-share is fixed by splitting `ApkInstall`
+> (`cache:` now carries apk's actual semantics), and the analyzer
+> blind spots (pip3 unmatched, yarn/pnpm cache mounts aimed at npm's
+> dir) are fixed in `optimize/buildcache.go`. Still open: raw RUN
+> escape hatches (deliberate), per-arch stage selection, uid/home user
+> creation, and lockfile staleness governance (separate discussion).
+
 Source: converting `Examples/*` Dockerfiles to `build.stagefile.yaml` (see
 `stagefile-integration-report.md` in this worktree for the full conversion
 log). Of 28 real-app Dockerfiles surveyed, 14 converted cleanly; the other

@@ -63,6 +63,18 @@ func (s *mcpServer) SetConn(conn *grpcclient.AgentConnection) {
 	}
 }
 
+// SetLANDiscoverer replaces the function device_list (and any other LAN
+// discovery tool) uses to collect LAN devices. New wires this to
+// discovery.DiscoverLAN by default; the CLI's mcp serve command overrides it
+// with the cache+probe collector (discovery.CollectLAN + the CLI's shared
+// StreamOptions) so MCP clients get the same instant-discovery acceleration
+// as the rest of the CLI. Tests can substitute a fixture the same way.
+func (s *mcpServer) SetLANDiscoverer(fn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discoverLANFn = fn
+}
+
 // SetConnType records the transport type of the active connection ("direct" or "cloud").
 func (s *mcpServer) SetConnType(t string) {
 	s.mu.Lock()

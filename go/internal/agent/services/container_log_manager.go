@@ -9,7 +9,10 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 )
 
 type logSubscriber struct {
@@ -51,7 +54,7 @@ type ContainerLogManager struct {
 	mu          sync.RWMutex
 	subscribers map[string]map[string]*logSubscriber // appName -> subID -> subscriber
 	nextID      uint64
-	resources   map[string]*otelpb.Resource // appName -> pre-built OTel resource (protected by mu)
+	resources   map[string]*resourcepb.Resource // appName -> pre-built OTel resource (protected by mu)
 }
 
 // NewContainerLogManager creates a new ContainerLogManager.
@@ -60,7 +63,7 @@ func NewContainerLogManager(logger *zap.Logger, broadcaster TelemetryPublisher) 
 		logger:      logger,
 		broadcaster: broadcaster,
 		subscribers: make(map[string]map[string]*logSubscriber),
-		resources:   make(map[string]*otelpb.Resource),
+		resources:   make(map[string]*resourcepb.Resource),
 	}
 }
 
@@ -146,7 +149,7 @@ func (m *ContainerLogManager) publishToTelemetry(appName string, output Containe
 	}
 
 	now := uint64(time.Now().UnixNano())
-	var records []*otelpb.LogRecord
+	var records []*logspb.LogRecord
 
 	if len(output.Stdout) > 0 {
 		records = append(records, containerLogRecord(now, "stdout", output.Stdout))
@@ -167,13 +170,13 @@ func (m *ContainerLogManager) publishToTelemetry(appName string, output Containe
 		resource = containerResource(appName, "")
 	}
 
-	m.broadcaster.PublishLogs(&otelpb.ExportLogsServiceRequest{
-		ResourceLogs: []*otelpb.ResourceLogs{
+	m.broadcaster.PublishLogs(&collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
 			{
 				Resource: resource,
-				ScopeLogs: []*otelpb.ScopeLogs{
+				ScopeLogs: []*logspb.ScopeLogs{
 					{
-						Scope:      &otelpb.InstrumentationScope{Name: "wendy.container"},
+						Scope:      &commonpb.InstrumentationScope{Name: "wendy.container"},
 						LogRecords: records,
 					},
 				},
@@ -182,33 +185,33 @@ func (m *ContainerLogManager) publishToTelemetry(appName string, output Containe
 	})
 }
 
-func containerLogRecord(now uint64, stream string, body []byte) *otelpb.LogRecord {
+func containerLogRecord(now uint64, stream string, body []byte) *logspb.LogRecord {
 	severityNumber, severityText := inferContainerLogSeverity(body)
-	return &otelpb.LogRecord{
+	return &logspb.LogRecord{
 		TimeUnixNano:         now,
 		ObservedTimeUnixNano: now,
 		SeverityNumber:       severityNumber,
 		SeverityText:         severityText,
-		Body: &otelpb.AnyValue{
-			Value: &otelpb.AnyValue_StringValue{
+		Body: &commonpb.AnyValue{
+			Value: &commonpb.AnyValue_StringValue{
 				StringValue: string(body),
 			},
 		},
-		Attributes: []*otelpb.KeyValue{
+		Attributes: []*commonpb.KeyValue{
 			{
 				Key: "stream",
-				Value: &otelpb.AnyValue{
-					Value: &otelpb.AnyValue_StringValue{StringValue: stream},
+				Value: &commonpb.AnyValue{
+					Value: &commonpb.AnyValue_StringValue{StringValue: stream},
 				},
 			},
 		},
 	}
 }
 
-func inferContainerLogSeverity(body []byte) (otelpb.SeverityNumber, string) {
+func inferContainerLogSeverity(body []byte) (logspb.SeverityNumber, string) {
 	line := strings.TrimSpace(string(body))
 	if line == "" {
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO"
+		return logspb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO"
 	}
 
 	if severity, text, ok := severityFromJSONLine(line); ok {
@@ -228,10 +231,10 @@ func inferContainerLogSeverity(body []byte) (otelpb.SeverityNumber, string) {
 	// diagnostics there. Keep the raw stream as an attribute and use INFO as the
 	// neutral default so warning/error filters only surface content that actually
 	// advertises a warning or error level.
-	return otelpb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO"
+	return logspb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO"
 }
 
-func severityFromJSONLine(line string) (otelpb.SeverityNumber, string, bool) {
+func severityFromJSONLine(line string) (logspb.SeverityNumber, string, bool) {
 	if !strings.HasPrefix(line, "{") {
 		return 0, "", false
 	}
@@ -253,7 +256,7 @@ func severityFromJSONLine(line string) (otelpb.SeverityNumber, string, bool) {
 	return 0, "", false
 }
 
-func severityFromLeadingLevel(line string) (otelpb.SeverityNumber, string, bool) {
+func severityFromLeadingLevel(line string) (logspb.SeverityNumber, string, bool) {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return 0, "", false
@@ -261,7 +264,7 @@ func severityFromLeadingLevel(line string) (otelpb.SeverityNumber, string, bool)
 	return containerLogSeverityFromToken(fields[0])
 }
 
-func severityFromISOLevel(line string) (otelpb.SeverityNumber, string, bool) {
+func severityFromISOLevel(line string) (logspb.SeverityNumber, string, bool) {
 	fields := strings.Fields(line)
 	if len(fields) < 2 || !looksLikeISOTimestamp(fields[0]) {
 		return 0, "", false
@@ -274,7 +277,7 @@ func severityFromISOLevel(line string) (otelpb.SeverityNumber, string, bool) {
 	return 0, "", false
 }
 
-func severityFromLlamaPrefix(line string) (otelpb.SeverityNumber, string, bool) {
+func severityFromLlamaPrefix(line string) (logspb.SeverityNumber, string, bool) {
 	fields := strings.Fields(line)
 	if len(fields) == 0 {
 		return 0, "", false
@@ -306,7 +309,7 @@ func looksLikeTimestampPrefix(s string) bool {
 	return hasDigit
 }
 
-func containerLogSeverityFromToken(token string) (otelpb.SeverityNumber, string, bool) {
+func containerLogSeverityFromToken(token string) (logspb.SeverityNumber, string, bool) {
 	token = strings.TrimSpace(token)
 	if idx := strings.IndexAny(token, "="); idx >= 0 && idx+1 < len(token) {
 		token = token[idx+1:]
@@ -315,35 +318,35 @@ func containerLogSeverityFromToken(token string) (otelpb.SeverityNumber, string,
 	return containerLogSeverityFromLevel(token)
 }
 
-func containerLogSeverityFromLlamaToken(token string) (otelpb.SeverityNumber, string, bool) {
+func containerLogSeverityFromLlamaToken(token string) (logspb.SeverityNumber, string, bool) {
 	switch strings.Trim(token, "[](){}:;,|\"'") {
 	case "I":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO", true
 	case "W":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", true
 	case "E":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", true
 	case "D":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", true
 	default:
 		return 0, "", false
 	}
 }
 
-func containerLogSeverityFromLevel(level string) (otelpb.SeverityNumber, string, bool) {
+func containerLogSeverityFromLevel(level string) (logspb.SeverityNumber, string, bool) {
 	switch level {
 	case "trace":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE", true
 	case "debug", "dbg":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", true
 	case "info", "information", "notice":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_INFO, "INFO", true
 	case "warn", "warning", "wrn":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", true
 	case "error", "err":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", true
 	case "fatal", "panic", "critical", "crit":
-		return otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL", true
+		return logspb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL", true
 	default:
 		return 0, "", false
 	}

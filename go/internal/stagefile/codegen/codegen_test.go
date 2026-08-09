@@ -127,7 +127,7 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 func TestGenerateApkInstall(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "alpine:3.20", Install: &spec.Install{
-			Apk: &spec.AptInstall{Packages: []string{"curl"}},
+			Apk: &spec.ApkInstall{Packages: []string{"curl"}},
 		}},
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}
@@ -144,10 +144,10 @@ func TestGenerateApkInstall(t *testing.T) {
 	}
 }
 
-func TestGenerateApkInstallWithRecommends(t *testing.T) {
+func TestGenerateApkInstallWithCache(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "app", From: "alpine:3.20", Install: &spec.Install{
-			Apk: &spec.AptInstall{Packages: []string{"curl"}, Recommends: true},
+			Apk: &spec.ApkInstall{Packages: []string{"curl"}, Cache: true},
 		}},
 	}}
 	images := map[string]string{"alpine:3.20": "sha256:abc123"}
@@ -494,6 +494,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 func TestGenerateLocksEveryCacheMount(t *testing.T) {
 	f := &spec.File{Version: 1, Stages: []spec.Stage{
 		{Name: "pipdeps", From: "debian:12", Install: &spec.Install{Pip: &spec.PipInstall{Packages: []string{"flask"}}}},
+		{Name: "uvdeps", From: "debian:12", Install: &spec.Install{Uv: &spec.UvInstall{}}},
 		{Name: "npmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{}}},
 		{Name: "yarndeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "yarn"}}},
 		{Name: "pnpmdeps", From: "debian:12", Install: &spec.Install{Npm: &spec.NpmInstall{Manager: "pnpm"}}},

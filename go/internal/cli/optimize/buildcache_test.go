@@ -1,6 +1,9 @@
 package optimize
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func dockerfileTarget(t *testing.T, src string) *Target {
 	t.Helper()
@@ -56,5 +59,25 @@ func TestBuildCacheIgnoresNonDockerTarget(t *testing.T) {
 	got := buildCacheAnalyzer{}.Analyze(tg)
 	if len(got) != 0 {
 		t.Fatalf("got %d findings, want 0", len(got))
+	}
+}
+
+func TestBuildCacheManagerSpecificCacheDirs(t *testing.T) {
+	cases := []struct{ line, target string }{
+		{"RUN pip3 install -r requirements.txt", "/root/.cache/pip"},
+		{"RUN yarn install", "/root/.cache/yarn"},
+		{"RUN pnpm install", "/root/.local/share/pnpm/store"},
+		{"RUN npm ci", "/root/.npm"},
+	}
+	for _, c := range cases {
+		tg := dockerfileTarget(t, "FROM node:22\n"+c.line+"\n")
+		got := buildCacheAnalyzer{}.Analyze(tg)
+		if len(got) != 1 || got[0].Fix == nil {
+			t.Fatalf("%s: got %+v, want one finding with fix", c.line, got)
+		}
+		want := "--mount=type=cache,target=" + c.target
+		if !strings.Contains(got[0].Fix.New, want) {
+			t.Fatalf("%s: fix %q missing %q", c.line, got[0].Fix.New, want)
+		}
 	}
 }

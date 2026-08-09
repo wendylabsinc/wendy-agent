@@ -29,7 +29,7 @@ require (
 	github.com/google/go-containerregistry v0.21.8
 	github.com/google/gousb v1.1.3
 	github.com/google/uuid v1.6.0
-	github.com/hashicorp/mdns v1.0.6
+	github.com/hashicorp/mdns v1.0.7
 	github.com/klauspost/compress v1.19.1
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/miekg/dns v1.1.72
@@ -41,7 +41,9 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/vishvananda/netlink v1.3.1
 	go.bug.st/serial v1.6.4
+	go.opentelemetry.io/proto/otlp v1.10.0
 	go.uber.org/zap v1.28.0
+	golang.org/x/net v0.57.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
@@ -85,6 +87,7 @@ require (
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
+	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
@@ -120,9 +123,9 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260414002931-afd174a4e478 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 	sigs.k8s.io/knftables v0.0.18 // indirect
 )

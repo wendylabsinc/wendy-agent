@@ -7,7 +7,9 @@
 package agentpb
 
 import (
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	v1 "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	v11 "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	v12 "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -98,7 +100,7 @@ type StreamLogsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP logs data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Logs *otelpb.ExportLogsServiceRequest `protobuf:"bytes,1,opt,name=logs,proto3" json:"logs,omitempty"`
+	Logs *v1.ExportLogsServiceRequest `protobuf:"bytes,1,opt,name=logs,proto3" json:"logs,omitempty"`
 	// true for replayed records; false for live
 	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -135,7 +137,7 @@ func (*StreamLogsResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *StreamLogsResponse) GetLogs() *otelpb.ExportLogsServiceRequest {
+func (x *StreamLogsResponse) GetLogs() *v1.ExportLogsServiceRequest {
 	if x != nil {
 		return x.Logs
 	}
@@ -225,7 +227,7 @@ type StreamMetricsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP metrics data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Metrics *otelpb.ExportMetricsServiceRequest `protobuf:"bytes,1,opt,name=metrics,proto3" json:"metrics,omitempty"`
+	Metrics *v11.ExportMetricsServiceRequest `protobuf:"bytes,1,opt,name=metrics,proto3" json:"metrics,omitempty"`
 	// true for replayed records; false for live
 	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -262,7 +264,7 @@ func (*StreamMetricsResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *StreamMetricsResponse) GetMetrics() *otelpb.ExportMetricsServiceRequest {
+func (x *StreamMetricsResponse) GetMetrics() *v11.ExportMetricsServiceRequest {
 	if x != nil {
 		return x.Metrics
 	}
@@ -352,7 +354,7 @@ type StreamTracesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// OTLP trace data using the standard OpenTelemetry format.
 	// Can be forwarded directly to a local OTLP collector.
-	Traces *otelpb.ExportTraceServiceRequest `protobuf:"bytes,1,opt,name=traces,proto3" json:"traces,omitempty"`
+	Traces *v12.ExportTraceServiceRequest `protobuf:"bytes,1,opt,name=traces,proto3" json:"traces,omitempty"`
 	// true for replayed records; false for live
 	IsHistory     bool `protobuf:"varint,2,opt,name=is_history,json=isHistory,proto3" json:"is_history,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -389,7 +391,7 @@ func (*StreamTracesResponse) Descriptor() ([]byte, []int) {
 	return file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *StreamTracesResponse) GetTraces() *otelpb.ExportTraceServiceRequest {
+func (x *StreamTracesResponse) GetTraces() *v12.ExportTraceServiceRequest {
 	if x != nil {
 		return x.Traces
 	}
@@ -467,15 +469,15 @@ func file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_rawDesc
 
 var file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_goTypes = []any{
-	(*StreamLogsRequest)(nil),                  // 0: wendy.agent.services.v1.StreamLogsRequest
-	(*StreamLogsResponse)(nil),                 // 1: wendy.agent.services.v1.StreamLogsResponse
-	(*StreamMetricsRequest)(nil),               // 2: wendy.agent.services.v1.StreamMetricsRequest
-	(*StreamMetricsResponse)(nil),              // 3: wendy.agent.services.v1.StreamMetricsResponse
-	(*StreamTracesRequest)(nil),                // 4: wendy.agent.services.v1.StreamTracesRequest
-	(*StreamTracesResponse)(nil),               // 5: wendy.agent.services.v1.StreamTracesResponse
-	(*otelpb.ExportLogsServiceRequest)(nil),    // 6: opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest
-	(*otelpb.ExportMetricsServiceRequest)(nil), // 7: opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest
-	(*otelpb.ExportTraceServiceRequest)(nil),   // 8: opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest
+	(*StreamLogsRequest)(nil),               // 0: wendy.agent.services.v1.StreamLogsRequest
+	(*StreamLogsResponse)(nil),              // 1: wendy.agent.services.v1.StreamLogsResponse
+	(*StreamMetricsRequest)(nil),            // 2: wendy.agent.services.v1.StreamMetricsRequest
+	(*StreamMetricsResponse)(nil),           // 3: wendy.agent.services.v1.StreamMetricsResponse
+	(*StreamTracesRequest)(nil),             // 4: wendy.agent.services.v1.StreamTracesRequest
+	(*StreamTracesResponse)(nil),            // 5: wendy.agent.services.v1.StreamTracesResponse
+	(*v1.ExportLogsServiceRequest)(nil),     // 6: opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest
+	(*v11.ExportMetricsServiceRequest)(nil), // 7: opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest
+	(*v12.ExportTraceServiceRequest)(nil),   // 8: opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_telemetry_service_proto_depIdxs = []int32{
 	6, // 0: wendy.agent.services.v1.StreamLogsResponse.logs:type_name -> opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest

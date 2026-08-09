@@ -39,6 +39,11 @@ import (
 // soon as the socket is readable.
 const dnssdPollInterval = 100 * time.Millisecond
 
+// dnssdResolveTimeout bounds a single instance resolve on the streaming LAN
+// backend (mdnsStreamBackend). It is a var, not a const, so tests can shrink
+// it.
+var dnssdResolveTimeout = 1 * time.Second
+
 // dnssdSession carries the callbacks for one DNSServiceRef. It is reached from
 // C by an integer handle: cgo forbids passing Go pointers into C and holding
 // them there.
@@ -200,51 +205,6 @@ func dnssdBrowseStream(ctx context.Context, serviceType string, onResult func(br
 		return nil
 	}
 	return err
-}
-
-// dnssdBrowse collects browse results, returning once results stop arriving.
-// Once the first result lands it waits dnssdBrowseSettle for more, so a
-// populated network does not pay the full timeout.
-func dnssdBrowse(ctx context.Context, serviceType string) ([]browseResult, error) {
-	browseCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	resultCh := make(chan browseResult, 16)
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- dnssdBrowseStream(browseCtx, serviceType, func(r browseResult) {
-			select {
-			case resultCh <- r:
-			case <-browseCtx.Done():
-			}
-		})
-	}()
-
-	var results []browseResult
-	seen := make(map[string]bool)
-	var settle <-chan time.Time
-
-	for {
-		select {
-		case <-ctx.Done():
-			return results, nil
-		case err := <-errCh:
-			if err != nil && len(results) == 0 {
-				return nil, err
-			}
-			return results, nil
-		case r := <-resultCh:
-			key := r.instanceName + "%" + r.interfaceName
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			results = append(results, r)
-			settle = time.After(dnssdBrowseSettle)
-		case <-settle:
-			return results, nil
-		}
-	}
 }
 
 // dnssdRegister advertises a service until the returned stop func is called.

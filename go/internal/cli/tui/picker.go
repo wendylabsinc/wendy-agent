@@ -46,6 +46,7 @@ const (
 	ProbePending                   // probe in flight: show an animated spinner
 	ProbeOK                        // probe succeeded: show the version
 	ProbeFailed                    // probe failed: show the error glyph
+	ProbeOffline                   // device offline: show "offline" text
 )
 
 // ProbeFailedGlyph marks a row whose agent probe failed and for which no version
@@ -71,8 +72,8 @@ func ColorizeProbeGlyphs(view string) string {
 
 // probeColumnValue renders an Agent/OS cell for the given probe state. While
 // pending it shows the current spinner frame; on failure with no cached version
-// it shows the error glyph; otherwise it shows the version text (a cached
-// version is preserved even after a later transient failure).
+// it shows the error glyph; for offline it shows "offline"; otherwise it shows
+// the version text (a cached version is preserved even after a later transient failure).
 func probeColumnValue(state ProbeState, version, frame string) string {
 	switch state {
 	case ProbePending:
@@ -81,6 +82,8 @@ func probeColumnValue(state ProbeState, version, frame string) string {
 		if version == "" {
 			return ProbeFailedGlyph
 		}
+	case ProbeOffline:
+		return "offline"
 	}
 	return version
 }
@@ -710,9 +713,12 @@ func DeviceWarningLegend(items []PickerItem) string {
 
 // itemShowsOutdated reports whether the Agent cell renders the outdated glyph.
 // A pending probe shows a spinner and a failed one may show no version at all,
-// and neither can carry a marker.
+// and neither can carry a marker. An offline row renders "offline" instead of
+// a version, and its version is cached metadata no live probe has confirmed —
+// update hints must never fire from that alone.
 func itemShowsOutdated(item PickerItem) bool {
-	return item.AgentOutdated && item.AgentVersion != "" && item.Probe != ProbePending
+	return item.AgentOutdated && item.AgentVersion != "" &&
+		item.Probe != ProbePending && item.Probe != ProbeOffline
 }
 
 type pickerColumnDef struct {

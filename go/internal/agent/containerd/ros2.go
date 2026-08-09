@@ -498,11 +498,25 @@ func ros2ShellArgs(distro, script string, extra []string) []string {
 	return args
 }
 
+// ros2SetupScript is the ROS environment script to dot-source for a distro.
+//
+// It must be setup.sh, not setup.bash. The sidecar runs commands under /bin/sh
+// (a slim app image may ship no bash), and on Ubuntu-based ROS images /bin/sh
+// is dash. ament's setup.bash resolves its own location via ${BASH_SOURCE[0]}
+// and declares AMENT_SHELL=bash, so dash aborts on it — and because the sourcing
+// is silenced, the only visible symptom was `command -v ros2` failing, which the
+// probe then reported as "the image does not include the ros2 CLI" for images
+// that plainly do. ament generates setup.sh alongside it for exactly this case:
+// it avoids BASH_SOURCE and bakes the install prefix in at generation time.
+func ros2SetupScript(distro string) string {
+	return fmt.Sprintf("/opt/ros/%s/setup.sh", distro)
+}
+
 // ros2SourceAndExec is the shell script the sidecar runs for a `ros2` invocation:
 // source the ROS environment, then exec the CLI with the caller's arguments kept
 // out of shell interpretation via "$@" (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
 func ros2SourceAndExec(distro string) string {
-	return fmt.Sprintf(". /opt/ros/%s/setup.bash >/dev/null 2>&1 && exec ros2 \"$@\"", distro)
+	return fmt.Sprintf(". %s >/dev/null 2>&1 && exec ros2 \"$@\"", ros2SetupScript(distro))
 }
 
 // sidecarHasROS2CLI reports whether the running sidecar task can find the ros2
@@ -518,7 +532,7 @@ func (c *Client) sidecarHasROS2CLI(ctx context.Context, container containerd.Con
 	pspec := spec.Process
 	pspec.Terminal = false
 	pspec.Args = ros2ShellArgs(distro,
-		fmt.Sprintf(". /opt/ros/%s/setup.bash >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", distro),
+		fmt.Sprintf(". %s >/dev/null 2>&1; command -v ros2 >/dev/null 2>&1", ros2SetupScript(distro)),
 		nil)
 	execID := fmt.Sprintf("ros2-probe-%d", ros2ExecCounter.Add(1))
 	proc, err := task.Exec(ctx, execID, pspec, cio.NullIO)

@@ -68,7 +68,7 @@ func TestValidateRejectsAptWithNoPackages(t *testing.T) {
 
 func TestValidateRejectsApkWithNoPackages(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "alpine:3.20", Install: &Install{Apk: &AptInstall{}}},
+		{Name: "app", From: "alpine:3.20", Install: &Install{Apk: &ApkInstall{}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for apk with no packages, got nil")
@@ -261,7 +261,7 @@ func TestValidateRejectsNewlineInUser(t *testing.T) {
 
 func TestValidateRejectsLeadingDashInApkPackage(t *testing.T) {
 	f := &File{Version: 1, Stages: []Stage{
-		{Name: "app", From: "alpine:3.20", Install: &Install{Apk: &AptInstall{Packages: []string{"--repository=http://evil.example"}}}},
+		{Name: "app", From: "alpine:3.20", Install: &Install{Apk: &ApkInstall{Packages: []string{"--repository=http://evil.example"}}}},
 	}}
 	if err := f.Validate(); err == nil {
 		t.Fatal("expected an error for an apk package entry starting with \"-\", got nil")

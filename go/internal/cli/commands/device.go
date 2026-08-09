@@ -28,7 +28,10 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
+	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"golang.org/x/term"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -224,6 +227,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			var netInterfaces []*agentpb.NetworkInterface
 			var hasGPU bool
 			var providerInfo *providers.ProviderDeviceInfo
+			// nil for mains-powered devices, for agents predating the field,
+			// and for the BLE/provider paths that never report one.
+			var battery *agentpb.BatteryStats
 
 			if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 				cliLogln("Connecting to %s via Bluetooth...", tui.Device(target.Bluetooth.DisplayName))
@@ -262,6 +268,7 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 				cpuCount = resp.GetCpuCount()
 				partitions = resp.GetPartitions()
 				netInterfaces = resp.GetNetworkInterfaces()
+				battery = resp.GetBattery()
 			} else if target.External != nil && target.Provider != nil {
 				info, infoErr := target.Provider.GetDeviceInfo(ctx, *target.External)
 				if infoErr != nil {
@@ -361,6 +368,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 					}
 					out["networkInterfaces"] = ifaces
 				}
+				if b := batteryJSON(battery); b != nil {
+					out["battery"] = b
+				}
 				if osUpdate := osUpdateJSON(osUpdateStatus); osUpdate != nil {
 					out["osUpdate"] = osUpdate
 				}
@@ -388,6 +398,9 @@ func newDeviceInfoLikeCmd(use string, deprecated bool) *cobra.Command {
 			}
 			if memTotalBytes > 0 {
 				fmt.Printf("%s %s\n", tui.Dim("Memory:"), tui.Value(formatBytes(memTotalBytes)))
+			}
+			if battery != nil {
+				fmt.Printf("%s %s\n", tui.Dim("Battery:"), tui.Value(formatBatterySummary(battery)))
 			}
 			if deviceType != "" {
 				fmt.Printf("%s %s\n", tui.Dim("Device Type:"), tui.Value(deviceType))
@@ -819,10 +832,14 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	var cloudTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {
@@ -838,7 +855,10 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	}
 	defer cloudConn.Close()
 
-	tokenCtx := cloudContext(ctx, auth)
+	tokenCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
 
 	var org OrgResolution
 	if orgOverride != 0 {
@@ -1015,10 +1035,14 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, keyErr := cert.PrivateKeyPEM()
+		if keyErr != nil {
+			return nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+		}
 		tlsCfg, tlsErr := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if tlsErr != nil {
@@ -1033,7 +1057,12 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}
-	return cloudConn, cloudContext(ctx, auth), nil
+	cloudCtx, ctxErr := cloudContext(ctx, auth)
+	if ctxErr != nil {
+		cloudConn.Close()
+		return nil, nil, ctxErr
+	}
+	return cloudConn, cloudCtx, nil
 }
 
 func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {
@@ -1092,17 +1121,17 @@ func scanWiFiNetworks(ctx context.Context, conn *grpcclient.AgentConnection) ([]
 func parseSeverityLevel(name string) int32 {
 	switch strings.ToLower(name) {
 	case "trace":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_TRACE)
 	case "debug":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG)
 	case "info":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_INFO)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_INFO)
 	case "warn", "warning":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_WARN)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_WARN)
 	case "error":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_ERROR)
 	case "fatal":
-		return int32(otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL)
+		return int32(logspb.SeverityNumber_SEVERITY_NUMBER_FATAL)
 	default:
 		return 0
 	}
@@ -1356,26 +1385,26 @@ var (
 	logMetaStyle  = lipgloss.NewStyle().Foreground(tui.ColorDim)
 )
 
-func severityLabel(sev otelpb.SeverityNumber) (string, lipgloss.Style) {
+func severityLabel(sev logspb.SeverityNumber) (string, lipgloss.Style) {
 	switch {
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_FATAL:
 		return "FATAL", logFatalStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_ERROR:
 		return "ERROR", logErrorStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_WARN:
 		return "WARN ", logWarnStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_INFO:
 		return "INFO ", logInfoStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
 		return "DEBUG", logDebugStyle
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_TRACE:
 		return "TRACE", logTraceStyle
 	default:
 		return "     ", logInfoStyle
 	}
 }
 
-func resourceServiceName(res *otelpb.Resource) string {
+func resourceServiceName(res *resourcepb.Resource) string {
 	if res == nil {
 		return ""
 	}
@@ -1387,25 +1416,25 @@ func resourceServiceName(res *otelpb.Resource) string {
 	return ""
 }
 
-func anyValueString(v *otelpb.AnyValue) string {
+func anyValueString(v *commonpb.AnyValue) string {
 	if v == nil {
 		return ""
 	}
 	switch v.Value.(type) {
-	case *otelpb.AnyValue_StringValue:
+	case *commonpb.AnyValue_StringValue:
 		return v.GetStringValue()
-	case *otelpb.AnyValue_IntValue:
+	case *commonpb.AnyValue_IntValue:
 		return fmt.Sprintf("%d", v.GetIntValue())
-	case *otelpb.AnyValue_DoubleValue:
+	case *commonpb.AnyValue_DoubleValue:
 		return fmt.Sprintf("%g", v.GetDoubleValue())
-	case *otelpb.AnyValue_BoolValue:
+	case *commonpb.AnyValue_BoolValue:
 		return fmt.Sprintf("%t", v.GetBoolValue())
 	default:
 		return fmt.Sprintf("%v", v)
 	}
 }
 
-func printLogRecordJSON(service string, lr *otelpb.LogRecord) {
+func printLogRecordJSON(service string, lr *logspb.LogRecord) {
 	entry := map[string]any{
 		"timestamp": time.Unix(0, int64(lr.GetTimeUnixNano())).UTC().Format(time.RFC3339Nano),
 		"severity":  lr.GetSeverityText(),
@@ -1427,7 +1456,7 @@ func printLogRecordJSON(service string, lr *otelpb.LogRecord) {
 	fmt.Println(string(data))
 }
 
-func printLogRecord(service string, lr *otelpb.LogRecord) {
+func printLogRecord(service string, lr *logspb.LogRecord) {
 	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05.000")
 	label, style := severityLabel(lr.GetSeverityNumber())
 
@@ -1735,7 +1764,7 @@ type telemetryTraceEntry struct {
 
 // emitMetricDataPoints extracts the latest value from a metric and emits one
 // telemetryMetricEntry per metric (using the last data point's value).
-func emitMetricDataPoints(emit func(any), m *otelpb.Metric, svc string, res map[string]string) {
+func emitMetricDataPoints(emit func(any), m *metricspb.Metric, svc string, res map[string]string) {
 	var value float64
 	var metricType string
 	var attrs map[string]string
@@ -1795,11 +1824,11 @@ func emitMetricDataPoints(emit func(any), m *otelpb.Metric, svc string, res map[
 }
 
 // numberDataPointValue extracts the numeric value from a NumberDataPoint.
-func numberDataPointValue(dp *otelpb.NumberDataPoint) float64 {
+func numberDataPointValue(dp *metricspb.NumberDataPoint) float64 {
 	switch dp.GetValue().(type) {
-	case *otelpb.NumberDataPoint_AsDouble:
+	case *metricspb.NumberDataPoint_AsDouble:
 		return dp.GetAsDouble()
-	case *otelpb.NumberDataPoint_AsInt:
+	case *metricspb.NumberDataPoint_AsInt:
 		return float64(dp.GetAsInt())
 	default:
 		return 0
@@ -1810,27 +1839,27 @@ func formatNanoUTC(nanos uint64) string {
 	return time.Unix(0, int64(nanos)).UTC().Format(time.RFC3339Nano)
 }
 
-func severityTextAndNumber(sev otelpb.SeverityNumber) (string, int32) {
+func severityTextAndNumber(sev logspb.SeverityNumber) (string, int32) {
 	num := int32(sev)
 	switch {
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_FATAL:
 		return "FATAL", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_ERROR:
 		return "ERROR", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_WARN:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_WARN:
 		return "WARN", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_INFO:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_INFO:
 		return "INFO", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG:
 		return "DEBUG", num
-	case sev >= otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE:
+	case sev >= logspb.SeverityNumber_SEVERITY_NUMBER_TRACE:
 		return "TRACE", num
 	default:
 		return "UNSPECIFIED", num
 	}
 }
 
-func kvMapFromResource(res *otelpb.Resource) map[string]string {
+func kvMapFromResource(res *resourcepb.Resource) map[string]string {
 	m := make(map[string]string)
 	if res == nil {
 		return m
@@ -1841,7 +1870,7 @@ func kvMapFromResource(res *otelpb.Resource) map[string]string {
 	return m
 }
 
-func kvMapFromKeyValues(kvs []*otelpb.KeyValue) map[string]string {
+func kvMapFromKeyValues(kvs []*commonpb.KeyValue) map[string]string {
 	m := make(map[string]string)
 	for _, kv := range kvs {
 		m[kv.GetKey()] = anyValueString(kv.GetValue())
