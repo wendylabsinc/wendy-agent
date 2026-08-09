@@ -385,6 +385,82 @@ func TestContainerMonitor_Register_And_Unregister(t *testing.T) {
 	m.mu.Unlock()
 }
 
+// TestMonitorSuppressSkipsRestart is the regression guard for F2: while a
+// Suppress handle is held for a container name, planRestarts must not
+// schedule a restart for it even though the container is stopped and its
+// policy would otherwise restart it. This is what lets a replace/stop
+// operation kill and delete the task without the monitor's next tick
+// resurrecting it mid-teardown (observed live: "cannot delete running task:
+// failed precondition"). Once the handle is resumed, the same input restarts
+// normally again.
+func TestMonitorSuppressSkipsRestart(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartUnlessStopped, 0)
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	resume := m.Suppress("com.example.app")
+
+	if got := m.planRestarts(stopped); len(got) != 0 {
+		t.Errorf("planRestarts scheduled a restart while suppressed: %v", got)
+	}
+
+	resume()
+
+	got := m.planRestarts(stopped)
+	if len(got) != 1 || got[0] != "com.example.app" {
+		t.Errorf("planRestarts after resume = %v; want [com.example.app]", got)
+	}
+}
+
+// TestMonitorSuppressIsReferenceCounted verifies two independent Suppress
+// handles on the same container name (e.g. a stop racing a replace of the
+// same service) both have to resume before restarts are allowed again —
+// otherwise the first operation to finish would silently re-enable restarts
+// while the second is still mid-teardown.
+func TestMonitorSuppressIsReferenceCounted(t *testing.T) {
+	m := newTestMonitor()
+	m.Register("com.example.app", RestartUnlessStopped, 0)
+
+	stopped := []*agentpb.AppContainer{
+		{AppName: "com.example.app", RunningState: agentpb.AppRunningState_STOPPED},
+	}
+
+	resumeA := m.Suppress("com.example.app")
+	resumeB := m.Suppress("com.example.app")
+
+	resumeA()
+	if got := m.planRestarts(stopped); len(got) != 0 {
+		t.Errorf("planRestarts scheduled a restart with one of two suppressions still held: %v", got)
+	}
+
+	resumeB()
+	if got := m.planRestarts(stopped); len(got) != 1 || got[0] != "com.example.app" {
+		t.Errorf("planRestarts after both resumed = %v; want [com.example.app]", got)
+	}
+}
+
+// TestMonitorSuppressResumeIsIdempotent verifies calling resume more than
+// once does not under-flow the suppression counter, which would otherwise let
+// a spurious extra resume cancel out a still-active, unrelated Suppress call
+// on the same name.
+func TestMonitorSuppressResumeIsIdempotent(t *testing.T) {
+	m := newTestMonitor()
+
+	resume := m.Suppress("com.example.app")
+	resume()
+	resume() // must be a no-op, not decrement past zero
+
+	m.mu.Lock()
+	count := m.suppressed["com.example.app"]
+	m.mu.Unlock()
+	if count != 0 {
+		t.Errorf("suppressed count = %d after idempotent double-resume; want 0", count)
+	}
+}
+
 func TestContainerMonitor_RestartStatuses(t *testing.T) {
 	m := newTestMonitor()
 

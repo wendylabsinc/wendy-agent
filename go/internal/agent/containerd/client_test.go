@@ -1305,3 +1305,113 @@ func TestCollectExposures(t *testing.T) {
 		}
 	}
 }
+
+// fakeRestartSuppressor is a recording restartSuppressor for the F2
+// replace/stop-suppression tests below: it captures every Suppress call and
+// every subsequent resume so tests can assert both the call and its pairing
+// without depending on the real container.ContainerMonitor.
+type fakeRestartSuppressor struct {
+	suppressed []string
+	resumed    []string
+}
+
+func (f *fakeRestartSuppressor) Suppress(containerName string) func() {
+	f.suppressed = append(f.suppressed, containerName)
+	return func() {
+		f.resumed = append(f.resumed, containerName)
+	}
+}
+
+// TestSuppressRestartsNoopWhenNoMonitor verifies suppressRestarts always
+// returns a callable resume func even when no monitor was wired in (e.g.
+// containerd came up before/without a monitor, or a bare *Client in a unit
+// test) — callers must be able to unconditionally `defer resume()`.
+func TestSuppressRestartsNoopWhenNoMonitor(t *testing.T) {
+	c := &Client{}
+	resume := c.suppressRestarts("com.example.app")
+	if resume == nil {
+		t.Fatal("suppressRestarts returned a nil func with no monitor wired")
+	}
+	resume() // must not panic
+}
+
+// TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards
+// to the wired restartMonitor and returns its resume func unchanged.
+func TestSuppressRestartsDelegatesToMonitor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{restartMonitor: fake}
+
+	resume := c.suppressRestarts("com.example.app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "com.example.app" {
+		t.Fatalf("Suppress calls = %v; want [com.example.app]", fake.suppressed)
+	}
+	if len(fake.resumed) != 0 {
+		t.Fatalf("resume calls before resume() = %v; want none", fake.resumed)
+	}
+
+	resume()
+	if len(fake.resumed) != 1 || fake.resumed[0] != "com.example.app" {
+		t.Fatalf("resume calls = %v; want [com.example.app]", fake.resumed)
+	}
+}
+
+// TestSetRestartSuppressor verifies the setter wires the field suppressRestarts reads.
+func TestSetRestartSuppressor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{}
+	c.SetRestartSuppressor(fake)
+
+	c.suppressRestarts("app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "app" {
+		t.Fatalf("Suppress calls after SetRestartSuppressor = %v; want [app]", fake.suppressed)
+	}
+}
+
+// TestIsMissingRuncStateDir is the regression guard for the missing-runc-
+// state-dir workaround (F2): forceDeleteTask must recognize the exact error
+// runc produces when a task's state directory under
+// /run/containerd/runc/<ns>/<id> is gone, and extract the directory path so
+// the caller can recreate it. The first case uses the literal string observed
+// live on hardware.
+func TestIsMissingRuncStateDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantDir string
+		wantOK  bool
+	}{
+		{
+			name:    "observed live error",
+			err:     errors.New("cannot open directory `/run/containerd/runc/default/com.wendylabs.examples.mcp-example`: No such file or directory"),
+			wantDir: "/run/containerd/runc/default/com.wendylabs.examples.mcp-example",
+			wantOK:  true,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("failed precondition"),
+		},
+		{
+			name: "cannot open directory but not a runc state path",
+			err:  errors.New("cannot open directory `/some/other/path`: No such file or directory"),
+		},
+		{
+			name: "cannot open directory with no closing backtick",
+			err:  errors.New("cannot open directory `/run/containerd/runc/default/app: No such file or directory"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, ok := isMissingRuncStateDir(tt.err)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v; want %v", ok, tt.wantOK)
+			}
+			if ok && dir != tt.wantDir {
+				t.Errorf("dir = %q; want %q", dir, tt.wantDir)
+			}
+		})
+	}
+}

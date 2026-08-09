@@ -78,8 +78,15 @@ type ContainerMonitor struct {
 	// tick would otherwise see the siblings stopped and launch a second,
 	// overlapping restart that races on the primary PID. Guarded by mu.
 	groupRestarting map[string]bool
-	mu              sync.Mutex
-	interval        time.Duration
+	// suppressed counts in-flight Suppress handles per container name (see
+	// Suppress). While a name's count is > 0, planRestarts will not schedule a
+	// restart for it. A counter rather than a bool so two independent
+	// operations racing on the same name (e.g. a stop overlapping a replace of
+	// the same service) don't have the first resume() re-enable restarts while
+	// the second is still tearing the task down. Guarded by mu.
+	suppressed map[string]int
+	mu         sync.Mutex
+	interval   time.Duration
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -92,6 +99,7 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		logManager:      logManager,
 		states:          make(map[string]*containerState),
 		groupRestarting: make(map[string]bool),
+		suppressed:      make(map[string]int),
 		interval:        interval,
 	}
 }
@@ -140,6 +148,38 @@ func (m *ContainerMonitor) ClearExplicitStop(appName string) {
 	defer m.mu.Unlock()
 	if state, ok := m.states[appName]; ok {
 		state.ExplicitStop = false
+	}
+}
+
+// Suppress pauses automatic restarts for containerName until the returned
+// resume func is called. The containerd client holds this for the duration of
+// a replace or stop operation's kill+delete sequence so the monitor's
+// periodic tick cannot launch a competing restartSingle while the task is
+// being torn down — observed live as a crash-looping app's restart racing a
+// replace/stop ("cannot delete running task: failed precondition"), and a
+// half-dead task left behind wedging the follow-up delete entirely.
+//
+// The returned func is idempotent: calling it more than once only decrements
+// the count on the first call. containerName uses the same keying as
+// Register/states — bare appID for single-container apps, "{appID}_{service}"
+// for services-map apps.
+func (m *ContainerMonitor) Suppress(containerName string) func() {
+	m.mu.Lock()
+	m.suppressed[containerName]++
+	m.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			m.mu.Lock()
+			if m.suppressed[containerName] > 0 {
+				m.suppressed[containerName]--
+			}
+			if m.suppressed[containerName] <= 0 {
+				delete(m.suppressed, containerName)
+			}
+			m.mu.Unlock()
+		})
 	}
 }
 
@@ -411,6 +451,13 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 	var toRestart []string
 	for appName, state := range m.states {
 		if running[appName] {
+			continue
+		}
+		if m.suppressed[appName] > 0 {
+			// A replace/stop operation is mid-teardown of this container; see
+			// Suppress. Skip it this tick — the caller will resume suppression
+			// once it is done, and the container's next observed state (running
+			// again, or still down) drives the following tick normally.
 			continue
 		}
 		if !m.shouldRestart(state) {

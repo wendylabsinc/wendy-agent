@@ -336,6 +336,48 @@ func TestCheckContainers_LegacySingleContainer_NotRestarted(t *testing.T) {
 	}
 }
 
+// TestCheckContainers_SuppressedContainer_NotRestarted is the full
+// checkContainers-round-trip regression guard for F2 (see
+// TestMonitorSuppressSkipsRestart in monitor_test.go for the narrower
+// planRestarts-only version). While a Suppress handle is held, a tick must
+// not call StartContainer for that name even though it is stopped and its
+// policy would otherwise restart it; once resumed, the very same tick
+// conditions restart it normally.
+func TestCheckContainers_SuppressedContainer_NotRestarted(t *testing.T) {
+	fake := &fakeContainerd{
+		started: make(chan string, 1),
+		containers: []*agentpb.AppContainer{{
+			AppName:      "crashloop-app",
+			RunningState: agentpb.AppRunningState_STOPPED,
+		}},
+	}
+	m := newMonitorWithClient(fake)
+	m.Register("crashloop-app", RestartUnlessStopped, 0)
+
+	resume := m.Suppress("crashloop-app")
+
+	m.checkContainers(context.Background())
+
+	select {
+	case got := <-fake.started:
+		t.Fatalf("StartContainer called for suppressed container: %q", got)
+	case <-time.After(200 * time.Millisecond):
+		// expected: nothing started while suppressed
+	}
+
+	resume()
+	m.checkContainers(context.Background())
+
+	select {
+	case got := <-fake.started:
+		if got != "crashloop-app" {
+			t.Fatalf("restarted %q, want %q", got, "crashloop-app")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected StartContainer(crashloop-app) after resume, got none")
+	}
+}
+
 func TestProbeExposedPortsInvokesProber(t *testing.T) {
 	f := &fakeContainerd{}
 	m := newMonitorWithClient(f)
