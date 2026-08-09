@@ -2932,11 +2932,7 @@ func updatedAgentReconnectFunc(ctx context.Context, previous *grpcclient.AgentCo
 		}
 	}
 
-	if addr, _, err := resolveDeviceAddress(); err == nil {
-		hostname := addr
-		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-			hostname = host
-		}
+	if addr, hostname, _, err := resolveDeviceAddress(); err == nil {
 		return func(waitCtx context.Context) (*grpcclient.AgentConnection, error) {
 			return connectResolvedAgentWithProvisionedHint(waitCtx, hostname, addr, false, deferProvisionedMTLSCheck(waitCtx, addr))
 		}

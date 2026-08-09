@@ -753,6 +753,13 @@ type SelectedDevice struct {
 	Bluetooth *models.BluetoothDevice
 	External  *models.ExternalDevice
 	Provider  providers.DeviceProvider
+	// PinKey is the name the device pin for this selection is filed under: the
+	// hostname behind the picker row the user chose. It is the only part of a
+	// picker selection that identifies a device durably — the address came from
+	// discovery, and a pin keyed on a DHCP lease would be worthless. Empty for
+	// selections with no hostname to key on, which are left unenforced (see
+	// enforceSelectedDevicePin).
+	PinKey string
 }
 
 // Close releases any resources held by this SelectedDevice.
@@ -762,24 +769,34 @@ func (s *SelectedDevice) Close() {
 	}
 }
 
-func resolveDeviceAddress() (addr string, isDefault bool, err error) {
+// resolveDeviceAddress turns --device (or the saved default) into the address to
+// dial and the key its pin is filed under.
+//
+// pinKey is derived from addr by pinKeyForAddr — the very function the dial
+// ladder uses on the address it is handed — so the key a connection is CHECKED
+// against and the key it is DIALLED with are the same function of the same
+// input, and cannot drift apart. That matters more than it looks: a host pinned
+// under one key and verified under another would leave enforcement switched off
+// while every log line and config entry said it was on.
+func resolveDeviceAddress() (addr string, pinKey string, isDefault bool, err error) {
 	hostname := deviceFlag
 	if hostname == "" {
 		cfg, loadErr := config.Load()
 		if loadErr != nil {
-			return "", false, fmt.Errorf("loading config: %w", loadErr)
+			return "", "", false, fmt.Errorf("loading config: %w", loadErr)
 		}
 		hostname = cfg.DefaultDevice
 		isDefault = hostname != ""
 	}
 	if hostname == "" {
-		return "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
+		return "", "", false, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 	// If the hostname already contains a port, use it as-is.
-	if _, _, splitErr := net.SplitHostPort(hostname); splitErr == nil {
-		return hostname, isDefault, nil
+	addr = hostname
+	if _, _, splitErr := net.SplitHostPort(hostname); splitErr != nil {
+		addr = hostPort(hostname, defaultAgentPort)
 	}
-	return hostPort(hostname, defaultAgentPort), isDefault, nil
+	return addr, pinKeyForAddr(addr), isDefault, nil
 }
 
 // recoveryChoice represents the user's selection in the default-device recovery menu.
@@ -1027,13 +1044,12 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 		return conn, nil
 	}
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err == nil {
 		startedAt := time.Now()
-		hostname := addr
-		if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
-			hostname = host
-		}
+		// The name the user asked for, used both to talk about this device and
+		// to decide which device is acceptable — see resolveDeviceAddress.
+		hostname := pinKey
 		provisionedMTLS := deferProvisionedMTLSCheck(ctx, addr)
 		conn, connErr := connectResolvedAgentWithProvisionedHint(ctx, hostname, addr, isDefault, provisionedMTLS)
 		if connErr != nil {
@@ -1086,16 +1102,18 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 				return nil, connErr
 			}
 		}
-		// WDY-1149: verify the resolved default device is still the same device,
-		// in the same organisation and cloud, that was pinned here (and pin it on
-		// first use). This runs BEFORE the update check on purpose: that check can
-		// offer to upload an agent binary, which must never happen against a
-		// device whose identity we are about to reject.
-		if isDefault {
-			if pinErr := enforceDevicePin(hostname, conn); pinErr != nil {
-				conn.Close()
-				return nil, pinErr
-			}
+		// WDY-1149: verify the device that answered is still the same device, in
+		// the same organisation and cloud, that was pinned under this name (and
+		// pin it on first use). Every named target is checked, not just the saved
+		// default: --device is exactly as spoofable as a default, and a check that
+		// only covers the device you did not name is not a check.
+		//
+		// This runs BEFORE the update check on purpose: that check can offer to
+		// upload an agent binary, which must never happen against a device whose
+		// identity we are about to reject.
+		if pinErr := enforceDevicePin(pinKey, conn); pinErr != nil {
+			conn.Close()
+			return nil, pinErr
 		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(conn)
@@ -1128,6 +1146,9 @@ func connectToAgent(ctx context.Context, opts ...resolveOption) (*grpcclient.Age
 // support gRPC.
 func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpcclient.AgentConnection, error) {
 	if target.Agent != nil {
+		if pinErr := enforceSelectedDevicePin(target); pinErr != nil {
+			return nil, pinErr
+		}
 		if !cfg.suppressProvisioningHint {
 			suggestProvisioning(target.Agent)
 		}
@@ -1147,6 +1168,46 @@ func connectFromSelectedDevice(target *SelectedDevice, cfg resolveConfig) (*grpc
 	}
 
 	return nil, fmt.Errorf("selected device does not support gRPC agent commands")
+}
+
+// enforceSelectedDevicePin applies the device pin to a picker selection, and
+// closes the connection if it is refused.
+//
+// The dial ladder could not do this itself: the picker dials an address
+// discovery handed it, so by the time a certificate arrives the only record of
+// WHICH device the user chose is on the row they selected. A selection with no
+// key is left unenforced rather than pinned under a substitute — pinning device
+// A's certificate under device B's name is worse than not pinning at all,
+// because it looks like enforcement while checking nothing.
+func enforceSelectedDevicePin(target *SelectedDevice) error {
+	if target == nil || target.Agent == nil || target.PinKey == "" {
+		return nil
+	}
+	if err := enforceDevicePin(target.PinKey, target.Agent); err != nil {
+		target.Agent.Close()
+		target.Agent = nil
+		return err
+	}
+	return nil
+}
+
+// pinKeyForLANDevice is the pin key for a picker row: the device's HOSTNAME.
+//
+// Not its DisplayName, which is the tempting choice and the wrong one. On
+// WendyOS that is a Title-Cased friendly name from the `displayname` TXT record
+// ("Agx Orin") built from the device name, while the hostname is "wendyos-" +
+// that name ("wendyos-agx-orin.local") — one is not a transform of the other.
+// Keying picker pins on the display name would file them where the --device and
+// default-device paths (which key on the hostname, via pinKeyForAddr) never
+// look: the same device pinned twice under two names, each path blind to what
+// the other recorded, with nothing in the config or the output to show for it.
+// The hostname is also exactly what a user types for --device, which is what
+// makes it the one name every path can agree on.
+func pinKeyForLANDevice(d *models.LANDevice) string {
+	if d == nil {
+		return ""
+	}
+	return strings.TrimSpace(d.Hostname)
 }
 
 // connectWithAutoTLS tries to connect using mTLS if the CLI has auth certs,
@@ -2509,12 +2570,26 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 				conn = refreshedConn
 			} else if isDefault && !jsonOutput && !cfg.nonInteractive && isInteractiveTerminal() {
 				// Default device is unreachable — offer interactive recovery.
-				return handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+				recovered, recErr := handleDefaultDeviceRecovery(ctx, device, time.Since(startedAt), err, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+				if recErr != nil {
+					return nil, recErr
+				}
+				if pinErr := enforceSelectedDevicePin(recovered); pinErr != nil {
+					return nil, pinErr
+				}
+				return recovered, nil
 			} else if isDefault {
 				return nil, defaultDeviceUnreachableError(device, err)
 			} else {
 				return nil, err
 			}
+		}
+		// Same pin key as connectToAgent's: the host of the address dialled, via
+		// the same pinKeyForAddr the ladder uses. resolveTarget reaches devices
+		// connectToAgent never sees, and an unchecked path is the whole attack.
+		if pinErr := enforceDevicePin(pinKeyForAddr(addr), conn); pinErr != nil {
+			conn.Close()
+			return nil, pinErr
 		}
 		if !cfg.suppressUpdateCheck {
 			var updateErr error
@@ -2532,7 +2607,14 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 		return nil, fmt.Errorf("no device specified; use --device flag or set a default with 'wendy device set-default'")
 	}
 
-	return pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	picked, pickErr := pickDevice(ctx, cfg.excludeProviderKeys, cfg.includeBluetooth, cfg.suppressUpdateCheck)
+	if pickErr != nil {
+		return nil, pickErr
+	}
+	if pinErr := enforceSelectedDevicePin(picked); pinErr != nil {
+		return nil, pinErr
+	}
+	return picked, nil
 }
 
 // findDeviceByID searches all available providers for a device whose ID
@@ -3125,7 +3207,7 @@ func pickDevice(ctx context.Context, excludeProviders map[string]bool, includeBl
 						return nil, updateErr
 					}
 				}
-				return &SelectedDevice{Agent: conn}, nil
+				return &SelectedDevice{Agent: conn, PinKey: pinKeyForLANDevice(d.LAN)}, nil
 			}
 			// LAN failed — fall back to BLE if available.
 			if d.Bluetooth != nil {

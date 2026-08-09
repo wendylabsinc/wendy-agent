@@ -482,7 +482,7 @@ func TestResolveDeviceAddress_Flag(t *testing.T) {
 	defer func() { deviceFlag = origFlag }()
 	deviceFlag = "my-device.local"
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -491,6 +491,9 @@ func TestResolveDeviceAddress_Flag(t *testing.T) {
 	}
 	if addr != "my-device.local:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "my-device.local:50051")
+	}
+	if pinKey != "my-device.local" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "my-device.local")
 	}
 }
 
@@ -501,7 +504,7 @@ func TestResolveDeviceAddress_DefaultDevice(t *testing.T) {
 
 	setTempConfig(t, &config.Config{DefaultDevice: "wendy-thor.local"})
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -511,6 +514,9 @@ func TestResolveDeviceAddress_DefaultDevice(t *testing.T) {
 	if addr != "wendy-thor.local:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "wendy-thor.local:50051")
 	}
+	if pinKey != "wendy-thor.local" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "wendy-thor.local")
+	}
 }
 
 func TestResolveDeviceAddress_ExplicitHostPortFlag(t *testing.T) {
@@ -518,7 +524,7 @@ func TestResolveDeviceAddress_ExplicitHostPortFlag(t *testing.T) {
 	defer func() { deviceFlag = origFlag }()
 	deviceFlag = "my-mac.local:50051"
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -527,6 +533,9 @@ func TestResolveDeviceAddress_ExplicitHostPortFlag(t *testing.T) {
 	}
 	if addr != "my-mac.local:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
+	}
+	if pinKey != "my-mac.local" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "my-mac.local")
 	}
 }
 
@@ -537,7 +546,7 @@ func TestResolveDeviceAddress_ExplicitHostPortDefault(t *testing.T) {
 
 	setTempConfig(t, &config.Config{DefaultDevice: "my-mac.local:50051"})
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -547,6 +556,9 @@ func TestResolveDeviceAddress_ExplicitHostPortDefault(t *testing.T) {
 	if addr != "my-mac.local:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "my-mac.local:50051")
 	}
+	if pinKey != "my-mac.local" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "my-mac.local")
+	}
 }
 
 func TestResolveDeviceAddress_IPv6ZoneFlag(t *testing.T) {
@@ -554,7 +566,7 @@ func TestResolveDeviceAddress_IPv6ZoneFlag(t *testing.T) {
 	defer func() { deviceFlag = origFlag }()
 	deviceFlag = "fe80::8c13:12bf:4df8:b976%en24"
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -563,6 +575,9 @@ func TestResolveDeviceAddress_IPv6ZoneFlag(t *testing.T) {
 	}
 	if addr != "[fe80::8c13:12bf:4df8:b976%en24]:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "[fe80::8c13:12bf:4df8:b976%en24]:50051")
+	}
+	if pinKey != "fe80::8c13:12bf:4df8:b976%en24" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "fe80::8c13:12bf:4df8:b976%en24")
 	}
 }
 
@@ -573,7 +588,7 @@ func TestResolveDeviceAddress_IPv6DefaultDevice(t *testing.T) {
 
 	setTempConfig(t, &config.Config{DefaultDevice: "fe80::1%en0"})
 
-	addr, isDefault, err := resolveDeviceAddress()
+	addr, pinKey, isDefault, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -583,6 +598,9 @@ func TestResolveDeviceAddress_IPv6DefaultDevice(t *testing.T) {
 	if addr != "[fe80::1%en0]:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "[fe80::1%en0]:50051")
 	}
+	if pinKey != "fe80::1%en0" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "fe80::1%en0")
+	}
 }
 
 func TestResolveDeviceAddress_IPv6GlobalFlag(t *testing.T) {
@@ -590,12 +608,15 @@ func TestResolveDeviceAddress_IPv6GlobalFlag(t *testing.T) {
 	defer func() { deviceFlag = origFlag }()
 	deviceFlag = "2001:db8::1"
 
-	addr, _, err := resolveDeviceAddress()
+	addr, pinKey, _, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if addr != "[2001:db8::1]:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "[2001:db8::1]:50051")
+	}
+	if pinKey != "2001:db8::1" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "2001:db8::1")
 	}
 }
 
@@ -604,12 +625,15 @@ func TestResolveDeviceAddress_IPv4Flag(t *testing.T) {
 	defer func() { deviceFlag = origFlag }()
 	deviceFlag = "192.168.1.42"
 
-	addr, _, err := resolveDeviceAddress()
+	addr, pinKey, _, err := resolveDeviceAddress()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if addr != "192.168.1.42:50051" {
 		t.Fatalf("addr = %q, want %q", addr, "192.168.1.42:50051")
+	}
+	if pinKey != "192.168.1.42" {
+		t.Fatalf("pinKey = %q, want %q — the pin must be filed under the name the user typed, not the dialled address", pinKey, "192.168.1.42")
 	}
 }
 
@@ -620,7 +644,7 @@ func TestResolveDeviceAddress_NoDevice(t *testing.T) {
 
 	setTempConfig(t, &config.Config{})
 
-	_, _, err := resolveDeviceAddress()
+	_, _, _, err := resolveDeviceAddress()
 	if err == nil {
 		t.Fatal("expected error when no device is specified")
 	}

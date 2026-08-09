@@ -1,13 +1,19 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
+	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
 // TestCloudGRPCForOrg maps the org carried by a verifying mTLS cert back to the
@@ -206,6 +212,184 @@ func TestClearDevicePinForRepin(t *testing.T) {
 	}
 	if _, ok := pins["wendy-orin"]; !ok {
 		t.Error("clearDevicePinForRepin dropped an unrelated device's pin")
+	}
+}
+
+// TestEnforceDeviceIdentityHardFails covers the approved policy change: a
+// mismatch is refused identically in every mode, with no prompt.
+//
+// The arrangement is deliberately the one the old code let through — an
+// interactive TTY, where a user could answer "yes" — because that answer is
+// precisely what an attacker needs. "The human consented" is not evidence about
+// which device answered, so it must not be a way through.
+func TestEnforceDeviceIdentityHardFails(t *testing.T) {
+	// Org 7 asset 43 against a pin for org 7 asset 42: both devices are
+	// legitimately enrolled in the same organisation and cloud, so only the
+	// asset id says the hostname now points at a different machine. It is the
+	// case a user is least able to adjudicate from a one-line prompt.
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendy-thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	obs := observedDeviceIdentity{mTLS: true, orgID: 7, assetID: "43"}
+
+	origJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = origJSON })
+
+	// Interactive, human output: the mode that used to prompt.
+	stubInteractive(t)
+	jsonOutput = false
+	interactiveErr := enforceDeviceIdentity("wendy-thor.local", obs)
+	if interactiveErr == nil {
+		t.Fatal("interactive mismatch: want a refusal, got nil — a prompt is still deciding this")
+	}
+	if !strings.Contains(interactiveErr.Error(), "wendy device unpin wendy-thor.local") {
+		t.Errorf("refusal %q does not name the command that resolves it", interactiveErr)
+	}
+
+	// A prompt answered "yes" would have re-pinned to asset 43. The original pin
+	// surviving is the observable proof that nothing accepted the new identity —
+	// an assertion on the error alone would also pass if the user had declined a
+	// prompt that still ran.
+	if pin := readPins()["wendy-thor"]; pin.AssetID != "42" {
+		t.Errorf("pin after refusal = %+v, want the original asset 42 intact", pin)
+	}
+
+	// Same input, other two modes. Identical text is the point: a refusal that
+	// reads differently depending on where it is printed invites the reader to
+	// assume the interactive one is negotiable.
+	jsonOutput = true
+	jsonErr := enforceDeviceIdentity("wendy-thor.local", obs)
+	jsonOutput = false
+	stubNonInteractive(t)
+	headlessErr := enforceDeviceIdentity("wendy-thor.local", obs)
+
+	if jsonErr == nil || headlessErr == nil {
+		t.Fatalf("mismatch must be refused in every mode: json=%v, non-interactive=%v", jsonErr, headlessErr)
+	}
+	if jsonErr.Error() != interactiveErr.Error() || headlessErr.Error() != interactiveErr.Error() {
+		t.Errorf("refusal differs by mode:\n  interactive:     %v\n  json:            %v\n  non-interactive: %v", interactiveErr, jsonErr, headlessErr)
+	}
+
+	// The assertions above prove the OUTCOME no longer depends on the mode. This
+	// proves the MECHANISM is gone: with no confirmation prompt anywhere in the
+	// identity path, there is no mode-dependent branch left for one to hide in.
+	// A function seam would only catch a prompt re-added THROUGH the seam; the
+	// likely regression — someone reaching for tui.Confirm* directly, to be
+	// helpful — is what this catches.
+	src, readErr := os.ReadFile("device_pin.go")
+	if readErr != nil {
+		t.Fatalf("reading device_pin.go: %v", readErr)
+	}
+	if strings.Contains(string(src), "tui.Confirm") {
+		t.Error("device_pin.go calls a tui.Confirm* prompt: the identity path must refuse, never ask — a MITM warning that can be dismissed gets dismissed")
+	}
+}
+
+// TestEnforceDeviceIdentityAppliesToNonDefault guards the scope widening: the
+// pin used to be checked only for the saved default device, so `--device
+// <host>` — just as spoofable — went unchecked.
+//
+// It also pins down the correctness trap in that widening. The LKG stub asserts
+// the key the DIAL was constrained by, and the refusal text carries the key the
+// CHECK was made against; asserting both are "wendy-thor.local" is what proves
+// a host cannot be pinned under one key and verified under another, which would
+// disable enforcement while looking like it works.
+func TestEnforceDeviceIdentityAppliesToNonDefault(t *testing.T) {
+	stubNonInteractive(t)
+
+	origFlag := deviceFlag
+	deviceFlag = "wendy-thor.local"
+	t.Cleanup(func() { deviceFlag = origFlag })
+
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendy-thor": {OrgID: 9, CloudGRPC: "grpc.b.sh:443", AssetID: "42"},
+	})
+	// The whole point is that this device is NOT the default: with a default set
+	// the old code would have checked it anyway and the test would prove nothing.
+	if cfg, err := config.Load(); err != nil || cfg.DefaultDevice != "" {
+		t.Fatalf("precondition: no default device may be set (default=%q, err=%v)", cfg.DefaultDevice, err)
+	}
+
+	// Reach the device over the cache fast path so no name resolution or real
+	// dialling happens; the connection it hands back carries a certificate for
+	// org 7, while the pin above says org 9.
+	seedLKGCache(t, discoverycache.Entry{
+		ID: "dev-1", Hostname: "wendy-thor.local", IP: "10.0.0.9", Port: 50052, MTLS: true,
+	}, 0)
+	var dialedPinKey string
+	origLKG := dialAgentLKGFn
+	dialAgentLKGFn = func(ctx context.Context, e discoverycache.Entry, pinKey string) (*grpcclient.AgentConnection, error, lkgOutcome) {
+		dialedPinKey = pinKey
+		return &grpcclient.AgentConnection{
+			IsMTLS:   true,
+			CertInfo: &config.CertificateInfo{OrganizationID: 7},
+		}, nil, lkgConnected
+	}
+	origLadder := dialAgentLadderFn
+	dialAgentLadderFn = func(ctx context.Context, target dialTarget) (*grpcclient.AgentConnection, error, error) {
+		t.Errorf("general ladder ran despite an LKG hit (addr %s)", target.Addr)
+		return nil, nil, errors.New("unreachable")
+	}
+	origDiscover := discoverLANDevices
+	discoverLANDevices = func(context.Context, time.Duration) ([]models.LANDevice, error) { return nil, nil }
+	t.Cleanup(func() {
+		dialAgentLKGFn, dialAgentLadderFn = origLKG, origLadder
+		discoverLANDevices = origDiscover
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := connectToAgent(ctx, SuppressProvisioningHint(), SuppressUpdateCheck(), NonInteractive())
+	if conn != nil {
+		conn.Close()
+		t.Fatal("connectToAgent returned a connection to a --device host whose certificate contradicts its pin")
+	}
+	if err == nil {
+		t.Fatal("connectToAgent returned no error for a --device host whose certificate contradicts its pin")
+	}
+	if !strings.Contains(err.Error(), `device "wendy-thor.local" identity changed`) ||
+		!strings.Contains(err.Error(), "wendy device unpin wendy-thor.local") {
+		t.Fatalf("err = %v, want the identity refusal naming the device and the unpin escape hatch", err)
+	}
+	if dialedPinKey != "wendy-thor.local" {
+		t.Errorf("dial was constrained by pin key %q, but the check was made against \"wendy-thor.local\"; a host pinned under one key and verified under another is unenforced", dialedPinKey)
+	}
+	if pin := readPins()["wendy-thor"]; pin.OrgID != 9 {
+		t.Errorf("pin after refusal = %+v, want the original org 9 intact", pin)
+	}
+}
+
+// TestPickerPinKeyMatchesDeviceFlagKey is the fourth path's half of the same
+// agreement TestEnforceDeviceIdentityAppliesToNonDefault proves for --device:
+// picking a device from the TUI must file its pin exactly where naming it on
+// the command line looks for it.
+//
+// The DisplayName here is the shape a real WendyOS device advertises — a
+// Title-Cased friendly name from the `displayname` TXT record, built from the
+// device name, while the hostname is "wendyos-" + that name. Keying on it would
+// produce two pins for one device, each path blind to the other's, which reads
+// as enforcement while enforcing nothing.
+func TestPickerPinKeyMatchesDeviceFlagKey(t *testing.T) {
+	lan := &models.LANDevice{DisplayName: "Agx Orin", Hostname: "wendyos-agx-orin.local"}
+
+	origFlag := deviceFlag
+	deviceFlag = "wendyos-agx-orin.local"
+	t.Cleanup(func() { deviceFlag = origFlag })
+	_, flagKey, _, err := resolveDeviceAddress()
+	if err != nil {
+		t.Fatalf("resolveDeviceAddress: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.SetDevicePin(pinKeyForLANDevice(lan), 7, "grpc.a.sh:443", "42")
+	if _, ok := cfg.DevicePinFor(flagKey); !ok {
+		t.Fatalf("a pin recorded for the picked device (key %q) is invisible to --device %q (key %q): pins under %v",
+			pinKeyForLANDevice(lan), deviceFlag, flagKey, cfg.DevicePins)
+	}
+
+	// And the trap itself: the display name must not be what keys the pin.
+	if strings.EqualFold(pinKeyForLANDevice(lan), lan.DisplayName) {
+		t.Errorf("picker pin key = %q, want the hostname %q — the display name is not a transform of the hostname", pinKeyForLANDevice(lan), lan.Hostname)
 	}
 }
 
