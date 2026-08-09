@@ -122,6 +122,40 @@ After the UDC binds:
 - `ip link set usb0 txqueuelen 2000` increases the TX queue length.
 - The USB interrupt is pinned to CPUs 0–3 via `/proc/irq/<irq>/smp_affinity`.
 
+## Well-Known IPv6 Link-Local Address
+
+Beyond the SLAAC link-local address derived from the gadget MAC, the device carries a second, **fixed** link-local address on the gadget interface:
+
+```
+fe80::5741:1/64      (0x57 0x41 = "WA", Wendy Agent)
+```
+
+Because it is identical on every WendyOS device, the host CLI can dial it without resolving anything — no DHCP lease, no NetworkManager profile, no mDNS, and no `sudo`. Link-local addresses are scoped per link, so several devices plugged into the same host are reached at the same address over different interface zones (`%enx…a`, `%enx…b`) without colliding, which the shared `10.42.0.0/24` IPv4 subnet cannot do.
+
+### How it is applied
+
+`wendy-agent` applies the address itself, rather than a boot-time script, so it survives anything that flushes the interface later:
+
+- At agent startup, and every **30 seconds** thereafter, it adds the address to every non-loopback interface whose name starts with `usb`.
+- Re-applying is idempotent: an `EEXIST` from the kernel counts as success.
+- The address is added with link scope and the `IFA_F_NODAD` flag. Skipping duplicate address detection is safe here — the only peer on a gadget link is the USB host, which never claims this address — and makes the address usable immediately instead of after DAD completes.
+- The periodic re-apply covers NetworkManager re-activating the `usb-gadget` profile (which flushes addresses it did not configure itself) and the gadget interface appearing late, as it can during the Jetson USB role-switch race described above.
+- If applying fails persistently — the agent lacking `CAP_NET_ADMIN`, or netlink being unreachable — a warning is logged once when the failure starts rather than on every pass, and again if it recurs after a successful pass.
+
+This runs on Linux devices only. The macOS agent is never USB-attached hardware, so it does nothing.
+
+### Verifying
+
+```bash
+# On the device
+ip -6 addr show usb0 | grep 5741
+
+# On the host — reach the agent (zone is the host interface)
+ping6 fe80::5741:1%enxXXXXXXXXXXXX
+```
+
+The host side of this address — how `wendy discover`, the device picker, and the connect path use it — is documented in [Discovering Devices](../../device/discovering-devices) and [device selection](../../clients/wendy-cli/device-selection.md).
+
 ## systemd Services
 
 | Service | Purpose |

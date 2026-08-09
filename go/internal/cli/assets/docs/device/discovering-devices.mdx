@@ -89,9 +89,33 @@ LAN discovery uses mDNS (also known as Bonjour on macOS or Avahi on Linux) to fi
   **Network Requirements**: LAN discovery requires that your network allows mDNS traffic. Many workplace and public networks block this by default.
 </Callout>
 
+### Direct USB discovery
+
+A USB-attached device is also discovered without mDNS. Every WendyOS device assigns itself a fixed IPv6 link-local address on its USB gadget interface:
+
+```
+fe80::5741:1
+```
+
+`wendy discover` and the interactive device picker dial that address on every USB-backed network interface on your machine, in parallel, and ask each agent that answers who it is (`GetAgentVersion`) instead of reading mDNS TXT records. Because IPv6 link-local addresses are scoped to a single link, several devices plugged in at once are reached at the same address over different interfaces without conflicting.
+
+What this means in practice:
+
+- **No host setup is needed to see the device.** No DHCP lease, no NetworkManager profile, no `sudo`, and no working multicast. On Linux, `wendy device usb-setup` is still useful when you want the device to reach the internet through your machine, but it is no longer a prerequisite for discovery.
+- **Results are merged with mDNS.** A device found by both paths appears once; the direct probe fills in the USB annotation and interface on the existing entry. A device found only by the probe is added to the list.
+- **If mDNS discovery fails outright** (no multicast route, Avahi down), any device reached over USB is still reported rather than the failure.
+- **Hosts with no USB interface pay nothing.** With no USB-backed interface present, the probe does no work.
+- **Older agents still work.** An agent that predates this behavior does not answer at the well-known address and is discovered over mDNS as before. An agent that answers but reports no hostname is listed as `USB device (<interface>)`.
+
+<Callout type="info">
+  **Windows and macOS**: USB-backed interfaces are identified by their adapter description (Windows) or hardware port name (macOS), since the interface name alone (`Ethernet 3`, `en5`) says nothing about the bus.
+</Callout>
+
 ## Device address selection
 
 When mDNS returns both IPv4 and IPv6 addresses for the same device — which happens because Avahi emits one resolve record per protocol, and macOS dns-sd lookups can list IPv6 first — the CLI prefers the IPv4 address. IPv6 address sets typically lead with an RFC 4941 temporary (privacy) address that rotates away, making a stored IPv6 address go stale before the next deploy or readiness probe. IPv6 is used only as a fallback when no IPv4 address is available.
+
+For a device that also has a USB path, the CLI normally tries the `.local` hostname before the routed IP, because a residential router with AP isolation can black-hole the Wi-Fi address while USB still works. The exception is a device found by the direct USB probe: its address is a zoned link-local literal (`fe80::5741:1%enx…`) that the probe has just proven answers, so it is tried first — resolving a `.local` name for such a device would only spend a full resolver timeout before arriving at the address that already works.
 
 ## Troubleshooting LAN Discovery
 

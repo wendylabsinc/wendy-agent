@@ -1,6 +1,6 @@
 # WendyOS Networking Overview
 
-WendyOS provides a self-contained networking stack designed for USB-tethered connectivity between a device (Raspberry Pi, Jetson, or other supported hardware) and a host computer. When you plug a WendyOS device into a host via USB-C, the device presents a composite USB gadget that includes both a network interface and a serial console. No drivers, no pairing — the device advertises itself over mDNS and the wendy-agent can discover and connect to it immediately. On Linux hosts, run `wendy device usb-setup` once to configure the USB-C link.
+WendyOS provides a self-contained networking stack designed for USB-tethered connectivity between a device (Raspberry Pi, Jetson, or other supported hardware) and a host computer. When you plug a WendyOS device into a host via USB-C, the device presents a composite USB gadget that includes both a network interface and a serial console. No drivers, no pairing — the device advertises itself over mDNS, and it also answers at a fixed IPv6 link-local address that the CLI dials directly, so the wendy-agent can discover and connect to it immediately. On Linux hosts, `wendy device usb-setup` configures IPv4 on the USB-C link (and internet sharing through the host); it is not needed to discover or connect to the device.
 
 ## Architecture
 
@@ -10,6 +10,7 @@ WendyOS device                          Host computer
   usb0 (NCM gadget interface)  ←USB→    enxXXXXXXXXXXXX (CDC NCM)
   IPv4: DHCP client (or shared)         IPv4: 10.42.0.1/24 (NM shared)
   IPv6: link-local (auto)               IPv6: link-local (auto)
+  IPv6: fe80::5741:1 (well-known)  ←→   wendy CLI dials fe80::5741:1%<iface>
   mDNS: _wendyos._udp (Avahi)           mDNS discovery (avahi-browse/dns-sd)
   /dev/ttyGS0 (ACM serial)     ←USB→    /dev/ttyACM0 (serial console)
 ```
@@ -23,12 +24,13 @@ WendyOS device                          Host computer
 | dnsmasq | Optional on-device DHCP server for `usb0` | `recipes-support/gadget-network-config/` |
 | radvd | IPv6 Router Advertisement daemon on `usb0` | `recipes-connectivity/radvd/` |
 | Avahi | mDNS service broadcasting (`_wendyos._udp`) | `recipes-connectivity/avahi/` |
+| wendy-agent (`usbgadget`) | Keeps the well-known IPv6 link-local address on the gadget interface | `go/internal/agent/usbgadget/` |
 | `generate-hostname.sh` | Sets a stable device hostname before Avahi starts | `recipes-connectivity/avahi/` |
 | `update-mdns-uuid.sh` | Injects device UUID and name into the Avahi service file | `recipes-core/wendyos-identity/` |
 
 ## Topics
 
-- [USB NCM Gadget](./usb-ncm.md) — How the USB gadget is constructed and initialized
+- [USB NCM Gadget](./usb-ncm.md) — How the USB gadget is constructed and initialized, and the [well-known IPv6 link-local address](./usb-ncm.md#well-known-ipv6-link-local-address) that makes USB connectivity deterministic
 - [MAC Address Generation](./mac-addresses.md) — Deterministic MAC generation and IPv6 link-local formation
 - [IPv4 DHCP](./ipv4-dhcp.md) — DHCP client and server modes for `usb0`, and host-side setup
 - [IPv6 Router Advertisements](./ipv6-ra.md) — radvd configuration for IPv6 link-local on `usb0`
@@ -42,7 +44,8 @@ WendyOS device                          Host computer
 | Device `usb0` IPv4 (DHCP client mode) | Assigned by host (typically `10.42.0.2`–`10.42.0.5`) |
 | Host IPv4 when using NetworkManager shared | `10.42.0.1/24` |
 | dnsmasq pool (on-device DHCP server mode) | `10.42.0.2`–`10.42.0.5` |
-| IPv6 | Link-local only (`fe80::/64`, derived from MAC via EUI-64) |
+| IPv6 (automatic) | Link-local only (`fe80::/64`, derived from MAC via EUI-64) |
+| IPv6 well-known USB address | `fe80::5741:1/64` on `usb0`, self-assigned by wendy-agent — see [USB NCM Gadget](./usb-ncm.md#well-known-ipv6-link-local-address) |
 | mDNS service | `_wendyos._udp`, port `50051` pre-provisioning / `50052` post-provisioning |
 | mDNS hostname | `wendyos-<device-name>.local` or `wendyos-<short-uuid>.local` |
 

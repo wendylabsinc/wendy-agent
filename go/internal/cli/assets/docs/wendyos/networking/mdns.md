@@ -87,6 +87,8 @@ hosts: files mdns4_minimal [NOTFOUND=return] mdns4 dns
 
 ## Host-Side Discovery
 
+> **mDNS is not required over USB.** A USB-attached device is also discoverable at the well-known IPv6 link-local address `fe80::5741:1` (see [USB NCM Gadget](./usb-ncm.md#well-known-ipv6-link-local-address)). The CLI probes that address on every USB-backed host interface in parallel with the mDNS browse below and merges the results, taking device identity from the agent's `GetAgentVersion` response instead of the TXT records. mDNS remains the discovery path for devices reached over Wi-Fi or Ethernet.
+
 ### Linux (avahi-browse)
 
 ```bash

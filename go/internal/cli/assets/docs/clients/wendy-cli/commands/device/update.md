@@ -26,6 +26,8 @@ Agent updated successfully (agent reports 2026.07.01-223311).
 ```
 
 > **Protocol note:** `GetAgentVersionResponse.binary_sha256` carries the hex SHA-256 of the executable the agent process was started from, computed once at startup and cached. It is non-empty only on the Linux/WendyOS Go agent; the macOS agent does not implement it yet. Because it is cached at startup, it keeps reporting the *running* binary even after an update has replaced the file on disk — which is exactly what makes it usable as proof that the restart picked up the new binary.
+>
+> The same response also carries `hostname`, the device hostname as reported by `gethostname(2)`. It identifies a device reached over the well-known USB link-local address `fe80::5741:1`, where there are no mDNS TXT records to read an identity from — see [device selection](../../device-selection.md#usb-fallback-for-an-unreachable-address). It is empty on agents predating the field, and the USB fallback treats an empty hostname as "no match" rather than assuming the device is the right one.
 
 ## JSON output (`--json`)
 

@@ -54,6 +54,8 @@ In this mode the host receives an address from `10.42.0.2`–`10.42.0.5` and the
 
 ## Host-Side Setup
 
+> **Not needed just to reach the device.** The device self-assigns the well-known IPv6 link-local address `fe80::5741:1` on `usb0` (see [USB NCM Gadget](./usb-ncm.md#well-known-ipv6-link-local-address)), and the `wendy` CLI discovers and connects over it with no host-side configuration at all. Set up IPv4 below when you want IPv4 connectivity over the USB link, or want the device to reach the internet through the host.
+
 ### Easiest — let `wendy discover` set it up (Linux)
 
 On a Linux host, `wendy discover` auto-detects a USB-C-tethered Wendy device

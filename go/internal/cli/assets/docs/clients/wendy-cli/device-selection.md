@@ -36,12 +36,42 @@ that the default is set but unreachable instead of opening a picker.
 
 > **TODO (test)**: If the target device is outdated, and `--json` is not specified, a warning will be printed to indicate an update is available.
 
+## USB fallback for an unreachable address
+
+An address resolved from either of the two steps above — the `--device` target
+or the stored default — can turn out to be unreachable for ordinary reasons:
+the device moved to another network, DHCP handed out a different lease, or
+mDNS is blocked on this host. When that happens and the device is plugged in
+over USB-C, the CLI reaches it over USB instead of giving up.
+
+Each USB-backed interface on the host is tried in turn at the well-known IPv6
+link-local address `fe80::5741:1` that every WendyOS device assigns to its USB
+gadget interface. The connection is kept **only** when the agent that answers
+reports the hostname of the device that was asked for; the comparison ignores
+case and a trailing `.local`. Anything else is closed and the walk continues:
+
+- A different Wendy device that happens to be plugged in is rejected, so a
+  command never silently runs against the wrong machine.
+- An agent predating the `hostname` field reports an empty hostname, which
+  never matches, so it is rejected too.
+
+This needs no host-side network setup — no DHCP, no NetworkManager profile, no
+`sudo`, and no working mDNS. When no USB candidate matches, the outcome is the
+same as if the fallback did not exist: the interactive picker for an
+unreachable default, or a failure.
+
 ## 3. Show Picker
 
 mDNS and BLE discover nearby [WendyOS](../../wendyos/),
 [Wendy-Agent](../../wendy-agent/) and [Wendy Lite](../../wendy-lite/) devices.
 A device picker is shown only when the terminal is interactive, so a user can
 select their target device for the current command invocation.
+
+Alongside the continuous mDNS browse, the picker probes the well-known USB
+address `fe80::5741:1` on every USB-backed host interface, so a USB-attached
+device shows up even where mDNS is blocked. A device found by both paths is
+listed once. See
+[Direct USB discovery](../../device/discovering-devices).
 
 Headless Mac advertises over Bonjour/mDNS as `_wendyos._udp` and appears
 as a LAN device when local discovery is allowed by the network and macOS Local
