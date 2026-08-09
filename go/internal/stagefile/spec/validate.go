@@ -237,8 +237,8 @@ func validateInstall(inst *Install) error {
 	if inst == nil {
 		return nil
 	}
-	if inst.Apt == nil && inst.Apk == nil && inst.Pip == nil && inst.Npm == nil && inst.Uv == nil {
-		return fmt.Errorf("install: at least one of apt, apk, pip, npm, uv must be set")
+	if inst.Apt == nil && inst.Apk == nil && len(inst.CMake) == 0 && inst.Pip == nil && inst.Npm == nil && inst.Uv == nil {
+		return fmt.Errorf("install: at least one of apt, apk, cmake, pip, npm, uv must be set")
 	}
 	if inst.Apt != nil {
 		if len(inst.Apt.Packages) == 0 {
@@ -254,6 +254,39 @@ func validateInstall(inst *Install) error {
 		}
 		for _, r := range inst.Apk.Repositories {
 			if err := validateRepoURL(r, "install.apk.repositories entry"); err != nil {
+				return err
+			}
+		}
+	}
+	for i, c := range inst.CMake {
+		field := fmt.Sprintf("install.cmake[%d]", i)
+		if err := validateRepoURL(c.Repository, field+".repository"); err != nil {
+			return err
+		}
+		if len(c.Commit) != 40 || !isHex(c.Commit) {
+			return fmt.Errorf("%s.commit must be a full 40-hex Git commit (got %q) — branches and tags can move", field, c.Commit)
+		}
+		if c.Prefix != "" {
+			if err := rejectNewline(c.Prefix, field+".prefix"); err != nil {
+				return err
+			}
+			if !strings.HasPrefix(c.Prefix, "/") {
+				return fmt.Errorf("%s.prefix must be an absolute path (got %q)", field, c.Prefix)
+			}
+		}
+		switch c.BuildType {
+		case "", "Release", "Debug", "RelWithDebInfo", "MinSizeRel":
+		default:
+			return fmt.Errorf("%s.buildType %q is not one of Release, Debug, RelWithDebInfo, MinSizeRel", field, c.BuildType)
+		}
+		if c.Jobs < 0 {
+			return fmt.Errorf("%s.jobs must be non-negative (got %d)", field, c.Jobs)
+		}
+		for k, v := range c.Defines {
+			if !isCMakeIdentifier(k) {
+				return fmt.Errorf("%s.defines key %q must be a CMake identifier (letters, digits, and underscore; not starting with a digit)", field, k)
+			}
+			if err := rejectNewline(v, field+".defines value"); err != nil {
 				return err
 			}
 		}
@@ -367,6 +400,19 @@ func validateDownloads(entries []Download) error {
 		}
 	}
 	return nil
+}
+
+func isCMakeIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_' || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func validateCopy(entries []CopyEntry, priorNames map[string]bool) error {
