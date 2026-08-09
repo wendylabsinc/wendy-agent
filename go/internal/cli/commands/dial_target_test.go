@@ -21,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 )
 
@@ -523,6 +524,159 @@ func TestWrongDeviceAbortsLadder(t *testing.T) {
 	want := `device "orin.local" is pinned to asset 42 in organization 7, but the host answering presented asset 43 in organization 7`
 	if !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "wendy device unpin orin.local") {
 		t.Fatalf("err = %v, want the identity refusal naming both identities and the unpin escape hatch", err)
+	}
+	if mtlsErr == nil {
+		t.Fatal("mtlsErr = nil, want the mTLS probe failure preserved alongside the refusal")
+	}
+}
+
+// TestRefusalNamesTheKeyTheGoverningPinIsFiledUnder is the escape hatch's other
+// half. lookupPin resolves the governing pin across every name a device answers
+// to, so a dial to the mDNS hostname can be refused by a pin filed under the
+// cloud roster's asset name — and the refusal has to hand the user a key that
+// `wendy device unpin` can act on. Naming the DIALLED key instead points at a
+// command that clears nothing, and the next dial refuses identically.
+func TestRefusalNamesTheKeyTheGoverningPinIsFiledUnder(t *testing.T) {
+	setUp := func(t *testing.T) {
+		t.Helper()
+		setTempConfig(t, &config.Config{DevicePins: map[string]config.DevicePin{
+			// Filed under the display name, as cloud seeding writes it — never
+			// under the hostname the user dials.
+			"calm-zinnia": {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443", AssetID: "42", Source: config.PinSourceCloud},
+		}})
+		setPinCache(t, discoverycache.Entry{
+			ID:          "dev-1",
+			DisplayName: "calm-zinnia",
+			Hostname:    "wendyos-calm-zinnia.local",
+		})
+	}
+
+	t.Run("the target carries the matched key", func(t *testing.T) {
+		setUp(t)
+		target := newDialTarget("wendyos-calm-zinnia.local", "10.0.0.9:50051")
+		if target.PinnedKey != "calm-zinnia" {
+			t.Fatalf("PinnedKey = %q, want \"calm-zinnia\" — the key the pin is actually filed under", target.PinnedKey)
+		}
+		if target.refusalKey() != "calm-zinnia" {
+			t.Fatalf("refusalKey = %q, want \"calm-zinnia\"", target.refusalKey())
+		}
+		if target.Expected == nil || target.Expected.EntityID != "42" {
+			t.Fatalf("Expected = %v, want the alias pin's asset 42 still enforced", target.Expected)
+		}
+	})
+
+	t.Run("a wrong-device refusal names it", func(t *testing.T) {
+		setUp(t)
+		origMismatch := identityMismatchFn
+		identityMismatchFn = func(*grpcclient.AgentConnection) (*certs.IdentityMismatchError, bool) {
+			return &certs.IdentityMismatchError{WantOrg: 7, WantAsset: "42", GotOrg: 7, GotAsset: "43"}, true
+		}
+		origPlaintext := plaintextConnectFn
+		plaintextConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+			t.Error("plaintext rung attempted after a wrong-device rejection")
+			return grpcclient.NewFromConn(nil), nil
+		}
+		t.Cleanup(func() { identityMismatchFn, plaintextConnectFn = origMismatch, origPlaintext })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		target := newDialTarget("wendyos-calm-zinnia.local", deadAgentAddr(t))
+		conn, _, err := dialAgentLadderWithCerts(ctx, target, []config.CertificateInfo{selfSignedCLICert(t, 7)})
+		if conn != nil {
+			conn.Close()
+		}
+		if err == nil {
+			t.Fatal("no error for a wrong-device rejection")
+		}
+		if !strings.Contains(err.Error(), "wendy device unpin calm-zinnia") {
+			t.Fatalf("err = %v, want it to name 'wendy device unpin calm-zinnia' — the key that actually holds the pin", err)
+		}
+	})
+
+	t.Run("an unauthenticated-fallback refusal names it", func(t *testing.T) {
+		setUp(t)
+		origPlaintext := plaintextConnectFn
+		plaintextConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+			t.Error("plaintext rung attempted for a pinned host")
+			return grpcclient.NewFromConn(nil), nil
+		}
+		t.Cleanup(func() { plaintextConnectFn = origPlaintext })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		target := newDialTarget("wendyos-calm-zinnia.local", deadAgentAddr(t))
+		conn, _, err := dialAgentLadderWithCerts(ctx, target, []config.CertificateInfo{selfSignedCLICert(t, 7)})
+		if conn != nil {
+			conn.Close()
+		}
+		if err == nil {
+			t.Fatal("no error for a pinned host whose mTLS rungs all failed")
+		}
+		if !strings.Contains(err.Error(), "wendy device unpin calm-zinnia") {
+			t.Fatalf("err = %v, want it to name 'wendy device unpin calm-zinnia'", err)
+		}
+	})
+}
+
+// TestSPKIMismatchAbortsLadderAndNamesUnpin covers the OTHER pin store: the
+// SPKI one, keyed by the certificate's own asset URN, which hard-fails when a
+// device's public key changes while its pinned certificate is still valid.
+//
+// That rejection is raised inside VerifyConnection and reached the user only as
+// whatever survived gRPC's "authentication handshake failed" wrapper — a
+// message naming neither the host as the user knows it nor any way out. The
+// pin key here is deliberately UNPINNED in config, which is the real shape of
+// the problem: `wendy device list` SPKI-pins every device the prober enumerates
+// without writing a single config pin, so isPinned cannot be what refuses the
+// plaintext rung here — only the abort can.
+func TestSPKIMismatchAbortsLadderAndNamesUnpin(t *testing.T) {
+	setTempConfig(t, &config.Config{}) // no config pins at all
+	setPinCache(t)
+	if isPinned("orin.local") {
+		t.Fatal("test precondition: orin.local must be unpinned in config")
+	}
+
+	pinReads := 0
+	origPin := pinMismatchFn
+	pinMismatchFn = func(*grpcclient.AgentConnection) (*devicepin.PinMismatchError, bool) {
+		pinReads++
+		return &devicepin.PinMismatchError{
+			Key: "urn:wendy:org:7:asset:42", DisplayName: "orin",
+			Want: "sha256:aaa", Got: "sha256:bbb",
+		}, true
+	}
+	plaintextCalls := 0
+	origPlaintext := plaintextConnectFn
+	plaintextConnectFn = func(context.Context, string) (*grpcclient.AgentConnection, error) {
+		plaintextCalls++
+		return grpcclient.NewFromConn(nil), nil
+	}
+	t.Cleanup(func() { pinMismatchFn, plaintextConnectFn = origPin, origPlaintext })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Two certs × two ports = four rungs if the ladder kept going.
+	allCerts := []config.CertificateInfo{selfSignedCLICert(t, 7), selfSignedCLICert(t, 9)}
+	conn, mtlsErr, err := dialAgentLadderWithCerts(ctx, newDialTarget("orin.local", deadAgentAddr(t)), allCerts)
+	if conn != nil {
+		conn.Close()
+	}
+
+	if pinReads != 1 {
+		t.Fatalf("ladder examined %d rungs after an SPKI rejection, want exactly 1; the key belongs to the device, so every remaining cert and port fails identically", pinReads)
+	}
+	if plaintextCalls != 0 {
+		t.Fatalf("plaintext rung attempted %d times after an SPKI rejection", plaintextCalls)
+	}
+	if err == nil {
+		t.Fatal("ladder returned no error for an SPKI pin rejection")
+	}
+	if !strings.Contains(err.Error(), "wendy device unpin orin.local") {
+		t.Fatalf("err = %v, want the SPKI refusal naming the unpin escape hatch; without it recovery means hand-editing known_devices.json", err)
+	}
+	if !errors.Is(err, errDeviceIdentityRefused) {
+		t.Fatalf("err = %v does not read as an identity refusal; the picker's BLE fallback would take it for an unreachable device", err)
 	}
 	if mtlsErr == nil {
 		t.Fatal("mtlsErr = nil, want the mTLS probe failure preserved alongside the refusal")

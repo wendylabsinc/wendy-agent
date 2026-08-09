@@ -18,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tlscache"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc"
@@ -96,19 +97,56 @@ type AgentConnection struct {
 	// into the first RPC's status, so the ladder reads it from here instead of
 	// string-matching. nil for connections that never install the sink.
 	identityMismatch *atomic.Pointer[certs.IdentityMismatchError]
+	// pinMismatch holds the SPKI pin-store rejection raised inside
+	// VerifyConnection when the peer's public key changed while its pinned
+	// certificate was still valid. Captured for the same reason as
+	// identityMismatch: the ladder must recognise it by type, not by digging it
+	// out of gRPC's handshake-failure string. nil for connections that never
+	// install the sink.
+	pinMismatch *atomic.Pointer[devicepin.PinMismatchError]
 }
 
 // verifiedIdentitySink returns the OnVerifiedServerIdentity callback that
 // records the device identity behind a verified server certificate. Identities
 // without an org are dropped: org 0 is not a real Wendy org, so storing one
 // would let ObservedServerIdentity report an identity no certificate asserted.
+//
+// dst may be nil (observation not requested), in which case the returned sink is
+// a no-op — the same contract as identityMismatchSink below. This runs inside
+// VerifyConnection, so an unguarded nil would panic mid-handshake.
 func verifiedIdentitySink(dst *atomic.Pointer[certs.WendyIdentity]) func(certs.WendyIdentity) {
 	return func(id certs.WendyIdentity) {
-		if id.OrgID == 0 {
+		if dst == nil || id.OrgID == 0 {
 			return
 		}
 		stored := id
 		dst.Store(&stored)
+	}
+}
+
+// observedOrgSink returns the OnServerIdentity callback that records the
+// (unverified, diagnostics-only) org a server certificate claims. Same nil
+// contract as the sinks above, and for the same reason: it fires during the TLS
+// handshake, where a panic takes the connection down rather than surfacing as an
+// error.
+func observedOrgSink(dst *atomic.Int32) func(certs.WendyIdentity) {
+	return func(id certs.WendyIdentity) {
+		if dst == nil || id.OrgID == 0 {
+			return
+		}
+		dst.Store(id.OrgID)
+	}
+}
+
+// pinMismatchSink returns the callback that records an SPKI pin rejection from
+// the device pin store. dst may be nil (no pin store in play), in which case the
+// returned sink is a no-op.
+func pinMismatchSink(dst *atomic.Pointer[devicepin.PinMismatchError]) func(*devicepin.PinMismatchError) {
+	return func(e *devicepin.PinMismatchError) {
+		if dst == nil || e == nil {
+			return
+		}
+		dst.Store(e)
 	}
 }
 
@@ -195,6 +233,7 @@ func newAgentTLSConfig(
 	observedIdentity *atomic.Pointer[certs.WendyIdentity],
 	expected *certs.WendyIdentity,
 	mismatch *atomic.Pointer[certs.IdentityMismatchError],
+	pinMismatch *atomic.Pointer[devicepin.PinMismatchError],
 ) (*tls.Config, error) {
 	// Only load the leaf cert — not the chain. Go's TLS library calls
 	// x509.ParseCertificate on every cert sent in the handshake, and ML-DSA
@@ -213,15 +252,11 @@ func newAgentTLSConfig(
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
-		ChainPEM:         certInfo.PemCertificateChain,
-		ExpectedOrgID:    int32(certInfo.OrganizationID),
-		PinStore:         pins,
-		ExpectedIdentity: expected,
-		OnServerIdentity: func(id certs.WendyIdentity) {
-			if id.OrgID != 0 {
-				observedOrg.Store(id.OrgID)
-			}
-		},
+		ChainPEM:                 certInfo.PemCertificateChain,
+		ExpectedOrgID:            int32(certInfo.OrganizationID),
+		PinStore:                 pins,
+		ExpectedIdentity:         expected,
+		OnServerIdentity:         observedOrgSink(observedOrg),
 		OnVerifiedServerIdentity: verifiedIdentitySink(observedIdentity),
 	})
 	if err != nil {
@@ -235,12 +270,22 @@ func newAgentTLSConfig(
 	// SetResumed wraps below — so it observes that verifier's own return
 	// value, not one a later wrap may have transformed.
 	sink := identityMismatchSink(mismatch)
+	// The SPKI store's rejection needs capturing here for the same reason and at
+	// the same point: it is raised inside VerifyConnection (step 3 of
+	// BuildServerVerifyConnection), and by the time the dial ladder sees it, it
+	// is a gRPC status string with the store's message buried in it. Without
+	// this the CLI could only recognise it by matching that text.
+	pinSink := pinMismatchSink(pinMismatch)
 	verifyConnBase := verifyConn
 	verifyConn = func(cs tls.ConnectionState) error {
 		err := verifyConnBase(cs)
 		var im *certs.IdentityMismatchError
 		if errors.As(err, &im) {
 			sink(im)
+		}
+		var pm *devicepin.PinMismatchError
+		if errors.As(err, &pm) {
+			pinSink(pm)
 		}
 		return err
 	}
@@ -302,7 +347,8 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 	observedOrg := new(atomic.Int32)
 	observedIdentity := new(atomic.Pointer[certs.WendyIdentity])
 	mismatch := new(atomic.Pointer[certs.IdentityMismatchError])
-	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg, observedIdentity, expected, mismatch)
+	pinMismatch := new(atomic.Pointer[devicepin.PinMismatchError])
+	tlsCfg, err := newAgentTLSConfig(address, certInfo, pins, observedOrg, observedIdentity, expected, mismatch, pinMismatch)
 	if err != nil {
 		return nil, err
 	}
@@ -332,6 +378,7 @@ func ConnectWithTLSExpecting(ctx context.Context, address string, certInfo *conf
 	ac.observedServerOrg = observedOrg
 	ac.observedServerIdentity = observedIdentity
 	ac.identityMismatch = mismatch
+	ac.pinMismatch = pinMismatch
 	return ac, nil
 }
 
@@ -438,10 +485,24 @@ func (c *AgentConnection) IdentityMismatch() (*certs.IdentityMismatchError, bool
 	return e, e != nil
 }
 
+// PinMismatch reports the SPKI pin-store rejection this connection hit, if any.
+// Like IdentityMismatch it tells the ladder that the peer is the problem — the
+// key behind a device's asset identity changed — so no other certificate or
+// port can help, and the message the user needs is the one naming
+// `wendy device unpin`, not gRPC's handshake wrapper.
+func (c *AgentConnection) PinMismatch() (*devicepin.PinMismatchError, bool) {
+	if c.pinMismatch == nil {
+		return nil, false
+	}
+	e := c.pinMismatch.Load()
+	return e, e != nil
+}
+
 func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 	return &AgentConnection{
 		Conn:                conn,
 		identityMismatch:    new(atomic.Pointer[certs.IdentityMismatchError]),
+		pinMismatch:         new(atomic.Pointer[devicepin.PinMismatchError]),
 		AgentService:        agentpb.NewWendyAgentServiceClient(conn),
 		ContainerService:    agentpb.NewWendyContainerServiceClient(conn),
 		ShellService:        agentpb.NewWendyShellServiceClient(conn),

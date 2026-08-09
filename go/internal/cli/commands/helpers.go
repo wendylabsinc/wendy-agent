@@ -1224,7 +1224,10 @@ func pinKeyForLANDevice(d *models.LANDevice) string {
 // A refusal is also not a reason to fall back to Bluetooth. The BLE fallback in
 // the connect-error branch is for a device that did not answer at all; a device
 // that answered as somebody else is a refusal, and reaching it over a second
-// transport instead would hand back the very device the pin just rejected.
+// transport instead would hand back the very device the pin just rejected. That
+// holds for both refusals that can reach here — the post-connect one below, and
+// the dial ladder's own, which arrives as a connect ERROR and so has to be
+// recognised before the fallback, not after it.
 //
 // Note this also covers `wendy device set-default` with no argument, which
 // picks through here: a device whose identity changed can no longer be re-pinned
@@ -1235,6 +1238,19 @@ func connectPickedLANDevice(ctx context.Context, d *models.DiscoveredDevice, add
 	mtls := d.LAN.IsMTLS
 	conn, err := connectAgentAtAddressWithProvisionedHint(ctx, addr, func() bool { return mtls })
 	if err != nil {
+		// An identity refusal is not "the LAN attempt failed". The dial ladder
+		// raises one when the host answering proved it is somebody else, or when
+		// a pinned host offered only an unauthenticated endpoint — and the BLE
+		// half of this row is named by the same unauthenticated advertisement
+		// that named the LAN half. Falling back would reach the very peer the
+		// refusal just rejected, over a transport where nothing enforces the pin
+		// at all (attemptBLEConnect sets no ExpectedIdentity, and
+		// enforceSelectedDevicePin is a no-op for a Bluetooth selection), and
+		// report success. Typed, not text-matched: the wording of these refusals
+		// is not a contract, and a message rewrite must not silently reopen this.
+		if errors.Is(err, errDeviceIdentityRefused) {
+			return nil, err
+		}
 		// LAN failed — fall back to BLE if available.
 		if d.Bluetooth != nil {
 			return &SelectedDevice{Bluetooth: d.Bluetooth}, nil
@@ -1956,7 +1972,20 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 						// The device is wrong, not our certificate — every
 						// remaining cert and port would fail the same way, and
 						// the plaintext rung below must not be reached at all.
-						return nil, lastMTLSErr, identityRefusal(target.PinKey, im)
+						// refusalKey, not PinKey: the pin that produced this
+						// constraint may be filed under one of the device's
+						// other names, and that is the key `wendy device unpin`
+						// has to be handed to clear it.
+						return nil, lastMTLSErr, identityRefusal(target.refusalKey(), im)
+					}
+					if pm, mismatched := pinMismatchFn(conn); mismatched {
+						conn.Close()
+						// The SPKI store rejected the peer's public key. Same
+						// reasoning as above — the key belongs to the device,
+						// not to our certificate — but this refusal also has to
+						// exist because gRPC's handshake wrapper is otherwise
+						// the only thing the user sees, and it names no way out.
+						return nil, lastMTLSErr, spkiRefusal(target.refusalKey(), pm)
 					}
 					if tlsDebug {
 						fmt.Fprintf(os.Stderr, "[tls-debug] GetAgentVersion(%s) error: %v\n", mtlsAddr, probeErr)
@@ -2005,7 +2034,7 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 		// A host we have already reached over mTLS must never be reached
 		// unauthenticated. Unlike provisionedAgentAdvertisedMTLS this reads
 		// local state, not a TXT record the attacker also controls.
-		return nil, lastMTLSErr, pinnedHostWentUnauthenticatedError(target.PinKey)
+		return nil, lastMTLSErr, pinnedHostWentUnauthenticatedError(target.refusalKey())
 	}
 	conn, err := plaintextConnectFn(ctx, plaintextAddr)
 	return conn, lastMTLSErr, err

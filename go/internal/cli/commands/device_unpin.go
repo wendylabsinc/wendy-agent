@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -40,30 +41,7 @@ func newDeviceUnpinCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
-			// Read the config pin BEFORE clearing it: it is the only place the
-			// (org, asset) pair needed to compute the SPKI store's key still
-			// lives. Clear first and that information is gone.
-			pin, hadPin := cfg.DevicePinFor(pinKey)
-			cfg.ClearDevicePin(pinKey)
-
-			// A legacy pin (no AssetID) has no derivable SPKI key. That is not a
-			// failure: clear the config pin and succeed, same as any other
-			// unpin.
-			if hadPin && pin.AssetID != "" {
-				// Same config-directory resolution as openPinStore, but that
-				// helper returns certs.PinChecker, which only exposes
-				// CheckAndUpdate — not Remove. Open the concrete store directly.
-				if dir, dirErr := config.ConfigDir(); dirErr == nil {
-					if store, openErr := devicepin.Open(dir); openErr == nil {
-						key := certs.WendyIdentity{
-							OrgID:      int32(pin.OrgID),
-							EntityType: "asset",
-							EntityID:   pin.AssetID,
-						}.IdentityKey()
-						_ = store.Remove(key)
-					}
-				}
-			}
+			clearPinsGoverning(cfg, pinKey)
 
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
@@ -72,5 +50,101 @@ func newDeviceUnpinCmd() *cobra.Command {
 			fmt.Fprintf(cmd.OutOrStdout(), "Unpinned %q. The next connection to it will record a fresh identity.\n", hostname)
 			return nil
 		},
+	}
+}
+
+// clearPinsGoverning drops every pin that could govern a dial to pinKey — the
+// config pins under each of the device's candidate keys, plus the SPKI entries
+// those pins identify — and reports whether any config pin was actually
+// removed. It mutates cfg; saving is the caller's job.
+//
+// It clears EVERY candidate rather than only the one lookupPin would return,
+// because "unpin" has to terminate. A device pinned under both its mDNS
+// hostname and the cloud roster's asset name would otherwise refuse under one
+// pin, be unpinned, and refuse again under the other — a user watching that
+// happen learns the command does not work. Consulting the same candidate list
+// the dial path uses is what keeps the two in step: whatever a refusal could be
+// caused by is what this clears.
+//
+// SPKI entries are cleared unconditionally, not only when a config pin was
+// found. The two stores are written on different paths — getAgentVersionAtAddress
+// runs the ladder with the SPKI store for every device the mDNS prober
+// enumerates, so `wendy device list` alone leaves SPKI entries with no config
+// pin behind them — and an escape hatch that only reaches one of them leaves
+// the other's refusal permanent.
+func clearPinsGoverning(cfg *config.Config, pinKey string) bool {
+	if cfg == nil || pinKey == "" {
+		return false
+	}
+	cleared := false
+	var identityKeys []string
+	for _, key := range pinCandidateKeys(pinKey) {
+		pin, ok := cfg.DevicePinFor(key)
+		if !ok {
+			continue
+		}
+		cfg.ClearDevicePin(key)
+		cleared = true
+		// Read the pin BEFORE it is gone: it is the only place the (org, asset)
+		// pair needed to compute the SPKI store's key lives. A legacy pin (no
+		// AssetID) has no derivable key — not a failure, just nothing to remove.
+		if pin.AssetID != "" {
+			identityKeys = append(identityKeys, certs.WendyIdentity{
+				OrgID:      int32(pin.OrgID),
+				EntityType: "asset",
+				EntityID:   pin.AssetID,
+			}.IdentityKey())
+		}
+	}
+	if key := cachedIdentityKey(pinKey); key != "" {
+		identityKeys = append(identityKeys, key)
+	}
+	removeSPKIPins(identityKeys)
+	return cleared
+}
+
+// cachedIdentityKey derives the SPKI store's key for pinKey from the discovery
+// cache, which records the asset and org a device advertised. It is the only
+// lookup that reaches an SPKI entry belonging to a host with no asset-bearing
+// config pin — the `wendy device list` case above, where nothing else in local
+// state ties the hostname the user types to the asset URN the store is keyed
+// by.
+//
+// Reading unauthenticated discovery data here is safe in the way it is not on
+// the dial path: the worst an attacker-chosen asset id can do is make an unpin
+// remove a pin the user was already asking to remove. Returns "" when the cache
+// is unavailable, has no entry, or the entry carries no asset identity.
+func cachedIdentityKey(pinKey string) string {
+	entry, ok := cachedDeviceHostEntry(pinKey)
+	if !ok || entry.AssetID <= 0 || entry.OrgID <= 0 {
+		return ""
+	}
+	return certs.WendyIdentity{
+		OrgID:      entry.OrgID,
+		EntityType: "asset",
+		EntityID:   strconv.Itoa(int(entry.AssetID)),
+	}.IdentityKey()
+}
+
+// removeSPKIPins drops the given identity keys from the SPKI pin store.
+// Best-effort: an unopenable store leaves the config side of the unpin done,
+// which is strictly better than failing the command outright.
+func removeSPKIPins(identityKeys []string) {
+	if len(identityKeys) == 0 {
+		return
+	}
+	// Same config-directory resolution as openPinStore, but that helper returns
+	// certs.PinChecker, which only exposes CheckAndUpdate — not Remove. Open the
+	// concrete store directly.
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return
+	}
+	store, err := devicepin.Open(dir)
+	if err != nil {
+		return
+	}
+	for _, key := range identityKeys {
+		_ = store.Remove(key)
 	}
 }

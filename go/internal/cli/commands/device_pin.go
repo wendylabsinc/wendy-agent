@@ -114,7 +114,7 @@ func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
 	default: // config.PinMismatch
 		prev, _ := cfg.DevicePinFor(hostname)
 		printIdentityChangeWarning(hostname, prev, obs, cloud)
-		return fmt.Errorf("device %q identity changed (organization/cloud/asset); refusing to connect — if this is expected, run 'wendy device unpin %s'", hostname, hostname)
+		return refuseIdentity("device %q identity changed (organization/cloud/asset); refusing to connect — if this is expected, run 'wendy device unpin %s'", hostname, hostname)
 	}
 }
 
@@ -152,26 +152,30 @@ func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 	fmt.Fprintln(os.Stderr, tui.ErrorMessage("  now:    unprovisioned (no mTLS)"))
 	fmt.Fprintln(os.Stderr, tui.ErrorMessage("An enrolled device does not drop its certificate on its own — it has been reflashed or factory reset, another machine has taken its name or address, or this CLI no longer holds credentials for its organization (try 'wendy auth login'). Anything you run over this connection would be unauthenticated."))
 
-	return fmt.Errorf("device %q was enrolled but is now answering unprovisioned; refusing to connect — re-enroll it, check 'wendy auth login', or run 'wendy device unpin %s' if this is expected", hostname, hostname)
+	return refuseIdentity("device %q was enrolled but is now answering unprovisioned; refusing to connect — re-enroll it, check 'wendy auth login', or run 'wendy device unpin %s' if this is expected", hostname, hostname)
 }
 
-// clearDevicePinForRepin drops the stored pin for hostname so the next
+// clearDevicePinForRepin drops the stored pins for hostname so the next
 // successful connection records a fresh one. `wendy device set-default <host>`
 // calls it because naming a device on the command line is the user asserting
 // they mean that device — without it, set-default's own connect would hit the
 // refusals above and never reach the re-pin. It is the same operation the
 // refusals point at by name (`wendy device unpin <host>`), reached through a
-// different command. Best-effort; a config read/write failure just leaves the
-// old pin in place.
+// different command, so it goes through the same clearPinsGoverning: pki/README
+// already promises set-default has "the same clearing effect", and a version of
+// it that missed the SPKI store would make that promise false for exactly the
+// refusal that has no other way out. Best-effort; a config read/write failure
+// just leaves the old pin in place.
 func clearDevicePinForRepin(hostname string) {
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
-	if _, pinned := cfg.DevicePinFor(hostname); !pinned {
+	// The SPKI half is cleared inside clearPinsGoverning whether or not a config
+	// pin existed, so a false return means only "nothing to save".
+	if !clearPinsGoverning(cfg, hostname) {
 		return
 	}
-	cfg.ClearDevicePin(hostname)
 	_ = config.Save(cfg)
 }
 

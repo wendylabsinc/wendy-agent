@@ -39,7 +39,21 @@ func seedPinsFromCloudAssets(assets []*cloudpb.Asset, orgID int, cloudGRPC strin
 		if name == "" || a.GetId() <= 0 {
 			continue
 		}
-		cfg.SetDevicePinFrom(name, orgID, cloudGRPC, strconv.Itoa(int(a.GetId())), config.PinSourceCloud)
+		want := config.DevicePin{
+			OrgID:     orgID,
+			CloudGRPC: cloudGRPC,
+			AssetID:   strconv.Itoa(int(a.GetId())),
+			Source:    config.PinSourceCloud,
+		}
+		// Only a pin whose stored value would actually differ counts as a
+		// change. Setting the flag for every valid asset made "changed" mean "the
+		// roster was non-empty", so the steady state — a roster already fully
+		// seeded — rewrote config.json on every pass, which for the TUI's 10s
+		// refresh is a disk write every 10 seconds that alters nothing.
+		if existing, ok := cfg.DevicePinFor(name); ok && existing == want {
+			continue
+		}
+		cfg.SetDevicePinFrom(name, orgID, cloudGRPC, want.AssetID, config.PinSourceCloud)
 		changed = true
 	}
 	if !changed {

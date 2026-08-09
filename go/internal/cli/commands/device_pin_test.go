@@ -565,6 +565,149 @@ func TestPickerEnforcesPinBeforeAgentUpdate(t *testing.T) {
 	}
 }
 
+// TestPickerLadderRefusalDoesNotFallBackToBluetooth closes the gap the doc
+// comment on connectPickedLANDevice already claimed was closed.
+//
+// There are two refusals that can reach the picker, and only one of them
+// arrived where the Bluetooth fallback could not see it. The post-connect one
+// (TestPickerEnforcesPinBeforeAgentUpdate) comes back after a successful dial.
+// The dial ladder's own — a wrong-device abort, or a pinned host that offered
+// no authenticated endpoint — comes back as a connect ERROR, and the very next
+// line handed the caller the row's BLE half instead.
+//
+// That is the whole attack: answer the victim's mDNS name over LAN, get
+// rejected, and have the CLI quietly connect to a BLE peer advertising the same
+// name — where attemptBLEConnect sets no ExpectedIdentity and
+// enforceSelectedDevicePin is a no-op for a Bluetooth selection, so nothing
+// checks anything.
+func TestPickerLadderRefusalDoesNotFallBackToBluetooth(t *testing.T) {
+	stubNonInteractive(t)
+	writePinTestConfig(t, map[string]config.DevicePin{
+		"wendyos-agx-orin": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	setPinCache(t)
+
+	lan := &models.LANDevice{
+		DisplayName: "Agx Orin",
+		Hostname:    "wendyos-agx-orin.local",
+		IPAddress:   "10.0.0.9",
+		Port:        50051,
+		IsMTLS:      true,
+	}
+
+	refusals := map[string]error{
+		"wrong device answered": identityRefusal("wendyos-agx-orin.local", &certs.IdentityMismatchError{
+			WantOrg: 7, WantAsset: "42", GotOrg: 7, GotAsset: "43",
+		}),
+		"pinned host offered no authenticated endpoint": pinnedHostWentUnauthenticatedError("wendyos-agx-orin.local"),
+	}
+
+	for name, refusal := range refusals {
+		t.Run(name, func(t *testing.T) {
+			origLadder := dialAgentLadderFn
+			dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+				return nil, nil, refusal
+			}
+			origUpdate := checkAndOfferUpdateFn
+			checkAndOfferUpdateFn = func(_ context.Context, conn *grpcclient.AgentConnection) (*grpcclient.AgentConnection, error) {
+				t.Error("the agent update check ran despite the dial being refused")
+				return conn, nil
+			}
+			t.Cleanup(func() { dialAgentLadderFn, checkAndOfferUpdateFn = origLadder, origUpdate })
+
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			withBLE := &models.DiscoveredDevice{
+				DisplayName: lan.DisplayName,
+				LAN:         lan,
+				Bluetooth:   &models.BluetoothDevice{DisplayName: "Agx Orin"},
+			}
+			sel, err := connectPickedLANDevice(ctx, withBLE, preferredLANAddress(*lan), false)
+			if err == nil {
+				t.Fatalf("a refused dial fell through to a usable selection (%+v); the BLE fallback is for a device that did not answer, not one that answered as somebody else", sel)
+			}
+			if sel != nil {
+				t.Errorf("refused selection = %+v, want nil", sel)
+			}
+			if !errors.Is(err, errDeviceIdentityRefused) {
+				t.Errorf("err = %v does not read as an identity refusal; the fallback is decided on the error's type, not its wording", err)
+			}
+		})
+	}
+
+	// The fallback itself must survive: an ordinary connect failure — the device
+	// is off, the port is shut — is exactly what BLE is there for.
+	t.Run("an ordinary connect failure still falls back", func(t *testing.T) {
+		origLadder := dialAgentLadderFn
+		dialAgentLadderFn = func(context.Context, dialTarget) (*grpcclient.AgentConnection, error, error) {
+			return nil, nil, errors.New("dial tcp 10.0.0.9:50051: connect: connection refused")
+		}
+		t.Cleanup(func() { dialAgentLadderFn = origLadder })
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		ble := &models.BluetoothDevice{DisplayName: "Agx Orin"}
+		withBLE := &models.DiscoveredDevice{DisplayName: lan.DisplayName, LAN: lan, Bluetooth: ble}
+		sel, err := connectPickedLANDevice(ctx, withBLE, preferredLANAddress(*lan), false)
+		if err != nil {
+			t.Fatalf("an unreachable LAN half must still fall back to BLE, got %v", err)
+		}
+		if sel == nil || sel.Bluetooth != ble {
+			t.Fatalf("selection = %+v, want the row's Bluetooth half", sel)
+		}
+	})
+}
+
+// TestDefaultDeviceNameForPrefersPinKey covers what `wendy device set-default`
+// with no argument stores.
+//
+// selected.Agent.Host is the address the picker dialled, which on any LAN row
+// is an IP. Saving that made the default device a DHCP lease — and worse, it
+// keyed every later connection's pin on the IP while the picker had just pinned
+// the device under its HOSTNAME seconds earlier. pinCandidateKeys cannot map an
+// IP back to a hostname row, so that pin was never consulted again and
+// enforcement was silently off for the whole configuration.
+func TestDefaultDeviceNameForPrefersPinKey(t *testing.T) {
+	picked := &SelectedDevice{
+		Agent:  &grpcclient.AgentConnection{Host: "10.0.0.9"},
+		PinKey: "wendyos-agx-orin.local",
+	}
+
+	got, err := defaultDeviceNameFor(picked)
+	if err != nil {
+		t.Fatalf("defaultDeviceNameFor: %v", err)
+	}
+	if got != "wendyos-agx-orin.local" {
+		t.Fatalf("default device name = %q, want the pin key %q — an IP is a DHCP lease, not a device", got, picked.PinKey)
+	}
+
+	// The consequence, stated directly: the pin the picker just wrote has to be
+	// visible to every later connect keyed on the saved default.
+	cfg := &config.Config{}
+	cfg.SetDevicePin(picked.PinKey, 7, "grpc.a.sh:443", "42")
+	if _, ok := cfg.DevicePinFor(pinKeyForAddr(got)); !ok {
+		t.Fatalf("the pin recorded under %q is invisible to a default of %q: every later connect keys on a name no pin was filed under, and enforcement is off",
+			picked.PinKey, got)
+	}
+
+	// A selection with no pin key has nothing else to identify it; the address
+	// stays the fallback, exactly as before.
+	noKey := &SelectedDevice{Agent: &grpcclient.AgentConnection{Host: "10.0.0.9"}}
+	if got, err := defaultDeviceNameFor(noKey); err != nil || got != "10.0.0.9" {
+		t.Fatalf("keyless selection = (%q, %v), want the dialled host as the fallback", got, err)
+	}
+
+	ext := &SelectedDevice{External: &models.ExternalDevice{ProviderKey: "adb"}}
+	if got, err := defaultDeviceNameFor(ext); err != nil || got != "adb" {
+		t.Fatalf("external selection = (%q, %v), want its provider key", got, err)
+	}
+	if _, err := defaultDeviceNameFor(&SelectedDevice{}); err == nil {
+		t.Error("an empty selection must not name a default device")
+	}
+}
+
 // TestPickerRunsUpdateCheckOnceThePinHolds is the other half of the ordering
 // assertion above: the pin gate must not have simply disabled the update check.
 // A device whose pin matches still gets the check, and the connection the check

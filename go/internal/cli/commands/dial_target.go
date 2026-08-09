@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
+	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
 )
 
 // dialTarget carries what the ladder needs to know about *who* it is dialing,
@@ -21,11 +23,33 @@ type dialTarget struct {
 	// ordinary DHCP churn and would train users to unpin reflexively. An empty
 	// PinKey disables pin enforcement for this dial.
 	PinKey string
+	// PinnedKey is the key the governing pin is ACTUALLY filed under, which is
+	// not always PinKey: lookupPin resolves a pin across every name the device
+	// answers to, so dialling "wendyos-calm-zinnia" can be governed by a pin
+	// recorded under the cloud roster's "calm-zinnia". Empty when no pin
+	// governs this dial.
+	//
+	// It exists because a refusal has to name a key `wendy device unpin` can
+	// act on. Naming the dialled key when an alias holds the pin sends the user
+	// to a command that clears nothing, and the next dial refuses identically —
+	// a permanent dead end dressed up as an escape hatch.
+	PinnedKey string
 	// Addr is the host:port actually dialed.
 	Addr string
 	// Expected constrains the peer certificate. Non-nil only when a pin (or a
 	// cloud-seeded value) names a specific asset.
 	Expected *certs.WendyIdentity
+}
+
+// refusalKey is the name a refusal for this dial must print: the key the pin is
+// filed under when one governs, else the name the user asked for. Falling back
+// to PinKey keeps a hand-built dialTarget (and any future caller that sets only
+// PinKey) naming something rather than an empty string.
+func (t dialTarget) refusalKey() string {
+	if t.PinnedKey != "" {
+		return t.PinnedKey
+	}
+	return t.PinKey
 }
 
 // loadConfigForPinFn is a seam over config.Load for tests.
@@ -44,12 +68,44 @@ var plaintextConnectFn = grpcclient.Connect
 // device and the plaintext rung.
 var identityMismatchFn = (*grpcclient.AgentConnection).IdentityMismatch
 
+// pinMismatchFn is the same seam for the SPKI store's rejection. It is seamed
+// for the same reason: only a real handshake against a device whose key rotated
+// can set the flag, so testing the ladder's REACTION to it — abort, no
+// plaintext rung, a message naming `wendy device unpin` — needs the read
+// stubbed rather than a live ML-DSA peer with a rotated keypair.
+var pinMismatchFn = (*grpcclient.AgentConnection).PinMismatch
+
 // newDialTarget resolves the pin for pinKey and returns a target constrained by
 // it. Key resolution deliberately may read discovery-derived names: choosing
 // the wrong key can only ever produce a mismatch — a stricter outcome — never
 // a bypass, because the trust decision itself stays on the certificate.
 func newDialTarget(pinKey, addr string) dialTarget {
-	return dialTarget{PinKey: pinKey, Addr: addr, Expected: expectedIdentityFor(pinKey)}
+	target := dialTarget{PinKey: pinKey, Addr: addr}
+	pin, key, ok := governingPin(pinKey)
+	if !ok {
+		return target
+	}
+	target.PinnedKey = key
+	if pin.AssetID != "" {
+		target.Expected = &certs.WendyIdentity{OrgID: int32(pin.OrgID), EntityType: "asset", EntityID: pin.AssetID}
+	}
+	return target
+}
+
+// governingPin resolves the pin that governs pinKey across every name the
+// device answers to, returning it and the key it is actually filed under. It is
+// the single reader of pin state on the dial path, so the identity a dial
+// enforces, the fact that it is pinned, and the key a refusal names can never
+// disagree about which pin they are talking about.
+func governingPin(pinKey string) (config.DevicePin, string, bool) {
+	if pinKey == "" {
+		return config.DevicePin{}, "", false
+	}
+	cfg, err := loadConfigForPinFn()
+	if err != nil {
+		return config.DevicePin{}, "", false
+	}
+	return lookupPin(cfg, pinKey)
 }
 
 // pinKeyForAddr extracts the pin key from the address a caller was asked to
@@ -74,14 +130,7 @@ func pinKeyForAddr(addr string) string {
 // The lookup goes through lookupPin, so a pin recorded under any of the
 // device's names — hostname, mesh name, or display name — is honoured here.
 func expectedIdentityFor(pinKey string) *certs.WendyIdentity {
-	if pinKey == "" {
-		return nil
-	}
-	cfg, err := loadConfigForPinFn()
-	if err != nil {
-		return nil
-	}
-	pin, _, ok := lookupPin(cfg, pinKey)
+	pin, _, ok := governingPin(pinKey)
 	if !ok || pin.AssetID == "" {
 		return nil
 	}
@@ -97,14 +146,7 @@ func expectedIdentityFor(pinKey string) *certs.WendyIdentity {
 // isCertRejectionError happening to match gRPC's "authentication handshake
 // failed" wrapper, which any change to gRPC's error text would silently undo.
 func isPinned(pinKey string) bool {
-	if pinKey == "" {
-		return false
-	}
-	cfg, err := loadConfigForPinFn()
-	if err != nil {
-		return false
-	}
-	_, _, ok := lookupPin(cfg, pinKey)
+	_, _, ok := governingPin(pinKey)
 	return ok
 }
 
@@ -198,6 +240,32 @@ func lookupPin(cfg *config.Config, pinKey string) (config.DevicePin, string, boo
 	return best, bestKey, found
 }
 
+// errDeviceIdentityRefused is what every refusal in this package answers
+// errors.Is to. It exists so a caller can tell "the device you asked for is not
+// what answered" apart from "nothing answered" WITHOUT matching on message
+// text: the picker's Bluetooth fallback turns on exactly that distinction, and
+// a fallback that silently reaches the rejected device over a second transport
+// is the refusal undone.
+var errDeviceIdentityRefused = errors.New("device identity refused")
+
+// deviceIdentityRefusalError carries a refusal's full user-facing text while
+// staying recognisable to errors.Is. The text is the whole message rather than
+// a wrap so the refusals read exactly as they did before this type existed.
+type deviceIdentityRefusalError struct{ msg string }
+
+func (e *deviceIdentityRefusalError) Error() string { return e.msg }
+
+func (e *deviceIdentityRefusalError) Is(target error) bool {
+	return target == errDeviceIdentityRefused
+}
+
+// refuseIdentity builds a refusal that errors.Is(err, errDeviceIdentityRefused)
+// recognises. Every refusal raised because the wrong device answered — here and
+// in device_pin.go — must go through it.
+func refuseIdentity(format string, args ...any) error {
+	return &deviceIdentityRefusalError{msg: fmt.Sprintf(format, args...)}
+}
+
 // identityRefusal renders a wrong-device rejection. Same text in interactive,
 // JSON, and non-interactive modes — there is deliberately no "trust this?"
 // prompt, because a MITM warning that can be dismissed gets dismissed.
@@ -206,13 +274,34 @@ func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 	if im.GotAsset != "" {
 		got = fmt.Sprintf("asset %s in organization %d", im.GotAsset, im.GotOrg)
 	}
-	return fmt.Errorf(
+	return refuseIdentity(
 		"device %q is pinned to asset %s in organization %d, but the host answering presented %s; refusing to connect — if this device was legitimately replaced or re-enrolled, run 'wendy device unpin %s'",
 		pinKey, im.WantAsset, im.WantOrg, got, pinKey)
 }
 
 func pinnedHostWentUnauthenticatedError(pinKey string) error {
-	return fmt.Errorf(
+	return refuseIdentity(
 		"device %q is pinned to an enrolled identity but no authenticated endpoint answered; refusing to fall back to an unauthenticated connection — if it was reflashed or factory reset, run 'wendy device unpin %s'",
 		pinKey, pinKey)
+}
+
+// spkiRefusal renders the OTHER pin's rejection: the SPKI store's, which is
+// keyed by the certificate's own asset URN rather than by hostname and fires
+// when a device's public key changes while its pinned certificate is still
+// valid.
+//
+// Without this the store's PinMismatchError reached the user only as whatever
+// text survived gRPC's handshake wrapper — a message that names neither the
+// host as the user knows it nor any way out, leaving hand-editing
+// known_devices.json as the only recovery. The SPKI store has no hostname in
+// it, so the key comes from the dial: pinKey when there is one, the store's own
+// display name otherwise.
+func spkiRefusal(pinKey string, pm *devicepin.PinMismatchError) error {
+	named := pinKey
+	if named == "" {
+		named = pm.DisplayName
+	}
+	return refuseIdentity(
+		"device %q presented a different certificate key than the one pinned for %s (pinned %s, now %s); refusing to connect — if its certificate was legitimately reissued, run 'wendy device unpin %s'",
+		named, pm.Key, pm.Want, pm.Got, named)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/devicepin"
+	"github.com/wendylabsinc/wendy/go/internal/shared/discoverycache"
 )
 
 // seedSPKIPin writes a known_devices.json entry for key directly into the
@@ -78,6 +79,92 @@ func TestDeviceUnpinClearsBothStores(t *testing.T) {
 	}
 	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
 		t.Error("SPKI pin survived unpin: the identity refusal would fire again on the next connect")
+	}
+}
+
+// TestDeviceUnpinClearsAPinFoundUnderAnAlias is the dead end this closes.
+//
+// `wendy cloud discover` seeds pins under the name the cloud roster carries
+// (the asset name, which is the discovery cache's display name), while dials
+// name the device by its mDNS hostname. lookupPin already reconciles the two —
+// so a dial to "wendyos-calm-zinnia" is governed, and refused, by the pin filed
+// under "calm-zinnia" — but unpin cleared only the key it was handed. The
+// refusal named a key nothing was filed under, unpinning it removed nothing,
+// and the very next dial refused identically. Forever.
+func TestDeviceUnpinClearsAPinFoundUnderAnAlias(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"calm-zinnia": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceCloud},
+	})
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "calm-zinnia",
+		Hostname:    "wendyos-calm-zinnia.local",
+	})
+	seedSPKIPin(t, "urn:wendy:org:7:asset:42")
+
+	cmd := newDeviceUnpinCmd()
+	if err := cmd.RunE(cmd, []string{"wendyos-calm-zinnia.local"}); err != nil {
+		t.Fatalf("unpin: %v", err)
+	}
+
+	if pin, ok := readPins()["calm-zinnia"]; ok {
+		t.Errorf("the pin that governs this host survived unpinning it by the name the refusal named (%+v); the next dial refuses identically and there is no way out", pin)
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("SPKI pin survived an alias-keyed unpin")
+	}
+}
+
+// TestDeviceUnpinClearsSPKIPinWithNoConfigPin covers the store that gets
+// written where no config pin ever does. getAgentVersionAtAddress runs the dial
+// ladder with the SPKI store for every device the mDNS prober enumerates, so
+// `wendy device list` alone SPKI-pins the whole LAN with no config pin behind
+// any of it. When one of those certificates is reissued, the old unpin declined
+// to touch the SPKI store at all (it required an asset-bearing config pin to
+// derive the key from), and recovery meant hand-editing known_devices.json.
+//
+// The discovery cache is what closes the gap: it records the asset and org the
+// device advertised, which is exactly the pair the store is keyed by.
+func TestDeviceUnpinClearsSPKIPinWithNoConfigPin(t *testing.T) {
+	writePinTestConfig(t, nil)
+	setPinCache(t, discoverycache.Entry{
+		ID:          "dev-1",
+		DisplayName: "Thor",
+		Hostname:    "wendyos-thor.local",
+		AssetID:     42,
+		OrgID:       7,
+	})
+	seedSPKIPin(t, "urn:wendy:org:7:asset:42")
+
+	cmd := newDeviceUnpinCmd()
+	if err := cmd.RunE(cmd, []string{"wendyos-thor.local"}); err != nil {
+		t.Fatalf("unpin: %v", err)
+	}
+
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("SPKI pin survived unpin for a host with no config pin: the refusal it causes has no escape hatch but a text editor")
+	}
+}
+
+// TestClearDevicePinForRepinClearsSPKIStore holds set-default to the claim
+// pki/README.md already makes for it — that naming a device has "the same
+// clearing effect" as unpin. Leaving the SPKI half behind made that false for
+// the one refusal that has no other way out: set-default would clear the config
+// pin, reconnect, and be rejected again by the pin store it never touched.
+func TestClearDevicePinForRepinClearsSPKIStore(t *testing.T) {
+	readPins := writePinTestConfig(t, map[string]config.DevicePin{
+		"wendy-thor": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42"},
+	})
+	setPinCache(t) // empty cache: exactly the single-key legacy shape
+	seedSPKIPin(t, "urn:wendy:org:7:asset:42")
+
+	clearDevicePinForRepin("wendy-thor.local")
+
+	if pin, ok := readPins()["wendy-thor"]; ok {
+		t.Errorf("config pin survived clearDevicePinForRepin: %+v", pin)
+	}
+	if _, ok := readSPKIPins(t)["urn:wendy:org:7:asset:42"]; ok {
+		t.Error("SPKI pin survived clearDevicePinForRepin: set-default cannot re-pin a device whose key rotated, though the docs say it can")
 	}
 }
 

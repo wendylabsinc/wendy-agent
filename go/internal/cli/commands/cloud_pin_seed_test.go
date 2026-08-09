@@ -154,6 +154,67 @@ func TestSeedPinsFromCloudAssets(t *testing.T) {
 		}
 	})
 
+	// The steady state. `wendy cloud discover`'s TUI re-fetches the roster every
+	// 10 seconds, and a roster that has already been seeded describes pins that
+	// are byte-for-byte what is on disk. Marking "changed" for every valid asset
+	// made the flag mean "the roster was non-empty", so that steady state wrote
+	// config.json every 10 seconds to store exactly what it already held.
+	t.Run("does not rewrite config when every pin already matches", func(t *testing.T) {
+		cfg := &config.Config{DevicePins: map[string]config.DevicePin{
+			"calm-zinnia": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceCloud},
+			"bold-fern":   {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "43", Source: config.PinSourceCloud},
+		}}
+		stubLoadConfigForPin(t, cfg)
+
+		// Same sentinel as the subtests above: a HOME that cannot hold ~/.wendy,
+		// so an attempted config.Save fails loudly. Every asset below is already
+		// pinned exactly as the roster describes, so Save must never run.
+		unwritableHome := t.TempDir() + "-not-a-directory"
+		if err := os.WriteFile(unwritableHome, []byte("not a directory"), 0o600); err != nil {
+			t.Fatalf("writing sentinel file: %v", err)
+		}
+		t.Setenv("HOME", unwritableHome)
+		t.Setenv("USERPROFILE", unwritableHome)
+
+		assets := []*cloudpb.Asset{
+			{Id: 42, Name: "calm-zinnia"},
+			{Id: 43, Name: "bold-fern"},
+		}
+		if err := seedPinsFromCloudAssets(assets, 7, "grpc.a.sh:443"); err != nil {
+			t.Fatalf("seedPinsFromCloudAssets: unexpected error: %v (config.Save should never have been attempted for an unchanged roster)", err)
+		}
+	})
+
+	// The other half: suppression must be scoped to pins that genuinely match.
+	// One drifted asset in an otherwise-unchanged roster still has to be written.
+	t.Run("writes when a single asset in an otherwise unchanged roster drifts", func(t *testing.T) {
+		cfg := &config.Config{DevicePins: map[string]config.DevicePin{
+			"calm-zinnia": {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "42", Source: config.PinSourceCloud},
+			"bold-fern":   {OrgID: 7, CloudGRPC: "grpc.a.sh:443", AssetID: "99", Source: config.PinSourceCloud},
+		}}
+		stubLoadConfigForPin(t, cfg)
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		assets := []*cloudpb.Asset{
+			{Id: 42, Name: "calm-zinnia"},
+			{Id: 43, Name: "bold-fern"},
+		}
+		if err := seedPinsFromCloudAssets(assets, 7, "grpc.a.sh:443"); err != nil {
+			t.Fatalf("seedPinsFromCloudAssets: unexpected error: %v", err)
+		}
+
+		onDisk, err := config.Load()
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		pin, ok := onDisk.DevicePinFor("bold-fern")
+		if !ok || pin.AssetID != "43" {
+			t.Fatalf("on-disk pin for bold-fern = %+v (ok=%v), want asset 43 persisted — a re-pointed asset must still reach disk", pin, ok)
+		}
+	})
+
 	// A roster is not all-or-nothing: one unusable asset must not cost the
 	// others their pins.
 	t.Run("seeds the usable assets in a mixed roster", func(t *testing.T) {
