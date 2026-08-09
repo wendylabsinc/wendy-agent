@@ -30,17 +30,55 @@ type Stage struct {
 	// Env declares environment variables (ENV), visible to install/build
 	// steps in this stage and baked into the final image. Emitted sorted
 	// by key.
-	Env         map[string]string `yaml:"env,omitempty"`
-	Install     *Install          `yaml:"install,omitempty"`
-	Build       *Build            `yaml:"build,omitempty"`
-	Copy        []CopyEntry       `yaml:"copy,omitempty"`
-	Healthcheck *Healthcheck      `yaml:"healthcheck,omitempty"`
-	Entrypoint  *Entrypoint       `yaml:"entrypoint,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
+	Install *Install          `yaml:"install,omitempty"`
+	// Download fetches files from the network into this stage. Every entry
+	// is content-pinned; see Download.
+	Download    []Download   `yaml:"download,omitempty"`
+	Build       *Build       `yaml:"build,omitempty"`
+	Copy        []CopyEntry  `yaml:"copy,omitempty"`
+	Healthcheck *Healthcheck `yaml:"healthcheck,omitempty"`
+	Entrypoint  *Entrypoint  `yaml:"entrypoint,omitempty"`
 	// Cmd is the container's default-argument list (CMD), overridable by
 	// `docker run <image> <args>` while Entrypoint stays fixed.
 	Cmd  []string `yaml:"cmd,omitempty"`
 	User string   `yaml:"user,omitempty"`
 }
+
+// Download fetches one file from URL into the image at build time. BuildKit
+// performs the fetch itself (ADD --checksum), so no shell runs inside the
+// container and the bytes are verified before any layer can read them — the
+// same mechanism, and the same guarantee, as a pinned apt signing key.
+//
+// SHA256 is optional in the source and mandatory in the compiled output:
+// omitted, it is resolved once against the live URL and recorded in
+// build.stagefile.lock.yaml, exactly as an unpinned image ref is, and never
+// re-resolved after that without an explicit re-lock.
+type Download struct {
+	URL string `yaml:"url"`
+	// SHA256 pins the content, with or without a "sha256:" prefix.
+	SHA256 string `yaml:"sha256,omitempty"`
+	// Dest is where the file lands (or, with Extract, the directory the
+	// archive is unpacked into). A relative path resolves against the
+	// stage's workdir, as copy.dest does.
+	Dest string `yaml:"dest"`
+	// Extract unpacks the download at Dest instead of placing the file
+	// there: "tar.gz" or "zip". A remote ADD never auto-extracts the way a
+	// local tarball does, so unpacking is necessarily its own step — which
+	// is also why it is emitted after install: and can therefore use a tool
+	// (unzip) that install.apt declared.
+	Extract string `yaml:"extract,omitempty"`
+	// Mode and Owner set the placed file's permissions and ownership
+	// (ADD --chmod / --chown). Neither is allowed with Extract, where they
+	// would describe one file that no longer exists by the end of the stage.
+	Mode  string `yaml:"mode,omitempty"`
+	Owner string `yaml:"owner,omitempty"`
+}
+
+// ExtractFormats are the archive kinds Extract accepts. Both are unpacked by
+// a tool the compiler invokes with typed arguments; adding a format means
+// adding its command, not accepting one.
+var ExtractFormats = []string{"tar.gz", "zip"}
 
 // Install is the set of declarative, per-ecosystem dependency installs for
 // one stage. Any subset of the fields may be set; each compiles to exactly

@@ -50,6 +50,9 @@ func (f *File) Validate() error {
 		if err := validateInstall(s.Install); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
+		if err := validateDownloads(s.Download); err != nil {
+			return fmt.Errorf("stage %q: %w", s.Name, err)
+		}
 		if err := validateCopy(s.Copy, priorNames); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
@@ -173,6 +176,19 @@ func isHex(s string) bool {
 	return true
 }
 
+// validateSHA256 checks a content digest, with or without the "sha256:"
+// prefix. Both the apt signing key and the download step pin content this
+// way, and they share this check so the two can't drift on what counts as a
+// digest — a difference that would show up as one of them accepting a
+// truncated hash.
+func validateSHA256(value, fieldDesc string) error {
+	sha := strings.TrimPrefix(value, "sha256:")
+	if len(sha) != 64 || !isHex(sha) {
+		return fmt.Errorf("%s must be a 64-hex-digit sha256 (got %q) — content is pinned, like everything else", fieldDesc, value)
+	}
+	return nil
+}
+
 func validateAptRepositories(repos []AptRepository) error {
 	seen := map[string]bool{}
 	for _, r := range repos {
@@ -205,9 +221,8 @@ func validateAptRepositories(repos []AptRepository) error {
 		if err := validateRepoURL(r.Key.URL, "install.apt.repositories key.url"); err != nil {
 			return err
 		}
-		sha := strings.TrimPrefix(r.Key.SHA256, "sha256:")
-		if len(sha) != 64 || !isHex(sha) {
-			return fmt.Errorf("install.apt.repositories %q: key.sha256 must be a 64-hex-digit sha256 (got %q) — the signing key is pinned, like everything else", r.Name, r.Key.SHA256)
+		if err := validateSHA256(r.Key.SHA256, fmt.Sprintf("install.apt.repositories %q: key.sha256", r.Name)); err != nil {
+			return err
 		}
 		switch r.Key.Format {
 		case "", "binary", "armored":
@@ -275,6 +290,85 @@ func validateInstall(inst *Install) error {
 	return nil
 }
 
+// validateMode checks an octal file mode as COPY --chmod / ADD --chmod
+// accepts it.
+func validateMode(mode, fieldDesc string) error {
+	valid := len(mode) <= 4 && len(mode) > 0
+	for _, r := range mode {
+		if r < '0' || r > '7' {
+			valid = false
+		}
+	}
+	if !valid {
+		return fmt.Errorf("%s %q must be an octal mode like \"0755\"", fieldDesc, mode)
+	}
+	return nil
+}
+
+func validateDownloads(entries []Download) error {
+	dests := map[string]bool{}
+	for i, d := range entries {
+		where := fmt.Sprintf("download[%d]", i)
+		if err := validateRepoURL(d.URL, where+" url"); err != nil {
+			return err
+		}
+		if d.SHA256 != "" {
+			if err := validateSHA256(d.SHA256, where+" sha256"); err != nil {
+				return err
+			}
+		}
+		if d.Dest == "" {
+			return fmt.Errorf("%s: dest is required", where)
+		}
+		if d.Dest == "/" {
+			return fmt.Errorf("%s: dest must not be \"/\"", where)
+		}
+		if err := rejectNewline(d.Dest, where+" dest"); err != nil {
+			return err
+		}
+		if err := rejectWhitespace(d.Dest, where+" dest"); err != nil {
+			return err
+		}
+		if err := rejectLeadingDash(d.Dest, where+" dest"); err != nil {
+			return err
+		}
+		if dests[d.Dest] {
+			return fmt.Errorf("%s: duplicate dest %q; two downloads in one stage would race to the same path", where, d.Dest)
+		}
+		dests[d.Dest] = true
+
+		if d.Extract != "" {
+			known := false
+			for _, f := range ExtractFormats {
+				if d.Extract == f {
+					known = true
+				}
+			}
+			if !known {
+				return fmt.Errorf("%s: extract %q is not one of %s", where, d.Extract, strings.Join(ExtractFormats, ", "))
+			}
+			// Rejected rather than ignored: mode and owner describe a single
+			// placed file, and an extracted archive has none by the end of
+			// the stage. Accepting them would leave the Stagefile stating a
+			// permission the image does not have.
+			if d.Mode != "" || d.Owner != "" {
+				return fmt.Errorf("%s: mode and owner do not apply with extract (they would describe the archive, which is deleted after unpacking)", where)
+			}
+		}
+		if d.Mode != "" {
+			if err := validateMode(d.Mode, where+" mode"); err != nil {
+				return err
+			}
+		}
+		if d.Owner != "" {
+			if err := validateRepoToken(d.Owner, where+" owner"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func validateCopy(entries []CopyEntry, priorNames map[string]bool) error {
 	for _, e := range entries {
 		if len(e.Paths) == 0 {
@@ -297,14 +391,8 @@ func validateCopy(entries []CopyEntry, priorNames map[string]bool) error {
 			}
 		}
 		if e.Mode != "" {
-			valid := len(e.Mode) <= 4 && len(e.Mode) > 0
-			for _, r := range e.Mode {
-				if r < '0' || r > '7' {
-					valid = false
-				}
-			}
-			if !valid {
-				return fmt.Errorf("copy.mode %q must be an octal mode like \"0755\"", e.Mode)
+			if err := validateMode(e.Mode, "copy.mode"); err != nil {
+				return err
 			}
 		}
 	}

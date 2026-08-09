@@ -572,7 +572,14 @@ func hasContainerBuildFile(dir string) bool {
 // "Dockerfile.generated" and ".dockerignore" into dir and returning the
 // generated Dockerfile's filename.
 func compileStagefile(dir string) (string, error) {
-	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "")
+	// A download with no sha256 in the Stagefile is pinned by fetching it
+	// once, here, inline in the build. For model weights that is minutes of
+	// silence on the first build, so say which URL is being pinned rather
+	// than let it look like a hang.
+	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "",
+		stagefile.WithProgress(func(url string) {
+			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
+		}))
 	if err != nil {
 		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
 	}

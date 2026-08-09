@@ -21,6 +21,16 @@
 > dir) are fixed in `optimize/buildcache.go`. Still open: raw RUN
 > escape hatches (deliberate), per-arch stage selection, uid/home user
 > creation, and lockfile staleness governance (separate discussion).
+>
+> **Update (2026-08-08):** the *download* half of gap #3 is now closed by a
+> per-stage `download:` list — url, optional sha256 (resolved into the
+> lockfile when absent, like an unpinned base image), dest, and
+> `extract: tar.gz|zip`. It compiles to `ADD --checksum`, so BuildKit
+> performs the fetch and verifies it and the raw-RUN escape hatch stays
+> closed. This covers the `ClaudeOnDevice` pinned-tarball case and bundled
+> model weights. See `specs/2026-08-08-stagefile-download-design.md`. The
+> rest of gap #3 — arbitrary post-install shell, such as the CUDA
+> `ldconfig` + `find`/`ln -sf` loop — remains open.
 
 Source: converting `Examples/*` Dockerfiles to `build.stagefile.yaml` (see
 `stagefile-integration-report.md` in this worktree for the full conversion

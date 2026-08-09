@@ -2,8 +2,12 @@ package lock
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"maps"
+	"net/http"
 	"sync"
 	"time"
 
@@ -75,22 +79,52 @@ func Memoize(r Resolver) Resolver {
 
 // Resolve fills in a digest for every ref in refs, reusing existing's
 // current pin unless forceUpdate names that ref explicitly. sourceHash is
-// stamped onto the returned file regardless of which refs changed.
+// stamped onto the returned file regardless of which refs changed. Any
+// download pins already recorded carry forward untouched; ResolveDownloads
+// updates those.
 func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[string]bool, resolver Resolver) (*File, []string, error) {
 	result := &File{Version: 1, SourceHash: sourceHash, Images: map[string]string{}}
 	if existing != nil {
 		maps.Copy(result.Images, existing.Images)
+		if len(existing.Downloads) > 0 {
+			result.Downloads = map[string]string{}
+			maps.Copy(result.Downloads, existing.Downloads)
+		}
 	}
+	pending, err := pinAll(result.Images, refs, forceUpdate, resolver)
+	if err != nil {
+		return nil, nil, err
+	}
+	return result, pending, nil
+}
 
+// ResolveDownloads fills in a sha256 for every URL in urls, reusing f's
+// current pin unless forceUpdate names that URL explicitly. It shares
+// pinAll with image resolution so "reuse the existing pin unless forced"
+// has one implementation and cannot mean two things.
+func (f *File) ResolveDownloads(urls []string, forceUpdate map[string]bool, hasher Hasher) ([]string, error) {
+	if len(urls) == 0 {
+		return nil, nil
+	}
+	if f.Downloads == nil {
+		f.Downloads = map[string]string{}
+	}
+	return pinAll(f.Downloads, urls, forceUpdate, func(url string) (string, error) { return hasher(url) })
+}
+
+// pinAll resolves every ref in refs that current has no pin for (or that
+// forceUpdate names), writing the results into current and returning the refs
+// it actually resolved, in declaration order.
+func pinAll(current map[string]string, refs []string, forceUpdate map[string]bool, lookup func(string) (string, error)) ([]string, error) {
 	// Collect the refs that actually need a lookup, in declaration order and
 	// without duplicates. Doing this up front (rather than writing digests into
-	// result.Images as we go) is what keeps both the returned list and the
+	// current as we go) is what keeps both the returned list and the
 	// error we report keyed to the source file instead of to whichever lookup
 	// happened to finish first.
 	var pending []string
 	seen := map[string]bool{}
 	for _, ref := range refs {
-		if _, have := result.Images[ref]; have && !forceUpdate[ref] {
+		if _, have := current[ref]; have && !forceUpdate[ref] {
 			continue
 		}
 		if seen[ref] {
@@ -100,10 +134,10 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 		pending = append(pending, ref)
 	}
 	if len(pending) == 0 {
-		return result, nil, nil
+		return nil, nil
 	}
 
-	// Each lookup is an independent registry round-trip, so they run
+	// Each lookup is an independent network round-trip, so they run
 	// concurrently: a Stagefile with N distinct base images used to pay N
 	// sequential round-trips — each with its own 30s CraneResolver timeout —
 	// inline in every build that had an unpinned ref. Results land in a fixed
@@ -117,7 +151,7 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			digests[i], errs[i] = resolver(ref)
+			digests[i], errs[i] = lookup(ref)
 		})
 	}
 	wg.Wait()
@@ -127,13 +161,53 @@ func Resolve(existing *File, sourceHash string, refs []string, forceUpdate map[s
 	// registry timing.
 	for i, err := range errs {
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolving %q: %w", pending[i], err)
+			return nil, fmt.Errorf("resolving %q: %w", pending[i], err)
 		}
 	}
 	for i, ref := range pending {
-		result.Images[ref] = digests[i]
+		current[ref] = digests[i]
 	}
-	return result, pending, nil
+	return pending, nil
+}
+
+// Hasher returns the sha256 of the bytes a URL serves, as "sha256:<hex>".
+// It is what pins a download whose Stagefile declares no sha256 of its own;
+// the CLI wires in HTTPHasher, tests use a fake.
+type Hasher func(url string) (string, error)
+
+// downloadHeaderTimeout bounds how long a server may take to send response
+// headers. There is deliberately no timeout on the body: this exists to fetch
+// files like a 310 MB ONNX voice model, and a total deadline generous enough
+// for that on a slow link is not a timeout, while one that isn't would fail
+// exactly the case the feature was built for. A server that accepts the
+// connection and then says nothing is still bounded here, and a body that
+// stalls mid-stream surfaces as a read error from the transport rather than
+// hanging forever.
+const downloadHeaderTimeout = 30 * time.Second
+
+// HTTPHasher is a Hasher backed by a real HTTP GET. Like CraneResolver it is
+// intentionally not covered by a network-dependent test; the tests drive it
+// against an httptest.Server instead.
+func HTTPHasher(url string) (string, error) {
+	client := &http.Client{Transport: &http.Transport{
+		ResponseHeaderTimeout: downloadHeaderTimeout,
+		Proxy:                 http.ProxyFromEnvironment,
+	}}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("fetching %q: %w", url, err)
+	}
+	defer resp.Body.Close()
+	// A 404 page hashes just as well as a model does. Checking the status
+	// is what stops "pinned successfully" from meaning "pinned the error".
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return "", fmt.Errorf("fetching %q: %s", url, resp.Status)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, resp.Body); err != nil {
+		return "", fmt.Errorf("reading %q: %w", url, err)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // CraneResolver is a Resolver backed by a real registry lookup. It is
