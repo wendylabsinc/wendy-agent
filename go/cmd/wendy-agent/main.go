@@ -491,6 +491,7 @@ func main() {
 		// check rather than reject every caller.
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 		meshSvc := services.NewMeshService(logger, configPath, orgID)
+		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{ConfigPath: configPath})
 
 		agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 		agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
@@ -509,6 +510,7 @@ func main() {
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
+		agentpbv2.RegisterWendyBuildServiceServer(srv, buildSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)
 		}
