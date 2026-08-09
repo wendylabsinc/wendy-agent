@@ -361,7 +361,6 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 	return true, nil
 }
 
-
 // containerExitDetail returns a short human summary of why appID's container
 // stopped (e.g. "container crashed (exit 1)"), or "" if it's running, the cause
 // wasn't recorded, or the lookup fails. Best-effort — it exists only to enrich
