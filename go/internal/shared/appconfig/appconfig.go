@@ -64,7 +64,24 @@ const (
 	// declares the app's primary HTTP port so clients (wendy run, remote
 	// management apps) can discover and open it. See entitlements.md.
 	EntitlementHTTP = "http"
+	// EntitlementIPC lets one app expose a unix socket to another app on the
+	// same device without either app gaining access to the other's data. It
+	// generalizes the agent-owned socket mounts already used by `admin` and
+	// `notifications` from agent-provided sockets to app-provided ones. See
+	// entitlements.md.
+	EntitlementIPC = "ipc"
 )
+
+// IPC entitlement roles. A "provide" app owns the socket and binds it; a
+// "consume" app receives the same socket read-only and may only connect.
+const (
+	IPCRoleProvide = "provide"
+	IPCRoleConsume = "consume"
+)
+
+// ValidIPCRoles is the set of accepted `role` values for the ipc
+// entitlement, in the order they are offered to users.
+var ValidIPCRoles = []string{IPCRoleProvide, IPCRoleConsume}
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
 var ValidEntitlementTypes = []string{
@@ -87,6 +104,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementAdmin,
 	EntitlementBuild,
 	EntitlementHTTP,
+	EntitlementIPC,
 }
 
 // FrameworkROS2 is the "ros2" key under wendy.json's "frameworks" object.
@@ -123,6 +141,7 @@ var allowedKeys = map[string][]string{
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
 	EntitlementHTTP:          {"type", "port"},
+	EntitlementIPC:           {"type", "name", "role"},
 }
 
 // Platform constants identify the target hardware family.
@@ -363,6 +382,14 @@ type Entitlement struct {
 	// The agent derives the gateway from the bridge subnet separately; this
 	// field only carries the service CIDR policy.
 	ServiceCIDR string `json:"serviceCIDR,omitempty"` // Network (mesh mode)
+
+	// Role is the ipc entitlement's side of the socket: "provide" (this app
+	// binds it) or "consume" (this app may only connect to it). It shares the
+	// Name field with persist, but the two namespaces are unrelated: a persist
+	// name selects a data volume, an ipc name selects an agent-owned socket
+	// directory that carries no data. Unrelated to ServiceName / the top-level
+	// services map, which identify containers within one app.
+	Role string `json:"role,omitempty"` // IPC
 }
 
 // DeprecatedEntitlementReplacement reports the preferred replacement for a deprecated entitlement type.
@@ -466,7 +493,35 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("%s[%d]: http port must be between 1 and 65535, got %d", prefix, i, e.Port)
 			}
+		case EntitlementIPC:
+			if e.Name == "" {
+				return fmt.Errorf("%s[%d]: ipc entitlement requires a name", prefix, i)
+			}
+			if err := ValidateIPCName(e.Name); err != nil {
+				return fmt.Errorf("%s[%d]: %w", prefix, i, err)
+			}
+			if e.Role == "" {
+				return fmt.Errorf("%s[%d]: ipc entitlement requires a role (%q or %q)", prefix, i, IPCRoleProvide, IPCRoleConsume)
+			}
+			if !slices.Contains(ValidIPCRoles, e.Role) {
+				return fmt.Errorf("%s[%d]: ipc role must be %q or %q, got %q", prefix, i, IPCRoleProvide, IPCRoleConsume, e.Role)
+			}
 		}
+	}
+
+	// One entitlement list may not name the same ipc service twice: two entries for
+	// the same name would produce two bind mounts on the same destination, and a
+	// provide+consume pair on one container is a self-connection that the socket
+	// already allows without a second entitlement.
+	seenIPCNames := make(map[string]int, len(entitlements))
+	for i, e := range entitlements {
+		if e.Type != EntitlementIPC {
+			continue
+		}
+		if first, ok := seenIPCNames[e.Name]; ok {
+			return fmt.Errorf("%s[%d]: duplicate ipc entitlement for name %q (already declared at %s[%d]); declare each ipc name at most once per container", prefix, i, e.Name, prefix, first)
+		}
+		seenIPCNames[e.Name] = i
 	}
 
 	mcpCount := 0
@@ -561,6 +616,28 @@ func ValidateServiceName(name string) error {
 	}
 	if !serviceNamePattern.MatchString(name) {
 		return fmt.Errorf("serviceName %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
+	}
+	return nil
+}
+
+// ValidateIPCName reports whether name is a well-formed ipc entitlement
+// name. The name becomes a directory component on the host
+// (/var/lib/wendy/ipc/<name>), a bind-mount destination inside the
+// container (/run/wendy/ipc/<name>), and part of an injected environment
+// variable name, so it is held to the same RFC 1123 DNS-label rule as
+// serviceName: no dots (so it can never traverse), no separators, no case
+// ambiguity. Unlike appID — which permits dots and is therefore hashed before
+// use as a path — a name that passes this check is safe to use verbatim, which
+// keeps `ls /var/lib/wendy/ipc` a readable list of what is registered.
+func ValidateIPCName(name string) error {
+	if name == "" {
+		return fmt.Errorf("ipc name is required")
+	}
+	if len(name) > 57 {
+		return fmt.Errorf("ipc name too long: %d chars (max 57)", len(name))
+	}
+	if !serviceNamePattern.MatchString(name) {
+		return fmt.Errorf("ipc name %q is invalid: must start with a lowercase letter, contain only lowercase letters, digits, or hyphens, end with a letter or digit, and be at most 57 chars (RFC 1123)", name)
 	}
 	return nil
 }

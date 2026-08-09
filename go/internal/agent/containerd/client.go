@@ -63,6 +63,19 @@ type AppSystemAPISocketProvider interface {
 	ReleaseApp(appID string)
 }
 
+// ServiceSocketProvider is the narrow capability the client needs from
+// services.ServiceSocketManager to honour the `service` entitlement: claim a
+// name for a container and get the host directory to mount, clear a stale
+// socket before a provider's task starts, and drop claims at teardown.
+// Declared here — rather than importing the concrete type — for the same
+// reason as restartSuppressor above, and so tests can inject a recorder.
+type ServiceSocketProvider interface {
+	Ensure(name, role, appID, serviceName string) (string, error)
+	PrepareProvider(name, appID, serviceName string) error
+	Release(name, appID, serviceName string)
+	ReleaseApp(appID string)
+}
+
 // restartSuppressor is the narrow capability the client needs from the
 // container-restart monitor: pause automatic restarts for a container name
 // while a replace or stop operation holds the handle, so the monitor's
@@ -84,6 +97,7 @@ type Client struct {
 	mu                      sync.Mutex
 	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
 	systemAPISocketProvider AppSystemAPISocketProvider
+	serviceSocketProvider   ServiceSocketProvider
 
 	// appServices caches the services map for multi-service apps, keyed by appID.
 	// Populated on CreateContainerWithProgress; used by resolveStopOrder.
@@ -193,6 +207,94 @@ func (c *Client) SetMeshDNS(d *mesh.DNSServer) {
 // SetAppSystemAPISocketProvider injects the manager for private app System API sockets.
 func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvider) {
 	c.systemAPISocketProvider = provider
+}
+
+// SetServiceSocketProvider injects the manager for app-provided service sockets.
+// Called once from main.go at agent startup, before the Client is exposed to
+// concurrent callers (same single-threaded-startup contract as SetMeshDNS).
+func (c *Client) SetServiceSocketProvider(provider ServiceSocketProvider) {
+	c.serviceSocketProvider = provider
+}
+
+// serviceEntitlements returns the `service` entitlements in ents that name a
+// valid service and a valid role. Malformed entries are dropped rather than
+// erroring: the same list is read back from container labels, which are
+// external state the agent must not trust (SOC2-CC6, NIST-SI-10).
+func serviceEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
+	var out []appconfig.Entitlement
+	for _, e := range ents {
+		if e.Type != appconfig.EntitlementService {
+			continue
+		}
+		if appconfig.ValidateServiceSocketName(e.Name) != nil {
+			continue
+		}
+		if e.Role != appconfig.ServiceRoleProvide && e.Role != appconfig.ServiceRoleConsume {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// releaseServiceSockets drops every service claim a container holds. Safe to
+// call for a container with no service entitlements (it does nothing) and safe
+// to call twice — Release is a no-op for an owner that is already gone.
+func (c *Client) releaseServiceSockets(ents []appconfig.Entitlement, appID, serviceName string) {
+	if c.serviceSocketProvider == nil {
+		return
+	}
+	for _, e := range serviceEntitlements(ents) {
+		c.serviceSocketProvider.Release(e.Name, appID, serviceName)
+	}
+}
+
+// RestoreServiceSockets reconstructs service-name claims from trusted,
+// persisted container labels after an agent restart, so a provider does not
+// lose its name to a later app and a still-deployed consumer's directory is not
+// swept as unused. Stopped containers count too: they retain the bind mount and
+// may be started again. It deliberately never touches the sockets themselves —
+// a provider that survived the agent restart is still serving on its.
+func (c *Client) RestoreServiceSockets(ctx context.Context) {
+	if c.serviceSocketProvider == nil {
+		return
+	}
+	ctx = c.withNamespace(ctx)
+	ctrs, err := c.client.Containers(ctx, fmt.Sprintf("labels.%q", labelKeyAppID))
+	if err != nil {
+		c.logger.Warn("restore service sockets: listing containers failed", zap.Error(err))
+		return
+	}
+	labelSets := make([]map[string]string, 0, len(ctrs))
+	for _, ctr := range ctrs {
+		info, err := ctr.Info(ctx)
+		if err != nil {
+			c.logger.Warn("restore service socket: reading container failed", zap.String("id", ctr.ID()), zap.Error(err))
+			continue
+		}
+		labelSets = append(labelSets, info.Labels)
+	}
+	// Providers first, then consumers. Containerd returns containers in no
+	// meaningful order, and restoring a consumer before its provider would emit
+	// a spurious "no provider on this device" warning at every agent start.
+	for _, role := range []string{appconfig.ServiceRoleProvide, appconfig.ServiceRoleConsume} {
+		for _, labels := range labelSets {
+			appID := labels[labelKeyAppID]
+			serviceName := labels[labelKeyServiceName]
+			if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
+				continue
+			}
+			for _, e := range serviceEntitlements(parseEntitlementsFromAnnotations(labels)) {
+				if e.Role != role {
+					continue
+				}
+				if _, err := c.serviceSocketProvider.Ensure(e.Name, e.Role, appID, serviceName); err != nil {
+					c.logger.Warn("restore service socket failed",
+						zap.String(logfields.AppID, appID), zap.String("service", e.Name), zap.Error(err))
+				}
+			}
+		}
+	}
 }
 
 type appSystemAPIOwner struct {
@@ -1024,8 +1126,10 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		defer resumeRestarts()
 
 		oldHadSystemAPI := false
+		var oldEntitlements []appconfig.Entitlement
 		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
+			oldEntitlements = parseEntitlementsFromAnnotations(labels)
+			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
 		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
@@ -1072,6 +1176,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
 			c.systemAPISocketProvider.Release(appID, serviceName)
 		}
+		// Release the replaced container's service claims so a redeploy that
+		// drops (or renames) a "provide" entitlement frees the name. Claims the
+		// new spec still declares are re-Ensured below under the same owner key,
+		// and the directory survives the gap whenever a consumer still holds it.
+		c.releaseServiceSockets(oldEntitlements, appID, serviceName)
 		// Stop old D-Bus proxy if any.
 		if c.proxyManager != nil {
 			_ = c.proxyManager.Stop(containerName)
@@ -1250,9 +1359,35 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}()
 	}
 
+	// Claim each declared service name before the spec is built. Failure is
+	// fatal, not best-effort: a provider whose name is already taken must not
+	// start believing it owns the socket, and a consumer must not start with a
+	// silently absent mount it will then poll forever.
+	var serviceSocketDirs map[string]string
+	serviceRefsOwned := serviceEntitlements(appCfg.Entitlements)
+	if len(serviceRefsOwned) > 0 {
+		if c.serviceSocketProvider == nil {
+			return fmt.Errorf("service entitlement unavailable: service socket manager is not configured")
+		}
+		serviceSocketDirs = make(map[string]string, len(serviceRefsOwned))
+		defer func() {
+			for _, e := range serviceRefsOwned {
+				c.serviceSocketProvider.Release(e.Name, appID, serviceName)
+			}
+		}()
+		for _, e := range serviceRefsOwned {
+			dir, ensureErr := c.serviceSocketProvider.Ensure(e.Name, e.Role, appID, serviceName)
+			if ensureErr != nil {
+				return fmt.Errorf("preparing service socket %q: %w", e.Name, ensureErr)
+			}
+			serviceSocketDirs[e.Name] = dir
+		}
+	}
+
 	opts := localoci.ApplyOptions{
 		DBusProxySocketDir: dbusProxySocketDir,
 		SystemAPISocketDir: systemAPISocketDir,
+		ServiceSocketDirs:  serviceSocketDirs,
 	}
 	// Pass a shallow copy of appCfg with AppID and ServiceName set to the
 	// derived (validated) values. This ensures ApplyEntitlements always receives
@@ -1467,6 +1602,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	// Container created successfully; keep its external socket resources running.
 	dbusProxyStarted = false
 	systemAPIRefOwned = false
+	serviceRefsOwned = nil
 
 	report(&agentpb.CreateContainerProgress{Phase: agentpb.CreateContainerProgress_COMPLETE})
 
@@ -1606,6 +1742,28 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	} else {
 		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
 			zap.String("app_name", appName), zap.Error(serr))
+	}
+
+	// Clear a stale service socket BEFORE the task is created, so the provider's
+	// first bind() in the new run always lands on an empty directory. This is
+	// the platform owning the "provider died without cleanup" failure: without
+	// it the previous run's socket file is still there, the provider's bind
+	// fails with EADDRINUSE, and consumers are left with a socket that opens but
+	// refuses connections. Fail-closed — a provider that cannot get a clean
+	// directory must not start and pretend to serve.
+	if c.serviceSocketProvider != nil {
+		var startEntitlements []appconfig.Entitlement
+		if labels, lerr := container.Labels(ctx); lerr == nil {
+			startEntitlements = parseEntitlementsFromAnnotations(labels)
+		}
+		for _, e := range serviceEntitlements(startEntitlements) {
+			if e.Role != appconfig.ServiceRoleProvide {
+				continue
+			}
+			if err := c.serviceSocketProvider.PrepareProvider(e.Name, appID, serviceName); err != nil {
+				return nil, fmt.Errorf("preparing service socket %q for %q: %w", e.Name, appName, err)
+			}
+		}
 	}
 
 	if restartPolicy != nil {
@@ -3533,6 +3691,15 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 				zap.Error(proxyErr))
 		}
 	}
+	// Drop this container's service claims only after the container itself is
+	// gone: a claim released while the container still exists would let another
+	// app take the name out from under a provider that is merely stopped.
+	// Released here rather than in stopOne for the same reason — a stopped
+	// container keeps its bind mount and is expected to reclaim its socket on
+	// the next start.
+	if parseErr == nil {
+		c.releaseServiceSockets(entitlements, appID, svcName)
+	}
 	c.logger.Info("Container deleted", zap.String("container_id", ctr.ID()))
 	return imgName, nil
 }
@@ -3575,6 +3742,12 @@ func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage b
 	// The system-API socket is per app: only release it once the app is gone.
 	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
 		c.systemAPISocketProvider.ReleaseApp(appID)
+	}
+	// Sweep any service claim deleteOne could not attribute (an unparseable
+	// container ID, or labels that failed to load). deleteOne already released
+	// the attributable ones; ReleaseApp is idempotent for those.
+	if len(errs) == 0 && wholeApp && c.serviceSocketProvider != nil {
+		c.serviceSocketProvider.ReleaseApp(appID)
 	}
 	return errors.Join(errs...)
 }

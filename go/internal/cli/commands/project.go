@@ -29,6 +29,7 @@ var entitlementDescriptions = map[string]string{
 	appconfig.EntitlementGPIO:      "Access GPIO pins",
 	appconfig.EntitlementSPI:       "Access SPI bus devices (displays, sensors, flash - may require GPIO access)",
 	appconfig.EntitlementInput:     "Access Linux input devices (game controllers, barcode scanners, keyboards)",
+	appconfig.EntitlementService:   "Expose a unix socket to another app on the device, or connect to one",
 }
 
 // frameworkDescriptions mirrors entitlementDescriptions for the "frameworks"
@@ -577,6 +578,35 @@ func promptEntitlementFields(ent *appconfig.Entitlement) error {
 			return err
 		}
 		ent.Pins = pins
+
+	case appconfig.EntitlementService:
+		name, err := tui.PromptText(
+			"Service name",
+			"both apps use this same name — unrelated to persist volumes",
+			func(v string) error {
+				return appconfig.ValidateServiceSocketName(strings.TrimSpace(v))
+			},
+		)
+		if err != nil {
+			return err
+		}
+		ent.Name = strings.TrimSpace(name)
+
+		role, err := tui.PromptTextWithDefault(
+			"Role",
+			fmt.Sprintf("%q binds the socket, %q only connects to it", appconfig.ServiceRoleProvide, appconfig.ServiceRoleConsume),
+			appconfig.ServiceRoleConsume,
+			func(v string) error {
+				if !slices.Contains(appconfig.ValidServiceRoles, strings.TrimSpace(v)) {
+					return fmt.Errorf("role must be %q or %q", appconfig.ServiceRoleProvide, appconfig.ServiceRoleConsume)
+				}
+				return nil
+			},
+		)
+		if err != nil {
+			return err
+		}
+		ent.Role = strings.TrimSpace(role)
 	}
 
 	return nil

@@ -287,7 +287,7 @@ IP networking access.
 | `"host-admin"` | Host networking **plus** `CAP_NET_ADMIN` — allows reconfiguring interfaces, routes, and netfilter. Only request this if your app genuinely manages the network; it is a high-privilege capability. |
 | `"none"` | Networking fully disabled — no namespace connectivity of any kind. |
 | `"bridge"` | Isolated network namespace with a private IP, outbound internet via NAT, and working DNS — but **no** host/LAN-published ports. Use this for apps that need to reach the internet without exposing anything locally. Cross-device access to a bridge app is via a `mesh` entitlement, not this one. |
-| `"mesh"` | Isolated network namespace chained into the wendy-mesh CNI, with a route to a `serviceCIDR` (required for this mode — a valid CIDR string) so the app can reach other meshed devices/services. Optionally set `ports` (host→container mappings) so mesh peers can dial in. |
+| `"mesh"` | Isolated network namespace chained into the wendy-mesh CNI, with a route to a `serviceCIDR` (required for this mode — a valid CIDR string) so the app can reach other meshed devices/services. Optionally set `ports` (host→container mappings) so mesh peers can dial in. **Cross-device only** — for app-to-app access on the *same* device, use the [`service`](#service) entitlement. |
 
 > **Security note:** `CAP_NET_ADMIN` (host network reconfiguration) is granted only by `"host-admin"`, never by plain `"host"`. Apps that previously relied on `CAP_NET_ADMIN` under `"host"` must switch to `"host-admin"`.
 
@@ -531,6 +531,42 @@ Grants the container the wendy-agent's **full gRPC over a local unix socket** (`
 An app with `admin` can start, stop, and delete apps and read all device data locally. The socket is bind-mounted **only** into containers that declare `admin` — that mount is the entire trust boundary — and it is never reachable off-device (a unix socket, not TCP). At most one `admin` per app.
 
 > **Security:** `admin` is a privileged, deliberate grant equivalent to local device control. Grant it only to fully-trusted first-party apps (e.g. the WendyOS shell). Requires an agent build that serves the local socket.
+
+### `service`
+
+Lets one app expose a unix socket to another app on the same device, without either app gaining access to the other's data.
+
+```json
+{ "type": "service", "name": "world", "role": "provide" }
+```
+
+```json
+{ "type": "service", "name": "world", "role": "consume" }
+```
+
+| Field | Description |
+|-------|-------------|
+| `name` | The service name. Both sides use the same one. Lowercase RFC 1123 label (`^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$`). Unrelated to `persist` volume names and to the top-level `services` map. |
+| `role` | `"provide"` binds the socket and owns the service; `"consume"` may only connect to it. |
+
+The agent owns the socket path and its lifecycle. It bind-mounts a per-name directory at `/run/wendy/services/<name>` — **read-write** for the provider (which must `bind()` there) and **read-only** for consumers — and injects `WENDY_SERVICE_<NAME>_SOCKET` pointing at `/run/wendy/services/<name>/service.sock` (hyphens in the name become underscores in the variable). The directory, not the socket inode, is mounted, so a provider that recreates its socket is transparent to an already-running consumer.
+
+A read-only mount still permits `connect()` — the kernel's read-only-superblock check applies to regular files, directories, and symlinks, never to sockets — so read-only denies a consumer only the ability to unlink or replace the provider's socket.
+
+The agent also handles the lifecycle problems apps would otherwise each solve badly:
+
+| Problem | What the agent does |
+|---|---|
+| Stale socket after an unclean provider exit | Removes any leftover socket before the provider's task starts, so `bind()` never hits `EADDRINUSE` and consumers never find a socket that refuses connections |
+| Name typo vs. provider not deployed | Warns at deploy time when a consumer's name has no provider on the device, and lists the names that do |
+| Directory lifetime | The per-name host directory under `/var/lib/wendy/services` is reference-counted across every provider and consumer container (stopped ones included) and removed only after the last is deleted, so a provider restart never strands a consumer's bind mount |
+| Traversal | Both sides get supplementary GID `2001`; the directory is `2770 root:2001` and setgid, so a socket the provider binds inherits the group without the app knowing the GID exists |
+
+> **Why not a shared `persist` volume?** Two apps *can* share a socket today by sharing a `persist` name — but that grants the entire data volume. An app that only needs to *call* a service should not also get read/write on that service's database. `service` grants the socket and nothing else.
+
+> **Security:** at most one app may `provide` a given name on a device, first claim wins, held until the providing container is deleted. A later app cannot take over a name a consumer already trusts. Claims are restored from container labels after an agent restart.
+
+> **Known limitation — non-root providers.** The socket's *mode* is set by whoever calls `bind()`. With a default umask a provider creates it `0755`, which a **non-root** consumer cannot `connect()` to (connect requires write permission on the socket inode). Until socket activation lands, a non-root provider must create the socket group-accessible — `umask(0o007)` before binding, or `chmod(path, 0o660)` after. Providers and consumers that both run as root (the current WendyOS default) are unaffected.
 
 ---
 

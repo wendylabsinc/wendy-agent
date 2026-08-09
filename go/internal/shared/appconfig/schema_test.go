@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"regexp"
 	"testing"
 )
 
@@ -210,6 +211,91 @@ func TestSchemaJSON_HTTPEntitlement(t *testing.T) {
 	if got := int(port["maximum"].(float64)); got != 65535 {
 		t.Errorf("http port maximum = %d, want 65535", got)
 	}
+}
+
+// TestSchemaJSON_IPCEntitlement is a sync guard between the schema branch
+// editors validate against and the Go rules the agent enforces: the role enum
+// must match ValidIPCRoles and the name pattern must accept exactly what
+// ValidateIPCName accepts.
+func TestSchemaJSON_IPCEntitlement(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(SchemaJSON), &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+
+	branch := entitlementBranch(t, schema, "ipc")
+	if additional, ok := branch["additionalProperties"].(bool); !ok || additional {
+		t.Errorf("ipc entitlement additionalProperties = %v, want false", branch["additionalProperties"])
+	}
+
+	required, _ := branch["required"].([]any)
+	requiredSet := make(map[string]bool, len(required))
+	for _, key := range required {
+		if name, ok := key.(string); ok {
+			requiredSet[name] = true
+		}
+	}
+	for _, key := range []string{"type", "name", "role"} {
+		if !requiredSet[key] {
+			t.Errorf("ipc entitlement does not require %q", key)
+		}
+	}
+
+	props := schemaProps(t, branch)
+	role, ok := props["role"].(map[string]any)
+	if !ok {
+		t.Fatal("ipc entitlement missing role property")
+	}
+	roleEnum, _ := role["enum"].([]any)
+	if len(roleEnum) != len(ValidIPCRoles) {
+		t.Fatalf("schema role enum = %v, want %v", roleEnum, ValidIPCRoles)
+	}
+	for i, want := range ValidIPCRoles {
+		if roleEnum[i] != want {
+			t.Errorf("schema role enum[%d] = %v, want %q", i, roleEnum[i], want)
+		}
+	}
+
+	name, ok := props["name"].(map[string]any)
+	if !ok {
+		t.Fatal("ipc entitlement missing name property")
+	}
+	pattern, _ := name["pattern"].(string)
+	if pattern == "" {
+		t.Fatal("ipc entitlement name has no pattern")
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		t.Fatalf("ipc name pattern does not compile: %v", err)
+	}
+	for _, candidate := range []string{"world", "world-model", "a", "svc9", "World", "1world", "world-", "com.example", "../etc", ""} {
+		schemaOK := re.MatchString(candidate)
+		goOK := ValidateIPCName(candidate) == nil
+		if schemaOK != goOK {
+			t.Errorf("ipc name %q: schema pattern accepts=%v, ValidateIPCName accepts=%v", candidate, schemaOK, goOK)
+		}
+	}
+}
+
+// entitlementBranch returns the $defs.entitlement oneOf branch whose type const
+// is entType.
+func entitlementBranch(t *testing.T, schema map[string]any, entType string) map[string]any {
+	t.Helper()
+	entitlement := defOf(t, schema, "entitlement")
+	branches, ok := entitlement["oneOf"].([]any)
+	if !ok {
+		t.Fatal("$defs.entitlement missing oneOf")
+	}
+	for _, raw := range branches {
+		branch, _ := raw.(map[string]any)
+		props, _ := branch["properties"].(map[string]any)
+		typeProp, _ := props["type"].(map[string]any)
+		if typeProp["const"] == entType {
+			return branch
+		}
+	}
+	t.Fatalf("$defs.entitlement.oneOf missing %q branch", entType)
+	return nil
 }
 
 func TestSchemaJSON_DeclaresROS2ExampleKeys(t *testing.T) {

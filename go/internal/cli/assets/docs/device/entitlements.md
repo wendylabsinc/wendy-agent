@@ -258,6 +258,8 @@ The persist entitlement allows the container to persist data across restarts. Da
 
 Volumes are identified by name only (not by app ID), so multiple apps can share data by using the same volume name. This is useful for sharing caches or data between apps.
 
+> **Sharing a socket, not data?** Use the [`service`](#service) entitlement instead. A shared `persist` name grants the *entire* volume — an app that only needs to call another app's service would also get read/write on that service's database.
+
 ### Recommended Shared Volume Names
 
 | Name | Path | Description |
@@ -273,6 +275,40 @@ Example for a Python ML app:
     "path": "/app/.cache/huggingface"
 }
 ```
+
+## Service
+
+The service entitlement lets one app expose a unix socket to another app **on the same device**. It is the same mechanism `admin` and `notifications` already use — an entitlement-gated bind mount of an agent-owned socket directory — generalized from agent-provided sockets to app-provided ones.
+
+The provider:
+
+```json
+{ "type": "service", "name": "world", "role": "provide" }
+```
+
+The consumer:
+
+```json
+{ "type": "service", "name": "world", "role": "consume" }
+```
+
+| Boundary | Value |
+|---|---|
+| Mount | `/run/wendy/services/<name>` — read-write for `provide`, read-only for `consume` |
+| Injected environment | `WENDY_SERVICE_<NAME>_SOCKET=/run/wendy/services/<name>/service.sock` (hyphens become underscores) |
+| Supplementary group | GID `2001`, so non-root apps can traverse the directory without world access |
+| Stable host directory | `/var/lib/wendy/services/<name>`, mode `2770 root:2001` |
+| Providers per name | One per device, first claim wins, held until that container is deleted |
+
+Both sides read the socket path from the environment rather than hardcoding it, so a typo cannot silently produce two apps talking past each other. A consumer whose name has no provider on the device is warned about at deploy time, with the names that do exist — the failure mode that a shared-volume socket makes indistinguishable from "the provider hasn't started yet".
+
+The agent removes a leftover socket before the provider's task starts, so a provider that died without cleaning up does not leave a socket that consumers can open but not connect to, and does not have to `rm -f` its own socket on boot.
+
+**This is not cross-device.** For a container on one device to reach a service on another, use the [`network` entitlement's `mesh` mode](../apps/wendy.json.md#network), which addresses peers by cloud asset ID over a service CIDR. `service` is device-local IPC only.
+
+> **Not a shared volume.** Two apps can already share a unix socket by sharing a `persist` name, but that grants the whole data volume. `service` grants the socket and nothing else — a consumer gets no access to the provider's storage.
+
+> **Non-root providers (current limitation).** The socket's permissions come from whoever calls `bind()`. With a default umask that is `0755`, which a **non-root** consumer cannot connect to. Until socket activation lands, a non-root provider should `umask(0o007)` before binding or `chmod` the socket to `0660` after. Root-run providers and consumers — the current WendyOS default — need no change.
 
 ## Build
 

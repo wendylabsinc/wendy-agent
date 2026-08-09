@@ -31,6 +31,7 @@ const EntitlementAnnotationKeyPrefix = "sh.wendy/entitlement."
 //	gpio(pins=[17,18])       → "pins=17,18"
 //	mcp(port=8080)           → "port=8080"
 //	network(host,[8080:80])  → "mode=host,ports=8080:80"
+//	ipc(world,provide)       → "name=world,role=provide"
 func EntitlementAnnotationValue(e Entitlement) string {
 	var parts []string
 	if e.Mode != "" {
@@ -44,6 +45,9 @@ func EntitlementAnnotationValue(e Entitlement) string {
 	}
 	if e.Device != "" {
 		parts = append(parts, "device="+e.Device)
+	}
+	if e.Role != "" {
+		parts = append(parts, "role="+e.Role)
 	}
 	if e.Port != 0 {
 		parts = append(parts, "port="+strconv.Itoa(e.Port))
@@ -94,6 +98,8 @@ func ParseEntitlementAnnotation(entType, value string) Entitlement {
 			ent.Path = val
 		case "device":
 			ent.Device = val
+		case "role":
+			ent.Role = val
 		case "port":
 			if n, err := strconv.Atoi(val); err == nil {
 				ent.Port = n

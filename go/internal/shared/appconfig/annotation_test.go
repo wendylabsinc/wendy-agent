@@ -166,6 +166,8 @@ func TestEntitlementAnnotationRoundTrip(t *testing.T) {
 		{Type: EntitlementI2C, Device: "i2c-1"},
 		{Type: EntitlementSerial, Device: "ttyUSB0"},
 		{Type: EntitlementNetwork, Mode: "mesh", ServiceCIDR: "10.99.0.0/16"},
+		{Type: EntitlementIPC, Name: "world", Role: IPCRoleProvide},
+		{Type: EntitlementIPC, Name: "world-model", Role: IPCRoleConsume},
 	}
 
 	for _, want := range entitlements {

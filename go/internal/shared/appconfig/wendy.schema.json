@@ -339,6 +339,26 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "Run a container image builder (BuildKit) inside the app container. Privileged-equivalent: grants CAP_SYS_ADMIN and the namespace syscalls a nested builder needs — a container→host escape surface. Grant only to fully-trusted first-party apps. At most one per app."
+        },
+        {
+          "properties": {
+            "type": { "const": "ipc" },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 57,
+              "pattern": "^[a-z]([a-z0-9-]{0,55}[a-z0-9])?$",
+              "description": "Name of the device-local IPC service. Both sides must use the same name. Unrelated to the persist volume namespace and to the top-level \"services\" map."
+            },
+            "role": {
+              "type": "string",
+              "enum": ["provide", "consume"],
+              "description": "\"provide\" binds the socket and owns the service; \"consume\" may only connect to it."
+            }
+          },
+          "required": ["type", "name", "role"],
+          "additionalProperties": false,
+          "description": "Expose or connect to another app on the same device over a unix socket. The agent owns the socket path, its directory, and cleanup: it mounts /run/wendy/ipc/<name> (read-write to the provider, read-only to consumers) and injects WENDY_IPC_<NAME>_SOCKET. Consumers get the socket and nothing else — no access to the provider's persist volume. At most one provider per name per device."
         }
       ]
     },

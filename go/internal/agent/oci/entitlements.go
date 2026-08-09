@@ -34,6 +34,13 @@ const (
 	// appSystemAPIGroupGID is reserved by WendyOS for private app System API
 	// sockets, allowing non-root workloads to connect without world access.
 	appSystemAPIGroupGID uint32 = 2000
+	// appServiceGroupGID is reserved by WendyOS for app-provided service sockets
+	// (the `service` entitlement), the analogue of appSystemAPIGroupGID for
+	// agent-provided ones. It owns the per-service directory, which is setgid,
+	// so a socket the provider binds inside it inherits this group without the
+	// app having to know the GID exists. Kept in sync with the agent-side
+	// constant of the same name in internal/agent/services.
+	appServiceGroupGID uint32 = 2001
 	// v4l2Major is the standard Video4Linux character device major.
 	v4l2Major int64 = 81
 )
@@ -54,6 +61,12 @@ type ApplyOptions struct {
 	// SystemAPISocketDir is the app-specific host directory prepared by
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
+	// ServiceSocketDirs maps a `service` entitlement name to the host directory
+	// ServiceSocketManager prepared for it. Only names present here are mounted:
+	// the caller, not this package, decides which claims were granted, so an
+	// entitlement the manager refused (e.g. a name another app already provides)
+	// cannot smuggle a mount in via the app's own config.
+	ServiceSocketDirs map[string]string
 }
 
 // ApplyEntitlements modifies an OCI spec in-place based on app config entitlements.
@@ -118,6 +131,8 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
 			applyBuild(spec)
+		case appconfig.EntitlementService:
+			applyServiceSocket(spec, ent, opts.ServiceSocketDirs)
 		}
 	}
 	return nil
@@ -463,6 +478,74 @@ func applyAdmin(spec *Spec) {
 		Options:     []string{"rbind", "nosuid", "noexec", "ro"},
 	})
 	spec.Process.Env = append(spec.Process.Env, "WENDY_AGENT_SOCKET="+ctrAgentSocketPath)
+}
+
+// ServiceSocketContainerRoot is the in-container parent of every `service`
+// entitlement mount. One directory per service name is bind-mounted beneath it.
+const ServiceSocketContainerRoot = "/run/wendy/services"
+
+// ServiceSocketFilename is the socket inside each service directory. Fixed by
+// the platform so both sides of the entitlement agree on the path without an
+// out-of-band convention.
+const ServiceSocketFilename = "service.sock"
+
+// applyServiceSocket mounts one app-provided service socket directory.
+//
+// This is the same trust-boundary shape as applyAdmin and applySystemAPI —
+// an entitlement-gated bind mount of an agent-owned directory — generalized
+// from agent-provided sockets to app-provided ones. The directory (not the
+// socket inode) is mounted so a provider that recreates its socket is
+// transparent to an already-running consumer, exactly as for the admin socket.
+//
+// The provider gets it read-write because it must bind() the socket there.
+// Consumers get it read-only, which still permits connect(): the kernel's
+// read-only-superblock check (sb_permission) applies to regular files,
+// directories and symlinks, never to sockets. Read-only therefore denies a
+// consumer the ability to unlink or replace the provider's socket — and it
+// grants no access whatsoever to the provider's persist volume, which is the
+// whole point of the entitlement.
+//
+// A name absent from hostDirs is skipped rather than mounted from a guessed
+// path: only claims the ServiceSocketManager actually granted are honoured.
+func applyServiceSocket(spec *Spec, ent appconfig.Entitlement, hostDirs map[string]string) {
+	if appconfig.ValidateServiceSocketName(ent.Name) != nil {
+		return
+	}
+	hostDirectory := hostDirs[ent.Name]
+	if hostDirectory == "" {
+		return
+	}
+	if _, err := os.Stat(hostDirectory); err != nil {
+		return
+	}
+
+	options := []string{"rbind", "nosuid", "noexec", "nodev"}
+	if ent.Role == appconfig.ServiceRoleProvide {
+		options = append(options, "rw")
+	} else {
+		options = append(options, "ro")
+	}
+	containerDirectory := path.Join(ServiceSocketContainerRoot, ent.Name)
+	spec.Mounts = append(spec.Mounts, Mount{
+		Destination: containerDirectory,
+		Source:      hostDirectory,
+		Type:        "bind",
+		Options:     options,
+	})
+	// The directory is mode 2770 root:appServiceGroupGID, so without this GID a
+	// non-root process cannot even traverse into it. Membership on its own
+	// reaches nothing — the bind mount is what makes the directory visible.
+	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, appServiceGroupGID)
+	spec.Process.Env = append(spec.Process.Env,
+		serviceSocketEnvName(ent.Name)+"="+path.Join(containerDirectory, ServiceSocketFilename))
+}
+
+// serviceSocketEnvName maps a service name to the environment variable that
+// carries its socket path, e.g. "world-model" → "WENDY_SERVICE_WORLD_MODEL_SOCKET".
+// The name is already restricted to [a-z0-9-] by ValidateServiceSocketName, so
+// upper-casing and replacing hyphens always yields a valid POSIX variable name.
+func serviceSocketEnvName(name string) string {
+	return "WENDY_SERVICE_" + strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_SOCKET"
 }
 
 // applyNetwork configures the network namespace.

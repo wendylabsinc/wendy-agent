@@ -2293,6 +2293,115 @@ func TestValidateJSON_BuildEntitlementRejectsExtraKeys(t *testing.T) {
 	}
 }
 
+func TestValidate_IPCEntitlement(t *testing.T) {
+	valid := []struct {
+		name string
+		role string
+	}{
+		{"world", IPCRoleProvide},
+		{"world", IPCRoleConsume},
+		{"world-model", IPCRoleProvide},
+		{"a", IPCRoleConsume},
+		{"svc9", IPCRoleProvide},
+	}
+	for _, tc := range valid {
+		t.Run("valid/"+tc.name+"/"+tc.role, func(t *testing.T) {
+			cfg := &AppConfig{
+				AppID:        "com.example.app",
+				Entitlements: []Entitlement{{Type: EntitlementIPC, Name: tc.name, Role: tc.role}},
+			}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("Validate() unexpected error: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		desc string
+		ent  Entitlement
+	}{
+		{"missing name", Entitlement{Type: EntitlementIPC, Role: IPCRoleProvide}},
+		{"missing role", Entitlement{Type: EntitlementIPC, Name: "world"}},
+		{"unknown role", Entitlement{Type: EntitlementIPC, Name: "world", Role: "publish"}},
+		{"uppercase name", Entitlement{Type: EntitlementIPC, Name: "World", Role: IPCRoleProvide}},
+		{"dotted name", Entitlement{Type: EntitlementIPC, Name: "com.example", Role: IPCRoleProvide}},
+		{"traversal name", Entitlement{Type: EntitlementIPC, Name: "../etc", Role: IPCRoleProvide}},
+		{"dot dot name", Entitlement{Type: EntitlementIPC, Name: "..", Role: IPCRoleProvide}},
+		{"slash name", Entitlement{Type: EntitlementIPC, Name: "a/b", Role: IPCRoleProvide}},
+		{"leading digit", Entitlement{Type: EntitlementIPC, Name: "1world", Role: IPCRoleProvide}},
+		{"trailing hyphen", Entitlement{Type: EntitlementIPC, Name: "world-", Role: IPCRoleProvide}},
+	}
+	for _, tc := range invalid {
+		t.Run("invalid/"+tc.desc, func(t *testing.T) {
+			cfg := &AppConfig{AppID: "com.example.app", Entitlements: []Entitlement{tc.ent}}
+			if err := cfg.Validate(); err == nil {
+				t.Errorf("Validate() accepted %+v, want an error", tc.ent)
+			}
+		})
+	}
+}
+
+// A single container may not declare the same ipc name twice: two entries
+// would produce two bind mounts on one destination, and provide+consume on the
+// same container is a self-connection the socket already permits.
+func TestValidate_IPCEntitlementRejectsDuplicateName(t *testing.T) {
+	for _, roles := range [][2]string{
+		{IPCRoleProvide, IPCRoleConsume},
+		{IPCRoleProvide, IPCRoleProvide},
+		{IPCRoleConsume, IPCRoleConsume},
+	} {
+		cfg := &AppConfig{
+			AppID: "com.example.app",
+			Entitlements: []Entitlement{
+				{Type: EntitlementIPC, Name: "world", Role: roles[0]},
+				{Type: EntitlementIPC, Name: "world", Role: roles[1]},
+			},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() accepted duplicate ipc name with roles %v, want an error", roles)
+		}
+	}
+
+	// Distinct names on one container are fine — an app may consume several.
+	cfg := &AppConfig{
+		AppID: "com.example.app",
+		Entitlements: []Entitlement{
+			{Type: EntitlementIPC, Name: "world", Role: IPCRoleConsume},
+			{Type: EntitlementIPC, Name: "planner", Role: IPCRoleConsume},
+			{Type: EntitlementIPC, Name: "telemetry", Role: IPCRoleProvide},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate() rejected distinct ipc names: %v", err)
+	}
+}
+
+func TestValidateJSON_IPCEntitlementRejectsExtraKeys(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"ipc","name":"world","role":"provide","path":"/data"}]}`))
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for an unknown key on the ipc entitlement")
+	}
+}
+
+func TestValidateJSON_IPCEntitlement(t *testing.T) {
+	warnings := ValidateJSON([]byte(`{"appId":"test","entitlements":[{"type":"ipc","name":"world","role":"consume"}]}`))
+	if len(warnings) != 0 {
+		t.Fatalf("expected ipc entitlement to validate, got warnings: %v", warnings)
+	}
+}
+
+func TestValidateIPCName(t *testing.T) {
+	if err := ValidateIPCName(""); err == nil {
+		t.Error("ValidateIPCName(\"\") = nil, want an error")
+	}
+	if err := ValidateIPCName(strings.Repeat("a", 58)); err == nil {
+		t.Error("ValidateIPCName(58 chars) = nil, want an error")
+	}
+	if err := ValidateIPCName(strings.Repeat("a", 57)); err != nil {
+		t.Errorf("ValidateIPCName(57 chars) = %v, want nil", err)
+	}
+}
+
 // TestAppConfig_TopLevelEnv covers WDY-2040: a single-container app declares
 // env at the top level, which is the only place it can.
 func TestAppConfig_TopLevelEnv(t *testing.T) {

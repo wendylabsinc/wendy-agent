@@ -233,6 +233,26 @@ Runs a container image builder (BuildKit) inside the app container.
 
 Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` syscalls a nested builder needs (the kernel-module and `kexec` denials are kept). **Privileged-equivalent: a container→host escape surface.** Used so a device can build apps for itself (see the `claude-on-device` example). Grant only to fully-trusted, first-party apps. At most one per app; takes no parameters (`{"type":"build"}`).
 
+### Service Entitlement
+
+Exposes a unix socket from one app to another **on the same device**, without either app gaining access to the other's data.
+
+```json
+{ "type": "service", "name": "world", "role": "provide" }
+```
+
+```json
+{ "type": "service", "name": "world", "role": "consume" }
+```
+
+`name` is a lowercase RFC 1123 label shared by both sides (unrelated to `persist` volume names and to the top-level `services` map). `role` is `"provide"` (binds the socket) or `"consume"` (may only connect).
+
+The agent bind-mounts `/run/wendy/services/<name>` — read-write for the provider, read-only for consumers — and injects `WENDY_SERVICE_<NAME>_SOCKET=/run/wendy/services/<name>/service.sock` (hyphens become underscores). Read it from the environment rather than hardcoding the path. The agent also clears a stale socket before the provider starts, refcounts the directory so a provider restart cannot strand a consumer, and allows only one provider per name per device.
+
+Use this instead of sharing a `persist` volume to reach another app's socket: a shared volume grants the whole data directory, this grants the socket and nothing else. For **cross-device** service access use the `network` entitlement's `mesh` mode instead — `service` is device-local only.
+
+> **Non-root providers:** the socket's mode comes from whoever calls `bind()`; a default umask yields `0755`, which a non-root consumer cannot connect to. A non-root provider should `umask(0o007)` before binding or `chmod` the socket to `0660`. Root-run apps need no change.
+
 ## Common Configurations
 
 ### Web Server with Camera
