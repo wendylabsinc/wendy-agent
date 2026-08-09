@@ -1640,8 +1640,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	//
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
+	var ociHint *ociReuseHint
 	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
-		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts); err == nil {
+		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
+		ociHint = hint
+		if err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
@@ -1686,18 +1689,44 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Build and push the Docker image directly to the device's registry.
 	regPort := registryPort(agentOS)
 	repo := strings.ToLower(appCfg.AppID)
-	// Single-service build: no concurrency, so keep the shared local cache dir
-	// (empty cache key) for cross-run cache reuse.
-	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
-	if err := runBuildWithProgress(ctx, buildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
-		return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
-	}); err != nil {
-		if isRegistryUnavailable(err) {
-			// Return the friendly error bare (matching the Swift path above) —
-			// the "building and pushing image" prefix adds nothing to it.
-			return err
+
+	// The chunk-diff attempt above may have already built this exact image
+	// (same Dockerfile, build-args, and platform) to a local OCI layout
+	// directory before failing for a reason unrelated to the build itself
+	// (e.g. the device not supporting chunk-diff). Reuse that content — a
+	// direct registry push, no buildx involved — instead of paying for a
+	// second full build of identical content. This is what used to show up
+	// as a second "Building and pushing image..." buildx run that re-did
+	// everything the first build already did, including any non-cacheable
+	// steps (e.g. a Swift compile) that BuildKit's own layer cache can't
+	// carry across the two builds' separate builder instances. Purely an
+	// optimization: any failure here (stale layout, registry unreachable,
+	// unsupported builder combination, ...) falls straight through to the
+	// normal rebuild below exactly as if this block were absent.
+	pushed := false
+	if ociHint != nil && registryPushWouldUseDocker(opts.builder) {
+		if err := tryPushExistingOCILayout(ctx, conn, regPort, ociHint, repo, conn.IsMTLS); err == nil {
+			cliSuccess("Reused already-built image for the registry push (skipped a redundant rebuild)")
+			pushed = true
+		} else if opts.debug {
+			cliLogln("Reusing the already-built image failed (%v); rebuilding instead.", err)
 		}
-		return fmt.Errorf("building and pushing image: %w", err)
+	}
+
+	if !pushed {
+		// Single-service build: no concurrency, so keep the shared local cache dir
+		// (empty cache key) for cross-run cache reuse.
+		buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
+		if err := runBuildWithProgress(ctx, buildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
+			return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
+		}); err != nil {
+			if isRegistryUnavailable(err) {
+				// Return the friendly error bare (matching the Swift path above) —
+				// the "building and pushing image" prefix adds nothing to it.
+				return err
+			}
+			return fmt.Errorf("building and pushing image: %w", err)
+		}
 	}
 
 	// The agent pulls from localhost:<regPort>.
@@ -1719,6 +1748,50 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	}
 
 	return startAndStreamContainer(ctx, conn, appCfg, createReq, opts)
+}
+
+// registryPushWouldUseDocker reports whether the registry-push fallback in
+// runWithAgent would end up building with the Docker builder — mirroring,
+// without any side effects, the precedence buildAndPushImageForAgent applies:
+// an explicit --builder wins outright, otherwise the macOS Apple Container
+// auto-attempt (shouldAutoAttemptAppleContainerBuilder) is tried before
+// Docker. The chunk-diff deploy's reusable OCI layout (ociReuseHint) was only
+// ever built with Docker/buildx (chunkExportPlan), so reusing it for the
+// fallback is only valid when this also resolves to Docker — otherwise the
+// fallback may legitimately want a different builder and reuse must not
+// short-circuit that choice.
+func registryPushWouldUseDocker(builder string) bool {
+	if imageBuilderWasExplicit(builder) {
+		normalized, err := normalizeImageBuilder(builder)
+		return err == nil && normalized == imageBuilderDocker
+	}
+	return !shouldAutoAttemptAppleContainerBuilder()
+}
+
+// tryPushExistingOCILayout pushes the image hint already points at straight
+// to the device's registry, without invoking docker/buildx again. It is the
+// registry-push fallback's fast path when the preceding chunk-diff attempt
+// already built this exact image (see ociReuseHint's doc comment for why the
+// content is guaranteed identical). Any error here should be treated as
+// "reuse didn't work" by the caller, which then falls back to the normal
+// rebuild — this function never leaves the deploy worse off than skipping it
+// entirely would have.
+func tryPushExistingOCILayout(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, hint *ociReuseHint, repo string, useMTLS bool) error {
+	registryAddr, cleanup, dialErr, err := resolveRegistryForAgent(ctx, conn, regPort)
+	if err != nil {
+		return fmt.Errorf("resolving device registry: %w", err)
+	}
+	defer cleanup()
+
+	if err := pushOCILayoutToRegistry(ctx, hint.layoutDir, hint.platform, registryAddr, repo, useMTLS); err != nil {
+		if dialErr != nil {
+			if de := dialErr(); isDialRefused(de) {
+				return fmt.Errorf("device registry unreachable: %w", de)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // validateEnvFlag checks --env entries are KEY=VALUE with a POSIX-portable
@@ -2323,14 +2396,32 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 // instead of requiring the caller to set it by hand.
 const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 
+// ociReuseHint carries the on-disk location of the OCI-layout image the
+// chunk-diff deploy just built, so a registry-push fallback triggered by a
+// LATER failure (e.g. the device rejecting chunk-diff entirely) can push that
+// exact content straight to the registry via pushOCILayoutToRegistry instead
+// of re-running buildx from scratch — the two builds are otherwise given the
+// same Dockerfile, build-args, and platform, so the content would be
+// identical anyway. Non-nil only when the "dir" export plan was used (see
+// chunkExportPlan) and the build succeeded and was read back successfully:
+// nil for the "tar" export plan (whose temp directory is removed before the
+// caller could reuse it) and whenever the build/read itself failed.
+type ociReuseHint struct {
+	layoutDir string
+	platform  string
+}
+
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
 // calls RunContainer with the resulting layer headers. On success it returns the
 // uncompressed layer diff IDs it deployed, so the caller can record them in the
 // deploy fingerprint and later verify the device still holds this content before
-// skipping a rebuild (WDY-1824).
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
+// skipping a rebuild (WDY-1824). It also returns an *ociReuseHint (see its doc
+// comment) so a caller that has to fall back to a registry push after a
+// failure here can reuse the image already built rather than rebuilding it.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, *ociReuseHint, error) {
 	mark := phaseTimer()
+	var hint *ociReuseHint
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
 	runBuild := func(build func(stream, logw io.Writer) error) error {
@@ -2369,7 +2460,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if exportMode == "dir" {
 		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
 		if err != nil {
-			return nil, err
+			return nil, hint, err
 		}
 		defer releaseLayout()
 		build := func(stream, logw io.Writer) error {
@@ -2403,7 +2494,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			mark("build (native layers)")
 		} else {
 			if err := runBuild(build); err != nil {
-				return nil, err
+				return nil, hint, err
 			}
 			mark("build (oci export)")
 		}
@@ -2415,14 +2506,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			// removes state.json, so the native path stays off until re-adoption.
 			cliLogln("OCI layout cache unreadable (%v); rebuilding it from scratch", err)
 			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
-				return nil, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
+				return nil, hint, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
 			}
 			nativeDone = false
 			if err := runBuild(build); err != nil {
-				return nil, err
+				return nil, hint, err
 			}
 			if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
-				return nil, err
+				return nil, hint, err
 			}
 		}
 		if nativeEligible && !nativeDone {
@@ -2431,10 +2522,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			// layers' file sets) so every following iteration can skip buildx.
 			if adopted, adoptErr := adoptNativeLayers(layoutDir, platform, cwd, sf, depsHash); adoptErr == nil && adopted {
 				if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
-					return nil, err
+					return nil, hint, err
 				}
 			}
 		}
+		// The layout directory now holds a known-good, freshly built image —
+		// record it so a chunk-diff failure below can fall back to reusing it
+		// (see ociReuseHint) instead of a redundant second buildx build.
+		hint = &ociReuseHint{layoutDir: layoutDir, platform: platform}
 		// Prune blobs superseded by this build once the deploy is done with them.
 		// Best-effort: reachable blobs are never touched, so a failed GC only
 		// leaves garbage for the next run to collect.
@@ -2442,30 +2537,30 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
 		if err != nil {
-			return nil, err
+			return nil, hint, err
 		}
 		defer os.RemoveAll(tmp)
 		ociTar := filepath.Join(tmp, "image.tar")
 		if err := runBuild(func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
-			return nil, err
+			return nil, hint, err
 		}
 		mark("build (oci export)")
 		layers, imageConfig, err = readOCILayoutLayers(ociTar, platform)
 		if err != nil {
-			return nil, err
+			return nil, hint, err
 		}
 	}
 	mark("read+decompress layers")
 
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
-		return nil, err
+		return nil, hint, err
 	}
 	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
 	if err != nil {
-		return nil, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+		return nil, hint, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
 	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
@@ -2499,14 +2594,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		Env:            deployEnv,
 	})
 	if err != nil {
-		return nil, err
+		return nil, hint, err
 	}
 	if err := streamRunContainer(ctx, conn, stream, appCfg, opts); err != nil {
 		mark("runcontainer (assemble+create+start[+readiness])")
-		return nil, err
+		return nil, hint, err
 	}
 	mark("runcontainer (assemble+create+start[+readiness])")
-	return layerDiffIDs(headers), nil
+	return layerDiffIDs(headers), hint, nil
 }
 
 // layerDiffIDs extracts the ordered uncompressed diff IDs from the reassembly
