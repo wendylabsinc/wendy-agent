@@ -21,6 +21,96 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type SetBuildHostEnabledRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Enabled       bool                   `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetBuildHostEnabledRequest) Reset() {
+	*x = SetBuildHostEnabledRequest{}
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetBuildHostEnabledRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetBuildHostEnabledRequest) ProtoMessage() {}
+
+func (x *SetBuildHostEnabledRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetBuildHostEnabledRequest.ProtoReflect.Descriptor instead.
+func (*SetBuildHostEnabledRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *SetBuildHostEnabledRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetBuildHostEnabledResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Echoes the state now in effect, so a caller can confirm without a second
+	// round trip.
+	Enabled       bool `protobuf:"varint,1,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetBuildHostEnabledResponse) Reset() {
+	*x = SetBuildHostEnabledResponse{}
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetBuildHostEnabledResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetBuildHostEnabledResponse) ProtoMessage() {}
+
+func (x *SetBuildHostEnabledResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetBuildHostEnabledResponse.ProtoReflect.Descriptor instead.
+func (*SetBuildHostEnabledResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *SetBuildHostEnabledResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
 type GetBuildCapabilitiesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -29,7 +119,7 @@ type GetBuildCapabilitiesRequest struct {
 
 func (x *GetBuildCapabilitiesRequest) Reset() {
 	*x = GetBuildCapabilitiesRequest{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[0]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +131,7 @@ func (x *GetBuildCapabilitiesRequest) String() string {
 func (*GetBuildCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetBuildCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[0]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +144,7 @@ func (x *GetBuildCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBuildCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetBuildCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{0}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{2}
 }
 
 type GetBuildCapabilitiesResponse struct {
@@ -79,7 +169,7 @@ type GetBuildCapabilitiesResponse struct {
 
 func (x *GetBuildCapabilitiesResponse) Reset() {
 	*x = GetBuildCapabilitiesResponse{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[1]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -91,7 +181,7 @@ func (x *GetBuildCapabilitiesResponse) String() string {
 func (*GetBuildCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetBuildCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[1]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -104,7 +194,7 @@ func (x *GetBuildCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBuildCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetBuildCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{1}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GetBuildCapabilitiesResponse) GetBuildkitAvailable() bool {
@@ -169,7 +259,7 @@ type ChunkManifest struct {
 
 func (x *ChunkManifest) Reset() {
 	*x = ChunkManifest{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -181,7 +271,7 @@ func (x *ChunkManifest) String() string {
 func (*ChunkManifest) ProtoMessage() {}
 
 func (x *ChunkManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[2]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -194,7 +284,7 @@ func (x *ChunkManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChunkManifest.ProtoReflect.Descriptor instead.
 func (*ChunkManifest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{2}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ChunkManifest) GetChunkHashes() [][]byte {
@@ -224,7 +314,7 @@ type DockerfileBuild struct {
 
 func (x *DockerfileBuild) Reset() {
 	*x = DockerfileBuild{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -236,7 +326,7 @@ func (x *DockerfileBuild) String() string {
 func (*DockerfileBuild) ProtoMessage() {}
 
 func (x *DockerfileBuild) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[3]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -249,7 +339,7 @@ func (x *DockerfileBuild) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DockerfileBuild.ProtoReflect.Descriptor instead.
 func (*DockerfileBuild) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{3}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DockerfileBuild) GetDockerfile() string {
@@ -292,7 +382,7 @@ type BuildSpec struct {
 
 func (x *BuildSpec) Reset() {
 	*x = BuildSpec{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -304,7 +394,7 @@ func (x *BuildSpec) String() string {
 func (*BuildSpec) ProtoMessage() {}
 
 func (x *BuildSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -317,7 +407,7 @@ func (x *BuildSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildSpec.ProtoReflect.Descriptor instead.
 func (*BuildSpec) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{4}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *BuildSpec) GetAppId() string {
@@ -385,7 +475,7 @@ type BuildImageRequest struct {
 
 func (x *BuildImageRequest) Reset() {
 	*x = BuildImageRequest{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -397,7 +487,7 @@ func (x *BuildImageRequest) String() string {
 func (*BuildImageRequest) ProtoMessage() {}
 
 func (x *BuildImageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -410,7 +500,7 @@ func (x *BuildImageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildImageRequest.ProtoReflect.Descriptor instead.
 func (*BuildImageRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{5}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *BuildImageRequest) GetSpec() *BuildSpec {
@@ -433,7 +523,7 @@ type BuildImageProgress struct {
 
 func (x *BuildImageProgress) Reset() {
 	*x = BuildImageProgress{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -445,7 +535,7 @@ func (x *BuildImageProgress) String() string {
 func (*BuildImageProgress) ProtoMessage() {}
 
 func (x *BuildImageProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -458,7 +548,7 @@ func (x *BuildImageProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildImageProgress.ProtoReflect.Descriptor instead.
 func (*BuildImageProgress) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{6}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *BuildImageProgress) GetEvent() isBuildImageProgress_Event {
@@ -514,7 +604,7 @@ type BuildImageResult struct {
 
 func (x *BuildImageResult) Reset() {
 	*x = BuildImageResult{}
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +616,7 @@ func (x *BuildImageResult) String() string {
 func (*BuildImageResult) ProtoMessage() {}
 
 func (x *BuildImageResult) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v2_build_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +629,7 @@ func (x *BuildImageResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildImageResult.ProtoReflect.Descriptor instead.
 func (*BuildImageResult) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{7}
+	return file_wendy_agent_services_v2_build_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BuildImageResult) GetImageDigest() string {
@@ -553,7 +643,11 @@ var File_wendy_agent_services_v2_build_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_build_service_proto_rawDesc = "" +
 	"\n" +
-	"+wendy/agent/services/v2/build_service.proto\x12\x17wendy.agent.services.v2\"\x1d\n" +
+	"+wendy/agent/services/v2/build_service.proto\x12\x17wendy.agent.services.v2\"6\n" +
+	"\x1aSetBuildHostEnabledRequest\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\"7\n" +
+	"\x1bSetBuildHostEnabledResponse\x12\x18\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\"\x1d\n" +
 	"\x1bGetBuildCapabilitiesRequest\"\xb6\x02\n" +
 	"\x1cGetBuildCapabilitiesResponse\x12-\n" +
 	"\x12buildkit_available\x18\x01 \x01(\bR\x11buildkitAvailable\x12)\n" +
@@ -591,11 +685,12 @@ const file_wendy_agent_services_v2_build_service_proto_rawDesc = "" +
 	"\x06result\x18\x02 \x01(\v2).wendy.agent.services.v2.BuildImageResultH\x00R\x06resultB\a\n" +
 	"\x05event\"5\n" +
 	"\x10BuildImageResult\x12!\n" +
-	"\fimage_digest\x18\x01 \x01(\tR\vimageDigest2\x84\x02\n" +
+	"\fimage_digest\x18\x01 \x01(\tR\vimageDigest2\x87\x03\n" +
 	"\x11WendyBuildService\x12\x83\x01\n" +
 	"\x14GetBuildCapabilities\x124.wendy.agent.services.v2.GetBuildCapabilitiesRequest\x1a5.wendy.agent.services.v2.GetBuildCapabilitiesResponse\x12i\n" +
 	"\n" +
-	"BuildImage\x12*.wendy.agent.services.v2.BuildImageRequest\x1a+.wendy.agent.services.v2.BuildImageProgress(\x010\x01BAZ?github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
+	"BuildImage\x12*.wendy.agent.services.v2.BuildImageRequest\x1a+.wendy.agent.services.v2.BuildImageProgress(\x010\x01\x12\x80\x01\n" +
+	"\x13SetBuildHostEnabled\x123.wendy.agent.services.v2.SetBuildHostEnabledRequest\x1a4.wendy.agent.services.v2.SetBuildHostEnabledResponseBAZ?github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
 
 var (
 	file_wendy_agent_services_v2_build_service_proto_rawDescOnce sync.Once
@@ -609,33 +704,37 @@ func file_wendy_agent_services_v2_build_service_proto_rawDescGZIP() []byte {
 	return file_wendy_agent_services_v2_build_service_proto_rawDescData
 }
 
-var file_wendy_agent_services_v2_build_service_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_wendy_agent_services_v2_build_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_wendy_agent_services_v2_build_service_proto_goTypes = []any{
-	(*GetBuildCapabilitiesRequest)(nil),  // 0: wendy.agent.services.v2.GetBuildCapabilitiesRequest
-	(*GetBuildCapabilitiesResponse)(nil), // 1: wendy.agent.services.v2.GetBuildCapabilitiesResponse
-	(*ChunkManifest)(nil),                // 2: wendy.agent.services.v2.ChunkManifest
-	(*DockerfileBuild)(nil),              // 3: wendy.agent.services.v2.DockerfileBuild
-	(*BuildSpec)(nil),                    // 4: wendy.agent.services.v2.BuildSpec
-	(*BuildImageRequest)(nil),            // 5: wendy.agent.services.v2.BuildImageRequest
-	(*BuildImageProgress)(nil),           // 6: wendy.agent.services.v2.BuildImageProgress
-	(*BuildImageResult)(nil),             // 7: wendy.agent.services.v2.BuildImageResult
-	nil,                                  // 8: wendy.agent.services.v2.DockerfileBuild.BuildArgsEntry
+	(*SetBuildHostEnabledRequest)(nil),   // 0: wendy.agent.services.v2.SetBuildHostEnabledRequest
+	(*SetBuildHostEnabledResponse)(nil),  // 1: wendy.agent.services.v2.SetBuildHostEnabledResponse
+	(*GetBuildCapabilitiesRequest)(nil),  // 2: wendy.agent.services.v2.GetBuildCapabilitiesRequest
+	(*GetBuildCapabilitiesResponse)(nil), // 3: wendy.agent.services.v2.GetBuildCapabilitiesResponse
+	(*ChunkManifest)(nil),                // 4: wendy.agent.services.v2.ChunkManifest
+	(*DockerfileBuild)(nil),              // 5: wendy.agent.services.v2.DockerfileBuild
+	(*BuildSpec)(nil),                    // 6: wendy.agent.services.v2.BuildSpec
+	(*BuildImageRequest)(nil),            // 7: wendy.agent.services.v2.BuildImageRequest
+	(*BuildImageProgress)(nil),           // 8: wendy.agent.services.v2.BuildImageProgress
+	(*BuildImageResult)(nil),             // 9: wendy.agent.services.v2.BuildImageResult
+	nil,                                  // 10: wendy.agent.services.v2.DockerfileBuild.BuildArgsEntry
 }
 var file_wendy_agent_services_v2_build_service_proto_depIdxs = []int32{
-	8, // 0: wendy.agent.services.v2.DockerfileBuild.build_args:type_name -> wendy.agent.services.v2.DockerfileBuild.BuildArgsEntry
-	2, // 1: wendy.agent.services.v2.BuildSpec.context:type_name -> wendy.agent.services.v2.ChunkManifest
-	3, // 2: wendy.agent.services.v2.BuildSpec.dockerfile_build:type_name -> wendy.agent.services.v2.DockerfileBuild
-	4, // 3: wendy.agent.services.v2.BuildImageRequest.spec:type_name -> wendy.agent.services.v2.BuildSpec
-	7, // 4: wendy.agent.services.v2.BuildImageProgress.result:type_name -> wendy.agent.services.v2.BuildImageResult
-	0, // 5: wendy.agent.services.v2.WendyBuildService.GetBuildCapabilities:input_type -> wendy.agent.services.v2.GetBuildCapabilitiesRequest
-	5, // 6: wendy.agent.services.v2.WendyBuildService.BuildImage:input_type -> wendy.agent.services.v2.BuildImageRequest
-	1, // 7: wendy.agent.services.v2.WendyBuildService.GetBuildCapabilities:output_type -> wendy.agent.services.v2.GetBuildCapabilitiesResponse
-	6, // 8: wendy.agent.services.v2.WendyBuildService.BuildImage:output_type -> wendy.agent.services.v2.BuildImageProgress
-	7, // [7:9] is the sub-list for method output_type
-	5, // [5:7] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	10, // 0: wendy.agent.services.v2.DockerfileBuild.build_args:type_name -> wendy.agent.services.v2.DockerfileBuild.BuildArgsEntry
+	4,  // 1: wendy.agent.services.v2.BuildSpec.context:type_name -> wendy.agent.services.v2.ChunkManifest
+	5,  // 2: wendy.agent.services.v2.BuildSpec.dockerfile_build:type_name -> wendy.agent.services.v2.DockerfileBuild
+	6,  // 3: wendy.agent.services.v2.BuildImageRequest.spec:type_name -> wendy.agent.services.v2.BuildSpec
+	9,  // 4: wendy.agent.services.v2.BuildImageProgress.result:type_name -> wendy.agent.services.v2.BuildImageResult
+	2,  // 5: wendy.agent.services.v2.WendyBuildService.GetBuildCapabilities:input_type -> wendy.agent.services.v2.GetBuildCapabilitiesRequest
+	7,  // 6: wendy.agent.services.v2.WendyBuildService.BuildImage:input_type -> wendy.agent.services.v2.BuildImageRequest
+	0,  // 7: wendy.agent.services.v2.WendyBuildService.SetBuildHostEnabled:input_type -> wendy.agent.services.v2.SetBuildHostEnabledRequest
+	3,  // 8: wendy.agent.services.v2.WendyBuildService.GetBuildCapabilities:output_type -> wendy.agent.services.v2.GetBuildCapabilitiesResponse
+	8,  // 9: wendy.agent.services.v2.WendyBuildService.BuildImage:output_type -> wendy.agent.services.v2.BuildImageProgress
+	1,  // 10: wendy.agent.services.v2.WendyBuildService.SetBuildHostEnabled:output_type -> wendy.agent.services.v2.SetBuildHostEnabledResponse
+	8,  // [8:11] is the sub-list for method output_type
+	5,  // [5:8] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v2_build_service_proto_init() }
@@ -643,10 +742,10 @@ func file_wendy_agent_services_v2_build_service_proto_init() {
 	if File_wendy_agent_services_v2_build_service_proto != nil {
 		return
 	}
-	file_wendy_agent_services_v2_build_service_proto_msgTypes[4].OneofWrappers = []any{
+	file_wendy_agent_services_v2_build_service_proto_msgTypes[6].OneofWrappers = []any{
 		(*BuildSpec_DockerfileBuild)(nil),
 	}
-	file_wendy_agent_services_v2_build_service_proto_msgTypes[6].OneofWrappers = []any{
+	file_wendy_agent_services_v2_build_service_proto_msgTypes[8].OneofWrappers = []any{
 		(*BuildImageProgress_LogLine)(nil),
 		(*BuildImageProgress_Result)(nil),
 	}
@@ -656,7 +755,7 @@ func file_wendy_agent_services_v2_build_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_build_service_proto_rawDesc), len(file_wendy_agent_services_v2_build_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

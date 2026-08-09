@@ -4,7 +4,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +15,8 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -190,6 +195,101 @@ func TestBuildImage_RejectsBadPushDestinationBeforeBuilding(t *testing.T) {
 	}})
 	if status.Code(err) != codes.InvalidArgument {
 		t.Fatalf("got %v, want InvalidArgument — the destination must be validated before any build runs", err)
+	}
+}
+
+// ctxWithIdentity builds a gRPC context carrying an mTLS peer whose leaf has
+// the given wendy identity URN, mirroring how the agent sees a real caller.
+func ctxWithIdentity(t *testing.T, urn string) context.Context {
+	t.Helper()
+	uri, err := url.Parse(urn)
+	if err != nil {
+		t.Fatalf("parsing urn: %v", err)
+	}
+	leaf := &x509.Certificate{URIs: []*url.URL{uri}}
+	return peer.NewContext(context.Background(), &peer.Peer{
+		AuthInfo: credentials.TLSInfo{
+			State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}},
+		},
+	})
+}
+
+func TestSetBuildHostEnabled_UserCertMayEnable(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: dir, StateDir: t.TempDir()})
+
+	resp, err := svc.SetBuildHostEnabled(ctxWithIdentity(t, "urn:wendy:org:2:user:alice"),
+		&agentpbv2.SetBuildHostEnabledRequest{Enabled: true})
+	if err != nil {
+		t.Fatalf("SetBuildHostEnabled: %v", err)
+	}
+	if !resp.GetEnabled() {
+		t.Fatal("response must echo the state now in effect")
+	}
+	if !svc.builderEnabled() {
+		t.Fatal("the builder role must actually be on afterwards")
+	}
+}
+
+func TestSetBuildHostEnabled_TakesEffectWithoutRestart(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: dir, StateDir: t.TempDir()})
+	ctx := ctxWithIdentity(t, "urn:wendy:org:2:user:alice")
+
+	if _, err := svc.SetBuildHostEnabled(ctx, &agentpbv2.SetBuildHostEnabledRequest{Enabled: true}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	caps, err := svc.GetBuildCapabilities(ctx, &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetBuildCapabilities: %v", err)
+	}
+	if !caps.GetBuilderEnabled() {
+		t.Fatal("capabilities must reflect the new state on the very next call, with no agent restart")
+	}
+
+	if _, err := svc.SetBuildHostEnabled(ctx, &agentpbv2.SetBuildHostEnabledRequest{Enabled: false}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if svc.builderEnabled() {
+		t.Fatal("disable must take effect immediately too")
+	}
+}
+
+// The gate would be decorative if a device cert could flip it: anything able to
+// call BuildImage could simply call this first.
+func TestSetBuildHostEnabled_RefusesDeviceCert(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: dir, StateDir: t.TempDir()})
+
+	_, err := svc.SetBuildHostEnabled(ctxWithIdentity(t, "urn:wendy:org:2:asset:345"),
+		&agentpbv2.SetBuildHostEnabledRequest{Enabled: true})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v, want PermissionDenied for an asset certificate", err)
+	}
+	if svc.builderEnabled() {
+		t.Fatal("a refused call must not have enabled anything")
+	}
+}
+
+func TestSetBuildHostEnabled_RefusesNoIdentity(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: dir, StateDir: t.TempDir()})
+
+	_, err := svc.SetBuildHostEnabled(context.Background(),
+		&agentpbv2.SetBuildHostEnabledRequest{Enabled: true})
+	if status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("got %v, want PermissionDenied without mTLS", err)
+	}
+}
+
+func TestSetBuildHostEnabled_DisableIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{ConfigPath: dir, StateDir: t.TempDir()})
+	ctx := ctxWithIdentity(t, "urn:wendy:org:2:user:alice")
+
+	// Disabling something already disabled must not error.
+	if _, err := svc.SetBuildHostEnabled(ctx, &agentpbv2.SetBuildHostEnabledRequest{Enabled: false}); err != nil {
+		t.Fatalf("disabling an already-disabled host must be a no-op, got: %v", err)
 	}
 }
 

@@ -14,6 +14,29 @@ option go_package = "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2;agent
 service WendyBuildService {
   rpc GetBuildCapabilities(GetBuildCapabilitiesRequest) returns (GetBuildCapabilitiesResponse);
   rpc BuildImage(stream BuildImageRequest) returns (stream BuildImageProgress);
+
+  // SetBuildHostEnabled turns the builder role on or off, so opting a device in
+  // does not require shell access to touch a file on it.
+  //
+  // This RPC requires a *user* certificate and refuses asset (device) ones. The
+  // distinction is the whole point: a human with an org login can already
+  // deploy arbitrary containers to this device with `wendy run`, so letting
+  // them flip the builder role grants nothing they did not have. A device
+  // certificate cannot, which is the threat that matters — one compromised
+  // device in the org quietly conscripting its peers into build farms. Without
+  // that split the gate would be decorative, since anyone able to call
+  // BuildImage could simply call this first.
+  rpc SetBuildHostEnabled(SetBuildHostEnabledRequest) returns (SetBuildHostEnabledResponse);
+}
+
+message SetBuildHostEnabledRequest {
+  bool enabled = 1;
+}
+
+message SetBuildHostEnabledResponse {
+  // Echoes the state now in effect, so a caller can confirm without a second
+  // round trip.
+  bool enabled = 1;
 }
 
 message GetBuildCapabilitiesRequest {}

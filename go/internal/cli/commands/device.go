@@ -79,6 +79,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceUnpinCmd(),
+		newDeviceBuildHostCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),

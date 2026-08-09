@@ -18,9 +18,12 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/buildargs"
+	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -95,9 +98,69 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 }
 
 // builderEnabled reports whether this device has opted in to serving builds.
+// Read per call rather than cached, so SetBuildHostEnabled takes effect on the
+// next RPC without restarting the agent.
 func (s *BuildService) builderEnabled() bool {
 	_, err := os.Stat(s.buildHostEnabledPath)
 	return err == nil
+}
+
+// SetBuildHostEnabled turns the builder role on or off, so opting a device in
+// does not require shell access to place a file on it.
+//
+// It requires a USER certificate and refuses asset (device) ones. See the RPC's
+// comment in build_service.proto: without that split the opt-in gate would be
+// decorative, because anything able to call BuildImage could call this first.
+func (s *BuildService) SetBuildHostEnabled(ctx context.Context, req *agentpbv2.SetBuildHostEnabledRequest) (*agentpbv2.SetBuildHostEnabledResponse, error) {
+	if err := requireUserIdentity(ctx); err != nil {
+		return nil, err
+	}
+
+	if req.GetEnabled() {
+		if err := os.MkdirAll(filepath.Dir(s.buildHostEnabledPath), 0o755); err != nil {
+			return nil, status.Errorf(codes.Internal, "creating agent config directory: %v", err)
+		}
+		if err := os.WriteFile(s.buildHostEnabledPath, nil, 0o600); err != nil {
+			return nil, status.Errorf(codes.Internal, "enabling the builder role: %v", err)
+		}
+	} else if err := os.Remove(s.buildHostEnabledPath); err != nil && !os.IsNotExist(err) {
+		// Already-absent is success, so disabling twice is not an error.
+		return nil, status.Errorf(codes.Internal, "disabling the builder role: %v", err)
+	}
+
+	if s.logger != nil {
+		s.logger.Info("builder role changed", zap.Bool("enabled", req.GetEnabled()))
+	}
+	return &agentpbv2.SetBuildHostEnabledResponse{Enabled: req.GetEnabled()}, nil
+}
+
+// requireUserIdentity admits only a caller presenting a wendy USER certificate.
+// Mirrors MeshService.assetIdentityFromContext, which makes the opposite
+// demand: mesh dials are device-to-device, this is human-to-device.
+//
+// Org equality is deliberately left to the server's mTLS interceptors here.
+// Unlike MeshDial — which must reject cross-org callers even when
+// WENDY_MTLS_ORG_ENFORCEMENT is off — this device has no independent notion of
+// which org "owns" it beyond the certificate chain that already admitted the
+// connection.
+func requireUserIdentity(ctx context.Context) error {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return status.Error(codes.PermissionDenied, "changing the builder role requires mTLS")
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok || len(tlsInfo.State.PeerCertificates) == 0 {
+		return status.Error(codes.PermissionDenied, "changing the builder role requires a client certificate")
+	}
+	ident, found, err := certs.IdentityFromCert(tlsInfo.State.PeerCertificates[0])
+	if err != nil || !found {
+		return status.Error(codes.PermissionDenied, "client certificate carries no wendy identity")
+	}
+	if ident.EntityType != "user" {
+		return status.Error(codes.PermissionDenied,
+			"changing the builder role requires a user certificate; a device certificate cannot opt this host in")
+	}
+	return nil
 }
 
 func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetBuildCapabilitiesRequest) (*agentpbv2.GetBuildCapabilitiesResponse, error) {

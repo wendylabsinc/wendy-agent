@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	WendyBuildService_GetBuildCapabilities_FullMethodName = "/wendy.agent.services.v2.WendyBuildService/GetBuildCapabilities"
 	WendyBuildService_BuildImage_FullMethodName           = "/wendy.agent.services.v2.WendyBuildService/BuildImage"
+	WendyBuildService_SetBuildHostEnabled_FullMethodName  = "/wendy.agent.services.v2.WendyBuildService/SetBuildHostEnabled"
 )
 
 // WendyBuildServiceClient is the client API for WendyBuildService service.
@@ -37,6 +38,18 @@ const (
 type WendyBuildServiceClient interface {
 	GetBuildCapabilities(ctx context.Context, in *GetBuildCapabilitiesRequest, opts ...grpc.CallOption) (*GetBuildCapabilitiesResponse, error)
 	BuildImage(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[BuildImageRequest, BuildImageProgress], error)
+	// SetBuildHostEnabled turns the builder role on or off, so opting a device in
+	// does not require shell access to touch a file on it.
+	//
+	// This RPC requires a *user* certificate and refuses asset (device) ones. The
+	// distinction is the whole point: a human with an org login can already
+	// deploy arbitrary containers to this device with `wendy run`, so letting
+	// them flip the builder role grants nothing they did not have. A device
+	// certificate cannot, which is the threat that matters — one compromised
+	// device in the org quietly conscripting its peers into build farms. Without
+	// that split the gate would be decorative, since anyone able to call
+	// BuildImage could simply call this first.
+	SetBuildHostEnabled(ctx context.Context, in *SetBuildHostEnabledRequest, opts ...grpc.CallOption) (*SetBuildHostEnabledResponse, error)
 }
 
 type wendyBuildServiceClient struct {
@@ -70,6 +83,16 @@ func (c *wendyBuildServiceClient) BuildImage(ctx context.Context, opts ...grpc.C
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyBuildService_BuildImageClient = grpc.BidiStreamingClient[BuildImageRequest, BuildImageProgress]
 
+func (c *wendyBuildServiceClient) SetBuildHostEnabled(ctx context.Context, in *SetBuildHostEnabledRequest, opts ...grpc.CallOption) (*SetBuildHostEnabledResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetBuildHostEnabledResponse)
+	err := c.cc.Invoke(ctx, WendyBuildService_SetBuildHostEnabled_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WendyBuildServiceServer is the server API for WendyBuildService service.
 // All implementations must embed UnimplementedWendyBuildServiceServer
 // for forward compatibility.
@@ -84,6 +107,18 @@ type WendyBuildService_BuildImageClient = grpc.BidiStreamingClient[BuildImageReq
 type WendyBuildServiceServer interface {
 	GetBuildCapabilities(context.Context, *GetBuildCapabilitiesRequest) (*GetBuildCapabilitiesResponse, error)
 	BuildImage(grpc.BidiStreamingServer[BuildImageRequest, BuildImageProgress]) error
+	// SetBuildHostEnabled turns the builder role on or off, so opting a device in
+	// does not require shell access to touch a file on it.
+	//
+	// This RPC requires a *user* certificate and refuses asset (device) ones. The
+	// distinction is the whole point: a human with an org login can already
+	// deploy arbitrary containers to this device with `wendy run`, so letting
+	// them flip the builder role grants nothing they did not have. A device
+	// certificate cannot, which is the threat that matters — one compromised
+	// device in the org quietly conscripting its peers into build farms. Without
+	// that split the gate would be decorative, since anyone able to call
+	// BuildImage could simply call this first.
+	SetBuildHostEnabled(context.Context, *SetBuildHostEnabledRequest) (*SetBuildHostEnabledResponse, error)
 	mustEmbedUnimplementedWendyBuildServiceServer()
 }
 
@@ -99,6 +134,9 @@ func (UnimplementedWendyBuildServiceServer) GetBuildCapabilities(context.Context
 }
 func (UnimplementedWendyBuildServiceServer) BuildImage(grpc.BidiStreamingServer[BuildImageRequest, BuildImageProgress]) error {
 	return status.Error(codes.Unimplemented, "method BuildImage not implemented")
+}
+func (UnimplementedWendyBuildServiceServer) SetBuildHostEnabled(context.Context, *SetBuildHostEnabledRequest) (*SetBuildHostEnabledResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetBuildHostEnabled not implemented")
 }
 func (UnimplementedWendyBuildServiceServer) mustEmbedUnimplementedWendyBuildServiceServer() {}
 func (UnimplementedWendyBuildServiceServer) testEmbeddedByValue()                           {}
@@ -146,6 +184,24 @@ func _WendyBuildService_BuildImage_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyBuildService_BuildImageServer = grpc.BidiStreamingServer[BuildImageRequest, BuildImageProgress]
 
+func _WendyBuildService_SetBuildHostEnabled_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetBuildHostEnabledRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WendyBuildServiceServer).SetBuildHostEnabled(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WendyBuildService_SetBuildHostEnabled_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WendyBuildServiceServer).SetBuildHostEnabled(ctx, req.(*SetBuildHostEnabledRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WendyBuildService_ServiceDesc is the grpc.ServiceDesc for WendyBuildService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -156,6 +212,10 @@ var WendyBuildService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetBuildCapabilities",
 			Handler:    _WendyBuildService_GetBuildCapabilities_Handler,
+		},
+		{
+			MethodName: "SetBuildHostEnabled",
+			Handler:    _WendyBuildService_SetBuildHostEnabled_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
