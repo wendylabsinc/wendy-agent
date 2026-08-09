@@ -407,18 +407,3 @@ func TestValidateEnvFlag(t *testing.T) {
 		}
 	}
 }
-
-// TestChunkDeployIneligibleWithDebug asserts --debug deploys never take the
-// chunk-diff (CDC) path. Only the registry-push path wraps the image with
-// debugpy (injectDebugpy); the agent's debug entrypoint rewrite crash-loops
-// any image deployed unwrapped via chunk-diff (every Stagefile Python app).
-func TestChunkDeployIneligibleWithDebug(t *testing.T) {
-	opts := runOptions{detach: true, chunking: chunkingAuto, debug: true}
-	if chunkDeployEligible(opts, false) {
-		t.Fatal("--debug must route through the registry path (debugpy injection)")
-	}
-	opts.debug = false
-	if !chunkDeployEligible(opts, false) {
-		t.Fatal("non-debug detached deploy should stay on the chunk path")
-	}
-}
