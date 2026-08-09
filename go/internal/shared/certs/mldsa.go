@@ -46,6 +46,27 @@ func (e *OrgMismatchError) Error() string {
 	return fmt.Sprintf("server certificate belongs to org %d, expected org %d", e.Got, e.Want)
 }
 
+// IdentityMismatchError is returned by the VerifyConnection callback when the
+// server certificate does not carry the exact asset identity the caller
+// required via ServerVerifyOpts.ExpectedIdentity. Unlike OrgMismatchError this
+// is never subject to grace mode: a certificate with no Wendy identity is a
+// mismatch, because the caller asked for a specific device and got something
+// that cannot prove it is that device.
+type IdentityMismatchError struct {
+	WantOrg   int32
+	WantAsset string
+	GotOrg    int32  // 0 when the certificate carried no Wendy identity
+	GotAsset  string // "" when the certificate carried no Wendy asset identity
+}
+
+func (e *IdentityMismatchError) Error() string {
+	if e.GotAsset == "" {
+		return fmt.Sprintf("device presented no wendy asset identity, expected asset %s in org %d", e.WantAsset, e.WantOrg)
+	}
+	return fmt.Sprintf("device presented asset %s in org %d, expected asset %s in org %d",
+		e.GotAsset, e.GotOrg, e.WantAsset, e.WantOrg)
+}
+
 // PinChecker is satisfied by *devicepin.Store. Defined here as an interface
 // so shared/certs does not import shared/devicepin (which would be circular).
 type PinChecker interface {
@@ -58,6 +79,16 @@ type ServerVerifyOpts struct {
 	ChainPEM      string     // required: PEM-encoded CA chain for ML-DSA-aware chain verification
 	ExpectedOrgID int32      // 0 = accept any org (still extracted for pinning key)
 	PinStore      PinChecker // nil = skip pinning
+	// ExpectedIdentity, when non-nil, requires the server leaf to carry an
+	// "asset" Wendy identity whose org and entity id match it exactly. This is
+	// the CLI-side counterpart of agent/mtls.NewClientTLSConfigExpectingPeer:
+	// chain validity alone only proves the peer holds a cert from a trusted CA,
+	// not that it is the device the caller asked for, so any other same-CA cert
+	// could otherwise answer at an mDNS-advertised address.
+	//
+	// Grace mode does not apply when this is set — a cert with no Wendy
+	// identity is a mismatch, not a legacy device to be tolerated.
+	ExpectedIdentity *WendyIdentity
 	// OnServerIdentity, when non-nil, is called with the server leaf's Wendy
 	// identity BEFORE chain verification and the org-mismatch check — so the
 	// observed org is captured on every outcome (success, chain-verify failure,
@@ -235,6 +266,27 @@ func BuildServerVerifyConnection(opts ServerVerifyOpts) (func(tls.ConnectionStat
 		// OrgModeGrace behaviour in interceptor/mtls.go.
 		if hasIdentity && opts.ExpectedOrgID != 0 && identity.OrgID != opts.ExpectedOrgID {
 			return &OrgMismatchError{Want: opts.ExpectedOrgID, Got: identity.OrgID}
+		}
+
+		// Step 2b: exact device identity check. Deliberately after the org check
+		// so a cross-org impostor still reports OrgMismatchError, whose remedy
+		// (fetch that org's cert) differs from this one's (wrong device).
+		if opts.ExpectedIdentity != nil {
+			if !hasIdentity || identity.EntityType != "asset" {
+				return &IdentityMismatchError{
+					WantOrg:   opts.ExpectedIdentity.OrgID,
+					WantAsset: opts.ExpectedIdentity.EntityID,
+					GotOrg:    identity.OrgID,
+				}
+			}
+			if identity.OrgID != opts.ExpectedIdentity.OrgID || identity.EntityID != opts.ExpectedIdentity.EntityID {
+				return &IdentityMismatchError{
+					WantOrg:   opts.ExpectedIdentity.OrgID,
+					WantAsset: opts.ExpectedIdentity.EntityID,
+					GotOrg:    identity.OrgID,
+					GotAsset:  identity.EntityID,
+				}
+			}
 		}
 
 		// Step 3: SPKI pin check/update.

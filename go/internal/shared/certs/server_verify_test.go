@@ -325,3 +325,70 @@ func TestBuildServerVerifyConnection_OnServerIdentitySilentWhenNoIdentity(t *tes
 		t.Errorf("OnServerIdentity calls = %d, want 0 (no Wendy identity in cert)", calls)
 	}
 }
+
+func TestBuildServerVerifyConnection_ExpectedIdentity(t *testing.T) {
+	want := certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"}
+
+	cases := []struct {
+		name        string
+		sanURI      string
+		wantErr     bool
+		wantGotAsst string
+	}{
+		{name: "exact match", sanURI: "urn:wendy:org:7:asset:42"},
+		{name: "different asset, same org", sanURI: "urn:wendy:org:7:asset:43", wantErr: true, wantGotAsst: "43"},
+		{name: "same asset, different org", sanURI: "urn:wendy:org:9:asset:42", wantErr: true, wantGotAsst: "42"},
+		{name: "user URN is not an asset", sanURI: "urn:wendy:org:7:user:42", wantErr: true},
+		{name: "no wendy identity at all", sanURI: "", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serverCert, chainPEM := selfSignedCert(t, "device", tc.sanURI)
+			expected := want
+			verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+				ChainPEM:         string(chainPEM),
+				ExpectedIdentity: &expected,
+			})
+			if err != nil {
+				t.Fatalf("BuildServerVerifyConnection: %v", err)
+			}
+
+			err = verifyConn(tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}})
+
+			var mismatch *certs.IdentityMismatchError
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("want accepted, got %v", err)
+				}
+				return
+			}
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("want IdentityMismatchError, got %v", err)
+			}
+			if mismatch.WantOrg != 7 || mismatch.WantAsset != "42" {
+				t.Errorf("want side = org %d asset %q, want org 7 asset \"42\"", mismatch.WantOrg, mismatch.WantAsset)
+			}
+			if mismatch.GotAsset != tc.wantGotAsst {
+				t.Errorf("GotAsset = %q, want %q", mismatch.GotAsset, tc.wantGotAsst)
+			}
+		})
+	}
+}
+
+// TestBuildServerVerifyConnection_ExpectedIdentityNil locks in that
+// the new field is opt-in: with it unset, a no-URN cert still passes (grace
+// mode), which is what keeps unpinned legacy devices working.
+func TestBuildServerVerifyConnection_ExpectedIdentityNil(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "")
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      string(chainPEM),
+		ExpectedOrgID: 7,
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+	if err := verifyConn(tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}); err != nil {
+		t.Fatalf("grace mode should accept a no-URN cert, got %v", err)
+	}
+}
