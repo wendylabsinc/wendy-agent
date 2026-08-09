@@ -336,6 +336,9 @@ message HostStats {
     // Every readable thermal sensor on the device (CPU, GPU, SoC, junction, …),
     // from /sys/class/thermal. Empty when no zones are readable.
     repeated ThermalZone thermal_zones = 7;
+    // Aggregate system-battery state, from /sys/class/power_supply. Absent on
+    // mains-powered devices, which is the overwhelming majority of them.
+    optional BatteryStats battery = 8;
 }
 
 // ThermalZone is one temperature sensor read from /sys/class/thermal.
