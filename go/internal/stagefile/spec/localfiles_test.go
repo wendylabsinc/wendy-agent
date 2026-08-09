@@ -44,7 +44,7 @@ func TestInstallLocalFilesClassifiesEveryField(t *testing.T) {
 		"Apt": false, "Apk": false, "CMake": false,
 	}
 	ty := reflect.TypeOf(Install{})
-	for i := range ty.NumField() {
+	for i := 0; i < ty.NumField(); i++ {
 		name := ty.Field(i).Name
 		if _, ok := readsContext[name]; !ok {
 			t.Fatalf("Install.%s is unclassified: add it to LocalFiles if it reads "+
