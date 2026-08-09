@@ -50,6 +50,14 @@ func resolveBuildHostName(flagValue string) (string, error) {
 	return loadBuildHostDefault()
 }
 
+// errBuildHostOnBuildCmd is returned by `wendy build --build-host`. Only
+// `wendy run` can delegate a build: the remote path's whole delivery step is a
+// push into the TARGET device's registry, and `wendy build` has no target. A
+// remote `wendy build` would leave the image on the build host and nowhere the
+// developer asked for, so the flag is refused rather than half-honoured.
+var errBuildHostOnBuildCmd = errors.New(
+	"--build-host is supported by `wendy run`, not `wendy build`: a remote build delivers the image to the target device, and `wendy build` has no target; use `wendy run --build-host` instead")
+
 // validateBuildHostFlags rejects flag combinations where both values cannot be
 // honoured, so the conflict surfaces before a build rather than as a silently
 // ignored flag.

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"io"
 	"os/exec"
 	"strings"
 	"testing"
@@ -11,6 +12,23 @@ import (
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
+
+// `wendy build` never reaches runRemoteBuild, so accepting --build-host there
+// would build locally while the developer believed the Spark was doing it.
+func TestBuildCmd_RefusesBuildHostRatherThanIgnoringIt(t *testing.T) {
+	cmd := newBuildCmd()
+	cmd.SetArgs([]string{"--build-host", "spark-office"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	if !errors.Is(err, errBuildHostOnBuildCmd) {
+		t.Fatalf("got %v, want the build-host-unsupported error; a silently ignored flag builds on the wrong machine", err)
+	}
+	if !strings.Contains(err.Error(), "wendy run") {
+		t.Fatalf("the refusal must point at the command that does support it, got: %v", err)
+	}
+}
 
 func TestCheckBuildHostCapabilities_NotOptedIn(t *testing.T) {
 	err := checkBuildHostCapabilities("spark-office", &agentpbv2.GetBuildCapabilitiesResponse{

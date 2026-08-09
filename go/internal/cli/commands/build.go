@@ -64,6 +64,12 @@ func newBuildCmd() *cobra.Command {
 			if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
 				return err
 			}
+			// Refused rather than ignored: `wendy build` never reaches
+			// runRemoteBuild, so accepting the flag would build locally while the
+			// developer believed the Spark was doing it.
+			if strings.TrimSpace(opts.buildHost) != "" {
+				return errBuildHostOnBuildCmd
+			}
 			// --dockerfile implies a Docker build; prevent the provider from
 			// auto-selecting a Compose file when both markers are present.
 			if opts.dockerfile != "" && opts.buildType == "" {
