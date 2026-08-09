@@ -104,6 +104,16 @@ func (s *Store) CheckAndUpdate(leaf *x509.Certificate, displayName string) error
 	return s.flush()
 }
 
+// Remove drops the pin for an identity key, so the next connection is a first
+// use. Removing an absent key is not an error.
+func (s *Store) Remove(key string) error {
+	if _, ok := s.devices[key]; !ok {
+		return nil
+	}
+	delete(s.devices, key)
+	return s.flush()
+}
+
 func (s *Store) flush() error {
 	data, err := json.MarshalIndent(s.devices, "", "  ")
 	if err != nil {
