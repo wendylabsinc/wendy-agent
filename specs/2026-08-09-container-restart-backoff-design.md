@@ -91,9 +91,16 @@ crash is unaffected. Cumulative time to reach the ceiling is ~310s. Restarts in
 the first hour of a permanent failure drop from ~360 to ~17.
 
 `BackoffLevel` stops incrementing once `restartDelay(level) >= restartBackoffCap`,
-so the shift cannot overflow no matter how long a container loops. `restartDelay`
-additionally guards its shift against large inputs rather than relying solely on
-the caller clamping.
+so it cannot run away no matter how long a container loops.
+
+`restartDelay` does not rely on that clamp for safety. It doubles by repeated
+multiplication with an early exit at the cap rather than computing
+`base << (level-1)`: a shift of 64 or more silently yields 0 on a 64-bit int,
+which would hand back a zero delay and restore the exact unthrottled every-tick
+restart this change exists to prevent. The loop exits within a handful of
+iterations because it returns as soon as the cap is reached, so even
+`math.MaxInt32` is cheap. This is covered by
+`TestRestartDelay_LargeLevelStaysAtCap`.
 
 ### Gate and reset in `planRestarts`
 
