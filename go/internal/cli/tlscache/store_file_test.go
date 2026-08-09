@@ -9,28 +9,34 @@ import (
 
 func TestFileStoreRoundTrip(t *testing.T) {
 	s := &fileStore{dir: filepath.Join(t.TempDir(), "tls-sessions")}
-	if got := s.get("k1"); got != nil {
-		t.Fatalf("get on empty store = %q, want nil", got)
+	if got := s.Get("k1"); got != nil {
+		t.Fatalf("Get on empty store = %q, want nil", got)
 	}
-	s.put("k1", []byte("blob-1"))
-	if got := string(s.get("k1")); got != "blob-1" {
-		t.Fatalf("get after put = %q, want blob-1", got)
+	if err := s.Put("k1", []byte("blob-1")); err != nil {
+		t.Fatalf("Put: %v", err)
 	}
-	s.put("k1", []byte("blob-2")) // overwrite
-	if got := string(s.get("k1")); got != "blob-2" {
-		t.Fatalf("get after overwrite = %q, want blob-2", got)
+	if got := string(s.Get("k1")); got != "blob-1" {
+		t.Fatalf("Get after Put = %q, want blob-1", got)
 	}
-	s.delete("k1")
-	if got := s.get("k1"); got != nil {
-		t.Fatalf("get after delete = %q, want nil", got)
+	if err := s.Put("k1", []byte("blob-2")); err != nil { // overwrite
+		t.Fatalf("Put overwrite: %v", err)
 	}
-	s.delete("k1") // deleting a missing key must not panic
+	if got := string(s.Get("k1")); got != "blob-2" {
+		t.Fatalf("Get after overwrite = %q, want blob-2", got)
+	}
+	s.Delete("k1")
+	if got := s.Get("k1"); got != nil {
+		t.Fatalf("Get after Delete = %q, want nil", got)
+	}
+	s.Delete("k1") // deleting a missing key must not panic
 }
 
 func TestFileStorePermissions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tls-sessions")
 	s := &fileStore{dir: dir}
-	s.put("k1", []byte("secret"))
+	if err := s.Put("k1", []byte("secret")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 
 	di, err := os.Stat(dir)
 	if err != nil {
@@ -51,17 +57,21 @@ func TestFileStorePermissions(t *testing.T) {
 func TestFileStorePrunesOldSessions(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tls-sessions")
 	s := &fileStore{dir: dir}
-	s.put("old", []byte("stale"))
+	if err := s.Put("old", []byte("stale")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	oldPath := filepath.Join(dir, "old.tlssession")
 	past := time.Now().Add(-sessionFileMaxAge - time.Hour)
 	if err := os.Chtimes(oldPath, past, past); err != nil {
 		t.Fatalf("chtimes: %v", err)
 	}
-	s.put("fresh", []byte("new")) // put triggers pruning
+	if err := s.Put("fresh", []byte("new")); err != nil { // Put triggers pruning
+		t.Fatalf("Put: %v", err)
+	}
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Errorf("expected old session pruned, stat err = %v", err)
 	}
-	if got := string(s.get("fresh")); got != "new" {
+	if got := string(s.Get("fresh")); got != "new" {
 		t.Errorf("fresh session lost by pruning: %q", got)
 	}
 }
@@ -69,7 +79,9 @@ func TestFileStorePrunesOldSessions(t *testing.T) {
 func TestFileStoreNoTempFileLeftovers(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "tls-sessions")
 	s := &fileStore{dir: dir}
-	s.put("k1", []byte("blob"))
+	if err := s.Put("k1", []byte("blob")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("readdir: %v", err)

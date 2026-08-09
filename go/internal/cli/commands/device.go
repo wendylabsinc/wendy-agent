@@ -819,10 +819,14 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 
 	var cloudTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {
@@ -838,7 +842,10 @@ func runEnrollDevice(ctx context.Context, conn *grpcclient.AgentConnection, auth
 	}
 	defer cloudConn.Close()
 
-	tokenCtx := cloudContext(ctx, auth)
+	tokenCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
 
 	var org OrgResolution
 	if orgOverride != 0 {
@@ -1015,10 +1022,14 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, keyErr := cert.PrivateKeyPEM()
+		if keyErr != nil {
+			return nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+		}
 		tlsCfg, tlsErr := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if tlsErr != nil {
@@ -1033,7 +1044,12 @@ func dialCloud(ctx context.Context, target, deviceCloudHost string) (*grpc.Clien
 	if dialErr != nil {
 		return nil, nil, fmt.Errorf("connecting to cloud: %w", dialErr)
 	}
-	return cloudConn, cloudContext(ctx, auth), nil
+	cloudCtx, ctxErr := cloudContext(ctx, auth)
+	if ctxErr != nil {
+		cloudConn.Close()
+		return nil, nil, ctxErr
+	}
+	return cloudConn, cloudCtx, nil
 }
 
 func cloudUnenrollCleanup(ctx context.Context, cloudGRPC, deviceCloudHost string, assetID int32) (certsRevoked int, assetDeleted bool, err error) {

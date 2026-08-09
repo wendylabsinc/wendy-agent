@@ -546,7 +546,11 @@ func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onli
 			req.OnlineOnly = boolPtr(true)
 		}
 
-		stream, err := assetClient.ListAssets(cloudContext(ctx, auth), req)
+		cloudCtx, err := cloudContext(ctx, auth)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := assetClient.ListAssets(cloudCtx, req)
 		if err != nil {
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}

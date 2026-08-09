@@ -419,10 +419,19 @@ func newAuthLogoutCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
+			// Drop the references and save FIRST, then delete the Keychain
+			// items they pointed at. A failed Save here leaves config.json
+			// and the Keychain items both untouched, so a retry (or a
+			// manual fix) can still recover; deleting the items first would
+			// instead risk leaving config.json referencing Keychain items
+			// that no longer exist, breaking every command until the user
+			// re-logs in.
+			entries := cfg.Auth
 			cfg.Auth = nil
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+			config.DeleteStoredSecrets(&config.Config{Auth: entries})
 
 			fmt.Println(tui.SuccessMessage("Logged out. All authentication credentials removed."))
 			return nil
@@ -594,10 +603,14 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	// Connect to cloud using existing mTLS credentials.
 	var refreshTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		existingKeyPEM, err := existingCert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading existing client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			existingCert.PemCertificate,
 			existingCert.PemCertificateChain,
-			existingCert.PemPrivateKey,
+			existingKeyPEM,
 			"",
 		)
 		if err != nil {
@@ -615,8 +628,13 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 
 	certClient := cloudpb.NewCertificateServiceClient(certConn)
 
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
+
 	// Use RefreshCertificate RPC.
-	refreshResp, err := certClient.RefreshCertificate(cloudContext(ctx, auth), &cloudpb.RefreshCertificateRequest{
+	refreshResp, err := certClient.RefreshCertificate(cloudCtx, &cloudpb.RefreshCertificateRequest{
 		PemCsr: csrPEM,
 	})
 	if err != nil {
