@@ -291,6 +291,70 @@ func (e provisionedAgentUnauthorizedError) Error() string {
 	return msg
 }
 
+// agentNotListeningError reports that the mTLS port refused the TCP connection:
+// the host answered, but no wendy-agent was bound to the port.
+//
+// This is deliberately NOT a provisionedAgentUnauthorizedError. The two arrive
+// at the same place — every mTLS rung failed, the plaintext probe failed, and
+// mDNS still advertises an mTLS agent — but a refused connection carries no
+// authentication verdict at all: the agent never got far enough to look at our
+// certificate. Reporting it as "Unauthorized. Run 'wendy auth login'" sends the
+// user to re-authenticate credentials that were never in question, and the most
+// common way to hit it is the few-second window after `wendy device update`
+// restarts the very agent we are dialling.
+type agentNotListeningError struct {
+	addr  string // mTLS address that refused, "" when the cause did not name one
+	cause error
+}
+
+func (e agentNotListeningError) Error() string {
+	where := "the device's mTLS port"
+	if e.addr != "" {
+		where = e.addr
+	}
+	// Deliberately free of the raw "rpc error: code = ..." text. formatError in
+	// cmd/wendy rewrites everything from that marker onwards into "Could not
+	// connect to device. Is it powered on and connected to the network?", which
+	// contradicts this diagnosis — the device answered, its agent just isn't
+	// bound. The cause stays reachable through Unwrap for callers and for
+	// WENDY_TLS_DEBUG=1, which already logs every rung verbatim.
+	return fmt.Sprintf(
+		"No wendy-agent is listening on %s (connection refused).\n"+
+			"The device advertises an mTLS agent, so this is not an authentication problem — the agent is most likely restarting, which is expected for a few seconds after 'wendy device update'. Retry shortly.\n"+
+			"If it persists, check the agent on the device: ssh wendy@<host> 'systemctl status wendy-agent'\n"+
+			"For full TLS details rerun with WENDY_TLS_DEBUG=1",
+		where)
+}
+
+func (e agentNotListeningError) Unwrap() error { return e.cause }
+
+// isConnectionRefusedError reports whether an mTLS failure is a refused TCP
+// connection. Matched on the message rather than errors.Is(syscall.ECONNREFUSED)
+// because gRPC flattens the dial error into a status description long before it
+// reaches us, which is also why every sibling predicate here
+// (isCertRefreshableError, isReachabilityTimeoutError) matches on text.
+func isConnectionRefusedError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "connection refused")
+}
+
+// provisionedAgentConnectError picks the error for "a provisioned, mTLS-only
+// agent would not talk to us": a refused mTLS port means the agent is down, and
+// anything else (cert rejection, timeout, no certs at all) means we were not
+// authorized. mtlsErr is the dial ladder's last mTLS error and is nil when the
+// CLI holds no certificates — the original "you are not logged in" case, which
+// correctly falls through to the unauthorized error.
+func provisionedAgentConnectError(mtlsErr error) error {
+	if isConnectionRefusedError(mtlsErr) {
+		var attempt mtlsAttemptError
+		addr := ""
+		if errors.As(mtlsErr, &attempt) {
+			addr = attempt.addr
+		}
+		return agentNotListeningError{addr: addr, cause: mtlsErr}
+	}
+	return newProvisionedAgentUnauthorizedError(mtlsErr)
+}
+
 // isReachabilityTimeoutError reports whether an error is a connection timeout
 // against an mTLS-enrolled device's plaintext port. This indicates the device
 // is up and enrolled (only the mTLS port is open), which may mean the CLI is
@@ -975,7 +1039,7 @@ func connectAgentAtAddressWithProvisionedHint(ctx context.Context, addr string, 
 			// unprovisioned device apart from a provisioned one rejecting
 			// plaintext, rather than launching a second, later browse.
 			if provisionedMTLS() {
-				return nil, newProvisionedAgentUnauthorizedError(mtlsErr)
+				return nil, provisionedAgentConnectError(mtlsErr)
 			}
 			return nil, probeErr
 		}
@@ -1877,6 +1941,20 @@ func cacheHostnameForStorage(host string) string {
 	return host
 }
 
+// mtlsAttemptError tags a failed mTLS rung with the address it was dialled at.
+// It renders exactly as the "<addr>: <err>" wrapping it replaces, so the
+// diagnostics that quote the last mTLS error are unchanged; the point is that
+// the address survives as data, letting provisionedAgentConnectError name the
+// port that refused instead of re-parsing it out of the message.
+type mtlsAttemptError struct {
+	addr string
+	err  error
+}
+
+func (e mtlsAttemptError) Error() string { return e.addr + ": " + e.err.Error() }
+
+func (e mtlsAttemptError) Unwrap() error { return e.err }
+
 // dialAgentLadder tries every stored org cert's mTLS connection in turn
 // (plaintextAddr's port, then port+1 — see the mtlsAddrs comment below),
 // falling back to a plaintext connection when none succeed. addr must already
@@ -1896,7 +1974,7 @@ func dialAgentLadderWithCerts(ctx context.Context, target dialTarget, allCerts [
 	var lastMTLSErr error
 	recordMTLSErr := func(addr string, err error) {
 		if err != nil {
-			lastMTLSErr = fmt.Errorf("%s: %w", addr, err)
+			lastMTLSErr = mtlsAttemptError{addr: addr, err: err}
 		}
 	}
 	if len(allCerts) > 0 {
