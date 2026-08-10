@@ -41,6 +41,18 @@ on:
 permissions:
   contents: read
 
+# These runners authenticate from a config.json that lives on the machine, so
+# the CLI must never move those credentials somewhere the machine cannot read
+# back. On macOS the default store is the login Keychain, readable only while
+# it is unlocked — an interactive act no CI job can perform. Pinning the file
+# store keeps credentials in config.json and, from the CLI version that added
+# RestoreSecretsIfNeeded onward, pulls already-migrated ones back inline on the
+# first run that can read them. Without this the runner's only client key sat
+# in a locked keychain and every mTLS call failed "Unauthorized", which blocked
+# every release.
+env:
+  WENDY_SECRET_STORE: file
+
 jobs:
   discover:
     name: Discover (${{ matrix.runner.name }})
@@ -304,6 +316,32 @@ jobs:
           fi
           echo "docker_ready=$DOCKER_READY" >> "$GITHUB_OUTPUT"
 
+      # Says why a credential read would fail. The CLI cannot tell these apart:
+      # security(1) answers "locked", "no such item" and "user interaction is
+      # not allowed" with the same miss, so a run that fails "Unauthorized"
+      # leaves no way to choose between unlocking the keychain and logging in
+      # again — which is what made the outage this guards against hard to read
+      # from the logs. Reports state only; prints no secret material, unlocks
+      # nothing (that needs a password no CI job should hold), and never fails
+      # the job.
+      - name: Report macOS Keychain state
+        if: steps.prepare-docker.outputs.docker_ready == 'true'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          KEYCHAIN="$(security default-keychain -d user 2>/dev/null | tr -d ' "')"
+          echo "default keychain: ${KEYCHAIN:-<none>}"
+          if [ -z "$KEYCHAIN" ]; then
+            echo "::warning::no default keychain for this user"
+            exit 0
+          fi
+          if security show-keychain-info "$KEYCHAIN" 2>&1; then
+            echo "keychain state: unlocked"
+          else
+            echo "keychain state: locked or unreadable"
+            echo "::warning::The login keychain is locked. Any wendy credential migrated into it is unreadable from this job, and mTLS will fail Unauthorized. Recover on the runner with 'WENDY_SECRET_STORE=file wendy auth login', which puts credentials back in config.json where CI can read them."
+          fi
+
       - name: Run integration tests
         if: steps.prepare-docker.outputs.docker_ready == 'true'
         run: |
@@ -364,6 +402,11 @@ jobs:
           HOSTNAME="$1"; shift
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
           export DOCKER_HOST="$DOCKER_HOST_VALUE"
+          # ssh forwards no environment, so the workflow-level setting does not
+          # reach the shell that actually runs the CLI. Restating it here is
+          # what keeps the tests off the Keychain; a constant, so the quoted
+          # heredoc leaving it unexpanded is correct.
+          export WENDY_SECRET_STORE=file
           export WENDY_BUILDX_BUILDER="$BUILDER"
           cd "$WORKDIR"
           exec go/scripts/test-ci.sh "$@" -h "$HOSTNAME"

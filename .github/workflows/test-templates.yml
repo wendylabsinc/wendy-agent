@@ -52,6 +52,12 @@ on:
 permissions:
   contents: read
 
+# The deploy job authenticates from the runner's own config.json, and the
+# macOS default secret store is a login Keychain no CI job can unlock. See
+# integration-tests.yml for what that cost.
+env:
+  WENDY_SECRET_STORE: file
+
 concurrency:
   group: template-tests-${{ github.ref }}
   cancel-in-progress: false
@@ -180,6 +186,9 @@ jobs:
           set -euo pipefail
           WORKDIR="$1"
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+          # ssh forwards no environment, so the workflow-level setting does not
+          # reach this shell. A constant, so the quoted heredoc is correct.
+          export WENDY_SECRET_STORE=file
           cd "$WORKDIR"
           ./go/bin/wendy discover --json --type lan --timeout 10s
           REMOTE

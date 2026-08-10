@@ -56,6 +56,22 @@ func useFakeStore(t *testing.T, s *fakeStore) {
 	})
 }
 
+// useKeychainDefault puts the process in the state dehydration requires: a
+// platform with a store, and a session someone could answer a Keychain prompt
+// from. `go test` has neither a terminal nor (in CI) an unset CI variable, so
+// pinning both is what keeps these tests exercising the dehydration path
+// rather than silently taking the inline branch.
+func useKeychainDefault(t *testing.T) {
+	t.Helper()
+	origDefault, origInteractive := secretsPlatformDefault, interactiveSession
+	secretsPlatformDefault = true
+	interactiveSession = func() bool { return true }
+	t.Cleanup(func() {
+		secretsPlatformDefault = origDefault
+		interactiveSession = origInteractive
+	})
+}
+
 func TestAccessorsInlineValues(t *testing.T) {
 	useFakeStore(t, newFakeStore())
 	c := CertificateInfo{PemPrivateKey: "-----BEGIN PRIVATE KEY-----\nabc"}
@@ -190,9 +206,7 @@ func TestSaveDehydratesAndLoadResolves(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{{
 		CloudGRPC: "grpc.wendy.com:443",
@@ -250,9 +264,7 @@ func TestSavePutFailureKeepsSecretInline(t *testing.T) {
 	store := newFakeStore()
 	store.putErr = errors.New("keychain locked")
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok-123"}}}
 	if err := Save(cfg); err != nil {
@@ -269,9 +281,7 @@ func TestSaveFileModeSkipsAndDeMigrates(t *testing.T) {
 	store := newFakeStore()
 	store.m["token-cafebabe0000dead"] = []byte("tok-999") // seeded ref target
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	cfg := &Config{Auth: []AuthConfig{{
@@ -296,9 +306,7 @@ func TestSaveFileModeSkipsAndDeMigrates(t *testing.T) {
 func TestSaveFileModeKeepsRefOnFailedRead(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	useFakeStore(t, newFakeStore()) // empty store → ref unresolvable
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	ref := refPrefixV1 + "token-0123456789abcdef"
@@ -324,9 +332,7 @@ func TestSaveTokenAccountPerOrgOnSharedEndpoint(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{
 		{
@@ -383,9 +389,7 @@ func TestSaveTokenAccountPerDashboardOnSharedEndpoint(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{
 		{
@@ -440,9 +444,7 @@ func TestSaveKeyAccountPerAssetOnEmptyUserID(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{
 		{
@@ -510,9 +512,7 @@ func TestMigrateSecretsIfNeeded(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok-123"}}}
 	if err := Save(cfg); err != nil { // simulate a pre-existing config...
@@ -547,7 +547,13 @@ func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
 	useFakeStore(t, newFakeStore())
 	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok"}}}
 
-	origDefault := secretsPlatformDefault
+	origDefault, origInteractive := secretsPlatformDefault, interactiveSession
+	t.Cleanup(func() {
+		secretsPlatformDefault = origDefault
+		interactiveSession = origInteractive
+	})
+	interactiveSession = func() bool { return true }
+
 	secretsPlatformDefault = false // non-darwin
 	if MigrateSecretsIfNeeded(cfg) {
 		t.Error("migrated on a platform without a store")
@@ -557,7 +563,87 @@ func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
 	if MigrateSecretsIfNeeded(cfg) {
 		t.Error("migrated despite WENDY_SECRET_STORE=file")
 	}
-	secretsPlatformDefault = origDefault
+}
+
+// A headless macOS host must not migrate: it can never answer the unlock
+// prompt that reading the item back would raise, and migrating removes the
+// inline copy that was working. This is the case that took the macOS
+// integration-test runner — and every release with it — offline.
+func TestMigrateSecretsNoOpWhenNonInteractive(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "")
+	useFakeStore(t, newFakeStore())
+	origDefault, origInteractive := secretsPlatformDefault, interactiveSession
+	t.Cleanup(func() {
+		secretsPlatformDefault = origDefault
+		interactiveSession = origInteractive
+	})
+	secretsPlatformDefault = true
+	interactiveSession = func() bool { return false }
+
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok"}}}
+	if MigrateSecretsIfNeeded(cfg) {
+		t.Error("migrated from a session that cannot answer a Keychain prompt")
+	}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if isRef(loaded.Auth[0].APIKey) {
+		t.Errorf("Save dehydrated non-interactively: APIKey = %q", loaded.Auth[0].APIKey)
+	}
+
+	// WENDY_SECRET_STORE=keychain is the escape hatch for anyone who wants the
+	// store anyway on such a host.
+	t.Setenv("WENDY_SECRET_STORE", "keychain")
+	if !MigrateSecretsIfNeeded(cfg) {
+		t.Error("WENDY_SECRET_STORE=keychain did not force migration")
+	}
+}
+
+// The mirror: once the store is out of use here, references come back inline
+// so the host stops depending on a keychain it cannot unlock.
+func TestRestoreSecretsIfNeeded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	store := newFakeStore()
+	store.m["token-aaaa"] = []byte("tok-123")
+	useFakeStore(t, store)
+
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: refPrefixV1 + "token-aaaa"}}}
+	if !RestoreSecretsIfNeeded(cfg) {
+		t.Fatal("RestoreSecretsIfNeeded = false, want true (reference was resolvable)")
+	}
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Auth[0].APIKey != "tok-123" {
+		t.Errorf("APIKey on disk = %q, want the resolved secret inline", loaded.Auth[0].APIKey)
+	}
+	if RestoreSecretsIfNeeded(loaded) {
+		t.Error("second RestoreSecretsIfNeeded = true, want false (nothing left to restore)")
+	}
+}
+
+// A locked or emptied keychain resolves nothing. Rewriting config.json on
+// every command in that state buys nothing, so the restore must decline —
+// and must never drop the references it could not resolve.
+func TestRestoreSecretsKeepsUnresolvableRefs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	useFakeStore(t, newFakeStore()) // empty: every lookup misses
+
+	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: refPrefixV1 + "token-aaaa"}}}
+	if RestoreSecretsIfNeeded(cfg) {
+		t.Error("RestoreSecretsIfNeeded = true with nothing resolvable")
+	}
+	if cfg.Auth[0].APIKey != refPrefixV1+"token-aaaa" {
+		t.Errorf("unresolvable reference was altered: %q", cfg.Auth[0].APIKey)
+	}
 }
 
 func TestDeleteStoredSecrets(t *testing.T) {

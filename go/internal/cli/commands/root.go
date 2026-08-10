@@ -87,6 +87,14 @@ func NewRootCmd() *cobra.Command {
 			if config.MigrateSecretsIfNeeded(cfg) {
 				cmd.PrintErrln("Moved wendy credentials into the macOS Keychain (older wendy versions will need 'wendy auth login' again).")
 			}
+			// The mirror: a host that migrated while someone was logged in, and
+			// now runs headless (CI runner, launchd, ssh) or with
+			// WENDY_SECRET_STORE=file, gets its credentials written back to
+			// config.json the first time the Keychain is readable — so it stops
+			// depending on a keychain nothing here can unlock.
+			if config.RestoreSecretsIfNeeded(cfg) {
+				cmd.PrintErrln("Restored wendy credentials to config.json (this host cannot unlock the macOS Keychain non-interactively).")
+			}
 
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)

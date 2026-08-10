@@ -211,3 +211,45 @@ A refusal costs storage hardening, never the secret: the value stays wherever
 it already lives, exactly as an ordinary `Put` failure already did.
 `WENDY_SECRET_STORE=file` remains the way to opt out of the Keychain path
 entirely.
+
+## Amendment (2026-08-09): only migrate where a person can unlock
+
+The previous amendment made *writes* safe. It left the symmetric hole on the
+other side: a migration that succeeds is only as durable as the reader's
+ability to unlock the keychain later, and `dehydrate` removes the inline copy
+once `Put` returns nil. A host that was unlocked at migration time and
+headless afterwards ends up with credentials it cannot reach and no fallback
+on disk — recoverable only by `wendy auth login`.
+
+That is what happened. The macOS integration-test runner migrated its client
+key into the login keychain; the keychain later locked; the workflow's
+`ssh localhost` sessions could no longer read the item. Every mTLS call failed
+*"Unauthorized"*, 22 of 24 integration tests failed, and because `release` in
+`build.yml` gates on that job, every release was blocked.
+`checkWritableKeychain` never fired — nothing was being written.
+
+**Resolution.** `dehydrateEnabled` now migrates only from a session that could
+answer an unlock prompt: `interactiveSession()` requires stdin *and* stderr to
+be terminals (stdout is redirected by ordinary interactive use) and `CI` to be
+unset. The terminal check is the load-bearing one — `CI` does not survive the
+`ssh host wendy …` hop the runners use.
+
+`WENDY_SECRET_STORE` now pins the decision in both directions: `keychain`
+forces migration on such a host anyway, `file` keeps everything inline. The
+device-facing CI workflows set `file` explicitly rather than relying on the
+heuristic.
+
+`RestoreSecretsIfNeeded` is the recovery path, and the mirror of
+`MigrateSecretsIfNeeded`: where the store is no longer in use, references are
+resolved back inline the first time they *can* be read, so a host that
+migrated under a login session heals itself instead of staying pinned to a
+keychain nothing there can open. It declines when nothing resolves, so a
+locked keychain does not mean rewriting `config.json` on every command, and
+unresolvable references are never dropped.
+
+**Still open.** `keychain.Get` reports "locked", "no such item" and "user
+interaction is not allowed" as one undifferentiated miss, which is why the
+outage's logs could not distinguish *unlock the keychain* from *log in again*.
+The integration workflow now prints the keychain's lock state alongside the
+failure, and `resolveError` names the probe command; surfacing `security(1)`'s
+own error through `Store.Get` would be the better fix.

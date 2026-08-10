@@ -38,7 +38,10 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          # WENDY_SECRET_STORE=file: this runner authenticates from its own
+          # config.json, and the macOS default store is a login Keychain no CI
+          # job can unlock. See integration-tests.yml.
+          SSH_ENV="export PATH='$PATH' WENDY_SECRET_STORE=file"
 
           $SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy os cache clear"
 
@@ -89,7 +92,10 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          # WENDY_SECRET_STORE=file: this runner authenticates from its own
+          # config.json, and the macOS default store is a login Keychain no CI
+          # job can unlock. See integration-tests.yml.
+          SSH_ENV="export PATH='$PATH' WENDY_SECRET_STORE=file"
 
           INFO=$($SSH "$SSH_ENV && cd '$WORKDIR' && ./go/bin/wendy device info --json --device '$DEVICE_HOSTNAME'" || true)
           echo "$INFO" | jq '{osVersion, agentVersion: .version, deviceType}' || true
@@ -104,7 +110,10 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no localhost"
           WORKDIR="$(pwd)"
-          SSH_ENV="export PATH='$PATH'"
+          # WENDY_SECRET_STORE=file: this runner authenticates from its own
+          # config.json, and the macOS default store is a login Keychain no CI
+          # job can unlock. See integration-tests.yml.
+          SSH_ENV="export PATH='$PATH' WENDY_SECRET_STORE=file"
 
           # wendy os update blocks until the device reboots and comes back
           # online, with a 5-minute internal timeout.

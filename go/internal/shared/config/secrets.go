@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/term"
+
 	"github.com/wendylabsinc/wendy/go/internal/shared/secretstore"
 )
 
@@ -67,23 +69,32 @@ func resolveSecret(ref string) (string, error) {
 
 	account, ok := strings.CutPrefix(ref, refPrefixV1)
 	if !ok {
-		return "", resolveError(fmt.Errorf("unrecognized credential reference %q (written by a newer wendy?)", ref))
+		return "", resolveError("", fmt.Errorf("unrecognized credential reference %q (written by a newer wendy?)", ref))
 	}
 	store := newCredentialStore()
 	if store == nil {
-		return "", resolveError(fmt.Errorf("no credential store on this platform (config migrated on macOS?)"))
+		return "", resolveError(account, fmt.Errorf("no credential store on this platform (config migrated on macOS?)"))
 	}
 	secret := store.Get(account)
 	if secret == nil {
-		return "", resolveError(fmt.Errorf("keychain item %s/%s not readable", credentialService, account))
+		return "", resolveError(account, fmt.Errorf("keychain item %s/%s not readable", credentialService, account))
 	}
 	cacheSecret(ref, string(secret))
 	return string(secret), nil
 }
 
-func resolveError(cause error) error {
+// resolveError wraps a failed lookup with the remedies. It names the probe
+// command as well: security(1) reports "locked", "not found" and "user
+// interaction is not allowed" as the same miss here, and which one it is
+// decides between unlocking and logging in again.
+func resolveError(account string, cause error) error {
+	probe := "security find-generic-password -s " + credentialService
+	if account != "" {
+		probe += " -a " + account
+	}
 	return fmt.Errorf("credential is stored in the macOS Keychain but could not be read (keychain locked?): %w\n"+
-		"Unlock with 'security unlock-keychain', or re-run 'wendy auth login' with WENDY_SECRET_STORE=file to keep credentials in config.json.", cause)
+		"Diagnose with '%s -w'.\n"+
+		"Unlock with 'security unlock-keychain', or re-run 'wendy auth login' with WENDY_SECRET_STORE=file to keep credentials in config.json.", cause, probe)
 }
 
 // keyAccount derives the deterministic Keychain account for a client
@@ -139,13 +150,47 @@ func (a AuthConfig) BearerToken() (string, error) {
 }
 
 // dehydrateEnabled reports whether Save should move inline secrets into the
-// platform store. WENDY_SECRET_STORE=file forces inline writes (and
-// de-migration); everything else uses the platform default.
+// platform store.
+//
+// WENDY_SECRET_STORE pins the answer either way: "file" forces inline writes
+// (and de-migration), "keychain" forces the store on even where the default
+// below declines.
+//
+// Otherwise the Keychain is used only for invocations a person is sitting in
+// front of. A Keychain item is readable only while the login keychain is
+// unlocked, and unlocking it is an interactive act — so migrating a headless
+// macOS host (a CI runner, a launchd job, `ssh host wendy ...`) swaps a
+// config.json that always works for one that stops working the moment that
+// keychain locks, with no copy left on disk to fall back to and no way to
+// answer the unlock prompt. That is not hypothetical: it took the macOS
+// integration-test runner offline, and with it every release, because the
+// runner's only client key had moved into a keychain no non-interactive
+// session could open.
 func dehydrateEnabled() bool {
-	if os.Getenv("WENDY_SECRET_STORE") == "file" {
+	switch os.Getenv("WENDY_SECRET_STORE") {
+	case "file":
+		return false
+	case "keychain":
+		return secretsPlatformDefault
+	}
+	return secretsPlatformDefault && interactiveSession()
+}
+
+// interactiveSession reports whether someone could answer a Keychain prompt
+// for this process. Package variable so tests pin it rather than inheriting
+// whatever `go test` was launched from.
+//
+// stdin and stderr are the streams that matter: stdout is redirected by
+// ordinary interactive use (`wendy device list | less`, `--json > file`),
+// while a piped stdin means nobody is there to type. CI is checked too, but
+// only as a belt-and-braces signal — it does not survive an `ssh host wendy
+// ...` hop, which is exactly how the integration-test runner invokes the CLI,
+// so the terminal check is what actually carries that case.
+var interactiveSession = func() bool {
+	if os.Getenv("CI") != "" {
 		return false
 	}
-	return secretsPlatformDefault
+	return term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 // clone deep-copies a Config via JSON round-trip so Save can rewrite secret
@@ -241,6 +286,55 @@ func MigrateSecretsIfNeeded(cfg *Config) bool {
 		return false
 	}
 	return countInlineSecrets(reloaded) < countInlineSecrets(cfg)
+}
+
+// RestoreSecretsIfNeeded is MigrateSecretsIfNeeded's mirror: it pulls
+// Keychain-referenced secrets back inline once the store is no longer in use
+// here — WENDY_SECRET_STORE=file, or a host that dehydrateEnabled now
+// declines to migrate (headless, non-interactive). Without it a machine that
+// migrated while someone was logged in stays pinned to the Keychain forever,
+// because nothing else on a read-only command path calls Save.
+//
+// Returns true only when references were actually resolved and written back.
+func RestoreSecretsIfNeeded(cfg *Config) bool {
+	if dehydrateEnabled() {
+		return false
+	}
+	before := countSecretRefs(cfg)
+	if before == 0 {
+		return false
+	}
+	// Resolve against a throwaway copy first. On a locked or emptied keychain
+	// every reference is a miss and Save would rewrite the same bytes on every
+	// command forever; this keeps the rewrite to runs that recover something.
+	// The lookups it performs are memoized, so Save's own pass is free.
+	probe, err := cfg.clone()
+	if err != nil {
+		return false
+	}
+	inlineSecrets(probe)
+	if countSecretRefs(probe) == before {
+		return false
+	}
+	if err := Save(cfg); err != nil {
+		return false
+	}
+	return true
+}
+
+func countSecretRefs(cfg *Config) int {
+	n := 0
+	for _, a := range cfg.Auth {
+		if isRef(a.APIKey) {
+			n++
+		}
+		for _, c := range a.Certificates {
+			if isRef(c.PemPrivateKey) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func countInlineSecrets(cfg *Config) int {

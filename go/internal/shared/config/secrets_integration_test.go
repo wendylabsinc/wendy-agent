@@ -15,9 +15,7 @@ func TestLoginFlowEndToEnd(t *testing.T) {
 	t.Setenv("WENDY_SECRET_STORE", "")
 	store := newFakeStore()
 	useFakeStore(t, store)
-	origDefault := secretsPlatformDefault
-	secretsPlatformDefault = true
-	t.Cleanup(func() { secretsPlatformDefault = origDefault })
+	useKeychainDefault(t)
 
 	cfg, err := Load()
 	if err != nil {
