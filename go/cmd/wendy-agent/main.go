@@ -140,6 +140,16 @@ func main() {
 
 	configpartition.Apply(logger, configPath)
 
+	// Restore the mDNS advertisement for a device renamed via
+	// 'wendy device rename'. The boot-time identity units — and
+	// configpartition.Apply just above, when the config partition carries a
+	// device name — re-derive the name/displayname TXT records from
+	// /etc/wendyos/device-name, reverting the rename. Ordered last so the
+	// operator's explicit choice wins, matching generate-hostname.sh's
+	// precedence for the hostname itself. A no-op on a device that was never
+	// renamed.
+	services.ReassertHostnameAdvertisement(logger)
+
 	// Time sync: apply config-partition floor immediately, then start
 	// background Roughtime + multicast sync.
 	timesyncMgr := timesync.NewManager(logger, configPath)
