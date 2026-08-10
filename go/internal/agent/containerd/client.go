@@ -77,12 +77,21 @@ type restartSuppressor interface {
 	Suppress(containerName string) func()
 }
 
+// dbusProxyManager is the narrow lifecycle surface containerd needs. Keeping
+// it as an interface lets the reboot/start path be tested without launching a
+// real xdg-dbus-proxy process.
+type dbusProxyManager interface {
+	Start(context.Context, string) (string, error)
+	Stop(string) error
+	StopAll()
+}
+
 type Client struct {
 	client                  *containerd.Client
 	logger                  *zap.Logger
 	namespace               string
 	mu                      sync.Mutex
-	proxyManager            *dbusproxy.Manager // nil if xdg-dbus-proxy is not available
+	proxyManager            dbusProxyManager // nil if xdg-dbus-proxy is not available
 	systemAPISocketProvider AppSystemAPISocketProvider
 
 	// appServices caches the services map for multi-service apps, keyed by appID.
@@ -1317,6 +1326,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		}
 	}
 	labels := wendyLabels(appID, serviceName, version, req.GetRestartPolicy(), appCfg.Entitlements, appCfg.Isolation, dependsOn)
+	if identities := captureSerialIdentities(appCfg.Entitlements); len(identities) > 0 {
+		encoded, err := json.Marshal(identities)
+		if err != nil {
+			return fmt.Errorf("encoding serial device identities: %w", err)
+		}
+		labels[labelKeySerialIdentities] = string(encoded)
+	}
 
 	// Publish the resolved ROS 2 configuration as a container label so the
 	// agent can discover ROS 2 containers at runtime and configure the CLI
@@ -1577,6 +1593,7 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// namespace joins, CNI per-service records) under the wrong identity.
 	// The labels written at create time are authoritative — prefer them,
 	// re-validating since labels are external state (SOC2-CC6, NIST-SI-10).
+	var serialIdentityLabel string
 	if labels, lerr := container.Labels(ctx); lerr == nil {
 		if id := labels[labelKeyAppID]; id != "" && appconfig.ValidateAppID(id) == nil {
 			svc := labels[labelKeyServiceName]
@@ -1588,7 +1605,20 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+		serialIdentityLabel = labels[labelKeySerialIdentities]
 	}
+
+	// Resources created under /run disappear across reboot even though
+	// containerd preserves the container and its OCI spec. If this start fails
+	// after recreating a proxy, release it again unless the task reaches the
+	// running state below.
+	dbusProxyStartedForTask := false
+	dbusProxyContainerName := container.ID()
+	defer func() {
+		if dbusProxyStartedForTask && c.proxyManager != nil {
+			_ = c.proxyManager.Stop(dbusProxyContainerName)
+		}
+	}()
 
 	// Reboot resilience for meshed containers (C-final-review Fix 1): the
 	// container's OCI spec bind-mounts /etc/resolv.conf from a tmpfs path
@@ -1603,8 +1633,28 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// failure just skips the hook.
 	if spec, serr := container.Spec(ctx); serr == nil {
 		c.recreateMeshResolvConfForStart(spec.Mounts)
+
+		started, proxyErr := c.ensureDBusProxyForStart(ctx, dbusProxyContainerName, spec.Mounts)
+		if proxyErr != nil {
+			return nil, proxyErr
+		}
+		dbusProxyStartedForTask = started
+
+		identities, identityErr := decodeSerialIdentities(serialIdentityLabel)
+		if identityErr != nil {
+			return nil, fmt.Errorf("loading serial device identities for %q: %w", appName, identityErr)
+		}
+		changed, serialErr := refreshSerialMountsForStart(spec, identities)
+		if serialErr != nil {
+			return nil, fmt.Errorf("refreshing serial devices for %q: %w", appName, serialErr)
+		}
+		if changed {
+			if updateErr := container.Update(ctx, withUpdatedContainerSpec(spec)); updateErr != nil {
+				return nil, fmt.Errorf("persisting refreshed serial devices for %q: %w", appName, updateErr)
+			}
+		}
 	} else {
-		c.logger.Warn("mesh: could not load container spec to recreate resolv.conf before start",
+		c.logger.Warn("could not load container spec to recreate start resources",
 			zap.String("app_name", appName), zap.Error(serr))
 	}
 
@@ -1680,6 +1730,9 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		c.recordStartFailure(ctx, appName, err)
 		return nil, fmt.Errorf("starting task for %q: %w", appName, err)
 	}
+	// The running Bluetooth task owns the proxy until stop/delete. Do not let
+	// the failure-only defer above tear it down on the successful return path.
+	dbusProxyStartedForTask = false
 
 	c.logger.Info("Container started", zap.String("app_name", appName))
 	c.startPostStartAgentHook(postStartAgentCommand, appName)
@@ -3607,6 +3660,21 @@ func (c *Client) ListBootContainers(ctx context.Context) ([]services.BootContain
 		if err != nil {
 			c.logger.Warn("Failed to get container info", zap.String("id", ctr.ID()), zap.Error(err))
 			continue
+		}
+
+		// An agent-only restart leaves containerd tasks running, but Close stops
+		// the agent-owned xdg-dbus-proxy processes. Restore the socket in the
+		// persisted bind-mount source even when the monitor will not restart the
+		// already-running task.
+		running := c.containerIsRunning(ctx, ctr)
+		if running {
+			if spec, specErr := ctr.Spec(ctx); specErr != nil {
+				c.logger.Warn("Could not inspect running container start resources",
+					zap.String("id", ctr.ID()), zap.Error(specErr))
+			} else if _, proxyErr := c.restoreDBusProxyForRunningTask(ctx, ctr.ID(), running, spec.Mounts); proxyErr != nil {
+				c.logger.Error("Could not restore running container D-Bus proxy",
+					zap.String("id", ctr.ID()), zap.Error(proxyErr))
+			}
 		}
 
 		// Rehydrate c.appIsolation from the persisted label BEFORE the monitor's
