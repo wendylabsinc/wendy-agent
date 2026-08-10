@@ -33,7 +33,7 @@ func Acquire(device string) (*Lock, error) {
 	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		unix.Close(fd)
 		if errors.Is(err, unix.EWOULDBLOCK) {
-			return nil, fmt.Errorf("serial port %s is in use by another program (idf.py monitor?)", device)
+			return nil, fmt.Errorf("%w: serial port %s (idf.py monitor?)", ErrLocked, device)
 		}
 		return nil, fmt.Errorf("lock serial port %s: %w", device, err)
 	}

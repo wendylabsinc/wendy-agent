@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"time"
 
@@ -200,7 +201,13 @@ type espFlasher struct {
 
 func isPermissionDenied(err error) bool {
 	var portErr *serial.PortError
-	return errors.As(err, &portErr) && portErr.Code() == serial.PermissionDenied
+	if errors.As(err, &portErr) && portErr.Code() == serial.PermissionDenied {
+		return true
+	}
+	// openLockedPort's own pre-open (via seriallock.Acquire) fails with a
+	// raw syscall error, not a *serial.PortError, when it can't even open
+	// the device to take the lock.
+	return errors.Is(err, fs.ErrPermission)
 }
 
 // errPortBusy indicates the serial port is already open by another process.
@@ -945,7 +952,16 @@ func (p *lockedPort) Close() error {
 func openLockedPort(portPath string, mode *serial.Mode) (serial.Port, error) {
 	lock, err := seriallock.Acquire(portPath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errPortBusy, err)
+		// Acquire fails for reasons besides "someone else holds it" — the
+		// device doesn't exist yet, permission denied, ... — and only the
+		// genuinely-locked case should be classified as busy: the others
+		// need to stay retryable (missing device) or keep their
+		// permission-denied messaging (isPermissionDenied below already
+		// checks for this), not get labeled "busy".
+		if errors.Is(err, seriallock.ErrLocked) {
+			return nil, fmt.Errorf("%w: %s", errPortBusy, err)
+		}
+		return nil, err
 	}
 	port, err := serial.Open(portPath, mode)
 	if err != nil {

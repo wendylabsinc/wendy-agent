@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -247,6 +249,32 @@ func TestOpenLockedPortDetectsExistingLock(t *testing.T) {
 	}
 	if !errors.Is(err, errPortBusy) {
 		t.Errorf("openLockedPort() error = %v, want it to satisfy errors.Is(err, errPortBusy)", err)
+	}
+}
+
+func TestOpenLockedPortMissingDeviceIsNotBusy(t *testing.T) {
+	// A device that doesn't exist yet (mid re-enumeration during a reboot)
+	// is a different failure mode from "someone else holds it" — it must
+	// stay retryable rather than being misclassified as busy (which
+	// openPortRetrying treats as terminal).
+	path := filepath.Join(t.TempDir(), "does-not-exist")
+
+	_, err := openLockedPort(path, &serial.Mode{BaudRate: initialBaudRate})
+	if err == nil {
+		t.Fatal("openLockedPort() = nil error, want failure on a nonexistent path")
+	}
+	if errors.Is(err, errPortBusy) {
+		t.Errorf("openLockedPort() error = %v, want it to NOT satisfy errors.Is(err, errPortBusy) for a missing device", err)
+	}
+}
+
+func TestIsPermissionDeniedFromRawSyscallError(t *testing.T) {
+	// openLockedPort's own pre-open (via seriallock.Acquire) can fail with a
+	// raw syscall error rather than a *serial.PortError when it can't even
+	// open the device to take the lock.
+	err := fmt.Errorf("open serial: %w", syscall.EACCES)
+	if !isPermissionDenied(err) {
+		t.Errorf("isPermissionDenied(%v) = false, want true", err)
 	}
 }
 
