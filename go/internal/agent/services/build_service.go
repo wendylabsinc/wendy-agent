@@ -330,6 +330,15 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if s.peers == nil {
 		return status.Error(codes.FailedPrecondition, "this build host has no mesh dialer and cannot deliver an image to another device")
 	}
+	// The role can be enabled on a host whose buildkitd was never installed, or
+	// has since stopped. GetBuildCapabilities reports that, but a preflight the
+	// CLIENT performs is not a check the server has made — and without it the
+	// context is reassembled and extracted first, only for buildctl to fail with
+	// a bare "exit status 1" that names nothing.
+	if !buildkitSocketPresent(s.buildkitAddress) {
+		return status.Errorf(codes.FailedPrecondition,
+			"this build host has no buildkit daemon at %s; install and start buildkitd there, or build elsewhere", s.buildkitAddress)
+	}
 
 	dir, err := s.contextDir(spec.GetAppId())
 	if err != nil {
@@ -565,6 +574,21 @@ func extractContextTar(r io.Reader, dir string) error {
 			return status.Errorf(codes.InvalidArgument,
 				"build context entry %q is a link, which is not accepted in a remote build context", hdr.Name)
 		}
+		// Everything else that is not a plain file — device nodes, fifos, sockets
+		// — would otherwise be written out as an ordinary empty file, silently
+		// changing what the Dockerfile sees. The CLI's packer emits only regular
+		// files and directories, so refusing is free and honest.
+		if hdr.Typeflag != tar.TypeReg {
+			return status.Errorf(codes.InvalidArgument,
+				"build context entry %q is not a regular file (tar type %q)", hdr.Name, string(hdr.Typeflag))
+		}
+		// A single entry must not be able to fill the build host's disk. Refuse
+		// the declared size first, so a pathological header costs no I/O.
+		if hdr.Size > maxContextEntryBytes {
+			return status.Errorf(codes.InvalidArgument,
+				"build context entry %q declares %d bytes, above the %d-byte per-file maximum",
+				hdr.Name, hdr.Size, int64(maxContextEntryBytes))
+		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
@@ -572,14 +596,21 @@ func extractContextTar(r io.Reader, dir string) error {
 		if err != nil {
 			return err
 		}
-		// Bounded copy: a manifest-declared total size is checked by the caller,
-		// but a single entry must not be able to fill the disk on its own.
-		if _, err := io.Copy(f, io.LimitReader(tr, maxContextEntryBytes)); err != nil {
+		// The header is not trusted either, so the copy is bounded independently.
+		// Read one byte past the ceiling: a truncating LimitReader would leave a
+		// short file behind with no error, and a build from a silently truncated
+		// source is worse than a failed one.
+		n, err := io.Copy(f, io.LimitReader(tr, maxContextEntryBytes+1))
+		if err != nil {
 			f.Close()
 			return err
 		}
 		if err := f.Close(); err != nil {
-			return err
+			return fmt.Errorf("writing build context entry %q: %w", hdr.Name, err)
+		}
+		if n > maxContextEntryBytes {
+			return status.Errorf(codes.InvalidArgument,
+				"build context entry %q exceeds the %d-byte per-file maximum", hdr.Name, int64(maxContextEntryBytes))
 		}
 	}
 }

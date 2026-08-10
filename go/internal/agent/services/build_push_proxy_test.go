@@ -166,3 +166,43 @@ func TestValidatePushTarget_RejectsHostInRepository(t *testing.T) {
 		t.Fatal("a repository containing a host component must be rejected")
 	}
 }
+
+// The repository is concatenated into `--output type=image,name=<ref>,push=true`,
+// where a comma opens a new key and an '=' opens a new value. Rejecting only '/'
+// and space leaves the rest of that grammar reachable by the client.
+func TestValidatePushTarget_RejectsBuildctlOutputOptionInjection(t *testing.T) {
+	for _, repo := range []string{
+		"a:latest,push=false",                 // drop the push, leaving a silent no-op
+		"a:latest,type=local,dest=/etc",       // swap the exporter for a filesystem write
+		"a=b:latest",                          // end the name, start another value
+		"a:latest\toci-mediatypes=true",       // tab is whitespace but not a space
+		"a:latest\npush=false",                // newline likewise, and forges a log line
+		"a:latest,registry.insecure=true",     // relax the transport for the hop
+		"",                                    // no repository at all
+		":latest",                             // empty name with a tag
+		"a:latest,name=other.example.com/x:1", // rename the push destination outright
+	} {
+		if err := validatePushTarget(&agentpbv2.PushTarget{
+			AssetId: 214, RegistryPort: 5000, Repository: repo,
+		}); err == nil {
+			t.Fatalf("repository %q was accepted; it can rewrite the buildctl output spec", repo)
+		}
+	}
+}
+
+// The shapes the CLI actually sends — lowercased app ids, which carry dots,
+// hyphens and underscores — must keep working.
+func TestValidatePushTarget_AcceptsRealAppRepositories(t *testing.T) {
+	for _, repo := range []string{
+		"sh.wendy.examples.hellopython:latest",
+		"my-app:latest",
+		"my_app2:1.0.0-rc1",
+		"app",
+	} {
+		if err := validatePushTarget(&agentpbv2.PushTarget{
+			AssetId: 214, RegistryPort: 5000, Repository: repo,
+		}); err != nil {
+			t.Fatalf("repository %q was rejected: %v", repo, err)
+		}
+	}
+}

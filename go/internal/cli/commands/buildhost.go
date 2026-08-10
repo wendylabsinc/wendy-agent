@@ -321,8 +321,16 @@ func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection,
 	if err := stream.CloseSend(); err != nil {
 		return err
 	}
+	return consumeBuildProgress(stream.Recv, out)
+}
+
+// consumeBuildProgress forwards build log lines until the stream ends.
+//
+// Split from streamRemoteBuild so the termination rule can be tested without a
+// gRPC connection: it is the part with a way to go wrong.
+func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), out io.Writer) error {
 	for {
-		msg, err := stream.Recv()
+		msg, err := recv()
 		if err == io.EOF {
 			return nil
 		}
@@ -331,6 +339,13 @@ func streamRemoteBuild(ctx context.Context, builder *grpcclient.AgentConnection,
 		}
 		if line := msg.GetLogLine(); line != "" {
 			fmt.Fprintln(out, line)
+		}
+		// The result event is terminal by definition. Today the agent returns
+		// right after sending it, so EOF follows immediately — but a client that
+		// stops only on EOF is one trailing event away from waiting forever on a
+		// build that has already finished.
+		if msg.GetResult() != nil {
+			return nil
 		}
 	}
 }

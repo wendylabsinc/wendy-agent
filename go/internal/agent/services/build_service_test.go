@@ -189,6 +189,50 @@ func TestExtractContextTar_RejectsSymlinkEntries(t *testing.T) {
 	}
 }
 
+// An entry larger than the per-file ceiling must be refused, not truncated to
+// it. A short file written with no error is a build from sources that are not
+// the developer's — worse than a build that fails.
+func TestExtractContextTar_RejectsOversizedEntry(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	// The declared size alone must be enough: the body is deliberately never
+	// written, because the extractor has to refuse before reading a byte of it.
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "huge.bin", Mode: 0o644, Size: maxContextEntryBytes + 1,
+	}); err != nil {
+		t.Fatalf("writing oversized header: %v", err)
+	}
+
+	dir := t.TempDir()
+	err := extractContextTar(bytes.NewReader(buf.Bytes()), dir)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument for an entry past the per-file ceiling", err)
+	}
+}
+
+// Device nodes, fifos and sockets would otherwise land as empty regular files,
+// quietly changing what the Dockerfile sees. The CLI's packer never emits one.
+func TestExtractContextTar_RejectsNonRegularEntries(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "pipe", Typeflag: tar.TypeFifo, Mode: 0o644,
+	}); err != nil {
+		t.Fatalf("writing fifo header: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("closing tar: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := extractContextTar(bytes.NewReader(buf.Bytes()), dir); err == nil {
+		t.Fatal("a fifo entry must be rejected, not written out as an empty regular file")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pipe")); err == nil {
+		t.Fatal("the rejected entry was written anyway")
+	}
+}
+
 func TestBuildctlArgs_RejectsDockerfileEscapingContext(t *testing.T) {
 	if _, err := buildctlArgs("/ctx", "../../etc/shadow", "linux/arm64",
 		"127.0.0.1:41000/a:latest", nil); err == nil {
@@ -225,7 +269,22 @@ func enabledService(t *testing.T) *BuildService {
 		// BuildImage refuses up front when it has no way to deliver, which
 		// would otherwise mask the errors under test.
 		Peers: stubPeerDialer{err: errors.New("not dialed in this test")},
+		// Likewise a buildkit address that exists: BuildImage refuses a host with
+		// no daemon before it touches the context, which would otherwise mask
+		// every later error these tests are actually about.
+		BuildkitAddress: presentBuildkitAddress(t),
 	})
+}
+
+// presentBuildkitAddress returns a unix:// address whose socket path exists, so
+// buildkitSocketPresent is satisfied without running a daemon.
+func presentBuildkitAddress(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "buildkitd.sock")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("creating fake buildkit socket: %v", err)
+	}
+	return "unix://" + path
 }
 
 // A build host with no way to reach peers must say so rather than build first
@@ -529,9 +588,10 @@ func TestLockContextDir_DoesNotSerialiseDifferentDirectories(t *testing.T) {
 func TestBuildImage_PinsPushCredentialsToTheTargetAsset(t *testing.T) {
 	var gotAssetID int32 = -1
 	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
-		ConfigPath: enabledConfigDir(t),
-		StateDir:   t.TempDir(),
-		Peers:      stubPeerDialer{err: errors.New("not dialed in this test")},
+		ConfigPath:      enabledConfigDir(t),
+		StateDir:        t.TempDir(),
+		Peers:           stubPeerDialer{err: errors.New("not dialed in this test")},
+		BuildkitAddress: presentBuildkitAddress(t),
 		// A real tar: extraction runs before the push credentials are loaded, so
 		// a bogus context would fail earlier and the assertion would never run.
 		Chunks: staticChunkSource{data: tarWith(t, "Dockerfile")},
@@ -555,6 +615,72 @@ func TestBuildImage_PinsPushCredentialsToTheTargetAsset(t *testing.T) {
 
 	if gotAssetID != 214 {
 		t.Fatalf("push credentials were requested for asset %d, want the push target's 214: an unpinned config lets any org-issued cert receive the image", gotAssetID)
+	}
+}
+
+// The builder role is a marker file; buildkitd is a package someone installs
+// separately. Enabling the role on a host that has no daemon must be refused
+// before the context is reassembled, not discovered by buildctl afterwards —
+// where it surfaces as a bare "exit status 1" naming nothing.
+func TestBuildImage_RefusesWhenBuildkitIsAbsent(t *testing.T) {
+	var read int64
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath:      enabledConfigDir(t),
+		StateDir:        t.TempDir(),
+		Peers:           stubPeerDialer{err: errors.New("not dialed in this test")},
+		BuildkitAddress: "unix:///nonexistent/buildkitd.sock",
+		Chunks:          oversizedChunkSource{read: &read},
+	})
+
+	err := svc.BuildImage(&stubBuildStream{spec: &agentpbv2.BuildSpec{
+		AppId:      "app",
+		Platform:   "linux/arm64",
+		PushTarget: &agentpbv2.PushTarget{AssetId: 214, RegistryPort: 5000, Repository: "app:latest"},
+		Context:    &agentpbv2.ChunkManifest{ChunkHashes: [][]byte{make([]byte, 32)}},
+		Definition: &agentpbv2.BuildSpec_DockerfileBuild{
+			DockerfileBuild: &agentpbv2.DockerfileBuild{Dockerfile: "Dockerfile"},
+		},
+	}})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("got %v, want FailedPrecondition when the host has no buildkit daemon", err)
+	}
+	if read != 0 {
+		t.Fatalf("read %d context bytes; a host that cannot build must refuse before touching the context", read)
+	}
+}
+
+// missingChunkSource is the real chunk store's behaviour for a hash it does not
+// hold: the stream errors rather than contributing zero bytes.
+type missingChunkSource struct{}
+
+func (missingChunkSource) OpenChunkStream(context.Context, [][32]byte) io.Reader {
+	return errReader{errors.New("chunk 0 (0000) unavailable")}
+}
+
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+// A manifest may declare total_size 0, so the reassembled-length check cannot
+// catch a context that came up short. A chunk the store does not hold has to
+// fail the read itself — otherwise a build runs, and pushes, from a truncated
+// source tree.
+func TestReassembleContext_FailsClosedOnMissingChunkWithUndeclaredSize(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath: enabledConfigDir(t),
+		StateDir:   t.TempDir(),
+		Chunks:     missingChunkSource{},
+	})
+
+	_, err := svc.reassembleContext(context.Background(), &agentpbv2.ChunkManifest{
+		ChunkHashes: [][]byte{make([]byte, 32)},
+		TotalSize:   0,
+	})
+	if err == nil {
+		t.Fatal("a manifest naming an unstaged chunk must fail, not reassemble a short context")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("got %v, want FailedPrecondition telling the client to re-send the context", err)
 	}
 }
 

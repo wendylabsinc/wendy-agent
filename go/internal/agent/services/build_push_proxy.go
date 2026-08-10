@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
+	"regexp"
 	"sync"
 
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
@@ -63,6 +63,16 @@ func (p *pushProxy) recordError(err error) {
 	}
 }
 
+// validRepositoryRe matches a bare OCI "repository:tag" with no registry host
+// and no separator that buildctl's --output parser would read as structure.
+//
+// It is an allowlist rather than a list of rejected characters on purpose: the
+// value is concatenated into `type=image,name=<ref>,push=true`, where a comma
+// starts a new key=value pair and an '=' starts a new value, so anything not
+// positively known to be part of a name is a chance to append an exporter
+// option. The CLI only ever sends lowercased "<appid>:latest".
+var validRepositoryRe = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$`)
+
 // validatePushTarget checks a push destination before any build runs.
 //
 // There is no hostname to constrain here: an asset id can only ever address a
@@ -85,8 +95,9 @@ func validatePushTarget(t *agentpbv2.PushTarget) error {
 		return status.Error(codes.InvalidArgument, "push target has no repository")
 	}
 	// A slash would make the first element a registry host once joined to the
-	// proxy address, quietly redirecting the push somewhere else.
-	if strings.ContainsAny(repo, "/ ") {
+	// proxy address, quietly redirecting the push somewhere else; a comma or an
+	// '=' would end the name and start another buildctl output option.
+	if !validRepositoryRe.MatchString(repo) {
 		return status.Errorf(codes.InvalidArgument, "push target repository %q must be a bare repository:tag", repo)
 	}
 	return nil

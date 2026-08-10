@@ -209,6 +209,45 @@ func TestClassifyRemoteBuildError_NilStaysNil(t *testing.T) {
 	}
 }
 
+// The result event ends the build. A client that waits for EOF instead hangs on
+// a finished build the moment the server keeps the stream open past it — a
+// trailing event a later agent version is free to add.
+func TestConsumeBuildProgress_StopsAtResultWithoutWaitingForEOF(t *testing.T) {
+	events := []*agentpbv2.BuildImageProgress{
+		{Event: &agentpbv2.BuildImageProgress_LogLine{LogLine: "#1 [app 1/2] FROM python"}},
+		{Event: &agentpbv2.BuildImageProgress_Result{
+			Result: &agentpbv2.BuildImageResult{ImageDigest: "sha256:abc"},
+		}},
+	}
+	i := 0
+	recv := func() (*agentpbv2.BuildImageProgress, error) {
+		if i >= len(events) {
+			// Never EOF: a stream held open past the result is exactly the case
+			// a client that only stops on EOF would block on forever.
+			t.Fatal("consumed past the result event; the build had already finished")
+		}
+		e := events[i]
+		i++
+		return e, nil
+	}
+
+	var out strings.Builder
+	if err := consumeBuildProgress(recv, &out); err != nil {
+		t.Fatalf("consumeBuildProgress: %v", err)
+	}
+	if !strings.Contains(out.String(), "[app 1/2] FROM python") {
+		t.Fatalf("log lines must still be forwarded, got %q", out.String())
+	}
+}
+
+// EOF without a result is still a clean end: an older agent may not send one.
+func TestConsumeBuildProgress_StopsAtEOF(t *testing.T) {
+	recv := func() (*agentpbv2.BuildImageProgress, error) { return nil, io.EOF }
+	if err := consumeBuildProgress(recv, io.Discard); err != nil {
+		t.Fatalf("a stream that just ends must not be an error, got %v", err)
+	}
+}
+
 func TestValidateBuildHostFlags_RejectsBuilderCombo(t *testing.T) {
 	err := validateBuildHostFlags("spark-office", "docker")
 	if !errors.Is(err, errBuilderWithBuildHost) {

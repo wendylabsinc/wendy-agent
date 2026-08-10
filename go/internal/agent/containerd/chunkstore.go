@@ -338,6 +338,12 @@ func (c *Client) chunkLen(h [32]byte) (int64, bool) {
 // themselves: it writes a layer blob into the content store, which is right for
 // an image layer and wrong for anything else — a remote build context, say.
 // This exposes the same chunk resolution without that side effect.
+//
+// The stream fails closed: a chunk that is in neither the staging area nor the
+// index ends the read with an error rather than contributing zero bytes, and a
+// chunk whose contents do not hash to the name it was asked for is rejected. A
+// caller reassembling something it will then execute — a build context — gets
+// either every requested byte or an error, never a silently short prefix.
 func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader {
 	nsCtx := c.withNamespace(ctx)
 	src := func(h [32]byte) ([]byte, error) {
@@ -349,6 +355,10 @@ func (c *Client) OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Read
 		if loc, ok := c.chunkIndex.Has(h); ok {
 			return c.readIndexedChunk(nsCtx, loc)
 		}
+		// SECURITY: a nil chunk is the "not held here" sentinel, not an empty
+		// one — chunkStream.Read turns it into "chunk N (%x) unavailable" rather
+		// than splicing zero bytes into the stream. Returning an empty []byte
+		// here instead would be the silent-truncation bug.
 		return nil, nil
 	}
 	return &chunkStream{order: hashes, src: src}
