@@ -163,7 +163,16 @@ func NeedsGPUTarget(dir string) bool {
 }
 
 // NeedsGPUTargetFile is NeedsGPUTarget for one named Stagefile in dir.
+//
+// source is validated the same way CompileFile validates it, so the exported
+// pair cannot disagree about what counts as a Stagefile. It also keeps
+// filepath.Join from resolving a caller's "../" segments into a read outside
+// dir: the grammar admits no dots or separators, so a name that reaches the
+// Join is always a bare filename.
 func NeedsGPUTargetFile(dir, source string) bool {
+	if !IsSourceName(source) {
+		return false
+	}
 	raw, err := os.ReadFile(filepath.Join(dir, source))
 	if err != nil {
 		return false

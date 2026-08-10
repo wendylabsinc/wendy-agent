@@ -189,3 +189,47 @@ func TestCompileFileRejectsNonStagefileSource(t *testing.T) {
 		t.Fatalf("error %q does not explain the naming rule", err)
 	}
 }
+
+// NeedsGPUTargetFile is exported alongside CompileFile, so it validates its
+// source the same way: a name outside the family never reaches a file read.
+//
+// Every rejected name below is backed by a real file holding a cuda: stage, so
+// each case fails if the guard is removed rather than passing vacuously on a
+// missing file.
+func TestNeedsGPUTargetFileRejectsNonSourceNames(t *testing.T) {
+	const cuda = "version: 1\nstages:\n  - name: app\n    from: ubuntu:22.04\n    pin: false\n    cuda: true\n"
+
+	root := t.TempDir()
+	dir := filepath.Join(root, "project")
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// One cuda: Stagefile at every location a rejected name could reach.
+	for _, p := range []string{
+		filepath.Join(dir, SourceName),                  // the legitimate read
+		filepath.Join(root, SourceName),                 // reached by "../"
+		filepath.Join(sub, SourceName),                  // reached by "sub/"
+		filepath.Join(dir, "build.stagefile.lock.yaml"), // a lockfile, not a source
+		filepath.Join(dir, "Dockerfile"),                // not the family at all
+	} {
+		if err := os.WriteFile(p, []byte(cuda), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if !NeedsGPUTargetFile(dir, SourceName) {
+		t.Fatal("canonical source declaring cuda: should need a GPU target")
+	}
+	for _, bad := range []string{
+		"../" + SourceName,
+		"sub/" + SourceName,
+		"build.stagefile.lock.yaml",
+		"Dockerfile",
+		"",
+	} {
+		if NeedsGPUTargetFile(dir, bad) {
+			t.Fatalf("NeedsGPUTargetFile(%q) = true, want false for a non-source name", bad)
+		}
+	}
+}
