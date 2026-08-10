@@ -685,6 +685,50 @@ func TestHasHostNetworkEntitlementHostAdmin(t *testing.T) {
 	}
 }
 
+// TestNeedsNvidiaCDIGPUOnly verifies the pre-existing trigger (gpu entitlement
+// alone) still applies CDI, so this change is additive.
+func TestNeedsNvidiaCDIGPUOnly(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementGPU},
+		},
+	}
+	if !needsNvidiaCDI(cfg) {
+		t.Error("gpu entitlement should trigger CDI application")
+	}
+}
+
+// TestNeedsNvidiaCDIDisplayOnly covers the gap this change closes: a display
+// entitlement with no explicit gpu entitlement must still get the NVIDIA CDI
+// library/device mounts, matching applyDisplay's own doc comment that Jetson
+// injects the EGL/GLES userspace via CDI. Before this fix, a display-only app
+// got /dev/dri and the driver-capability env vars from applyDisplay but none
+// of CDI's actual library mounts.
+func TestNeedsNvidiaCDIDisplayOnly(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementDisplay},
+		},
+	}
+	if !needsNvidiaCDI(cfg) {
+		t.Error("display entitlement alone should trigger CDI application")
+	}
+}
+
+// TestNeedsNvidiaCDINeitherEntitlement verifies an app with neither
+// entitlement gets no CDI mounts, preserving the default no-GPU sandbox for
+// apps that never opted into GPU or display access.
+func TestNeedsNvidiaCDINeitherEntitlement(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementAudio},
+		},
+	}
+	if needsNvidiaCDI(cfg) {
+		t.Error("neither gpu nor display entitlement should not trigger CDI application")
+	}
+}
+
 func TestExpandAgentHook(t *testing.T) {
 	t.Setenv("EXTRA_VALUE", "ok")
 

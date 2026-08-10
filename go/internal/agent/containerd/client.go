@@ -1224,7 +1224,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
-	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
+	if needsNvidiaCDI(appCfg) {
 		c.applyCDIGPU(spec)
 	}
 
@@ -2393,6 +2393,24 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 
 func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 	return entitlementsUseHostNetwork(appCfg.Entitlements)
+}
+
+// needsNvidiaCDI reports whether CreateContainer should apply the host's
+// NVIDIA CDI spec (library mounts, extra device nodes, driver env vars) to
+// this app's OCI spec. Both the explicit gpu entitlement AND the display
+// entitlement trigger it: applyDisplay's own doc comment promises that "the
+// NVIDIA EGL/GLES userspace is injected from the host via CDI" for a Jetson
+// app, but before this fix that injection only happened for apps that also
+// declared gpu — an app requesting display alone (no gpu) got /dev/dri and
+// the NVIDIA_DRIVER_CAPABILITIES=all env var from applyDisplay but none of
+// the actual library/device mounts CDI provides, so its EGL/GLES calls had
+// nothing real to bind to. Merging CDI's container edits is not a new grant
+// of trust for a display app: applyDisplay already sets
+// NVIDIA_VISIBLE_DEVICES=all and NVIDIA_DRIVER_CAPABILITIES=all on Jetson
+// once display is requested, so this only fulfills what that entitlement
+// already declares.
+func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
+	return appCfg.HasEntitlement(appconfig.EntitlementGPU) || appCfg.HasEntitlement(appconfig.EntitlementDisplay)
 }
 
 // entitlementsUseHostNetwork reports whether the entitlements put the container
