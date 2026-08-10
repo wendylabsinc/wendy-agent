@@ -44,6 +44,18 @@ const wendyLiteCatalogJSON = `
             "flash_size": "16MB"
         },
         {
+            "name": "esp32s3",
+            "target": "esp32s3",
+            "board_cfg": "esp32s3_generic",
+            "flash_size": "4MB"
+        },
+        {
+            "name": "esp32s3_native",
+            "target": "esp32s3",
+            "board_cfg": "esp32s3_generic_native",
+            "flash_size": "4MB"
+        },
+        {
             "name": "esp32s3_seeed_xiao_native",
             "target": "esp32s3",
             "board_cfg": "seeed_xiao_esp32s3_native",
@@ -104,6 +116,18 @@ const wendyLiteCatalogJSON = `
             "display_name": "DFRobot FireBeetle 2 ESP32-P4 (DFR1172), 16MB flash",
             "binary": "esp32p4_dfr1172_firebeetle",
             "target": "esp32p4"
+        },
+        {
+            "name": "esp32s3_generic",
+            "display_name": "Generic ESP32-S3 board, 4MB flash",
+            "binary": "esp32s3",
+            "target": "esp32s3"
+        },
+        {
+            "name": "esp32s3_generic_native",
+            "display_name": "Generic ESP32-S3 board, 4MB flash, native app support",
+            "binary": "esp32s3_native",
+            "target": "esp32s3"
         },
         {
             "name": "esp32s3_seeed_xiao_native",
