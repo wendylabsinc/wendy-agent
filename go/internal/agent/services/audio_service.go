@@ -58,6 +58,10 @@ func (s *AudioService) pipewireUnavailable(op string) (bool, string) {
 		return false, ""
 	}
 	reason := audio.UnavailableReason()
+	if reason == "" {
+		// Session became available between checks; avoid falling back with no reason.
+		return false, ""
+	}
 	s.logger.Warn("PipeWire session unavailable; falling back to ALSA",
 		zap.String("operation", op),
 		zap.String("reason", reason))
