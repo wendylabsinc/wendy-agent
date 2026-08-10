@@ -1,0 +1,27 @@
+version: 1
+stages:
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      # Sources/CLinuxVideo is a systemLibrary target over <linux/videodev2.h>,
+      # which the swift:*-noble image already carries via linux-libc-dev — no
+      # apt packages needed.
+      product: HelloVideo
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/HelloVideo]
+        dest: /HelloVideo
+    cmd: [/HelloVideo]
+    # Opens /dev/video0, which is root:video mode 0660. The compiler's
+    # non-root default is in no groups and would fail to open the camera.
+    user: root

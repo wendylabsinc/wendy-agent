@@ -1,0 +1,16 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    workdir: /app
+    install:
+      pip:
+        - requirements: requirements.txt
+    # The Dockerfile this replaced ended in `COPY . .`, which also dragged the
+    # README, .gitignore and wendy.json into the image. Only main.py is needed
+    # at run time; the derived .dockerignore keeps the rest out of the build
+    # context entirely, so editing the README no longer invalidates the layer.
+    copy:
+      - from: local
+        paths: [main.py]
+    cmd: [python, main.py]

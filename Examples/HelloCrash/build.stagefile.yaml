@@ -1,0 +1,24 @@
+version: 1
+stages:
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: HelloCrash
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/HelloCrash]
+        dest: /HelloCrash
+    # This example exists to crash on purpose — the container is expected to
+    # exit non-zero so the agent's restart/backoff and crash reporting can be
+    # exercised.
+    cmd: [/HelloCrash]

@@ -7,12 +7,15 @@ The build command is mainly used to verify your app can build/compile.
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
 1. `docker-compose.yml` / `compose.yml` — multi-service Compose project
-2. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
-3. `Package.swift` — Swift Package Manager project
-4. `*.xcodeproj` — Xcode project (macOS targets only)
-5. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
+2. `build.stagefile.yaml` — Stagefile, compiled to a digest-pinned Dockerfile (wins over a `Dockerfile` in the same directory)
+3. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
+4. `Package.swift` — Swift Package Manager project
+5. `*.xcodeproj` — Xcode project (macOS targets only)
+6. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
 
 If multiple manifests are present you can override detection with `--build-type`.
+
+A Stagefile is a YAML build descriptor that compiles to a real Dockerfile with guarantees a hand-written one does not get by default: base images are digest-pinned through a committed `build.stagefile.lock.yaml`, each install step is emitted with the correct flags and a scoped cache mount, the `.dockerignore` is derived from the declared copy paths, and there is no raw-shell escape hatch. The compiled `Dockerfile.generated` and its `Dockerfile.generated.dockerignore` are written next to the source as build output. Most projects under [`Examples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples) use this format and are worth reading as reference. `--dockerfile build.stagefile.yaml` is not supported — the Stagefile is picked up by detection, not by an explicit override.
 
 ## Compatibility
 

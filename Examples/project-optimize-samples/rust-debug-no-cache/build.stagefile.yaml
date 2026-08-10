@@ -1,0 +1,23 @@
+version: 1
+# Converted from the intentionally un-optimized Dockerfile this replaced. See
+# ./EXPECTED.txt for what survived the conversion and what did not.
+stages:
+  - name: app
+    # The Dockerfile pinned `--platform=linux/amd64` on an arm64 device, which
+    # was this sample's headline finding (an error, not a warning). A Stagefile
+    # has no per-stage architecture pin — `platform:` accepts only "build"
+    # ($BUILDPLATFORM) — so that mistake is simply not writable here, and the
+    # image builds for the target architecture.
+    from: rust:1
+    workdir: /app
+    copy:
+      - from: local
+        paths: ["."]
+    build:
+      lang: rust
+      # Still a debug build, and still single-stage shipping the whole Rust
+      # toolchain: `profile: debug` is a visible deviation from the compiler's
+      # release default, which is the point. The missing cache mount is gone —
+      # every build.lang gets one unconditionally.
+      profile: debug
+    cmd: [/app/target/debug/app]

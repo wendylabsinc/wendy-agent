@@ -1,5 +1,27 @@
-Expected findings (wendy project optimize):
-  warning  cuda-ml         x86 CUDA base image on an arm64 target               (Dockerfile:5)
-  warning  cuda-ml         GPU entitlement set but a CPU-only ML wheel pinned   (requirements.txt:3)
-  warning  build-cache     pip install without --mount=type=cache              (Dockerfile:9) [fixable]
-  warning  arch-image      No .dockerignore                                     [fixable]
+Expected findings (wendy project optimize): NONE.
+
+This sample was converted from a Dockerfile to build.stagefile.yaml, and
+`wendy project optimize` analyses Dockerfiles, Containerfiles and compose
+services — not Stagefiles. Running it here now reports nothing and exits 0.
+
+What the four findings this file used to list became:
+
+  Structurally impossible in a Stagefile:
+    build-cache     pip install without cache mount -> every install gets a scoped mount
+    arch-image      No .dockerignore                -> derived from the copy paths
+
+  Still true of the converted file, just no longer reported by anything:
+    cuda-ml         x86 CUDA base image on an arm64 target
+                    (`from: nvidia/cuda:12.4.0-runtime-ubuntu22.04` is still
+                    there; a Stagefile pins whichever digest the tag resolves
+                    to and does not judge the choice)
+    cuda-ml         GPU entitlement set but a CPU-only ML wheel pinned
+                    (requirements.txt:3 — a dependency-set problem, which no
+                    build-file format fixes. The Stagefile answer is
+                    `cuda: true` on the stage and on the pip group, which
+                    resolves the wheel index from the device's gpu_arch.)
+
+This directory is also still not buildable, exactly as it was not before:
+nvidia/cuda:12.4.0-runtime-ubuntu22.04 ships no pip, so the install step
+fails. The Dockerfile had the identical step; this sample has always been
+read by the analyzer rather than built.

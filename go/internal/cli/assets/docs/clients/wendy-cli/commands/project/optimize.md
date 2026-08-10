@@ -43,16 +43,9 @@ Separately: after a slow *incremental* build (one that reused cached layers and 
 
 ## Sample projects
 
-The repository ships small, deliberately un-optimized sample projects under [`Examples/project-optimize-samples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples/project-optimize-samples) that each trigger a specific finding, so you can see the analyzer and `--fix` in action:
+The repository used to ship deliberately un-optimized sample projects under [`Examples/project-optimize-samples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples/project-optimize-samples), each triggering a specific finding. Those four have since been converted to `build.stagefile.yaml`, and this command does not analyse Stagefiles — so they no longer reproduce anything. Each one's `EXPECTED.txt` now records what its findings were and which of them a Stagefile makes structurally impossible, which is a useful read if you are choosing between the two formats.
 
-| Sample | Demonstrates |
-|---|---|
-| `rust-debug-no-cache` | Missing build-cache mount + a debug (non-release) build |
-| `swift-debug-wendy-debug` | A declared-but-unused `WENDY_DEBUG` arg and a debug Swift build |
-| `python-cuda-mismatch` | A CUDA wheel that doesn't match the target's CUDA version |
-| `dockerfile-hygiene` | `apt-get`/`pip`/`npm` flag hygiene, `ADD` vs `COPY`, an unpinned `FROM`, a broad `COPY --from`, and shell-form `CMD` |
-
-Run `wendy project optimize` (or `--fix`) inside any sample directory to reproduce the corresponding finding. See the [samples README](https://github.com/wendylabsinc/wendyos/tree/main/Examples/project-optimize-samples) for details.
+To see the analyzer and `--fix` in action, run it against a project that still has a Dockerfile — [`Examples/ClaudeOnDevice`](https://github.com/wendylabsinc/wendyos/tree/main/Examples/ClaudeOnDevice) and [`Examples/HelloAudio`](https://github.com/wendylabsinc/wendyos/tree/main/Examples/HelloAudio) are the two left in this repository — or against your own.
 
 ## A note on `--agentic` and secrets
 

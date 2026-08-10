@@ -1,0 +1,27 @@
+version: 1
+stages:
+  # This example is a fixture: Sources/HelloHTTP/main.swift contains a planted
+  # syntax error, and the point is to exercise how a failed build is reported.
+  # The Stagefile therefore compiles fine and the *docker build* is expected to
+  # fail at `swift build` — which is now where the failure surfaces, instead of
+  # in the host toolchain the language-detected path used.
+  #
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: HelloHTTP
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/HelloHTTP]
+        dest: /HelloHTTP
+    cmd: [/HelloHTTP]
