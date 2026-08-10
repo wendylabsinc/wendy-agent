@@ -5,9 +5,12 @@
 package dockerignore
 
 import (
+	"fmt"
 	"path"
 	"strings"
 
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/ir"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/recipe"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
@@ -72,6 +75,82 @@ func Derive(paths []string) string {
 			return ""
 		}
 	}
+	return strings.Join(allowLines(paths), "\n") + "\n"
+}
+
+// LocalPathsFromGraph collects the same allowlist as LocalPaths, but from a
+// lowered graph rather than the spec it came from.
+//
+// Two consumers need the allowlist and reach it by different routes: codegen
+// writes a .dockerignore beside a Dockerfile and holds the spec, while llbgen
+// filters an llb.Local and holds only the graph. Deriving the graph side from
+// the same recipe definitions that decide what each step stages — rather than
+// from a second list of "which recipes read files" — is what keeps the two
+// from disagreeing about which files a build may see. A path missing from one
+// of them is a file that exists for one backend and not the other.
+func LocalPathsFromGraph(g *ir.Graph) ([]string, error) {
+	seen := map[string]bool{}
+	var paths []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	// Walked per stage, copies before installs — the order LocalPaths visits
+	// the spec in, not the order the nodes sit in (where installs precede
+	// copies). Derive preserves the order it is given, so producing the same
+	// sequence here is what makes the two routes byte-identical rather than
+	// merely equivalent as sets. A "!" allowlist is last-match-wins, so equal
+	// sets in different orders are not something to rely on being the same
+	// filter.
+	start := 0
+	for si, st := range g.Stages {
+		if st.Final < start || st.Final >= len(g.Nodes) {
+			return nil, fmt.Errorf("stage %d: final node %d is outside the graph's %d nodes", si, st.Final, len(g.Nodes))
+		}
+		for i := start; i <= st.Final; i++ {
+			n := g.Nodes[i]
+			if n.Kind == ir.OpCopy && n.Copy != nil && n.Copy.FromLocal {
+				for _, p := range n.Copy.Paths {
+					add(p)
+				}
+			}
+		}
+		for i := start; i <= st.Final; i++ {
+			n := g.Nodes[i]
+			if n.Kind != ir.OpExec {
+				continue
+			}
+			if n.Exec == nil {
+				return nil, fmt.Errorf("node %d has kind %q but nil Exec payload", i, n.Kind)
+			}
+			staged, err := recipe.StagedFiles(n.Exec)
+			if err != nil {
+				return nil, fmt.Errorf("node %d: %w", i, err)
+			}
+			for _, p := range staged {
+				add(p)
+			}
+		}
+		start = st.Final + 1
+	}
+	return paths, nil
+}
+
+// Patterns returns the allowlist as the exclude-pattern list BuildKit applies
+// to a local source, which is the same matcher — "!" negations included — that
+// reads the .dockerignore file Derive writes. One derivation, two renderings.
+func Patterns(paths []string) []string {
+	for _, raw := range paths {
+		if isContextRoot(raw) {
+			return nil
+		}
+	}
+	return allowLines(paths)
+}
+
+func allowLines(paths []string) []string {
 	lines := []string{"*"}
 	seen := map[string]bool{}
 	add := func(p string) {
@@ -97,5 +176,5 @@ func Derive(paths []string) string {
 		add(p + "/")
 		add(p + "/**")
 	}
-	return strings.Join(lines, "\n") + "\n"
+	return lines
 }

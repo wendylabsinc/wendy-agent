@@ -94,6 +94,28 @@ type Step struct {
 
 func run(cmd ...string) Step { return Step{Run: &RunSpec{Command: cmd}} }
 
+// StagedFiles returns the build-context paths one exec op reads, or nil if it
+// reads none.
+//
+// It is deliberately independent of platform: what a recipe stages cannot vary
+// by architecture, and the derived build-context allowlist has no platform to
+// give. Deriving it from For's PreCopy — rather than from a second table of
+// "which recipes read files" — is what keeps the allowlist in step with the
+// recipes when one of them starts staging something new.
+func StagedFiles(x *ir.ExecOp) ([]string, error) {
+	steps, err := For(x, "")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, s := range steps {
+		if s.Run != nil && s.Run.PreCopy != nil {
+			paths = append(paths, s.Run.PreCopy.Paths...)
+		}
+	}
+	return paths, nil
+}
+
 // FetchFor translates a download node into the same Fetch shape a recipe's
 // own fetches use, so a backend has one fetch renderer rather than two.
 //
