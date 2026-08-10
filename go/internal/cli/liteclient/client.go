@@ -648,6 +648,32 @@ func (c *WendyLiteClient) sendConsoleDetach(eventID uint32, abrupt bool) error {
 	return nil
 }
 
+// ConsolePushStdinData injects data into the device's stdin. Fire-and-forget:
+// the device sends no acknowledgment.
+func (c *WendyLiteClient) ConsolePushStdinData(data []byte) error {
+	for len(data) > 0 {
+		n := min(len(data), c.link.maxChunk())
+		err := c.link.send(&wendypb.WendyComMessage{
+			Msg: &wendypb.WendyComMessage_Event{
+				Event: &wendypb.WendyComEvent{
+					Data: &wendypb.WendyComEvent_ConsoleData{
+						ConsoleData: &wendypb.WendyComConsoleData{
+							Io:   wendypb.WendyComConsoleIo_WENDY_COM_CONSOLE_IO_STANDARD_INPUT,
+							Gap:  false,
+							Data: data[:n],
+						},
+					},
+				},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		data = data[n:]
+	}
+	return nil
+}
+
 func resultToError(result wendypb.WendyComResult) error {
 	switch result {
 	case wendypb.WendyComResult_WENDY_COM_RESULT_OK:
