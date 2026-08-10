@@ -35,7 +35,7 @@ stages:
 		return "", fmt.Errorf("no fake digest for %q", ref)
 	}
 
-	dockerfile, dockerignore, err := compileFile(dir, "linux/arm64", "", "", fakeResolver, refuseHasher(t))
+	dockerfile, dockerignore, err := compileFile(dir, SourceName, "linux/arm64", "", "", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestCompileFileReusesExistingLockPin(t *testing.T) {
 		return "sha256:shouldnothappen", nil
 	}
 
-	dockerfile, _, err := compileFile(dir, "", "", "", fakeResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", fakeResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -98,14 +98,14 @@ func TestCompileFileReturnsErrorForInvalidSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := compileFile(dir, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
+	if _, _, err := compileFile(dir, SourceName, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error for an unsupported version, got nil")
 	}
 }
 
 func TestCompileFileReturnsErrorWhenSourceMissing(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, err := compileFile(dir, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
+	if _, _, err := compileFile(dir, SourceName, "", "", "", func(string) (string, error) { return "", nil }, refuseHasher(t)); err == nil {
 		t.Fatal("expected an error when build.stagefile.yaml is missing, got nil")
 	}
 }
@@ -166,7 +166,7 @@ func TestCompileFileSkipsResolutionForUnpinnedStage(t *testing.T) {
 		t.Fatalf("resolver must not be called for an unpinned ref, got %q", ref)
 		return "", nil
 	}
-	dockerfile, _, err := compileFile(dir, "", "", "", resolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", resolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}

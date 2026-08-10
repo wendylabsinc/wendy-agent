@@ -56,6 +56,15 @@ type options struct {
 	progress     func(url string)
 	gpuArch      string
 	buildProfile string
+	source       string
+}
+
+// WithSource names which Stagefile in dir to compile, for a project that
+// carries several (see SourceNames). Defaults to the canonical SourceName.
+// An unrecognised name is not silently ignored — CompileFile rejects it, so a
+// typo'd variant fails here rather than compiling the wrong file.
+func WithSource(name string) Option {
+	return func(o *options) { o.source = name }
 }
 
 // BuildProfileDebug and BuildProfileRelease are the two compile profiles a
@@ -98,19 +107,27 @@ func WithBuildProfile(profile string) Option {
 	}
 }
 
-// CompileFile reads build.stagefile.yaml from dir, resolves any missing
-// lockfile image refs against a live registry (existing pins are never
-// touched — only an explicit re-lock changes them), writes/updates
-// build.stagefile.lock.yaml in dir, and returns the compiled Dockerfile
-// text and the derived .dockerignore text.
+// CompileFile reads a Stagefile from dir — the canonical build.stagefile.yaml
+// unless WithSource names a variant — resolves any missing lockfile image refs
+// against a live registry (existing pins are never touched — only an explicit
+// re-lock changes them), writes/updates that source's lockfile in dir, and
+// returns the compiled Dockerfile text and the derived .dockerignore text.
 //
 // Safe to call concurrently for different directories: the lockfile and both
 // generated files are written via temp-file + rename, and the registry lookups
-// behind sharedResolver are deduplicated across callers.
+// behind sharedResolver are deduplicated across callers. Two variants in the
+// SAME directory are equally safe, because each owns a distinct lockfile.
 func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore string, err error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
+	}
+	source := o.source
+	if source == "" {
+		source = SourceName
+	}
+	if !IsSourceName(source) {
+		return "", "", fmt.Errorf("%q is not a Stagefile name: expected %s or a variant of it such as prod%s", source, SourceName, sourceSuffix)
 	}
 	hasher := sharedHasher
 	if o.progress != nil {
@@ -119,20 +136,35 @@ func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore
 			return sharedHasher(url)
 		}
 	}
-	return compileFile(dir, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
+	return compileFile(dir, source, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
 }
 
-// NeedsGPUTarget reports whether dir's Stagefile declares a cuda: stage, and
-// therefore cannot be compiled without knowing the GPU architecture it is
+// NeedsGPUTarget reports whether ANY Stagefile in dir declares a cuda: stage,
+// and therefore cannot be compiled without knowing the GPU architecture it is
 // being built for.
 //
 // The CLI asks before it compiles: a GPU project has to resolve its target
 // device first, while every other project keeps the cheaper ordering that
-// compiles without connecting to anything. A missing or unparseable Stagefile
-// is not this function's error to report — it answers false and lets the
-// compile produce the real diagnostic.
+// compiles without connecting to anything. Because the answer is needed before
+// the build file has been chosen, it deliberately spans the whole family rather
+// than one variant — the cost of being wrong is one extra GetAgentVersion RPC,
+// against a variant build that would otherwise fail with "a stage declares
+// cuda: but this build has no GPU target".
+//
+// A missing or unparseable Stagefile is not this function's error to report —
+// it answers false and lets the compile produce the real diagnostic.
 func NeedsGPUTarget(dir string) bool {
-	raw, err := os.ReadFile(filepath.Join(dir, "build.stagefile.yaml"))
+	for _, name := range SourceNames(dir) {
+		if NeedsGPUTargetFile(dir, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsGPUTargetFile is NeedsGPUTarget for one named Stagefile in dir.
+func NeedsGPUTargetFile(dir, source string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, source))
 	if err != nil {
 		return false
 	}
@@ -178,8 +210,8 @@ func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, 
 // compileFile is the resolver-injectable implementation behind
 // CompileFile, allowing tests to exercise it with a fake resolver and hasher
 // instead of a live registry and live URLs.
-func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
-	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
+func compileFile(dir, source, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+	sourcePath := filepath.Join(dir, source)
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return "", "", fmt.Errorf("reading %s: %w", sourcePath, err)
@@ -190,7 +222,7 @@ func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Reso
 	}
 	applyBuildProfile(f, buildProfile)
 
-	lockPath := filepath.Join(dir, "build.stagefile.lock.yaml")
+	lockPath := filepath.Join(dir, LockName(source))
 	existing, err := lock.Load(lockPath)
 	if err != nil {
 		return "", "", err

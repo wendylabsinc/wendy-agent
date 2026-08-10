@@ -226,7 +226,7 @@ func newBuildCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")

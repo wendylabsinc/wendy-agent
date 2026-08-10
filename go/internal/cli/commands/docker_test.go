@@ -3044,7 +3044,7 @@ func TestCompileStagefile_NoIgnoreFileWhenContextRootIsCopied(t *testing.T) {
 	stale := filepath.Join(dir, generatedDockerignoreName)
 	mustWrite(t, stale, "*\n!.\n!./\n!./**\n")
 
-	if _, err := compileStagefile(dir, ""); err != nil {
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -3066,7 +3066,7 @@ func TestCompileStagefile_WritesIgnoreFileForNamedPaths(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
 		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
 
-	if _, err := compileStagefile(dir, ""); err != nil {
+	if _, err := compileStagefile(dir, stagefileSourceName, ""); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, generatedDockerignoreName))

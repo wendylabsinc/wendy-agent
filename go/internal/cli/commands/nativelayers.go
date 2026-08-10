@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/gzip"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
@@ -59,10 +60,14 @@ func nativeDepsHash(cwd, dockerfile, platform string, buildArgs map[string]strin
 	h.Write(dfData)
 
 	// The lockfile pins base-image digests; absent is a valid state (hashed as
-	// absent — creating it later changes the hash, correctly).
-	if lockData, err := os.ReadFile(filepath.Join(cwd, stagefileLockName)); err == nil {
-		fmt.Fprintf(h, "lock %d\n", len(lockData))
-		h.Write(lockData)
+	// absent — creating it later changes the hash, correctly). Each Stagefile
+	// variant owns its own lockfile, so hash the one belonging to the source
+	// this dockerfile was compiled from, not whichever happens to be canonical.
+	if source, ok := stagefileSourceForGenerated(dockerfile); ok {
+		if lockData, err := os.ReadFile(filepath.Join(cwd, stagefile.LockName(source))); err == nil {
+			fmt.Fprintf(h, "lock %d\n", len(lockData))
+			h.Write(lockData)
+		}
 	}
 
 	for _, p := range nativeDepsPaths(sf) {
@@ -233,10 +238,11 @@ func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 	if os.Getenv(nativeLayersEnv) == "off" {
 		return nil, false
 	}
-	if filepath.Base(dockerfile) != generatedDockerfileName {
+	source, ok := stagefileSourceForGenerated(dockerfile)
+	if !ok {
 		return nil, false
 	}
-	data, err := os.ReadFile(filepath.Join(cwd, stagefileSourceName))
+	data, err := os.ReadFile(filepath.Join(cwd, source))
 	if err != nil {
 		return nil, false
 	}

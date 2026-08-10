@@ -54,7 +54,7 @@ func newFleetRunCmd() *cobra.Command {
 	// A focused subset of `wendy run` build flags (logs/streaming/picker flags
 	// don't apply to a fan-out deploy).
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type when ambiguous: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile/Containerfile to build from")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force: docker or apple-container")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging + host networking")

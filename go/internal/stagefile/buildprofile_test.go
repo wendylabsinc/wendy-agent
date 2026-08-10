@@ -34,7 +34,7 @@ stages:
       lang: rust
       profile: release
 `)
-	dockerfile, _, err := compileFile(dir, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -61,7 +61,7 @@ stages:
     build:
       lang: swift
 `)
-	dockerfile, _, err := compileFile(dir, "", "", "", anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", "", anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}
@@ -84,7 +84,7 @@ stages:
     build:
       lang: go
 `)
-	dockerfile, _, err := compileFile(dir, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
+	dockerfile, _, err := compileFile(dir, SourceName, "", "", BuildProfileDebug, anyDigestResolver, refuseHasher(t))
 	if err != nil {
 		t.Fatalf("compileFile: %v", err)
 	}

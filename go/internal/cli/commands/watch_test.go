@@ -14,12 +14,19 @@ func TestWatchShouldIgnore(t *testing.T) {
 		// Artifacts the deploy pipeline writes into the watched root on every
 		// build — reacting to them would cancel each deploy from inside itself.
 		{generatedDockerfileName, true},
-		{stagefileLockName, true},
+		{generatedDockerignoreName, true},
+		{"build.stagefile.lock.yaml", true},
 		{"api/" + generatedDockerfileName, true},
+		// ...including the artifacts of every Stagefile variant.
+		{"Dockerfile.generated.prod", true},
+		{"Dockerfile.generated.prod.dockerignore", true},
+		{"prod.stagefile.lock.yaml", true},
 		// Real sources must keep triggering redeploys.
 		{stagefileSourceName, false},
+		{"prod.stagefile.yaml", false},
 		{"main.py", false},
 		{"Dockerfile", false},
+		{"Dockerfile.prod", false},
 		// Editor droppings and ignored dirs.
 		{"main.py~", true},
 		{".git/HEAD", true},
