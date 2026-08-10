@@ -3267,19 +3267,28 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	return ""
 }
 
+// swiftBuildConfig maps the --debug flag onto a SwiftPM build configuration.
+func swiftBuildConfig(debug bool) string {
+	if debug {
+		return "debug"
+	}
+	return "release"
+}
+
 // buildSwiftDockerImage cross-compiles a Swift package for Linux and builds a
 // Docker image containing the resulting binary. Returns the Docker image name.
 // Used for Swift projects that do not have a Dockerfile (Docker provider,
-// local build path, and provider-build path).
-func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
+// local build path, and provider-build path). buildConfig is the SwiftPM
+// configuration to compile with — use swiftBuildConfig to derive it from --debug.
+func buildSwiftDockerImage(ctx context.Context, dir, product, arch, buildConfig string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
 	sdk, err := swifttoolchain.FindSwiftSDK(ctx, arch, toolchainStdout, toolchainStderr)
 	if err != nil {
 		return "", fmt.Errorf("finding Swift SDK: %w", err)
 	}
 
-	cliLogln("Cross-compiling %s for linux/%s...", product, arch)
+	cliLogln("Cross-compiling %s for linux/%s (%s)...", product, arch, buildConfig)
 	buildCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--product", product)
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--product", product)
 	buildCmd.Dir = dir
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
@@ -3289,7 +3298,7 @@ func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolc
 
 	// Determine the binary output path.
 	showBinCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--show-bin-path")
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--show-bin-path")
 	showBinCmd.Dir = dir
 	out, err := showBinCmd.CombinedOutput()
 	if err != nil {

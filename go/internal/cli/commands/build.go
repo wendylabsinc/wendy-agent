@@ -129,7 +129,7 @@ func newBuildCmd() *cobra.Command {
 						cliLogln("Building Swift project for %s...", target.Provider.DisplayName())
 						// runtime.GOARCH is correct here: Docker Desktop loads images into the
 						// host daemon, so the image must match the host architecture.
-						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, &dimWriter{}, os.Stderr); err != nil {
+						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, swiftBuildConfig(opts.debug), &dimWriter{}, os.Stderr); err != nil {
 							return fmt.Errorf("building Swift Docker image: %w", err)
 						}
 						cliSuccess("Build completed successfully.")
@@ -220,6 +220,7 @@ func newBuildCmd() *cobra.Command {
 
 			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder,
 				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)),
+				opts.debug,
 				debugStagefileOptions(opts.debug)...)
 		},
 	}
@@ -478,7 +479,7 @@ func detectProjectTypeWithLanguage(dir, language string) string {
 	return t
 }
 
-func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder, gpuArch string, sfOpts ...stagefile.Option) error {
+func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder, gpuArch string, debug bool, sfOpts ...stagefile.Option) error {
 	imageName := strings.ToLower(appID) + ":latest"
 	normalizedBuilder, err := normalizeImageBuilder(builder)
 	if err != nil {
@@ -507,7 +508,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 		}
-		return buildSwiftContainerProject(ctx, dir, appID, platform)
+		return buildSwiftContainerProject(ctx, dir, appID, platform, debug)
 	case "xcode":
 		if normalizedBuilder == imageBuilderAppleContainer {
 			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
@@ -679,7 +680,7 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 	return nil
 }
 
-func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string) error {
+func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string, debug bool) error {
 	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
@@ -695,7 +696,7 @@ func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string
 		arch = parts[1]
 	}
 
-	if _, err := buildSwiftDockerImage(ctx, dir, product, arch, &dimWriter{}, os.Stderr); err != nil {
+	if _, err := buildSwiftDockerImage(ctx, dir, product, arch, swiftBuildConfig(debug), &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
 	cliSuccess("Build completed successfully.")
