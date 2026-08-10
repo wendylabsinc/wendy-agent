@@ -49,8 +49,15 @@ func newDeviceShellCmd() *cobra.Command {
 
 func runDeviceShell(cmd *cobra.Command, shellCmd []string) error {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return fmt.Errorf("device shell requires an interactive terminal")
+	interactive := term.IsTerminal(fd)
+
+	// A login shell genuinely needs a terminal — there is nothing to drive it
+	// otherwise. A one-off `-- command` does not: it is the natural way to run
+	// something on the device from a script, from CI, or from an AI agent, and
+	// refusing it forces every such caller to shell out to a human. Only the
+	// no-command form still requires a TTY.
+	if !interactive && len(shellCmd) == 0 {
+		return fmt.Errorf("device shell requires an interactive terminal (pass `-- command...` to run a single command non-interactively)")
 	}
 
 	ctx := cmd.Context()
@@ -74,29 +81,44 @@ func runDeviceShell(cmd *cobra.Command, shellCmd []string) error {
 		return stream.Send(req)
 	}
 
-	rows, cols := termSize(fd)
+	var rows, cols uint32 = 24, 80
+	if interactive {
+		rows, cols = termSize(fd)
+	}
 	if err := send(buildShellStart(shellCmd, rows, cols)); err != nil {
 		return fmt.Errorf("sending shell start: %w", err)
 	}
 
-	oldState, rawErr := term.MakeRaw(fd)
-	if rawErr == nil {
-		defer func() { _ = term.Restore(fd, oldState) }()
+	if interactive {
+		oldState, rawErr := term.MakeRaw(fd)
+		if rawErr == nil {
+			defer func() { _ = term.Restore(fd, oldState) }()
+		}
+
+		// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on Windows).
+		winch := make(chan os.Signal, 1)
+		stopResize := notifyTerminalResize(winch)
+		defer stopResize()
+		go func() {
+			for range winch {
+				r, c := termSize(fd)
+				_ = send(shellWinSizeFrame(r, c))
+			}
+		}()
 	}
 
-	// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on Windows).
-	winch := make(chan os.Signal, 1)
-	stopResize := notifyTerminalResize(winch)
-	defer stopResize()
+	// stdin -> stream. With no terminal there is nothing to forward, and
+	// leaving the send side open makes the remote command wait forever on
+	// input that will never arrive — so close it straight away.
+	if !interactive {
+		sendMu.Lock()
+		_ = stream.CloseSend()
+		sendMu.Unlock()
+	}
 	go func() {
-		for range winch {
-			r, c := termSize(fd)
-			_ = send(shellWinSizeFrame(r, c))
+		if !interactive {
+			return
 		}
-	}()
-
-	// stdin -> stream.
-	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, rerr := os.Stdin.Read(buf)

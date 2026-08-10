@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -79,5 +81,39 @@ func TestConfirmNoDefault_CtrlCCancels(t *testing.T) {
 	}
 	if cm.answered {
 		t.Error("Ctrl+C should not mark the prompt answered")
+	}
+}
+
+// A prompt with no terminal must fail fast rather than hang. Under `go test`
+// stdin is not a character device, so the default (no program options) path is
+// exactly the non-interactive case an agent or CI job hits.
+func TestConfirmWithoutTerminalReturnsErrNotInteractive(t *testing.T) {
+	for name, fn := range map[string]func(string, ...tea.ProgramOption) (bool, error){
+		"Confirm":                Confirm,
+		"ConfirmDefaultYes":      ConfirmDefaultYes,
+		"ConfirmNoDefault":       ConfirmNoDefault,
+		"ConfirmNoDefaultDanger": ConfirmNoDefaultDanger,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, err := fn("proceed?")
+			if !errors.Is(err, ErrNotInteractive) {
+				t.Fatalf("expected ErrNotInteractive, got ok=%v err=%v", ok, err)
+			}
+			if ok {
+				t.Fatal("a prompt that could not be shown must never report confirmation")
+			}
+		})
+	}
+}
+
+// Callers that supply their own input keep working with no terminal attached —
+// the guard must not break ConfirmWithIO or the existing tests.
+func TestConfirmWithIOStillWorksWithoutTerminal(t *testing.T) {
+	ok, err := ConfirmWithIO("proceed?", strings.NewReader("y"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected confirmation from supplied input")
 	}
 }

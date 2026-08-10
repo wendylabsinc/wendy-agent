@@ -3,9 +3,11 @@ package tui
 import (
 	"fmt"
 	"io"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"golang.org/x/term"
 )
 
 // ConfirmModel is a Bubble Tea model for styled yes/no prompts.
@@ -142,7 +144,23 @@ func (m ConfirmModel) Cancelled() bool {
 	return m.quitting
 }
 
+// stdinIsTerminal reports whether stdin is a real terminal.
+//
+// This deliberately uses term.IsTerminal rather than checking
+// os.ModeCharDevice: /dev/null IS a character device, so the mode check reports
+// "terminal" for the single most common non-interactive stdin there is — which
+// is how `go test` runs, and how many CI runners invoke commands.
+func stdinIsTerminal() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
 func runConfirm(m ConfirmModel, programOpts []tea.ProgramOption) (bool, error) {
+	// Only guard the default path. Callers that supply their own program
+	// options (ConfirmWithIO, tests) have deliberately provided an input
+	// source and must keep working with no terminal attached.
+	if len(programOpts) == 0 && !stdinIsTerminal() {
+		return false, ErrNotInteractive
+	}
 	p := tea.NewProgram(m, programOpts...)
 	result, err := p.Run()
 	if err != nil {
