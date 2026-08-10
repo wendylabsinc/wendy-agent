@@ -13,6 +13,56 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+const (
+	// restartBackoffBase is the delay before the second restart of a container
+	// that keeps failing; each subsequent restart doubles it.
+	restartBackoffBase = 10 * time.Second
+	// restartBackoffCap ceilings the doubling. The monitor never gives up on a
+	// crash-looping container — unattended devices must self-heal when a
+	// dependency (network, camera, USB peripheral) comes back — so it keeps
+	// retrying at this interval indefinitely.
+	restartBackoffCap = 5 * time.Minute
+	// restartStabilityWindow is how long a container must be observed RUNNING
+	// continuously before its backoff resets. It is deliberately much longer
+	// than the tick interval: a container that starts, is seen running once,
+	// and dies is still crash-looping, and resetting on that sighting would
+	// pin the delay at the base forever.
+	restartStabilityWindow = 60 * time.Second
+)
+
+// restartDelay returns how long to wait before the next restart of a container
+// that has already been restarted level times, doubling from restartBackoffBase
+// and clamping at restartBackoffCap:
+//
+//	level: 0   1     2     3     4     5      6+
+//	delay: 0   10s   20s   40s   80s   160s   5m
+//
+// Level 0 (the first restart after a crash) is immediate and level 1 is 10s,
+// preserving the pre-backoff timing for the first two attempts so a transient
+// crash still recovers promptly.
+func restartDelay(level int) time.Duration {
+	if level <= 0 {
+		return 0
+	}
+	// Doubling by repeated multiplication with an early exit rather than
+	// `base << (level-1)`: level is unbounded (a container can loop for days),
+	// and a shift that large silently wraps — on a 64-bit int the delay would
+	// come back as 0 and restore the unthrottled every-tick restart this
+	// exists to prevent. The loop cannot run more than a handful of times
+	// because it returns the moment the cap is reached.
+	d := restartBackoffBase
+	for i := 0; i < level-1; i++ {
+		if d >= restartBackoffCap {
+			return restartBackoffCap
+		}
+		d *= 2
+	}
+	if d > restartBackoffCap {
+		return restartBackoffCap
+	}
+	return d
+}
+
 // RestartPolicy determines the container restart behavior.
 type RestartPolicy int
 
@@ -65,6 +115,15 @@ type containerState struct {
 	ExplicitStop  bool
 	RestartPolicy RestartPolicy
 	MaxRetries    int
+	// BackoffLevel is the number of restarts performed since the last reset,
+	// driving the delay before the next one (see restartDelay). It is distinct
+	// from FailureCount, which stays cumulative because it is user-visible
+	// through RestartStatuses.
+	BackoffLevel int
+	// RunningSince is when the container was first observed RUNNING since its
+	// last restart, or zero while it is not running. Once it has been running
+	// for restartStabilityWindow the backoff resets.
+	RunningSince time.Time
 }
 
 // ContainerMonitor monitors container health and implements restart policies.
@@ -87,6 +146,10 @@ type ContainerMonitor struct {
 	suppressed map[string]int
 	mu         sync.Mutex
 	interval   time.Duration
+	// now is the monitor's clock, defaulting to time.Now. Restart backoff is
+	// measured in minutes, so tests override this to drive the curve
+	// deterministically instead of sleeping.
+	now func() time.Time
 }
 
 func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, logManager *services.ContainerLogManager, interval time.Duration) *ContainerMonitor {
@@ -101,6 +164,7 @@ func NewContainerMonitor(logger *zap.Logger, client services.ContainerdClient, l
 		groupRestarting: make(map[string]bool),
 		suppressed:      make(map[string]int),
 		interval:        interval,
+		now:             time.Now,
 	}
 }
 
@@ -520,11 +584,31 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// One clock reading for the whole pass so every container is judged
+	// against the same instant.
+	now := m.now()
 	var toRestart []string
 	for appName, state := range m.states {
 		if running[appName] {
+			// Track how long it has been up. A container that comes back and
+			// stays up is healthy, and its next failure should restart
+			// promptly rather than inherit the accumulated delay — but only
+			// sustained health counts. The monitor ticks every few seconds, so
+			// resetting on the first RUNNING sighting would hand a free reset
+			// to a container that starts, is seen once, and dies; its backoff
+			// would stay pinned at the base forever.
+			if state.RunningSince.IsZero() {
+				state.RunningSince = now
+			} else if now.Sub(state.RunningSince) >= restartStabilityWindow {
+				// FailureCount is deliberately not reset: it is user-visible
+				// through RestartStatuses as the app's cumulative failure
+				// tally.
+				state.BackoffLevel = 0
+			}
 			continue
 		}
+		// Down: any partial stability streak is void.
+		state.RunningSince = time.Time{}
 		if m.suppressed[appName] > 0 {
 			// A replace/stop operation is mid-teardown of this container; see
 			// Suppress. Skip it this tick — the caller will resume suppression
@@ -535,15 +619,23 @@ func (m *ContainerMonitor) planRestarts(containers []*agentpb.AppContainer) []st
 		if !m.shouldRestart(state) {
 			continue
 		}
-		if time.Since(state.LastRestart) < 10*time.Second {
+		delay := restartDelay(state.BackoffLevel)
+		if now.Sub(state.LastRestart) < delay {
 			continue
 		}
 		m.logger.Info("Restarting container",
 			zap.String("app_name", appName),
 			zap.Int("failure_count", state.FailureCount),
+			zap.Duration("backoff", delay),
 		)
 		state.FailureCount++
-		state.LastRestart = time.Now()
+		state.LastRestart = now
+		// Stop counting at the ceiling: past it the delay no longer changes,
+		// and an ever-growing level on a container that loops for days is just
+		// an overflow waiting to happen.
+		if delay < restartBackoffCap {
+			state.BackoffLevel++
+		}
 		toRestart = append(toRestart, appName)
 	}
 	return toRestart
