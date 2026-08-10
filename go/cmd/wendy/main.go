@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
 	"github.com/wendylabsinc/wendy/go/internal/cli/commands"
+	"github.com/wendylabsinc/wendy/go/internal/cli/memguard"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
@@ -21,6 +22,11 @@ import (
 
 func main() {
 	start := time.Now()
+	// Before anything else, so a leak during command construction or prerun is
+	// caught too. A trip kills the process outright, which means no analytics
+	// event and no error message from below — the heap profile it leaves behind
+	// is the report.
+	memguard.Start()
 	cmd := commands.NewRootCmd()
 
 	// Reject an unknown subcommand before cobra can quietly answer it with the

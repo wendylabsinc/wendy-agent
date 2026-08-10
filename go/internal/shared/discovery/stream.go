@@ -675,7 +675,10 @@ func (s *lanStream) scheduleProbe(key string, st *lanDeviceState) {
 		}
 		defer func() { <-s.sem }()
 
-		probeCtx, cancel := context.WithTimeout(s.ctx, probeTimeout)
+		// Marked so the prober's dial path cannot fall back to another mDNS
+		// browse, which would start a fresh discovery session and probe from
+		// there — see WithinProbe.
+		probeCtx, cancel := context.WithTimeout(WithinProbe(s.ctx), probeTimeout)
 		defer cancel()
 		probed, err := prober(probeCtx, dev)
 
