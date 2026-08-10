@@ -79,31 +79,78 @@ func (d Defaults) IsDefault(n Node) bool {
 	return n.Name != "" && n.Name == d.SourceName
 }
 
-// RuntimeDir returns the directory holding the user session's PipeWire socket,
-// or "" when no session is up. Only the socket owned by the "wendy" user is
-// trusted: on a multi-user host, any local UID can create a session under
-// /run/user/<uid>, and root blindly following the first glob match would let
-// that UID influence the agent's audio graph operations.
-func RuntimeDir() string {
+// session locates the user session's PipeWire socket directory. It returns
+// either a directory and an empty reason, or an empty directory and a reason
+// naming the precondition that failed.
+//
+// The reason exists because "no session" is three different situations — no
+// "wendy" account, no socket, or a socket owned by someone else — and a caller
+// that sees only "" reports the same thing for all three. Each is a distinct
+// misconfiguration, and an operator can only act on the one that applies.
+//
+// Only the socket owned by the "wendy" user is trusted: on a multi-user host,
+// any local UID can create a session under /run/user/<uid>, and root blindly
+// following the first glob match would let that UID influence the agent's
+// audio graph operations.
+func session() (dir, reason string) {
 	uid, ok := expectedUID()
 	if !ok {
-		return ""
+		return "", `no local user "wendy" (PipeWire runs in that user's session)`
 	}
 	matches, _ := filepath.Glob(SocketGlob)
+	// Tracked so a candidate that exists but is unusable can be reported for
+	// what it is: a socket owned by the wrong UID is a very different fault
+	// from no socket at all, and conflating them sends an operator looking in
+	// the wrong place.
+	var rejected string
 	for _, m := range matches {
 		// Lstat, not Stat: a symlink swapped in after the glob must not be
 		// followed to a socket outside the expected session.
 		fi, err := os.Lstat(m)
-		if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		if err != nil {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s could not be read: %v", m, err)
+			}
+			continue
+		}
+		if fi.Mode()&os.ModeSocket == 0 {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s is not a socket", m)
+			}
 			continue
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != uid {
+		if !ok {
 			continue
 		}
-		return filepath.Dir(m)
+		if st.Uid != uid {
+			if rejected == "" {
+				rejected = fmt.Sprintf("%s is owned by uid %d, expected the \"wendy\" user (uid %d)", m, st.Uid, uid)
+			}
+			continue
+		}
+		return filepath.Dir(m), ""
 	}
-	return ""
+	if rejected != "" {
+		return "", rejected
+	}
+	return "", fmt.Sprintf("no socket matching %s (is pipewire-user-setup.service running?)", SocketGlob)
+}
+
+// RuntimeDir returns the directory holding the user session's PipeWire socket,
+// or "" when no session is up. Use UnavailableReason to find out why.
+func RuntimeDir() string {
+	dir, _ := session()
+	return dir
+}
+
+// UnavailableReason explains why no PipeWire session was usable, or "" when one
+// is. Callers put it in log lines and error messages so a fallback to ALSA
+// states its cause rather than asserting, unprovably, that nothing is running.
+// Behind a var so tests can pair it with a stubbed Available.
+var UnavailableReason = func() string {
+	_, reason := session()
+	return reason
 }
 
 // Available reports whether a PipeWire user session is up. Callers use this

@@ -37,17 +37,45 @@ var AmixerRun = func(ctx context.Context, args ...string) ([]byte, error) {
 	return exec.CommandContext(ctx, "amixer", args...).CombinedOutput()
 }
 
-// EncodeAlsaID and DecodeAlsaID convert between an ALSA card/device pair and
-// the Node.ID used to address it, so 0 remains the "unspecified" sentinel
-// callers already use for PipeWire node IDs.
-func EncodeAlsaID(card, device uint64) uint32 { return uint32(((card << 8) | device) + 1) }
+// Layout of the Node.ID an ALSA endpoint encodes to: device in the low 8 bits,
+// card in the next 16, direction in the bit above.
+//
+// Direction has to be part of the ID because a card/device pair does not
+// identify one endpoint. A duplex device — a USB speakerphone, say — is
+// reported as the same card and device by both aplay -l and arecord -l, so an
+// ID built from card and device alone names its playback and capture halves at
+// once, and FindNode resolves it to whichever one the sort happened to place
+// first.
+const (
+	alsaDeviceBits = 8
+	alsaCardBits   = 16
+	alsaDeviceMask = 1<<alsaDeviceBits - 1
+	alsaCardMask   = 1<<alsaCardBits - 1
+	// alsaSourceFlag marks a capture endpoint; sinks leave it clear.
+	alsaSourceFlag = uint64(1) << (alsaDeviceBits + alsaCardBits)
+)
 
-func DecodeAlsaID(id uint32) (card, device uint64) {
+// EncodeAlsaID and DecodeAlsaID convert between an ALSA card/device/direction
+// triple and the Node.ID used to address it, so 0 remains the "unspecified"
+// sentinel callers already use for PipeWire node IDs.
+func EncodeAlsaID(card, device uint64, isSink bool) uint32 {
+	encoded := ((card & alsaCardMask) << alsaDeviceBits) | (device & alsaDeviceMask)
+	if !isSink {
+		encoded |= alsaSourceFlag
+	}
+	return uint32(encoded + 1)
+}
+
+// DecodeAlsaID reverses EncodeAlsaID. The zero sentinel decodes to card 0,
+// device 0; its direction is meaningless and callers must not read it.
+func DecodeAlsaID(id uint32) (card, device uint64, isSink bool) {
 	if id == 0 {
-		return 0, 0
+		return 0, 0, false
 	}
 	encoded := uint64(id) - 1
-	return encoded >> 8, encoded & 0xFF
+	card = (encoded >> alsaDeviceBits) & alsaCardMask
+	device = encoded & alsaDeviceMask
+	return card, device, encoded&alsaSourceFlag == 0
 }
 
 // parseAlsaList parses the output of "aplay -l" or "arecord -l": lines of the
@@ -79,7 +107,7 @@ func parseAlsaList(output string, isSink bool) []Node {
 			}
 		}
 		nodes = append(nodes, Node{
-			ID: EncodeAlsaID(card, device),
+			ID: EncodeAlsaID(card, device, isSink),
 			// plughw, not hw: the plug layer handles format conversion a
 			// card's native rate/format may not support directly.
 			Name:        fmt.Sprintf("plughw:%d,%d", card, device),
@@ -115,7 +143,12 @@ func ListAlsaNodes(ctx context.Context) ([]Node, error) {
 	if len(nodes) == 0 && firstErr != nil {
 		return nil, fmt.Errorf("querying ALSA: %w", firstErr)
 	}
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	// SliceStable, not Slice: an unstable sort leaves the order of any two
+	// nodes that compare equal up to the algorithm, which is how a duplicate ID
+	// used to resolve to an arbitrary one of the two nodes carrying it. IDs are
+	// unique now, so this is belt and braces — but it costs nothing and keeps a
+	// listing reproducible if a future card ever collides again.
+	sort.SliceStable(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
 	return nodes, nil
 }
 
