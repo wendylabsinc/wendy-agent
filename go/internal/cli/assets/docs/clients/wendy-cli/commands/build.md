@@ -20,7 +20,7 @@ The build command is mainly used to verify your app can build/compile.
 - **Compose projects** — applies to services built from a Stagefile.
 - **Swift packages without a build file** — the host cross-compile runs `swift build -c debug`.
 
-Hand-written Dockerfiles are not rewritten. `--debug` reaches them only as the `WENDY_DEBUG` build-arg (see the build-arg table below); branch on it in a `RUN` step to make it take effect.
+Hand-written Dockerfiles are not rewritten, and `wendy build` passes no build-args, so `--debug` has no effect on them here. To gate a hand-written Dockerfile on it, branch on the `WENDY_DEBUG` build-arg that [`wendy run`](run.md) passes (see the build-arg table below).
 
 The same flag on [`wendy run`](run.md) and `wendy fleet run` additionally enables debug logging, and on `fleet run` host networking. On `wendy build` it only selects the build configuration.
 
@@ -48,7 +48,7 @@ If multiple manifests are present you can override detection with `--build-type`
 
 ### Dockerfile and Containerfile projects
 
-`wendy build` invokes an image builder targeting the device's CPU architecture. It passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them:
+`wendy build` invokes an image builder targeting the device's CPU architecture. [`wendy run`](run.md) passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them. `wendy build` compiles the same image but passes no build-args, so a Dockerfile that branches on them takes its `ARG` defaults here:
 
 On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
 installed, Wendy tries Apple Container first for Dockerfile and
