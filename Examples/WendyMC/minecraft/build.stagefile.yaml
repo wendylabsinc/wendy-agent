@@ -7,6 +7,16 @@ stages:
     # them as build args. Declaring them as args with defaults and then
     # exporting them as env is the whole file — there is no source to copy and
     # no command to run.
+    #
+    # RCON_PASSWORD is a demo default, not a secret. It is baked into the image
+    # as an ENV, so it is readable by anyone who can run `docker history` or
+    # unpack a layer, and RCON grants full remote server console. That is
+    # tolerable only because this example binds RCON to 127.0.0.1 on a host
+    # network. CHANGE IT — via `--build-arg RCON_PASSWORD=...`, and in
+    # ../webui, which must match — before exposing this server to anything.
+    # Baking it in at build time is inherited from the Dockerfile this
+    # replaced; a runtime secret is the real fix and is not something the
+    # build file can provide.
     args:
       EULA: "TRUE"
       TYPE: PAPER
