@@ -1,0 +1,14 @@
+version: 1
+# This example is a negative fixture for wendy.json validation: its
+# entitlement carries both a stray "network" key and a "mode" key, and the
+# point is that `wendy` rejects the config before any build starts. The
+# Dockerfile this replaced was a single empty line — a placeholder that made
+# the directory look like a container project, nothing more.
+#
+# There is no application here, so this is the smallest Stagefile that
+# compiles: enough for detection to classify the project, never reached
+# because config validation fails first.
+stages:
+  - name: app
+    from: debian:12-slim
+    cmd: [/bin/true]

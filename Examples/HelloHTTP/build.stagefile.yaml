@@ -1,0 +1,23 @@
+version: 1
+stages:
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: HelloHTTP
+  - name: app
+    from: swift:6.3.2-noble-slim
+    copy:
+      - from: build
+        paths: [/build/.build/release/HelloHTTP]
+        dest: /HelloHTTP
+    # Serves on :8080, which is above 1024, so the compiler's non-root default
+    # can bind it.
+    cmd: [/HelloHTTP]

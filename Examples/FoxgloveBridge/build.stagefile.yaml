@@ -1,0 +1,34 @@
+version: 1
+stages:
+  - name: foxglove
+    # ros:humble already carries the ROS 2 apt sources, so these package names
+    # resolve without a declared repository.
+    from: ros:humble
+    install:
+      apt:
+        packages:
+          - ros-humble-foxglove-bridge
+          - ros-humble-rmw-cyclonedds-cpp
+          # Add the robot's custom message packages here so their schemas
+          # render in Foxglove Studio, e.g. ros-humble-unitree-go — otherwise
+          # custom types show up but can't be deserialized.
+    # ros2 resolves its packages from environment the setup script exports, so
+    # the command has to run with that sourced. entrypoint.source is a bash
+    # source-then-exec wrapper: the argv below is passed through untouched as
+    # "$@" and is never parsed by the shell.
+    #
+    # This replaces the base image's own /ros_entrypoint.sh, which sourced the
+    # same file — nothing else in it is load-bearing here.
+    entrypoint:
+      source: /opt/ros/humble/setup.bash
+      exec:
+        - ros2
+        - launch
+        - foxglove_bridge
+        - foxglove_bridge_launch.xml
+        - "port:=8765"
+        - "address:=0.0.0.0"
+    # ros:humble declares no user, so the Dockerfile this replaced ran as root
+    # and ROS 2 wrote its logs to /root/.ros that way. The compiler's non-root
+    # default has no home directory, which rmw/rcl treat as a hard error.
+    user: root
