@@ -541,11 +541,22 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 // Both branches write to the same generated filename — detectBuildOptions
 // already excludes it from re-entering detection as a rival build file, so
 // this covers both origins with one exclusion.
-func prepareDockerBuildFile(dir, dockerfile, gpuArch string) (string, error) {
+func prepareDockerBuildFile(dir, dockerfile, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
 	if dockerfile == stagefileSourceName {
-		return compileStagefile(dir, gpuArch)
+		return compileStagefile(dir, gpuArch, sfOpts...)
 	}
 	return applySafeOptimizeFixes(dir, dockerfile)
+}
+
+// debugStagefileOptions is the Stagefile compile options implied by --debug:
+// build swift and rust stages unoptimized so the deployed binary is debuggable.
+// Without the flag it returns nothing, leaving whatever profile the Stagefile
+// declares (which itself defaults to release) untouched.
+func debugStagefileOptions(debug bool) []stagefile.Option {
+	if !debug {
+		return nil
+	}
+	return []stagefile.Option{stagefile.WithBuildProfile(stagefile.BuildProfileDebug)}
 }
 
 // hasContainerBuildFile reports whether dir holds any docker build source
@@ -626,16 +637,21 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 // compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
 // "Dockerfile.generated" and ".dockerignore" into dir and returning the
 // generated Dockerfile's filename.
-func compileStagefile(dir, gpuArch string) (string, error) {
+func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
 	// A download with no sha256 in the Stagefile is pinned by fetching it
 	// once, here, inline in the build. For model weights that is minutes of
 	// silence on the first build, so say which URL is being pinned rather
 	// than let it look like a hang.
-	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "",
+	//
+	// sfOpts comes last so a caller-supplied override (--debug's build profile)
+	// wins over the defaults assembled here.
+	opts := append([]stagefile.Option{
 		stagefile.WithGPUArch(gpuArch),
 		stagefile.WithProgress(func(url string) {
 			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
-		}))
+		}),
+	}, sfOpts...)
+	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "", opts...)
 	if err != nil {
 		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
 	}
@@ -704,7 +720,7 @@ func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
 	return generatedDockerfileName, nil
 }
 
-func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string) (string, error) {
+func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
 	if requested != "" {
 		if err := validateDockerfileName(requested); err != nil {
 			return "", err
@@ -726,7 +742,7 @@ func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return prepareDockerBuildFile(cwd, file, gpuArch)
+		return prepareDockerBuildFile(cwd, file, gpuArch, sfOpts...)
 	}
 
 	if len(dockerfiles) <= 1 {
@@ -1824,7 +1840,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
-		"--progress", "plain",
+		"--progress", buildxProgressMode(ctx),
 	}
 	if dockerfile != "" {
 		// Callers validate the filename at their own boundary: the CLI flag path
@@ -3251,19 +3267,28 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	return ""
 }
 
+// swiftBuildConfig maps the --debug flag onto a SwiftPM build configuration.
+func swiftBuildConfig(debug bool) string {
+	if debug {
+		return "debug"
+	}
+	return "release"
+}
+
 // buildSwiftDockerImage cross-compiles a Swift package for Linux and builds a
 // Docker image containing the resulting binary. Returns the Docker image name.
 // Used for Swift projects that do not have a Dockerfile (Docker provider,
-// local build path, and provider-build path).
-func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
+// local build path, and provider-build path). buildConfig is the SwiftPM
+// configuration to compile with — use swiftBuildConfig to derive it from --debug.
+func buildSwiftDockerImage(ctx context.Context, dir, product, arch, buildConfig string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
 	sdk, err := swifttoolchain.FindSwiftSDK(ctx, arch, toolchainStdout, toolchainStderr)
 	if err != nil {
 		return "", fmt.Errorf("finding Swift SDK: %w", err)
 	}
 
-	cliLogln("Cross-compiling %s for linux/%s...", product, arch)
+	cliLogln("Cross-compiling %s for linux/%s (%s)...", product, arch, buildConfig)
 	buildCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--product", product)
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--product", product)
 	buildCmd.Dir = dir
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
@@ -3273,7 +3298,7 @@ func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolc
 
 	// Determine the binary output path.
 	showBinCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--show-bin-path")
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--show-bin-path")
 	showBinCmd.Dir = dir
 	out, err := showBinCmd.CombinedOutput()
 	if err != nil {

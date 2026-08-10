@@ -21,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -168,7 +169,7 @@ type servicePlan struct {
 // plan as "don't skip this service, and don't reuse anything for it", so the
 // real error surfaces from the build path instead of aborting the whole group
 // during planning.
-func computeServicePlans(cwd, platform, gpuArch string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) map[string]servicePlan {
+func computeServicePlans(cwd, platform, gpuArch string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string, sfOpts ...stagefile.Option) map[string]servicePlan {
 	var mu sync.Mutex
 	plans := make(map[string]servicePlan, len(services))
 
@@ -180,7 +181,7 @@ func computeServicePlans(cwd, platform, gpuArch string, appCfg *appconfig.AppCon
 			defer func() { <-sem }()
 
 			contextDir := filepath.Join(cwd, svc.Context)
-			dockerfile, err := planResolveDockerfile(contextDir, "", false, gpuArch)
+			dockerfile, err := planResolveDockerfile(contextDir, "", false, gpuArch, sfOpts...)
 			if err != nil {
 				return
 			}
@@ -276,7 +277,7 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 // that consult the device happen here. The resolved build files are returned
 // alongside so the build path can reuse them instead of resolving (and, for a
 // Stagefile, recompiling) every service a second time in the same run.
-func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string) (skip map[string]bool, hashes, dockerfiles map[string]string) {
+func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection, cwd, appID, deviceKey, platform string, appCfg *appconfig.AppConfig, services map[string]*appconfig.ServiceConfig, buildArgs map[string]string, sfOpts ...stagefile.Option) (skip map[string]bool, hashes, dockerfiles map[string]string) {
 	skip = map[string]bool{}
 	hashes = map[string]string{}
 	dockerfiles = map[string]string{}
@@ -284,7 +285,7 @@ func planServicePushSkips(ctx context.Context, conn *grpcclient.AgentConnection,
 		return skip, hashes, dockerfiles
 	}
 
-	plans := computeServicePlans(cwd, platform, serviceGPUArch(ctx, cwd, services, conn), appCfg, services, buildArgs)
+	plans := computeServicePlans(cwd, platform, serviceGPUArch(ctx, cwd, services, conn), appCfg, services, buildArgs, sfOpts...)
 	present := deviceContainerNames(ctx, conn)
 	for name := range services {
 		plan, planned := plans[name]
@@ -388,13 +389,14 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// presence, so this currently skips nothing for multi-service; see
 	// planServicePushSkips / contentPresentForService.
 	deviceKey := deviceFingerprintKey(versionResp)
-	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs)
+	sfOpts := debugStagefileOptions(opts.debug)
+	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs, sfOpts...)
 	if n := len(skip); n > 0 {
 		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency, sfOpts...)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -557,6 +559,7 @@ func buildServicesParallel(
 	skip map[string]bool,
 	dockerfiles map[string]string,
 	maxConcurrency int,
+	sfOpts ...stagefile.Option,
 ) (map[string]error, error) {
 	names := make([]string, 0, len(services))
 	for n := range services {
@@ -634,7 +637,7 @@ func buildServicesParallel(
 			dockerfile, planned := dockerfiles[name]
 			var dockerfileErr error
 			if !planned {
-				dockerfile, dockerfileErr = planResolveDockerfile(contextDir, "", false, gpuArch)
+				dockerfile, dockerfileErr = planResolveDockerfile(contextDir, "", false, gpuArch, sfOpts...)
 			}
 
 			var buildOut io.Writer
@@ -792,7 +795,14 @@ func newServiceProgressEmitter(prog *tea.Program, name string) (func(tui.BuildSt
 	emit := func(e tui.BuildStepEvent) {
 		switch e.Status {
 		case tui.BuildStepRunning:
-			prog.Send(tui.MultiSpinnerDetailMsg{Name: name, Detail: e.Display})
+			// Prefer the step's live progress ("[525/1027] 51% Compiling …",
+			// "61% 128MB/210MB 9.4MB/s") over its bare label: with one row per
+			// service that sub-line is the only place a user sees movement.
+			detail := e.Display
+			if p := tui.ProgressDetail(e); p != "" {
+				detail = e.Display + " · " + p
+			}
+			prog.Send(tui.MultiSpinnerDetailMsg{Name: name, Detail: detail})
 		case tui.BuildStepCached:
 			if e.Kind == tui.BuildVertexStep {
 				t.Cached++

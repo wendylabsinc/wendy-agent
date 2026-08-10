@@ -112,7 +112,11 @@ In attached mode, each service's readiness→postStart sequence fires asynchrono
 
 When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
 
-1. **Parallel build** — all service images are built and pushed concurrently. By default, up to 4 simultaneous builds run; for large groups (8+ services), builds throttle to 2 concurrent to protect the device registry tunnel. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). In non-interactive terminals plain log lines are printed instead.
+1. **Parallel build** — all service images are built and pushed concurrently. By default, up to 4 simultaneous builds run; for large groups (8+ services), builds throttle to 2 concurrent to protect the device registry tunnel. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). While a service builds, its row names the Dockerfile step currently running and, where that step's output exposes it, appends live progress after a `·` separator:
+
+    ⠹ api         [4/9] RUN pip install -r requirements.txt · 61%  128.0MB/797.3MB  95.2MB/s
+
+In non-interactive terminals plain log lines are printed instead, with a heartbeat for each running step every 15 seconds.
 2. **Ordered container creation** — containers are created one at a time in topological dependency order. A service listed in another service's `dependsOn` is created first.
 3. **Start and stream** — all containers are started and their combined stdout/stderr is multiplexed to the terminal. Each line is prefixed with `[serviceName]`.
 

@@ -15,6 +15,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"golang.org/x/term"
@@ -34,6 +35,9 @@ type buildOptions struct {
 	// there is no device to ask. With a device selected it is redundant —
 	// the device reports its own.
 	gpuArch string
+	// debug builds compiled languages unoptimized (swift -c debug, cargo
+	// without --release), matching `wendy run --debug`.
+	debug bool
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -125,7 +129,7 @@ func newBuildCmd() *cobra.Command {
 						cliLogln("Building Swift project for %s...", target.Provider.DisplayName())
 						// runtime.GOARCH is correct here: Docker Desktop loads images into the
 						// host daemon, so the image must match the host architecture.
-						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, &dimWriter{}, os.Stderr); err != nil {
+						if _, err := buildSwiftDockerImage(cmd.Context(), cwd, product, runtime.GOARCH, swiftBuildConfig(opts.debug), &dimWriter{}, os.Stderr); err != nil {
 							return fmt.Errorf("building Swift Docker image: %w", err)
 						}
 						cliSuccess("Build completed successfully.")
@@ -138,7 +142,8 @@ func newBuildCmd() *cobra.Command {
 				// build files exist and no --dockerfile flag was given.
 				if projectType == "docker" && opts.dockerfile == "" {
 					resolved, resolveErr := resolveDockerfile(cwd, "", isInteractiveTerminal(),
-						resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)))
+						resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)),
+						debugStagefileOptions(opts.debug)...)
 					if resolveErr != nil {
 						return resolveErr
 					}
@@ -214,7 +219,9 @@ func newBuildCmd() *cobra.Command {
 			}
 
 			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder,
-				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)))
+				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)),
+				opts.debug,
+				debugStagefileOptions(opts.debug)...)
 		},
 	}
 
@@ -222,6 +229,7 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
+	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")
 
 	return cmd
 }
@@ -471,7 +479,7 @@ func detectProjectTypeWithLanguage(dir, language string) string {
 	return t
 }
 
-func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder, gpuArch string) error {
+func buildProject(ctx context.Context, dir string, option *BuildOption, appID, platform, builder, gpuArch string, debug bool, sfOpts ...stagefile.Option) error {
 	imageName := strings.ToLower(appID) + ":latest"
 	normalizedBuilder, err := normalizeImageBuilder(builder)
 	if err != nil {
@@ -483,9 +491,9 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		if normalizedBuilder == imageBuilderAppleContainer {
 			return fmt.Errorf("Apple Container builder does not support Compose builds; use --builder docker")
 		}
-		return buildComposeProject(dir, gpuArch)
+		return buildComposeProject(dir, gpuArch, sfOpts...)
 	case "docker":
-		resolvedFile, err := prepareDockerBuildFile(dir, option.File, gpuArch)
+		resolvedFile, err := prepareDockerBuildFile(dir, option.File, gpuArch, sfOpts...)
 		if err != nil {
 			return err
 		}
@@ -500,7 +508,7 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 		if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 			return fmt.Errorf("`wendy build` for Swift packages is not supported on %s; provide a Dockerfile or Containerfile", runtime.GOOS)
 		}
-		return buildSwiftContainerProject(ctx, dir, appID, platform)
+		return buildSwiftContainerProject(ctx, dir, appID, platform, debug)
 	case "xcode":
 		if normalizedBuilder == imageBuilderAppleContainer {
 			return fmt.Errorf("Apple Container builder is only supported for Dockerfile/Containerfile builds; provide a build file or omit --builder")
@@ -511,10 +519,10 @@ func buildProject(ctx context.Context, dir string, option *BuildOption, appID, p
 	}
 }
 
-func buildComposeProject(dir, gpuArch string) error {
+func buildComposeProject(dir, gpuArch string, sfOpts ...stagefile.Option) error {
 	cliLogln("Building Compose services...")
 	args := []string{"compose"}
-	overridePath, cleanup, err := composeStagefileOverride(dir, gpuArch)
+	overridePath, cleanup, err := composeStagefileOverride(dir, gpuArch, sfOpts...)
 	if err != nil {
 		return err
 	}
@@ -672,7 +680,7 @@ func buildXcodeProject(ctx context.Context, dir, xcodeproj string) error {
 	return nil
 }
 
-func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string) error {
+func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string, debug bool) error {
 	if err := swifttoolchain.EnsureSwiftVersion(ctx, &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
@@ -688,7 +696,7 @@ func buildSwiftContainerProject(ctx context.Context, dir, appID, platform string
 		arch = parts[1]
 	}
 
-	if _, err := buildSwiftDockerImage(ctx, dir, product, arch, &dimWriter{}, os.Stderr); err != nil {
+	if _, err := buildSwiftDockerImage(ctx, dir, product, arch, swiftBuildConfig(debug), &dimWriter{}, os.Stderr); err != nil {
 		return err
 	}
 	cliSuccess("Build completed successfully.")

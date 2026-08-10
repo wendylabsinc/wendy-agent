@@ -53,9 +53,17 @@ var sharedHasher = lock.Hasher(lock.Memoize(func(url string) (string, error) {
 type Option func(*options)
 
 type options struct {
-	progress func(url string)
-	gpuArch  string
+	progress     func(url string)
+	gpuArch      string
+	buildProfile string
 }
+
+// BuildProfileDebug and BuildProfileRelease are the two compile profiles a
+// Stagefile build stage understands.
+const (
+	BuildProfileRelease = "release"
+	BuildProfileDebug   = "debug"
+)
 
 // WithGPUArch names the GPU architecture (the gpu_arch a device reports, e.g.
 // "sm_87") this build targets. It is required if any stage declares cuda: and
@@ -72,6 +80,22 @@ func WithGPUArch(arch string) Option {
 // runs inline inside CompileFile, which otherwise prints nothing at all.
 func WithProgress(f func(url string)) Option {
 	return func(o *options) { o.progress = f }
+}
+
+// WithBuildProfile overrides the profile of every build stage that has one, so
+// `wendy run --debug` produces a debuggable binary from a Stagefile whose
+// checked-in profile is release. Stages of a language with no release/debug
+// notion (go, npm/yarn/pnpm) are unaffected.
+//
+// Only "release" and "debug" are accepted; any other value is ignored rather
+// than applied, because this override lands after spec validation and the
+// profile is interpolated into the generated RUN line.
+func WithBuildProfile(profile string) Option {
+	return func(o *options) {
+		if profile == BuildProfileRelease || profile == BuildProfileDebug {
+			o.buildProfile = profile
+		}
+	}
 }
 
 // CompileFile reads build.stagefile.yaml from dir, resolves any missing
@@ -95,7 +119,7 @@ func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore
 			return sharedHasher(url)
 		}
 	}
-	return compileFile(dir, platform, o.gpuArch, sharedResolver, hasher)
+	return compileFile(dir, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
 }
 
 // NeedsGPUTarget reports whether dir's Stagefile declares a cuda: stage, and
@@ -154,7 +178,7 @@ func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, 
 // compileFile is the resolver-injectable implementation behind
 // CompileFile, allowing tests to exercise it with a fake resolver and hasher
 // instead of a live registry and live URLs.
-func compileFile(dir, platform, gpuArch string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
 	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -164,6 +188,7 @@ func compileFile(dir, platform, gpuArch string, resolver lock.Resolver, hasher l
 	if err != nil {
 		return "", "", err
 	}
+	applyBuildProfile(f, buildProfile)
 
 	lockPath := filepath.Join(dir, "build.stagefile.lock.yaml")
 	existing, err := lock.Load(lockPath)
@@ -194,6 +219,27 @@ func compileFile(dir, platform, gpuArch string, resolver lock.Resolver, hasher l
 	}
 	dockerignore = dockerignorepkg.Derive(dockerignorepkg.LocalPaths(f))
 	return dockerfile, dockerignore, nil
+}
+
+// applyBuildProfile overrides the compile profile of every build stage that has
+// one. Node package scripts are skipped: spec validation rejects a profile on
+// them outright, so setting one here would generate a Stagefile the same file
+// could not have declared. Go is skipped for the same reason it ignores
+// profile in codegen — `go build` has no release/debug split.
+func applyBuildProfile(f *spec.File, profile string) {
+	if profile == "" {
+		return
+	}
+	for i := range f.Stages {
+		b := f.Stages[i].Build
+		if b == nil {
+			continue
+		}
+		switch b.Lang {
+		case "rust", "swift":
+			b.Profile = profile
+		}
+	}
 }
 
 // imageRefs collects every distinct from: value across f's stages, in

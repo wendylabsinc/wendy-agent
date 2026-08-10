@@ -769,7 +769,8 @@ func runCommand(ctx context.Context, opts runOptions) error {
 			}
 		}
 		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(),
-			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)))
+			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)),
+			debugStagefileOptions(opts.debug)...)
 		if err != nil {
 			return err
 		}
@@ -1404,7 +1405,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if projectType == "swift" {
 		if ib, ok := p.(providers.ImageBuilder); ok {
 			cliLogln("Building Swift project for %s...", p.DisplayName())
-			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, &dimWriter{}, os.Stderr)
+			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, swiftBuildConfig(opts.debug), &dimWriter{}, os.Stderr)
 			if err != nil {
 				return fmt.Errorf("building Swift Docker image: %w", err)
 			}

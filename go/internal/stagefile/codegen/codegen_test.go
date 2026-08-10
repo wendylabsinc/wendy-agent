@@ -412,8 +412,11 @@ func TestGenerateBuildSwiftDebugIsExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
+	// -c debug is spelled out rather than left implicit: bare `swift build`
+	// already means debug, so omitting the flag is indistinguishable from
+	// having forgotten it.
 	want := "FROM swift:6.0@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.swiftpm swift build\n" +
+		"RUN --mount=type=cache,sharing=locked,target=/root/.swiftpm swift build -c debug\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)

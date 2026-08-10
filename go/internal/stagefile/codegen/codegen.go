@@ -744,10 +744,11 @@ func buildLines(b *spec.Build) ([]string, error) {
 		}
 		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
-		cmd := "swift build"
-		if profile == "release" {
-			cmd += " -c release"
-		}
+		// Always spell the configuration out. Bare `swift build` already means
+		// debug, so an implicit debug build is indistinguishable from someone
+		// having forgotten the flag — both in the generated Dockerfile and to the
+		// optimizer check that scans for it.
+		cmd := "swift build -c " + profile
 		if b.Product != "" {
 			cmd += " --product " + shellQuote(b.Product)
 		}
