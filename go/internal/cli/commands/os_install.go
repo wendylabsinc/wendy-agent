@@ -2497,7 +2497,17 @@ func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort s
 	if autoDiscoverPort {
 		fmt.Println("\nScanning for ESP32 devices...")
 
-		serialPort, err = discovery.ResolveESP32SerialPort()
+		// A device that's rebooting on its own can drop off and reappear on
+		// the USB bus as it re-enumerates, so a single scan can miss it.
+		// Retry briefly rather than failing on the very first attempt.
+		deadline := time.Now().Add(1 * time.Second)
+		for {
+			serialPort, err = discovery.ResolveESP32SerialPort()
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 		if err != nil {
 			fmt.Println("\nNo ESP32 device detected.")
 			fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
