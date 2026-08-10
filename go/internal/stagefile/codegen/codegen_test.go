@@ -394,11 +394,24 @@ func TestGenerateBuildSwiftReleaseByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "FROM swift:6.0@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.swiftpm swift build -c release\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	// The build runs against a scratch path on a cache mount and then installs
+	// the product into .build/release, which is where SwiftPM would have put it
+	// had it built in place — so an entrypoint naming that path still resolves
+	// even though the tree it was compiled in never enters the image.
+	for _, want := range []string{
+		"swift build --scratch-path " + swiftScratchPath + " --cache-path " + swiftCachePath + " -c release",
+		"target=" + swiftScratchPath,
+		"target=" + swiftCachePath,
+		"mkdir -p .build/release",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	// The old cache location. It held SwiftPM's *configuration*, not its build
+	// tree or its shared cache, so caching it sped up nothing at all.
+	if strings.Contains(out, "/root/.swiftpm") {
+		t.Errorf("still caching /root/.swiftpm, which holds no build output:\n%s", out)
 	}
 }
 
@@ -415,11 +428,16 @@ func TestGenerateBuildSwiftDebugIsExplicit(t *testing.T) {
 	// -c debug is spelled out rather than left implicit: bare `swift build`
 	// already means debug, so omitting the flag is indistinguishable from
 	// having forgotten it.
-	want := "FROM swift:6.0@sha256:abc123 AS app\n" +
-		"RUN --mount=type=cache,sharing=locked,target=/root/.swiftpm swift build -c debug\n" +
-		"USER 65532\n"
-	if out != want {
-		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	if !strings.Contains(out, " -c debug") {
+		t.Errorf("missing an explicit -c debug in:\n%s", out)
+	}
+	if strings.Contains(out, "-c release") {
+		t.Errorf("debug profile still compiled -c release:\n%s", out)
+	}
+	// The install destination follows the profile, or a debug build would
+	// deposit its binary where a release entrypoint looks for it.
+	if !strings.Contains(out, "mkdir -p .build/debug") {
+		t.Errorf("debug build does not install into .build/debug:\n%s", out)
 	}
 }
 
@@ -511,17 +529,27 @@ func TestGenerateLocksEveryCacheMount(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 
-	mounts := 0
 	for _, line := range strings.Split(out, "\n") {
 		if !strings.Contains(line, "type=cache") {
 			continue
 		}
-		mounts++
 		if !strings.Contains(line, "sharing=locked") {
 			t.Errorf("cache mount without an explicit sharing mode (defaults to shared):\n%s", line)
 		}
 	}
-	if mounts != len(f.Stages) {
-		t.Fatalf("found %d cache mounts, want one per stage (%d)", mounts, len(f.Stages))
+
+	// Every stage above declares something cache-mounted, so a stage with no
+	// mount at all means a primitive lost its cache rather than its sharing
+	// mode. Counted per stage rather than in total because a single stage may
+	// legitimately declare several — a Swift build mounts its object tree and
+	// SwiftPM's download cache separately.
+	blocks := strings.Split(strings.TrimSpace(out), "\n\n")
+	if len(blocks) != len(f.Stages) {
+		t.Fatalf("got %d stage blocks, want %d", len(blocks), len(f.Stages))
+	}
+	for i, block := range blocks {
+		if !strings.Contains(block, "type=cache") {
+			t.Errorf("stage %q emits no cache mount:\n%s", f.Stages[i].Name, block)
+		}
 	}
 }

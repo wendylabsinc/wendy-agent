@@ -180,7 +180,7 @@ func TestGenerateBuildProducts(t *testing.T) {
 		build *spec.Build
 		want  string
 	}{
-		{&spec.Build{Lang: "swift", Product: "camserver"}, "swift build -c release --product 'camserver'"},
+		{&spec.Build{Lang: "swift", Product: "camserver"}, "-c release --product 'camserver'"},
 		{&spec.Build{Lang: "rust", Product: "serve"}, "cargo build --release --bin 'serve'"},
 		{&spec.Build{Lang: "go", Product: "./cmd/serve"}, "go build -o /usr/local/bin/ './cmd/serve'"},
 		{&spec.Build{Lang: "npm"}, "RUN --mount=type=cache,sharing=locked,target=/root/.npm npm run 'build'"},

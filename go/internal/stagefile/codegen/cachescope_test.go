@@ -104,6 +104,99 @@ func TestPipCacheIDSharesWhenContentCanBeShared(t *testing.T) {
 	}
 }
 
+// swiftStage is a Swift build stage at the given toolchain and profile.
+func swiftStage(from, profile string) spec.Stage {
+	return spec.Stage{Name: "app", From: from, Workdir: "/app",
+		Build: &spec.Build{Lang: "swift", Profile: profile}}
+}
+
+// genScoped is gen with a cache scope, standing in for CompileFile passing the
+// project directory.
+func genScoped(t *testing.T, scope, platform string, s spec.Stage) string {
+	t.Helper()
+	out, err := Generate(&spec.File{Version: 1, Stages: []spec.Stage{s}},
+		map[string]string{s.From: "sha256:abc123"}, nil, platform, nil, WithCacheScope(scope))
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	return out
+}
+
+// scratchID returns the id of the mount targeting the Swift build tree.
+func scratchID(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.Contains(line, "target="+swiftScratchPath) {
+			continue
+		}
+		_, after, _ := strings.Cut(line, "id=")
+		id, _, _ := strings.Cut(after, ",")
+		return id
+	}
+	t.Fatalf("no scratch mount in:\n%s", out)
+	return ""
+}
+
+// The Swift build tree is the one compiler cache here holding object files
+// rather than self-describing downloads, so two projects sharing it would take
+// turns invalidating each other — and, being sharing=locked, queue to do it.
+func TestSwiftScratchCacheIDSeparatesProjects(t *testing.T) {
+	s := swiftStage("swift:6.1", "")
+	a := scratchID(t, genScoped(t, "/home/dev/alpha", "linux/arm64", s))
+	b := scratchID(t, genScoped(t, "/home/dev/beta", "linux/arm64", s))
+	if a == b {
+		t.Fatalf("two projects share one Swift build tree (id %q)", a)
+	}
+}
+
+// The same project rebuilding must land on the same tree, or the cache buys
+// nothing at all — this is the case the mount exists for.
+func TestSwiftScratchCacheIDIsStableAcrossRebuilds(t *testing.T) {
+	s := swiftStage("swift:6.1", "")
+	a := scratchID(t, genScoped(t, "/home/dev/alpha", "linux/arm64", s))
+	b := scratchID(t, genScoped(t, "/home/dev/alpha", "linux/arm64", s))
+	if a != b {
+		t.Fatalf("same project got two build trees: %q vs %q", a, b)
+	}
+}
+
+// Object files are per-architecture, per-toolchain and per-profile. Mixing any
+// of the three in one tree means SwiftPM discards it and rebuilds.
+func TestSwiftScratchCacheIDSeparatesBuildInputs(t *testing.T) {
+	const scope = "/home/dev/alpha"
+	base := scratchID(t, genScoped(t, scope, "linux/arm64", swiftStage("swift:6.1", "release")))
+	for _, c := range []struct {
+		name string
+		id   string
+	}{
+		{"platform", scratchID(t, genScoped(t, scope, "linux/amd64", swiftStage("swift:6.1", "release")))},
+		{"toolchain", scratchID(t, genScoped(t, scope, "linux/arm64", swiftStage("swift:6.2", "release")))},
+		{"profile", scratchID(t, genScoped(t, scope, "linux/arm64", swiftStage("swift:6.1", "debug")))},
+	} {
+		if c.id == base {
+			t.Errorf("a different %s shares the build tree (id %q)", c.name, base)
+		}
+	}
+}
+
+// SwiftPM's shared cache is scoped the other way on purpose: it holds bare
+// clones keyed by repository URL, so two projects depending on swift-nio should
+// share the one clone rather than each fetching it.
+func TestSwiftPMCacheIsSharedAcrossProjects(t *testing.T) {
+	s := swiftStage("swift:6.1", "")
+	ids := func(scope string) []string {
+		return mountIDs(t, genScoped(t, scope, "linux/arm64", s))
+	}
+	a, b := ids("/home/dev/alpha"), ids("/home/dev/beta")
+	if len(a) != 2 || len(b) != 2 {
+		t.Fatalf("want a scratch mount and a SwiftPM cache mount, got %v / %v", a, b)
+	}
+	// mountIDs returns them in emission order: scratch first, then the cache.
+	if a[1] != b[1] {
+		t.Fatalf("two projects cannot share SwiftPM's download cache: %q vs %q", a[1], b[1])
+	}
+}
+
 // uv resolves wheels the same way pip does and has the same platform split.
 func TestUvCacheIDSeparatesPlatforms(t *testing.T) {
 	s := spec.Stage{Name: "app", From: "python:3.12-slim", Install: &spec.Install{Uv: &spec.UvInstall{}}}
