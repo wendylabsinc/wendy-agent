@@ -76,11 +76,17 @@ func enforceDevicePin(hostname string, conn *grpcclient.AgentConnection) error {
 //   - match       → proceed; a renewed or re-enrolled cert for the same
 //     organisation + cloud + asset is expected and never challenged
 //   - legacy pin  → backfill the observed asset id, proceed
-//   - mismatch    → warn in red and interactively ask whether to trust the new
-//     identity; declining, or running non-interactively, aborts the connection
-//   - unprovisioned, but pinned → same challenge: a device we have seen
-//     enrolled answering with no identity at all has been reflashed, factory
-//     reset, or replaced by something squatting its name
+//   - mismatch    → explain what changed and refuse
+//   - unprovisioned, but pinned → same refusal: a device we have seen enrolled
+//     answering with no identity at all has been reflashed, factory reset, or
+//     replaced by something squatting its name
+//
+// The two refusals are unconditional and read identically in interactive, JSON,
+// and non-interactive modes. There is deliberately no "trust this anyway?"
+// prompt: a man-in-the-middle warning that can be dismissed gets dismissed, and
+// the one person who can tell a legitimate replacement from an attack is not
+// the one staring at a prompt mid-command. `wendy device unpin <host>` is the
+// deliberate, separate act that resolves it.
 //
 // A device with no pin that answers unprovisioned is the ordinary
 // out-of-the-box case and passes silently. It is best-effort about local state:
@@ -108,17 +114,7 @@ func enforceDeviceIdentity(hostname string, obs observedDeviceIdentity) error {
 	default: // config.PinMismatch
 		prev, _ := cfg.DevicePinFor(hostname)
 		printIdentityChangeWarning(hostname, prev, obs, cloud)
-
-		if jsonOutput || !isInteractiveTerminal() {
-			return fmt.Errorf("device %q identity changed (organization/cloud/asset); refusing to connect — re-run 'wendy device set-default %s' to re-pin if this is expected", hostname, hostname)
-		}
-		trusted, cErr := tui.ConfirmNoDefaultDanger(fmt.Sprintf("Trust the new identity for %q and re-pin it?", hostname))
-		if cErr != nil || !trusted {
-			return fmt.Errorf("device %q identity change was not trusted; connection aborted", hostname)
-		}
-		cfg.SetDevicePin(hostname, obs.orgID, cloud, obs.assetID)
-		_ = config.Save(cfg)
-		return nil
+		return refuseIdentity("device %q identity changed (organization/cloud/asset); refusing to connect — if this is expected, run 'wendy device unpin %s'", hostname, hostname)
 	}
 }
 
@@ -142,8 +138,9 @@ func printIdentityChangeWarning(hostname string, prev config.DevicePin, obs obse
 // out-of-the-box flow.
 //
 // This case cannot be folded into EvaluateDevicePin — there is no observed
-// identity to compare — but it is the same trust question: the device that
-// vouched for this hostname is not the one answering now.
+// identity to compare — but it is the same trust question, and it gets the same
+// unconditional answer: the device that vouched for this hostname is not the one
+// answering now, so the connection does not happen.
 func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 	prev, pinned := cfg.DevicePinFor(hostname)
 	if !pinned {
@@ -155,36 +152,36 @@ func challengeUnprovisionedDevice(cfg *config.Config, hostname string) error {
 	fmt.Fprintln(os.Stderr, tui.ErrorMessage("  now:    unprovisioned (no mTLS)"))
 	fmt.Fprintln(os.Stderr, tui.ErrorMessage("An enrolled device does not drop its certificate on its own — it has been reflashed or factory reset, another machine has taken its name or address, or this CLI no longer holds credentials for its organization (try 'wendy auth login'). Anything you run over this connection would be unauthenticated."))
 
-	if jsonOutput || !isInteractiveTerminal() {
-		return fmt.Errorf("device %q was enrolled but is now answering unprovisioned; refusing to connect — re-enroll it, check 'wendy auth login', or run 'wendy device set-default %s' to accept the change", hostname, hostname)
-	}
-	trusted, cErr := tui.ConfirmNoDefaultDanger(fmt.Sprintf("Continue to %q unauthenticated and forget its pinned identity?", hostname))
-	if cErr != nil || !trusted {
-		return fmt.Errorf("device %q unexpected loss of identity was not trusted; connection aborted", hostname)
-	}
-	// Accepted: there is no identity left to pin, so drop the stale one rather
-	// than re-challenging on every subsequent command.
-	cfg.ClearDevicePin(hostname)
-	_ = config.Save(cfg)
-	return nil
+	return refuseIdentity("device %q was enrolled but is now answering unprovisioned; refusing to connect — re-enroll it, check 'wendy auth login', or run 'wendy device unpin %s' if this is expected", hostname, hostname)
 }
 
-// clearDevicePinForRepin drops the stored pin for hostname so the next
+// clearDevicePinForRepin drops the stored pins for hostname so the next
 // successful connection records a fresh one. `wendy device set-default <host>`
 // calls it because naming a device on the command line is the user asserting
-// they mean that device — and it is the escape hatch both refusal paths above
-// point at, which would otherwise be a dead end: set-default's own connect
-// would hit the same refusal and never reach the re-pin. Best-effort; a config
-// read/write failure just leaves the old pin in place.
+// they mean that device — without it, set-default's own connect would hit the
+// refusals above and never reach the re-pin. It is the same operation the
+// refusals point at by name (`wendy device unpin <host>`), reached through a
+// different command, so it goes through the same clearPinsGoverning: pki/README
+// already promises set-default has "the same clearing effect", and a version of
+// it that missed the SPKI store would make that promise false for exactly the
+// refusal that has no other way out. Best-effort; a config read/write failure
+// just leaves the old pin in place.
+//
+// It reports what it cleared on stderr for the same reason unpin does on
+// stdout: set-default deleting trust state is a side effect of a command whose
+// name does not mention pins, and the user is the only one who can notice it
+// touched something they did not mean. Stderr keeps it out of any JSON output.
 func clearDevicePinForRepin(hostname string) {
 	cfg, err := config.Load()
 	if err != nil {
 		return
 	}
-	if _, pinned := cfg.DevicePinFor(hostname); !pinned {
+	cleared := clearPinsGoverning(cfg, hostname)
+	printClearedPins(os.Stderr, cleared)
+	// The SPKI half flushes itself, so only a config-store clear needs a save.
+	if !clearedAnyConfigPin(cleared) {
 		return
 	}
-	cfg.ClearDevicePin(hostname)
 	_ = config.Save(cfg)
 }
 

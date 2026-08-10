@@ -125,3 +125,46 @@ func TestDevicePinRoundTripsThroughConfig(t *testing.T) {
 		t.Fatalf("asset did not round-trip through JSON, got %v", v)
 	}
 }
+
+func TestDevicePinSourcePrecedence(t *testing.T) {
+	const host = "wendy-thor.local"
+
+	t.Run("cloud write overwrites a lan pin", func(t *testing.T) {
+		c := &Config{}
+		c.SetDevicePinFrom(host, 7, "grpc.wendy.dev:443", "42", PinSourceLAN)
+		c.SetDevicePinFrom(host, 7, "grpc.wendy.dev:443", "99", PinSourceCloud)
+
+		pin, _ := c.DevicePinFor(host)
+		if pin.AssetID != "99" || pin.Source != PinSourceCloud {
+			t.Fatalf("want asset 99 from cloud, got asset %q from %q", pin.AssetID, pin.Source)
+		}
+	})
+
+	t.Run("lan observation conflicting with a cloud pin is a mismatch", func(t *testing.T) {
+		c := &Config{}
+		c.SetDevicePinFrom(host, 7, "grpc.wendy.dev:443", "42", PinSourceCloud)
+		if v := c.EvaluateDevicePin(host, 7, "grpc.wendy.dev:443", "43"); v != PinMismatch {
+			t.Fatalf("want PinMismatch, got %v", v)
+		}
+	})
+
+	t.Run("lan never backfills an asset into a cloud pin", func(t *testing.T) {
+		c := &Config{}
+		c.SetDevicePinFrom(host, 7, "grpc.wendy.dev:443", "", PinSourceCloud)
+		if v := c.EvaluateDevicePin(host, 7, "grpc.wendy.dev:443", "42"); v != PinMatch {
+			t.Fatalf("want PinMatch without adoption, got %v", v)
+		}
+	})
+
+	t.Run("legacy fieldless pin reads as lan", func(t *testing.T) {
+		c := &Config{DevicePins: map[string]DevicePin{
+			"wendy-thor": {OrgID: 7, CloudGRPC: "grpc.wendy.dev:443"},
+		}}
+		if got := c.PinSource(host); got != PinSourceLAN {
+			t.Fatalf("want %q, got %q", PinSourceLAN, got)
+		}
+		if v := c.EvaluateDevicePin(host, 7, "grpc.wendy.dev:443", "42"); v != PinAdoptAsset {
+			t.Fatalf("want PinAdoptAsset, got %v", v)
+		}
+	})
+}

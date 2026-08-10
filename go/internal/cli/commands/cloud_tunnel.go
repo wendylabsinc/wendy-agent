@@ -374,7 +374,12 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 }
 
 func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Asset, error) {
-	return fetchCloudAssetsFiltered(ctx, auth, true)
+	assets, err := fetchCloudAssetsFiltered(ctx, auth, true)
+	if err != nil {
+		return nil, err
+	}
+	seedPinsFromAssetsBestEffort(auth, assets)
+	return assets, nil
 }
 
 func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Asset, error) {
