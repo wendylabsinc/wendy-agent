@@ -49,39 +49,81 @@ var virtualIfacePrefixes = []string{
 	"docker", "br-", "veth", "cni", "flannel", "virbr", "kube", "nerdctl", "tap", "tun",
 }
 
-// candidateInterfaces lists interfaces worth trying for DDS discovery: up,
-// non-loopback, multicast-capable, with an IPv4 address, and not obviously
-// virtual.
+// candidateIface is the part of a net.Interface that eligibility depends on,
+// split out so the filter can be tested without a host's real interface list.
+type candidateIface struct {
+	Name    string
+	Flags   net.Flags
+	HasIPv4 bool
+}
+
+// candidateInterfaces lists the host's interfaces worth trying for DDS
+// discovery. See eligibleInterfaces for the criteria.
 func candidateInterfaces() []string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
-	var out []string
+	out := make([]candidateIface, 0, len(ifaces))
 	for _, iface := range ifaces {
-		f := iface.Flags
-		if f&net.FlagUp == 0 || f&net.FlagLoopback != 0 || f&net.FlagMulticast == 0 {
-			continue
-		}
-		if isVirtualInterface(iface.Name) {
-			continue
-		}
+		c := candidateIface{Name: iface.Name, Flags: iface.Flags}
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
 		}
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil {
-				out = append(out, iface.Name)
+				c.HasIPv4 = true
 				break
 			}
 		}
+		out = append(out, c)
+	}
+	return eligibleInterfaces(out)
+}
+
+// eligibleInterfaces narrows a host's interfaces to those worth trying for DDS
+// discovery: up, non-loopback, multicast-capable, with an IPv4 address, and
+// neither virtual nor wireless.
+func eligibleInterfaces(ifaces []candidateIface) []string {
+	var out []string
+	for _, iface := range ifaces {
+		f := iface.Flags
+		if f&net.FlagUp == 0 || f&net.FlagLoopback != 0 || f&net.FlagMulticast == 0 {
+			continue
+		}
+		if !iface.HasIPv4 {
+			continue
+		}
+		if isVirtualInterface(iface.Name) || isWireless(iface.Name) {
+			continue
+		}
+		out = append(out, iface.Name)
 	}
 	return out
 }
 
 func isVirtualInterface(name string) bool {
 	for _, p := range virtualIfacePrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// isWireless reports whether a name looks like a wireless interface. Linux
+// predictable names use a "wl" prefix; the legacy names are wlanN and wifiN,
+// and some out-of-tree drivers use athN and raN. Mirrors the helper in
+// internal/agent/ipcam.
+//
+// A robot's DDS bus is a wired network. Announcing SPDP over WiFi puts
+// multicast discovery traffic onto whatever office or home network the device
+// happens to be associated with, where it can only find strangers' robots, so
+// auto-discovery skips wireless outright rather than merely deprioritising it.
+func isWireless(name string) bool {
+	name = strings.ToLower(name)
+	for _, p := range []string{"wl", "wifi", "ath", "ra"} {
 		if strings.HasPrefix(name, p) {
 			return true
 		}
@@ -111,9 +153,10 @@ func moveToFront(names []string, want string) []string {
 type Config struct {
 	// Enabled false disables the monitor entirely.
 	Enabled bool
-	// Interfaces pins discovery to named network interfaces. Empty means
-	// auto-select. Only the first is used today; the field is plural so the
-	// config format does not have to change to support more.
+	// Interfaces pins discovery to named network interfaces, tried in order
+	// until one yields a battery topic. Empty means auto-select, which skips
+	// virtual and wireless interfaces; naming one here bypasses that filter and
+	// is how a host whose robot link is WiFi opts back in.
 	Interfaces []string
 	// DomainID is the DDS domain. Zero is the ROS 2 default.
 	DomainID int
@@ -171,14 +214,20 @@ func (m *Monitor) Run(ctx context.Context) {
 // on a device running containers, a handful of bridge interfaces. Picking the
 // first multicast-capable interface finds the battery only by luck.
 func (m *Monitor) scanAndSubscribe(ctx context.Context) bool {
+	// A configured list is taken verbatim: naming an interface is how an
+	// operator overrides the filter below, including to force a wireless one on
+	// hardware whose robot link really is WiFi.
 	ifaces := m.cfg.Interfaces
 	if len(ifaces) == 0 {
 		ifaces = candidateInterfaces()
 	}
-	// A last resort of "" lets the rtps package auto-select, so a host whose
-	// interfaces all look virtual still gets one attempt.
+	// There is deliberately no "let rtps auto-select" fallback here. Auto-select
+	// takes the first multicast-capable interface, which on a host with nothing
+	// eligible means WiFi or a container bridge — exactly what the filter just
+	// excluded, and traffic we would rather not emit at all.
 	if len(ifaces) == 0 {
-		ifaces = []string{""}
+		m.logf("ros2 battery: no wired multicast interface; set interfaces in %s to override", ConfigFile)
+		return false
 	}
 
 	// Start from whichever interface last worked, so a steady-state rescan does
