@@ -1,0 +1,17 @@
+services:
+  sim:
+    image: g1-fruit-ninja-mujoco:local
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8878:8878"
+    environment:
+      MUJOCO_GL: osmesa
+      FRUIT_NINJA_HOST: 0.0.0.0
+      FRUIT_NINJA_PORT: "8878"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8878/api/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+      start_period: 30s
