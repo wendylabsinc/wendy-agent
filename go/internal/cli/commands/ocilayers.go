@@ -1039,7 +1039,7 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	submark("  build: setup (cache/env)")
 
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := dockerCommand(ctx, args...)
 	cmd.Dir = cwd
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

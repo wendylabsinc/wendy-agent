@@ -1060,7 +1060,7 @@ var windowsDockerRuntimes = []dockerRuntime{
 var (
 	dockerLookPathFn    = exec.LookPath
 	dockerStatFn        = os.Stat
-	dockerVersionOKFn   = func(ctx context.Context) bool { return exec.CommandContext(ctx, "docker", "version").Run() == nil }
+	dockerVersionOKFn   = func(ctx context.Context) bool { return runDockerControl(ctx, "version") == nil }
 	dockerOpenRuntimeFn = func(ctx context.Context, appPath string) error {
 		return exec.CommandContext(ctx, "open", "-a", appPath).Run()
 	}
@@ -1272,6 +1272,12 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	if err := ensureDockerDaemon(ctx); err != nil {
 		return "", "", err
 	}
+	// Everything below enters buildx's builder store, which serializes every
+	// access behind one lock taken with no timeout. Check the store can be
+	// entered rather than issue a command that blocks on it with no output.
+	if err := ensureBuildxStoreUsable(ctx, w); err != nil {
+		return "", "", err
+	}
 	// Use separate builders for mTLS and plaintext so switching between
 	// provisioned and unprovisioned devices doesn't recreate builders.
 	const containerCertDir = "/etc/buildkit/certs"
@@ -1303,9 +1309,9 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 	// the alias to the real IPv6 address.
 	if ipv6IP != "" {
 		containerName := "buildx_buildkit_" + builderName + "0"
-		hostsCmd := exec.CommandContext(ctx, "docker", "exec", containerName, "sh", "-c",
+		out, cmdErr := combinedDockerControl(ctx, "exec", containerName, "sh", "-c",
 			fmt.Sprintf("if grep -q ' wendy-registry' /etc/hosts; then sed -i 's/^[^#]* wendy-registry$/%s wendy-registry/' /etc/hosts; else printf '\\n%s wendy-registry\\n' >> /etc/hosts; fi", ipv6IP, ipv6IP))
-		if out, cmdErr := hostsCmd.CombinedOutput(); cmdErr != nil {
+		if cmdErr != nil {
 			return "", "", fmt.Errorf("adding hosts entry to builder: %s: %w", string(out), cmdErr)
 		}
 	}
@@ -1340,31 +1346,34 @@ func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
 	// plugin load, no buildkit gRPC handshake). On any miss we fall through to the
 	// full robust path below.
 	containerName := "buildx_buildkit_" + builderName + "0"
-	if out, err := exec.CommandContext(ctx, "docker", "inspect", "-f", "{{.State.Running}}", containerName).Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
+	if out, err := outputDockerControl(ctx, "inspect", "-f", "{{.State.Running}}", containerName); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return builderName, nil
 	}
 
 	if err := ensureDockerDaemon(ctx); err != nil {
 		return "", err
 	}
+	// Everything below enters buildx's builder store. Check it can be entered
+	// before issuing a command that would otherwise block on it with no output.
+	if err := ensureBuildxStoreUsable(ctx, w); err != nil {
+		return "", err
+	}
 
-	exists := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil
+	exists := runDockerControl(ctx, "buildx", "inspect", builderName) == nil
 	if !exists {
 		fmt.Fprintf(w, "[buildx] creating OCI-export builder %q\n", builderName)
-		cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		if out, err := combinedDockerControl(ctx, "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
 	}
 
 	// Ensure the builder is running. This is cheap when it is already up and,
 	// crucially, performs no config injection or container restart.
-	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 		return "", fmt.Errorf("bootstrapping builder %q: %s: %w", builderName, string(out), err)
 	}
 	return builderName, nil
@@ -1392,9 +1401,15 @@ func buildkitRegistryConfig(registryAddr string, plainHTTP bool, keypair *[2]str
 // removeBuilder removes a buildx builder, falling back to deleting the
 // instance file directly when `docker buildx rm` fails (e.g. because the
 // stored config contains IPv6 brackets that the host TOML parser rejects).
+//
+// The rm is deadline-bounded because failure here is not always a returned
+// error: a builder whose stored endpoint names a docker context that no longer
+// runs makes `docker buildx rm` block forever — while holding the buildx store
+// lock, which stalls every build on the machine until that process is killed.
+// Timing out and taking the fallback path is strictly better than waiting: the
+// fallback removes the same state without talking to the dead endpoint at all.
 func removeBuilder(ctx context.Context, name string) {
-	rmCmd := exec.CommandContext(ctx, "docker", "buildx", "rm", name)
-	if rmCmd.Run() == nil {
+	if runDockerControl(ctx, "buildx", "rm", name) == nil {
 		return
 	}
 	// Fallback: remove the instance file and kill the container directly.
@@ -1403,7 +1418,7 @@ func removeBuilder(ctx context.Context, name string) {
 		os.Remove(filepath.Join(home, ".docker", "buildx", "instances", name))
 		os.Remove(filepath.Join(home, ".docker", "buildx", "activity", name))
 	}
-	exec.CommandContext(ctx, "docker", "rm", "-f", "buildx_buildkit_"+name+"0").Run()
+	_ = runDockerControl(ctx, "rm", "-f", "buildx_buildkit_"+name+"0")
 }
 
 // ensurePlaintextBuilder ensures the "wendy" buildx builder exists with plain
@@ -1423,8 +1438,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != fullConfig
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
+	builderExists := runDockerControl(ctx, "buildx", "inspect", builderName) == nil
 
 	if builderExists && configChanged {
 		removeBuilder(ctx, builderName)
@@ -1432,12 +1446,11 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 	}
 
 	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
+		if out, err := combinedDockerControl(ctx, "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
 		configChanged = true // always inject config into a newly created builder
@@ -1450,8 +1463,8 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 
 	// Read the config currently applied inside the running container (if any).
 	var liveContainerConfig string
-	if out, err := exec.CommandContext(ctx, "docker", "exec", containerName,
-		"cat", "/etc/buildkit/buildkitd.toml").Output(); err == nil {
+	if out, err := outputDockerControl(ctx, "exec", containerName,
+		"cat", "/etc/buildkit/buildkitd.toml"); err == nil {
 		liveContainerConfig = string(out)
 	}
 
@@ -1462,8 +1475,7 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 		_ = os.WriteFile(appliedPath, []byte(fullConfig), 0o644)
 	} else {
 		// Builder exists with correct config — just ensure it's running.
-		bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-		if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+		if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 			return "", fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 		}
 	}
@@ -1536,8 +1548,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != appliedState
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
+	builderExists := runDockerControl(ctx, "buildx", "inspect", builderName) == nil
 
 	if builderExists && configChanged {
 		removeBuilder(ctx, builderName)
@@ -1545,12 +1556,11 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	}
 
 	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
+		if out, err := combinedDockerControl(ctx, "buildx", "create",
 			"--name", builderName,
 			"--driver", "docker-container",
 			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		); err != nil {
 			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 		}
 		configChanged = true // always inject certs and config into a newly created builder
@@ -1568,8 +1578,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 		_ = os.WriteFile(appliedPath, []byte(appliedState), 0o600)
 	} else {
 		// Builder exists with correct config — just ensure it's running.
-		bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-		if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+		if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 			return "", fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 		}
 	}
@@ -1582,8 +1591,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 // with the device registry.
 func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, containerCertDir string) error {
 	// Bootstrap the builder to ensure the container is running.
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 		return fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 	}
 
@@ -1591,8 +1599,7 @@ func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, container
 	containerName := "buildx_buildkit_" + builderName + "0"
 
 	// Copy cert files into the running container.
-	cmd = exec.CommandContext(ctx, "docker", "cp", hostCertDir+"/.", containerName+":"+containerCertDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerControl(ctx, "cp", hostCertDir+"/.", containerName+":"+containerCertDir); err != nil {
 		return fmt.Errorf("docker cp certs: %s: %w", string(out), err)
 	}
 
@@ -1604,8 +1611,7 @@ func copyCertsToBuilder(ctx context.Context, builderName, hostCertDir, container
 // configuration takes effect.
 func updateBuilderConfig(ctx context.Context, builderName, config string, w io.Writer) error {
 	fmt.Fprintf(w, "[buildx] bootstrapping builder %q\n", builderName)
-	bootstrapCmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapCmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 		return fmt.Errorf("bootstrapping builder: %s: %w", string(out), err)
 	}
 	fmt.Fprintf(w, "[buildx] bootstrap done\n")
@@ -1627,8 +1633,7 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	tmp.Close()
 
 	fmt.Fprintf(w, "[buildx] copying config into container %q\n", containerName)
-	cmd := exec.CommandContext(ctx, "docker", "cp", tmp.Name(), containerName+":"+containerConfigPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerControl(ctx, "cp", tmp.Name(), containerName+":"+containerConfigPath); err != nil {
 		return fmt.Errorf("docker cp config: %s: %w", string(out), err)
 	}
 
@@ -1637,9 +1642,9 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	// is a macOS binary that does not exist on Linux and causes "signal: killed"
 	// errors when pulling public base images (e.g. python:3.11-slim).
 	fmt.Fprintf(w, "[buildx] injecting clean docker config into container %q\n", containerName)
-	injectCmd := exec.CommandContext(ctx, "docker", "exec", containerName,
+	out, err := combinedDockerControl(ctx, "exec", containerName,
 		"sh", "-c", `mkdir -p /root/.docker && printf '{"auths":{}}' > /root/.docker/config.json`)
-	if out, err := injectCmd.CombinedOutput(); err != nil {
+	if err != nil {
 		// Non-fatal: log the error but proceed. The credential helper may still
 		// fail for private images, but public images will work without credentials.
 		fmt.Fprintf(w, "[buildx] warning: could not inject docker config: %s\n", string(out))
@@ -1648,14 +1653,12 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 	}
 
 	fmt.Fprintf(w, "[buildx] restarting container %q\n", containerName)
-	cmd = exec.CommandContext(ctx, "docker", "restart", containerName)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := combinedDockerControl(ctx, "restart", containerName); err != nil {
 		return fmt.Errorf("restarting builder: %s: %w", string(out), err)
 	}
 	fmt.Fprintf(w, "[buildx] container restarted, waiting for buildkitd\n")
 
-	bootstrapAfterRestart := exec.CommandContext(ctx, "docker", "buildx", "inspect", "--bootstrap", "--builder", builderName)
-	if out, err := bootstrapAfterRestart.CombinedOutput(); err != nil {
+	if out, err := combinedDockerBootstrap(ctx, "buildx", "inspect", "--bootstrap", "--builder", builderName); err != nil {
 		return fmt.Errorf("waiting for builder after restart: %s: %w", string(out), err)
 	}
 	fmt.Fprintf(w, "[buildx] builder ready\n")
@@ -1890,7 +1893,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	var lastErr error
 	for attempt := 1; attempt <= maxBuildPushAttempts; attempt++ {
 		capture := &capturingWriter{w: streamOutput}
-		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd := dockerCommand(ctx, args...)
 		cmd.Dir = dir
 		cmd.Stdout = capture
 		cmd.Stderr = capture
@@ -3330,7 +3333,7 @@ func buildSwiftDockerImage(ctx context.Context, dir, product, arch, buildConfig 
 
 	// Build the Docker image with a sanitised name.
 	imageName := sanitizeDockerImageName(product) + ":latest"
-	dockerCmd := exec.CommandContext(ctx, "docker", "build", "-t", imageName, ".")
+	dockerCmd := dockerCommand(ctx, "build", "-t", imageName, ".")
 	dockerCmd.Dir = tmpDir
 	dockerCmd.Stdout = os.Stdout
 	dockerCmd.Stderr = os.Stderr
