@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"go.bug.st/serial"
 )
 
@@ -921,9 +922,42 @@ func espResetViaUsbJtag(port serial.Port, enterBootloader bool) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// lockedPort pairs a serial.Port with the advisory flock acquired for it, so
+// every existing f.port.Close() call releases both without any call site
+// needing to change.
+type lockedPort struct {
+	serial.Port
+	lock *seriallock.Lock
+}
+
+func (p *lockedPort) Close() error {
+	err := p.Port.Close()
+	p.lock.Release()
+	return err
+}
+
+// openLockedPort acquires the WendyCom-style advisory flock for portPath —
+// catching pyserial-based tools (idf.py monitor, esptool) that don't set
+// TIOCEXCL and so would otherwise be invisible to go.bug.st/serial's own
+// busy detection — before opening it, mirroring liteclient's
+// ConnectToSerial. The lock is released whenever the returned port is
+// Closed.
+func openLockedPort(portPath string, mode *serial.Mode) (serial.Port, error) {
+	lock, err := seriallock.Acquire(portPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", errPortBusy, err)
+	}
+	port, err := serial.Open(portPath, mode)
+	if err != nil {
+		lock.Release()
+		return nil, err
+	}
+	return &lockedPort{Port: port, lock: lock}, nil
+}
+
 // serialOpenFn opens a serial port; a package var so tests can stub it
 // without touching real hardware.
-var serialOpenFn = serial.Open
+var serialOpenFn = openLockedPort
 
 // portOpenRetryBudget bounds how long openPortRetrying waits for a device
 // node to (re)appear; portOpenRetryInterval is the poll spacing, matching
@@ -936,12 +970,15 @@ var (
 
 // openPortRetrying opens portPath, retrying while the failure looks
 // transient. Permission-denied is not transient — missing group membership
-// won't resolve itself by waiting — so it returns immediately, preserving
-// the caller's specific messaging for that case. Everything else, including
-// busy, is retried until budget runs out: a device that's rebooting can
-// make its USB node report busy for a moment (not just disappear as "no
-// such file"), so busy has to be retried too rather than treated as a hard
-// failure.
+// won't resolve itself by waiting. Nor is a flock failure (errPortBusy,
+// from openLockedPort): it means a different process on this host — an
+// idf.py monitor session, say — holds the port, and nothing about us
+// retrying will make it let go. Both return immediately, preserving the
+// caller's specific messaging for those cases. Everything else, including
+// raw kernel busy (TIOCEXCL), is retried until budget runs out: a device
+// that's rebooting can make its USB node report busy for a moment (not just
+// disappear as "no such file"), so that has to be retried rather than
+// treated as a hard failure.
 func openPortRetrying(portPath string, mode *serial.Mode, budget time.Duration) (serial.Port, error) {
 	deadline := time.Now().Add(budget)
 	for {
@@ -949,7 +986,7 @@ func openPortRetrying(portPath string, mode *serial.Mode, budget time.Duration) 
 		if err == nil {
 			return port, nil
 		}
-		if isPermissionDenied(err) || time.Now().After(deadline) {
+		if isPermissionDenied(err) || errors.Is(err, errPortBusy) || time.Now().After(deadline) {
 			return nil, err
 		}
 		time.Sleep(portOpenRetryInterval)
@@ -984,6 +1021,11 @@ func connectAttempt(portPath string, mode *serial.Mode) (*espFlasher, error) {
 				return nil, fmt.Errorf("Permission denied to access USB device %s. To have access, you need to be part of the user group '%s'.", portPath, group)
 			}
 		}
+		if errors.Is(err, errPortBusy) {
+			// openLockedPort's flock error already names the port and the
+			// likely holder, so it's returned as-is rather than re-wrapped.
+			return nil, err
+		}
 		if isPortBusy(err) {
 			// The underlying *serial.PortError just says "Serial port busy"
 			// again, so it is dropped rather than repeated: errPortBusy already
@@ -1002,6 +1044,9 @@ func connectAttempt(portPath string, mode *serial.Mode) (*espFlasher, error) {
 
 		newPort, err := openPortRetrying(portPath, mode, portOpenRetryBudget)
 		if err != nil {
+			if errors.Is(err, errPortBusy) {
+				return nil, err
+			}
 			if isPortBusy(err) {
 				return nil, fmt.Errorf("%w: reopening port %s after reset", errPortBusy, portPath)
 			}

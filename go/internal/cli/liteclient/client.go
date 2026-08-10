@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	wendypb "github.com/wendylabsinc/wendy/go/proto/gen/litepb"
 	"go.bug.st/serial"
 	"google.golang.org/protobuf/proto"
@@ -93,7 +94,7 @@ type subscription struct {
 // Close is terminal — create a new client to reconnect.
 type WendyLiteClient struct {
 	link                wcomLink
-	serialLock          *serialLock
+	serialLock          *seriallock.Lock
 	requestIdGen        atomic.Uint32
 	eventIdGen          atomic.Uint32
 	peerProtocolVersion protocolVersion
@@ -172,7 +173,7 @@ func (c *WendyLiteClient) ConnectWithMutualAuthentication(address string, cert t
 }
 
 func (c *WendyLiteClient) ConnectToSerial(device string) error {
-	lock, err := acquireSerialLock(device)
+	lock, err := seriallock.Acquire(device)
 	if err != nil {
 		return err
 	}
@@ -184,14 +185,14 @@ func (c *WendyLiteClient) ConnectToSerial(device string) error {
 	}
 	port, err := serial.Open(device, mode)
 	if err != nil {
-		lock.release()
+		lock.Release()
 		return fmt.Errorf("open serial: %w", err)
 	}
 	c.link = &directLink{conn: port, isSerial: true}
 	c.serialLock = lock
 	if err := c.handshake(); err != nil {
 		port.Close()
-		lock.release()
+		lock.Release()
 		c.link = nil
 		c.serialLock = nil
 		return fmt.Errorf("handshake: %w", err)
@@ -228,7 +229,7 @@ func (c *WendyLiteClient) Close() error {
 	c.closeOnce.Do(func() {
 		c.closeErr = c.link.close()
 		c.readDone.Wait()
-		c.serialLock.release()
+		c.serialLock.Release()
 	})
 	return c.closeErr
 }

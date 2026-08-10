@@ -3,10 +3,12 @@ package commands
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/seriallock"
 	"go.bug.st/serial"
 )
 
@@ -220,5 +222,96 @@ func TestConnectAttemptGivesUpAfterAttempts(t *testing.T) {
 	wantMsg := fmt.Sprintf("did not respond after %d bootloader-reset attempts", connectAttemptRetries)
 	if !strings.Contains(err.Error(), wantMsg) {
 		t.Errorf("connectAttempt() error = %q, want it to contain %q", err.Error(), wantMsg)
+	}
+}
+
+func TestOpenLockedPortDetectsExistingLock(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "espflash-lock")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	path := f.Name()
+	f.Close()
+
+	// Simulate another program (idf.py monitor, esptool, ...) already
+	// holding the port.
+	holder, err := seriallock.Acquire(path)
+	if err != nil {
+		t.Fatalf("seriallock.Acquire() error = %v", err)
+	}
+	defer holder.Release()
+
+	_, err = openLockedPort(path, &serial.Mode{BaudRate: initialBaudRate})
+	if err == nil {
+		t.Fatal("openLockedPort() = nil error, want failure while another lock is held")
+	}
+	if !errors.Is(err, errPortBusy) {
+		t.Errorf("openLockedPort() error = %v, want it to satisfy errors.Is(err, errPortBusy)", err)
+	}
+}
+
+func TestOpenLockedPortReleasesLockOnOpenFailure(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "espflash-lock")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	path := f.Name()
+	f.Close()
+
+	// path is a plain file, not a real serial device, so serial.Open fails
+	// after the flock succeeds — openLockedPort must release that flock
+	// rather than leak it.
+	_, err = openLockedPort(path, &serial.Mode{BaudRate: initialBaudRate})
+	if err == nil {
+		t.Fatal("openLockedPort() = nil error, want serial.Open to fail on a plain file")
+	}
+	if errors.Is(err, errPortBusy) {
+		t.Errorf("openLockedPort() error = %v, want a serial.Open failure, not a lock failure", err)
+	}
+
+	lock, err := seriallock.Acquire(path)
+	if err != nil {
+		t.Fatalf("seriallock.Acquire() error = %v, want success — openLockedPort should have released its own lock", err)
+	}
+	lock.Release()
+}
+
+func TestOpenPortRetryingDoesNotRetryLockFailure(t *testing.T) {
+	origOpen := serialOpenFn
+	defer func() { serialOpenFn = origOpen }()
+
+	calls := 0
+	serialOpenFn = func(portPath string, mode *serial.Mode) (serial.Port, error) {
+		calls++
+		return nil, fmt.Errorf("%w: serial port %s is in use by another program (idf.py monitor?)", errPortBusy, portPath)
+	}
+
+	_, err := openPortRetrying("/dev/fake", &serial.Mode{}, time.Second)
+	if err == nil {
+		t.Fatal("openPortRetrying() = nil error, want the lock failure")
+	}
+	if !errors.Is(err, errPortBusy) {
+		t.Errorf("openPortRetrying() error = %v, want errPortBusy", err)
+	}
+	if calls != 1 {
+		t.Errorf("serialOpenFn called %d times, want 1 (a lock failure is terminal, unlike raw kernel busy)", calls)
+	}
+}
+
+func TestConnectAttemptPassesThroughLockFailure(t *testing.T) {
+	origOpen := serialOpenFn
+	defer func() { serialOpenFn = origOpen }()
+
+	wantErr := fmt.Errorf("%w: serial port /dev/fake is in use by another program (idf.py monitor?)", errPortBusy)
+	serialOpenFn = func(portPath string, mode *serial.Mode) (serial.Port, error) {
+		return nil, wantErr
+	}
+
+	_, err := connectAttempt("/dev/fake", &serial.Mode{BaudRate: initialBaudRate})
+	if !errors.Is(err, errPortBusy) {
+		t.Errorf("connectAttempt() error = %v, want errPortBusy", err)
+	}
+	if err.Error() != wantErr.Error() {
+		t.Errorf("connectAttempt() error = %q, want it passed through unchanged as %q", err.Error(), wantErr.Error())
 	}
 }
