@@ -13,14 +13,16 @@ import Testing
                     mode: nil,
                     name: nil,
                     path: nil,
-                    ports: [WendyPortMapping(host: 3000, container: 3000)]
+                    ports: [WendyPortMapping(host: 3000, container: 3000)],
+                    port: nil
                 ),
                 WendyEntitlement(
                     type: "persist",
                     mode: nil,
                     name: "db",
                     path: "/data",
-                    ports: nil
+                    ports: nil,
+                    port: nil
                 ),
             ],
             brewfile: nil

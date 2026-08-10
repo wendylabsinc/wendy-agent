@@ -6,116 +6,73 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
 )
 
-func TestIsRoutableLANAddress(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"192.168.1.10", true},                     // IPv4 private
-		{"10.0.0.5", true},                         // IPv4 private
-		{"169.254.1.1", true},                      // IPv4 link-local (APIPA) is still routable per "IPv4 (any)"
-		{"2001:db8::1", true},                      // global IPv6
-		{"fd00::1", true},                          // ULA IPv6 (not link-local)
-		{"::1", true},                              // IPv6 loopback is not link-local-unicast
-		{"fe80::1", false},                         // IPv6 link-local
-		{"fe80::1dc5:4d23:df52:fc45%wlan0", false}, // zoned IPv6 link-local
-		{"", false},                                // empty
-		{"not-an-ip", false},                       // garbage
-	}
-	for _, tc := range cases {
-		if got := isRoutableLANAddress(tc.addr); got != tc.want {
-			t.Errorf("isRoutableLANAddress(%q) = %v, want %v", tc.addr, got, tc.want)
+// TestSetLANNetworkInterface is the pure logic every platform's newLANAnnotator
+// override (darwin's init() in discovery_darwin.go, linux's in
+// annotate_linux.go, windows' in annotate_windows.go) ultimately funnels
+// through: it must set NetworkInterface, and derive the USB summary from the
+// interface/display name and link speed only when the interface actually
+// looks USB-backed and only when USB has not already been set upstream.
+func TestSetLANNetworkInterface(t *testing.T) {
+	t.Run("USB-looking interface gets a USB summary with link speed", func(t *testing.T) {
+		dev := &models.LANDevice{}
+		setLANNetworkInterface(dev, "usb0", "", "480 Mbps")
+		if dev.NetworkInterface != "usb0" {
+			t.Errorf("NetworkInterface = %q, want %q", dev.NetworkInterface, "usb0")
 		}
-	}
-}
-
-func TestAppendPreferredLANDevicePrefersRoutable(t *testing.T) {
-	v4 := models.LANDevice{ID: "d", DisplayName: "cam", Hostname: "cam.local", Port: 50052, IPAddress: "192.168.1.5"}
-	v6ll := models.LANDevice{ID: "d", DisplayName: "cam", Hostname: "cam.local", Port: 50052, IPAddress: "fe80::1%wlan0"}
-	const key = "cam-cam.local-50052"
-
-	// Link-local discovered first, then routable IPv4 → IPv4 must win.
-	var devs []models.LANDevice
-	idx := map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v6ll)
-	devs = appendPreferredLANDevice(devs, idx, key, v4)
-	if len(devs) != 1 || devs[0].IPAddress != "192.168.1.5" {
-		t.Fatalf("routable IPv4 should win, got %+v", devs)
-	}
-
-	// Routable IPv4 first, then link-local → IPv4 must remain.
-	devs = nil
-	idx = map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v4)
-	devs = appendPreferredLANDevice(devs, idx, key, v6ll)
-	if len(devs) != 1 || devs[0].IPAddress != "192.168.1.5" {
-		t.Fatalf("routable IPv4 should remain, got %+v", devs)
-	}
-
-	// Only link-local available → it must be kept (no address dropped).
-	devs = nil
-	idx = map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v6ll)
-	if len(devs) != 1 || devs[0].IPAddress != "fe80::1%wlan0" {
-		t.Fatalf("link-local should be kept when only option, got %+v", devs)
-	}
-}
-
-func TestAppendPreferredLANDevicePrefersIPv4OverGlobalIPv6(t *testing.T) {
-	// avahi resolves the same device once per protocol; the IPv6 entry often
-	// carries a rotating RFC 4941 temporary address. IPv4 must win regardless
-	// of arrival order — before this rule both addresses scored the same, so
-	// whichever resolved first (usually IPv6) was kept.
-	v4 := models.LANDevice{ID: "d", DisplayName: "cam", Hostname: "cam.local", Port: 50052, IPAddress: "192.168.0.159"}
-	v6 := models.LANDevice{ID: "d", DisplayName: "cam", Hostname: "cam.local", Port: 50052, IPAddress: "2600:1011:a003:4221:be41:6859:13c0:f7"}
-	const key = "cam-cam.local-50052"
-
-	// IPv6 discovered first, then IPv4 → IPv4 must win.
-	var devs []models.LANDevice
-	idx := map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v6)
-	devs = appendPreferredLANDevice(devs, idx, key, v4)
-	if len(devs) != 1 || devs[0].IPAddress != "192.168.0.159" {
-		t.Fatalf("IPv4 should win over global IPv6, got %+v", devs)
-	}
-
-	// IPv4 first, then IPv6 → IPv4 must remain, even when the IPv6 record
-	// carries more metadata (which would otherwise out-score it).
-	v6To := v6
-	v6To.NetworkInterface = "wlan0"
-	devs = nil
-	idx = map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v4)
-	devs = appendPreferredLANDevice(devs, idx, key, v6To)
-	if len(devs) != 1 || devs[0].IPAddress != "192.168.0.159" {
-		t.Fatalf("IPv4 should remain over global IPv6, got %+v", devs)
-	}
-
-	// Only IPv6 available → it must be kept.
-	devs = nil
-	idx = map[string]int{}
-	devs = appendPreferredLANDevice(devs, idx, key, v6)
-	if len(devs) != 1 || devs[0].IPAddress != v6.IPAddress {
-		t.Fatalf("IPv6 should be kept when only option, got %+v", devs)
-	}
-}
-
-func TestIsIPv4LANAddress(t *testing.T) {
-	cases := []struct {
-		addr string
-		want bool
-	}{
-		{"192.168.1.10", true},
-		{"169.254.1.1", true},
-		{"::ffff:192.168.1.10", true}, // IPv4-mapped
-		{"2001:db8::1", false},
-		{"fe80::1%wlan0", false},
-		{"", false},
-		{"not-an-ip", false},
-	}
-	for _, tc := range cases {
-		if got := isIPv4LANAddress(tc.addr); got != tc.want {
-			t.Errorf("isIPv4LANAddress(%q) = %v, want %v", tc.addr, got, tc.want)
+		if want := "usb0 480 Mbps"; dev.USB != want {
+			t.Errorf("USB = %q, want %q", dev.USB, want)
 		}
+	})
+
+	t.Run("display name distinct from interface name is parenthesized", func(t *testing.T) {
+		dev := &models.LANDevice{}
+		setLANNetworkInterface(dev, "Ethernet 3", "Remote NDIS Compatible Device", "425 Mbps")
+		if want := "Remote NDIS Compatible Device (Ethernet 3) 425 Mbps"; dev.USB != want {
+			t.Errorf("USB = %q, want %q", dev.USB, want)
+		}
+	})
+
+	t.Run("no link speed omits the trailing speed", func(t *testing.T) {
+		dev := &models.LANDevice{}
+		setLANNetworkInterface(dev, "usb0", "", "")
+		if want := "usb0"; dev.USB != want {
+			t.Errorf("USB = %q, want %q", dev.USB, want)
+		}
+	})
+
+	t.Run("non-USB interface leaves USB empty but still sets NetworkInterface", func(t *testing.T) {
+		dev := &models.LANDevice{}
+		setLANNetworkInterface(dev, "eth0", "", "1 Gbps")
+		if dev.NetworkInterface != "eth0" {
+			t.Errorf("NetworkInterface = %q, want %q", dev.NetworkInterface, "eth0")
+		}
+		if dev.USB != "" {
+			t.Errorf("USB = %q, want empty for a non-USB-looking interface", dev.USB)
+		}
+	})
+
+	t.Run("empty interface name is a no-op", func(t *testing.T) {
+		dev := &models.LANDevice{NetworkInterface: "stale", USB: "stale-usb"}
+		setLANNetworkInterface(dev, "", "irrelevant", "irrelevant")
+		if dev.NetworkInterface != "stale" || dev.USB != "stale-usb" {
+			t.Errorf("dev = %+v, want untouched", dev)
+		}
+	})
+
+	t.Run("an already-set USB is not overwritten", func(t *testing.T) {
+		dev := &models.LANDevice{USB: "already set upstream"}
+		setLANNetworkInterface(dev, "usb0", "", "480 Mbps")
+		if dev.USB != "already set upstream" {
+			t.Errorf("USB = %q, want the pre-existing value preserved", dev.USB)
+		}
+		if dev.NetworkInterface != "usb0" {
+			t.Errorf("NetworkInterface = %q, want %q", dev.NetworkInterface, "usb0")
+		}
+	})
+}
+
+func TestLooksLikeUSBConnectionNCM(t *testing.T) {
+	if !looksLikeUSBConnection("ncm0", "") {
+		t.Fatal("ncm0 should be classified as a USB connection")
 	}
 }

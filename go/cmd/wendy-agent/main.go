@@ -43,6 +43,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/registry"
 	"github.com/wendylabsinc/wendy/go/internal/agent/services"
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/agent/usbgadget"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -50,7 +51,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 const (
@@ -223,10 +226,18 @@ func main() {
 
 	installer := &services.AgentInstaller{}
 	agentSvc := services.NewAgentService(logger, networkMgr, hwDiscoverer, btManager, installer)
+	agentSvc.WarmBinaryHash()
 
 	var monitor *container.ContainerMonitor
 	if containerdClient != nil {
 		monitor = container.NewContainerMonitor(logger, containerdClient, logManager, 15*time.Second)
+		if ctrdClient != nil {
+			// Let the low-level client pause the monitor's restart cycle for a
+			// container it is mid-replace/stop on, so a crash-looping app's
+			// automatic restart cannot race the kill+delete (WDY debug:
+			// "cannot delete running task: failed precondition").
+			ctrdClient.SetRestartSuppressor(monitor)
+		}
 	}
 
 	containerSvcOpts := []services.ContainerServiceOption{
@@ -279,8 +290,13 @@ func main() {
 	go timesyncMgr.RunDirect(ctx)
 	go timesyncMgr.RunMulticast(ctx)
 
+	startROS2BatteryMonitor(ctx, logger, configPath)
+
 	videoSvc := services.NewVideoService(ctx, logger)
 	defer videoSvc.Shutdown()
+	// Network cameras have to be found before they can be listed, so probe
+	// periodically rather than only when a client asks.
+	videoSvc.StartDiscovery()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 
@@ -714,6 +730,10 @@ func main() {
 		}()
 	}
 
+	// Keep the USB gadget interface reachable at the well-known link-local
+	// address the CLI dials directly (no mDNS/DHCP needed over USB-C).
+	go usbgadget.EnsureWellKnownAddress(ctx, 30*time.Second, logger)
+
 	// Local control socket: the agent's full gRPC over a unix socket with NO
 	// mTLS. Access is gated solely by the admin entitlement (oci.applyAdmin
 	// bind-mounts this socket into entitled containers). Disabled with
@@ -810,6 +830,13 @@ func main() {
 	// coming up locally (mDNS discovery still works unenrolled).
 	go provisioningSvc.ApplyEnrollmentFile(context.Background())
 
+	// Restore audio peripherals paired before the last reboot. Nothing else
+	// does: BlueZ only reconnects after a link supervision timeout and has no
+	// startup path, and a speaker that was already powered when the host went
+	// away never pages us. Runs once per boot and waits on the user audio
+	// session, so it neither delays startup nor repeats on agent restarts.
+	go btManager.ReconnectTrusted(ctx)
+
 	otelPort := defaultOTELPort
 	if p := os.Getenv("WENDY_OTEL_PORT"); p != "" {
 		otelPort = p
@@ -830,9 +857,9 @@ func main() {
 			PermitWithoutStream: true,
 		}),
 	)
-	otelpb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
-	otelpb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
-	otelpb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
+	collogspb.RegisterLogsServiceServer(otelServer, otelLogReceiver)
+	colmetricspb.RegisterMetricsServiceServer(otelServer, otelMetricReceiver)
+	coltracepb.RegisterTraceServiceServer(otelServer, otelTraceReceiver)
 
 	otelLis, err := listenDualStackLoopback(otelPort)
 	if err != nil {
@@ -1054,8 +1081,21 @@ func handleUtilityCommand(args []string) (bool, int) {
 	}
 
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils open-browser <url>")
+		fmt.Fprintln(os.Stderr, "usage: wendy-agent utils <command>")
 		return true, 2
+	}
+	if args[1] == "ipcam-gstreamer" {
+		if len(args) != 2 {
+			fmt.Fprintln(os.Stderr, "invalid GStreamer helper invocation")
+			return true, 2
+		}
+		if err := services.RunIPCameraGStreamerHelper(os.Stdin, os.Stdout); err != nil {
+			// Keep this deliberately generic: the helper's pipeline contains camera
+			// credentials, and library diagnostics may repeat property values.
+			fmt.Fprintln(os.Stderr, "GStreamer capture pipeline failed")
+			return true, 1
+		}
+		return true, 0
 	}
 	if args[1] != "open-browser" {
 		return false, 0

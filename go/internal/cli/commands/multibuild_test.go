@@ -1,10 +1,192 @@
 package commands
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 )
+
+// newServiceTree writes n service directories under a fresh temp root, each
+// with a minimal Dockerfile, and returns the root plus the services map.
+func newServiceTree(t *testing.T, n int) (string, map[string]*appconfig.ServiceConfig) {
+	t.Helper()
+	root := t.TempDir()
+	services := map[string]*appconfig.ServiceConfig{}
+	for i := range n {
+		name := fmt.Sprintf("svc%02d", i)
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		services[name] = &appconfig.ServiceConfig{Context: name}
+	}
+	return root, services
+}
+
+// TestComputeServicePlansRunsServicesConcurrently is the reason planning was
+// split out of planServicePushSkips. Per service it resolves a build file —
+// which for a Stagefile project is a full compile including registry digest
+// lookups — and hashes the entire build context by walking and reading every
+// file. Serially that is dead wall-clock time before the first `docker build`
+// even starts, and it scaled with service count: the 14-service go2 template
+// paid 14 context walks back to back.
+//
+// The stubbed resolver blocks until every service's plan is in flight, which
+// can only happen if they run at once. A serial implementation never releases
+// the barrier, so the bounded wait fails the test rather than hanging the suite.
+func TestComputeServicePlansRunsServicesConcurrently(t *testing.T) {
+	root, services := newServiceTree(t, maxConcurrentPlans)
+
+	var inFlight sync.WaitGroup
+	inFlight.Add(len(services))
+	orig := planResolveDockerfile
+	defer func() { planResolveDockerfile = orig }()
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string, _ ...stagefile.Option) (string, error) {
+		inFlight.Done()
+		inFlight.Wait() // released only once every other service's plan has started
+		return "Dockerfile", nil
+	}
+
+	done := make(chan map[string]servicePlan, 1)
+	go func() {
+		done <- computeServicePlans(root, "linux/arm64", "", &appconfig.AppConfig{AppID: "app"}, services, nil)
+	}()
+
+	select {
+	case plans := <-done:
+		if len(plans) != len(services) {
+			t.Fatalf("planned %d services, want %d", len(plans), len(services))
+		}
+		for name, plan := range plans {
+			if plan.dockerfile != "Dockerfile" {
+				t.Errorf("service %s: dockerfile = %q, want Dockerfile", name, plan.dockerfile)
+			}
+			if plan.inputHash == "" {
+				t.Errorf("service %s: inputHash is empty", name)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("computeServicePlans did not plan all %d services concurrently", len(services))
+	}
+}
+
+// TestComputeServicePlansOmitsServicesItCannotPlan preserves what the serial
+// loop did by `continue`ing past a failure: a service whose build file cannot be
+// resolved simply has no plan. Callers read a missing plan as "can't skip, and
+// no precomputed dockerfile to reuse", so the build path resolves it again and
+// surfaces the real error there rather than aborting the whole group here.
+func TestComputeServicePlansOmitsServicesItCannotPlan(t *testing.T) {
+	root, services := newServiceTree(t, 2)
+
+	orig := planResolveDockerfile
+	defer func() { planResolveDockerfile = orig }()
+	planResolveDockerfile = func(cwd, requested string, interactive bool, gpuArch string, _ ...stagefile.Option) (string, error) {
+		if filepath.Base(cwd) == "svc00" {
+			return "", fmt.Errorf("no build file")
+		}
+		return "Dockerfile", nil
+	}
+
+	plans := computeServicePlans(root, "linux/arm64", "", &appconfig.AppConfig{AppID: "app"}, services, nil)
+
+	if _, ok := plans["svc00"]; ok {
+		t.Error("svc00 could not be resolved; it must not get a plan")
+	}
+	if _, ok := plans["svc01"]; !ok {
+		t.Error("svc01 resolved cleanly; it must still get a plan when a sibling fails")
+	}
+}
+
+// TestBuildServicesParallelReusesPlannedDockerfile closes the double-compile:
+// planning already resolved (and, for a Stagefile, compiled) each service's
+// build file, so the build goroutine must use that result instead of resolving
+// the same directory a second time on every run.
+func TestBuildServicesParallelReusesPlannedDockerfile(t *testing.T) {
+	root, services := newServiceTree(t, 3)
+
+	const appID = "app"
+	planned := map[string]string{}
+	for name := range services {
+		// A name resolveDockerfile would never produce on its own, so seeing it
+		// arrive at the builder proves the planned value was threaded through
+		// rather than recomputed.
+		planned[name] = "Dockerfile.planned-" + name
+	}
+
+	var mu sync.Mutex
+	got := map[string]string{} // repo -> dockerfile the builder received
+	orig := buildServiceImage
+	defer func() { buildServiceImage = orig }()
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, dockerfile string, _ map[string]string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		got[repo] = dockerfile
+		mu.Unlock()
+		return nil
+	}
+
+	failed, infraErr := buildServicesParallel(
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, planned, len(services))
+	if infraErr != nil {
+		t.Fatalf("unexpected infra error: %v", infraErr)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("unexpected build failures: %v", sortedServiceErrorKeys(failed))
+	}
+
+	for name := range services {
+		repo := appID + "-" + name
+		if got[repo] != planned[name] {
+			t.Errorf("service %s built with dockerfile %q, want the planned %q", name, got[repo], planned[name])
+		}
+	}
+}
+
+// TestBuildServicesParallelResolvesWhenPlanningSkippedIt keeps the fallback
+// honest: planning is best-effort (it bails out on WENDY_PUSH_SKIP=0 and on any
+// per-service error), so a service with no planned entry must still resolve its
+// own build file rather than being built with an empty one.
+func TestBuildServicesParallelResolvesWhenPlanningSkippedIt(t *testing.T) {
+	root, services := newServiceTree(t, 2)
+
+	const appID = "app"
+	var mu sync.Mutex
+	got := map[string]string{}
+	orig := buildServiceImage
+	defer func() { buildServiceImage = orig }()
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, dockerfile string, _ map[string]string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		got[repo] = dockerfile
+		mu.Unlock()
+		return nil
+	}
+
+	failed, infraErr := buildServicesParallel(
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, nil, len(services))
+	if infraErr != nil {
+		t.Fatalf("unexpected infra error: %v", infraErr)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("unexpected build failures: %v", sortedServiceErrorKeys(failed))
+	}
+
+	for name := range services {
+		if repo := appID + "-" + name; got[repo] != "Dockerfile" {
+			t.Errorf("service %s built with dockerfile %q, want the self-resolved Dockerfile", name, got[repo])
+		}
+	}
+}
 
 // ros2ExampleAppConfig mirrors Examples/ROS2/wendy.json: group-level
 // frameworks.ros2 + isolation, with a per-service override on one service.
@@ -115,6 +297,54 @@ func TestMultiServiceCreateConfig_DoesNotInheritTopLevelHooks(t *testing.T) {
 	}
 	if got.Hooks != nil {
 		t.Errorf("Hooks = %+v, want nil (top-level hooks must not leak per-service)", got.Hooks)
+	}
+}
+
+func TestMultiServiceLifecycleConfig_ScopesHTTPEntitlements(t *testing.T) {
+	appCfg := &appconfig.AppConfig{
+		AppID: "sh.wendy.examples.wendymc",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementNetwork, Mode: "host"},
+			{Type: appconfig.EntitlementHTTP, Port: 8080},
+		},
+		Readiness: &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"minecraft": {Context: "./minecraft"},
+			"webui":     {Context: "./webui"},
+		},
+	}
+
+	for _, name := range []string{"minecraft", "webui"} {
+		createCfg := multiServiceCreateConfig(appCfg, name, appCfg.Services[name])
+		if port, ok := httpEntitlementPort(createCfg.Entitlements); !ok || port != 8080 {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited 8080", name, port, ok)
+		}
+		if lifecycleCfg := multiServiceLifecycleConfig(appCfg.AppID, name, appCfg.Services[name]); lifecycleCfg != nil {
+			t.Errorf("%s lifecycle config = %+v, want nil (top-level HTTP must not execute per service)", name, lifecycleCfg)
+		}
+	}
+
+	appLifecycle := appLevelLifecycleConfig(appCfg.AppID, appCfg)
+	if appLifecycle == nil {
+		t.Fatal("app-level HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(appLifecycle.Entitlements); !ok || port != 8080 {
+		t.Errorf("app-level lifecycle HTTP = %d, %v; want 8080", port, ok)
+	}
+	if appLifecycle.Readiness == nil || appLifecycle.Readiness.TimeoutSeconds != 180 {
+		t.Errorf("app-level readiness = %+v, want timeoutSeconds 180", appLifecycle.Readiness)
+	}
+	if readiness := effectiveReadiness(appLifecycle); readiness == nil || readiness.TCPSocket == nil || readiness.TCPSocket.Port != 8080 || readiness.TimeoutSeconds != 180 {
+		t.Errorf("effective app-level readiness = %+v, want port 8080 with timeoutSeconds 180", readiness)
+	}
+
+	appCfg.Services["webui"].Entitlements = []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 9090}}
+	serviceLifecycle := multiServiceLifecycleConfig(appCfg.AppID, "webui", appCfg.Services["webui"])
+	if serviceLifecycle == nil {
+		t.Fatal("service-local HTTP should produce a lifecycle config")
+	}
+	if port, ok := httpEntitlementPort(serviceLifecycle.Entitlements); !ok || port != 9090 {
+		t.Errorf("service lifecycle HTTP = %d, %v; want service-declared 9090", port, ok)
 	}
 }
 

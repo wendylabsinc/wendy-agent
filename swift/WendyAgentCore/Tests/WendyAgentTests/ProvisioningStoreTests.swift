@@ -21,7 +21,7 @@ struct ProvisioningStoreTests {
             cloudHost: "cloud.example:50051",
             orgID: 7,
             assetID: 42,
-            keyPEM: "KEYPEM",
+            keyBacking: .softwarePEM("KEYPEM"),
             certPEM: "CERTPEM",
             chainPEM: "CHAINPEM"
         )
@@ -31,7 +31,7 @@ struct ProvisioningStoreTests {
         #expect(loaded.cloudHost == "cloud.example:50051")
         #expect(loaded.orgID == 7)
         #expect(loaded.assetID == 42)
-        #expect(loaded.keyPEM == "KEYPEM")
+        #expect(loaded.keyBacking == .softwarePEM("KEYPEM"))
         #expect(loaded.certPEM == "CERTPEM")
         #expect(loaded.chainPEM == "CHAINPEM")
 
@@ -73,7 +73,7 @@ struct ProvisioningStoreTests {
 
         let store = ProvisioningStore(configPath: dir)
         let loaded = try #require(store.load())
-        #expect(loaded.keyPEM == "LEGACYKEY")
+        #expect(loaded.keyBacking == .softwarePEM("LEGACYKEY"))
         // Migrated to device-key.pem and stripped from json.
         let migratedKey = try String(
             contentsOf: dir.appendingPathComponent("device-key.pem"),
@@ -136,7 +136,7 @@ struct ProvisioningStoreTests {
                 cloudHost: "c:50051",
                 orgID: 1,
                 assetID: 2,
-                keyPEM: "KEYPEM",
+                keyBacking: .softwarePEM("KEYPEM"),
                 certPEM: "CERTPEM",
                 chainPEM: "CHAINPEM"
             )
@@ -161,7 +161,7 @@ struct ProvisioningStoreTests {
             cloudHost: "c:50051",
             orgID: 1,
             assetID: 2,
-            keyPEM: "K",
+            keyBacking: .softwarePEM("K"),
             certPEM: "C",
             chainPEM: "CH"
         )
@@ -175,5 +175,31 @@ struct ProvisioningStoreTests {
         }
         // Second clear on an empty dir does not throw.
         try store.clear()
+    }
+
+    @Test("Secure-Enclave-backed save persists no device-key.pem, and round-trips")
+    func secureEnclaveBackingPersistsNoKeyFile() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = ProvisioningStore(configPath: dir)
+
+        try store.save(
+            cloudHost: "h",
+            orgID: 1,
+            assetID: 2,
+            keyBacking: .secureEnclave,
+            certPEM: "CERT",
+            chainPEM: "CHAIN"
+        )
+
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: dir.appendingPathComponent("device-key.pem").path
+            )
+        )
+        let loaded = try #require(store.load())
+        #expect(loaded.keyBacking == .secureEnclave)
+        #expect(loaded.certPEM == "CERT")
+        #expect(loaded.chainPEM == "CHAIN")
     }
 }

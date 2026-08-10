@@ -151,6 +151,32 @@ func TestRunResolveOptions_YesIsNonInteractive(t *testing.T) {
 	}
 }
 
+// TestRunResolveOptions_NoBluetooth verifies `wendy run` never opts into BLE
+// discovery: it cannot deploy over BLE, so the picker must not scan for or list
+// BLE devices the user would only be told are unusable.
+func TestRunResolveOptions_NoBluetooth(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	for _, o := range runResolveOptions(runOptions{}) {
+		o(&cfg)
+	}
+	if cfg.includeBluetooth {
+		t.Error("wendy run must not include Bluetooth devices in device resolution")
+	}
+}
+
+// TestIncludeBluetooth verifies BLE discovery is off unless a command opts in,
+// so a new command that has no BLE code path gets the safe default.
+func TestIncludeBluetooth(t *testing.T) {
+	cfg := resolveConfig{excludeProviderKeys: map[string]bool{}}
+	if cfg.includeBluetooth {
+		t.Error("resolveConfig zero value should exclude Bluetooth")
+	}
+	IncludeBluetooth()(&cfg)
+	if !cfg.includeBluetooth {
+		t.Error("IncludeBluetooth() should enable Bluetooth discovery")
+	}
+}
+
 func TestResolveRunWorkingDir_Default(t *testing.T) {
 	prevWD, err := os.Getwd()
 	if err != nil {

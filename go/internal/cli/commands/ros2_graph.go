@@ -66,8 +66,8 @@ func ros2GraphEdges(graph *agentpbv2.GetROS2GraphResponse) (pubs, subs map[ros2E
 }
 
 // renderROS2GraphASCII renders the node graph as one "publisher ──topic──▶
-// subscriber" line per edge, with dangling publications and isolated nodes
-// listed afterwards (WDY-1333).
+// subscriber" line per edge, with dangling publications, dangling subscriptions
+// and genuinely isolated nodes listed afterwards (WDY-1333).
 func renderROS2GraphASCII(graph *agentpbv2.GetROS2GraphResponse) string {
 	pubs, subs := ros2GraphEdges(graph)
 
@@ -96,6 +96,31 @@ func renderROS2GraphASCII(graph *agentpbv2.GetROS2GraphResponse) string {
 				connected[pub] = true
 				connected[sub] = true
 			}
+		}
+	}
+
+	// Dangling *subscriptions* used to be invisible: the render only walked `pubs`,
+	// so a topic with subscribers but no publisher produced no line at all, and its
+	// subscribers then appeared under "Isolated nodes (no graph connections)" —
+	// which is wrong, they do have a subscription. It is also the single most useful
+	// thing a graph can tell you while debugging ("nothing is publishing what my
+	// node is waiting for"), so it gets the mirror of the no-subscribers rendering.
+	subOnlyKeys := make([]ros2EdgeKey, 0, len(subs))
+	for k := range subs {
+		if len(pubs[k]) == 0 {
+			subOnlyKeys = append(subOnlyKeys, k)
+		}
+	}
+	sort.Slice(subOnlyKeys, func(i, j int) bool {
+		if subOnlyKeys[i].topic != subOnlyKeys[j].topic {
+			return subOnlyKeys[i].topic < subOnlyKeys[j].topic
+		}
+		return subOnlyKeys[i].rmw < subOnlyKeys[j].rmw
+	})
+	for _, k := range subOnlyKeys {
+		for _, sub := range subs[k] {
+			fmt.Fprintf(&b, "(no publishers) ──%s──▶ [%s]\n", k.topic, sub)
+			connected[sub] = true
 		}
 	}
 
@@ -136,8 +161,19 @@ func renderROS2GraphDOT(graph *agentpbv2.GetROS2GraphResponse) string {
 	for _, node := range graph.GetNodes() {
 		fmt.Fprintf(&b, "  %q;\n", ros2GraphNodeLabel(ros2GraphNodeFQN(node), node.GetRmw(), tagged))
 	}
-	keys := make([]ros2EdgeKey, 0, len(pubs))
+	// Every topic that appears on either side, so dangling publications and
+	// dangling subscriptions are drawn rather than dropped — matching
+	// renderROS2GraphASCII. Rendering only the intersection hid exactly the
+	// case you draw a graph to find.
+	keySet := make(map[ros2EdgeKey]struct{}, len(pubs)+len(subs))
 	for k := range pubs {
+		keySet[k] = struct{}{}
+	}
+	for k := range subs {
+		keySet[k] = struct{}{}
+	}
+	keys := make([]ros2EdgeKey, 0, len(keySet))
+	for k := range keySet {
 		keys = append(keys, k)
 	}
 	sort.Slice(keys, func(i, j int) bool {
@@ -147,9 +183,25 @@ func renderROS2GraphDOT(graph *agentpbv2.GetROS2GraphResponse) string {
 		return keys[i].rmw < keys[j].rmw
 	})
 	for _, k := range keys {
-		for _, pub := range pubs[k] {
+		switch {
+		case len(pubs[k]) == 0:
+			// Subscribers with nothing publishing: hang them off a placeholder.
+			placeholder := k.topic + " (no publishers)"
+			fmt.Fprintf(&b, "  %q [shape=plaintext];\n", placeholder)
 			for _, sub := range subs[k] {
-				fmt.Fprintf(&b, "  %q -> %q [label=%q];\n", pub, sub, k.topic)
+				fmt.Fprintf(&b, "  %q -> %q [label=%q, style=dashed];\n", placeholder, sub, k.topic)
+			}
+		case len(subs[k]) == 0:
+			placeholder := k.topic + " (no subscribers)"
+			fmt.Fprintf(&b, "  %q [shape=plaintext];\n", placeholder)
+			for _, pub := range pubs[k] {
+				fmt.Fprintf(&b, "  %q -> %q [label=%q, style=dashed];\n", pub, placeholder, k.topic)
+			}
+		default:
+			for _, pub := range pubs[k] {
+				for _, sub := range subs[k] {
+					fmt.Fprintf(&b, "  %q -> %q [label=%q];\n", pub, sub, k.topic)
+				}
 			}
 		}
 	}

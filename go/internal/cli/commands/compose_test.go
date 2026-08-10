@@ -599,6 +599,8 @@ func TestDeduplicateEntitlements(t *testing.T) {
 	net := appconfig.Entitlement{Type: appconfig.EntitlementNetwork, Mode: "host"}
 	persist1 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "data"}
 	persist2 := appconfig.Entitlement{Type: appconfig.EntitlementPersist, Name: "logs"}
+	serial0 := appconfig.Entitlement{Type: appconfig.EntitlementSerial, Device: "ttyUSB0"}
+	serial1 := appconfig.Entitlement{Type: appconfig.EntitlementSerial, Device: "ttyUSB1"}
 
 	t.Run("removes exact duplicates", func(t *testing.T) {
 		got := deduplicateEntitlements([]appconfig.Entitlement{gpu, cam, gpu})
@@ -618,6 +620,27 @@ func TestDeduplicateEntitlements(t *testing.T) {
 		got := deduplicateEntitlements([]appconfig.Entitlement{persist1, persist2, persist1})
 		if len(got) != 2 {
 			t.Fatalf("want 2, got %d: %+v", len(got), got)
+		}
+	})
+
+	t.Run("distinct serial devices are kept", func(t *testing.T) {
+		got := deduplicateEntitlements([]appconfig.Entitlement{serial0, serial1, serial0})
+		if len(got) != 2 || got[0].Device != "ttyUSB0" || got[1].Device != "ttyUSB1" {
+			t.Fatalf("want ttyUSB0 and ttyUSB1 once each, got %+v", got)
+		}
+	})
+
+	t.Run("all parameter fields participate in identity", func(t *testing.T) {
+		ents := []appconfig.Entitlement{
+			{Type: appconfig.EntitlementGPIO, Pins: []int{17}},
+			{Type: appconfig.EntitlementGPIO, Pins: []int{18}},
+			{Type: appconfig.EntitlementCamera, Allowlist: []string{"/dev/video0"}},
+			{Type: appconfig.EntitlementCamera, Allowlist: []string{"/dev/video1"}},
+			{Type: appconfig.EntitlementNetwork, Ports: []appconfig.PortMapping{{Host: 8080, Container: 80}}},
+			{Type: appconfig.EntitlementNetwork, Ports: []appconfig.PortMapping{{Host: 9090, Container: 90}}},
+		}
+		if got := deduplicateEntitlements(ents); len(got) != len(ents) {
+			t.Fatalf("parameterized entitlements collapsed: got %+v", got)
 		}
 	})
 
@@ -907,6 +930,45 @@ services:
 	})
 }
 
+func TestComposeServiceLifecycleConfigs_ScopesHTTP(t *testing.T) {
+	composeCfg := &composeConfig{Services: map[string]composeService{
+		"minecraft": {Image: "alpine"},
+		"webui":     {Image: "alpine"},
+	}}
+	companion := &appconfig.AppConfig{
+		AppID:        "app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 8080}},
+		Readiness:    &appconfig.ReadinessConfig{TimeoutSeconds: 180},
+		Services: map[string]*appconfig.ServiceConfig{
+			"webui": {Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementHTTP, Port: 9090}}},
+		},
+	}
+
+	createCfgs, warnings, err := buildComposeServiceConfigs("proj", composeCfg, companion)
+	if err != nil {
+		t.Fatalf("buildComposeServiceConfigs: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	lifecycleCfgs := composeServiceLifecycleConfigs(createCfgs, companion)
+	for _, name := range []string{"minecraft", "webui"} {
+		if port, ok := httpEntitlementPort(createCfgs[name].Entitlements); !ok || port != 8080 {
+			t.Errorf("%s create config HTTP = %d, %v; want inherited top-level 8080", name, port, ok)
+		}
+	}
+	if lifecycleCfgs["minecraft"] != nil {
+		t.Errorf("minecraft lifecycle config = %+v, want nil", lifecycleCfgs["minecraft"])
+	}
+	if port, ok := httpEntitlementPort(lifecycleCfgs["webui"].Entitlements); !ok || port != 9090 {
+		t.Errorf("webui lifecycle HTTP = %d, %v; want service-declared 9090", port, ok)
+	}
+	appLifecycle := appLevelLifecycleConfig(companion.AppID, companion)
+	if readiness := effectiveReadiness(appLifecycle); readiness == nil || readiness.TCPSocket == nil || readiness.TCPSocket.Port != 8080 || readiness.TimeoutSeconds != 180 {
+		t.Errorf("effective app lifecycle readiness = %+v, want port 8080 and timeoutSeconds 180", readiness)
+	}
+}
+
 func TestApplyComposeCompanion_LifecycleOverride(t *testing.T) {
 	xWendyAppCfg := func() *appconfig.AppConfig {
 		return &appconfig.AppConfig{
@@ -1000,5 +1062,160 @@ services:
 	warnings := unsupportedComposeWarnings(cfg.Services["api"])
 	if len(warnings) != 0 {
 		t.Errorf("expected no warnings for clean service, got %v", warnings)
+	}
+}
+
+func TestComposeBuildContext_PrefersStagefile(t *testing.T) {
+	parse := func(t *testing.T, body string) composeService {
+		t.Helper()
+		var cfg composeConfig
+		if err := yaml.Unmarshal([]byte(body), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		return cfg.Services["svc"]
+	}
+
+	t.Run("scalar build path with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "api")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build: ./api\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("mapping without dockerfile with stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte("version: 1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != stagefileSourceName {
+			t.Fatalf("got %q, want %q", df, stagefileSourceName)
+		}
+	})
+
+	t.Run("explicit dockerfile wins over stagefile", func(t *testing.T) {
+		proj := t.TempDir()
+		svcDir := filepath.Join(proj, "svc")
+		if err := os.MkdirAll(svcDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range map[string]string{
+			stagefileSourceName: "version: 1\n",
+			"Dockerfile.dev":    "FROM alpine\n",
+		} {
+			if err := os.WriteFile(filepath.Join(svcDir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		svc := parse(t, "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: Dockerfile.dev\n")
+		_, df, _, err := composeBuildContext(svc, proj)
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if df != "Dockerfile.dev" {
+			t.Fatalf("got %q, want %q", df, "Dockerfile.dev")
+		}
+	})
+}
+
+func TestComposeStagefileOverride(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(svcDir, stagefileSourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seeded pin so the compile never touches a live registry.
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(svcDir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n  cached:\n    image: alpine\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	path, cleanup, err := composeStagefileOverride(proj, "")
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected an override file, got none")
+	}
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Build struct {
+				Context    string `yaml:"context"`
+				Dockerfile string `yaml:"dockerfile"`
+			} `yaml:"build"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parsing override: %v\n%s", err, data)
+	}
+	ov, ok := doc.Services["server"]
+	if !ok || ov.Build.Context != "server" || ov.Build.Dockerfile != "Dockerfile.generated" {
+		t.Fatalf("override = %+v\n%s", doc, data)
+	}
+	if _, hasCached := doc.Services["cached"]; hasCached {
+		t.Fatalf("image-only service must not be overridden:\n%s", data)
+	}
+	generated, err := os.ReadFile(filepath.Join(svcDir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("expected compiled Dockerfile.generated: %v", err)
+	}
+	if !strings.Contains(string(generated), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing pinned digest:\n%s", generated)
+	}
+}
+
+func TestComposeStagefileOverride_NoStagefiles(t *testing.T) {
+	proj := t.TempDir()
+	svcDir := filepath.Join(proj, "server")
+	if err := os.MkdirAll(svcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(svcDir, "Dockerfile"), []byte("FROM alpine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	compose := "services:\n  server:\n    build: ./server\n"
+	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, cleanup, err := composeStagefileOverride(proj, "")
+	if err != nil {
+		t.Fatalf("composeStagefileOverride: %v", err)
+	}
+	if path != "" || cleanup != nil {
+		t.Fatalf("expected no override for a Dockerfile-only project, got %q", path)
 	}
 }

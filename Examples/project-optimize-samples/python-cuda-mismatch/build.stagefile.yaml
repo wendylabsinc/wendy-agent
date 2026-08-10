@@ -1,0 +1,24 @@
+version: 1
+# Converted from the intentionally un-optimized Dockerfile this replaced. See
+# ./EXPECTED.txt for what survived the conversion and what did not.
+stages:
+  - name: app
+    # Still the x86-first CUDA base image on an arm64 (Jetson) target — a
+    # Stagefile pins whichever digest the tag resolves to and does not judge
+    # the choice. The build-cache and .dockerignore problems are both gone:
+    # pip installs behind a scoped cache mount, and the .dockerignore is
+    # derived from the copy paths below.
+    from: nvidia/cuda:12.4.0-runtime-ubuntu22.04
+    workdir: /app
+    install:
+      pip:
+        # requirements.txt still pins a CPU-only ML wheel while wendy.json
+        # asks for the gpu entitlement. Nothing here fixes that — it is a
+        # dependency-set problem, not a build-file one. Real GPU builds
+        # declare `cuda: true` on the stage and on the pip group, which
+        # resolves the wheel index from the device's gpu_arch.
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [main.py]
+    cmd: [python3, main.py]

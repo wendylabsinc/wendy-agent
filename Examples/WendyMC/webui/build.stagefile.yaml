@@ -1,0 +1,45 @@
+version: 1
+stages:
+  - name: webui
+    from: python:3.11-slim
+    workdir: /app
+    # docker-compose.yml passes all seven of these as build args; app.py reads
+    # them from the environment to find the Minecraft server and its log.
+    #
+    # RCON_PASSWORD is a demo default baked into the image as an ENV — see the
+    # longer note in ../minecraft/build.stagefile.yaml. Change it in both
+    # places together, or the web UI loses its console.
+    #
+    # This service also binds 0.0.0.0:${WEBUI_PORT} and relays RCON console
+    # access, so it is only safe behind the entitlement/mesh boundary — do not
+    # put it on an untrusted network.
+    args:
+      RCON_HOST: 127.0.0.1
+      RCON_PORT: "25575"
+      RCON_PASSWORD: wendymc-local
+      MC_HOST: 127.0.0.1
+      MC_PORT: "25565"
+      LOG_PATH: /mc-data/logs/latest.log
+      WEBUI_PORT: "8080"
+    env:
+      PYTHONUNBUFFERED: "1"
+      RCON_HOST: ${RCON_HOST}
+      RCON_PORT: ${RCON_PORT}
+      RCON_PASSWORD: ${RCON_PASSWORD}
+      MC_HOST: ${MC_HOST}
+      MC_PORT: ${MC_PORT}
+      LOG_PATH: ${LOG_PATH}
+      WEBUI_PORT: ${WEBUI_PORT}
+    install:
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [app.py]
+      - from: local
+        paths: [static]
+    # `python app.py`, not `uvicorn --port ${WEBUI_PORT}`: cmd is an argv list
+    # with no shell to expand the variable in, so app.py's __main__ block
+    # reads WEBUI_PORT and starts uvicorn itself. Same port, same
+    # configurability, no shell.
+    cmd: [python, app.py]

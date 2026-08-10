@@ -38,20 +38,35 @@ includes kernels for Orin's `sm_87` GPU. On JetPack 7 (WendyOS 0.17) the host pr
 CUDA 13, so the image also **bundles the CUDA-12 runtime** (`nvidia-*-cu12`) and puts it
 first on `LD_LIBRARY_PATH`; CUDA 12.6 runs on the JetPack-7 GPU driver via backward
 compatibility. (The CUDA-13 `sbsa` builds are Thor/Spark `sm_110`/`sm_121` only — no Orin
-kernels.) See the Dockerfile for the exact CUDA-12 packages.
+kernels.)
 
-```dockerfile
-# onnxruntime-gpu wheel from Jetson AI Lab (JetPack 6 / CUDA 12.6, includes Orin sm_87)
-RUN pip3 install --no-cache-dir onnxruntime-gpu \
-    --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
+None of that is written out here. `build.stagefile.yaml` declares `cuda: true`
+on the stage and on the pip group holding the GPU wheel, and the compiler
+resolves the rest — the CUDA version, the wheel index, the matching runtime
+packages, the directory they are collected into, its loader precedence, and
+running as root for `/dev/nvmap` — from the `gpu_arch` the target device
+reports. Nothing in the file names a board, so it is as correct on a Thor as
+on an Orin, and the resolved profile is pinned per architecture in
+`build.stagefile.lock.yaml` so a CLI upgrade cannot move the app to a
+different CUDA runtime behind your back.
 
-# Standard packages from PyPI
-RUN pip3 install --no-cache-dir onnx numpy==1.26.4
+```yaml
+install:
+  apt:
+    packages: [python3-pip, python3-dev, libopenblas-dev, libgomp1]
+  pip:
+    - packages: [onnxruntime-gpu]
+      cuda: true
+    # onnx and numpy from standard PyPI. NumPy pinned to 1.x — the GPU wheel
+    # is compiled against NumPy 1.x.
+    - packages: [onnx, "numpy==1.26.4"]
 ```
 
-> **Important:** Install `onnxruntime-gpu` using **only** `--index-url`
-> (not `--extra-index-url`) so pip does not accidentally pick the CPU-only
-> build from PyPI instead.
+> **Why the two pip groups are separate:** making the vendor index primary and
+> PyPI an extra index lets pip resolve either package from either source, so it
+> can silently pick the CPU-only `onnxruntime` from PyPI. A `cuda: true` group
+> is emitted as its own `pip install` with only the GPU index, which is what
+> prevents that.
 
 ## Running
 

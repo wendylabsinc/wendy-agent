@@ -146,6 +146,15 @@ func (f *fakePinChecker) CheckAndUpdate(leaf *x509.Certificate, displayName stri
 	return f.onCheck(leaf, displayName)
 }
 
+// blockingPinError stands in for devicepin.PinMismatchError, which this package
+// cannot import (that circular import is the reason PinChecker is an interface
+// here). What it models is the only thing the verifier looks at: the error says
+// its rejection is about the peer.
+type blockingPinError struct{ msg string }
+
+func (e *blockingPinError) Error() string         { return e.msg }
+func (e *blockingPinError) BlockingPinRejection() {}
+
 func TestBuildServerVerifyConnection_OnServerIdentityFiresOnSuccess(t *testing.T) {
 	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
 
@@ -224,6 +233,167 @@ func TestBuildServerVerifyConnection_OnServerIdentityFiresOnChainFailure(t *test
 	}
 }
 
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentityFiresOnSuccess covers
+// the trust-grade sink: unlike OnServerIdentity (best-effort, fires before any
+// verification so diagnostics work on failure), this one fires only once the
+// chain and org checks have passed, so its identity is safe to pin against.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentityFiresOnSuccess(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var got certs.WendyIdentity
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { got = id; calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnVerifiedServerIdentity calls = %d, want 1", calls)
+	}
+	if got.OrgID != 7 || got.EntityType != "asset" || got.EntityID != "42" {
+		t.Errorf("captured identity = %+v, want org 7 asset 42", got)
+	}
+}
+
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailure
+// is the whole point of a separate sink: an unverified certificate must never
+// reach a pin decision, or an impostor could rewrite the pin by presenting an
+// unsigned cert.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnChainFailure(t *testing.T) {
+	serverCert, _ := selfSignedCert(t, "device", "urn:wendy:org:9:asset:1")
+	_, unrelatedChain := selfSignedCert(t, "other-ca", "")
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(unrelatedChain),
+		ExpectedOrgID:            9,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err == nil {
+		t.Fatal("expected chain-verification error, got nil")
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (chain never verified)", calls)
+	}
+}
+
+// TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection
+// locks in that a rejected SPKI pin (devicepin.PinMismatchError) also keeps the
+// trust-grade sink from firing. Device pinning is a security control that
+// trusts OnVerifiedServerIdentity's output, so a pin REJECTION must behave
+// exactly like a chain or org failure here: reject the connection and never
+// reach this sink.
+//
+// The fake used to return a bare errors.New, back when the verifier failed on
+// any PinChecker error at all. It now returns a blocking one — the same
+// assertions, narrowed to the case they were always about. A pin store that
+// merely failed to WRITE is not a rejection of the device, and is covered by
+// TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock below.
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnPinRejection(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	pinErr := error(&blockingPinError{msg: "simulated pin mismatch"})
+	pin := &fakePinChecker{onCheck: func(leaf *x509.Certificate, name string) error {
+		return pinErr
+	}}
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		PinStore:                 pin,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); !errors.Is(err, pinErr) {
+		t.Fatalf("verifyConn error = %v, want the pin error to propagate", err)
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (pin check rejected)", calls)
+	}
+}
+
+// TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock is the
+// other half of the rule, and the one with the operational teeth: a pin store
+// that cannot WRITE must not cost the user a device.
+//
+// The verifier used to return whatever CheckAndUpdate returned, so a read-only
+// config directory, a full disk, or a stale lock aborted every mTLS connection
+// the CLI made — a total loss of access with no security question anywhere
+// behind it. The store is bookkeeping; the certificate already verified. So the
+// connection must be accepted and the trust-grade sink must still fire, because
+// the identity it reports was verified by exactly the same checks as always.
+func TestBuildServerVerifyConnection_PinPersistenceFailureDoesNotBlock(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	called := false
+	pin := &fakePinChecker{onCheck: func(leaf *x509.Certificate, name string) error {
+		called = true
+		return errors.New("writing pin store: open /ro/known_devices.json: read-only file system")
+	}}
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            7,
+		PinStore:                 pin,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err != nil {
+		t.Fatalf("verifyConn = %v, want nil: a pin-store WRITE failure must never abort a certificate that verified", err)
+	}
+	if !called {
+		t.Error("PinStore.CheckAndUpdate was not called")
+	}
+	if calls != 1 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 1 (the cert verified; only the bookkeeping failed)", calls)
+	}
+}
+
+func TestBuildServerVerifyConnection_OnVerifiedServerIdentitySilentOnOrgMismatch(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "urn:wendy:org:7:asset:42")
+
+	var calls int
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:                 string(chainPEM),
+		ExpectedOrgID:            5,
+		OnVerifiedServerIdentity: func(id certs.WendyIdentity) { calls++ },
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}
+	if err := verifyConn(cs); err == nil {
+		t.Fatal("expected OrgMismatchError, got nil")
+	}
+	if calls != 0 {
+		t.Errorf("OnVerifiedServerIdentity calls = %d, want 0 (org check rejected)", calls)
+	}
+}
+
 func TestBuildServerVerifyConnection_OnServerIdentitySilentWhenNoIdentity(t *testing.T) {
 	// CN carries no Wendy identity → sink must not be called.
 	serverCert, chainPEM := selfSignedCert(t, "plain-cn", "")
@@ -244,5 +414,72 @@ func TestBuildServerVerifyConnection_OnServerIdentitySilentWhenNoIdentity(t *tes
 	}
 	if calls != 0 {
 		t.Errorf("OnServerIdentity calls = %d, want 0 (no Wendy identity in cert)", calls)
+	}
+}
+
+func TestBuildServerVerifyConnection_ExpectedIdentity(t *testing.T) {
+	want := certs.WendyIdentity{OrgID: 7, EntityType: "asset", EntityID: "42"}
+
+	cases := []struct {
+		name        string
+		sanURI      string
+		wantErr     bool
+		wantGotAsst string
+	}{
+		{name: "exact match", sanURI: "urn:wendy:org:7:asset:42"},
+		{name: "different asset, same org", sanURI: "urn:wendy:org:7:asset:43", wantErr: true, wantGotAsst: "43"},
+		{name: "same asset, different org", sanURI: "urn:wendy:org:9:asset:42", wantErr: true, wantGotAsst: "42"},
+		{name: "user URN is not an asset", sanURI: "urn:wendy:org:7:user:42", wantErr: true},
+		{name: "no wendy identity at all", sanURI: "", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			serverCert, chainPEM := selfSignedCert(t, "device", tc.sanURI)
+			expected := want
+			verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+				ChainPEM:         string(chainPEM),
+				ExpectedIdentity: &expected,
+			})
+			if err != nil {
+				t.Fatalf("BuildServerVerifyConnection: %v", err)
+			}
+
+			err = verifyConn(tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}})
+
+			var mismatch *certs.IdentityMismatchError
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("want accepted, got %v", err)
+				}
+				return
+			}
+			if !errors.As(err, &mismatch) {
+				t.Fatalf("want IdentityMismatchError, got %v", err)
+			}
+			if mismatch.WantOrg != 7 || mismatch.WantAsset != "42" {
+				t.Errorf("want side = org %d asset %q, want org 7 asset \"42\"", mismatch.WantOrg, mismatch.WantAsset)
+			}
+			if mismatch.GotAsset != tc.wantGotAsst {
+				t.Errorf("GotAsset = %q, want %q", mismatch.GotAsset, tc.wantGotAsst)
+			}
+		})
+	}
+}
+
+// TestBuildServerVerifyConnection_ExpectedIdentityNil locks in that
+// the new field is opt-in: with it unset, a no-URN cert still passes (grace
+// mode), which is what keeps unpinned legacy devices working.
+func TestBuildServerVerifyConnection_ExpectedIdentityNil(t *testing.T) {
+	serverCert, chainPEM := selfSignedCert(t, "device", "")
+	verifyConn, err := certs.BuildServerVerifyConnection(certs.ServerVerifyOpts{
+		ChainPEM:      string(chainPEM),
+		ExpectedOrgID: 7,
+	})
+	if err != nil {
+		t.Fatalf("BuildServerVerifyConnection: %v", err)
+	}
+	if err := verifyConn(tls.ConnectionState{PeerCertificates: []*x509.Certificate{serverCert}}); err != nil {
+		t.Fatalf("grace mode should accept a no-URN cert, got %v", err)
 	}
 }

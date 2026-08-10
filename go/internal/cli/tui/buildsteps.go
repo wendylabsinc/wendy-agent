@@ -17,11 +17,13 @@ type BuildStepMsg BuildStepEvent
 type BuildAllDoneMsg struct{ Err error }
 
 type buildRow struct {
-	id      int
+	id      string
 	kind    BuildVertexKind
 	display string
 	status  BuildStepStatus
 	dur     time.Duration
+	detail  string
+	bytes   ByteProgress
 }
 
 // BuildStepsModel renders a live, collapsing list of buildx steps for a single
@@ -29,7 +31,7 @@ type buildRow struct {
 type BuildStepsModel struct {
 	title   string
 	rows    []buildRow
-	byID    map[int]int
+	byID    map[string]int
 	spinner spinner.Model
 	hints   hintRotator
 	width   int
@@ -46,7 +48,7 @@ func NewBuildStepsModel(title string) BuildStepsModel {
 	s.Style = lipgloss.NewStyle().Foreground(ColorPrimary)
 	return BuildStepsModel{
 		title:   title,
-		byID:    map[int]int{},
+		byID:    map[string]int{},
 		spinner: s,
 		hints:   newHintRotator(),
 	}
@@ -89,12 +91,24 @@ func (m BuildStepsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *BuildStepsModel) applyEvent(e BuildStepEvent) {
 	i, ok := m.byID[e.ID]
 	if !ok {
-		m.rows = append(m.rows, buildRow{id: e.ID, kind: e.Kind, display: e.Display, status: e.Status})
+		m.rows = append(m.rows, buildRow{
+			id: e.ID, kind: e.Kind, display: e.Display,
+			status: e.Status, detail: e.Detail, bytes: e.Bytes,
+		})
 		m.byID[e.ID] = len(m.rows) - 1
 		return
 	}
 	m.rows[i].status = e.Status
 	m.rows[i].dur = e.Dur
+	if e.Status == BuildStepRunning {
+		// Repeated Running events carry progress updates; terminal events clear
+		// the sub-line so a finished step collapses back to one row.
+		m.rows[i].detail = e.Detail
+		m.rows[i].bytes = e.Bytes
+	} else {
+		m.rows[i].detail = ""
+		m.rows[i].bytes = ByteProgress{}
+	}
 	switch e.Status {
 	case BuildStepCached:
 		if e.Kind == BuildVertexStep {
@@ -117,6 +131,11 @@ var (
 
 const buildStepLabelWidth = 34
 
+// maxVisibleFinishedRows bounds how many completed steps stay on screen. Running
+// steps are never dropped — they each occupy two lines once they have a detail
+// sub-line, and a 40-step build would otherwise scroll its own progress away.
+const maxVisibleFinishedRows = 8
+
 // View implements tea.Model.
 func (m BuildStepsModel) View() string {
 	if m.done {
@@ -124,11 +143,20 @@ func (m BuildStepsModel) View() string {
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s\n", m.spinner.View(), bsTitle.Render(m.title)))
-	for _, r := range m.rows {
-		label := truncateLabel(r.display, buildStepLabelWidth)
+
+	labelWidth := m.labelWidth()
+	visible, elided := m.visibleRows()
+	if elided > 0 {
+		sb.WriteString(fmt.Sprintf("  %s\n", bsDim.Render(fmt.Sprintf("… %d earlier steps", elided))))
+	}
+	for _, r := range visible {
+		label := truncateDetail(r.display, labelWidth)
 		switch r.status {
 		case BuildStepRunning:
 			sb.WriteString(fmt.Sprintf("  %s %s\n", m.spinner.View(), label))
+			if d := r.progressLine(); d != "" {
+				sb.WriteString(fmt.Sprintf("      %s\n", bsDim.Render(d)))
+			}
 		case BuildStepCached:
 			sb.WriteString(fmt.Sprintf("  %s %s %s\n", bsCache.Render("⚡"), label, bsDim.Render("cached")))
 		case BuildStepDone:
@@ -144,15 +172,52 @@ func (m BuildStepsModel) View() string {
 	return sb.String()
 }
 
-func truncateLabel(s string, max int) string {
-	if len(s) <= max {
-		return s
+// labelWidth grows the step label to fit the terminal, leaving room for the
+// spinner and the trailing duration. A step label like "RUN apt-get update &&
+// apt-get install …" is not worth much cut at 34 columns, and it now sits above
+// a detail line up to maxDetailLen wide.
+func (m BuildStepsModel) labelWidth() int {
+	if m.width <= 0 {
+		return buildStepLabelWidth
 	}
-	if max <= 1 {
-		return s[:max]
+	w := m.width - 24
+	if w < buildStepLabelWidth {
+		return buildStepLabelWidth
 	}
-	return s[:max-1] + "…"
+	if w > maxDetailLen {
+		return maxDetailLen
+	}
+	return w
 }
+
+// visibleRows keeps every running/failed row plus the most recent finished ones,
+// returning how many older finished rows were dropped.
+func (m BuildStepsModel) visibleRows() ([]buildRow, int) {
+	finished := 0
+	for _, r := range m.rows {
+		if r.status == BuildStepCached || r.status == BuildStepDone {
+			finished++
+		}
+	}
+	drop := finished - maxVisibleFinishedRows
+	if drop <= 0 {
+		return m.rows, 0
+	}
+	out := make([]buildRow, 0, len(m.rows)-drop)
+	dropped := 0
+	for _, r := range m.rows {
+		if dropped < drop && (r.status == BuildStepCached || r.status == BuildStepDone) {
+			dropped++
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, dropped
+}
+
+// progressLine is the dim sub-line under a running step: the tool's own progress
+// ("[525/1027] 51% Compiling WendyKit") and/or BuildKit's transfer counters.
+func (r buildRow) progressLine() string { return joinProgress(r.detail, r.bytes) }
 
 // Err returns the terminal error (ErrCancelled on ctrl+c, the build error from
 // BuildAllDoneMsg, or nil).

@@ -28,15 +28,24 @@ via backward compatibility. Only the GPU **driver** comes from CDI at runtime.
 
 Official NVIDIA documentation: [Install PyTorch for Jetson Platform](https://docs.nvidia.com/deeplearning/frameworks/install-pytorch-jetson-platform/index.html)
 
-This example uses the **Jetson AI Lab PyPI index** which provides optimized ARM64 wheels:
+This example does not name a wheel index. `build.stagefile.yaml` marks the
+stage and the PyTorch pip group with `cuda: true`, and the compiler resolves
+the index — along with the CUDA version, the matching runtime packages and the
+loader path they need — from the `gpu_arch` the target device reports:
 
-```dockerfile
-RUN pip3 install --no-cache-dir \
-    torch==2.8.0 \
-    torchvision==0.23.0 \
-    torchaudio==2.8.0 \
-    --index-url https://pypi.jetson-ai-lab.io/jp6/cu126/
+```yaml
+cuda: true
+install:
+  pip:
+    - packages: ["torch==2.8.0", "torchvision==0.23.0", "torchaudio==2.8.0"]
+      cuda: true
+    # NumPy pinned to 1.x — the GPU PyTorch wheels are compiled against it.
+    - packages: ["numpy==1.26.4", scipy, matplotlib]
 ```
+
+Nothing here names a board, so the same file is correct on an Orin (which
+resolves to the Jetson AI Lab JetPack-6 / CUDA-12.6 index) and on a Thor. The
+resolved profile is recorded per architecture in `build.stagefile.lock.yaml`.
 
 **Important:** Always pin specific versions to ensure CUDA-enabled builds, not CPU-only versions from default PyPI.
 

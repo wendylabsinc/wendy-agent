@@ -1,0 +1,4 @@
+version: 1
+sourceHash: sha256:017fd67fc910395236491828c1fe608b841b5f9d8018c816288fb6ba270daa1e
+images:
+    nvidia/cuda:12.4.0-runtime-ubuntu22.04: sha256:af8bd179ed3bf69d4b63b19a763662a6141f0f62ef099283f68d0b14b4bab0e3

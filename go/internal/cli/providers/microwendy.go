@@ -183,9 +183,11 @@ func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) mo
 
 // DiscoverDevicesContinuous streams wendy-lite devices as they are found:
 // mDNS services via continuous browsing and serial devices via the background
-// serial scanner. Continuous mDNS browsing is only available on macOS; on
-// other platforms this returns an error and callers fall back to polling
-// DiscoverDevices.
+// serial scanner. Continuous mDNS browsing works on every platform — macOS
+// via mDNSResponder, Linux via Avahi over D-Bus (hashicorp/mdns when the
+// daemon is unreachable), Windows via hashicorp/mdns — so the polling
+// fallback in callers is now only reached if the browse itself fails to
+// start.
 func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
 	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
 	if err != nil {
@@ -706,7 +708,11 @@ func (p *MicroWendyProvider) connectClient(device models.ExternalDevice) (*litec
 			var connectErrs []error
 			connected := false
 			for _, certInfo := range certInfos {
-				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+				keyPEM, err := certInfo.PrivateKeyPEM()
+				if err != nil {
+					return nil, fmt.Errorf("wendy-lite provider: loading client key: %w", err)
+				}
+				cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 				if err != nil {
 					return nil, fmt.Errorf("wendy-lite provider: parsing mTLS cert: %w", err)
 				}

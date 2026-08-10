@@ -21,6 +21,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -124,6 +125,16 @@ func parseComposeFile(dir string) (*composeConfig, string, error) {
 	return nil, "", fmt.Errorf("no docker-compose file found in %s", dir)
 }
 
+// defaultComposeBuildFile mirrors single-service build-file precedence for a
+// compose service that doesn't name a dockerfile explicitly: a Stagefile in
+// the build context wins over the conventional "Dockerfile".
+func defaultComposeBuildFile(ctxDir string) string {
+	if _, err := os.Stat(filepath.Join(ctxDir, stagefileSourceName)); err == nil {
+		return stagefileSourceName
+	}
+	return "Dockerfile"
+}
+
 // composeBuildContext returns the build context dir and Dockerfile for a service.
 // Returns ("", "", nil) when the service uses a pre-built image.
 func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerfile string, buildArgs map[string]string, err error) {
@@ -135,7 +146,7 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 	case yaml.ScalarNode:
 		// build: ./path
 		ctxDir = filepath.Join(projectDir, svc.Build.Value)
-		return ctxDir, "Dockerfile", nil, nil
+		return ctxDir, defaultComposeBuildFile(ctxDir), nil, nil
 
 	case yaml.MappingNode:
 		var bc composeBuildConfig
@@ -146,7 +157,7 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 		if bc.Context != "" {
 			ctxDir = filepath.Join(projectDir, bc.Context)
 		}
-		df := "Dockerfile"
+		df := defaultComposeBuildFile(ctxDir)
 		if bc.Dockerfile != "" {
 			if err := validateComposeDockerfileName(bc.Dockerfile); err != nil {
 				return "", "", nil, fmt.Errorf("compose dockerfile: %w", err)
@@ -160,6 +171,76 @@ func composeBuildContext(svc composeService, projectDir string) (ctxDir, dockerf
 	}
 
 	return "", "", nil, fmt.Errorf("unsupported build directive (yaml kind %d); expected a path string or a mapping", svc.Build.Kind)
+}
+
+// composeGPUArch is the GPU architecture every buildable service in a compose
+// project compiles against. The device is asked once for the whole project,
+// and only if some service actually declares a cuda: stage.
+func composeGPUArch(ctx context.Context, projectDir string, cfg *composeConfig, conn *grpcclient.AgentConnection) string {
+	var dirs []string
+	for _, svc := range cfg.Services {
+		ctxDir, _, _, err := composeBuildContext(svc, projectDir)
+		if err != nil || ctxDir == "" {
+			continue
+		}
+		dirs = append(dirs, ctxDir)
+	}
+	return resolveGPUArchForDirs(ctx, dirs, "", conn)
+}
+
+// composeStagefileOverride compiles every compose service whose build context
+// carries a Stagefile and writes a docker-compose override file pointing those
+// services at their compiled Dockerfile.generated — `docker compose build`
+// itself knows nothing about build.stagefile.yaml. Returns "" when no service
+// uses a Stagefile. The caller must invoke cleanup (when non-nil) after the
+// compose build finishes.
+func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (path string, cleanup func(), err error) {
+	cfg, _, err := parseComposeFile(dir)
+	if err != nil {
+		return "", nil, err
+	}
+	overrides := map[string]any{}
+	for name, svc := range cfg.Services {
+		ctxDir, dockerfile, _, err := composeBuildContext(svc, dir)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", name, err)
+		}
+		if ctxDir == "" || dockerfile != stagefileSourceName {
+			continue
+		}
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...)
+		if err != nil {
+			return "", nil, fmt.Errorf("service %s: %w", name, err)
+		}
+		ctxRel, err := filepath.Rel(dir, ctxDir)
+		if err != nil {
+			ctxRel = ctxDir
+		}
+		overrides[name] = map[string]any{
+			"build": map[string]string{"context": ctxRel, "dockerfile": compiled},
+		}
+	}
+	if len(overrides) == 0 {
+		return "", nil, nil
+	}
+	data, err := yaml.Marshal(map[string]any{"services": overrides})
+	if err != nil {
+		return "", nil, fmt.Errorf("marshaling compose override: %w", err)
+	}
+	f, err := os.CreateTemp("", "wendy-compose-stagefile-*.yml")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating compose override: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", nil, fmt.Errorf("writing compose override: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", nil, fmt.Errorf("closing compose override: %w", err)
+	}
+	return f.Name(), func() { os.Remove(f.Name()) }, nil
 }
 
 // composeCommand returns the command for a service as a slice. Sequence form
@@ -550,17 +631,41 @@ func buildComposeServiceConfigs(projectName string, cfg *composeConfig, companio
 	return svcCfgs, warnings, nil
 }
 
+// composeServiceLifecycleConfigs builds CLI-private lifecycle views from the
+// fully merged Compose configs. Readiness/hooks may come from x-wendy or a
+// companion service override, but HTTP entitlements come only from the
+// matching companion services.<name> scope. Top-level companion HTTP remains
+// inherited in each create config while executing once via appLevelCfg.
+func composeServiceLifecycleConfigs(svcCfgs map[string]*appconfig.AppConfig, companion *appconfig.AppConfig) map[string]*appconfig.AppConfig {
+	lifecycleCfgs := make(map[string]*appconfig.AppConfig, len(svcCfgs))
+	for name, cfg := range svcCfgs {
+		var serviceEntitlements []appconfig.Entitlement
+		if companion != nil {
+			if svc := companion.Services[name]; svc != nil {
+				serviceEntitlements = svc.Entitlements
+			}
+		}
+		lifecycleCfgs[name] = lifecycleConfig(cfg.AppID, cfg.ServiceName, cfg.Readiness, cfg.Hooks, serviceEntitlements)
+	}
+	return lifecycleCfgs
+}
+
 // deduplicateEntitlements returns a copy of ents with duplicates removed.
-// Two entitlements are considered duplicates when their type, name, and mode
-// are equal; the first occurrence is kept. This covers the common cases:
+// Two entitlements are considered duplicates when their type and complete
+// canonical annotation value are equal; the first occurrence is kept. This
+// covers the common cases without collapsing parameterized same-type grants:
 //   - GPU declared in both shared and per-service sections
 //   - Network mode declared in both compose (network_mode:host) and companion
-//   - Persist volumes declared multiple times with the same name
+//   - Persist volumes declared multiple times with the same name and path
+//
+// Device, GPIO, allowlist, port, and every other entitlement parameter is part
+// of EntitlementAnnotationValue, so (for example) ttyUSB0 and ttyUSB1 remain
+// two serial entitlements.
 func deduplicateEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
 	seen := make(map[string]bool, len(ents))
 	out := make([]appconfig.Entitlement, 0, len(ents))
 	for _, e := range ents {
-		key := string(e.Type) + "\x00" + e.Name + "\x00" + e.Mode
+		key := e.Type + "\x00" + appconfig.EntitlementAnnotationValue(e)
 		if !seen[key] {
 			seen[key] = true
 			out = append(out, e)
@@ -737,12 +842,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// Use the project directory name as the project name.
 	projectName := strings.ToLower(filepath.Base(projectDir))
 
-	// Synthesize every service's AppConfig once (compose fields + x-wendy
-	// lifecycle config + companion overrides) so the create/stop/detach/attach
-	// steps below all see the same config instead of recomputing it. Done
-	// BEFORE the image builds so an invalid x-wendy config (a hard error here)
-	// fails fast instead of costing a full multi-minute build; nothing in it
-	// depends on build outputs (projectName is the only input).
+	// Synthesize every service's full create config (compose fields + x-wendy
+	// lifecycle config + companion overrides), then derive separate CLI-private
+	// lifecycle views below. Done BEFORE the image builds so an invalid x-wendy
+	// config fails fast instead of costing a full multi-minute build.
 	svcCfgs, xWendyWarnings, err := buildComposeServiceConfigs(projectName, cfg, companion)
 	if err != nil {
 		return err
@@ -750,11 +853,11 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	for _, w := range xWendyWarnings {
 		cliLogln("warning: %s", w)
 	}
+	svcLifecycleCfgs := composeServiceLifecycleConfigs(svcCfgs, companion)
 
 	// App-level lifecycle fallback: only a companion wendy.json can declare
-	// TOP-LEVEL readiness/hooks for a compose project (x-wendy is per-service
-	// by construction), and buildComposeServiceConfigs deliberately leaves them
-	// off the per-service configs. It fires once after ALL services have
+	// top-level HTTP/readiness/hooks for a compose project (x-wendy is
+	// per-service by construction). It fires once after ALL services have
 	// started; the compose path has no service-subset flag (unlike --service on
 	// the multi-service path), so that guarantee always holds here.
 	var appLevelCfg *appconfig.AppConfig
@@ -769,6 +872,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("warning: top-level hooks.postStart.agent is ignored for compose apps (no app-level container exists); declare it under a service's x-wendy.hooks or the companion's services.<name>.hooks")
 	}
 
+	// Resolved once for the project: every service lands on this one device,
+	// so a cuda: stage in any of them compiles against its GPU architecture.
+	gpuArch := composeGPUArch(ctx, projectDir, cfg, conn)
+
 	// Build and push each service that has a build directive.
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, buildArgs, err := composeBuildContext(svc, projectDir)
@@ -777,6 +884,12 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		if ctxDir == "" {
 			continue // uses pre-built image
+		}
+		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
+		// same way the single-service path does — docker build itself knows
+		// nothing about build.stagefile.yaml.
+		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
+			return fmt.Errorf("service %s: %w", name, err)
 		}
 
 		allBuildArgs := map[string]string{
@@ -794,8 +907,8 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		// Compose builds run sequentially, so they share the local cache dir
 		// (empty cache key) — no concurrent cache-export race to isolate.
 		composeBuildTitle := fmt.Sprintf("Building service %s for %s...", name, tui.Value(platform))
-		if err := runBuildWithProgress(ctx, composeBuildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
-			return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", stream, logw)
+		if err := runBuildWithProgress(ctx, composeBuildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
+			return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", stream, logw)
 		}); err != nil {
 			return fmt.Errorf("building service %s: %w", name, err)
 		}
@@ -905,13 +1018,13 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, appLevelCfg, projectName)
+		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName)
 	}
 
 	// Attached mode: stream output from all containers concurrently with
 	// color-coded, column-aligned service name prefixes.
 	stdoutWriters, stderrWriters := newServiceLogWriters(ordered)
-	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, appLevelCfg, stdoutWriters, stderrWriters)
+	return composeStartAndStream(runCtx, runCancel, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, stdoutWriters, stderrWriters)
 }
 
 // composeStartDetached starts every compose service in dependency order,
@@ -921,7 +1034,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 // agent-side postStart hook as gRPC metadata, and once every container is up
 // the per-service readiness→announce→postStart sequences run sequentially in
 // dependency order, then the app-level fallback (WDY-1271).
-func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
+func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, projectName string) error {
 	for _, name := range ordered {
 		appCfg := svcCfgs[name]
 		stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
@@ -945,7 +1058,7 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 	// nothing left to wait on once we detach.
 	runner := &serviceHookRunner{conn: conn}
 	for _, name := range ordered {
-		runner.runOne(runCtx, context.Background(), svcCfgs[name])
+		runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
 	}
 	runner.runOne(runCtx, context.Background(), appLevelCfg)
 	return nil
@@ -957,7 +1070,7 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 // until every stream ends. Extracted from runComposeWithAgent so tests can
 // drive it with fake clients; the Ctrl+C handler (stop in reverse order, then
 // runCancel) stays with the caller and its ordering is unchanged.
-func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
+func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
 	runner := &serviceHookRunner{conn: conn}
 
 	var wg sync.WaitGroup
@@ -974,7 +1087,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 		appCfg := svcCfgs[name]
 
 		wg.Add(1)
-		go func(serviceName, containerID string, svcCfg *appconfig.AppConfig) {
+		go func(serviceName, containerID string, svcCfg, lifecycleCfg *appconfig.AppConfig) {
 			defer wg.Done()
 			markStarted := sync.OnceFunc(startedWg.Done)
 			defer markStarted()
@@ -1057,7 +1170,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 					// slow or failing probe never stalls this log loop.
 					hookFired = true
 					markStarted()
-					runner.startAsync(runCtx, svcCfg)
+					runner.startAsync(runCtx, lifecycleCfg)
 				}
 				if out := resp.GetStdoutOutput(); out != nil {
 					outW.Write(out.GetData())
@@ -1066,7 +1179,7 @@ func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc,
 					errW.Write(out.GetData())
 				}
 			}
-		}(name, appCfg.ContainerName(), appCfg)
+		}(name, appCfg.ContainerName(), appCfg, svcLifecycleCfgs[name])
 	}
 
 	// App-level fallback: fires once after every service has reported Started

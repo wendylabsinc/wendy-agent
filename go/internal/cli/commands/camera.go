@@ -8,9 +8,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
+
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -28,6 +31,8 @@ func newCameraCmd() *cobra.Command {
 		// "watch" is a hidden alias for "view": it just works for muscle memory
 		// but stays out of help to keep the listed commands focused.
 		newCameraWatchCmd(),
+		newCameraLoginCmd(),
+		newCameraForgetCmd(),
 	)
 	return cmd
 }
@@ -67,14 +72,15 @@ func newCameraListCmd() *cobra.Command {
 				return nil
 			}
 
-			headers := []string{"ID", "Type", "Name", "Path"}
+			headers := []string{"ID", "Type", "Name", "Where", "Status"}
 			var rows [][]string
 			for _, d := range devices {
 				rows = append(rows, []string{
 					fmt.Sprintf("%d", d.GetId()),
 					transportLabel(d.GetTransport()),
 					d.GetName(),
-					d.GetPath(),
+					cameraWhere(d),
+					cameraStatus(d),
 				})
 			}
 			fmt.Print(tui.RenderTable(headers, rows))
@@ -92,9 +98,117 @@ func transportLabel(t agentpb.VideoTransport) string {
 		return "usb"
 	case agentpb.VideoTransport_VIDEO_TRANSPORT_CSI:
 		return "csi"
+	case agentpb.VideoTransport_VIDEO_TRANSPORT_IP:
+		return "ip"
 	default:
 		return "-"
 	}
+}
+
+// newCameraLoginCmd stores credentials for a network camera on the device.
+//
+// The password is read from a terminal without echo, or from
+// WENDY_CAMERA_PASSWORD when there is no terminal, so scripts and continuous
+// integration do not have to drive a prompt. It is never passed as a flag, which
+// would put it in the shell history and the process list.
+func newCameraLoginCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "login <id>",
+		Short: "Store credentials for a network camera",
+		Long: "Store the username and password for a network camera on the device.\n\n" +
+			"The password is prompted for without echo, or taken from\n" +
+			"WENDY_CAMERA_PASSWORD when standard input is not a terminal. It is\n" +
+			"stored on the device and never returned by any command.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseCameraID(args[0])
+			if err != nil {
+				return err
+			}
+			password, err := readCameraPassword(cmd, id)
+			if err != nil {
+				return err
+			}
+
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.VideoService.SetCameraCredentials(ctx, &agentpb.SetCameraCredentialsRequest{
+				DeviceId: id,
+				Username: username,
+				Password: password,
+			}); err != nil {
+				return fmt.Errorf("storing camera credentials: %w", err)
+			}
+			cliLogln("Stored credentials for camera %d.", id)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "user", "admin", "Camera username")
+	return cmd
+}
+
+// readCameraPassword prompts on a terminal, or reads the environment variable
+// when there is no terminal to prompt on.
+func readCameraPassword(cmd *cobra.Command, id uint32) (string, error) {
+	if fromEnv := os.Getenv("WENDY_CAMERA_PASSWORD"); fromEnv != "" {
+		return fromEnv, nil
+	}
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return "", fmt.Errorf(
+			"no terminal to prompt on; set WENDY_CAMERA_PASSWORD to supply the password for camera %d", id)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Password for camera %d: ", id)
+	secret, err := term.ReadPassword(fd)
+	fmt.Fprintln(cmd.OutOrStdout())
+	if err != nil {
+		return "", fmt.Errorf("reading password: %w", err)
+	}
+	return string(secret), nil
+}
+
+// newCameraForgetCmd removes a network camera and its stored credentials.
+func newCameraForgetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "forget <id>",
+		Short: "Remove a network camera and its stored credentials",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseCameraID(args[0])
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			conn, err := connectToAgent(ctx)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			if _, err := conn.VideoService.ForgetCamera(ctx, &agentpb.ForgetCameraRequest{
+				DeviceId: id,
+			}); err != nil {
+				return fmt.Errorf("forgetting camera: %w", err)
+			}
+			cliLogln("Forgot camera %d.", id)
+			return nil
+		},
+	}
+}
+
+// parseCameraID validates a camera ID argument.
+func parseCameraID(arg string) (uint32, error) {
+	id, err := strconv.ParseUint(arg, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("invalid camera id %q; see `wendy device camera list`", arg)
+	}
+	return uint32(id), nil
 }
 
 func newCameraViewCmd() *cobra.Command {
@@ -126,14 +240,49 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 			defer conn.Close()
 
-			stream, err := conn.VideoService.StreamVideo(ctx, &agentpb.StreamVideoRequest{
+			// Without an explicit --id, list the cameras so a single camera is
+			// chosen silently and several open the picker. Before this, view
+			// defaulted to ID 0 with no sign that other cameras existed.
+			if !cmd.Flags().Changed("id") {
+				listed, err := conn.VideoService.ListVideoDevices(ctx, &agentpb.ListVideoDevicesRequest{})
+				if err != nil {
+					return fmt.Errorf("listing cameras: %w", err)
+				}
+				chosen, err := resolveCameraID(listed.GetDevices(), deviceID, false, pickCamera)
+				if err != nil {
+					return err
+				}
+				deviceID = chosen
+			}
+
+			req := &agentpb.StreamVideoRequest{
 				DeviceId:  deviceID,
 				Width:     width,
 				Height:    height,
 				Framerate: fps,
-			})
+			}
+			startStream := func() (videoStream, error) {
+				return conn.VideoService.StreamVideo(ctx, req)
+			}
+			resolveCredentials := func(needsLogin uint32) error {
+				cwd, cwdErr := os.Getwd()
+				if cwdErr != nil {
+					cwd = "."
+				}
+				return resolveCameraCredentials(ctx, cmd,
+					func(c context.Context, r *agentpb.SetCameraCredentialsRequest) error {
+						_, setErr := conn.VideoService.SetCameraCredentials(c, r)
+						return setErr
+					}, needsLogin, cwd, cameraPromptAllowed())
+			}
+
+			// Server-streaming status errors normally arrive on the first Recv,
+			// not while constructing the stream. Wrap both phases so a missing IP
+			// camera login is resolved and retried exactly once wherever gRPC
+			// surfaces it. Local cameras never take this path.
+			stream, err := streamVideoWithCredentialRetry(startStream, resolveCredentials)
 			if err != nil {
-				return fmt.Errorf("starting video stream: %w", cameraFirmwareDiagnostic(err))
+				return fmt.Errorf("starting video stream: %w", cameraStreamDiagnostic(err))
 			}
 			diagnosticStream := &cameraDiagnosticStream{videoStream: stream}
 
@@ -165,23 +314,31 @@ type cameraDiagnosticStream struct{ videoStream }
 func (s *cameraDiagnosticStream) Recv() (*agentpb.VideoFrame, error) {
 	frame, err := s.videoStream.Recv()
 	if err != nil {
-		return nil, cameraFirmwareDiagnostic(err)
+		return nil, cameraStreamDiagnostic(err)
 	}
 	return frame, nil
 }
 
-func cameraFirmwareDiagnostic(err error) error {
+// cameraStreamDiagnostic turns machine-readable agent errors into the action the
+// operator should take. Every reason the agent can attach names its own fix.
+func cameraStreamDiagnostic(err error) error {
 	st, ok := status.FromError(err)
 	if !ok {
 		return err
 	}
 	for _, detail := range st.Details() {
 		info, ok := detail.(*errdetails.ErrorInfo)
-		if !ok || info.GetReason() != "TEGRA_FIRMWARE_MISMATCH" {
+		if !ok {
 			continue
 		}
-		rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
-		return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+		switch info.GetReason() {
+		case "TEGRA_FIRMWARE_MISMATCH":
+			rootfs, boot := info.GetMetadata()["rootfs_l4t"], info.GetMetadata()["boot_firmware_l4t"]
+			return fmt.Errorf("Jetson CSI camera is unavailable because the rootfs (%s) and boot firmware (%s) are from different L4T families. Run `wendy os install`, choose this Jetson, and perform full USB recovery (do not use --rootfs-only)", rootfs, boot)
+		case "IP_CAMERA_NO_CREDENTIALS":
+			id := info.GetMetadata()["device_id"]
+			return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
+		}
 	}
 	return err
 }

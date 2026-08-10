@@ -31,7 +31,7 @@ func (s *AudioServiceV2) ListAudioDevices(ctx context.Context, req *agentpbv2.Li
 	if err != nil {
 		return nil, err
 	}
-	volumes := s.v1.playbackVolumes(ctx, v1resp.Devices)
+	volumes := s.v1.nodeVolumes(ctx, v1resp.Devices)
 	devices := make([]*agentpbv2.AudioDevice, len(v1resp.Devices))
 	for i, d := range v1resp.Devices {
 		devices[i] = &agentpbv2.AudioDevice{
