@@ -168,7 +168,7 @@ const (
 const (
 	espFlashBlockSize = 0x1000            // 4 KiB per flash data block
 	maxFlashSize      = 128 * 1024 * 1024 // 128 MiB, generous upper bound for NOR flash
-	espSyncTimeout    = 3 * time.Second
+	espSyncTimeout    = 1 * time.Second
 	espCmdTimeout     = 10 * time.Second
 	flashBaudRate     = 921600
 	initialBaudRate   = 115200
@@ -921,6 +921,105 @@ func espResetViaUsbJtag(port serial.Port, enterBootloader bool) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+// serialOpenFn opens a serial port; a package var so tests can stub it
+// without touching real hardware.
+var serialOpenFn = serial.Open
+
+// portOpenRetryBudget bounds how long openPortRetrying waits for a device
+// node to (re)appear; portOpenRetryInterval is the poll spacing, matching
+// esptool's connect_loop() port-open retry (esptool/__init__.py). Both are
+// vars so tests can shrink them.
+var (
+	portOpenRetryBudget   = 5 * time.Second
+	portOpenRetryInterval = 100 * time.Millisecond
+)
+
+// openPortRetrying opens portPath, retrying while the failure looks
+// transient. Permission-denied is not transient — missing group membership
+// won't resolve itself by waiting — so it returns immediately, preserving
+// the caller's specific messaging for that case. Everything else, including
+// busy, is retried until budget runs out: a device that's rebooting can
+// make its USB node report busy for a moment (not just disappear as "no
+// such file"), so busy has to be retried too rather than treated as a hard
+// failure.
+func openPortRetrying(portPath string, mode *serial.Mode, budget time.Duration) (serial.Port, error) {
+	deadline := time.Now().Add(budget)
+	for {
+		port, err := serialOpenFn(portPath, mode)
+		if err == nil {
+			return port, nil
+		}
+		if isPermissionDenied(err) || time.Now().After(deadline) {
+			return nil, err
+		}
+		time.Sleep(portOpenRetryInterval)
+	}
+}
+
+// connectAttemptRetries bounds how many times connectAttempt re-pulses the
+// USB-JTAG-Serial reset and retries sync. A single DTR/RTS pulse can miss a
+// reboot-looping device's brief receptive window, so the whole
+// reset+reopen+sync cycle is retried, not just sync itself. A var so tests
+// can shrink it.
+var connectAttemptRetries = 5
+
+// connectAttempt opens portPath and gets the ESP32 bootloader to answer
+// SYNC, retrying the whole reset-into-bootloader cycle up to
+// connectAttemptRetries times when the device doesn't respond — not just
+// the port open. This targets devices that are power-cycling or
+// crash-looping on their own, where a single reset pulse can land while the
+// chip is mid-crash rather than idle and listening.
+//
+// The reset pulse genuinely disconnects and re-enumerates the USB device on
+// this hardware — confirmed empirically: writes on the pre-reset handle
+// fail with "device not configured" (ENXIO) — so the port is closed and
+// reopened after every pulse, unlike esptool's own
+// ESPLoader._connect_attempt(), which assumes the handle survives the reset
+// (true on the platforms esptool is normally used on, not true here).
+func connectAttempt(portPath string, mode *serial.Mode) (*espFlasher, error) {
+	port, err := openPortRetrying(portPath, mode, portOpenRetryBudget)
+	if err != nil {
+		if isPermissionDenied(err) {
+			if group := serialPortGroup(portPath); group != "" {
+				return nil, fmt.Errorf("Permission denied to access USB device %s. To have access, you need to be part of the user group '%s'.", portPath, group)
+			}
+		}
+		if isPortBusy(err) {
+			// The underlying *serial.PortError just says "Serial port busy"
+			// again, so it is dropped rather than repeated: errPortBusy already
+			// carries that, and the path is the only new information.
+			return nil, fmt.Errorf("%w: opening USB device %s", errPortBusy, portPath)
+		}
+		return nil, fmt.Errorf("opening USB device %s: %w", portPath, err)
+	}
+	f := &espFlasher{port: port}
+
+	var lastErr error
+	for attempt := 1; attempt <= connectAttemptRetries; attempt++ {
+		espResetViaUsbJtag(f.port, true)
+		f.port.Close()
+		time.Sleep(500 * time.Millisecond)
+
+		newPort, err := openPortRetrying(portPath, mode, portOpenRetryBudget)
+		if err != nil {
+			if isPortBusy(err) {
+				return nil, fmt.Errorf("%w: reopening port %s after reset", errPortBusy, portPath)
+			}
+			return nil, fmt.Errorf("reopening port after reset: %w", err)
+		}
+		f.port = newPort
+
+		if err := f.sync(); err == nil {
+			return f, nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	f.port.Close()
+	return nil, fmt.Errorf("device did not respond after %d bootloader-reset attempts: %w", connectAttemptRetries, lastErr)
+}
+
 // flashFirmware is the main entry point: flash a .bin file to the ESP32.
 func flashFirmware(portPath, firmwarePath string, progressFn func(pct float64)) error {
 	info, err := os.Stat(firmwarePath)
@@ -953,43 +1052,12 @@ func flashFirmwareBytes(portPath string, firmware []byte, progressFn func(pct fl
 		StopBits: serial.OneStopBit,
 	}
 
-	port, err := serial.Open(portPath, mode)
-	if err != nil {
-		if isPermissionDenied(err) {
-			if group := serialPortGroup(portPath); group != "" {
-				return fmt.Errorf("Permission denied to access USB device %s. To have access, you need to be part of the user group '%s'.", portPath, group)
-			}
-		}
-		if isPortBusy(err) {
-			// The underlying *serial.PortError just says "Serial port busy"
-			// again, so it is dropped rather than repeated: errPortBusy already
-			// carries that, and the path is the only new information.
-			return fmt.Errorf("%w: opening USB device %s", errPortBusy, portPath)
-		}
-		return fmt.Errorf("opening USB device %s: %w", portPath, err)
-	}
-
-	f := &espFlasher{port: port}
-	defer func() { f.port.Close() }()
-
 	// Step 1: Enter bootloader.
-	espResetViaUsbJtag(port, true)
-	f.port.Close()
-	time.Sleep(1500 * time.Millisecond) // wait for USB re-enumeration
-	newPort, err := serial.Open(portPath, mode)
+	f, err := connectAttempt(portPath, mode)
 	if err != nil {
-		if isPortBusy(err) {
-			return fmt.Errorf("%w: reopening port %s after reset", errPortBusy, portPath)
-		}
-		return fmt.Errorf("reopening port after reset: %w", err)
+		return err
 	}
-	f.port = newPort
-	f.drain()
-
-	// Verify that the bootloader is responding
-	if err := f.sync(); err != nil {
-		return fmt.Errorf("sync: %w", err)
-	}
+	defer func() { f.port.Close() }()
 
 	// Step 2: Increase baud rate.
 	if err := f.changeBaudRate(flashBaudRate); err != nil {
