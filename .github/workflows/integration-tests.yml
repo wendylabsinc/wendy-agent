@@ -41,6 +41,15 @@ on:
 permissions:
   contents: read
 
+# The self-hosted macOS runners execute as a LaunchAgent, whose session cannot
+# authorize the login Keychain: security(1) exits 152 ("Unable to obtain
+# authorization for this operation") for every read, so a dehydrated credential
+# is unreadable here. Keep this runner's credentials inline in config.json
+# instead. Covers steps that run the CLI directly; commands sent through
+# `ssh localhost` start a fresh session and export it again themselves.
+env:
+  WENDY_SECRET_STORE: file
+
 jobs:
   discover:
     name: Discover (${{ matrix.runner.name }})
@@ -365,6 +374,9 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
           export DOCKER_HOST="$DOCKER_HOST_VALUE"
           export WENDY_BUILDX_BUILDER="$BUILDER"
+          # ssh starts a fresh session, so the workflow-level env does not reach
+          # here — see the note on WENDY_SECRET_STORE at the top of this file.
+          export WENDY_SECRET_STORE=file
           cd "$WORKDIR"
           exec go/scripts/test-ci.sh "$@" -h "$HOSTNAME"
           REMOTE
