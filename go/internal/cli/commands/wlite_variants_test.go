@@ -83,3 +83,39 @@ func TestWendyLiteFirmwareID(t *testing.T) {
 		t.Error("WendyLiteFirmwareID(no_such_board) = nil error, want an error")
 	}
 }
+
+// wendyLiteBoardsWithFirmware drops catalog boards that have no published
+// firmware in the manifest's Firmware map, so pickers never offer a board
+// whose flash attempt would fail right after selection.
+func TestWendyLiteBoardsWithFirmwareFilter(t *testing.T) {
+	boards := []WendyLiteBoard{
+		{Board: "esp32c6_generic", Target: "esp32c6", DisplayName: "no manifest entry"},
+		{Board: "esp32c6_generic_native", Target: "esp32c6", DisplayName: "empty manifest path"},
+		{Board: "esp32s3_generic", Target: "esp32s3", DisplayName: "stable only"},
+		{Board: "esp32s3_generic_native", Target: "esp32s3", DisplayName: "nightly only"},
+		{Board: "no_such_board", Target: "esp32c6", DisplayName: "not in catalog"},
+	}
+	firmware := map[string]manifestDevice{
+		// esp32c6: no entry at all.
+		"esp32c6_native": {ManifestPath: ""}, // entry present but unpublished.
+		"esp32s3":        {ManifestPath: "firmware/esp32s3.json", Latest: "0.2.0"},
+		"esp32s3_native": {ManifestPath: "firmware/esp32s3_native.json", LatestNightly: "0.3.0-nightly"},
+	}
+
+	stable := wendyLiteBoardsWithFirmware(boards, firmware, false)
+	if len(stable) != 1 || stable[0].Board != "esp32s3_generic" {
+		t.Errorf("nightly=false: got %+v, want only esp32s3_generic", stable)
+	}
+
+	nightly := wendyLiteBoardsWithFirmware(boards, firmware, true)
+	if len(nightly) != 2 {
+		t.Fatalf("nightly=true: got %+v, want esp32s3_generic and esp32s3_generic_native", nightly)
+	}
+	seen := make(map[string]bool)
+	for _, b := range nightly {
+		seen[b.Board] = true
+	}
+	if !seen["esp32s3_generic"] || !seen["esp32s3_generic_native"] {
+		t.Errorf("nightly=true: got %+v, want esp32s3_generic and esp32s3_generic_native", nightly)
+	}
+}

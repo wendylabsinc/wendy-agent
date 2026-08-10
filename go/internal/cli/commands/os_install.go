@@ -273,10 +273,11 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 
 // pickWendyLiteBoard asks which Wendy Lite board to install. When target is
 // non-empty, only boards for that ESP32 target are offered; an empty target
-// lists every catalog board. Returns ErrUserCancelled when the user quits
-// the picker.
-func pickWendyLiteBoard(target string) (string, error) {
-	boards, err := WendyLiteBoards()
+// lists every catalog board with published firmware. nightly selects which
+// release channel a board's firmware must be published on to be offered.
+// Returns ErrUserCancelled when the user quits the picker.
+func pickWendyLiteBoard(target string, nightly bool) (string, error) {
+	boards, err := WendyLiteBoardsWithFirmware(nightly)
 	if err != nil {
 		return "", err
 	}
@@ -340,8 +341,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
 	}
 
-	// Fetch Wendy Lite boards and targets.
-	wliteBoards, err := WendyLiteBoards()
+	// Fetch Wendy Lite boards and targets, keeping only boards with published
+	// firmware — a catalog entry with no build yet would otherwise reach the
+	// picker and fail immediately after selection.
+	wliteBoards, err := WendyLiteBoardsWithFirmware(nightly)
 	if err != nil {
 		log.Printf("WARNING: could not fetch Wendy Lite board catalog: %v", err)
 	}
@@ -349,8 +352,8 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	if err != nil {
 		log.Printf("WARNING: could not fetch Wendy Lite target catalog: %v", err)
 	}
-	// Drop targets with no board in the catalog so the picker never offers a
-	// target that leads to an empty second picker.
+	// Drop targets with no board left so the picker never offers a target
+	// that leads to an empty second picker.
 	boardTargets := make(map[string]bool, len(wliteBoards))
 	for _, b := range wliteBoards {
 		boardTargets[b.Target] = true
@@ -468,7 +471,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		}
 
 		if target, ok := strings.CutPrefix(selected, "wlite_target_"); ok {
-			board, err := pickWendyLiteBoard(target)
+			board, err := pickWendyLiteBoard(target, nightly)
 			if err != nil {
 				return err
 			}

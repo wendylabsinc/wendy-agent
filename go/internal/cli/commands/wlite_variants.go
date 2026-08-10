@@ -253,3 +253,46 @@ func WendyLiteFirmwareID(board string) (string, error) {
 	}
 	return "", fmt.Errorf("board %q not found in the Wendy Lite catalog", board)
 }
+
+// wendyLiteBoardsWithFirmware filters boards down to those with a published
+// firmware version in the main manifest's Firmware map, keyed by firmware ID.
+// nightly selects which channel must have a build, matching how Linux
+// devices are filtered in runOSInstall: nightly falls back to the stable
+// version when no nightly build is published.
+func wendyLiteBoardsWithFirmware(boards []WendyLiteBoard, firmware map[string]manifestDevice, nightly bool) []WendyLiteBoard {
+	available := make([]WendyLiteBoard, 0, len(boards))
+	for _, b := range boards {
+		firmwareID, err := WendyLiteFirmwareID(b.Board)
+		if err != nil {
+			continue
+		}
+		chip, ok := firmware[firmwareID]
+		if !ok || chip.ManifestPath == "" {
+			continue
+		}
+		version := chip.Latest
+		if nightly && chip.LatestNightly != "" {
+			version = chip.LatestNightly
+		}
+		if version == "" {
+			continue
+		}
+		available = append(available, b)
+	}
+	return available
+}
+
+// WendyLiteBoardsWithFirmware returns the catalog boards that currently have
+// published firmware, so pickers never offer a board whose flash attempt
+// would fail immediately after selection.
+func WendyLiteBoardsWithFirmware(nightly bool) ([]WendyLiteBoard, error) {
+	boards, err := WendyLiteBoards()
+	if err != nil {
+		return nil, err
+	}
+	main, err := fetchMainManifest()
+	if err != nil {
+		return nil, err
+	}
+	return wendyLiteBoardsWithFirmware(boards, main.Firmware, nightly), nil
+}

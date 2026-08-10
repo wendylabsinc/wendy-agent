@@ -1551,7 +1551,7 @@ func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvide
 		return nil, wrapped
 	}
 
-	board, err := pickWendyLiteBoard("")
+	board, err := pickWendyLiteBoard("", false)
 	if err != nil {
 		if errors.Is(err, ErrUserCancelled) {
 			return nil, wrapped
