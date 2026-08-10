@@ -237,12 +237,13 @@ func listAppContainers(ctx context.Context, conn *grpcclient.AgentConnection) ([
 }
 
 type topJSONHost struct {
-	CPUPercent    float64          `json:"cpuPercent"`
-	CPUCount      uint32           `json:"cpuCount"`
-	MemUsedBytes  int64            `json:"memUsedBytes"`
-	MemTotalBytes int64            `json:"memTotalBytes"`
-	GPUs          []topJSONGPU     `json:"gpus,omitempty"`
-	ThermalZones  []topJSONThermal `json:"thermalZones,omitempty"`
+	CPUPercent         float64          `json:"cpuPercent"`
+	CPUCount           uint32           `json:"cpuCount"`
+	MemUsedBytes       int64            `json:"memUsedBytes"`
+	MemTotalBytes      int64            `json:"memTotalBytes"`
+	GPUs               []topJSONGPU     `json:"gpus,omitempty"`
+	ThermalZones       []topJSONThermal `json:"thermalZones,omitempty"`
+	MaximumTemperature *topJSONThermal  `json:"maximumTemperature,omitempty"`
 	// Absent on mains-powered devices. Consumers must read "no battery key" as
 	// "no battery", never as a flat one.
 	Battery *topJSONBattery `json:"battery,omitempty"`
@@ -308,6 +309,9 @@ func buildTopJSON(prev, cur topSample, containers []*agentpb.AppContainer) topJS
 				Name:  z.GetName(),
 				TempC: z.GetTempC(),
 			})
+		}
+		if summary, ok := summarizeTemperature(cur.host); ok {
+			out.Host.MaximumTemperature = &topJSONThermal{Name: summary.Max.Name, TempC: summary.Max.TempC}
 		}
 		if b := cur.host.GetBattery(); b != nil {
 			out.Host.Battery = &topJSONBattery{
@@ -392,6 +396,9 @@ func writeTopPlainSnapshot(w io.Writer, prev, cur topSample, containers []*agent
 			fmt.Fprintf(w, "GPU%d %s: %.0f%%  %s\n", g.GetIndex(), g.GetName(),
 				g.GetUtilPercent(), formatGPUMem(g))
 		}
+		if summary, ok := summarizeTemperature(cur.host); ok {
+			fmt.Fprintf(w, "TEMP MAX: %s\n", formatTemperatureSummary(summary))
+		}
 		if zones := cur.host.GetThermalZones(); len(zones) > 0 {
 			fmt.Fprintf(w, "TEMP: %s\n", formatThermalZones(zones))
 		}
@@ -420,7 +427,7 @@ func newTopCmd() *cobra.Command {
 	var interval time.Duration
 	cmd := &cobra.Command{
 		Use:   "top",
-		Short: "Live CPU, memory, and GPU usage for the device and its containers",
+		Short: "Live CPU, memory, GPU, and temperature for the device and its containers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			conn, err := connectToAgent(ctx)
@@ -790,11 +797,13 @@ var (
 	topValDim     = lipgloss.NewStyle().Foreground(tui.ColorDim)
 	topHeaderBar  = lipgloss.NewStyle().Bold(true).Background(tui.Emerald500).Foreground(lipgloss.Color("#02160f"))
 	// Bright mint selection bar for strong contrast with the black row text.
-	topSelRow     = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
-	topRunningRow = lipgloss.NewStyle().Foreground(tui.Emerald400)
-	topCrashRow   = lipgloss.NewStyle().Foreground(tui.Red500)
-	topKeyCap     = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
-	topKeyLabel   = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
+	topSelRow      = lipgloss.NewStyle().Background(lipgloss.Color("#9FE2BF")).Foreground(lipgloss.Color("#000000"))
+	topRunningRow  = lipgloss.NewStyle().Foreground(tui.Emerald400)
+	topCrashRow    = lipgloss.NewStyle().Foreground(tui.Red500)
+	topThermalNear = lipgloss.NewStyle().Bold(true).Foreground(tui.Amber500)
+	topThermalHot  = lipgloss.NewStyle().Bold(true).Foreground(tui.Red500)
+	topKeyCap      = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(lipgloss.Color("#d0d0d0"))
+	topKeyLabel    = lipgloss.NewStyle().Foreground(lipgloss.Color("#02160f")).Background(tui.Emerald500)
 )
 
 // topMeter renders an htop-style bracketed meter: LABEL[|||||      value].
@@ -903,6 +912,9 @@ func (m topModel) View() string {
 	if m.cur.host != nil {
 		h := m.cur.host
 		meterW := width - 2
+		if summary, ok := summarizeTemperature(h); ok {
+			top = append(top, renderTemperatureHeader(summary))
+		}
 		cpuRatio, cpuVal := 0.0, "—"
 		if m.havePrev {
 			pct := hostCPUPercent(m.prev, m.cur)
@@ -1149,4 +1161,142 @@ func formatThermalZones(zones []*agentpb.ThermalZone) string {
 		parts = append(parts, fmt.Sprintf("%s %.0f°C", name, z.GetTempC()))
 	}
 	return strings.Join(parts, "  ")
+}
+
+const (
+	// These are operational thresholds measured on Woof, not vendor ratings.
+	// Keep the source-specific distinction: Go2 motors have a lower warning
+	// point than the Jetson and Go2 IMU.
+	deviceThermalWarningC = 85.0
+	go2MotorWarningC      = 70.0
+	thermalNearDeltaC     = 5.0
+)
+
+type thermalRisk uint8
+
+const (
+	thermalNormal thermalRisk = iota
+	thermalNear
+	thermalOver
+)
+
+type thermalReading struct {
+	Name  string
+	TempC float64
+}
+
+type temperatureSummary struct {
+	Max            thermalReading
+	Risk           thermalRisk
+	Alert          thermalReading
+	AlertThreshold float64
+}
+
+// summarizeTemperature finds the maximum temperature while separately
+// classifying every reading against its own operational threshold. This is
+// important on a Go2: a 66C motor is near its 70C warning point even when a
+// hotter 79C IMU is still more than 5C below its 85C warning point.
+func summarizeTemperature(host *agentpb.HostStats) (temperatureSummary, bool) {
+	var readings []thermalReading
+	for _, zone := range host.GetThermalZones() {
+		if zone.GetTempC() > 0 {
+			readings = append(readings, thermalReading{Name: zone.GetName(), TempC: zone.GetTempC()})
+		}
+	}
+	for _, gpu := range host.GetGpus() {
+		if gpu.TempC != nil && gpu.GetTempC() > 0 {
+			readings = append(readings, thermalReading{
+				Name:  fmt.Sprintf("gpu/%d", gpu.GetIndex()),
+				TempC: gpu.GetTempC(),
+			})
+		}
+	}
+	if len(readings) == 0 {
+		return temperatureSummary{}, false
+	}
+
+	summary := temperatureSummary{Max: readings[0]}
+	bestMargin := thermalNearDeltaC + 1
+	for _, reading := range readings {
+		if reading.TempC > summary.Max.TempC {
+			summary.Max = reading
+		}
+		threshold, classified := thermalWarningThreshold(reading.Name)
+		if !classified {
+			continue
+		}
+		margin := threshold - reading.TempC
+		risk := thermalNormal
+		switch {
+		case margin <= 0:
+			risk = thermalOver
+		case margin <= thermalNearDeltaC:
+			risk = thermalNear
+		}
+		if risk > summary.Risk || (risk == summary.Risk && risk != thermalNormal && margin < bestMargin) {
+			summary.Risk = risk
+			summary.Alert = reading
+			summary.AlertThreshold = threshold
+			bestMargin = margin
+		}
+	}
+	return summary, true
+}
+
+// thermalWarningThreshold returns an applicable operational warning point.
+// Names under go2/ are emitted by the LowState decoder and therefore form a
+// stable typed seam rather than a heuristic over arbitrary sysfs labels.
+func thermalWarningThreshold(name string) (float64, bool) {
+	name = strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(name, "go2/motor/"):
+		return go2MotorWarningC, true
+	case name == "go2/imu":
+		return deviceThermalWarningC, true
+	case strings.HasPrefix(name, "go2/"):
+		return 0, false
+	default:
+		return deviceThermalWarningC, true
+	}
+}
+
+func formatTemperatureName(name string) string {
+	if name == "go2/imu" {
+		return "Go2 IMU"
+	}
+	if motor, ok := strings.CutPrefix(name, "go2/motor/"); ok {
+		return "Go2 " + strings.ReplaceAll(motor, "-", " ")
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(name, "-thermal"), "-therm")
+}
+
+func formatTemperatureSummary(summary temperatureSummary) string {
+	value := fmt.Sprintf("%.0f°C (%s)", summary.Max.TempC, formatTemperatureName(summary.Max.Name))
+	if summary.Risk == thermalNormal {
+		return value
+	}
+	alert := formatTemperatureName(summary.Alert.Name)
+	if summary.Alert.Name == summary.Max.Name {
+		return fmt.Sprintf("%s, %s %.0f°C warning", value, thermalRiskLabel(summary.Risk), summary.AlertThreshold)
+	}
+	return fmt.Sprintf("%s — %s %.0f°C, %s %.0f°C warning", value, alert, summary.Alert.TempC, thermalRiskLabel(summary.Risk), summary.AlertThreshold)
+}
+
+func thermalRiskLabel(risk thermalRisk) string {
+	if risk == thermalOver {
+		return "at/above"
+	}
+	return "near"
+}
+
+func renderTemperatureHeader(summary temperatureSummary) string {
+	line := " Temp max: " + formatTemperatureSummary(summary)
+	switch summary.Risk {
+	case thermalNear:
+		return " " + topThermalNear.Render("●") + line
+	case thermalOver:
+		return " " + topThermalHot.Render("●") + line
+	default:
+		return topValDim.Render(line)
+	}
 }
