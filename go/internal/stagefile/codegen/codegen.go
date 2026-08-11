@@ -325,7 +325,7 @@ func aptRepositoryLines(repos []spec.AptRepository) []string {
 		return nil
 	}
 	lines := []string{
-		"RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \\",
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends ca-certificates \\",
 		"    && rm -rf /var/lib/apt/lists/*",
 	}
 	for _, r := range repos {
@@ -349,7 +349,7 @@ func aptRepositoryLines(repos []spec.AptRepository) []string {
 
 func aptInstallLines(a *spec.AptInstall) []string {
 	lines := aptRepositoryLines(a.Repositories)
-	parts := []string{"apt-get", "update", "&&", "apt-get", "install", "-y"}
+	parts := []string{"rm", "-rf", "/var/lib/apt/lists/*", "&&", "apt-get", "update", "&&", "apt-get", "install", "-y"}
 	if !a.Recommends {
 		parts = append(parts, "--no-install-recommends")
 	}

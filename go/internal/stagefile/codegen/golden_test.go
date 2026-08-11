@@ -29,7 +29,7 @@ func TestGenerateGoldenExampleFixture(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM python:3.12-slim@sha256:abc123 AS deps\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'build-essential' \\\n" +
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends 'build-essential' \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"COPY requirements.txt requirements.txt\n" +
 		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-96a296d224f285c6,target=/root/.cache/pip pip install -r 'requirements.txt'\n" +

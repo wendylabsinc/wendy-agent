@@ -95,11 +95,35 @@ func TestGenerateAptInstall(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl' 'git' \\\n" +
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends 'curl' 'git' \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
+	}
+}
+
+func TestGenerateAptInstallRemovesStaleIndexesBeforeUpdate(t *testing.T) {
+	f := &spec.File{Version: 1, Stages: []spec.Stage{
+		{Name: "app", From: "ubuntu:24.04", Install: &spec.Install{
+			Apt: &spec.AptInstall{Packages: []string{"curl"}},
+		}},
+	}}
+	out, err := Generate(
+		f,
+		map[string]string{"ubuntu:24.04": "sha256:abc123"},
+		nil,
+		"",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(
+		out,
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install",
+	) {
+		t.Fatalf("apt install must discard stale base-image indexes first:\n%s", out)
 	}
 }
 
@@ -116,7 +140,7 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y 'curl' \\\n" +
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y 'curl' \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"USER 65532\n"
 	if out != want {
@@ -455,7 +479,7 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned' \\\n" +
+		"RUN rm -rf /var/lib/apt/lists/* && apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned' \\\n" +
 		"    && rm -rf /var/lib/apt/lists/*\n" +
 		"USER 65532\n"
 	if out != want {
