@@ -48,6 +48,59 @@ func TestFormatThermalZones(t *testing.T) {
 	}
 }
 
+func TestStabilizeThermalZoneOrderUsesHysteresis(t *testing.T) {
+	previous := []*agentpb.ThermalZone{
+		{Name: "go2/motor/fr-hip", TempC: 52},
+		{Name: "go2/motor/fl-hip", TempC: 51},
+		{Name: "go2/motor/rr-hip", TempC: 45},
+	}
+
+	// The agent now reports fl-hip first, but its one-degree lead is visually
+	// insignificant and should not make the dashboard rows trade places.
+	current := []*agentpb.ThermalZone{
+		{Name: "go2/motor/fl-hip", TempC: 52},
+		{Name: "go2/motor/fr-hip", TempC: 51},
+		{Name: "go2/motor/rr-hip", TempC: 45},
+	}
+	stable := stabilizeThermalZoneOrder(previous, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fr-hip,go2/motor/fl-hip,go2/motor/rr-hip" {
+		t.Fatalf("near-equal readings reordered: %s", got)
+	}
+
+	// A clear lead still promotes the genuinely hotter sensor.
+	current[0].TempC = 54
+	stable = stabilizeThermalZoneOrder(stable, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fl-hip,go2/motor/fr-hip,go2/motor/rr-hip" {
+		t.Fatalf("meaningfully hotter sensor was not promoted: %s", got)
+	}
+
+	// Crossing back by only one degree does not immediately undo that move.
+	current[0].TempC = 52
+	current[1].TempC = 53
+	stable = stabilizeThermalZoneOrder(stable, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fl-hip,go2/motor/fr-hip,go2/motor/rr-hip" {
+		t.Fatalf("order oscillated after a small reversal: %s", got)
+	}
+}
+
+func TestStabilizeThermalZoneOrderPreservesDuplicateNames(t *testing.T) {
+	current := []*agentpb.ThermalZone{
+		{Name: "x86_pkg_temp", TempC: 50},
+		{Name: "x86_pkg_temp", TempC: 49},
+	}
+	if got := stabilizeThermalZoneOrder(nil, current); len(got) != len(current) {
+		t.Fatalf("duplicate-named zones were dropped: got %d, want %d", len(got), len(current))
+	}
+}
+
+func thermalZoneNames(zones []*agentpb.ThermalZone) string {
+	names := make([]string, len(zones))
+	for i, zone := range zones {
+		names[i] = zone.GetName()
+	}
+	return strings.Join(names, ",")
+}
+
 func TestSummarizeTemperatureUsesSensorSpecificThreshold(t *testing.T) {
 	host := &agentpb.HostStats{ThermalZones: []*agentpb.ThermalZone{
 		{Name: "go2/imu", TempC: 79},

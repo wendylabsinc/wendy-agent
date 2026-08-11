@@ -467,6 +467,10 @@ type topModel struct {
 	prev, cur        topSample
 	havePrev         bool
 	cachedContainers []*agentpb.AppContainer
+	// Keep near-equal temperatures from trading places on every sample. The
+	// dashboard preserves this order across refreshes; snapshots remain a
+	// stateless representation of the agent response.
+	displayThermalZones []*agentpb.ThermalZone
 
 	rows      []topRow
 	cursor    int
@@ -705,6 +709,11 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.havePrev = true
 		}
 		m.cur = newTopSample(msg.resp, time.Now().UnixNano())
+		if m.cur.host != nil {
+			m.displayThermalZones = stabilizeThermalZoneOrder(m.displayThermalZones, m.cur.host.GetThermalZones())
+		} else {
+			m.displayThermalZones = nil
+		}
 		m.rebuildRows()
 		// Refresh ports for the selected app on every tick so they stay current.
 		sel := m.selectedAppName()
@@ -956,7 +965,13 @@ func (m topModel) View() string {
 			top = append(top, topMeter("GPU", g.GetUtilPercent()/100, val, meterW))
 		}
 
-		if zones := h.GetThermalZones(); len(zones) > 0 {
+		zones := m.displayThermalZones
+		// Some view tests construct a model directly instead of sending a stats
+		// message through Update. Use the sample's order for that initial frame.
+		if zones == nil {
+			zones = h.GetThermalZones()
+		}
+		if len(zones) > 0 {
 			top = append(top, topValDim.Render(" Temp: "+formatThermalZones(zones)))
 		}
 	} else {
@@ -1148,8 +1163,9 @@ func runTopDashboard(ctx context.Context, conn *grpcclient.AgentConnection, inte
 	return err
 }
 
-// formatThermalZones renders thermal zones (already sorted hottest-first by the
-// agent) as a compact one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C".
+// formatThermalZones renders thermal zones in the supplied order as a compact
+// one-line summary, e.g. "cpu 49°C  gpu 48°C  soc0 47°C". The agent supplies
+// them hottest-first; the live dashboard applies a small ordering hysteresis.
 // Zone names are shortened by trimming the conventional "-thermal"/"-therm"
 // suffix for readability.
 func formatThermalZones(zones []*agentpb.ThermalZone) string {
@@ -1161,6 +1177,55 @@ func formatThermalZones(zones []*agentpb.ThermalZone) string {
 		parts = append(parts, fmt.Sprintf("%s %.0f°C", name, z.GetTempC()))
 	}
 	return strings.Join(parts, "  ")
+}
+
+const thermalOrderHysteresisC = 1.0
+
+// stabilizeThermalZoneOrder keeps the live temperature list hottest-first
+// without allowing insignificant fluctuations to reorder it. Starting with
+// the prior displayed order, a sensor only overtakes the one above it after it
+// becomes more than thermalOrderHysteresisC hotter. Reversing that move needs
+// the same clear lead in the other direction, which prevents oscillation while
+// still surfacing a meaningfully hotter sensor promptly.
+func stabilizeThermalZoneOrder(previous, current []*agentpb.ThermalZone) []*agentpb.ThermalZone {
+	if len(current) == 0 {
+		return nil
+	}
+
+	indicesByName := make(map[string][]int, len(current))
+	for i, zone := range current {
+		indicesByName[zone.GetName()] = append(indicesByName[zone.GetName()], i)
+	}
+
+	ordered := make([]*agentpb.ThermalZone, 0, len(current))
+	used := make([]bool, len(current))
+	for _, zone := range previous {
+		name := zone.GetName()
+		indices := indicesByName[name]
+		if len(indices) > 0 {
+			index := indices[0]
+			indicesByName[name] = indices[1:]
+			ordered = append(ordered, current[index])
+			used[index] = true
+		}
+	}
+	// ResolveThermal sends new sensors hottest-first, so retaining its order
+	// here gives a sensible initial placement before hysteresis is applied.
+	for i, zone := range current {
+		if !used[i] {
+			ordered = append(ordered, zone)
+		}
+	}
+
+	// Insertion-sort from the previous visual order. Unlike a comparator that
+	// embeds hysteresis, this remains deterministic and cannot violate Go's
+	// strict-ordering requirement.
+	for i := 1; i < len(ordered); i++ {
+		for j := i; j > 0 && ordered[j].GetTempC() > ordered[j-1].GetTempC()+thermalOrderHysteresisC; j-- {
+			ordered[j], ordered[j-1] = ordered[j-1], ordered[j]
+		}
+	}
+	return ordered
 }
 
 const (
