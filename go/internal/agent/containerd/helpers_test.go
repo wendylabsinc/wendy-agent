@@ -392,7 +392,7 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		wantVal string
 	}{
 		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementNetwork, "mode=host"},
-		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, ""},
+		{appconfig.EntitlementAnnotationKeyPrefix + appconfig.EntitlementGPU, "present=true"},
 	}
 	for _, tc := range cases {
 		raw, ok := labels[tc.key]
@@ -401,6 +401,29 @@ func TestWendyLabels_EntitlementsStoredAsKeyValue(t *testing.T) {
 		}
 		if raw != tc.wantVal {
 			t.Errorf("%q value = %q; want %q", tc.key, raw, tc.wantVal)
+		}
+	}
+}
+
+func TestWendyLabels_TypeOnlyEntitlementsUseNonEmptyValues(t *testing.T) {
+	entitlements := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementCamera},
+		{Type: appconfig.EntitlementNotifications},
+	}
+	labels := wendyLabels("app", "", "1.0", nil, entitlements, "", nil)
+
+	for _, entitlement := range entitlements {
+		key := appconfig.EntitlementAnnotationKeyPrefix + entitlement.Type
+		raw, ok := labels[key]
+		if !ok {
+			t.Fatalf("missing entitlement label %q", key)
+		}
+		if raw == "" {
+			t.Fatalf("entitlement label %q has an empty value; containerd drops empty-valued labels", key)
+		}
+		got := appconfig.ParseEntitlementAnnotation(entitlement.Type, raw)
+		if got.Type != entitlement.Type {
+			t.Fatalf("parsed entitlement type = %q, want %q", got.Type, entitlement.Type)
 		}
 	}
 }
