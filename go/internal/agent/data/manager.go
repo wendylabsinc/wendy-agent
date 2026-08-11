@@ -106,11 +106,22 @@ type activeEpisode struct {
 }
 
 func NewManager(root string) (*Manager, error) {
+	implicitRoot := root == ""
 	if root == "" {
 		root = DefaultRoot
 	}
 	if err := os.MkdirAll(root, 0o750); err != nil {
-		return nil, err
+		if !implicitRoot || !errors.Is(err, os.ErrPermission) {
+			return nil, err
+		}
+		userData, fallbackErr := os.UserConfigDir()
+		if fallbackErr != nil {
+			return nil, errors.Join(err, fallbackErr)
+		}
+		root = filepath.Join(userData, "wendy-agent", "data", "episodes")
+		if fallbackErr = os.MkdirAll(root, 0o750); fallbackErr != nil {
+			return nil, errors.Join(err, fallbackErr)
+		}
 	}
 	m := &Manager{root: root, downloads: make(map[string]int)}
 	if err := m.recoverPartials(); err != nil {
