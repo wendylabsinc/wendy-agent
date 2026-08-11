@@ -42,7 +42,7 @@ func newWatchCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type when a Dockerfile sits alongside Package.swift or Python markers: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile to build from (e.g. Dockerfile.prod)")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, prod.stagefile.yaml)")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker or apple-container")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().StringVar(&opts.prefix, "prefix", "", "Project directory to watch instead of the current working directory")
@@ -214,7 +214,10 @@ func watchShouldIgnore(path, root string) bool {
 	// would make every watched deploy cancel and restart itself: the deploy
 	// writes the file, the watcher sees the write, the debouncer kills the
 	// in-flight deploy and triggers the next one, forever.
-	if base == generatedDockerfileName || base == generatedDockerignoreName || base == stagefileLockName {
+	// Covers every Stagefile variant's artifacts too: the generated namespace is
+	// "Dockerfile.generated*" (which subsumes each one's paired .dockerignore),
+	// and each variant maintains its own "<variant>.stagefile.lock.yaml".
+	if isGeneratedBuildFileName(base) || isStagefileLockName(base) {
 		return true
 	}
 	return strings.HasSuffix(base, "~") ||
