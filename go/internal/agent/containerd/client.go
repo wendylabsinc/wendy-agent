@@ -40,6 +40,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
@@ -2395,13 +2396,18 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 	return entitlementsUseHostNetwork(appCfg.Entitlements)
 }
 
+// boardDetect identifies the host SBC. Behind a var so tests can simulate a
+// Jetson or a non-Jetson host without touching the filesystem, mirroring the
+// oci package's hook of the same name.
+var boardDetect = board.Detect
+
 // needsNvidiaCDI reports whether CreateContainer should apply the host's
 // NVIDIA CDI spec (library mounts, extra device nodes, driver env vars) to
-// this app's OCI spec. Both the explicit gpu entitlement AND the display
-// entitlement trigger it: applyDisplay's own doc comment promises that "the
-// NVIDIA EGL/GLES userspace is injected from the host via CDI" for a Jetson
-// app, but before this fix that injection only happened for apps that also
-// declared gpu — an app requesting display alone (no gpu) got /dev/dri and
+// this app's OCI spec. Both the explicit gpu entitlement AND — on a Jetson —
+// the display entitlement trigger it: applyDisplay's own doc comment promises
+// that "the NVIDIA EGL/GLES userspace is injected from the host via CDI" for a
+// Jetson app, but before this fix that injection only happened for apps that
+// also declared gpu — an app requesting display alone (no gpu) got /dev/dri and
 // the NVIDIA_DRIVER_CAPABILITIES=all env var from applyDisplay but none of
 // the actual library/device mounts CDI provides, so its EGL/GLES calls had
 // nothing real to bind to. Merging CDI's container edits is not a new grant
@@ -2410,24 +2416,18 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 // once display is requested, so this only fulfills what that entitlement
 // already declares.
 func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
-	// Preserve existing behavior: an explicit GPU entitlement should still attempt
-	// NVIDIA CDI/CSV provisioning (and surface warnings) when host support is absent.
+	// An explicit GPU entitlement attempts NVIDIA CDI/CSV provisioning on every
+	// board, as it did before this change — including the warnings applyCDIGPU
+	// logs when the host has no NVIDIA provisioning at all, which are the point
+	// of asking for a GPU that isn't there.
 	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
 		return true
 	}
-	// For display-only apps, avoid NVIDIA CDI unless the host actually has NVIDIA
-	// provisioning artifacts (Jetson CSV mode or nvidia-ctk-generated CDI YAML).
-	if !appCfg.HasEntitlement(appconfig.EntitlementDisplay) {
-		return false
-	}
-	if _, err := os.Stat("/var/run/cdi/nvidia.yaml"); err == nil {
-		return true
-	}
-	if _, err := os.Stat("/etc/cdi/nvidia.yaml"); err == nil {
-		return true
-	}
-	csvs, _ := filepath.Glob("/etc/nvidia-container-runtime/host-files-for-container.d/*.csv")
-	return len(csvs) > 0
+	// A display entitlement only implies NVIDIA userspace on a Jetson. Gating on
+	// the same board check applyDisplay uses for NVIDIA_DRIVER_CAPABILITIES keeps
+	// the two in step, and keeps a Raspberry Pi display app — which has no NVIDIA
+	// anything — out of applyCDIGPU's "no CDI spec found" warning path.
+	return appCfg.HasEntitlement(appconfig.EntitlementDisplay) && boardDetect().IsJetson()
 }
 
 // entitlementsUseHostNetwork reports whether the entitlements put the container
