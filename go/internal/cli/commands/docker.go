@@ -661,7 +661,18 @@ func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, 
 	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
 	// file passed via -f, so the derived allowlist rides along without ever
 	// touching (or destroying) a user-authored .dockerignore in the project.
-	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
+	//
+	// That precedence is also why an empty derivation must leave no file behind
+	// rather than write one: winning the precedence with a file that ignores
+	// nothing would disable the project's own .dockerignore. An earlier build of
+	// the same project may have written one, so remove it rather than assume
+	// absence.
+	ignorePath := filepath.Join(dir, generatedDockerignoreName)
+	if dockerignoreText == "" {
+		if err := os.Remove(ignorePath); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("removing stale %s: %w", generatedDockerignoreName, err)
+		}
+	} else if err := writeGeneratedFile(ignorePath, []byte(dockerignoreText)); err != nil {
 		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
 	}
 	return generatedDockerfileName, nil

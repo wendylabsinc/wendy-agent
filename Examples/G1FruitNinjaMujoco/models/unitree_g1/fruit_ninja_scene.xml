@@ -1,0 +1,93 @@
+<mujoco model="wendy g1 fruit ninja">
+  <include file="g1_29dof.xml"/>
+
+  <option timestep="0.004" integrator="implicitfast" gravity="0 0 -9.81"/>
+
+  <statistic center="0.15 0 0.9" extent="1.5"/>
+
+  <visual>
+    <headlight diffuse="0.7 0.7 0.7" ambient="0.35 0.35 0.35" specular="0.1 0.1 0.1"/>
+    <rgba haze="0.03 0.05 0.08 1"/>
+    <global offwidth="640" offheight="360" azimuth="145" elevation="-12"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.025 0.055 0.09" rgb2="0.003 0.008 0.015"
+      width="512" height="3072"/>
+    <texture type="2d" name="floor_grid" builtin="checker" mark="edge"
+      rgb1="0.025 0.04 0.06" rgb2="0.055 0.085 0.11" markrgb="0.15 0.6 0.82"
+      width="512" height="512"/>
+    <material name="floor" texture="floor_grid" texuniform="true" texrepeat="8 8" reflectance="0.12"/>
+    <material name="blade" rgba="0.46 0.88 1 1" specular="0.95" shininess="0.8"/>
+    <material name="handle" rgba="0.04 0.08 0.1 1" specular="0.35" shininess="0.35"/>
+  </asset>
+
+  <worldbody>
+    <light pos="1.5 -1.5 3.2" dir="-0.25 0.2 -1" directional="true" diffuse="0.85 0.92 1"/>
+    <light pos="-1 1.5 2.2" dir="0.2 -0.3 -1" directional="true" diffuse="0.2 0.55 0.8"/>
+    <geom name="floor" type="plane" size="0 0 0.05" material="floor" friction="0.8 0.02 0.002" group="2"/>
+
+    <body name="blade_mocap" mocap="true" pos="0.25 -0.25 1.1">
+      <geom name="blade_visual" type="box" pos="0.115 0 0" size="0.16 0.007 0.033"
+        material="blade" contype="0" conaffinity="0" group="2"/>
+      <geom name="blade_guard" type="box" pos="-0.047 0 0" size="0.012 0.052 0.014"
+        material="handle" contype="0" conaffinity="0" group="2"/>
+      <geom name="blade_handle" type="capsule" fromto="-0.145 0 0 -0.055 0 0" size="0.018"
+        material="handle" contype="0" conaffinity="0" group="2"/>
+      <geom name="blade_edge" type="capsule" fromto="-0.015 0 0 0.265 0 0" size="0.055"
+        rgba="0 0 0 0" contype="2" conaffinity="2" friction="0.2 0.01 0.001" group="3"/>
+    </body>
+
+    <body name="fruit_0" pos="0 0 -5">
+      <freejoint name="fruit_0_joint"/>
+      <geom name="fruit_0_geom" type="sphere" size="0.062" mass="0.18" rgba="1 0.22 0.12 0" group="2"
+        friction="0.6 0.02 0.002" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_1" pos="0 0 -5">
+      <freejoint name="fruit_1_joint"/>
+      <geom name="fruit_1_geom" type="sphere" size="0.058" mass="0.16" rgba="1 0.72 0.08 0" group="2"
+        friction="0.6 0.02 0.002" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_2" pos="0 0 -5">
+      <freejoint name="fruit_2_joint"/>
+      <geom name="fruit_2_geom" type="sphere" size="0.065" mass="0.19" rgba="0.25 0.9 0.35 0" group="2"
+        friction="0.6 0.02 0.002" contype="3" conaffinity="3"/>
+    </body>
+
+    <body name="fruit_0_half_a" pos="0 0 -5">
+      <freejoint name="fruit_0_half_a_joint"/>
+      <geom name="fruit_0_half_a_geom" type="ellipsoid" size="0.034 0.061 0.056" mass="0.09" group="2"
+        rgba="1 0.22 0.12 0" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_0_half_b" pos="0 0 -5">
+      <freejoint name="fruit_0_half_b_joint"/>
+      <geom name="fruit_0_half_b_geom" type="ellipsoid" size="0.034 0.061 0.056" mass="0.09" group="2"
+        rgba="1 0.38 0.2 0" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_1_half_a" pos="0 0 -5">
+      <freejoint name="fruit_1_half_a_joint"/>
+      <geom name="fruit_1_half_a_geom" type="ellipsoid" size="0.032 0.057 0.052" mass="0.08" group="2"
+        rgba="1 0.72 0.08 0" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_1_half_b" pos="0 0 -5">
+      <freejoint name="fruit_1_half_b_joint"/>
+      <geom name="fruit_1_half_b_geom" type="ellipsoid" size="0.032 0.057 0.052" mass="0.08" group="2"
+        rgba="1 0.84 0.18 0" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_2_half_a" pos="0 0 -5">
+      <freejoint name="fruit_2_half_a_joint"/>
+      <geom name="fruit_2_half_a_geom" type="ellipsoid" size="0.036 0.064 0.058" mass="0.095" group="2"
+        rgba="0.25 0.9 0.35 0" contype="3" conaffinity="3"/>
+    </body>
+    <body name="fruit_2_half_b" pos="0 0 -5">
+      <freejoint name="fruit_2_half_b_joint"/>
+      <geom name="fruit_2_half_b_geom" type="ellipsoid" size="0.036 0.064 0.058" mass="0.095" group="2"
+        rgba="0.42 1 0.5 0" contype="3" conaffinity="3"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <weld name="supervised_support" body1="pelvis" solref="0.002 1" solimp="0.95 0.99 0.001"/>
+  </equality>
+</mujoco>

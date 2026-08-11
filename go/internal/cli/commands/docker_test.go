@@ -3022,3 +3022,65 @@ func TestWriteGeneratedFile_SkipsUnchangedWrites(t *testing.T) {
 		t.Fatalf("temp files left behind: %v", leftovers)
 	}
 }
+
+// A Stagefile that copies the whole context yields no derivable allowlist, and
+// the generated ignore file wins BuildKit's precedence over the project's own
+// .dockerignore. Writing a vacuous one there would therefore disable the
+// project's excludes — shipping, for a Swift project, a multi-gigabyte .build
+// directory into the build context and then into the image.
+func TestCompileStagefile_NoIgnoreFileWhenContextRootIsCopied(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n    workdir: /app\n" +
+		"    copy:\n      - from: local\n        paths: [.]\n        dest: /app/\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+	// The project's own excludes, which must remain the ones in effect.
+	mustWrite(t, filepath.Join(dir, ".dockerignore"), ".build/\n")
+
+	// A sidecar left by an earlier build must not survive: absence is what puts
+	// the project's .dockerignore back in charge, so a stale file is as bad as
+	// writing a new one.
+	stale := filepath.Join(dir, generatedDockerignoreName)
+	mustWrite(t, stale, "*\n!.\n!./\n!./**\n")
+
+	if _, err := compileStagefile(dir, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		b, _ := os.ReadFile(stale)
+		t.Fatalf("%s should not exist for a whole-context copy; stat err = %v, content:\n%s",
+			generatedDockerignoreName, err, b)
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, ".dockerignore")); err != nil || string(b) != ".build/\n" {
+		t.Fatalf("the project .dockerignore must be left alone: %q, err = %v", b, err)
+	}
+}
+
+// The narrow case still gets its allowlist: only a whole-context copy suppresses it.
+func TestCompileStagefile_WritesIgnoreFileForNamedPaths(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n" +
+		"    copy:\n      - from: local\n        paths: [main.py]\n"
+	mustWrite(t, filepath.Join(dir, "build.stagefile.yaml"), source)
+	mustWrite(t, filepath.Join(dir, "build.stagefile.lock.yaml"),
+		"version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n")
+
+	if _, err := compileStagefile(dir, ""); err != nil {
+		t.Fatalf("compileStagefile: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, generatedDockerignoreName))
+	if err != nil {
+		t.Fatalf("expected an allowlist for a named path: %v", err)
+	}
+	if !strings.HasPrefix(string(b), "*\n") || !strings.Contains(string(b), "!main.py") {
+		t.Fatalf("unexpected allowlist:\n%s", b)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

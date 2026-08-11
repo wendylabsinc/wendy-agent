@@ -1578,10 +1578,10 @@ func resolveMDNSHostAll(ctx context.Context, host string) []string {
 			continue
 		}
 		if normalizeMDNSHost(dev.Hostname) == want {
-			ips = append(ips, dev.IPAddress)
+      return dev.IPAddress
 		}
 	}
-	return ips
+	return nil
 }
 
 // normalizeMDNSHost lowercases a hostname and strips a trailing dot and ".local"

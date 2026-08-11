@@ -435,3 +435,60 @@ the new, one-level-shallower directory nesting), the full `commands`/
 `optimize` suites pass, and a real `wendy build` against a Stagefile
 project still produces a correctly digest-pinned Dockerfile via a live
 `docker buildx` build.
+
+---
+
+## Second conversion pass: the rest of `Examples/` (2026-08-09)
+
+The first pass (above) converted 14 of 28 Dockerfiles and left the rest on the
+DSL gaps recorded in `specs/stagefile-dsl-gaps.md`. Those gaps have since been
+closed, so this pass finishes the job. Everything under `Examples/` that has a
+container build now has a `build.stagefile.yaml`, and the sections above
+describing `project-optimize-samples`, `InvalidConfig` and `RemoteCam` as
+excluded or reverted are superseded by what follows.
+
+### Converted in this pass
+
+| Example | Notes |
+|---|---|
+| `FastAPIExample` | pip requirements + `cmd: [python, main.py]`. Its Dockerfile was gitignored build output — this example existed to demonstrate Dockerfile auto-generation, which it no longer does. See the README. |
+| `FoxgloveBridge` | apt + `entrypoint.source: /opt/ros/humble/setup.bash`, `user: root`. |
+| `ROS2/talker`, `ROS2/listener` | Same shape. `CMD` became `ENTRYPOINT` (the only way to get `source`), so run-arg override semantics changed; neither passes run args. |
+| `HelloVLM/llm` | apt + `env:` + `copy.mode: "0755"` (replacing `RUN chmod +x`) + `user: root`. Deliberately not `cuda:` — the CUDA build ships inside the ollama base image, and `cuda:` would install a second, conflicting runtime on top of it. |
+| `HelloVLM/llm-mlx` | `pin: false` + `env:`. |
+| `PythonAI` | apt + pip + `user: root` — the `useradd`+`audio` group it replaced is not expressible, and the compiler's non-root default (in no groups) would silently lose `/dev/snd`. |
+| `RemoteCam` | Two stages + `build.product: camserver`, the gap that blocked it the first time. Builds. |
+| `WendyMC/minecraft` | Pure `args:`→`env:` passthrough; no copy, no command, base image's own entrypoint and `/data` workdir inherited. |
+| `WendyMC/webui` | `args:`/`env:` + pip + copy. `CMD ["sh","-c","uvicorn … --port ${WEBUI_PORT}"]` is not expressible as argv, so `app.py` gained a `__main__` block that reads `WEBUI_PORT` and starts uvicorn itself: same port, same build-arg configurability, no shell. |
+| `HelloWorld`, `HelloCrash`, `StdinEcho`, `Environment`, `Persistence`, `HelloHTTP`, `HelloVideo`, `HelloVLM/app`, `HelloHTTPNoCompile` | Language-detected Swift projects that previously had no build file at all. Two stages: `swift:6.3.2-noble` → `swift:6.3.2-noble-slim`, binary at `/<Product>` to match the swift-container-plugin layout these apps were written against. All need `build.product` because they all depend on swift-container-plugin. |
+| `InvalidConfig` | Minimal stage; its Dockerfile was one empty line. The fixture is about `wendy.json` validation, which fails before any build. |
+| `project-optimize-samples/*` (4) | Converted per an explicit decision, with the consequence disclosed up front: `wendy project optimize` does not analyse Stagefiles, so these four now report nothing. Each `EXPECTED.txt` was rewritten to account for its old findings — structurally impossible, still true but unanalysed, or not expressible. |
+
+### Deliberately not converted
+
+- `ClaudeOnDevice` — needs `npm install -g @anthropic-ai/claude-code`.
+- `HelloAudio` — needs `RUN python generate_sound.py` at build time.
+
+Both are recorded in `specs/stagefile-dsl-gaps.md`. They are also now the only
+two projects in the repository that exercise the `wendy project optimize`
+build-time path, which is what the CLI docs point at.
+
+### Verification
+
+Every Stagefile was compiled and locked, and each was then built with a real
+`docker buildx build` against the compiled `Dockerfile.generated` on arm64.
+Results and the reason for each non-pass are in the handoff notes; the ones
+that do not build are `HelloVLM/app` (upstream: swift-json-schema's build-tool
+plugin does not compile for Linux), `HelloVLM/llm-mlx` (its base image is not
+published), `HelloHTTPNoCompile` (fails at its planted syntax error, which is
+the fixture's purpose), and the four `project-optimize-samples`, which have
+never been buildable — they carry no Cargo.toml, no Package.swift, and install
+steps that fail on their own base images.
+
+### Not addressed
+
+The published documentation still has no page describing the Stagefile format
+itself. `wendy build`'s manifest-detection list and `wendy project optimize`'s
+sample-project section were corrected here, and `managing-apps.mdx` and
+`multi-app-deployments.mdx` no longer claim a Dockerfile is required — but a
+reader who wants to write a Stagefile has only `Examples/` to learn from.

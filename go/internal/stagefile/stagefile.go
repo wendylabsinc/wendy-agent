@@ -213,7 +213,18 @@ func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Reso
 		return "", "", err
 	}
 
-	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile)
+	// The project directory is the cache scope: it is what makes two different
+	// projects' compiler caches distinct, and it is stable across the rebuilds
+	// of one project that the caches exist to speed up. An absolute path means
+	// moving a checkout starts from a cold cache, which is the right trade —
+	// the alternative keys are either not unique per project or not stable
+	// across an edit.
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		absDir = dir
+	}
+	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile,
+		codegen.WithCacheScope(absDir))
 	if err != nil {
 		return "", "", err
 	}

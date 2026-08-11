@@ -62,7 +62,7 @@ func TestFormatOSUpdateInfoFailureShowsHint(t *testing.T) {
 	if !strings.Contains(got, "Last update: rolled back") {
 		t.Errorf("missing rolled-back line:\n%s", got)
 	}
-	if !strings.Contains(got, "wendy device os update-status") {
+	if !strings.Contains(got, "wendy os update-status") {
 		t.Errorf("failure outcome should point at the detailed command:\n%s", got)
 	}
 }

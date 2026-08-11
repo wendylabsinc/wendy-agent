@@ -51,7 +51,8 @@ The image is small; the model weights (~16.5 GB) are downloaded **on the
 device** at first start (16 parallel connections — Hugging Face throttles
 per connection) into the `hellovlm-models` persist volume, so they never
 transit the developer machine and survive redeploys. Switch models by
-editing `MODEL_URL`/`MMPROJ_URL`/`MODEL_ALIAS` in `llm/Dockerfile`;
+editing `MODEL_URL`/`MMPROJ_URL`/`MODEL_ALIAS` under `env:` in
+`llm/build.stagefile.yaml`;
 `gemma-3-4b-it` is the fast validation tier. A Hugging Face token dropped
 at `/models/.hf-token` on the volume authenticates downloads (needed for
 gated models).
@@ -89,7 +90,7 @@ prove the MLX-on-Jetson path (WDY-1815); the out-of-the-box demo remains
 `llm/`. Measured on Thor with `gemma-3-4b-it-4bit`: prefill ~12 s
 (2 frames), ~41 tok/s decode. The default model is
 `gemma-3-27b-it-qat-4bit` (~16 GB, downloaded on-device on first start);
-override with `MLX_MODEL` in `llm-mlx/Dockerfile`.
+override with `MLX_MODEL` under `env:` in `llm-mlx/build.stagefile.yaml`.
 
 Its base image (`mlx-server:0.1`) is **not published to a registry yet**
 (WDY-1827) — nobody ships prebuilt MLX binaries for CUDA-on-arm64, so we
@@ -114,7 +115,10 @@ build them. To run the demo today you build/load the base image yourself:
    ```
 
 3. **Deploy** — with the image in your builder's local store,
-   `wendy run` in `llm-mlx/` works like any Dockerfile service:
+   `wendy run` in `llm-mlx/` works like any other service. Its Stagefile
+   declares `pin: false` on that base image — the visible statement that
+   there is no registry digest to pin it against yet, where every other
+   `from:` in `Examples/` is pinned through its lockfile:
 
    ```sh
    cd Examples/HelloVLM/llm-mlx

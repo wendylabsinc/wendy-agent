@@ -1,0 +1,4 @@
+version: 1
+sourceHash: sha256:c9d1236b57355627f83e501c618a73ecba4851186a10e7a4b58fe5364769be0a
+images:
+    itzg/minecraft-server:latest: sha256:23f417bcccfc5b96fad0c7898e1a9f6472a97d28450975a7c53a666722baeef3

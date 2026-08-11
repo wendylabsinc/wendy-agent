@@ -24,6 +24,27 @@ import (
 // /etc/passwd entry, so it works on any base image.
 const defaultUser = "65532"
 
+// Option configures a Generate call.
+type Option func(*options)
+
+type options struct {
+	cacheScope string
+}
+
+// WithCacheScope names the project being built, for the cache-mount ids that
+// must not be shared between projects — currently the Swift build tree, which
+// is the only compiler cache here that holds object files rather than
+// self-describing downloaded artifacts.
+//
+// It is an option rather than a parameter because it is not needed to produce
+// a correct Dockerfile, only an efficient one: without it, projects whose
+// stages agree on toolchain, platform and profile take turns invalidating one
+// build tree. Callers pass something stable and unique per project;
+// CompileFile passes the project directory.
+func WithCacheScope(scope string) Option {
+	return func(o *options) { o.cacheScope = scope }
+}
+
 // Generate compiles f into Dockerfile text. images maps every pinned from:
 // value in f to its resolved "sha256:..." digest, and downloads maps every
 // download url that declared no sha256 of its own to the one resolved for it
@@ -36,7 +57,11 @@ const defaultUser = "65532"
 // for, and is required if any stage declares cuda:. It is passed in rather
 // than looked up here because it is pinned in the lockfile: the compiler must
 // emit what was recorded, not what this binary's table says today.
-func Generate(f *spec.File, images, downloads map[string]string, platform string, cudaProfile *gpu.Profile) (string, error) {
+func Generate(f *spec.File, images, downloads map[string]string, platform string, cudaProfile *gpu.Profile, opts ...Option) (string, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	var blocks []string
 	lastIdx := len(f.Stages) - 1
 
@@ -118,7 +143,7 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 
 		if s.Build != nil {
-			bl, err := buildLines(s.Build)
+			bl, err := buildLines(s.Build, s.From, stagePlatform, o.cacheScope)
 			if err != nil {
 				return "", fmt.Errorf("stage %q: %w", s.Name, err)
 			}
@@ -264,11 +289,39 @@ func cacheRun(dir, cmd string) string {
 // object files that must never meet. An id lets the caller say exactly what
 // may share.
 func cacheRunID(id, dir, cmd string) string {
+	return "RUN " + mountFlag(cacheMount{id: id, target: dir}) + " " + cmd
+}
+
+// cacheMount is one BuildKit cache mount: a target path, and the id that
+// decides which other builds may share it (empty means "scoped by target
+// path", BuildKit's default).
+type cacheMount struct {
+	id     string
+	target string
+}
+
+// mountFlag renders one cache mount's --mount= flag. Every cache mount in the
+// generated Dockerfile is rendered here, so none can be emitted without a
+// sharing mode — see cacheRun for why sharing=locked rather than BuildKit's
+// default.
+func mountFlag(m cacheMount) string {
 	mount := "type=cache,sharing=locked"
-	if id != "" {
-		mount += ",id=" + id
+	if m.id != "" {
+		mount += ",id=" + m.id
 	}
-	return fmt.Sprintf("RUN --mount=%s,target=%s %s", mount, dir, cmd)
+	return fmt.Sprintf("--mount=%s,target=%s", mount, m.target)
+}
+
+// cacheRunMounts is cacheRunID for a step that needs more than one cache
+// mount, which a compiled build usually does: one cache for the dependencies
+// it downloads and a separate one for the object files it produces, because
+// the two are invalidated by completely different things.
+func cacheRunMounts(mounts []cacheMount, cmd string) string {
+	parts := make([]string, 0, len(mounts)+1)
+	for _, m := range mounts {
+		parts = append(parts, mountFlag(m))
+	}
+	return "RUN " + strings.Join(append(parts, cmd), " \\\n    ")
 }
 
 // scopedCacheID hashes the parts that decide whether two builds can share a
@@ -720,7 +773,104 @@ func copyLines(entries []spec.CopyEntry) []string {
 	return lines
 }
 
-func buildLines(b *spec.Build) ([]string, error) {
+// buildLines compiles a stage's build: step. from, platform and scope are not
+// used by every language — they are the inputs that scope a compiler's cache
+// mounts, and only a language whose object files are cached needs them.
+// swiftScratchPath and swiftCachePath are where a Swift stage's build tree and
+// SwiftPM's shared cache live while the stage builds. Both are cache mounts,
+// and neither is the package's own .build — deliberately.
+//
+// Mounting over .build would be the obvious thing and is wrong: a cache mount
+// is not part of any layer, so the product binary would vanish the moment the
+// RUN finished, and every Swift entrypoint naming .build/release/<product>
+// (which is where SwiftPM puts it, and what a hand-written Swift Dockerfile
+// therefore copies from) would point at nothing. Building into a scratch path
+// off to the side leaves .build an ordinary directory that the binary can be
+// installed into, so the cache is invisible to the rest of the Stagefile.
+const (
+	swiftScratchPath = "/var/cache/stagefile/swift/scratch"
+	swiftCachePath   = "/var/cache/stagefile/swift/pm"
+)
+
+// swiftScratchID scopes a Swift build tree to everything that decides which
+// object files belong in it: the toolchain image, the target platform, the
+// compile profile, and the project itself.
+//
+// The project is in the scope even though sharing a tree across projects would
+// not produce a wrong binary — SwiftPM rebuilds what it does not recognise.
+// It would produce the one thing this mount exists to prevent: two projects
+// alternately invalidating each other's tree, and, because the mount stays
+// sharing=locked, queueing to do it. scope is empty when the caller did not
+// name a project, which falls back to sharing per (toolchain, platform,
+// profile) — no worse than having no id at all.
+func swiftScratchID(scope, from, platform, profile string) string {
+	return scopedCacheID("swift-scratch", scope, from, platform, profile)
+}
+
+// swiftCacheID scopes SwiftPM's shared cache to the toolchain and platform,
+// and deliberately not to the project. It holds bare dependency clones keyed
+// by repository URL and compiled manifests keyed by their own contents, so two
+// projects depending on swift-nio genuinely share one clone instead of each
+// fetching it — the same reason the pip cache is scoped by index rather than
+// by project.
+func swiftCacheID(from, platform string) string {
+	return scopedCacheID("swiftpm", from, platform)
+}
+
+// swiftBuildLines compiles a Swift build stage.
+//
+// Two things are cached, because two different things are slow and they are
+// invalidated by different events. The scratch tree holds every object file in
+// the build including all of its dependencies', and is the entire reason a
+// second build is incremental: without it a one-line edit to app code
+// recompiles SwiftNIO from source. The shared cache holds SwiftPM's dependency
+// clones and compiled manifests, so a rebuild also stops re-cloning every
+// package in the graph over the network before it can start compiling.
+//
+// The binary is then installed from the scratch tree into .build/<profile>/,
+// which is what SwiftPM would have written had it built in place. That keeps
+// the cache an implementation detail: an entrypoint written against the
+// conventional path keeps working, and nothing in the Stagefile has to know
+// the build tree moved.
+func swiftBuildLines(b *spec.Build, profile, from, platform, scope string) []string {
+	// Always spell the configuration out. Bare `swift build` already means
+	// debug, so an implicit debug build is indistinguishable from someone
+	// having forgotten the flag — both in the generated Dockerfile and to the
+	// optimizer check that scans for it.
+	flags := "--scratch-path " + swiftScratchPath +
+		" --cache-path " + swiftCachePath +
+		" -c " + profile
+	build := "swift build " + flags
+	if b.Product != "" {
+		build += " --product " + shellQuote(b.Product)
+	}
+
+	dest := ".build/" + profile
+	commands := []string{
+		build,
+		// The bin path is asked of SwiftPM rather than assembled from profile:
+		// the real directory carries the target triple, so composing it here
+		// would mean hardcoding a per-architecture guess that breaks quietly
+		// the first time it is wrong. --product is omitted because the path is
+		// the same for every product in the package.
+		`BIN="$(swift build ` + flags + ` --show-bin-path)"`,
+		"mkdir -p " + dest,
+		// Only the top level, and only files and resource bundles. The
+		// per-target *.build/ directories sitting beside them hold the object
+		// files, which belong in the cache mount and would otherwise be copied
+		// into the image — several hundred megabytes of build intermediates in
+		// a layer, for nothing.
+		`find "$BIN" -mindepth 1 -maxdepth 1 \( -type f -o -name '*.bundle' \) ` +
+			`-exec cp -a '{}' ` + dest + `/ ';'`,
+	}
+	mounts := []cacheMount{
+		{id: swiftScratchID(scope, from, platform, profile), target: swiftScratchPath},
+		{id: swiftCacheID(from, platform), target: swiftCachePath},
+	}
+	return []string{cacheRunMounts(mounts, strings.Join(commands, " \\\n    && "))}
+}
+
+func buildLines(b *spec.Build, from, platform, scope string) ([]string, error) {
 	profile := b.Profile
 	if profile == "" {
 		profile = "release"
@@ -744,15 +894,7 @@ func buildLines(b *spec.Build) ([]string, error) {
 		}
 		return []string{cacheRun("/root/.cache/go-build", "go build ./...")}, nil
 	case "swift":
-		// Always spell the configuration out. Bare `swift build` already means
-		// debug, so an implicit debug build is indistinguishable from someone
-		// having forgotten the flag — both in the generated Dockerfile and to the
-		// optimizer check that scans for it.
-		cmd := "swift build -c " + profile
-		if b.Product != "" {
-			cmd += " --product " + shellQuote(b.Product)
-		}
-		return []string{cacheRun("/root/.swiftpm", cmd)}, nil
+		return swiftBuildLines(b, profile, from, platform, scope), nil
 	case "npm", "yarn", "pnpm":
 		script := b.Script
 		if script == "" {

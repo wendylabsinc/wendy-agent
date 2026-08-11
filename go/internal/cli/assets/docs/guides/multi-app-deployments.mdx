@@ -53,28 +53,41 @@ For ROS 2, set `network_mode: host` on every service that needs DDS discovery, m
 Multi-service projects target Linux/WendyOS devices. Headless Mac does not run multi-container stacks; `wendy run` rejects them before any build when the selected target is a Mac.
 </Callout>
 
-## Recommended: one `wendy.json`, one Dockerfile per service
+## Recommended: one `wendy.json`, one build descriptor per service
 
-Keep one folder per service, each with its own `Dockerfile`, and describe the stack in `wendy.json`:
+Keep one folder per service, each with its own build descriptor, and describe the stack in `wendy.json`:
 
 ```text
 ros2-stack/
   wendy.json
   talker/
-    Dockerfile
+    build.stagefile.yaml
   listener/
-    Dockerfile
+    build.stagefile.yaml
 ```
 
-Each service can use the same Dockerfile shape. For a ROS 2 demo graph:
+Each service can use the same shape. For a ROS 2 demo graph — this is `Examples/ROS2/talker/build.stagefile.yaml` verbatim:
 
-```dockerfile
-FROM ros:humble
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-humble-demo-nodes-cpp ros-humble-rmw-cyclonedds-cpp \
- && rm -rf /var/lib/apt/lists/*
-CMD ["bash","-lc","source /opt/ros/humble/setup.bash && exec ros2 run demo_nodes_cpp talker"]
+```yaml
+version: 1
+stages:
+  - name: talker
+    from: ros:humble
+    install:
+      apt:
+        packages: [ros-humble-demo-nodes-cpp, ros-humble-rmw-cyclonedds-cpp]
+    # ros2 resolves its packages from environment the setup script exports, so
+    # entrypoint.source wraps the command in a bash source-then-exec. The argv
+    # below is passed through as "$@" and is never parsed by the shell.
+    entrypoint:
+      source: /opt/ros/humble/setup.bash
+      exec: [ros2, run, demo_nodes_cpp, talker]
+    # ros:humble declares no user; ROS 2 needs a writable home for its logs,
+    # and the compiler's default for a final stage is a non-root UID.
+    user: root
 ```
+
+A plain `Dockerfile` per service works the same way; the equivalent is `FROM ros:humble`, an `apt-get` layer, and `CMD ["bash","-lc","source /opt/ros/humble/setup.bash && exec ros2 run demo_nodes_cpp talker"]`. See [`wendy build`](/clients/wendy-cli/commands/build) for how detection picks between them.
 
 The `wendy.json` declares both services, the start order, and, for ROS 2, the framework and isolation settings the stack needs:
 

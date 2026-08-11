@@ -432,3 +432,69 @@ stages:
 anything-llm and litellm were not mirrorable (gaps #7, #10–#14 plus the
 existing #1–#3 all at once); see the PR discussion for the line-by-line
 inventory.
+
+---
+
+# Addendum: the rest of `Examples/` converted (2026-08-09)
+
+Everything under `Examples/` that has a container build now has a
+`build.stagefile.yaml`, including the four fixtures the first pass excluded.
+Two projects are deliberately still on Dockerfiles. Per gap, what closed it:
+
+- **#1 ARG/ENV** — `WendyMC/minecraft` (whose entire content is
+  ARG-with-defaults → ENV passthrough), `WendyMC/webui`, `HelloVLM/llm`,
+  `HelloVLM/llm-mlx` all converted on `args:`/`env:`. Docker expands `${ARG}`
+  inside an `ENV` value, so the passthrough survives verbatim.
+- **#2 shell-sourcing entrypoint** — `ROS2/talker`, `ROS2/listener` and
+  `FoxgloveBridge` converted on `entrypoint.source`. Note this replaces the
+  base image's own `/ros_entrypoint.sh`, which sourced the same file; nothing
+  else in it was load-bearing. It also turns a `CMD` into an `ENTRYPOINT`, so
+  `docker run <image> <args>` now appends rather than replaces. Neither
+  example passes run arguments.
+- **#5 build.product** — `RemoteCam` converted and **builds**, closing the one
+  gap that was found as a real build failure rather than a missing field. Every
+  Swift example needs it for the same reason: they all depend on
+  swift-container-plugin, and a bare `swift build` compiles its plugin
+  executables and dies with "package-name is empty".
+- **#6 unpinned local base image** — `HelloVLM/llm-mlx` converted on
+  `pin: false`. Unverifiable here: `mlx-server:0.1` exists only in a local
+  daemon store, which is exactly what the field documents.
+
+## Still open, found by this pass
+
+- **No global package install.** `ClaudeOnDevice` needs
+  `npm install -g @anthropic-ai/claude-code`. `install.npm` compiles only to
+  `npm ci` against a `package.json` in the build context — there is no way to
+  install a named package globally. Left on its Dockerfile.
+- **No way to run a script from the build context.** `HelloAudio` synthesises
+  its demo audio at build time with `RUN python generate_sound.py`
+  (deliberately hermetic and seeded, rather than downloading or committing a
+  WAV). This is the general no-RUN boundary again, but note it is narrower
+  than `ClaudeOnDevice`'s arbitrary script: "run this file that install: just
+  provided the interpreter for" is a typed operation someone could add without
+  reopening raw shell. Left on its Dockerfile.
+- **No per-stage architecture pin.** Not a blocker, but worth recording:
+  `project-optimize-samples/rust-debug-no-cache` existed to demonstrate
+  `FROM --platform=linux/amd64` on an arm64 target, and that mistake is simply
+  not writable in a Stagefile — `platform:` accepts only `build`. Related to
+  the open half of #14 (per-arch `from:` selection).
+- **A container build is not the same build as a host cross-compile.** The
+  Swift examples moved from `wendy run`'s swift-container-plugin path
+  (cross-compile on the host, append the binary to `swift:<version>-slim`) to
+  `swift build` inside the toolchain image. `HelloVLM/app` does not survive
+  that move: its `swift-json-schema` build-tool plugin is built for Linux
+  instead of macOS, and `JSONSchemaGenerator` does not compile there
+  (`reference to var 'stderr' is not concurrency-safe`, on both 6.1 and
+  6.3.2). That is an upstream portability bug, not a DSL gap, but it is the
+  kind of thing the conversion surfaces.
+
+## Non-gap worth writing down: the non-root default is not always free
+
+The first pass recorded `USER 65532` as a lateral change. Across a wider set of
+examples it is not: `PythonAI` needs the `audio` supplementary group for
+`/dev/snd`, `HelloVideo`/`HelloVLM/app`/`RemoteCam` need `video` for
+`/dev/video0`, `Persistence` writes into a root-owned persist volume, ROS 2
+needs a writable home for its logs, and `itzg/minecraft-server` and
+`ollama/ollama` own their own data directories as root. All of these declare
+`user: root` — which is honest, but it means gap #13 (a user with a uid, a
+home, and supplementary groups) is the field that would let them be non-root.
