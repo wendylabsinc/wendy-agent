@@ -139,3 +139,33 @@ func TestLocalPathsIncludesYarnLockForYarnManager(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
+
+// A stage that copies the whole context cannot be narrowed by an allowlist, and
+// the naive attempt is actively harmful: `*` then `!./**` cleans to `*` then
+// `!**`, which ignores nothing. Because BuildKit prefers
+// <dockerfile>.dockerignore over .dockerignore, emitting that would silently
+// override the project's own denylist — so a repo excluding a multi-gigabyte
+// .build directory would ship it. "" means "write no file", leaving the
+// project's .dockerignore in charge.
+func TestDeriveWritesNothingForTheContextRoot(t *testing.T) {
+	for _, p := range []string{".", "./", "/", "././."} {
+		if got := Derive([]string{p}); got != "" {
+			t.Errorf("Derive([%q]) = %q, want \"\" (no ignore file)", p, got)
+		}
+	}
+}
+
+// The root poisons the whole allowlist, not just its own entry: once everything
+// is re-included, the narrower entries alongside it cannot take anything back.
+func TestDeriveContextRootPoisonsOtherPaths(t *testing.T) {
+	if got := Derive([]string{"requirements.txt", "."}); got != "" {
+		t.Errorf("Derive with a root path among others = %q, want \"\"", got)
+	}
+}
+
+// The ordinary case must keep denying everything it did before.
+func TestDeriveStillAllowlistsNormalPaths(t *testing.T) {
+	if got := Derive([]string{"Sources"}); got != "*\n!Sources\n!Sources/\n!Sources/**\n" {
+		t.Errorf("normal allowlist regressed: %q", got)
+	}
+}

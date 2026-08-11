@@ -568,7 +568,7 @@ func newRunCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
@@ -642,38 +642,44 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 // covered by the printed note below instead, since the CLI cannot inspect
 // an opaque Dockerfile's installed packages).
 //
-// stagefileSourceName ("build.stagefile.yaml") is not defined on this
-// branch — that constant lives on the not-yet-merged Stagefile-native-layers
-// work — so the literal filename is used here instead.
+// Every Stagefile in the project contributes its requirements files, not just
+// the canonical one: this runs before the build file has been chosen, and
+// warning about a requirements file that a sibling variant would have installed
+// debugpy from is far better than silently skipping the check.
 func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
 	if appCfg == nil || appCfg.Language != "python" {
 		return nil
 	}
 
-	data, err := os.ReadFile(filepath.Join(cwd, "build.stagefile.yaml"))
-	if err != nil {
-		// Not a Stagefile project (or unreadable) — nothing more to check here.
-		return nil
-	}
-
-	var stagefile struct {
-		Stages []struct {
-			Install struct {
-				Pip struct {
-					Requirements string `yaml:"requirements"`
-				} `yaml:"pip"`
-			} `yaml:"install"`
-		} `yaml:"stages"`
-	}
-	if err := yaml.Unmarshal(data, &stagefile); err != nil {
-		// Malformed Stagefile: let the normal build path surface the real
-		// parse error instead of failing here on an unrelated check.
-		return nil
-	}
-
 	var reqFiles []string
-	for _, stage := range stagefile.Stages {
-		if req := strings.TrimSpace(stage.Install.Pip.Requirements); req != "" {
+	seen := map[string]bool{}
+	for _, source := range stagefile.SourceNames(cwd) {
+		data, err := os.ReadFile(filepath.Join(cwd, source))
+		if err != nil {
+			continue
+		}
+
+		var parsed struct {
+			Stages []struct {
+				Install struct {
+					Pip struct {
+						Requirements string `yaml:"requirements"`
+					} `yaml:"pip"`
+				} `yaml:"install"`
+			} `yaml:"stages"`
+		}
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			// Malformed Stagefile: let the normal build path surface the real
+			// parse error instead of failing here on an unrelated check.
+			continue
+		}
+
+		for _, stage := range parsed.Stages {
+			req := strings.TrimSpace(stage.Install.Pip.Requirements)
+			if req == "" || seen[req] {
+				continue
+			}
+			seen[req] = true
 			reqFiles = append(reqFiles, req)
 		}
 	}
@@ -1311,7 +1317,7 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
-		if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		if len(stagefile.SourceNames(dir)) > 0 {
 			return "docker", nil
 		}
 		// Accept Dockerfile/Containerfile and dot/hyphen variants.

@@ -5,6 +5,7 @@
 package dockerignore
 
 import (
+	"path"
 	"strings"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
@@ -37,9 +38,40 @@ func LocalPaths(f *spec.File) []string {
 	return paths
 }
 
-// Derive returns .dockerignore content that denies everything except the
-// given paths.
+// isContextRoot reports whether a declared copy path is the build context
+// itself — `.`, `./`, `/`, or any spelling that cleans to one of those.
+//
+// Such a path defeats the allowlist rather than narrowing it. `copy: {paths:
+// [.]}` would compile to `*` followed by `!.` and `!./**`, and BuildKit cleans
+// `./**` to `**`, so the deny-all is undone on the next line and nothing is
+// ignored at all. A repo whose .dockerignore excludes a 4 GB .build directory
+// would ship it anyway, and COPY it into the image.
+//
+// There is also nothing to derive here: a stage that copies the whole context
+// has already said "everything", so the only ignore rules that can be right are
+// the project's own.
+func isContextRoot(raw string) bool {
+	switch path.Clean(raw) {
+	case ".", "/":
+		return true
+	}
+	return false
+}
+
+// Derive returns .dockerignore content that denies everything except the given
+// paths, or "" when no allowlist can be expressed — see isContextRoot.
+//
+// "" means "write no ignore file", not "ignore nothing". The distinction
+// matters because BuildKit prefers <dockerfile>.dockerignore over
+// .dockerignore: a generated file always wins, so emitting one that ignores
+// nothing silently disables the project's own .dockerignore, while emitting
+// none leaves it in charge.
 func Derive(paths []string) string {
+	for _, raw := range paths {
+		if isContextRoot(raw) {
+			return ""
+		}
+	}
 	lines := []string{"*"}
 	seen := map[string]bool{}
 	add := func(p string) {

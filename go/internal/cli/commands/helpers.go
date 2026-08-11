@@ -1455,6 +1455,15 @@ func resolveAddrOnce(ctx context.Context, addr string) string {
 // path, which already prefers discovered IPs for the same reason. Returns "" for
 // non-".local" hosts or when no advertised device matches.
 func resolveMDNSHost(ctx context.Context, host string) string {
+	// A dial made *by* a discovery probe must never browse: the browse starts
+	// another discovery session, whose probes dial, which browse again. Each
+	// level re-reads and re-parses the CLI config, certs and pin store, so the
+	// tree cost 934 MB of live heap (83% of the process) in one long-running
+	// `wendy device logs`. The probe already has the addresses this browse would
+	// look up — discovery handed them to it. See discovery.WithinProbe.
+	if discovery.IsWithinProbe(ctx) {
+		return ""
+	}
 	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if !strings.HasSuffix(normalized, ".local") {
 		return ""

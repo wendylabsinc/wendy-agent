@@ -40,18 +40,15 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// stagefileSourceName is the conventional filename for a Stagefile source,
-// matching the standalone stagefile tool's own CLI default.
-const stagefileSourceName = "build.stagefile.yaml"
-
-// stagefileLockName is the lockfile the Stagefile compiler maintains next to
-// its source (digest pins; see go/internal/stagefile/lock).
-const stagefileLockName = "build.stagefile.lock.yaml"
+// stagefileSourceName is the canonical Stagefile source filename. A project may
+// also carry variants ("prod.stagefile.yaml"); stagefile.SourceNames enumerates
+// the whole family and this one is the member every picker prefers.
+const stagefileSourceName = stagefile.SourceName
 
 // generatedDockerfileName is the internal build artifact prepareDockerBuildFile
-// writes (compiled Stagefile or auto-fixed Dockerfile copy). The writer, the
-// build-file-detection exclusion, and the watch ignore list all key off this
-// one name so they can't drift.
+// writes for the canonical Stagefile (or for an auto-fixed Dockerfile copy).
+// The writer, the build-file-detection exclusion, and the watch ignore list all
+// key off this one name so they can't drift.
 const generatedDockerfileName = "Dockerfile.generated"
 
 // generatedDockerignoreName is the ignore file BuildKit pairs with
@@ -59,6 +56,66 @@ const generatedDockerfileName = "Dockerfile.generated"
 // letting the Stagefile compiler's derived allowlist apply without touching a
 // user-authored .dockerignore.
 const generatedDockerignoreName = generatedDockerfileName + ".dockerignore"
+
+// generatedBuildFileFor returns the compiled-Dockerfile filename for a Stagefile
+// source, and the .dockerignore BuildKit pairs with it.
+//
+// The canonical source keeps the historical bare "Dockerfile.generated" — users
+// have it in .gitignore and CI globs — while each variant gets its own
+// "Dockerfile.generated.<variant>". Distinct names are not cosmetic: compose
+// routinely points several services at ONE build context with different build
+// files, so two variants compiling into a shared context would otherwise race
+// to overwrite a single artifact and could build each other's Dockerfile.
+func generatedBuildFileFor(source string) (dockerfileName, dockerignoreName string) {
+	variant, ok := stagefile.SourceVariant(source)
+	if !ok || stagefile.IsCanonicalSourceName(source) {
+		return generatedDockerfileName, generatedDockerignoreName
+	}
+	name := generatedDockerfileName + "." + variant
+	return name, name + ".dockerignore"
+}
+
+// isGeneratedBuildFileName reports whether name is one of the build artifacts
+// the CLI itself writes into a project dir — "Dockerfile.generated" and every
+// "Dockerfile.generated.<variant>".
+//
+// A prefix test rather than an equality test because the variant names are
+// themselves valid container-build-file names ("Dockerfile.generated.prod"
+// matches validDockerfileNameRe), so without this each compiled variant would
+// reappear in the next run's picker as a rival user build file.
+func isGeneratedBuildFileName(name string) bool {
+	return name == generatedDockerfileName || strings.HasPrefix(name, generatedDockerfileName+".")
+}
+
+// isStagefileLockName reports whether name is the lockfile of some Stagefile in
+// the family — a build artifact the compiler maintains, not a project source.
+func isStagefileLockName(name string) bool {
+	return stagefile.IsLockName(name)
+}
+
+// stagefileSourceForGenerated inverts generatedBuildFileFor: given a compiled
+// build file it names the Stagefile that would have produced it. ok is false for
+// anything outside the generated namespace.
+//
+// It answers from the filename alone, so "Dockerfile.generated" maps back to the
+// canonical Stagefile even when this particular copy came from the auto-fix path
+// instead. Callers (nativeBuildEligibility) then fail to read that source and
+// bail, which is the same answer they gave before variants existed.
+func stagefileSourceForGenerated(name string) (string, bool) {
+	base := filepath.Base(name)
+	if base == generatedDockerfileName {
+		return stagefileSourceName, true
+	}
+	variant, found := strings.CutPrefix(base, generatedDockerfileName+".")
+	if !found {
+		return "", false
+	}
+	source := variant + ".stagefile.yaml"
+	if !stagefile.IsSourceName(source) {
+		return "", false
+	}
+	return source, true
+}
 
 // writeGeneratedFile writes data to path only when the current content
 // differs, via a same-directory temp file + rename. The rename keeps
@@ -265,7 +322,7 @@ func detectProjectType(dir string) (string, error) {
 			return "compose", nil
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	if len(stagefile.SourceNames(dir)) > 0 {
 		return "docker", nil
 	}
 	// Check base build files first (fast path), then any variant.
@@ -331,12 +388,17 @@ func isContainerBuildFileName(name string) bool {
 	// prepareDockerBuildFile writes and deliberately never deletes, so no
 	// detection path (project-type, build options, provider fallback) may
 	// treat it as a rival candidate on later runs.
-	if name == generatedDockerfileName {
+	if isGeneratedBuildFileName(name) {
 		return false
 	}
 	return validDockerfileNameRe.MatchString(name)
 }
 
+// preferredContainerBuildFileOption returns the build file a project builds when
+// nobody chose one: the canonical Stagefile, else the conventional Dockerfile or
+// Containerfile. A project whose only build files are variants
+// ("prod.stagefile.yaml", "Dockerfile.prod") has no such default and returns
+// nil, so the caller asks instead of guessing.
 func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
 	for _, preferred := range []string{stagefileSourceName, "Dockerfile", "Containerfile"} {
 		for i := range options {
@@ -356,8 +418,13 @@ func validateDockerfileName(name string) error {
 	if strings.HasSuffix(cleaned, ".dockerignore") {
 		return fmt.Errorf("invalid container build file name %q: .dockerignore files are not build files", cleaned)
 	}
+	// A Stagefile is a container build file too: --dockerfile is how a project
+	// with several of them names one non-interactively (CI has no picker).
+	if stagefile.IsSourceName(cleaned) {
+		return nil
+	}
 	if !validDockerfileNameRe.MatchString(cleaned) {
-		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, or a dot/hyphen variant of either", cleaned)
+		return fmt.Errorf("invalid container build file name %q: must be Dockerfile, Containerfile, a %s variant, or a dot/hyphen variant of either", cleaned, stagefileSourceName)
 	}
 	return nil
 }
@@ -531,19 +598,20 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 // actual image builder, without ever modifying a real, user-authored
 // Dockerfile on disk:
 //
-//   - If dockerfile is stagefileSourceName, it's compiled via the stagefile
-//     package into "Dockerfile.generated" (plus ".dockerignore").
+//   - If dockerfile is a Stagefile (any variant), it's compiled via the
+//     stagefile package into that variant's generated Dockerfile (plus its
+//     paired ".dockerignore") — see generatedBuildFileFor.
 //   - Otherwise, if any purely-additive `wendy project optimize` fix
 //     applies to it (see optimize.SafeAutoApplyFindings), the fixed text is
 //     written to "Dockerfile.generated" and that name is returned instead.
 //   - If neither applies, dockerfile is returned unchanged.
 //
-// Both branches write to the same generated filename — detectBuildOptions
-// already excludes it from re-entering detection as a rival build file, so
-// this covers both origins with one exclusion.
+// Every branch writes into the "Dockerfile.generated*" namespace, which
+// isGeneratedBuildFileName excludes from re-entering detection as a rival build
+// file, so one exclusion covers all origins.
 func prepareDockerBuildFile(dir, dockerfile, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
-	if dockerfile == stagefileSourceName {
-		return compileStagefile(dir, gpuArch, sfOpts...)
+	if stagefile.IsSourceName(dockerfile) {
+		return compileStagefile(dir, dockerfile, gpuArch, sfOpts...)
 	}
 	return applySafeOptimizeFixes(dir, dockerfile)
 }
@@ -560,11 +628,11 @@ func debugStagefileOptions(debug bool) []stagefile.Option {
 }
 
 // hasContainerBuildFile reports whether dir holds any docker build source
-// (Stagefile, Dockerfile/Containerfile, or a variant) without the compile /
-// write side effects resolveDockerfile now has — for callers that only need
-// existence, not a build-ready filename.
+// (Stagefile, Dockerfile/Containerfile, or a variant of either) without the
+// compile / write side effects resolveDockerfile now has — for callers that
+// only need existence, not a build-ready filename.
 func hasContainerBuildFile(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	if len(stagefile.SourceNames(dir)) > 0 {
 		return true
 	}
 	entries, err := os.ReadDir(dir)
@@ -634,10 +702,11 @@ func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, 
 	return resp.GetGpuArch()
 }
 
-// compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
-// "Dockerfile.generated" and ".dockerignore" into dir and returning the
-// generated Dockerfile's filename.
-func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+// compileStagefile compiles the named Stagefile in dir into a real Dockerfile,
+// writing that source's generated Dockerfile and paired .dockerignore into dir
+// and returning the generated Dockerfile's filename.
+func compileStagefile(dir, source, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+	generatedName, generatedIgnoreName := generatedBuildFileFor(source)
 	// A download with no sha256 in the Stagefile is pinned by fetching it
 	// once, here, inline in the build. For model weights that is minutes of
 	// silence on the first build, so say which URL is being pinned rather
@@ -646,25 +715,37 @@ func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, 
 	// sfOpts comes last so a caller-supplied override (--debug's build profile)
 	// wins over the defaults assembled here.
 	opts := append([]stagefile.Option{
+		stagefile.WithSource(source),
 		stagefile.WithGPUArch(gpuArch),
 		stagefile.WithProgress(func(url string) {
-			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
+			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefile.LockName(source))
 		}),
 	}, sfOpts...)
 	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "", opts...)
 	if err != nil {
-		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
+		return "", fmt.Errorf("compiling %s: %w", source, err)
 	}
-	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
-		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
+	if err := writeGeneratedFile(filepath.Join(dir, generatedName), []byte(dockerfileText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedName, err)
 	}
 	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
 	// file passed via -f, so the derived allowlist rides along without ever
 	// touching (or destroying) a user-authored .dockerignore in the project.
-	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
-		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
+	//
+	// That precedence is also why an empty derivation must leave no file behind
+	// rather than write one: winning the precedence with a file that ignores
+	// nothing would disable the project's own .dockerignore. An earlier build of
+	// the same project may have written one, so remove it rather than assume
+	// absence.
+	ignorePath := filepath.Join(dir, generatedIgnoreName)
+	if dockerignoreText == "" {
+		if err := os.Remove(ignorePath); err != nil && !os.IsNotExist(err) {
+			return "", fmt.Errorf("removing stale %s: %w", generatedIgnoreName, err)
+		}
+	} else if err := writeGeneratedFile(ignorePath, []byte(dockerignoreText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedIgnoreName, err)
 	}
-	return generatedDockerfileName, nil
+	return generatedName, nil
 }
 
 // applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
@@ -727,6 +808,18 @@ func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string, 
 		}
 		if _, err := confinedDockerfilePath(cwd, requested); err != nil {
 			return "", err
+		}
+		// An explicitly named Dockerfile is handed to the builder verbatim —
+		// "build exactly what I named" — but a Stagefile is not a Dockerfile, so
+		// naming one still has to go through the compiler. Without this the
+		// builder would receive the YAML source as its -f argument.
+		//
+		// sfOpts is forwarded here for the same reason the detection path below
+		// forwards it: --debug has to reach a Stagefile the user named as much as
+		// one the picker found, or `--dockerfile prod.stagefile.yaml --debug`
+		// would quietly produce a release build.
+		if stagefile.IsSourceName(requested) {
+			return compileStagefile(cwd, requested, gpuArch, sfOpts...)
 		}
 		return requested, nil
 	}
@@ -801,14 +894,20 @@ func detectBuildOptions(dir string) []BuildOption {
 		}
 	}
 
-	// Stagefile — the most specific, most intentional signal in a project
+	// Stagefiles — the most specific, most intentional signal in a project
 	// (nobody has one by accident), so detected ahead of any plain
 	// Dockerfile/Containerfile that also happens to be present.
-	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+	//
+	// Every variant is listed, not just the canonical build.stagefile.yaml.
+	// Container build files have always been enumerated by pattern, so a project
+	// with Dockerfile.prod/Dockerfile.gpu saw all of them in the picker while its
+	// Stagefiles were matched by one hard-coded filename and stayed invisible.
+	// SourceNames orders the family canonical-first.
+	for _, name := range stagefile.SourceNames(dir) {
 		options = append(options, BuildOption{
-			Label: stagefileSourceName + " (Stagefile)",
+			Label: name + " (Stagefile)",
 			Type:  "docker",
-			File:  stagefileSourceName,
+			File:  name,
 		})
 	}
 

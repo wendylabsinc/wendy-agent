@@ -129,8 +129,13 @@ func parseComposeFile(dir string) (*composeConfig, string, error) {
 // compose service that doesn't name a dockerfile explicitly: a Stagefile in
 // the build context wins over the conventional "Dockerfile".
 func defaultComposeBuildFile(ctxDir string) string {
-	if _, err := os.Stat(filepath.Join(ctxDir, stagefileSourceName)); err == nil {
-		return stagefileSourceName
+	// SourceNames is canonical-first, so a context carrying build.stagefile.yaml
+	// resolves to it. A context holding ONLY variants has no conventional default;
+	// leaving it to "Dockerfile" would silently ignore the Stagefiles that are
+	// plainly there, so the first variant wins and the service can name another
+	// with an explicit `dockerfile:`.
+	if names := stagefile.SourceNames(ctxDir); len(names) > 0 {
+		return names[0]
 	}
 	return "Dockerfile"
 }
@@ -205,7 +210,7 @@ func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (
 		if err != nil {
 			return "", nil, fmt.Errorf("service %s: %w", name, err)
 		}
-		if ctxDir == "" || dockerfile != stagefileSourceName {
+		if ctxDir == "" || !stagefile.IsSourceName(dockerfile) {
 			continue
 		}
 		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...)

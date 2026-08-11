@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wendy · Instant MuJoCo Deployment</title>
+  <style>
+    :root { color-scheme:dark; --ink:#edfaff; --muted:#8da7b4; --cyan:#50e8ff; --lime:#b9ff5a; --line:rgba(126,220,255,.18); }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; overflow-x:hidden; color:var(--ink); font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif; background:radial-gradient(circle at 75% 5%,#123246 0,transparent 32%),radial-gradient(circle at 15% 85%,#102b28 0,transparent 28%),#03080d; }
+    body::before { content:""; position:fixed; inset:0; pointer-events:none; opacity:.3; background-image:linear-gradient(rgba(82,205,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(82,205,255,.035) 1px,transparent 1px); background-size:32px 32px; }
+    .shell { width:min(1440px,96vw); margin:0 auto; padding:22px 0 26px; position:relative; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:16px; }
+    .brand { display:flex; align-items:center; gap:14px; }
+    .mark { width:42px; height:42px; display:grid; place-items:center; border:1px solid rgba(80,232,255,.55); border-radius:12px; color:var(--cyan); box-shadow:0 0 30px rgba(80,232,255,.14); font-weight:900; font-size:20px; }
+    .eyebrow { color:var(--cyan); text-transform:uppercase; letter-spacing:.18em; font:700 11px/1.2 ui-monospace,SFMono-Regular,monospace; }
+    h1 { margin:4px 0 0; font-size:clamp(20px,2.3vw,34px); line-height:1; letter-spacing:-.04em; }
+    .live { display:flex; align-items:center; gap:9px; padding:9px 13px; border:1px solid rgba(185,255,90,.28); border-radius:999px; background:rgba(185,255,90,.06); color:#d8ff9e; font:700 11px ui-monospace,SFMono-Regular,monospace; letter-spacing:.08em; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--lime); box-shadow:0 0 14px var(--lime); animation:pulse 1.5s infinite; }
+    @keyframes pulse { 50% { opacity:.35; } }
+    .stage { position:relative; border:1px solid var(--line); border-radius:22px; overflow:hidden; background:#020609; box-shadow:0 28px 90px rgba(0,0,0,.52),inset 0 1px rgba(255,255,255,.04); }
+    .stream { display:block; width:100%; aspect-ratio:16/9; object-fit:cover; background:linear-gradient(145deg,#071721,#020609); }
+    .stage::after { content:""; position:absolute; inset:0; pointer-events:none; background:linear-gradient(180deg,rgba(0,0,0,.06) 55%,rgba(1,8,13,.86)); }
+    .topchips { position:absolute; z-index:2; top:16px; left:16px; right:16px; display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; }
+    .chips { display:flex; flex-wrap:wrap; gap:8px; }
+    .chip { padding:7px 10px; border:1px solid rgba(181,230,246,.17); border-radius:7px; background:rgba(2,12,18,.72); backdrop-filter:blur(14px); color:#bdd4df; font:600 10px ui-monospace,SFMono-Regular,monospace; letter-spacing:.08em; text-transform:uppercase; }
+    .chip.accent { color:var(--cyan); border-color:rgba(80,232,255,.32); }
+    .hud { position:absolute; z-index:2; left:20px; right:20px; bottom:17px; display:grid; grid-template-columns:1.4fr repeat(4,minmax(85px,.5fr)); gap:12px; align-items:end; }
+    .narrative .eyebrow { margin-bottom:5px; }
+    .narrative strong { display:block; font-size:clamp(20px,2.6vw,38px); letter-spacing:-.04em; }
+    .narrative p { margin:5px 0 0; color:#a7c0ca; font-size:13px; }
+    .metric { min-height:64px; padding:10px 12px; border-left:1px solid rgba(128,225,255,.22); background:linear-gradient(90deg,rgba(8,30,41,.68),transparent); }
+    .metric span { display:block; color:var(--muted); font:600 9px ui-monospace,SFMono-Regular,monospace; letter-spacing:.1em; text-transform:uppercase; }
+    .metric b { display:block; margin-top:8px; font:700 18px ui-monospace,SFMono-Regular,monospace; color:#f5fdff; white-space:nowrap; }
+    .below { display:grid; grid-template-columns:1.35fr .65fr; gap:14px; margin-top:14px; }
+    .panel { border:1px solid var(--line); border-radius:15px; background:rgba(5,15,21,.76); padding:15px 17px; }
+    .panelhead { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .panel h2 { margin:0; font-size:13px; letter-spacing:.03em; }
+    .flow { display:grid; grid-template-columns:repeat(4,1fr); align-items:center; gap:8px; }
+    .node { position:relative; padding:10px; border:1px solid rgba(130,211,239,.14); border-radius:9px; background:rgba(6,25,34,.6); }
+    .node:not(:last-child)::after { content:"›"; position:absolute; right:-8px; top:50%; transform:translate(50%,-50%); color:var(--cyan); z-index:2; }
+    .node span { color:var(--muted); font:600 8px ui-monospace,SFMono-Regular,monospace; letter-spacing:.08em; text-transform:uppercase; }
+    .node b { display:block; margin-top:4px; font-size:11px; }
+    .buttons { display:flex; gap:8px; }
+    button { cursor:pointer; border:1px solid rgba(80,232,255,.25); border-radius:8px; background:rgba(80,232,255,.07); color:#c8f8ff; padding:8px 10px; font:650 10px ui-monospace,SFMono-Regular,monospace; }
+    button:hover { background:rgba(80,232,255,.14); }
+    .facts { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .fact { color:var(--muted); font:500 10px ui-monospace,SFMono-Regular,monospace; }
+    .fact b { display:block; color:#e8f9ff; font-size:12px; margin-top:4px; overflow:hidden; text-overflow:ellipsis; }
+    .warning { color:#ffd98a !important; }
+    body.cinematic .below, body.cinematic header { display:none; }
+    body.cinematic .shell { width:100vw; padding:0; }
+    body.cinematic .stage { border-radius:0; border:0; height:100vh; }
+    body.cinematic .stream { height:100vh; aspect-ratio:auto; }
+    @media (max-width:860px) { .hud { grid-template-columns:1fr 1fr; } .narrative { grid-column:1/-1; } .below { grid-template-columns:1fr; } .flow { grid-template-columns:1fr 1fr; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><div class="mark">W</div><div><div class="eyebrow">Wendy instant deployment</div><h1>G1 Fruit Ninja · MuJoCo</h1></div></div>
+      <div class="live"><i class="dot"></i><span id="ready">CONNECTING</span></div>
+    </header>
+    <section class="stage" id="stage">
+      <img class="stream" src="/stream.mjpg" alt="Live MuJoCo render">
+      <div class="topchips"><div class="chips"><span class="chip accent">Real MuJoCo contacts</span><span class="chip">250 Hz physics</span><span class="chip">50 Hz control</span></div><span class="chip" id="target">DISCOVERING TARGET</span></div>
+      <div class="hud">
+        <div class="narrative"><div class="eyebrow" id="fruit">READY FOR LAUNCH</div><strong id="phase">BOOTING SIMULATION</strong><p>Full 29-DOF Unitree G1 · supported-base simulation · deterministic demo loop</p></div>
+        <div class="metric"><span>Hits</span><b id="hits">0 / 0</b></div>
+        <div class="metric"><span>Wrist speed</span><b id="speed">0.00 m/s</b></div>
+        <div class="metric"><span>Renderer</span><b id="renderer">—</b></div>
+        <div class="metric"><span>Stream</span><b id="fps">— fps</b></div>
+      </div>
+    </section>
+    <section class="below">
+      <div class="panel"><div class="panelhead"><h2>Deployment path</h2><div class="buttons"><button id="reset">RESET LOOP</button><button id="cinematic">CINEMATIC</button></div></div><div class="flow"><div class="node"><span>01 · package</span><b>Wendy project</b></div><div class="node"><span>02 · deploy</span><b>One CLI command</b></div><div class="node"><span>03 · runtime</span><b>MuJoCo container</b></div><div class="node"><span>04 · result</span><b>Live G1 physics</b></div></div></div>
+      <div class="panel"><div class="panelhead"><h2>Runtime evidence</h2></div><div class="facts"><div class="fact">SIMULATOR<b id="version">MuJoCo</b></div><div class="fact">ARCHITECTURE<b id="arch">—</b></div><div class="fact">CONTROLLER<b>Scripted strike</b></div><div class="fact">BOUNDARY<b class="warning">Simulation only</b></div></div></div>
+    </section>
+  </main>
+  <script>
+    const $=id=>document.getElementById(id);
+    async function refresh(){try{const r=await fetch('/api/status',{cache:'no-store'}),s=await r.json();$('ready').textContent=s.ready?'LIVE':'STARTING';$('phase').textContent=s.phase;$('fruit').textContent=s.fruit?`${s.fruit.toUpperCase()} IN FLIGHT`:'READY FOR LAUNCH';$('hits').textContent=`${s.hits} / ${s.launches}`;$('speed').textContent=`${Number(s.wristSpeedMps).toFixed(2)} m/s`;$('renderer').textContent=String(s.renderer).toUpperCase();$('fps').textContent=`${Number(s.streamFps).toFixed(1)} fps`;$('target').textContent=`${s.host} · ${s.architecture}`;$('version').textContent=`MuJoCo ${s.mujocoVersion}`;$('arch').textContent=s.architecture;document.querySelector('.live').style.borderColor=s.ready?'rgba(185,255,90,.28)':'rgba(255,217,138,.28)';}catch(e){$('ready').textContent='RECONNECTING';}}
+    setInterval(refresh,500);refresh();
+    $('reset').onclick=()=>fetch('/api/reset',{method:'POST'});
+    $('cinematic').onclick=()=>{document.body.classList.toggle('cinematic');if(document.body.classList.contains('cinematic'))document.documentElement.requestFullscreen?.();};
+    if(new URLSearchParams(location.search).get('cinematic')==='1')document.body.classList.add('cinematic');
+  </script>
+</body>
+</html>

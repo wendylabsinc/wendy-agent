@@ -69,7 +69,7 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 
 | Field | Description |
 |-------|-------------|
-| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. Custom Dockerfile paths must resolve inside the build context. Services without `build` use a pre-built image via `image`. |
+| `build` | Build context: a path string or a `{ context, dockerfile, args }` mapping. `dockerfile` may name a `Dockerfile`, `Containerfile`, a dot/hyphen variant of either, or a Stagefile (`prod.stagefile.yaml`), and must resolve inside the build context. See [Build files](#build-files) for how the default is chosen when `dockerfile` is omitted. Services without `build` use a pre-built image via `image`. |
 | `image` | Pre-built image to pull and run on the device (e.g. `redis:7-alpine`). Public image names are normalised to their fully-qualified form automatically. |
 | `command` | Override the container's default command. Accepts a string (shell-split) or a YAML sequence. |
 | `environment` | Environment variables to inject. Parsed from key-value maps or `KEY=VALUE` lists. Applied in order: image env → compose env → Wendy system vars → framework vars (e.g., ROS2) → OTEL vars. OCI last-wins semantics apply. |
@@ -81,6 +81,28 @@ Wendy honours the following compose fields. Fields not listed here are ignored.
 | `x-wendy` | Wendy-specific per-service extensions: `readiness` (a readiness probe) and `hooks` (postStart hooks). Same camelCase schema as `wendy.json`'s top-level `readiness`/`hooks` fields. See [Readiness probes and postStart hooks](#readiness-probes-and-poststart-hooks) below. |
 
 The following fields are recognized but intentionally ignored, each with a warning at deploy time: `devices`, `privileged`, `cap_add`, `security_opt`, `ipc`, `pid`, `shm_size`, `healthcheck`, `profiles`, `secrets`, and `extra_hosts`. Hardware access goes through Wendy entitlements in a companion `wendy.json` instead. Anything else (such as `networks`, `deploy`, `entrypoint`, `env_file`, or long-form volume syntax) is ignored silently.
+
+## Build files
+
+A service's `dockerfile` may name a Stagefile as well as a Dockerfile. Stagefiles are compiled to a Dockerfile before the image build, so nothing else about the service changes:
+
+```yaml
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: prod.stagefile.yaml
+```
+
+When `dockerfile` is omitted, Wendy resolves the default from the build context, in order:
+
+1. `build.stagefile.yaml` — the canonical Stagefile.
+2. Otherwise the first `<name>.stagefile.yaml` in the context, alphabetically. A context that holds only variants has no conventional default, and falling through to `Dockerfile` would silently ignore the Stagefiles plainly sitting there. Name one explicitly with `dockerfile:` to pick a different variant.
+3. Otherwise `Dockerfile`.
+
+Two services may share one build context and point at different build files. Each Stagefile compiles to its own artifact (`Dockerfile.generated` for the canonical one, `Dockerfile.generated.<variant>` otherwise), so concurrent service builds in a shared context never overwrite each other's compiled Dockerfile. See [Stagefile naming](../clients/wendy-cli/commands/build.md#stagefile-naming) for the filename rules.
+
+`docker compose build` itself knows nothing about Stagefiles, so `wendy build` compiles them first and passes a generated override file pointing the affected services at their compiled Dockerfile. Running plain `docker compose build` on the same project — without Wendy — will fail on a `dockerfile:` that names a Stagefile.
 
 ## Networking
 
