@@ -725,7 +725,7 @@ func TestNeedsNvidiaCDINeitherEntitlement(t *testing.T) {
 		},
 	}
 	if needsNvidiaCDI(cfg) {
-		t.Error("neither gpu nor display entitlement should not trigger CDI application")
+		t.Error("neither gpu nor display entitlement should trigger CDI application")
 	}
 }
 
