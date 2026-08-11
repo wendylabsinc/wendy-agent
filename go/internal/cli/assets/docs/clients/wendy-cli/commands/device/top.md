@@ -12,6 +12,17 @@ wendy device top [flags]
 
 `wendy device top` opens a full-screen, auto-refreshing dashboard showing whole-machine CPU and memory utilization, per-GPU utilization/memory (and temperature/power where reported), and a per-app/per-container table of CPU% and memory. CPU percentages are computed from deltas between refreshes, so the first frame may read low until a second sample is taken.
 
+When the device stops answering polls — because it lost power, dropped off the network, or ran its battery flat — the dashboard raises a banner in place of the usual status flash:
+
+```
+ ⚠ DEVICE OFFLINE — no response for 41s (last battery reading 3%, discharging)
+ Readings below are the last values received, not live.
+```
+
+The meters keep showing the last successful sample, since there is nothing newer to draw, and the second line marks them as stale. The battery percentage is named only when that last sample showed the pack discharging — a charging or full pack is not evidence of why the device went away. Before the first sample arrives the dashboard shows a `Connecting…` placeholder instead; once the device is offline the banner replaces that placeholder rather than appearing alongside it.
+
+Only transport-level failures raise the banner. An error the agent itself returns means the device answered and is therefore still reachable, so it appears as the normal status flash at the bottom of the screen — and it clears the banner if one was up. The banner also clears on the next successful poll.
+
 Apps are grouped the same way as [`wendy device dashboard`](dashboard.md): multi-service apps show a group header with one subrow per service. Running apps (`●`), stopped apps (`○`), and crash-looping apps (`↻`) have distinct row styling and are counted separately. Resource columns show unavailable values for stopped and crash-looping rows instead of presenting them as active zero-usage workloads. A side panel shows the listening ports of the currently selected running app.
 
 Press `x` to stop the selected app. For a multi-service app, this stops the whole app even when the cursor is on one of its service rows. Stop uses Wendy's normal graceful shutdown behavior and may escalate to a force kill when the app does not exit within its grace period.
@@ -32,7 +43,7 @@ Press `x` to stop the selected app. For a multi-service app, this stops the whol
 
 | Flag | Default | Description |
 |---|---|---|
-| `--interval` | `2s` | Refresh interval for the live view |
+| `--interval` | `2s` | Refresh interval for the live view. Each individual poll gets a deadline of 2× this value (at least 3s, at most 15s), so a device that loses power mid-request cannot freeze the dashboard while the connection waits on gRPC keepalive. |
 
 The [global `--json` flag](../../global-flags.md) is also honored — see below.
 

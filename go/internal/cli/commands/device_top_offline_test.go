@@ -117,6 +117,34 @@ func TestTopServerErrorIsNotOffline(t *testing.T) {
 	}
 }
 
+// An agent that replies with an error has, by replying, proved it is back. The
+// banner must not outlive that proof — "no response for 41s" beside a fresh
+// reply is simply false.
+func TestTopServerErrorClearsOffline(t *testing.T) {
+	m := newTopModel(context.Background(), nil, 2*time.Second)
+	updated, _ := m.Update(topStatsMsg{resp: topSampleWithBattery(3, agentpb.BatteryState_BATTERY_STATE_DISCHARGING)})
+	m = updated.(topModel)
+	updated, _ = m.Update(topStatsMsg{err: status.Error(codes.Unavailable, "connection refused")})
+	m = updated.(topModel)
+	if !m.isOffline() {
+		t.Fatal("setup: expected offline")
+	}
+
+	updated, _ = m.Update(topStatsMsg{err: status.Error(codes.Internal, "sampler blew up")})
+	m = updated.(topModel)
+	if m.isOffline() {
+		t.Fatal("an application-level reply proves the device is reachable; the banner must clear")
+	}
+	m.width, m.height = 100, 30
+	view := m.View()
+	if strings.Contains(view, "DEVICE OFFLINE") {
+		t.Fatalf("offline banner survived an agent reply:\n%s", view)
+	}
+	if m.flash == "" {
+		t.Fatal("the agent-side error should surface as a flash")
+	}
+}
+
 func TestIsDeviceUnreachable(t *testing.T) {
 	cases := []struct {
 		name string
@@ -165,6 +193,24 @@ func TestTopContainersPollMarksOffline(t *testing.T) {
 	m = updated.(topModel)
 	if !m.isOffline() {
 		t.Fatal("an unreachable containers poll must mark the device offline")
+	}
+}
+
+// A container list arriving is itself proof the connection is alive, so it must
+// end the outage even while the stats poll is still failing — otherwise the
+// banner claims silence over a device that is plainly answering.
+func TestTopContainersSuccessClearsOffline(t *testing.T) {
+	m := newTopModel(context.Background(), nil, 2*time.Second)
+	updated, _ := m.Update(topStatsMsg{err: status.Error(codes.Unavailable, "connection refused")})
+	m = updated.(topModel)
+	if !m.isOffline() {
+		t.Fatal("setup: expected offline")
+	}
+
+	updated, _ = m.Update(topContainersMsg{containers: nil})
+	m = updated.(topModel)
+	if m.isOffline() {
+		t.Fatal("a successful containers poll must clear the offline state")
 	}
 }
 

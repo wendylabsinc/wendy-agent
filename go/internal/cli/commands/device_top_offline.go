@@ -119,20 +119,33 @@ func (m topModel) silentFor(now time.Time) time.Duration {
 	return now.Sub(base)
 }
 
+// noteReachable ends an outage without touching lastOKAt. The two timestamps
+// answer different questions: offlineSince is about the connection, lastOKAt
+// dates the readings on screen. Any reply from the agent — including an error
+// reply — settles the first; only a fresh sample settles the second.
+func (m *topModel) noteReachable() { m.offlineSince = time.Time{} }
+
 // noteOfflineErr folds a failed poll into the model: a transport failure raises
 // the offline banner (which supersedes the flash line — the banner already says
-// what went wrong), anything else stays a flash and leaves the device online.
+// what went wrong), anything else stays a flash.
+//
+// A non-transport error also clears an outage. The agent answering at all —
+// even to say the sampler blew up — is proof the device came back, and leaving
+// "no response for 41s" on screen beside a fresh reply would be a lie. The
+// meters stay frozen either way, since there is still no new sample.
 func (m *topModel) noteOfflineErr(err error) {
 	if isDeviceUnreachable(err) {
 		m.markOffline()
 		m.flash = ""
 		return
 	}
+	m.noteReachable()
 	m.flash = userFacingGRPCError(err)
 }
 
-// noteOnline clears an outage after a poll succeeds.
+// noteOnline records a successful stats poll: the device is reachable and the
+// readings are as of now.
 func (m *topModel) noteOnline(at time.Time) {
-	m.offlineSince = time.Time{}
+	m.noteReachable()
 	m.lastOKAt = at
 }

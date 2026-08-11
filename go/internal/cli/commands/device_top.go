@@ -723,12 +723,13 @@ func (m topModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case topContainersMsg:
 		if msg.err != nil {
 			// Both polls ride the same connection, so this normally fails
-			// alongside the stats poll. The stats poll stays authoritative for
-			// clearing the banner: it is the one that runs as a pure liveness
-			// probe, and its next success means the device answered.
+			// alongside the stats poll.
 			m.noteOfflineErr(msg.err)
 			return m, waitForTopContainers(m.containersCh)
 		}
+		// A container list is a reply, so it ends an outage — but it is not a
+		// sample, so it does not refresh the age of the meters above it.
+		m.noteReachable()
 		m.cachedContainers = msg.containers
 		m.rebuildRows()
 		return m, tea.Batch(waitForTopContainers(m.containersCh), m.maybeFetchPorts())
