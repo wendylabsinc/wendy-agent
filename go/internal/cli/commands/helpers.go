@@ -2301,10 +2301,13 @@ func (w *mtlsWalk) dialAddr(ctx context.Context, cand string, isPrimary bool) (*
 // address's own port and port+1 — falling back to a plaintext connection only
 // when no candidate produced an authenticated one.
 //
-// Every candidate must already be resolved to a literal IP:port; this function
-// does no name resolution of its own. connectWithAutoTLSDiagnostics calls it for
-// every connect — resolved-address and device-cache fast path alike, including
-// the fast path's re-resolve retry — so all of them share this exact ladder.
+// Candidates arrive already resolved; this function does no name resolution of
+// its own. They are normally literal IP:port, but resolveAddrCandidates returns
+// the original host:port unchanged when resolution fails, so a candidate may
+// still be a name — deliberately, to leave gRPC's own resolver as the last
+// fallback. connectWithAutoTLSDiagnostics calls this for every connect —
+// resolved-address and device-cache fast path alike, including the fast path's
+// re-resolve retry — so all of them share this exact ladder.
 //
 // Walking the candidates is what makes a name with several addresses usable. The
 // ladder used to be handed one pre-resolved address, so a single unreachable one

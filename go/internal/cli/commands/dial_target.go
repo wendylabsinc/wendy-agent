@@ -519,14 +519,19 @@ func hostOnly(addr string) string {
 
 // addrFamilyCounts counts how many of addrs are IPv4 and how many IPv6, folding
 // duplicates by host so the same address on two ports counts once.
+//
+// The fold keeps the zone: fe80::1%en0 and fe80::1%en1 are two candidates, dialed
+// over two different interfaces, and either can fail while the other works — so
+// the tally has to agree with describeDialAttempts, which lists them separately.
+// Only the parse strips the zone, since net.ParseIP rejects a zoned literal.
 func addrFamilyCounts(addrs []string) (v4, v6 int) {
 	seen := map[string]bool{}
 	for _, addr := range addrs {
-		host := stripZone(hostOnly(addr))
+		host := hostOnly(addr)
 		if host == "" || seen[host] {
 			continue
 		}
-		ip := net.ParseIP(host)
+		ip := net.ParseIP(stripZone(host))
 		if ip == nil {
 			continue
 		}

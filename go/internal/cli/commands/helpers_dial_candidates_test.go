@@ -482,6 +482,48 @@ func TestExtraDeadCandidateDoesNotSuppressThePlaintextRung(t *testing.T) {
 	}
 }
 
+// The tally folds by address so two ports on one address count once, but a
+// link-local address is identified by its zone as much as by its digits: two
+// interfaces carrying fe80::1 are two places to dial, and describeDialAttempts
+// lists them as two. Folding the zone away made the summary say "1 IPv6" under a
+// list of two — the reader is then told the count and shown a contradiction.
+func TestAddrFamilyCountsKeepsZonesApartAndFoldsPorts(t *testing.T) {
+	cases := []struct {
+		name   string
+		addrs  []string
+		v4, v6 int
+	}{
+		{
+			name:  "same link-local on two interfaces counts twice",
+			addrs: []string{"[fe80::1%en0]:50051", "[fe80::1%en1]:50051"},
+			v6:    2,
+		},
+		{
+			name:  "one zoned address on two ports counts once",
+			addrs: []string{"[fe80::1%en0]:50051", "[fe80::1%en0]:50052"},
+			v6:    1,
+		},
+		{
+			name:  "mixed families, ports folded",
+			addrs: []string{"10.0.0.5:50051", "10.0.0.5:50052", "[fdc5::1]:50051", "[fe80::1%en0]:50051"},
+			v4:    1,
+			v6:    2,
+		},
+		{
+			name:  "unresolved names are not counted as either family",
+			addrs: []string{"woof.local:50051"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v4, v6 := addrFamilyCounts(c.addrs)
+			if v4 != c.v4 || v6 != c.v6 {
+				t.Errorf("addrFamilyCounts(%v) = (%d, %d), want (%d, %d)", c.addrs, v4, v6, c.v4, c.v6)
+			}
+		})
+	}
+}
+
 func TestDescribeAddrFamilies(t *testing.T) {
 	cases := []struct {
 		v4, v6 int
