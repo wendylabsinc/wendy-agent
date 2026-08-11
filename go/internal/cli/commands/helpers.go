@@ -1560,6 +1560,15 @@ func resolveMDNSHost(ctx context.Context, host string) string {
 // returned whichever matching record the browse happened to surface first.
 // Returning the full list lets the caller order and walk them.
 func resolveMDNSHostAll(ctx context.Context, host string) []string {
+	// A dial made *by* a discovery probe must never browse: the browse starts
+	// another discovery session, whose probes dial, which browse again. Each
+	// level re-reads and re-parses the CLI config, certs and pin store, so the
+	// tree cost 934 MB of live heap (83% of the process) in one long-running
+	// `wendy device logs`. The probe already has the addresses this browse would
+	// look up — discovery handed them to it. See discovery.WithinProbe.
+	if discovery.IsWithinProbe(ctx) {
+		return nil
+	}
 	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if !strings.HasSuffix(normalized, ".local") {
 		return nil
@@ -1578,10 +1587,10 @@ func resolveMDNSHostAll(ctx context.Context, host string) []string {
 			continue
 		}
 		if normalizeMDNSHost(dev.Hostname) == want {
-      return dev.IPAddress
+			ips = append(ips, dev.IPAddress)
 		}
 	}
-	return nil
+	return ips
 }
 
 // normalizeMDNSHost lowercases a hostname and strips a trailing dot and ".local"
