@@ -244,13 +244,23 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	for model, modelVersion := range opts.ModelVersions {
 		modelVersions[model] = modelVersion
 	}
-	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", Device: deviceIdentity(currentBootID), CanonicalClock: "CLOCK_BOOTTIME", BootID: currentBootID, RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), Trigger: trigger, CollectorVersion: collectorVersion, ModelVersions: modelVersions, RequestedTopics: append([]string(nil), opts.RequestedTopics...), UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported", Calibrations: []Calibration{}, Privacy: privacy, Upload: upload, Labeling: labeling, Files: []File{}}
+	requestedTopics := append([]string(nil), opts.RequestedTopics...)
+	if requestedTopics == nil {
+		requestedTopics = []string{}
+	}
+	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", Device: deviceIdentity(currentBootID), CanonicalClock: "CLOCK_BOOTTIME", BootID: currentBootID, RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), Trigger: trigger, CollectorVersion: collectorVersion, ModelVersions: modelVersions, RequestedTopics: requestedTopics, UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported", Calibrations: []Calibration{}, Privacy: privacy, Upload: upload, Labeling: labeling, Files: []File{}}
 	if consensus != nil {
 		manifest.Roughtime = append(manifest.Roughtime, *consensus)
 		manifest.SystemClockStatus = clockAgreement(obs, *consensus)
 	}
 	for _, s := range selected {
-		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, DropAccounting: "unavailable"})
+		requestedOffset := int64(0)
+		if opts.PreRollDuration > 0 {
+			requestedOffset = -opts.PreRollDuration.Nanoseconds()
+		} else if s.ID == "applications" {
+			requestedOffset = -preRollWindow.Nanoseconds()
+		}
+		manifest.Sources = append(manifest.Sources, SourceStats{Source: s, RequestedOffset: requestedOffset, DropAccounting: "unavailable"})
 	}
 	for source, contents := range opts.Calibrations {
 		name := safeName(source) + ".calibration"
@@ -281,9 +291,20 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		}
 	}
 	manifest.PreRollLost = m.preRollLost
-	if err := m.flushPreRoll(dir, origin, opts.PreRollDuration); err != nil {
+	preRollCount, earliestPreRoll, err := m.flushPreRoll(dir, origin, opts.PreRollDuration)
+	if err != nil {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
+	}
+	for i := range manifest.Sources {
+		if manifest.Sources[i].Source.ID != "applications" {
+			continue
+		}
+		manifest.Sources[i].Count += preRollCount
+		manifest.Sources[i].DropAccounting = "exact"
+		if earliestPreRoll != nil {
+			manifest.Sources[i].ActualOffset = *earliestPreRoll
+		}
 	}
 	if err := writeManifest(dir, manifest); err != nil {
 		_ = os.RemoveAll(dir)
@@ -563,12 +584,14 @@ func (m *Manager) evictPreRoll(now int64) {
 		m.preRollLost++
 	}
 }
-func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration) error {
+func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration) (uint64, *int64, error) {
 	window := preRollWindow
 	if requested > 0 && requested < window {
 		window = requested
 	}
 	cutoff := origin - window.Nanoseconds()
+	var count uint64
+	var earliest *int64
 	for _, r := range m.preRoll {
 		if r.bootNanos < cutoff {
 			continue
@@ -578,14 +601,19 @@ func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration
 			continue
 		}
 		stored.EpisodeNanos = r.bootNanos - origin
+		if earliest == nil || stored.EpisodeNanos < *earliest {
+			value := stored.EpisodeNanos
+			earliest = &value
+		}
 		b, _ := json.Marshal(stored)
 		if err := appendJSONL(filepath.Join(dir, "events.jsonl"), b); err != nil {
-			return err
+			return count, earliest, err
 		}
+		count++
 	}
 	m.preRoll = nil
 	m.preRollBytes = 0
-	return nil
+	return count, earliest, nil
 }
 func appendJSONL(path string, b []byte) error {
 	f, e := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
