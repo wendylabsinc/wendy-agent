@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -682,6 +683,88 @@ func TestHasHostNetworkEntitlementHostAdmin(t *testing.T) {
 	}
 	if !hasHostNetworkEntitlement(cfg) {
 		t.Error("host-admin mode should imply host networking")
+	}
+}
+
+// stubBoard pins the detected board kind for one test so needsNvidiaCDI never
+// reads the host's real /etc/nv_tegra_release — the assertions below are about
+// the entitlement/board decision, not about what the machine running the suite
+// happens to be.
+func stubBoard(t *testing.T, kind board.Kind) {
+	t.Helper()
+	prev := boardDetect
+	boardDetect = func() board.Info { return board.Info{Kind: kind} }
+	t.Cleanup(func() { boardDetect = prev })
+}
+
+// TestNeedsNvidiaCDIGPUOnly verifies the pre-existing trigger (gpu entitlement
+// alone) still applies CDI, so this change is additive. Board-independent: a
+// gpu entitlement asks for CDI/CSV provisioning on any host, and applyNvidiaCDI's
+// warnings when there is none are the intended outcome.
+func TestNeedsNvidiaCDIGPUOnly(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementGPU},
+		},
+	}
+	for _, kind := range []board.Kind{board.Jetson, board.RaspberryPi, board.Generic} {
+		stubBoard(t, kind)
+		if !needsNvidiaCDI(cfg) {
+			t.Errorf("gpu entitlement should trigger CDI application on board kind %v", kind)
+		}
+	}
+}
+
+// TestNeedsNvidiaCDIDisplayOnlyJetson covers the gap this change closes: a
+// display entitlement with no explicit gpu entitlement must still get the
+// NVIDIA CDI library/device mounts, matching applyDisplay's own doc comment
+// that Jetson injects the EGL/GLES userspace via CDI. Before this fix, a
+// display-only app got /dev/dri and the driver-capability env vars from
+// applyDisplay but none of CDI's actual library mounts.
+func TestNeedsNvidiaCDIDisplayOnlyJetson(t *testing.T) {
+	stubBoard(t, board.Jetson)
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementDisplay},
+		},
+	}
+	if !needsNvidiaCDI(cfg) {
+		t.Error("display entitlement alone should trigger CDI application on a Jetson")
+	}
+}
+
+// TestNeedsNvidiaCDIDisplayOnlyNonJetson pins the other half of the gate: a
+// display app on a board with no NVIDIA userspace must not enter applyNvidiaCDI,
+// which would only log "no NVIDIA CDI spec" warnings at it. This mirrors
+// applyDisplay, which likewise sets the NVIDIA driver-capability env vars only
+// on a Jetson.
+func TestNeedsNvidiaCDIDisplayOnlyNonJetson(t *testing.T) {
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementDisplay},
+		},
+	}
+	for _, kind := range []board.Kind{board.RaspberryPi, board.Generic} {
+		stubBoard(t, kind)
+		if needsNvidiaCDI(cfg) {
+			t.Errorf("display entitlement should not trigger NVIDIA CDI on board kind %v", kind)
+		}
+	}
+}
+
+// TestNeedsNvidiaCDINeitherEntitlement verifies an app with neither
+// entitlement gets no CDI mounts, preserving the default no-GPU sandbox for
+// apps that never opted into GPU or display access — including on a Jetson,
+// where the board check alone must not be enough.
+func TestNeedsNvidiaCDINeitherEntitlement(t *testing.T) {
+	stubBoard(t, board.Jetson)
+	cfg := &appconfig.AppConfig{
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementAudio},
+		},
+	}
+	if needsNvidiaCDI(cfg) {
+		t.Error("neither gpu nor display entitlement should trigger CDI application")
 	}
 }
 
