@@ -47,6 +47,8 @@ const (
 	EntitlementSerial    = "serial"
 	EntitlementMCP       = "mcp"
 	EntitlementDisplay   = "display"
+	// EntitlementData grants only the app-private episode event socket.
+	EntitlementData = "data"
 	// EntitlementNotifications grants access only to the app-attributed Wendy
 	// System Notification API. It does not expose the Agent control plane.
 	EntitlementNotifications = "notifications"
@@ -83,6 +85,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementSerial,
 	EntitlementMCP,
 	EntitlementDisplay,
+	EntitlementData,
 	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
@@ -119,6 +122,7 @@ var allowedKeys = map[string][]string{
 	EntitlementSerial:        {"type", "device"},
 	EntitlementMCP:           {"type", "port"},
 	EntitlementDisplay:       {"type"},
+	EntitlementData:          {"type"},
 	EntitlementNotifications: {"type"},
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
