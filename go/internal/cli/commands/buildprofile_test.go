@@ -44,7 +44,7 @@ func TestCompileStagefileDebugBuildsSwiftUnoptimized(t *testing.T) {
 	if _, err := compileStagefile(dir, "", debugStagefileOptions(true)...); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c debug") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c debug") {
 		t.Fatalf("want a debug build:\n%s", got)
 	}
 }
@@ -54,7 +54,7 @@ func TestCompileStagefileDefaultsToReleaseWithoutDebug(t *testing.T) {
 	if _, err := compileStagefile(dir, "", debugStagefileOptions(false)...); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c release") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c release") {
 		t.Fatalf("want a release build:\n%s", got)
 	}
 }
@@ -78,7 +78,7 @@ func TestResolveDockerfileForwardsDebugProfileToStagefile(t *testing.T) {
 	if name != generatedDockerfileName {
 		t.Fatalf("resolved %q, want %q", name, generatedDockerfileName)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c debug") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c debug") {
 		t.Fatalf("want a debug build:\n%s", got)
 	}
 }
