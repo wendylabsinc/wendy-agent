@@ -2410,7 +2410,24 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 // once display is requested, so this only fulfills what that entitlement
 // already declares.
 func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
-	return appCfg.HasEntitlement(appconfig.EntitlementGPU) || appCfg.HasEntitlement(appconfig.EntitlementDisplay)
+	// Preserve existing behavior: an explicit GPU entitlement should still attempt
+	// NVIDIA CDI/CSV provisioning (and surface warnings) when host support is absent.
+	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
+		return true
+	}
+	// For display-only apps, avoid NVIDIA CDI unless the host actually has NVIDIA
+	// provisioning artifacts (Jetson CSV mode or nvidia-ctk-generated CDI YAML).
+	if !appCfg.HasEntitlement(appconfig.EntitlementDisplay) {
+		return false
+	}
+	if _, err := os.Stat("/var/run/cdi/nvidia.yaml"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/etc/cdi/nvidia.yaml"); err == nil {
+		return true
+	}
+	csvs, _ := filepath.Glob("/etc/nvidia-container-runtime/host-files-for-container.d/*.csv")
+	return len(csvs) > 0
 }
 
 // entitlementsUseHostNetwork reports whether the entitlements put the container
