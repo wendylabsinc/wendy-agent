@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -235,6 +236,31 @@ func isLocalRegistryImage(imageName string) bool {
 		strings.HasPrefix(imageName, "localhost:5555/") ||
 		strings.HasPrefix(imageName, "127.0.0.1:5555/") ||
 		strings.HasPrefix(imageName, "[::1]:5555/")
+}
+
+// containerArgs resolves a container's argv from the create request and the
+// image's OCI config. An explicit request Cmd replaces the image's
+// entrypoint/cmd; UserArgs are then *appended* to whichever base won.
+//
+// Appending rather than replacing is what makes `wendy run --user-args ...`
+// (and wendy.json `run.args`) usable against an image that already declares its
+// own ENTRYPOINT/CMD: replacing the base would exec the first user argument as
+// the binary, which fails with "executable file not found" or — worse, for an
+// arg that happens to name a real binary — silently runs the wrong program.
+func containerArgs(cmd string, userArgs []string, cfg ocispec.ImageConfig) []string {
+	var args []string
+	if cmd != "" {
+		args = strings.Fields(cmd)
+	}
+	if len(args) == 0 {
+		// Fresh slice: never append into the image config's backing arrays.
+		args = append(args, cfg.Entrypoint...)
+		args = append(args, cfg.Cmd...)
+	}
+	if len(args) == 0 {
+		args = []string{"/bin/sh"}
+	}
+	return append(args, userArgs...)
 }
 
 func gcTimestamp() string {

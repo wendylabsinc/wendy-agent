@@ -1158,21 +1158,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("reading image config for %q (image is incomplete or corrupt): %w", imageName, err)
 	}
 
-	// Build the container command: explicit request > image config > /bin/sh.
-	var args []string
-	cmd := req.GetCmd()
-	if cmd != "" {
-		args = strings.Fields(cmd)
-	}
-	if len(req.GetUserArgs()) > 0 {
-		args = append(args, req.GetUserArgs()...)
-	}
-	if len(args) == 0 {
-		args = append(imageSpec.Config.Entrypoint, imageSpec.Config.Cmd...)
-	}
-	if len(args) == 0 {
-		args = []string{"/bin/sh"}
-	}
+	// Build the container command: explicit request Cmd > image config >
+	// /bin/sh, with UserArgs appended to whichever base won.
+	args := containerArgs(req.GetCmd(), req.GetUserArgs(), imageSpec.Config)
 
 	// Wrap Python commands with debugpy for remote debugging (only in debug mode).
 	if appCfg.Debug && appCfg.Language == "python" {

@@ -1141,9 +1141,10 @@ func runSwiftWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	restartPolicy := resolveRestartPolicy(opts)
 
 	// wendy.json run.args are the default arguments; explicit `wendy run -- ...`
-	// args take precedence. The agent replaces the image entrypoint whenever
-	// Cmd/UserArgs are set, so pass the product binary as Cmd alongside them —
-	// swift-container-plugin images use /<product> as their entrypoint.
+	// args take precedence. Current agents append UserArgs to the image's own
+	// entrypoint, but agents older than this change replace it, so keep passing
+	// the product binary as Cmd — swift-container-plugin images use /<product>
+	// as their entrypoint, so both agent versions produce the same argv.
 	userArgs := opts.userArgs
 	if len(userArgs) == 0 && appCfg.Run != nil {
 		userArgs = appCfg.Run.Args
