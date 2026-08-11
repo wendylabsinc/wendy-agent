@@ -19,8 +19,92 @@ import (
 
 func newDataCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "data", Short: "Record and retrieve synchronized device data"}
-	cmd.AddCommand(newDataSourcesCmd(), newDataRecordCmd(), newDataStopCmd(), newDataEpisodesCmd(), newDataInspectCmd(), newDataDownloadCmd())
+	cmd.AddCommand(newDataSourcesCmd(), newDataRecordCmd(), newDataStopCmd(), newDataEpisodesCmd(), newDataInspectCmd(), newDataDownloadCmd(), newDataCampaignCmd())
 	return cmd
+}
+
+func newDataCampaignCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "campaign", Short: "Deploy and run flight-recorder campaign plans"}
+	cmd.AddCommand(newDataCampaignDeployCmd(), newDataCampaignListCmd(), newDataCampaignInspectCmd(), newDataCampaignTriggerCmd())
+	return cmd
+}
+
+func newDataCampaignDeployCmd() *cobra.Command {
+	return &cobra.Command{Use: "deploy <campaign.yaml>", Short: "Validate, persist, and arm a campaign on the connected device", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		contents, err := os.ReadFile(args[0])
+		if err != nil {
+			return fmt.Errorf("reading campaign: %w", err)
+		}
+		return withDataClient(cmd.Context(), func(client agentpbv2.DataServiceClient) error {
+			campaign, err := client.CampaignDeploy(cmd.Context(), &agentpbv2.DataCampaignDeployRequest{CampaignYaml: contents})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				_, err = cmd.OutOrStdout().Write(campaign.GetPlanJson())
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Campaign %s: %s (revision %s)\n", campaign.GetName(), campaign.GetState(), shortRevision(campaign.GetRevision()))
+			for _, warning := range campaign.GetWarnings() {
+				fmt.Fprintf(cmd.OutOrStdout(), "Warning: %s\n", warning)
+			}
+			return nil
+		})
+	}}
+}
+
+func newDataCampaignListCmd() *cobra.Command {
+	return &cobra.Command{Use: "list", Aliases: []string{"ls"}, Short: "List deployed campaigns", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		return withDataClient(cmd.Context(), func(client agentpbv2.DataServiceClient) error {
+			response, err := client.Campaigns(cmd.Context(), &agentpbv2.DataCampaignsRequest{})
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(response)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "CAMPAIGN\tSTATE\tREVISION\tFLEET")
+			for _, campaign := range response.GetCampaigns() {
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", campaign.GetName(), campaign.GetState(), shortRevision(campaign.GetRevision()), campaign.GetFleet())
+			}
+			return nil
+		})
+	}}
+}
+
+func newDataCampaignInspectCmd() *cobra.Command {
+	return &cobra.Command{Use: "inspect <campaign>", Short: "Show the canonical deployed campaign plan", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return withDataClient(cmd.Context(), func(client agentpbv2.DataServiceClient) error {
+			campaign, err := client.CampaignInspect(cmd.Context(), &agentpbv2.DataCampaignInspectRequest{Name: args[0]})
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(campaign.GetPlanJson())
+			return err
+		})
+	}}
+}
+
+func newDataCampaignTriggerCmd() *cobra.Command {
+	var reason string
+	command := &cobra.Command{Use: "trigger <campaign>", Short: "Trigger a deployed campaign now", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		return withDataClient(cmd.Context(), func(client agentpbv2.DataServiceClient) error {
+			episode, err := client.CampaignTrigger(cmd.Context(), &agentpbv2.DataCampaignTriggerRequest{Name: args[0], Reason: reason})
+			if err != nil {
+				return err
+			}
+			return printEpisode(cmd, episode)
+		})
+	}}
+	command.Flags().StringVar(&reason, "reason", "manual", "Trigger reason stored in the Episode manifest")
+	return command
+}
+
+func shortRevision(revision string) string {
+	if len(revision) > 12 {
+		return revision[:12]
+	}
+	return revision
 }
 
 func withDataClient(ctx context.Context, fn func(agentpbv2.DataServiceClient) error) error {
@@ -150,7 +234,21 @@ type inspectionManifest struct {
 	CanonicalClock    string `json:"canonical_clock"`
 	BootID            string `json:"boot_id"`
 	SystemClockStatus string `json:"system_clock_status"`
-	UTC               []struct {
+	CollectorVersion  string `json:"collector_version"`
+	Trigger           struct {
+		Reason       string `json:"reason"`
+		CampaignName string `json:"campaign_name"`
+		Expression   string `json:"expression"`
+	} `json:"trigger"`
+	Upload struct {
+		State       string `json:"state"`
+		Destination string `json:"destination"`
+	} `json:"upload"`
+	Labeling struct {
+		State       string `json:"state"`
+		Destination string `json:"destination"`
+	} `json:"labeling"`
+	UTC []struct {
 		OffsetLower int64  `json:"offset_lower_nanos"`
 		OffsetUpper int64  `json:"offset_upper_nanos"`
 		Uncertainty int64  `json:"uncertainty_nanos"`
@@ -184,7 +282,23 @@ func printInspection(cmd *cobra.Command, b []byte) error {
 	if m.Name != "" {
 		fmt.Fprintf(w, " (%s)", m.Name)
 	}
-	fmt.Fprintf(w, "\nState: %s\nCanonical clock: %s\nBoot ID: %s\nSystem clock: %s\n", m.State, m.CanonicalClock, m.BootID, m.SystemClockStatus)
+	fmt.Fprintf(w, "\nState: %s\nCanonical clock: %s\nBoot ID: %s\nSystem clock: %s\nCollector: %s\nTrigger: %s", m.State, m.CanonicalClock, m.BootID, m.SystemClockStatus, m.CollectorVersion, m.Trigger.Reason)
+	if m.Trigger.CampaignName != "" {
+		fmt.Fprintf(w, " (campaign %s", m.Trigger.CampaignName)
+		if m.Trigger.Expression != "" {
+			fmt.Fprintf(w, "; %s", m.Trigger.Expression)
+		}
+		fmt.Fprint(w, ")")
+	}
+	fmt.Fprintf(w, "\nUpload: %s", m.Upload.State)
+	if m.Upload.Destination != "" {
+		fmt.Fprintf(w, " -> %s", m.Upload.Destination)
+	}
+	fmt.Fprintf(w, "\nLabeling: %s", m.Labeling.State)
+	if m.Labeling.Destination != "" {
+		fmt.Fprintf(w, " -> %s", m.Labeling.Destination)
+	}
+	fmt.Fprintln(w)
 	for i, o := range m.UTC {
 		label := "start"
 		if i == len(m.UTC)-1 && i > 0 {

@@ -41,6 +41,7 @@ type Manager struct {
 	preRollLost    uint64
 	downloads      map[string]int
 	sourceProvider func(context.Context) []Source
+	appObserver    func(string, ApplicationRecord)
 }
 
 // SetSourceProvider adds device-backed sources discovered by capture adapters.
@@ -126,6 +127,18 @@ func bootID() string {
 	return strings.TrimSpace(string(b))
 }
 
+func deviceIdentity(currentBootID string) DeviceIdentity {
+	hostname, _ := os.Hostname()
+	id := "unavailable"
+	for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
+		if b, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(b)) != "" {
+			id = strings.TrimSpace(string(b))
+			break
+		}
+	}
+	return DeviceIdentity{ID: id, Hostname: hostname, BootID: currentBootID}
+}
+
 func newID() (string, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -206,7 +219,32 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		_ = os.Remove(dir)
 		return Manifest{}, err
 	}
-	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", CanonicalClock: "CLOCK_BOOTTIME", BootID: bootID(), RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported"}
+	currentBootID := bootID()
+	trigger := opts.Trigger
+	if trigger.Reason == "" {
+		trigger.Reason = "manual"
+	}
+	collectorVersion := opts.CollectorVersion
+	if collectorVersion == "" {
+		collectorVersion = "unknown"
+	}
+	upload := opts.Upload
+	if upload.State == "" {
+		upload.State = "local"
+	}
+	labeling := opts.Labeling
+	if labeling.State == "" {
+		labeling.State = "unlabeled"
+	}
+	privacy := append([]PrivacyTransformation(nil), opts.Privacy...)
+	if privacy == nil {
+		privacy = []PrivacyTransformation{}
+	}
+	modelVersions := make(map[string]string, len(opts.ModelVersions))
+	for model, modelVersion := range opts.ModelVersions {
+		modelVersions[model] = modelVersion
+	}
+	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", Device: deviceIdentity(currentBootID), CanonicalClock: "CLOCK_BOOTTIME", BootID: currentBootID, RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), Trigger: trigger, CollectorVersion: collectorVersion, ModelVersions: modelVersions, RequestedTopics: append([]string(nil), opts.RequestedTopics...), UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported", Calibrations: []Calibration{}, Privacy: privacy, Upload: upload, Labeling: labeling, Files: []File{}}
 	if consensus != nil {
 		manifest.Roughtime = append(manifest.Roughtime, *consensus)
 		manifest.SystemClockStatus = clockAgreement(obs, *consensus)
@@ -222,7 +260,12 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 			return Manifest{}, err
 		}
 		h := sha256.Sum256(contents)
-		manifest.Calibrations = append(manifest.Calibrations, Calibration{Source: source, Path: name, SHA256: hex.EncodeToString(h[:])})
+		manifest.Calibrations = append(manifest.Calibrations, Calibration{Source: source, Revision: opts.CalibrationRevisions[source], Path: name, SHA256: hex.EncodeToString(h[:])})
+	}
+	for source, revision := range opts.CalibrationRevisions {
+		if _, attached := opts.Calibrations[source]; !attached {
+			manifest.Calibrations = append(manifest.Calibrations, Calibration{Source: source, Revision: revision})
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "events.jsonl"), nil, 0o640); err != nil {
 		_ = os.RemoveAll(dir)
@@ -238,7 +281,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		}
 	}
 	manifest.PreRollLost = m.preRollLost
-	if err := m.flushPreRoll(dir, origin); err != nil {
+	if err := m.flushPreRoll(dir, origin, opts.PreRollDuration); err != nil {
 		_ = os.RemoveAll(dir)
 		return Manifest{}, err
 	}
@@ -253,6 +296,15 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	go m.sampleEpisode(ctx, a)
 	m.active = a
 	return manifest, nil
+}
+
+// SetApplicationObserver receives validated entitled application records after
+// they have been durably buffered or recorded. It is used to arm campaign
+// triggers without granting applications access to the administrative socket.
+func (m *Manager) SetApplicationObserver(observer func(string, ApplicationRecord)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.appObserver = observer
 }
 
 // ActiveSession returns the immutable filesystem and clock context for capture
@@ -450,13 +502,14 @@ func (m *Manager) EndDownload(id string) {
 // It returns buffered or recorded; protocol-level validation happens before it.
 func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (string, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	before, err := readBootTime()
 	if err != nil {
+		m.mu.Unlock()
 		return "rejected", err
 	}
 	after, err := readBootTime()
 	if err != nil {
+		m.mu.Unlock()
 		return "rejected", err
 	}
 	receipt := before + (after-before)/2
@@ -470,6 +523,7 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 		stored.EpisodeNanos = stamp - m.active.manifest.RequestBootNanos
 		b, _ := json.Marshal(stored)
 		if err := appendJSONL(filepath.Join(m.active.dir, "events.jsonl"), b); err != nil {
+			m.mu.Unlock()
 			return "rejected", err
 		}
 		for i := range m.active.manifest.Sources {
@@ -477,16 +531,27 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 				m.active.manifest.Sources[i].Count++
 			}
 		}
+		observer := m.appObserver
+		m.mu.Unlock()
+		if observer != nil {
+			observer(appID, record)
+		}
 		return "recorded", nil
 	}
 	stored.EpisodeNanos = 0
 	b, err := json.Marshal(stored)
 	if err != nil {
+		m.mu.Unlock()
 		return "rejected", err
 	}
 	m.preRoll = append(m.preRoll, bufferedRecord{bootNanos: stamp, encoded: b})
 	m.preRollBytes += len(b)
 	m.evictPreRoll(receipt)
+	observer := m.appObserver
+	m.mu.Unlock()
+	if observer != nil {
+		observer(appID, record)
+	}
 	return "buffered", nil
 }
 
@@ -498,8 +563,16 @@ func (m *Manager) evictPreRoll(now int64) {
 		m.preRollLost++
 	}
 }
-func (m *Manager) flushPreRoll(dir string, origin int64) error {
+func (m *Manager) flushPreRoll(dir string, origin int64, requested time.Duration) error {
+	window := preRollWindow
+	if requested > 0 && requested < window {
+		window = requested
+	}
+	cutoff := origin - window.Nanoseconds()
 	for _, r := range m.preRoll {
+		if r.bootNanos < cutoff {
+			continue
+		}
 		var stored storedApplicationRecord
 		if err := json.Unmarshal(r.encoded, &stored); err != nil {
 			continue
@@ -580,6 +653,7 @@ func (m *Manager) finalizeLocked(state, reason string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	associateFileSources(files, a.manifest.Sources)
 	a.manifest.Files = files
 	if err := writeManifest(a.dir, a.manifest); err != nil {
 		return Manifest{}, err
@@ -745,6 +819,7 @@ func (m *Manager) recoverPartials() error {
 		if err != nil {
 			return fmt.Errorf("recovering episode %s: %w", mf.ID, err)
 		}
+		associateFileSources(mf.Files, mf.Sources)
 		if err := writeManifest(dir, mf); err != nil {
 			return err
 		}
@@ -858,11 +933,71 @@ func sealFiles(dir string) ([]File, error) {
 		if e != nil {
 			return e
 		}
-		out = append(out, File{Path: filepath.ToSlash(rel), Size: n, SHA256: h})
+		rel = filepath.ToSlash(rel)
+		format, mediaType := payloadFormat(rel)
+		out = append(out, File{Path: rel, Size: n, SHA256: h, SourceID: sourceForPath(rel), Format: format, MediaType: mediaType})
 		return nil
 	})
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, err
+}
+
+func payloadFormat(path string) (string, string) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".mcap":
+		return "mcap", "application/vnd.mcap"
+	case ".db3":
+		return "rosbag2", "application/vnd.sqlite3"
+	case ".h264":
+		return "h264", "video/h264"
+	case ".h265", ".hevc":
+		return "h265", "video/h265"
+	case ".mp4":
+		return "mp4", "video/mp4"
+	case ".jpg", ".jpeg":
+		return "jpeg", "image/jpeg"
+	case ".png":
+		return "png", "image/png"
+	case ".parquet":
+		return "parquet", "application/vnd.apache.parquet"
+	case ".jsonl":
+		return "jsonl", "application/x-ndjson"
+	case ".yaml", ".yml":
+		return "yaml", "application/yaml"
+	default:
+		return "binary", "application/octet-stream"
+	}
+}
+
+func sourceForPath(path string) string {
+	if path == "events.jsonl" {
+		return "applications"
+	}
+	if path == "telemetry.jsonl" {
+		return "telemetry"
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) >= 2 && (parts[0] == "cameras" || parts[0] == "ros2") {
+		return parts[1]
+	}
+	return ""
+}
+
+func associateFileSources(files []File, sources []SourceStats) {
+	for i := range files {
+		if files[i].SourceID == "applications" || files[i].SourceID == "telemetry" {
+			continue
+		}
+		path := strings.TrimPrefix(files[i].Path, "cameras/")
+		path = strings.TrimPrefix(path, "ros2/")
+		for _, stats := range sources {
+			encoded := safeName(stats.Source.ID)
+			if path == encoded || path == encoded+".calibration" || strings.HasPrefix(path, encoded+"/") || strings.HasPrefix(path, encoded+"-") {
+				files[i].SourceID = stats.Source.ID
+				break
+			}
+		}
+	}
 }
 func writeManifest(dir string, m Manifest) error {
 	b, e := json.MarshalIndent(m, "", "  ")

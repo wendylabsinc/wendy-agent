@@ -30,6 +30,12 @@ func TestEpisodeLifecycleUsesBoottimeAndSealsFiles(t *testing.T) {
 	if stopped.State != "complete" || stopped.StoppedEpisodeNS < 0 {
 		t.Fatalf("bad stopped manifest: %+v", stopped)
 	}
+	if stopped.Device.ID == "" || stopped.Trigger.Reason != "manual" || stopped.Upload.State != "local" || stopped.Labeling.State != "unlabeled" {
+		t.Fatalf("missing episode identity/workflow metadata: %+v", stopped)
+	}
+	if len(stopped.Files) != 1 || stopped.Files[0].Format != "jsonl" || stopped.Files[0].MediaType != "application/x-ndjson" || stopped.Files[0].SourceID != "applications" {
+		t.Fatalf("payload format metadata missing: %+v", stopped.Files)
+	}
 	_, failures, err := m.Inspect(stopped.ID, true)
 	if err != nil {
 		t.Fatal(err)

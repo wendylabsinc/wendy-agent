@@ -19,13 +19,17 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DataService_Sources_FullMethodName  = "/wendy.agent.services.v2.DataService/Sources"
-	DataService_Start_FullMethodName    = "/wendy.agent.services.v2.DataService/Start"
-	DataService_Stop_FullMethodName     = "/wendy.agent.services.v2.DataService/Stop"
-	DataService_Status_FullMethodName   = "/wendy.agent.services.v2.DataService/Status"
-	DataService_Episodes_FullMethodName = "/wendy.agent.services.v2.DataService/Episodes"
-	DataService_Inspect_FullMethodName  = "/wendy.agent.services.v2.DataService/Inspect"
-	DataService_Download_FullMethodName = "/wendy.agent.services.v2.DataService/Download"
+	DataService_Sources_FullMethodName         = "/wendy.agent.services.v2.DataService/Sources"
+	DataService_Start_FullMethodName           = "/wendy.agent.services.v2.DataService/Start"
+	DataService_Stop_FullMethodName            = "/wendy.agent.services.v2.DataService/Stop"
+	DataService_Status_FullMethodName          = "/wendy.agent.services.v2.DataService/Status"
+	DataService_Episodes_FullMethodName        = "/wendy.agent.services.v2.DataService/Episodes"
+	DataService_Inspect_FullMethodName         = "/wendy.agent.services.v2.DataService/Inspect"
+	DataService_Download_FullMethodName        = "/wendy.agent.services.v2.DataService/Download"
+	DataService_CampaignDeploy_FullMethodName  = "/wendy.agent.services.v2.DataService/CampaignDeploy"
+	DataService_Campaigns_FullMethodName       = "/wendy.agent.services.v2.DataService/Campaigns"
+	DataService_CampaignInspect_FullMethodName = "/wendy.agent.services.v2.DataService/CampaignInspect"
+	DataService_CampaignTrigger_FullMethodName = "/wendy.agent.services.v2.DataService/CampaignTrigger"
 )
 
 // DataServiceClient is the client API for DataService service.
@@ -42,6 +46,10 @@ type DataServiceClient interface {
 	Episodes(ctx context.Context, in *DataEpisodesRequest, opts ...grpc.CallOption) (*DataEpisodesResponse, error)
 	Inspect(ctx context.Context, in *DataInspectRequest, opts ...grpc.CallOption) (*DataInspectResponse, error)
 	Download(ctx context.Context, in *DataDownloadRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[DataDownloadChunk], error)
+	CampaignDeploy(ctx context.Context, in *DataCampaignDeployRequest, opts ...grpc.CallOption) (*DataCampaign, error)
+	Campaigns(ctx context.Context, in *DataCampaignsRequest, opts ...grpc.CallOption) (*DataCampaignsResponse, error)
+	CampaignInspect(ctx context.Context, in *DataCampaignInspectRequest, opts ...grpc.CallOption) (*DataCampaign, error)
+	CampaignTrigger(ctx context.Context, in *DataCampaignTriggerRequest, opts ...grpc.CallOption) (*DataEpisode, error)
 }
 
 type dataServiceClient struct {
@@ -131,6 +139,46 @@ func (c *dataServiceClient) Download(ctx context.Context, in *DataDownloadReques
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DataService_DownloadClient = grpc.ServerStreamingClient[DataDownloadChunk]
 
+func (c *dataServiceClient) CampaignDeploy(ctx context.Context, in *DataCampaignDeployRequest, opts ...grpc.CallOption) (*DataCampaign, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DataCampaign)
+	err := c.cc.Invoke(ctx, DataService_CampaignDeploy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dataServiceClient) Campaigns(ctx context.Context, in *DataCampaignsRequest, opts ...grpc.CallOption) (*DataCampaignsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DataCampaignsResponse)
+	err := c.cc.Invoke(ctx, DataService_Campaigns_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dataServiceClient) CampaignInspect(ctx context.Context, in *DataCampaignInspectRequest, opts ...grpc.CallOption) (*DataCampaign, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DataCampaign)
+	err := c.cc.Invoke(ctx, DataService_CampaignInspect_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *dataServiceClient) CampaignTrigger(ctx context.Context, in *DataCampaignTriggerRequest, opts ...grpc.CallOption) (*DataEpisode, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DataEpisode)
+	err := c.cc.Invoke(ctx, DataService_CampaignTrigger_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DataServiceServer is the server API for DataService service.
 // All implementations must embed UnimplementedDataServiceServer
 // for forward compatibility.
@@ -145,6 +193,10 @@ type DataServiceServer interface {
 	Episodes(context.Context, *DataEpisodesRequest) (*DataEpisodesResponse, error)
 	Inspect(context.Context, *DataInspectRequest) (*DataInspectResponse, error)
 	Download(*DataDownloadRequest, grpc.ServerStreamingServer[DataDownloadChunk]) error
+	CampaignDeploy(context.Context, *DataCampaignDeployRequest) (*DataCampaign, error)
+	Campaigns(context.Context, *DataCampaignsRequest) (*DataCampaignsResponse, error)
+	CampaignInspect(context.Context, *DataCampaignInspectRequest) (*DataCampaign, error)
+	CampaignTrigger(context.Context, *DataCampaignTriggerRequest) (*DataEpisode, error)
 	mustEmbedUnimplementedDataServiceServer()
 }
 
@@ -175,6 +227,18 @@ func (UnimplementedDataServiceServer) Inspect(context.Context, *DataInspectReque
 }
 func (UnimplementedDataServiceServer) Download(*DataDownloadRequest, grpc.ServerStreamingServer[DataDownloadChunk]) error {
 	return status.Error(codes.Unimplemented, "method Download not implemented")
+}
+func (UnimplementedDataServiceServer) CampaignDeploy(context.Context, *DataCampaignDeployRequest) (*DataCampaign, error) {
+	return nil, status.Error(codes.Unimplemented, "method CampaignDeploy not implemented")
+}
+func (UnimplementedDataServiceServer) Campaigns(context.Context, *DataCampaignsRequest) (*DataCampaignsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Campaigns not implemented")
+}
+func (UnimplementedDataServiceServer) CampaignInspect(context.Context, *DataCampaignInspectRequest) (*DataCampaign, error) {
+	return nil, status.Error(codes.Unimplemented, "method CampaignInspect not implemented")
+}
+func (UnimplementedDataServiceServer) CampaignTrigger(context.Context, *DataCampaignTriggerRequest) (*DataEpisode, error) {
+	return nil, status.Error(codes.Unimplemented, "method CampaignTrigger not implemented")
 }
 func (UnimplementedDataServiceServer) mustEmbedUnimplementedDataServiceServer() {}
 func (UnimplementedDataServiceServer) testEmbeddedByValue()                     {}
@@ -316,6 +380,78 @@ func _DataService_Download_Handler(srv interface{}, stream grpc.ServerStream) er
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type DataService_DownloadServer = grpc.ServerStreamingServer[DataDownloadChunk]
 
+func _DataService_CampaignDeploy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DataCampaignDeployRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataServiceServer).CampaignDeploy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataService_CampaignDeploy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataServiceServer).CampaignDeploy(ctx, req.(*DataCampaignDeployRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataService_Campaigns_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DataCampaignsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataServiceServer).Campaigns(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataService_Campaigns_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataServiceServer).Campaigns(ctx, req.(*DataCampaignsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataService_CampaignInspect_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DataCampaignInspectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataServiceServer).CampaignInspect(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataService_CampaignInspect_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataServiceServer).CampaignInspect(ctx, req.(*DataCampaignInspectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DataService_CampaignTrigger_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DataCampaignTriggerRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DataServiceServer).CampaignTrigger(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DataService_CampaignTrigger_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DataServiceServer).CampaignTrigger(ctx, req.(*DataCampaignTriggerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DataService_ServiceDesc is the grpc.ServiceDesc for DataService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -346,6 +482,22 @@ var DataService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Inspect",
 			Handler:    _DataService_Inspect_Handler,
+		},
+		{
+			MethodName: "CampaignDeploy",
+			Handler:    _DataService_CampaignDeploy_Handler,
+		},
+		{
+			MethodName: "Campaigns",
+			Handler:    _DataService_Campaigns_Handler,
+		},
+		{
+			MethodName: "CampaignInspect",
+			Handler:    _DataService_CampaignInspect_Handler,
+		},
+		{
+			MethodName: "CampaignTrigger",
+			Handler:    _DataService_CampaignTrigger_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
