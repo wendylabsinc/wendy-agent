@@ -76,4 +76,3 @@ func debugClock(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "[clock] "+format+"\n", args...)
 	}
 }
-

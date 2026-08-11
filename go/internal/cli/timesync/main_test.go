@@ -13,8 +13,8 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	os.Setenv("HOME", dir)             //nolint:errcheck
-	os.Setenv("USERPROFILE", dir)      //nolint:errcheck — config.ConfigDir on Windows
+	os.Setenv("HOME", dir)        //nolint:errcheck
+	os.Setenv("USERPROFILE", dir) //nolint:errcheck — config.ConfigDir on Windows
 	code := m.Run()
 	os.RemoveAll(dir) //nolint:errcheck
 	os.Exit(code)

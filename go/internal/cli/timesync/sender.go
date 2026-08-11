@@ -2,6 +2,7 @@ package clitimesync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -64,10 +65,12 @@ func FetchProofPacket(ctx context.Context) ([]byte, roughtime.Result, error) {
 		// ever advances its clock, so an out-of-date proof cannot make things
 		// worse than having none.
 		//
-		// Not when our own deadline expired, though: the query may have been about
-		// to succeed, and silently relaying an older time in its place would report
-		// success while leaving the device short of the time it needed.
-		if ctx.Err() != nil {
+		// Not when the caller abandoned the operation: relaying a time nobody asked
+		// for any more is not a rescue. A deadline expiring is the opposite case —
+		// servers that do not answer consume the whole budget, so this is how "no
+		// route" usually presents, and refusing the cache here would disable the
+		// fallback exactly where it is needed.
+		if errors.Is(ctx.Err(), context.Canceled) {
 			return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
 		}
 		cached, fetchedAt, cacheErr := loadProof()

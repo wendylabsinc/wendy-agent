@@ -89,10 +89,9 @@ func TestFetchProofPacket_NoCacheAndNoNetworkStillErrors(t *testing.T) {
 	}
 }
 
-// Our own deadline expiring is not evidence that the host has no route, and
-// substituting an older proof there would report success while leaving the device
-// short of the time it needed.
-func TestFetchProofPacket_DoesNotFallBackOnCancelledContext(t *testing.T) {
+// A caller that abandoned the operation does not want an older time relayed on
+// its behalf.
+func TestFetchProofPacket_DoesNotFallBackWhenCallerCancels(t *testing.T) {
 	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
 	if _, _, err := FetchProofPacket(context.Background()); err != nil {
 		t.Fatalf("seeding the cache: %v", err)
@@ -106,6 +105,33 @@ func TestFetchProofPacket_DoesNotFallBackOnCancelledContext(t *testing.T) {
 	cancel()
 	if _, _, err := FetchProofPacket(ctx); err == nil {
 		t.Fatal("a cancelled query must not silently fall back to the cached proof")
+	}
+}
+
+// The rescue runs under autoSyncTimeAndRetry's 5s budget against servers that do
+// not answer, so "no route" presents as that budget running out. Refusing the
+// cache then disables the fallback in the one scenario it exists for — which is
+// what happened on hardware before this case was pinned.
+func TestFetchProofPacket_FallsBackWhenOurOwnDeadlineExpires(t *testing.T) {
+	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
+	if _, _, err := FetchProofPacket(context.Background()); err != nil {
+		t.Fatalf("seeding the cache: %v", err)
+	}
+
+	resetProofCache()
+	roughtimeQueryFn = func(ctx context.Context, _ []roughtime.Server) (roughtime.Result, error) {
+		<-ctx.Done()
+		return roughtime.Result{}, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, result, err := FetchProofPacket(ctx)
+	if err != nil {
+		t.Fatalf("expected the cached proof to be used, got: %v", err)
+	}
+	if !result.Midpoint.Equal(liveResult().Midpoint) {
+		t.Errorf("midpoint = %v, want the cached one", result.Midpoint)
 	}
 }
 
