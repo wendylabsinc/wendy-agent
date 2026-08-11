@@ -1,0 +1,402 @@
+package data
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+const CampaignVersion = 1
+
+type CampaignSource struct {
+	Camera      string `json:"camera,omitempty" yaml:"camera,omitempty"`
+	ROS2        string `json:"ros2,omitempty" yaml:"ros2,omitempty"`
+	Telemetry   bool   `json:"telemetry,omitempty" yaml:"telemetry,omitempty"`
+	Calibration string `json:"calibration_revision,omitempty" yaml:"calibration_revision,omitempty"`
+}
+
+type CampaignTrigger struct {
+	Event            string `json:"event,omitempty" yaml:"event,omitempty"`
+	ModelUncertainty string `json:"model_uncertainty,omitempty" yaml:"model.uncertainty,omitempty"`
+}
+
+type CampaignCapture struct {
+	Buffer       string            `json:"buffer" yaml:"buffer"`
+	AfterTrigger string            `json:"after_trigger" yaml:"after_trigger"`
+	Triggers     []CampaignTrigger `json:"triggers" yaml:"triggers"`
+}
+
+type CampaignUpload struct {
+	When        string `json:"when" yaml:"when"`
+	Destination string `json:"destination" yaml:"destination"`
+}
+
+type CampaignExport struct {
+	Annotation string `json:"annotation" yaml:"annotation"`
+}
+
+type CampaignPrivacy struct {
+	Name     string `json:"name" yaml:"name"`
+	Revision string `json:"revision,omitempty" yaml:"revision,omitempty"`
+}
+
+// Campaign is the durable, device-local collection plan. Deployment arms its
+// triggers; it does not require the configured sensors or network destination
+// to be online at deployment time.
+type Campaign struct {
+	Version           int               `json:"version" yaml:"-"`
+	Name              string            `json:"name" yaml:"name"`
+	Fleet             string            `json:"fleet,omitempty" yaml:"fleet,omitempty"`
+	Sources           []CampaignSource  `json:"sources" yaml:"sources"`
+	Capture           CampaignCapture   `json:"capture" yaml:"capture"`
+	Upload            CampaignUpload    `json:"upload" yaml:"upload"`
+	Export            CampaignExport    `json:"export" yaml:"export"`
+	Models            map[string]string `json:"models" yaml:"models,omitempty"`
+	Privacy           []CampaignPrivacy `json:"privacy" yaml:"privacy,omitempty"`
+	State             string            `json:"state" yaml:"-"`
+	Revision          string            `json:"revision" yaml:"-"`
+	DeployedUnixNanos int64             `json:"deployed_unix_nanos" yaml:"-"`
+	Warnings          []string          `json:"warnings" yaml:"-"`
+}
+
+func ParseCampaign(contents []byte) (Campaign, error) {
+	var campaign Campaign
+	decoder := yaml.NewDecoder(bytes.NewReader(contents))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&campaign); err != nil {
+		return Campaign{}, fmt.Errorf("parsing campaign YAML: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err == nil {
+		return Campaign{}, errors.New("campaign YAML must contain exactly one document")
+	}
+	if err := campaign.validate(); err != nil {
+		return Campaign{}, err
+	}
+	campaign.Version = CampaignVersion
+	campaign.State = "armed"
+	if campaign.Models == nil {
+		campaign.Models = map[string]string{}
+	}
+	if campaign.Privacy == nil {
+		campaign.Privacy = []CampaignPrivacy{}
+	}
+	canonical, err := json.Marshal(campaign.planOnly())
+	if err != nil {
+		return Campaign{}, err
+	}
+	digest := sha256.Sum256(canonical)
+	campaign.Revision = hex.EncodeToString(digest[:])
+	return campaign, nil
+}
+
+func (c Campaign) planOnly() Campaign {
+	c.Version, c.State, c.Revision, c.DeployedUnixNanos, c.Warnings = 0, "", "", 0, nil
+	return c
+}
+
+func (c Campaign) validate() error {
+	if c.Name == "" || safeName(c.Name) != c.Name || len(c.Name) > 128 {
+		return errors.New("campaign name must use only letters, numbers, '.', '-' or '_'")
+	}
+	if len(c.Sources) == 0 {
+		return errors.New("campaign must define at least one source")
+	}
+	for i, source := range c.Sources {
+		kinds := 0
+		if strings.TrimSpace(source.Camera) != "" {
+			kinds++
+		}
+		if strings.TrimSpace(source.ROS2) != "" {
+			kinds++
+		}
+		if source.Telemetry {
+			kinds++
+		}
+		if kinds != 1 {
+			return fmt.Errorf("sources[%d] must select exactly one of camera, ros2, or telemetry", i)
+		}
+	}
+	buffer, err := time.ParseDuration(c.Capture.Buffer)
+	if err != nil || buffer < 0 || buffer > preRollWindow {
+		return fmt.Errorf("capture.buffer must be a duration from 0s through %s", preRollWindow)
+	}
+	after, err := time.ParseDuration(c.Capture.AfterTrigger)
+	if err != nil || after <= 0 || after > 24*time.Hour {
+		return errors.New("capture.after_trigger must be a duration greater than 0s and no more than 24h")
+	}
+	if len(c.Capture.Triggers) == 0 {
+		return errors.New("capture.triggers must contain at least one trigger")
+	}
+	for i, trigger := range c.Capture.Triggers {
+		if (trigger.Event == "") == (trigger.ModelUncertainty == "") {
+			return fmt.Errorf("capture.triggers[%d] must define exactly one event or model.uncertainty", i)
+		}
+		if trigger.ModelUncertainty != "" {
+			if _, _, err := parseThreshold(trigger.ModelUncertainty); err != nil {
+				return fmt.Errorf("capture.triggers[%d]: %w", i, err)
+			}
+		}
+	}
+	if c.Upload.When == "" {
+		return errors.New("upload.when is required")
+	}
+	if c.Upload.Destination == "" {
+		return errors.New("upload.destination is required")
+	}
+	if c.Export.Annotation == "" {
+		return errors.New("export.annotation is required")
+	}
+	for i, transform := range c.Privacy {
+		if strings.TrimSpace(transform.Name) == "" {
+			return fmt.Errorf("privacy[%d].name is required", i)
+		}
+	}
+	return nil
+}
+
+func (c Campaign) BufferDuration() time.Duration {
+	d, _ := time.ParseDuration(c.Capture.Buffer)
+	return d
+}
+
+func (c Campaign) AfterTriggerDuration() time.Duration {
+	d, _ := time.ParseDuration(c.Capture.AfterTrigger)
+	return d
+}
+
+func (m *Manager) campaignDir() string { return filepath.Join(filepath.Dir(m.root), "campaigns") }
+
+func (m *Manager) DeployCampaign(contents []byte) (Campaign, error) {
+	campaign, err := ParseCampaign(contents)
+	if err != nil {
+		return Campaign{}, err
+	}
+	campaign.DeployedUnixNanos = time.Now().UnixNano()
+	if campaign.BufferDuration() > 0 {
+		for _, source := range campaign.Sources {
+			if source.Camera != "" || source.ROS2 != "" {
+				campaign.Warnings = append(campaign.Warnings, "pre-trigger buffering is currently exact for application records; sensor streams start at the trigger and report their achieved offset")
+				break
+			}
+		}
+	}
+	dir := m.campaignDir()
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return Campaign{}, err
+	}
+	b, err := json.MarshalIndent(campaign, "", "  ")
+	if err != nil {
+		return Campaign{}, err
+	}
+	b = append(b, '\n')
+	tmp := filepath.Join(dir, campaign.Name+".json.tmp")
+	if err := os.WriteFile(tmp, b, 0o640); err != nil {
+		return Campaign{}, err
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, campaign.Name+".json")); err != nil {
+		return Campaign{}, err
+	}
+	return campaign, nil
+}
+
+func (m *Manager) Campaign(name string) (Campaign, error) {
+	if name == "" || safeName(name) != name {
+		return Campaign{}, errors.New("invalid campaign name")
+	}
+	var campaign Campaign
+	b, err := os.ReadFile(filepath.Join(m.campaignDir(), name+".json"))
+	if err != nil {
+		return Campaign{}, err
+	}
+	if err := json.Unmarshal(b, &campaign); err != nil {
+		return Campaign{}, err
+	}
+	return campaign, nil
+}
+
+func (m *Manager) Campaigns() ([]Campaign, error) {
+	entries, err := os.ReadDir(m.campaignDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return []Campaign{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var campaigns []Campaign
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		campaign, err := m.Campaign(strings.TrimSuffix(entry.Name(), ".json"))
+		if err == nil {
+			campaigns = append(campaigns, campaign)
+		}
+	}
+	sort.Slice(campaigns, func(i, j int) bool { return campaigns[i].Name < campaigns[j].Name })
+	return campaigns, nil
+}
+
+// ResolveCampaignSources maps semantic campaign selectors onto the current
+// device source inventory. ROS topic selectors intentionally select the local
+// ROS graph recorder, which preserves the requested topics in the manifest.
+func (m *Manager) ResolveCampaignSources(campaign Campaign) ([]string, []string, error) {
+	all := m.Sources(context.Background())
+	selected := map[string]bool{"applications": true}
+	var topics []string
+	for _, requested := range campaign.Sources {
+		switch {
+		case requested.Telemetry:
+			selected["telemetry"] = true
+		case requested.ROS2 != "":
+			topics = append(topics, requested.ROS2)
+			found := false
+			for _, source := range all {
+				if source.Kind == "ros2" && source.Healthy {
+					selected[source.ID], found = true, true
+				}
+			}
+			if !found {
+				return nil, nil, fmt.Errorf("no healthy ROS 2 graph is available for topic %s", requested.ROS2)
+			}
+		case requested.Camera != "":
+			id, err := resolveCameraSelector(all, requested.Camera)
+			if err != nil {
+				return nil, nil, err
+			}
+			selected[id] = true
+		}
+	}
+	ids := make([]string, 0, len(selected))
+	for id := range selected {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	sort.Strings(topics)
+	return ids, topics, nil
+}
+
+func resolveCameraSelector(all []Source, selector string) (string, error) {
+	selector = strings.TrimSpace(selector)
+	aliases := []string{selector}
+	if strings.HasPrefix(selector, "/dev/video") {
+		aliases = append(aliases, "v4l2:"+selector)
+	}
+	var healthy []Source
+	for _, source := range all {
+		if source.Kind != "camera" || !source.Healthy {
+			continue
+		}
+		healthy = append(healthy, source)
+		for _, alias := range aliases {
+			if source.ID == alias || strings.EqualFold(source.ID, alias) {
+				return source.ID, nil
+			}
+		}
+	}
+	var matches []string
+	for _, source := range healthy {
+		if strings.Contains(strings.ToLower(source.Detail), strings.ToLower(selector)) {
+			matches = append(matches, source.ID)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("camera selector %q is ambiguous: %s", selector, strings.Join(matches, ", "))
+	}
+	if len(healthy) == 1 && (selector == "front" || selector == "default") {
+		return healthy[0].ID, nil
+	}
+	return "", fmt.Errorf("no healthy camera matches %q", selector)
+}
+
+func (c Campaign) Match(record ApplicationRecord) (string, string, bool) {
+	for _, trigger := range c.Capture.Triggers {
+		if trigger.Event != "" && record.Type == "event" && record.Name == trigger.Event {
+			return "event:" + trigger.Event, "event=" + trigger.Event, true
+		}
+		if trigger.ModelUncertainty != "" && record.Type == "prediction" {
+			value, ok := uncertaintyValue(record)
+			if !ok {
+				continue
+			}
+			op, threshold, _ := parseThreshold(trigger.ModelUncertainty)
+			if compareThreshold(value, op, threshold) {
+				return fmt.Sprintf("model_uncertainty:%g", value), "model.uncertainty " + trigger.ModelUncertainty, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func uncertaintyValue(record ApplicationRecord) (float64, bool) {
+	if raw, ok := record.Attributes["uncertainty"]; ok {
+		if value, ok := numericValue(raw); ok {
+			return value, true
+		}
+	}
+	return numericValue(record.Value)
+}
+
+func numericValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		value, err := typed.Float64()
+		return value, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func parseThreshold(expression string) (string, float64, error) {
+	expression = strings.TrimSpace(expression)
+	for _, operator := range []string{"<=", ">=", "==", "<", ">"} {
+		if strings.HasPrefix(expression, operator) {
+			value, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(expression, operator)), 64)
+			if err != nil || value < 0 || value > 1 {
+				return "", 0, errors.New("model.uncertainty must compare with a number from 0 through 1")
+			}
+			return operator, value, nil
+		}
+	}
+	return "", 0, errors.New("model.uncertainty must begin with <, <=, ==, >=, or >")
+}
+
+func compareThreshold(value float64, operator string, threshold float64) bool {
+	switch operator {
+	case "<":
+		return value < threshold
+	case "<=":
+		return value <= threshold
+	case "==":
+		return value == threshold
+	case ">=":
+		return value >= threshold
+	case ">":
+		return value > threshold
+	default:
+		return false
+	}
+}

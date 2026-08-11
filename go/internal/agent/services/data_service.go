@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
+	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,6 +24,7 @@ type DataService struct {
 	adapters       []dataCaptureAdapter
 	captureMu      sync.Mutex
 	activeCaptures []runningDataCapture
+	autoStopCancel context.CancelFunc
 }
 
 type dataCaptureAdapter interface {
@@ -36,6 +39,7 @@ type runningDataCapture interface {
 func NewDataService(m *data.Manager) *DataService {
 	s := &DataService{manager: m}
 	m.SetSourceProvider(s.discoverAdapterSources)
+	m.SetApplicationObserver(s.observeApplicationRecord)
 	return s
 }
 
@@ -83,13 +87,17 @@ func (s *DataService) Sources(ctx context.Context, _ *agentpbv2.DataSourcesReque
 }
 
 func (s *DataService) Start(ctx context.Context, req *agentpbv2.DataStartRequest) (*agentpbv2.DataEpisode, error) {
-	s.captureMu.Lock()
-	defer s.captureMu.Unlock()
 	cal := map[string][]byte{}
 	for _, c := range req.GetCalibrations() {
 		cal[c.GetSource()] = c.GetContents()
 	}
-	m, err := s.manager.Start(data.StartOptions{Name: req.GetName(), Sources: req.GetSources(), ExcludeSources: req.GetExcludeSources(), RequireUTCUncertainty: time.Duration(req.GetRequireUtcUncertaintyNanos()), Calibrations: cal})
+	return s.startCapture(ctx, data.StartOptions{Name: req.GetName(), Sources: req.GetSources(), ExcludeSources: req.GetExcludeSources(), RequireUTCUncertainty: time.Duration(req.GetRequireUtcUncertaintyNanos()), Calibrations: cal, CollectorVersion: version.Version})
+}
+
+func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) (*agentpbv2.DataEpisode, error) {
+	s.captureMu.Lock()
+	defer s.captureMu.Unlock()
+	m, err := s.manager.Start(opts)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -124,8 +132,16 @@ func (s *DataService) Start(ctx context.Context, req *agentpbv2.DataStartRequest
 }
 
 func (s *DataService) Stop(ctx context.Context, _ *agentpbv2.DataStopRequest) (*agentpbv2.DataEpisode, error) {
+	return s.stopCapture(ctx)
+}
+
+func (s *DataService) stopCapture(ctx context.Context) (*agentpbv2.DataEpisode, error) {
 	s.captureMu.Lock()
 	defer s.captureMu.Unlock()
+	if s.autoStopCancel != nil {
+		s.autoStopCancel()
+		s.autoStopCancel = nil
+	}
 	var results []data.CaptureResult
 	var captureErrs []error
 	for i := len(s.activeCaptures) - 1; i >= 0; i-- {
@@ -153,6 +169,144 @@ func (s *DataService) Stop(ctx context.Context, _ *agentpbv2.DataStopRequest) (*
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return manifestEpisode(m), nil
+}
+
+func campaignMessage(campaign data.Campaign) (*agentpbv2.DataCampaign, error) {
+	b, err := json.MarshalIndent(campaign, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return &agentpbv2.DataCampaign{Name: campaign.Name, Fleet: campaign.Fleet, State: campaign.State, Revision: campaign.Revision, DeployedUnixNanos: campaign.DeployedUnixNanos, PlanJson: append(b, '\n'), Warnings: campaign.Warnings}, nil
+}
+
+func (s *DataService) CampaignDeploy(_ context.Context, req *agentpbv2.DataCampaignDeployRequest) (*agentpbv2.DataCampaign, error) {
+	campaign, err := s.manager.DeployCampaign(req.GetCampaignYaml())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	message, err := campaignMessage(campaign)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return message, nil
+}
+
+func (s *DataService) Campaigns(context.Context, *agentpbv2.DataCampaignsRequest) (*agentpbv2.DataCampaignsResponse, error) {
+	campaigns, err := s.manager.Campaigns()
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	response := &agentpbv2.DataCampaignsResponse{}
+	for _, campaign := range campaigns {
+		message, err := campaignMessage(campaign)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		response.Campaigns = append(response.Campaigns, message)
+	}
+	return response, nil
+}
+
+func (s *DataService) CampaignInspect(_ context.Context, req *agentpbv2.DataCampaignInspectRequest) (*agentpbv2.DataCampaign, error) {
+	campaign, err := s.manager.Campaign(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	message, err := campaignMessage(campaign)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
+	return message, nil
+}
+
+func (s *DataService) CampaignTrigger(ctx context.Context, req *agentpbv2.DataCampaignTriggerRequest) (*agentpbv2.DataEpisode, error) {
+	campaign, err := s.manager.Campaign(req.GetName())
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	reason := strings.TrimSpace(req.GetReason())
+	if reason == "" {
+		reason = "manual"
+	}
+	return s.triggerCampaign(ctx, campaign, reason, "manual")
+}
+
+func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaign, reason, expression string) (*agentpbv2.DataEpisode, error) {
+	sources, topics, err := s.manager.ResolveCampaignSources(campaign)
+	if err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	privacy := make([]data.PrivacyTransformation, 0, len(campaign.Privacy))
+	for _, transform := range campaign.Privacy {
+		privacy = append(privacy, data.PrivacyTransformation{Name: transform.Name, Revision: transform.Revision, State: "planned_not_applied"})
+	}
+	calibrationRevisions := map[string]string{}
+	for _, source := range campaign.Sources {
+		if source.Calibration == "" {
+			continue
+		}
+		identity := source.Camera
+		if identity == "" {
+			identity = source.ROS2
+		}
+		if identity == "" && source.Telemetry {
+			identity = "telemetry"
+		}
+		calibrationRevisions[identity] = source.Calibration
+	}
+	episode, err := s.startCapture(ctx, data.StartOptions{
+		Name:                 campaign.Name,
+		Sources:              sources,
+		PreRollDuration:      campaign.BufferDuration(),
+		Trigger:              data.EpisodeTrigger{Reason: reason, CampaignName: campaign.Name, CampaignRevision: campaign.Revision, Expression: expression},
+		CollectorVersion:     version.Version,
+		ModelVersions:        campaign.Models,
+		RequestedTopics:      topics,
+		CalibrationRevisions: calibrationRevisions,
+		Privacy:              privacy,
+		Upload:               data.WorkflowState{State: "pending", Destination: campaign.Upload.Destination},
+		Labeling:             data.WorkflowState{State: "unlabeled", Destination: campaign.Export.Annotation},
+	})
+	if err != nil {
+		return nil, err
+	}
+	timerContext, cancel := context.WithCancel(context.Background())
+	s.captureMu.Lock()
+	s.autoStopCancel = cancel
+	s.captureMu.Unlock()
+	go func(episodeID string, after time.Duration) {
+		timer := time.NewTimer(after)
+		defer timer.Stop()
+		select {
+		case <-timerContext.Done():
+			return
+		case <-timer.C:
+			active := s.manager.Status()
+			if active == nil || active.ID != episodeID {
+				return
+			}
+			_, _ = s.stopCapture(context.Background())
+		}
+	}(episode.GetId(), campaign.AfterTriggerDuration())
+	return episode, nil
+}
+
+func (s *DataService) observeApplicationRecord(_ string, record data.ApplicationRecord) {
+	if s.manager.Status() != nil {
+		return
+	}
+	campaigns, err := s.manager.Campaigns()
+	if err != nil {
+		return
+	}
+	for _, campaign := range campaigns {
+		reason, expression, matched := campaign.Match(record)
+		if !matched || campaign.State != "armed" {
+			continue
+		}
+		go func() { _, _ = s.triggerCampaign(context.Background(), campaign, reason, expression) }()
+		return
+	}
 }
 
 func (s *DataService) Status(context.Context, *agentpbv2.DataStatusRequest) (*agentpbv2.DataStatusResponse, error) {

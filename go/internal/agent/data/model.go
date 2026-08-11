@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	ManifestVersion = 1
+	ManifestVersion = 2
 	ClockAlgorithm  = "wendy-sandwich-v1"
 )
 
@@ -102,37 +102,75 @@ type MonotonicMappingSample struct {
 }
 
 type File struct {
-	Path   string `json:"path"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
+	Path      string `json:"path"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256"`
+	SourceID  string `json:"source_id,omitempty"`
+	Format    string `json:"format"`
+	MediaType string `json:"media_type"`
 }
 
 type Calibration struct {
-	Source string `json:"source"`
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
+	Source   string `json:"source"`
+	Revision string `json:"revision,omitempty"`
+	Path     string `json:"path,omitempty"`
+	SHA256   string `json:"sha256,omitempty"`
+}
+
+type DeviceIdentity struct {
+	ID       string `json:"id"`
+	Hostname string `json:"hostname,omitempty"`
+	BootID   string `json:"boot_id"`
+}
+
+type EpisodeTrigger struct {
+	Reason           string `json:"reason"`
+	CampaignName     string `json:"campaign_name,omitempty"`
+	CampaignRevision string `json:"campaign_revision,omitempty"`
+	Expression       string `json:"expression,omitempty"`
+}
+
+type PrivacyTransformation struct {
+	Name     string `json:"name"`
+	Revision string `json:"revision,omitempty"`
+	State    string `json:"state"`
+}
+
+type WorkflowState struct {
+	State       string `json:"state"`
+	Destination string `json:"destination,omitempty"`
+	UpdatedAt   int64  `json:"updated_unix_nanos,omitempty"`
 }
 
 type Manifest struct {
-	Version           int                  `json:"version"`
-	ID                string               `json:"id"`
-	Name              string               `json:"name,omitempty"`
-	State             string               `json:"state"`
-	Interruption      string               `json:"interruption,omitempty"`
-	CanonicalClock    string               `json:"canonical_clock"`
-	BootID            string               `json:"boot_id"`
-	RequestBootNanos  int64                `json:"request_boottime_nanos"`
-	StartedUnixNanos  int64                `json:"started_unix_nanos"`
-	StoppedEpisodeNS  int64                `json:"stopped_episode_nanos,omitempty"`
-	UTCObservations   []UTCObservation     `json:"utc_observations"`
-	Roughtime         []timesync.Consensus `json:"roughtime_observations,omitempty"`
-	SystemClockStatus string               `json:"system_clock_status"`
-	Sources           []SourceStats        `json:"sources"`
-	Calibrations      []Calibration        `json:"calibrations,omitempty"`
-	Files             []File               `json:"files"`
-	RecoveryActions   []string             `json:"recovery_actions,omitempty"`
-	PreRollLost       uint64               `json:"pre_roll_lost"`
-	PreRollAccounting string               `json:"pre_roll_accounting"`
+	Version           int                     `json:"version"`
+	ID                string                  `json:"id"`
+	Name              string                  `json:"name,omitempty"`
+	State             string                  `json:"state"`
+	Interruption      string                  `json:"interruption,omitempty"`
+	Device            DeviceIdentity          `json:"device"`
+	CanonicalClock    string                  `json:"canonical_clock"`
+	BootID            string                  `json:"boot_id"`
+	RequestBootNanos  int64                   `json:"request_boottime_nanos"`
+	StartedEpisodeNS  int64                   `json:"started_episode_nanos"`
+	StartedUnixNanos  int64                   `json:"started_unix_nanos"`
+	StoppedEpisodeNS  int64                   `json:"stopped_episode_nanos,omitempty"`
+	Trigger           EpisodeTrigger          `json:"trigger"`
+	CollectorVersion  string                  `json:"collector_version"`
+	ModelVersions     map[string]string       `json:"model_versions"`
+	RequestedTopics   []string                `json:"requested_ros2_topics"`
+	UTCObservations   []UTCObservation        `json:"utc_observations"`
+	Roughtime         []timesync.Consensus    `json:"roughtime_observations,omitempty"`
+	SystemClockStatus string                  `json:"system_clock_status"`
+	Sources           []SourceStats           `json:"sources"`
+	Calibrations      []Calibration           `json:"calibrations"`
+	Files             []File                  `json:"files"`
+	Privacy           []PrivacyTransformation `json:"privacy_transformations"`
+	Upload            WorkflowState           `json:"upload"`
+	Labeling          WorkflowState           `json:"labeling"`
+	RecoveryActions   []string                `json:"recovery_actions,omitempty"`
+	PreRollLost       uint64                  `json:"pre_roll_lost"`
+	PreRollAccounting string                  `json:"pre_roll_accounting"`
 }
 
 type StartOptions struct {
@@ -141,6 +179,15 @@ type StartOptions struct {
 	ExcludeSources        []string
 	RequireUTCUncertainty time.Duration
 	Calibrations          map[string][]byte
+	CalibrationRevisions  map[string]string
+	PreRollDuration       time.Duration
+	Trigger               EpisodeTrigger
+	CollectorVersion      string
+	ModelVersions         map[string]string
+	RequestedTopics       []string
+	Privacy               []PrivacyTransformation
+	Upload                WorkflowState
+	Labeling              WorkflowState
 }
 
 type EpisodeInfo struct {
