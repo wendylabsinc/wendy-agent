@@ -52,7 +52,7 @@ func LocalPaths(f *spec.File) []string {
 // the project's own.
 func isContextRoot(raw string) bool {
 	switch path.Clean(raw) {
-	case ".", "/", "..":
+	case ".", "/":
 		return true
 	}
 	return false
