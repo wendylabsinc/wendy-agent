@@ -248,10 +248,17 @@ type v4l2ReqBuffers struct {
 // Accessor methods read/write fields at their known offsets to avoid C-struct alignment surprises.
 type v4l2Buf [88]byte
 
-func (b *v4l2Buf) index() uint32      { return *(*uint32)(unsafe.Pointer(&b[0])) }
-func (b *v4l2Buf) setIndex(i uint32)  { *(*uint32)(unsafe.Pointer(&b[0])) = i }
-func (b *v4l2Buf) setType(t uint32)   { *(*uint32)(unsafe.Pointer(&b[4])) = t }
-func (b *v4l2Buf) bytesUsed() uint32  { return *(*uint32)(unsafe.Pointer(&b[8])) }
+func (b *v4l2Buf) index() uint32     { return *(*uint32)(unsafe.Pointer(&b[0])) }
+func (b *v4l2Buf) setIndex(i uint32) { *(*uint32)(unsafe.Pointer(&b[0])) = i }
+func (b *v4l2Buf) setType(t uint32)  { *(*uint32)(unsafe.Pointer(&b[4])) = t }
+func (b *v4l2Buf) bytesUsed() uint32 { return *(*uint32)(unsafe.Pointer(&b[8])) }
+func (b *v4l2Buf) flags() uint32     { return *(*uint32)(unsafe.Pointer(&b[12])) }
+func (b *v4l2Buf) timestampNanos() int64 {
+	sec := *(*int64)(unsafe.Pointer(&b[24]))
+	usec := *(*int64)(unsafe.Pointer(&b[32]))
+	return sec*int64(time.Second) + usec*int64(time.Microsecond)
+}
+func (b *v4l2Buf) sequence() uint32   { return *(*uint32)(unsafe.Pointer(&b[56])) }
 func (b *v4l2Buf) setMemory(m uint32) { *(*uint32)(unsafe.Pointer(&b[60])) = m }
 func (b *v4l2Buf) offset() uint32     { return *(*uint32)(unsafe.Pointer(&b[64])) }
 
@@ -311,19 +318,38 @@ func (e nativeH264NotSupported) Error() string { return e.msg }
 // at broadcast time. stream.Send() serialises the proto synchronously before returning,
 // so reading frame.data without a per-subscriber copy is safe.
 type videoFrame struct {
-	data  []byte
-	tsNs  uint64
-	codec agentpb.VideoCodec
+	data          []byte
+	tsNs          uint64
+	codec         agentpb.VideoCodec
+	nativeNs      int64
+	nativeClock   string
+	nativeFlags   uint32
+	sequence      uint32
+	sequenceValid bool
+}
+
+type frameTimestamp struct {
+	wallNs        uint64
+	nativeNs      int64
+	nativeClock   string
+	nativeFlags   uint32
+	sequence      uint32
+	sequenceValid bool
+}
+
+func realtimeFrameTimestamp(now time.Time) frameTimestamp {
+	return frameTimestamp{wallNs: uint64(now.UnixNano()), nativeNs: now.UnixNano(), nativeClock: "CLOCK_REALTIME_AGENT_CAPTURE"}
 }
 
 // deviceHub multiplexes one camera producer to multiple gRPC subscribers.
 type deviceHub struct {
-	mu     sync.Mutex
-	subs   map[int]chan *videoFrame
-	nextID int
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{} // closed by runProducer after the device fd is released
+	mu       sync.Mutex
+	subs     map[int]chan *videoFrame
+	subDrops map[int]uint64
+	nextID   int
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{} // closed by runProducer after the device fd is released
 	// err is set by runProducer to the terminal error before closing subscriber
 	// channels. Nil on graceful shutdown (context cancelled). Protected by h.mu.
 	err error
@@ -356,6 +382,10 @@ func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
 	id := h.nextID
 	h.nextID++
 	h.subs[id] = ch
+	if h.subDrops == nil {
+		h.subDrops = make(map[int]uint64)
+	}
+	h.subDrops[id] = 0
 	h.mu.Unlock()
 	return id, ch, nil
 }
@@ -363,13 +393,16 @@ func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
 // unsubscribe removes a subscriber. When the last subscriber leaves it cancels the producer.
 // cancel() is called while h.mu is still held to close the race window where a concurrent
 // getOrCreateHub could observe h.ctx.Err()==nil between the delete and the cancel call.
-func (h *deviceHub) unsubscribe(id int) {
+func (h *deviceHub) unsubscribe(id int) uint64 {
 	h.mu.Lock()
+	drops := h.subDrops[id]
 	delete(h.subs, id)
+	delete(h.subDrops, id)
 	if len(h.subs) == 0 {
 		h.cancel()
 	}
 	h.mu.Unlock()
+	return drops
 }
 
 // terminalErr returns the error recorded by runProducer under h.mu.
@@ -407,10 +440,11 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	if len(h.subs) == 0 {
 		return false
 	}
-	for _, ch := range h.subs {
+	for id, ch := range h.subs {
 		select {
 		case ch <- frame:
 		default:
+			h.subDrops[id]++
 		}
 	}
 	return true
@@ -880,6 +914,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	hctx, cancel := context.WithCancel(s.ctx)
 	h = &deviceHub{
 		subs:      make(map[int]chan *videoFrame),
+		subDrops:  make(map[int]uint64),
 		ctx:       hctx,
 		cancel:    cancel,
 		done:      make(chan struct{}),
@@ -902,8 +937,8 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 // When the hub loses its last subscriber the context is cancelled and this goroutine exits.
 func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
 	defer s.wg.Done()
-	broadcast := func(data []byte, tsNs uint64, codec agentpb.VideoCodec) bool {
-		return h.broadcast(&videoFrame{data: data, tsNs: tsNs, codec: codec})
+	broadcast := func(payload []byte, stamp frameTimestamp, codec agentpb.VideoCodec) bool {
+		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid})
 	}
 
 	// The hub key carries the source kind: network cameras key on "ip:<id>" and
@@ -1213,7 +1248,7 @@ func (s *VideoService) preflightIPCamera(cam ipcam.Camera) error {
 // The requested width selects the stream. That is safe despite a hub being
 // shared, because getOrCreateHub already refuses a subscriber whose stream
 // parameters differ from the running hub's.
-func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, key string, req *agentpb.StreamVideoRequest) error {
+func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, key string, req *agentpb.StreamVideoRequest) error {
 	devID, err := strconv.ParseUint(strings.TrimPrefix(key, ipHubKeyPrefix), 10, 32)
 	if err != nil {
 		return status.Errorf(codes.Internal, "malformed camera key %q", key)
@@ -1234,7 +1269,7 @@ func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte,
 		zap.Uint32("id", uint32(devID)),
 		zap.String("url", ipcam.RedactURL(streamURL)))
 	return s.runGStreamer(ctx, ipcam.PipelineArgs(streamURL), func(chunk []byte) {
-		broadcast(chunk, uint64(time.Now().UnixNano()), agentpb.VideoCodec_VIDEO_CODEC_H264)
+		broadcast(chunk, realtimeFrameTimestamp(time.Now()), agentpb.VideoCodec_VIDEO_CODEC_H264)
 	})
 }
 
@@ -1243,7 +1278,7 @@ func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte,
 // Each captured frame is delivered via the broadcast callback; if the callback returns
 // false the loop exits cleanly (no subscribers remain).
 // Returns nativeH264NotSupported if the device rejects the H.264 pixel format.
-func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
+func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest) error {
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
@@ -1398,7 +1433,19 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			// subscribers must not alias a buffer the camera may refill.
 			data := make([]byte, n)
 			copy(data, mapped[idx][:n])
-			if !broadcast(data, uint64(time.Now().UnixNano()), agentpb.VideoCodec_VIDEO_CODEC_H264) {
+			stamp := realtimeFrameTimestamp(time.Now())
+			stamp.nativeNs = dqbuf.timestampNanos()
+			stamp.nativeFlags = dqbuf.flags()
+			stamp.sequence = dqbuf.sequence()
+			stamp.sequenceValid = true
+			const v4l2TimestampMask = uint32(0x0000e000)
+			const v4l2TimestampMonotonic = uint32(0x00002000)
+			if stamp.nativeFlags&v4l2TimestampMask == v4l2TimestampMonotonic {
+				stamp.nativeClock = "CLOCK_MONOTONIC_V4L2"
+			} else {
+				stamp.nativeClock = "V4L2_TIMESTAMP_UNKNOWN"
+			}
+			if !broadcast(data, stamp, agentpb.VideoCodec_VIDEO_CODEC_H264) {
 				return nil
 			}
 			framesSent++
@@ -1511,7 +1558,7 @@ func resolveGSTBinary(name string) (string, error) {
 
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
 // encoder and pipes the resulting stream back as videoFrame chunks via the broadcast callback.
-func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) (runErr error) {
+func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, frameTimestamp, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) (runErr error) {
 	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -1624,7 +1671,7 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 				}
 				data := make([]byte, n)
 				copy(data, buf[:n])
-				if !broadcast(data, uint64(now.UnixNano()), enc.codec) {
+				if !broadcast(data, realtimeFrameTimestamp(now), enc.codec) {
 					return nil
 				}
 			}
