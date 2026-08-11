@@ -12,11 +12,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/roughtime"
 )
 
-// stubQuery replaces the Roughtime query for the duration of a test and clears
-// both the in-process memo and the on-disk cache around it.
+// stubQuery replaces the Roughtime query for the duration of a test, in a home
+// directory of its own so the on-disk cache starts empty.
 func stubQuery(t *testing.T, fn func() (roughtime.Result, error)) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	orig := roughtimeQueryFn
 	roughtimeQueryFn = func(_ context.Context, _ []roughtime.Server) (roughtime.Result, error) {
 		return fn()
@@ -25,20 +26,27 @@ func stubQuery(t *testing.T, fn func() (roughtime.Result, error)) {
 	resetProofCache()
 }
 
+func liveResult() roughtime.Result {
+	return roughtime.Result{
+		Server:      "cloudflare",
+		Nonce:       []byte("nonce"),
+		RawResponse: []byte("resp"),
+		Midpoint:    time.Date(2026, 8, 11, 3, 0, 0, 0, time.UTC),
+		Radius:      2 * time.Second,
+	}
+}
+
 // WDY-2389: the rescue path exists for a device too far behind to accept our
 // certificate, which is usually offline — and so is the host. A proof kept from a
 // run that did have a route is what makes the path work then.
 func TestFetchProofPacket_FallsBackToCachedProof(t *testing.T) {
-	midpoint := time.Date(2026, 8, 11, 3, 0, 0, 0, time.UTC)
-	stubQuery(t, func() (roughtime.Result, error) {
-		return roughtime.Result{Server: "cloudflare", Nonce: []byte("nonce"), RawResponse: []byte("resp"), Midpoint: midpoint}, nil
-	})
+	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
 
 	fresh, _, err := FetchProofPacket(context.Background())
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
-	if ProofFromCache() {
+	if cached, _ := ProofFromCache(); cached {
 		t.Error("a live query must not report as cached")
 	}
 
@@ -48,18 +56,27 @@ func TestFetchProofPacket_FallsBackToCachedProof(t *testing.T) {
 		return roughtime.Result{}, errors.New("network is unreachable")
 	}
 
-	cached, result, err := FetchProofPacket(context.Background())
+	pkt, result, err := FetchProofPacket(context.Background())
 	if err != nil {
 		t.Fatalf("expected the cached proof to be used, got: %v", err)
 	}
-	if !bytes.Equal(cached, fresh) {
-		t.Error("cached packet differs from the one stored")
+	// The datagram is rebuilt from the cached fields rather than stored verbatim,
+	// so this also pins that the round trip reproduces it byte for byte.
+	if !bytes.Equal(pkt, fresh) {
+		t.Error("packet rebuilt from cache differs from the live one")
 	}
-	if !ProofFromCache() {
+	cached, age := ProofFromCache()
+	if !cached {
 		t.Error("ProofFromCache() must report true so the caller can say so")
 	}
-	if !result.Midpoint.Equal(midpoint) {
-		t.Errorf("midpoint = %v, want %v", result.Midpoint, midpoint)
+	if age < 0 || age > time.Minute {
+		t.Errorf("age = %v, want the time since it was stored", age)
+	}
+	// Radius has to survive: the CLI prints it, and a zero would advertise a
+	// months-old proof as accurate to the millisecond.
+	if want := liveResult(); !result.Midpoint.Equal(want.Midpoint) || result.Radius != want.Radius {
+		t.Errorf("result = %v ± %v, want %v ± %v",
+			result.Midpoint, result.Radius, want.Midpoint, want.Radius)
 	}
 }
 
@@ -72,10 +89,45 @@ func TestFetchProofPacket_NoCacheAndNoNetworkStillErrors(t *testing.T) {
 	}
 }
 
-func TestCacheProof_WritesForALaterRun(t *testing.T) {
+// Our own deadline expiring is not evidence that the host has no route, and
+// substituting an older proof there would report success while leaving the device
+// short of the time it needed.
+func TestFetchProofPacket_DoesNotFallBackOnCancelledContext(t *testing.T) {
+	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
+	if _, _, err := FetchProofPacket(context.Background()); err != nil {
+		t.Fatalf("seeding the cache: %v", err)
+	}
+
+	resetProofCache()
+	roughtimeQueryFn = func(ctx context.Context, _ []roughtime.Server) (roughtime.Result, error) {
+		return roughtime.Result{}, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := FetchProofPacket(ctx); err == nil {
+		t.Fatal("a cancelled query must not silently fall back to the cached proof")
+	}
+}
+
+// The wire format names the server by index into timesync.Servers, so a cached
+// proof naming a server this build does not know cannot be re-encoded — sending
+// index 0 would have the device verify against the wrong key.
+func TestFetchProofPacket_RejectsCachedProofFromUnknownServer(t *testing.T) {
 	stubQuery(t, func() (roughtime.Result, error) {
-		return roughtime.Result{Server: "int08h", Nonce: []byte("n"), RawResponse: []byte("r"), Midpoint: time.Now()}, nil
+		return roughtime.Result{}, errors.New("network is unreachable")
 	})
+	r := liveResult()
+	r.Server = "retired.example.com"
+	if err := storeProof(r, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := FetchProofPacket(context.Background()); err == nil {
+		t.Fatal("expected a cached proof from an unknown server to be refused")
+	}
+}
+
+func TestCacheProof_WritesForALaterRun(t *testing.T) {
+	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
 
 	CacheProof(context.Background())
 
@@ -91,16 +143,24 @@ func TestCacheProof_WritesForALaterRun(t *testing.T) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("cache mode = %o, want 0600", perm)
 	}
-	if _, _, _, err := loadProof(); err != nil {
+	if _, _, err := loadProof(); err != nil {
 		t.Errorf("loadProof after CacheProof: %v", err)
+	}
+	// A failed rename must not leave scratch files next to it.
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != proofCacheFile {
+			t.Errorf("unexpected leftover file %q in the config dir", e.Name())
+		}
 	}
 }
 
 // A cache we cannot read must not stop a live query from working.
 func TestFetchProofPacket_IgnoresCorruptCache(t *testing.T) {
-	stubQuery(t, func() (roughtime.Result, error) {
-		return roughtime.Result{Server: "test", Nonce: []byte("n"), RawResponse: []byte("r")}, nil
-	})
+	stubQuery(t, func() (roughtime.Result, error) { return liveResult(), nil })
 	path, err := proofCachePath()
 	if err != nil {
 		t.Fatal(err)
@@ -113,16 +173,27 @@ func TestFetchProofPacket_IgnoresCorruptCache(t *testing.T) {
 	}
 }
 
-func TestLoadProof_RejectsEmptyPacket(t *testing.T) {
+// A proof missing the fields needed to rebuild the datagram must be an error, not
+// an empty packet relayed as if it were a time.
+func TestLoadProof_RejectsIncompleteProof(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	path, err := proofCachePath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"packet":"","midpointUnix":1,"server":"x"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := loadProof(); err == nil {
-		t.Fatal("expected an error for an empty cached packet")
+	for name, body := range map[string]string{
+		"no nonce":    `{"server":"cloudflare","rawResponse":"cmVzcA==","midpointMs":1}`,
+		"no response": `{"server":"cloudflare","nonce":"bm9uY2U=","midpointMs":1}`,
+		"no server":   `{"nonce":"bm9uY2U=","rawResponse":"cmVzcA==","midpointMs":1}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := loadProof(); err == nil {
+				t.Fatal("expected an error for an incomplete cached proof")
+			}
+		})
 	}
 }

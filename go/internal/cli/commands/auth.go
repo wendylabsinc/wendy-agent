@@ -286,10 +286,6 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 
 	fmt.Println(tui.SuccessMessage("Authentication successful. Certificates saved."))
-	// The certificate is only usable on a device whose clock has reached its
-	// NotBefore. Grab a Roughtime proof now, while the network is known good, so
-	// a later run can hand it to a device that is behind and offline. Paired with
-	// the cert just issued, so it asserts a time at or after its NotBefore.
 	clitimesync.CacheProof(ctx)
 
 	if len(issueResp.GetWarnings()) > 0 {
@@ -413,10 +409,6 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (org=%d, device=%s). Certificates saved.",
 		issueResp.GetOrganizationId(), deviceID)))
-	// The certificate is only usable on a device whose clock has reached its
-	// NotBefore. Grab a Roughtime proof now, while the network is known good, so
-	// a later run can hand it to a device that is behind and offline. Paired with
-	// the cert just issued, so it asserts a time at or after its NotBefore.
 	clitimesync.CacheProof(ctx)
 
 	return nil
@@ -677,6 +669,10 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 			UserID:              existingCert.UserID,
 		},
 	}
+
+	// This cert has a later NotBefore than the one it replaces, so the proof kept
+	// for offline use has to move with it.
+	clitimesync.CacheProof(ctx)
 
 	return nil
 }

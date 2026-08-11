@@ -20,21 +20,23 @@ var (
 	floorMax = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
 )
 
-// readFloor reads the Unix-seconds timestamp from configPath/clock_floor.
-// Returns zero time if the file doesn't exist, cannot be read, or holds a value
-// outside the plausible window; rejected reports which of those it was, so the
-// caller can log an implausible value rather than treat it as an absent file.
-func readFloor(configPath string) (t time.Time, rejected bool) {
+// readFloor reads the Unix-seconds timestamp from configPath/clock_floor. floor
+// is the value to apply and is zero when there is nothing to apply — an absent or
+// short file, the normal pre-feature case, or a value outside the plausible
+// window. Such a value comes back as refused instead, which is non-zero only in
+// that case, so it can be logged (an all-zero write, a 1970 host clock and a
+// year-2200 value need different remedies) without any path applying it.
+func readFloor(configPath string) (floor, refused time.Time) {
 	data, err := os.ReadFile(filepath.Join(configPath, clockFloorFile))
 	if err != nil || len(data) < 8 {
-		return time.Time{}, false
+		return time.Time{}, time.Time{}
 	}
 	sec := int64(binary.BigEndian.Uint64(data[:8])) //nolint:gosec — range-checked below
-	t = time.Unix(sec, 0)
+	t := time.Unix(sec, 0)
 	if t.Before(floorMin) || t.After(floorMax) {
-		return time.Time{}, true
+		return time.Time{}, t
 	}
-	return t, false
+	return t, time.Time{}
 }
 
 // FloorBytes encodes t as the 8-byte big-endian clock_floor payload.

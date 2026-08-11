@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/shared/roughtime"
@@ -25,23 +26,25 @@ var (
 	proofResult roughtime.Result
 	proofCached bool
 	// proofFromDisk records that the proof in use came from the on-disk cache
-	// rather than a live query, so callers can say so.
+	// rather than a live query, and proofAge how old it was when read, so callers
+	// can report both.
 	proofFromDisk bool
+	proofAge      time.Duration
 )
 
 // ProofFromCache reports whether the proof this run broadcast came from the
-// on-disk cache instead of a live Roughtime query.
-func ProofFromCache() bool {
+// on-disk cache instead of a live Roughtime query, and how old it was when read.
+func ProofFromCache() (bool, time.Duration) {
 	proofMu.Lock()
 	defer proofMu.Unlock()
-	return proofFromDisk
+	return proofFromDisk, proofAge
 }
 
 // resetProofCache clears the per-process proof cache (test helper).
 func resetProofCache() {
 	proofMu.Lock()
 	defer proofMu.Unlock()
-	proofPkt, proofResult, proofCached, proofFromDisk = nil, roughtime.Result{}, false, false
+	proofPkt, proofResult, proofCached, proofFromDisk, proofAge = nil, roughtime.Result{}, false, false, 0
 }
 
 // FetchProofPacket queries a Roughtime server and returns the encoded
@@ -60,47 +63,75 @@ func FetchProofPacket(ctx context.Context) ([]byte, roughtime.Result, error) {
 		// that did have one: it is signed by the same servers, and the agent only
 		// ever advances its clock, so an out-of-date proof cannot make things
 		// worse than having none.
-		if pkt, midpoint, server, cacheErr := loadProof(); cacheErr == nil {
-			proofPkt = pkt
-			proofResult = roughtime.Result{Midpoint: midpoint, Server: server}
-			proofCached, proofFromDisk = true, true
-			return proofPkt, proofResult, nil
+		//
+		// Not when our own deadline expired, though: the query may have been about
+		// to succeed, and silently relaying an older time in its place would report
+		// success while leaving the device short of the time it needed.
+		if ctx.Err() != nil {
+			return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
 		}
-		return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
+		cached, fetchedAt, cacheErr := loadProof()
+		if cacheErr != nil {
+			return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
+		}
+		pkt, encErr := encodeProofPacket(cached)
+		if encErr != nil {
+			return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w (cached proof unusable: %v)", err, encErr)
+		}
+		proofPkt, proofResult, proofCached = pkt, cached, true
+		proofFromDisk, proofAge = true, time.Since(fetchedAt)
+		return proofPkt, proofResult, nil
 	}
-	proofPkt = encodeProofPacket(result)
-	proofResult = result
-	proofCached = true
+	pkt, err := encodeProofPacket(result)
+	if err != nil {
+		return nil, roughtime.Result{}, err
+	}
+	proofPkt, proofResult, proofCached = pkt, result, true
 	// Best-effort: keep it for a future run that cannot reach a server.
-	_ = storeProof(proofPkt, result.Midpoint, result.Server)
+	_ = storeProof(result, time.Now())
 	return proofPkt, proofResult, nil
 }
 
+// cacheProofTimeout bounds the post-login proof fetch. Nothing waits on the
+// result, so a host that cannot reach a Roughtime server must not hold up the
+// command that triggered it.
+const cacheProofTimeout = 5 * time.Second
+
 // CacheProof fetches a proof and stores it for later offline use, discarding any
 // error. Called where the host is known to have working cloud access — notably
-// straight after login, which pairs the proof with the certificate just issued.
+// straight after issuing a certificate, which pairs the proof with that cert: it
+// asserts a time at or after the cert's NotBefore, which is the advance a device
+// behind that cert needs.
 func CacheProof(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, cacheProofTimeout)
+	defer cancel()
 	_, _, _ = FetchProofPacket(ctx)
 }
 
-// encodeProofPacket builds the WendyDatagram packet the agent verifies.
-func encodeProofPacket(result roughtime.Result) []byte {
-	serverIdx := uint8(0)
+// encodeProofPacket builds the WendyDatagram packet the agent verifies. The wire
+// format names the server by its index in timesync.Servers, so a result naming a
+// server this build does not know cannot be encoded — silently sending index 0
+// would have the device verify against the wrong key.
+func encodeProofPacket(result roughtime.Result) ([]byte, error) {
+	serverIdx := -1
 	for i, s := range timesync.Servers {
 		if s.Name == result.Server {
-			serverIdx = uint8(i)
+			serverIdx = i
 			break
 		}
 	}
+	if serverIdx < 0 {
+		return nil, fmt.Errorf("unknown roughtime server %q", result.Server)
+	}
 	payload := roughtime.EncodeRoughtimePayload(roughtime.RoughtimePayload{
-		ServerIndex: serverIdx,
+		ServerIndex: uint8(serverIdx), //nolint:gosec — bounded by len(timesync.Servers)
 		Nonce:       result.Nonce,
 		Response:    result.RawResponse,
 	})
 	return roughtime.Encode(roughtime.Datagram{
 		MsgType: roughtime.MsgTypeRoughtime,
 		Payload: payload,
-	})
+	}), nil
 }
 
 // BroadcastTime fetches a Roughtime proof and multicasts it as a WendyDatagram

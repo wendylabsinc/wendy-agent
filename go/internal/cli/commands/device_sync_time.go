@@ -21,8 +21,9 @@ Devices verify the Roughtime signature themselves — the Mac is an untrusted re
 				return err
 			}
 			source := "live query"
-			if clitimesync.ProofFromCache() {
-				source = "cached proof — no route to a Roughtime server"
+			if cached, age := clitimesync.ProofFromCache(); cached {
+				source = fmt.Sprintf("proof cached %s ago — no route to a Roughtime server",
+					age.Round(time.Minute))
 			}
 			fmt.Printf("Broadcast: %s ± %s  (via %s, %s)\n",
 				result.Midpoint.UTC().Format("2006-01-02T15:04:05Z"),
