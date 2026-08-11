@@ -114,18 +114,26 @@ On NVIDIA Jetson the GL/EGL userspace is injected from the host through CDI; on 
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
-### Video Entitlement
+### Camera Entitlement
 
-**Deprecated:** Use `camera` instead. Provides access to video capture devices (USB cameras, CSI cameras).
+Provides local USB/V4L2 and CSI camera access. It also injects the app-private
+`WENDY_SYSTEM_SOCKET`; the agent authorizes only `ListVideoDevices` and
+`StreamVideo` there so apps can consume authenticated IP cameras without the
+full `admin` socket.
 
 ```json
-{ "type": "video" }
+{ "type": "camera" }
 ```
 
 When enabled:
 - Mounts `/dev` to expose all video capture devices
 - Configures device permissions for video capture
 - Enables V4L2 (Video4Linux2) and libcamera interfaces
+- Allows read-only camera listing and streaming through `WENDY_SYSTEM_SOCKET`
+
+The deprecated `{ "type": "video" }` alias has the same runtime behavior.
+Credential changes, camera removal/refresh, and administrative Agent RPCs are
+not authorized by `camera`.
 
 ### Audio Entitlement
 

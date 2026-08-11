@@ -100,7 +100,7 @@ See `references/wendy.json.md` for detailed entitlement configuration.
 | `network` (host mode) | Web servers, HTTP APIs, incoming connections |
 | `gpu` | ML inference/computer vision (Jetson), board telemetry (Raspberry Pi) |
 | `display` | Present to local monitor as Wayland client |
-| `camera` | Camera access, video capture |
+| `camera` | Local camera access and read-only agent-brokered IP-camera streams |
 | `audio` | Microphone, speakers |
 | `bluetooth` | BLE devices, Bluetooth communication |
 

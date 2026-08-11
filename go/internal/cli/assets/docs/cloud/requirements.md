@@ -243,7 +243,7 @@ The following entitlements are supported:
 | `gpu` | GPU access for ML inference and compute workloads. |
 | `persist` | A named persistent storage volume. The volume persists across application restarts and updates. Two applications on the same device declaring a volume with the same name share that volume. |
 | `audio` | Audio device access for recording or playback. |
-| `camera` | Camera and video device access. |
+| `camera` | Local camera access plus read-only listing and streaming of agent-managed IP cameras. |
 | `bluetooth` | Filtered Bluetooth access via a D-Bus proxy. |
 | `usb` | Raw USB device access. |
 | `i2c` | I2C bus access. Requires a specific device to be named. |

@@ -225,7 +225,7 @@
           },
           "required": ["type"],
           "additionalProperties": false,
-          "description": "Camera/V4L2 device access. Legacy video entitlement keys remain accepted for compatibility."
+          "description": "Camera access across local V4L2/CSI devices and read-only agent-brokered IP-camera streams. Injects WENDY_SYSTEM_SOCKET for ListVideoDevices and StreamVideo. Legacy video entitlement keys remain accepted for compatibility."
         },
         {
           "properties": {

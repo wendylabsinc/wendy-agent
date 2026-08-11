@@ -311,7 +311,8 @@ On Raspberry Pi, `/dev/vcio` is bind-mounted only when present on the host; acce
 
 ### `camera`
 
-Camera / V4L2 device access.
+Camera access across local V4L2/CSI devices and IP cameras already authenticated
+by the Wendy agent.
 
 ```json
 { "type": "camera" }
@@ -321,6 +322,16 @@ Camera / V4L2 device access.
 | Field | Description |
 |-------|-------------|
 | `allowlist` | Restrict access to specific device paths. Omit to allow all cameras. |
+
+The agent mounts the app's private System API socket and injects
+`WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. Apps can use the existing
+Wendy video gRPC definitions to call `ListVideoDevices` and `StreamVideo` on
+that socket. This is the path for IP cameras because their stored credentials
+remain inside the agent. Credential changes, camera removal/refresh, and all
+administrative Agent RPCs are denied on the app-facing socket.
+
+> **Security:** `camera` never exposes `WENDY_AGENT_SOCKET`. Use `admin` only
+> when the app genuinely needs full device administration, not to read video.
 
 ### `audio`
 
@@ -491,8 +502,8 @@ app connection.
 
 The agent/daemon mounts `/run/wendy/system` read-only and injects
 `WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock`. There is one socket per
-app, shared by that app's entitled service containers and by future app-facing
-API capabilities; it is not one socket per capability. The public Swift
+app, shared by that app's camera- and notifications-entitled service containers;
+it is not one socket per capability. The public Swift
 API is `WendyNotification.send(_:)` in WendyKit, so normal apps do not call
 gRPC directly.
 

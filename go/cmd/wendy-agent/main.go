@@ -280,8 +280,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	videoSvc := services.NewVideoService(ctx, logger)
+	defer videoSvc.Shutdown()
+	// Network cameras have to be found before they can be listed, so probe
+	// periodically rather than only when a client asks.
+	videoSvc.StartDiscovery()
+
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
-	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
+	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender, videoSvc)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
@@ -291,12 +297,6 @@ func main() {
 	go timesyncMgr.RunMulticast(ctx)
 
 	startROS2BatteryMonitor(ctx, logger, configPath)
-
-	videoSvc := services.NewVideoService(ctx, logger)
-	defer videoSvc.Shutdown()
-	// Network cameras have to be found before they can be listed, so probe
-	// periodically rather than only when a client asks.
-	videoSvc.StartDiscovery()
 
 	bleDispatcher := bluetooth.NewDispatcher(networkMgr, containerdClient, hwDiscoverer, btManager)
 

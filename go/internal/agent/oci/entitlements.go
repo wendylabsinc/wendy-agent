@@ -68,6 +68,7 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 	}
 
 	didSetDeviceCapabilities := false
+	needsSystemAPI := false
 	for _, ent := range cfg.Entitlements {
 		switch ent.Type {
 		case appconfig.EntitlementGPU:
@@ -82,6 +83,7 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 			}
 		case appconfig.EntitlementVideo, appconfig.EntitlementCamera:
 			applyCamera(spec)
+			needsSystemAPI = true
 			if !didSetDeviceCapabilities {
 				didSetDeviceCapabilities = true
 				SetDeviceCapabilities(spec)
@@ -113,12 +115,15 @@ func ApplyEntitlements(spec *Spec, cfg *appconfig.AppConfig, opts ApplyOptions) 
 				SetDeviceCapabilities(spec)
 			}
 		case appconfig.EntitlementNotifications:
-			applySystemAPI(spec, opts.SystemAPISocketDir)
+			needsSystemAPI = true
 		case appconfig.EntitlementAdmin:
 			applyAdmin(spec)
 		case appconfig.EntitlementBuild:
 			applyBuild(spec)
 		}
+	}
+	if needsSystemAPI {
+		applySystemAPI(spec, opts.SystemAPISocketDir)
 	}
 	return nil
 }

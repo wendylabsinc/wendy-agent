@@ -16,6 +16,18 @@ Declare them in the `entitlements` array of your `wendy.json`, or add one with `
 
 > **Complete reference:** for every entitlement type, its options, and security notes, see [wendy.json → Entitlements](../apps/wendy.json.md#entitlements-1). This page is a guide to the common ones and how to choose between similar options.
 
+## Camera
+
+Use `{ "type": "camera" }` for local USB/V4L2 and CSI devices and for IP
+cameras already authenticated by the Wendy agent. The entitlement mounts the
+private app System API socket and injects `WENDY_SYSTEM_SOCKET`. On that socket,
+camera-entitled apps may call only `ListVideoDevices` and `StreamVideo` from the
+Wendy video service. Credential changes, camera removal/refresh, and all Agent
+administration methods remain unavailable.
+
+The System API mount is shared with `notifications` when a service declares
+both entitlements. It never exposes `WENDY_AGENT_SOCKET`.
+
 ## Notifications
 
 Use `{ "type": "notifications" }` when an app needs to alert operators through

@@ -1864,6 +1864,68 @@ func TestApplyNotifications_MountsOnlyPrivateSystemSocket(t *testing.T) {
 	}
 }
 
+func TestApplyCamera_MountsPrivateSystemSocketWithoutAdmin(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "wendy-camera-system-oci-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	listener, err := net.Listen("unix", filepath.Join(dir, "system.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementCamera}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SystemAPISocketDir: dir}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if !hasMount(spec, "/run/wendy/system") || !hasEnv(spec, "WENDY_SYSTEM_SOCKET=/run/wendy/system/system.sock") {
+		t.Fatal("camera entitlement did not expose the private System API socket")
+	}
+	if hasMount(spec, "/run/wendy/agent") || hasEnv(spec, "WENDY_AGENT_SOCKET=") {
+		t.Fatal("camera entitlement exposed the admin control socket")
+	}
+}
+
+func TestApplyCameraAndNotifications_MountSystemSocketOnce(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "wendy-combined-system-oci-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	listener, err := net.Listen("unix", filepath.Join(dir, "system.sock"))
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID: "test",
+		Entitlements: []appconfig.Entitlement{
+			{Type: appconfig.EntitlementCamera},
+			{Type: appconfig.EntitlementNotifications},
+		},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{SystemAPISocketDir: dir}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	mounts := 0
+	for _, mount := range spec.Mounts {
+		if mount.Destination == "/run/wendy/system" {
+			mounts++
+		}
+	}
+	if mounts != 1 {
+		t.Fatalf("System API mount count = %d, want 1", mounts)
+	}
+}
+
 func TestApplyNotifications_AbsentWithoutEntitlement(t *testing.T) {
 	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
 	cfg := &appconfig.AppConfig{AppID: "test"}

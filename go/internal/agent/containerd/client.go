@@ -196,8 +196,29 @@ func (c *Client) SetAppSystemAPISocketProvider(provider AppSystemAPISocketProvid
 }
 
 type appSystemAPIOwner struct {
-	appID       string
-	serviceName string
+	appID        string
+	serviceName  string
+	capabilities []string
+}
+
+func appSystemAPICapabilities(entitlements []appconfig.Entitlement) []string {
+	var camera, notifications bool
+	for _, entitlement := range entitlements {
+		switch entitlement.Type {
+		case appconfig.EntitlementCamera, appconfig.EntitlementVideo:
+			camera = true
+		case appconfig.EntitlementNotifications:
+			notifications = true
+		}
+	}
+	capabilities := make([]string, 0, 2)
+	if camera {
+		capabilities = append(capabilities, services.SystemAPICapabilityCamera)
+	}
+	if notifications {
+		capabilities = append(capabilities, services.SystemAPICapabilityNotifications)
+	}
+	return capabilities
 }
 
 func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIOwner {
@@ -208,11 +229,35 @@ func appSystemAPIOwnersFromLabels(labelSets []map[string]string) []appSystemAPIO
 		if appconfig.ValidateAppID(appID) != nil || (serviceName != "" && appconfig.ValidateServiceName(serviceName) != nil) {
 			continue
 		}
-		if entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications) {
-			owners = append(owners, appSystemAPIOwner{appID: appID, serviceName: serviceName})
+		capabilities := appSystemAPICapabilities(parseEntitlementsFromAnnotations(labels))
+		if len(capabilities) != 0 {
+			owners = append(owners, appSystemAPIOwner{
+				appID: appID, serviceName: serviceName, capabilities: capabilities,
+			})
 		}
 	}
 	return owners
+}
+
+// ensureAppSystemAPISocketForStart recreates the private System API listener
+// required by a persisted container before containerd processes its bind
+// mounts. CreateContainerWithProgress prepares the listener for a new
+// container and RestoreAppSystemAPISockets prepares all listeners at Agent
+// startup, but an explicit start of a persisted container must be independently
+// safe after the runtime directory or listener has disappeared.
+func (c *Client) ensureAppSystemAPISocketForStart(labels map[string]string) error {
+	owners := appSystemAPIOwnersFromLabels([]map[string]string{labels})
+	if len(owners) == 0 {
+		return nil
+	}
+	if c.systemAPISocketProvider == nil {
+		return fmt.Errorf("app System API entitlement unavailable: socket manager is not configured")
+	}
+	owner := owners[0]
+	if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, owner.capabilities); err != nil {
+		return fmt.Errorf("preparing persisted app System API socket: %w", err)
+	}
+	return nil
 }
 
 // RestoreAppSystemAPISockets reconstructs listeners and ownership from trusted,
@@ -238,7 +283,7 @@ func (c *Client) RestoreAppSystemAPISockets(ctx context.Context) {
 		labelSets = append(labelSets, info.Labels)
 	}
 	for _, owner := range appSystemAPIOwnersFromLabels(labelSets) {
-		if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, []string{services.SystemAPICapabilityNotifications}); err != nil {
+		if _, err := c.systemAPISocketProvider.Ensure(owner.appID, owner.serviceName, owner.capabilities); err != nil {
 			c.logger.Warn("restore app System API socket failed", zap.String(logfields.AppID, owner.appID), zap.Error(err))
 		}
 	}
@@ -1025,7 +1070,7 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 		oldHadSystemAPI := false
 		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
+			oldHadSystemAPI = len(appSystemAPICapabilities(parseEntitlementsFromAnnotations(labels))) != 0
 		}
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
@@ -1230,14 +1275,15 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	var systemAPISocketDir string
 	systemAPIRefOwned := false
-	if appCfg.HasEntitlement(appconfig.EntitlementNotifications) {
+	systemAPICapabilities := appSystemAPICapabilities(appCfg.Entitlements)
+	if len(systemAPICapabilities) != 0 {
 		if c.systemAPISocketProvider == nil {
-			return fmt.Errorf("notifications entitlement unavailable: app System API socket manager is not configured")
+			return fmt.Errorf("app System API entitlement unavailable: socket manager is not configured")
 		}
 		systemAPISocketDir, err = c.systemAPISocketProvider.Ensure(
 			appID,
 			serviceName,
-			[]string{services.SystemAPICapabilityNotifications},
+			systemAPICapabilities,
 		)
 		if err != nil {
 			return fmt.Errorf("preparing app System API socket: %w", err)
@@ -1588,6 +1634,12 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+		if err := c.ensureAppSystemAPISocketForStart(labels); err != nil {
+			return nil, fmt.Errorf("starting container %q: %w", appName, err)
+		}
+	} else {
+		c.logger.Warn("could not load container labels before start",
+			zap.String("app_name", appName), zap.Error(lerr))
 	}
 
 	// Reboot resilience for meshed containers (C-final-review Fix 1): the
@@ -1911,6 +1963,15 @@ func (c *Client) StartContainerWithStdin(ctx context.Context, appName string, st
 			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
 		}
 		container = ctrs[0]
+	}
+
+	if labels, lerr := container.Labels(ctx); lerr == nil {
+		if err := c.ensureAppSystemAPISocketForStart(labels); err != nil {
+			return nil, fmt.Errorf("starting container %q with stdin: %w", appName, err)
+		}
+	} else {
+		c.logger.Warn("could not load container labels before start with stdin",
+			zap.String("app_name", appName), zap.Error(lerr))
 	}
 
 	if restartPolicy != nil {

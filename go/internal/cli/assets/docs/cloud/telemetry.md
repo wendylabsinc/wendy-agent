@@ -21,7 +21,7 @@ The private app connection variable is conditional on an entitlement:
 
 | Variable | Value | Notes |
 |---|---|---|
-| `WENDY_SYSTEM_SOCKET` | `/run/wendy/system/system.sock` | Injected only with the `notifications` entitlement. Points to the app's private app-facing socket. |
+| `WENDY_SYSTEM_SOCKET` | `/run/wendy/system/system.sock` | Injected with `camera` or `notifications`. The private socket authorizes only the RPC capabilities declared by those entitlements. |
 
 The OpenTelemetry variables are injected **only when the app has the host
 `network` entitlement**, because the agent's local OTLP receiver listens on the

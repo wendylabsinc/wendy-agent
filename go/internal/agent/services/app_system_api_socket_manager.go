@@ -19,11 +19,13 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/localsocket"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	systempb "github.com/wendylabsinc/wendy/go/proto/gen/systempb"
 )
 
 const (
 	SystemAPICapabilityNotifications = "notifications"
+	SystemAPICapabilityCamera        = "camera"
 	SystemAPISocketFilename          = "system.sock"
 	appSystemAPIGroupGID             = 2000
 )
@@ -52,6 +54,7 @@ type AppSystemAPISocketManager struct {
 	ctx                context.Context
 	logger             *zap.Logger
 	notificationSender NotificationSender
+	videoService       agentpb.WendyVideoServiceServer
 	mu                 sync.RWMutex
 	sockets            map[string]*appSystemAPISocket
 }
@@ -60,11 +63,13 @@ func NewAppSystemAPISocketManager(
 	ctx context.Context,
 	logger *zap.Logger,
 	notificationSender NotificationSender,
+	videoService agentpb.WendyVideoServiceServer,
 ) *AppSystemAPISocketManager {
 	manager := &AppSystemAPISocketManager{
 		ctx:                ctx,
 		logger:             logger,
 		notificationSender: notificationSender,
+		videoService:       videoService,
 		sockets:            make(map[string]*appSystemAPISocket),
 	}
 	go func() {
@@ -90,8 +95,11 @@ func (m *AppSystemAPISocketManager) Ensure(appID, serviceName string, capabiliti
 		return "", fmt.Errorf("at least one System API capability is required")
 	}
 	for _, capability := range capabilities {
-		if capability != SystemAPICapabilityNotifications {
+		if capability != SystemAPICapabilityNotifications && capability != SystemAPICapabilityCamera {
 			return "", fmt.Errorf("unsupported System API capability %q", capability)
+		}
+		if capability == SystemAPICapabilityCamera && m.videoService == nil {
+			return "", fmt.Errorf("camera System API capability is unavailable")
 		}
 	}
 
@@ -148,10 +156,14 @@ func (m *AppSystemAPISocketManager) Ensure(appID, serviceName string, capabiliti
 		grpc.MaxRecvMsgSize(16*1024),
 		grpc.MaxConcurrentStreams(16),
 		grpc.UnaryInterceptor(m.authorize(socket)),
+		grpc.StreamInterceptor(m.authorizeStream(socket)),
 		grpc.KeepaliveParams(keepalive.ServerParameters{MaxConnectionIdle: 2 * time.Minute}),
 	)
 	socket.server = server
 	systempb.RegisterNotificationServiceServer(server, NewSystemNotificationService(appID, m.notificationSender))
+	if m.videoService != nil {
+		agentpb.RegisterWendyVideoServiceServer(server, m.videoService)
+	}
 	m.sockets[key] = socket
 
 	go func() {
@@ -238,9 +250,29 @@ func (m *AppSystemAPISocketManager) authorize(socket *appSystemAPISocket) grpc.U
 	}
 }
 
+func (m *AppSystemAPISocketManager) authorizeStream(socket *appSystemAPISocket) grpc.StreamServerInterceptor {
+	return func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+		capability := systemAPICapabilityForMethod(info.FullMethod)
+		if capability == "" {
+			return status.Error(codes.PermissionDenied, "System API method is not authorized")
+		}
+		m.mu.RLock()
+		allowed := socketHasCapability(socket, capability)
+		m.mu.RUnlock()
+		if !allowed {
+			return status.Error(codes.PermissionDenied, "System API capability is not authorized for this app")
+		}
+		return handler(srv, stream)
+	}
+}
+
 func systemAPICapabilityForMethod(method string) string {
-	if method == systempb.NotificationService_Send_FullMethodName {
+	switch method {
+	case systempb.NotificationService_Send_FullMethodName:
 		return SystemAPICapabilityNotifications
+	case agentpb.WendyVideoService_ListVideoDevices_FullMethodName,
+		agentpb.WendyVideoService_StreamVideo_FullMethodName:
+		return SystemAPICapabilityCamera
 	}
 	return ""
 }
