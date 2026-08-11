@@ -75,6 +75,11 @@ export:
 	if manifest.CollectorVersion == "" || manifest.Device.ID == "" {
 		t.Fatalf("episode identity/version missing: %+v", manifest)
 	}
+	for _, source := range manifest.Sources {
+		if source.Source.ID == "fake:camera" && source.RequestedOffset != -(10*time.Millisecond).Nanoseconds() {
+			t.Fatalf("camera requested offset = %d", source.RequestedOffset)
+		}
+	}
 }
 
 func TestCampaignApplicationEventAutomaticallyTriggers(t *testing.T) {
@@ -113,6 +118,11 @@ export: {annotation: cvat}
 			}
 			if manifest.Trigger.Reason != "event:emergency_stop" {
 				t.Fatalf("wrong trigger: %+v", manifest.Trigger)
+			}
+			for _, source := range manifest.Sources {
+				if source.Source.ID == "applications" && (source.Count != 1 || source.ActualOffset >= 0 || source.RequestedOffset != -time.Second.Nanoseconds()) {
+					t.Fatalf("application pre-roll accounting is not exact: %+v", source)
+				}
 			}
 			return
 		}

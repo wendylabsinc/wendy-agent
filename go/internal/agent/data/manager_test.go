@@ -83,6 +83,13 @@ func TestApplicationPreRollHasNegativeCanonicalOffsets(t *testing.T) {
 	if stored.EpisodeNanos >= 0 {
 		t.Fatalf("pre-roll offset=%d, want negative", stored.EpisodeNanos)
 	}
+	manifest, _, err := m.Inspect(started.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Sources) != 1 || manifest.Sources[0].Count != 1 || manifest.Sources[0].ActualOffset >= 0 {
+		t.Fatalf("pre-roll stats not represented in manifest: %+v", manifest.Sources)
+	}
 }
 
 func TestRecoveryFinalizesPartialAsInterrupted(t *testing.T) {
