@@ -16,6 +16,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -285,6 +286,11 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 
 	fmt.Println(tui.SuccessMessage("Authentication successful. Certificates saved."))
+	// The certificate is only usable on a device whose clock has reached its
+	// NotBefore. Grab a Roughtime proof now, while the network is known good, so
+	// a later run can hand it to a device that is behind and offline. Paired with
+	// the cert just issued, so it asserts a time at or after its NotBefore.
+	clitimesync.CacheProof(ctx)
 
 	if len(issueResp.GetWarnings()) > 0 {
 		fmt.Println(tui.WarningMessage("Warnings:"))
@@ -407,6 +413,12 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (org=%d, device=%s). Certificates saved.",
 		issueResp.GetOrganizationId(), deviceID)))
+	// The certificate is only usable on a device whose clock has reached its
+	// NotBefore. Grab a Roughtime proof now, while the network is known good, so
+	// a later run can hand it to a device that is behind and offline. Paired with
+	// the cert just issued, so it asserts a time at or after its NotBefore.
+	clitimesync.CacheProof(ctx)
+
 	return nil
 }
 

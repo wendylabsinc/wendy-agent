@@ -24,13 +24,24 @@ var (
 	proofPkt    []byte
 	proofResult roughtime.Result
 	proofCached bool
+	// proofFromDisk records that the proof in use came from the on-disk cache
+	// rather than a live query, so callers can say so.
+	proofFromDisk bool
 )
+
+// ProofFromCache reports whether the proof this run broadcast came from the
+// on-disk cache instead of a live Roughtime query.
+func ProofFromCache() bool {
+	proofMu.Lock()
+	defer proofMu.Unlock()
+	return proofFromDisk
+}
 
 // resetProofCache clears the per-process proof cache (test helper).
 func resetProofCache() {
 	proofMu.Lock()
 	defer proofMu.Unlock()
-	proofPkt, proofResult, proofCached = nil, roughtime.Result{}, false
+	proofPkt, proofResult, proofCached, proofFromDisk = nil, roughtime.Result{}, false, false
 }
 
 // FetchProofPacket queries a Roughtime server and returns the encoded
@@ -45,12 +56,31 @@ func FetchProofPacket(ctx context.Context) ([]byte, roughtime.Result, error) {
 	}
 	result, err := roughtimeQueryFn(ctx, timesync.Servers)
 	if err != nil {
+		// No route to a Roughtime server. Fall back to the proof kept from a run
+		// that did have one: it is signed by the same servers, and the agent only
+		// ever advances its clock, so an out-of-date proof cannot make things
+		// worse than having none.
+		if pkt, midpoint, server, cacheErr := loadProof(); cacheErr == nil {
+			proofPkt = pkt
+			proofResult = roughtime.Result{Midpoint: midpoint, Server: server}
+			proofCached, proofFromDisk = true, true
+			return proofPkt, proofResult, nil
+		}
 		return nil, roughtime.Result{}, fmt.Errorf("roughtime query: %w", err)
 	}
 	proofPkt = encodeProofPacket(result)
 	proofResult = result
 	proofCached = true
+	// Best-effort: keep it for a future run that cannot reach a server.
+	_ = storeProof(proofPkt, result.Midpoint, result.Server)
 	return proofPkt, proofResult, nil
+}
+
+// CacheProof fetches a proof and stores it for later offline use, discarding any
+// error. Called where the host is known to have working cloud access — notably
+// straight after login, which pairs the proof with the certificate just issued.
+func CacheProof(ctx context.Context) {
+	_, _, _ = FetchProofPacket(ctx)
 }
 
 // encodeProofPacket builds the WendyDatagram packet the agent verifies.

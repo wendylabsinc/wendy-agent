@@ -278,7 +278,11 @@ func logCertRejection(logger *zap.Logger, leaf *x509.Certificate, err error, eff
 	// String-matching on the error text would also fire for expired certs, pointing
 	// operators at the wrong remediation (NTP sync won't help an expired cert).
 	if effectiveNow.Before(leaf.NotBefore) {
-		msg += ": certificate not yet valid — device clock may be skewed; check NTP sync with: timedatectl status"
+		msg += ": certificate not yet valid — this device's clock reads " +
+			leaf.NotBefore.Sub(effectiveNow).Round(time.Second).String() +
+			" before the certificate was issued. Check the clock (timedatectl status);" +
+			" push a verified time from a host on this network with: wendy device sync-time"
+		fields = append(fields, zap.Duration("clockLag", leaf.NotBefore.Sub(effectiveNow)))
 	}
 	logger.Warn(msg, fields...)
 }

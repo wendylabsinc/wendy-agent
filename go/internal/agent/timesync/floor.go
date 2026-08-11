@@ -9,15 +9,32 @@ import (
 
 const clockFloorFile = "clock_floor"
 
+// A floor outside this window is treated as absent. It catches a torn or zeroed
+// write, not a wrong-but-plausible one: the CLI writes this file from the
+// flashing host's own clock (cli/commands/os_provision.go), so a host that is
+// merely months or years out still produces a value inside the window. Since
+// AdvanceTo never moves the clock backward, a future floor parks the device there
+// until it is reflashed, and only the grossly-wrong cases are caught here.
+var (
+	floorMin = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	floorMax = time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC)
+)
+
 // readFloor reads the Unix-seconds timestamp from configPath/clock_floor.
-// Returns zero time if the file doesn't exist or cannot be read.
-func readFloor(configPath string) time.Time {
+// Returns zero time if the file doesn't exist, cannot be read, or holds a value
+// outside the plausible window; rejected reports which of those it was, so the
+// caller can log an implausible value rather than treat it as an absent file.
+func readFloor(configPath string) (t time.Time, rejected bool) {
 	data, err := os.ReadFile(filepath.Join(configPath, clockFloorFile))
 	if err != nil || len(data) < 8 {
-		return time.Time{}
+		return time.Time{}, false
 	}
-	sec := int64(binary.BigEndian.Uint64(data[:8]))
-	return time.Unix(sec, 0)
+	sec := int64(binary.BigEndian.Uint64(data[:8])) //nolint:gosec — range-checked below
+	t = time.Unix(sec, 0)
+	if t.Before(floorMin) || t.After(floorMax) {
+		return time.Time{}, true
+	}
+	return t, false
 }
 
 // FloorBytes encodes t as the 8-byte big-endian clock_floor payload.
