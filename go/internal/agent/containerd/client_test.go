@@ -699,7 +699,7 @@ func stubBoard(t *testing.T, kind board.Kind) {
 
 // TestNeedsNvidiaCDIGPUOnly verifies the pre-existing trigger (gpu entitlement
 // alone) still applies CDI, so this change is additive. Board-independent: a
-// gpu entitlement asks for CDI/CSV provisioning on any host, and applyCDIGPU's
+// gpu entitlement asks for CDI/CSV provisioning on any host, and applyNvidiaCDI's
 // warnings when there is none are the intended outcome.
 func TestNeedsNvidiaCDIGPUOnly(t *testing.T) {
 	cfg := &appconfig.AppConfig{
@@ -734,7 +734,7 @@ func TestNeedsNvidiaCDIDisplayOnlyJetson(t *testing.T) {
 }
 
 // TestNeedsNvidiaCDIDisplayOnlyNonJetson pins the other half of the gate: a
-// display app on a board with no NVIDIA userspace must not enter applyCDIGPU,
+// display app on a board with no NVIDIA userspace must not enter applyNvidiaCDI,
 // which would only log "no NVIDIA CDI spec" warnings at it. This mirrors
 // applyDisplay, which likewise sets the NVIDIA driver-capability env vars only
 // on a Jetson.
