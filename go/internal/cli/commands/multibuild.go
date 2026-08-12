@@ -189,6 +189,15 @@ func serviceFingerprintKey(appID, service string) string {
 	return appID + "/svc/" + service
 }
 
+func multiServiceWatchHash(buildHash string, cfg *appconfig.AppConfig, env []string, restartPolicy *agentpb.RestartPolicy) (string, error) {
+	return watchDesiredHash(struct {
+		BuildHash     string
+		Config        *appconfig.AppConfig
+		Env           []string
+		RestartPolicy *agentpb.RestartPolicy
+	}{buildHash, cfg, env, restartPolicy})
+}
+
 // deviceContainerNames returns the lowercased set of container identities the
 // device currently knows about (any running state). ListContainers reports one
 // entry per app group whose AppName is the bare app id; per-service identities
@@ -197,11 +206,11 @@ func serviceFingerprintKey(appID, service string) string {
 // AppConfig.ContainerName / multiServiceContainerName so callers can look a
 // service up directly. Best-effort: on any RPC error it returns an empty set, so
 // callers simply don't skip anything.
-func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection) map[string]bool {
-	present := map[string]bool{}
+func deviceContainerStates(ctx context.Context, conn *grpcclient.AgentConnection) map[string]agentpb.AppRunningState {
+	states := map[string]agentpb.AppRunningState{}
 	stream, err := conn.ContainerService.ListContainers(ctx, &agentpb.ListContainersRequest{})
 	if err != nil {
-		return present
+		return states
 	}
 	for {
 		resp, recvErr := stream.Recv()
@@ -209,19 +218,27 @@ func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection)
 			break
 		}
 		if recvErr != nil {
-			return present
+			return states
 		}
 		c := resp.GetContainer()
 		if c == nil {
 			continue
 		}
 		app := c.GetAppName()
-		present[strings.ToLower(app)] = true
+		states[strings.ToLower(app)] = c.GetRunningState()
 		for _, s := range c.GetServices() {
 			if s.GetName() != "" {
-				present[strings.ToLower(app+"_"+s.GetName())] = true
+				states[strings.ToLower(app+"_"+s.GetName())] = s.GetRunningState()
 			}
 		}
+	}
+	return states
+}
+
+func deviceContainerNames(ctx context.Context, conn *grpcclient.AgentConnection) map[string]bool {
+	present := map[string]bool{}
+	for name := range deviceContainerStates(ctx, conn) {
+		present[name] = true
 	}
 	return present
 }
@@ -375,8 +392,50 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	deviceKey := deviceFingerprintKey(versionResp)
 	sfOpts := debugStagefileOptions(opts.debug)
 	skip, hashes, dockerfiles := planServicePushSkips(ctx, conn, cwd, appCfg.AppID, deviceKey, platform, appCfg, services, buildArgs, sfOpts...)
+
+	// Build the full per-service create configs before selecting watch work: a
+	// service is unchanged only when both its image inputs and its effective
+	// runtime configuration match the last successful cycle.
+	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
+	for name, svc := range services {
+		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
+		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
+	}
+
+	preserve := map[string]bool{}
+	desiredHashes := map[string]string{}
+	if opts.watchState != nil {
+		states := deviceContainerStates(ctx, conn)
+		candidates := map[string]watchServiceCandidate{}
+		for name, svc := range services {
+			buildHash, planned := hashes[name]
+			if !planned {
+				continue
+			}
+			desiredHash, err := multiServiceWatchHash(buildHash, svcCfgs[name], expandServiceEnv(appCfg, svc), resolveRestartPolicy(opts))
+			if err != nil {
+				continue
+			}
+			desiredHashes[name] = desiredHash
+			candidates[name] = watchServiceCandidate{
+				appID:         appCfg.AppID,
+				containerName: multiServiceContainerName(appCfg.AppID, name),
+				desiredHash:   desiredHash,
+			}
+		}
+		preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
+		for name := range preserve {
+			skip[name] = true
+		}
+		if n := len(preserve); n > 0 {
+			cliLogln("%d of %d services unchanged and running; leaving them untouched.", n, len(services))
+		}
+	}
 	if n := len(skip); n > 0 {
-		cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
+		if opts.watchState == nil {
+			cliLogln("%d of %d services unchanged and already on device; skipping their build/push.", n, len(services))
+		}
 	}
 
 	// Build all service images in parallel, then create and start containers.
@@ -427,22 +486,24 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	if err != nil {
 		return err
 	}
-
-	// Build the full per-service create configs and separate CLI-private
-	// lifecycle views. The latter preserve declaration scope so inherited
-	// top-level HTTP does not execute once per service.
-	svcCfgs := make(map[string]*appconfig.AppConfig, len(services))
-	svcLifecycleCfgs := make(map[string]*appconfig.AppConfig, len(services))
-	for name, svc := range services {
-		svcCfgs[name] = multiServiceCreateConfig(appCfg, name, svc)
-		svcLifecycleCfgs[name] = multiServiceLifecycleConfig(appCfg.AppID, name, svc)
+	adjustedPreserve := adjustSharedNamespacePreserve(ordered, preserve, appCfg.Isolation)
+	if len(adjustedPreserve) < len(preserve) {
+		cliLogln("Shared-namespace primary changed; restarting the affected service group.")
+	}
+	preserve = adjustedPreserve
+	if len(preserve) > 0 {
+		ordered = filterPreservedServices(ordered, preserve)
+		if len(ordered) == 0 {
+			cliLogln("All services are unchanged and running; nothing to redeploy.")
+			return partialErr
+		}
 	}
 
 	// The app-level fallback fires the group's top-level readiness/hooks once,
 	// after ALL services have started — a guarantee that cannot hold on a subset
 	// run (--service), so disable it there.
 	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
-	if opts.service != "" {
+	if opts.service != "" || len(preserve) > 0 {
 		appLevelCfg = nil
 	}
 
@@ -498,6 +559,13 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// next service is created.
 	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		return err
+	}
+	if ctx.Err() == nil {
+		for _, name := range ordered {
+			if h := desiredHashes[name]; h != "" {
+				opts.watchState.record(watchServiceKey(deviceKey, appCfg.AppID, name), h)
+			}
+		}
 	}
 	// In --keep-going mode, exit non-zero after deploying the healthy subset so
 	// callers/CI still see that some services failed.

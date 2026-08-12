@@ -43,6 +43,17 @@ func normalizeImageRef(ref string) string {
 	return reference.TagNameOnly(named).String()
 }
 
+func composeServiceWatchHash(imageIdentity string, cfg *appconfig.AppConfig, cmd string, userArgs []string, restartPolicy *agentpb.RestartPolicy, env []string) (string, error) {
+	return watchDesiredHash(struct {
+		ImageIdentity string
+		Config        *appconfig.AppConfig
+		Cmd           string
+		UserArgs      []string
+		RestartPolicy *agentpb.RestartPolicy
+		Env           []string
+	}{imageIdentity, cfg, cmd, userArgs, restartPolicy, env})
+}
+
 // composeConfig is a minimal representation of a docker-compose file.
 type composeConfig struct {
 	Services map[string]composeService `yaml:"services"`
@@ -1000,6 +1011,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// Resolved once for the project: every service lands on this one device,
 	// so a cuda: stage in any of them compiles against its GPU architecture.
 	gpuArch := composeGPUArch(ctx, projectDir, cfg, conn)
+	deviceKey := deviceFingerprintKey(versionResp)
+	states := map[string]agentpb.AppRunningState{}
+	if opts.watchState != nil {
+		states = deviceContainerStates(ctx, conn)
+	}
+	preserve := map[string]bool{}
+	desiredHashes := map[string]string{}
+	candidates := map[string]watchServiceCandidate{}
 
 	// Prepare each build before starting the parallel scheduler. In particular,
 	// compile Stagefiles to their generated Dockerfiles once, while errors can
@@ -1008,15 +1027,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, buildArgs, err := composeBuildContext(svc, projectDir)
 		if err != nil {
-			return fmt.Errorf("service %s: %w", name, err)
-		}
-		if ctxDir == "" {
-			continue // uses pre-built image
-		}
-		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
-		// same way the single-service path does — docker build itself knows
-		// nothing about build.stagefile.yaml.
-		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
 			return fmt.Errorf("service %s: %w", name, err)
 		}
 
@@ -1031,12 +1041,51 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			allBuildArgs[k] = v
 		}
 
+		imageIdentity := normalizeImageRef(svc.Image)
+		if ctxDir != "" {
+			// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
+			// same way the single-service path does — docker build itself knows
+			// nothing about build.stagefile.yaml.
+			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
+				return fmt.Errorf("service %s: %w", name, err)
+			}
+			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, allBuildArgs, composeEnv(svc))
+			if err != nil {
+				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
+			}
+		}
+
+		appCfg := svcCfgs[name]
+		restartPolicy := resolveRestartPolicy(opts)
+		if restartPolicy.GetMode() == agentpb.RestartPolicyMode_DEFAULT && svc.Restart != "" {
+			restartPolicy = composeRestartPolicy(svc.Restart)
+		}
+		cmd, extraArgs := composeArgv(svc)
+		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, composeEnv(svc))
+		if hashErr == nil {
+			desiredHashes[name] = desiredHash
+			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
+		}
+		if opts.watchState != nil {
+			preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
+			if preserve[name] {
+				continue
+			}
+		}
+
+		if ctxDir == "" {
+			continue // uses pre-built image
+		}
+
 		jobs[name] = composeBuildJob{
 			contextDir: ctxDir,
 			dockerfile: dockerfile,
 			repo:       fmt.Sprintf("%s-%s", projectName, name),
 			buildArgs:  allBuildArgs,
 		}
+	}
+	if n := len(preserve); n > 0 {
+		cliLogln("%d of %d Compose services unchanged and running; leaving them untouched.", n, len(cfg.Services))
 	}
 
 	failedBuilds, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, jobs, opts.maxConcurrency)
@@ -1053,6 +1102,23 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	ordered, err := serviceOrder(cfg)
 	if err != nil {
 		return err
+	}
+	if len(ordered) > 0 {
+		adjustedPreserve := adjustSharedNamespacePreserve(ordered, preserve, svcCfgs[ordered[0]].Isolation)
+		if len(adjustedPreserve) < len(preserve) {
+			cliLogln("Shared-namespace primary changed; restarting the affected Compose service group.")
+		}
+		preserve = adjustedPreserve
+	}
+	if len(preserve) > 0 {
+		ordered = filterPreservedServices(ordered, preserve)
+		if len(ordered) == 0 {
+			cliLogln("All Compose services are unchanged and running; nothing to redeploy.")
+			return nil
+		}
+		// A partial watch cycle does not own the preserved services, so it must
+		// not re-run the app-level lifecycle fallback for the whole group.
+		appLevelCfg = nil
 	}
 
 	for _, name := range ordered {
@@ -1151,7 +1217,18 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName)
+		if err := composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName); err != nil {
+			return err
+		}
+		if ctx.Err() == nil {
+			for _, name := range ordered {
+				if h := desiredHashes[name]; h != "" {
+					appCfg := svcCfgs[name]
+					opts.watchState.record(watchServiceKey(deviceKey, appCfg.AppID, name), h)
+				}
+			}
+		}
+		return nil
 	}
 
 	// Attached mode: stream output from all containers concurrently with

@@ -13,7 +13,40 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestMultiServiceWatchHashTracksBuildAndRuntimeState(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: "api"}
+	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
+	base, err := multiServiceWatchHash("build-a", cfg, []string{"MODE=prod"}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		build  string
+		cfg    *appconfig.AppConfig
+		env    []string
+		policy *agentpb.RestartPolicy
+	}{
+		{"build", "build-b", cfg, []string{"MODE=prod"}, policy},
+		{"config", "build-a", &appconfig.AppConfig{AppID: "demo", ServiceName: "worker"}, []string{"MODE=prod"}, policy},
+		{"env", "build-a", cfg, []string{"MODE=dev"}, policy},
+		{"restart", "build-a", cfg, []string{"MODE=prod"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := multiServiceWatchHash(tc.build, tc.cfg, tc.env, tc.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatalf("%s change did not invalidate watch hash", tc.name)
+			}
+		})
+	}
+}
 
 // newServiceTree writes n service directories under a fresh temp root, each
 // with a minimal Dockerfile, and returns the root plus the services map.

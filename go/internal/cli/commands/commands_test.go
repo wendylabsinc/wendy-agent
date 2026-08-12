@@ -103,12 +103,18 @@ func TestWithWatchInvariants(t *testing.T) {
 	if !got.yes {
 		t.Error("yes should be forced true in watch mode")
 	}
+	if got.watchState == nil {
+		t.Error("watch mode should initialize per-session deploy state")
+	}
 
 	// Other options must be preserved.
 	in := runOptions{product: "demo", prefix: "apps/demo", chunking: chunkingForce}
 	out := withWatchInvariants(in)
 	if out.product != "demo" || out.prefix != "apps/demo" || out.chunking != chunkingForce {
 		t.Errorf("watch invariants clobbered unrelated options: %+v", out)
+	}
+	if again := withWatchInvariants(out); again.watchState != out.watchState {
+		t.Error("watch invariants replaced existing session state")
 	}
 }
 

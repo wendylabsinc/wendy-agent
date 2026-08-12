@@ -501,6 +501,10 @@ type runOptions struct {
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
+	// watchState tracks the effective per-service state successfully deployed by
+	// this watch session. Multi-service deploys use it to leave unchanged,
+	// already-running containers completely untouched on later cycles.
+	watchState *watchDeployState
 	// gpuArch overrides the GPU architecture a Stagefile cuda: stage compiles
 	// against. Normally the selected device answers this; the flag exists for
 	// building against a board that isn't the one in front of you.

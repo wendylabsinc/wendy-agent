@@ -181,6 +181,17 @@ single redeploy runs after edits settle. Build output is hidden unless a build
 fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
 period.
 
+For multi-service `wendy.json` and Compose projects deployed to WendyOS, watch
+mode fingerprints each service's build inputs and effective runtime configuration
+independently. After the initial deploy, services that are unchanged and still
+running are left untouched: they are not rebuilt, recreated, or restarted.
+Changed services are redeployed in dependency order. A missing, stopped, or
+otherwise non-running service is not preserved and goes through the normal
+deploy path.
+When the primary of a `shared-network` or `shared-ipc` group changes, the group
+is restarted together because its other containers share that primary's Linux
+namespaces.
+
 > **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
 > backward compatibility, but `wendy run --watch` is the supported entry point.
 

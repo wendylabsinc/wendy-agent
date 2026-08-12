@@ -75,6 +75,40 @@ func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
 	}
 }
 
+func TestComposeServiceWatchHashTracksCreateRequest(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: "api"}
+	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
+	base, err := composeServiceWatchHash("image-a", cfg, "server", []string{"--port", "80"}, policy, []string{"MODE=prod"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		image  string
+		cmd    string
+		args   []string
+		env    []string
+		policy *agentpb.RestartPolicy
+	}{
+		{"image", "image-b", "server", []string{"--port", "80"}, []string{"MODE=prod"}, policy},
+		{"command", "image-a", "worker", []string{"--port", "80"}, []string{"MODE=prod"}, policy},
+		{"args", "image-a", "server", []string{"--port", "81"}, []string{"MODE=prod"}, policy},
+		{"env", "image-a", "server", []string{"--port", "80"}, []string{"MODE=dev"}, policy},
+		{"restart", "image-a", "server", []string{"--port", "80"}, []string{"MODE=prod"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := composeServiceWatchHash(tc.image, cfg, tc.cmd, tc.args, tc.policy, tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatalf("%s change did not invalidate watch hash", tc.name)
+			}
+		})
+	}
+}
+
 func writeComposeFile(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
