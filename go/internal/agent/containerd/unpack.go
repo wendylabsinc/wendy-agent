@@ -12,6 +12,7 @@ import (
 	"github.com/containerd/containerd/v2/core/snapshots"
 	"github.com/containerd/errdefs"
 	"github.com/google/uuid"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 )
 
@@ -180,59 +181,18 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 			})
 		}
 
-		// Unique per-attempt active key so concurrent unpacks of the same
-		// image (or a stale key from a crashed prior attempt) can't collide
-		// on the AlreadyExists path and clobber each other's in-progress
-		// snapshot. The lease pins the active snapshot during this loop
-		// iteration; only the committed chain-ID snapshot needs gc.root
-		// to survive lease release.
-		activeKey := fmt.Sprintf("extract-%s-%d-%s", img.Name(), i, uuid.NewString())
-		mounts, err := sn.Prepare(ctx, activeKey, parentChainID)
+		reused, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, img.Name(), i, layerDesc, parentChainID, chainID)
 		if err != nil {
-			return fmt.Errorf("preparing snapshot for layer %d: %w", i, err)
+			return err
 		}
-
-		if _, err := c.client.DiffService().Apply(ctx, layerDesc, mounts); err != nil {
-			c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after apply failure", i)
-			return fmt.Errorf("applying layer %d: %w", i, err)
-		}
-
-		gcRootOpt := snapshots.WithLabels(map[string]string{
-			labelKeyGCRoot: gcTimestamp(),
-		})
-		commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
-		switch {
-		case commitErr == nil:
-			c.logger.Debug("Unpacked layer",
-				zap.Int("layer", i),
-				zap.String("chain_id", chainID),
-				zap.Int64("size", layerDesc.Size),
-			)
-			if progress != nil {
-				progress(UnpackProgress{
-					Phase:       "layer",
-					LayerIndex:  i,
-					TotalLayers: totalLayers,
-					LayerSize:   layerDesc.Size,
-					Reused:      false,
-				})
-			}
-		// A concurrent unpack committed the same chain ID first. Our
-		// active key still exists; clean it up and report the layer
-		// as reused rather than freshly unpacked.
-		case errdefs.IsAlreadyExists(commitErr):
-			c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after concurrent commit", i)
-			if progress != nil {
-				progress(UnpackProgress{
-					Phase:       "layer",
-					LayerIndex:  i,
-					TotalLayers: totalLayers,
-					LayerSize:   layerDesc.Size,
-					Reused:      true,
-				})
-			}
-		default:
-			return fmt.Errorf("committing snapshot for layer %d: %w", i, commitErr)
+		if progress != nil {
+			progress(UnpackProgress{
+				Phase:       "layer",
+				LayerIndex:  i,
+				TotalLayers: totalLayers,
+				LayerSize:   layerDesc.Size,
+				Reused:      reused,
+			})
 		}
 
 		parentChainID = chainID
@@ -243,6 +203,55 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 	}
 
 	return nil
+}
+
+// applyLayerSnapshot applies one layer descriptor on top of parentChainID and
+// commits it under chainID. The caller must hold a containerd lease. Returning
+// reused=true means another concurrent preparation committed the same chain ID
+// first; that is a successful idempotent outcome.
+func (c *Client) applyLayerSnapshot(
+	ctx, cleanupCtx context.Context,
+	sn snapshots.Snapshotter,
+	imageName string,
+	layer int,
+	layerDesc ocispec.Descriptor,
+	parentChainID, chainID string,
+) (reused bool, err error) {
+	// Unique per-attempt active key so concurrent unpacks of the same image (or
+	// a stale key from a crashed prior attempt) cannot collide or clobber each
+	// other's in-progress snapshot.
+	activeKey := fmt.Sprintf("extract-%s-%d-%s", imageName, layer, uuid.NewString())
+	mounts, err := sn.Prepare(ctx, activeKey, parentChainID)
+	if err != nil {
+		return false, fmt.Errorf("preparing snapshot for layer %d: %w", layer, err)
+	}
+
+	if _, err := c.client.DiffService().Apply(ctx, layerDesc, mounts); err != nil {
+		c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after apply failure", layer)
+		return false, fmt.Errorf("applying layer %d: %w", layer, err)
+	}
+
+	gcRootOpt := snapshots.WithLabels(map[string]string{
+		labelKeyGCRoot: gcTimestamp(),
+	})
+	commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
+	switch {
+	case commitErr == nil:
+		c.logger.Debug("Unpacked layer",
+			zap.Int("layer", layer),
+			zap.String("chain_id", chainID),
+			zap.Int64("size", layerDesc.Size),
+		)
+		return false, nil
+	case errdefs.IsAlreadyExists(commitErr):
+		// A concurrent unpack committed the same chain ID first. Our active
+		// key still exists and must be removed.
+		c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after concurrent commit", layer)
+		return true, nil
+	default:
+		c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after commit failure", layer)
+		return false, fmt.Errorf("committing snapshot for layer %d: %w", layer, commitErr)
+	}
 }
 
 // removeActiveSnapshot deletes an active snapshot key as part of error recovery,

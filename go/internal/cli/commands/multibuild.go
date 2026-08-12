@@ -25,28 +25,12 @@ import (
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-const (
-	maxConcurrentBuilds = 4
+const maxConcurrentBuilds = 4
 
-	// Builds and pushes are fused in one buildx invocation, so build concurrency
-	// also bounds how many multi-GB images push through the single device-registry
-	// mTLS tunnel at once. Large groups (e.g. the 14-service go2 template, with a
-	// ~10 GB GPU image) collapse that tunnel under full fan-out, so groups at or
-	// above largeGroupThreshold are throttled to largeGroupConcurrency concurrent
-	// builds (WDY-1690). This is the heuristic default; users can override it with
-	// --max-concurrency (WDY-1693).
-	largeGroupThreshold   = 8
-	largeGroupConcurrency = 2
-)
-
-// multiBuildConcurrency returns the auto (heuristic) number of service images to
-// build+push at once for a group of numServices, throttling large groups to
-// protect the shared device registry tunnel (WDY-1690).
+// multiBuildConcurrency returns the default number of service images to
+// build+push at once for a group of numServices.
 func multiBuildConcurrency(numServices int) int {
 	n := maxConcurrentBuilds
-	if numServices >= largeGroupThreshold {
-		n = largeGroupConcurrency
-	}
 	if n > numServices {
 		n = numServices
 	}
@@ -58,7 +42,7 @@ func multiBuildConcurrency(numServices int) int {
 
 // resolveBuildConcurrency returns the effective build+push concurrency for
 // buildCount services. A positive override (--max-concurrency, WDY-1693) takes
-// precedence over the auto heuristic; either way the result is clamped to
+// precedence over the default; either way the result is clamped to
 // [1, buildCount].
 func resolveBuildConcurrency(buildCount, override int) int {
 	if buildCount < 1 {
@@ -142,9 +126,9 @@ var planResolveDockerfile = resolveDockerfile
 
 // maxConcurrentPlans bounds how many services are planned at once. Planning is
 // local work — a build-file resolve (a Stagefile compile, for a Stagefile
-// project) plus a full walk-and-hash of the build context — so unlike
-// maxConcurrentBuilds this is not throttled to protect the device registry
-// tunnel; it only keeps a very large group from opening every context at once.
+// project) plus a full walk-and-hash of the build context. Its higher limit
+// keeps planning fast without letting a very large group open every context at
+// once.
 const maxConcurrentPlans = 8
 
 // servicePlan is the per-service work that has to happen before we can decide
@@ -589,11 +573,8 @@ func buildServicesParallel(
 		}
 	}
 	concurrency := resolveBuildConcurrency(buildCount, maxConcurrency)
-	switch {
-	case maxConcurrency > 0 && concurrency < buildCount:
+	if maxConcurrency > 0 && concurrency < buildCount {
 		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
-	case maxConcurrency <= 0 && concurrency < maxConcurrentBuilds && concurrency < buildCount:
-		cliLogln("Throttling to %d concurrent builds for %d services to protect the device registry tunnel (WDY-1690); override with --max-concurrency.", concurrency, buildCount)
 	}
 	sem := make(chan struct{}, concurrency)
 

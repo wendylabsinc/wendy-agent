@@ -98,6 +98,14 @@ type ContainerdClient interface {
 	GetContainerRestartPolicyLabel(ctx context.Context, appName string) (string, error)
 }
 
+// ImagePreparer is the optional fast-deploy capability that assembles
+// chunk-backed image layers and unpacks their snapshots before RunContainer.
+// It stays separate from ContainerdClient so older test doubles and alternate
+// runtimes can decline the optimization without affecting normal deploys.
+type ImagePreparer interface {
+	PrepareImage(ctx context.Context, imageName string, layers []*agentpb.RunContainerLayerHeader, imageConfig []byte) error
+}
+
 // ContainerExecer is the optional capability to run a process inside a running
 // container with an interactive PTY (docker `exec -it`). The ExecContainer RPC
 // type-asserts for it; a client that does not implement it yields Unimplemented.
