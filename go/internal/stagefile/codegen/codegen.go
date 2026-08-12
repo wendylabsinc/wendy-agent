@@ -112,9 +112,14 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 		if install.Apt != nil {
 			// Include the resolved base-image digest in the APT cache scope. Two
-			// Stagefiles using the same base can safely share indexes and .debs,
-			// while a moved tag (or a different distro) gets a fresh cache.
-			aptBase := s.From + "@" + images[s.From]
+			// Stagefiles using the same pinned base can safely share indexes and
+			// .debs, while a moved tag (or a different distro) gets a fresh cache.
+			// An unpinned stage has no immutable base identity, so leave aptBase
+			// empty to disable persistent APT caches for that stage.
+			aptBase := ""
+			if pinned {
+				aptBase = s.From + "@" + digest
+			}
 			lines = append(lines, aptInstallLines(install.Apt, aptBase, stagePlatform)...)
 		}
 		if install.Apk != nil {
@@ -423,6 +428,14 @@ func aptCacheScope(base, platform string, repos []spec.AptRepository) []string {
 // compiled Stagefiles. sharing=locked is required because APT itself takes
 // exclusive locks in both directories.
 func aptRun(base, platform string, repos []spec.AptRepository, command string) string {
+	// pin: false deliberately leaves the base image unresolved. Without an
+	// immutable base identity, a persistent cache could carry indexes or .debs
+	// across incompatible images after a tag moves. Keep the uncached layer
+	// small by removing its package indexes after each APT invocation.
+	if base == "" {
+		return "RUN " + command + " \\\n" +
+			"    && rm -rf /var/lib/apt/lists/*"
+	}
 	scope := aptCacheScope(base, platform, repos)
 	mounts := []cacheMount{
 		{id: scopedCacheID("apt-lists", scope...), target: "/var/lib/apt/lists"},

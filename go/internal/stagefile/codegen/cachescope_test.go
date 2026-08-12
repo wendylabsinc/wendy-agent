@@ -71,6 +71,22 @@ func TestAptCachesSeparateBaseImagesAndPlatforms(t *testing.T) {
 	}
 }
 
+// pin: false intentionally avoids resolving the base image, so the compiler
+// cannot safely persist package state across builds: the same tag may refer to
+// a different distribution snapshot next time.
+func TestAptCachesDisabledForUnpinnedBase(t *testing.T) {
+	no := false
+	s := aptStage("debian:12", "curl")
+	s.Pin = &no
+	out := gen(t, "linux/arm64", s)
+	if strings.Contains(out, "type=cache") {
+		t.Fatalf("unpinned base uses persistent APT caches:\n%s", out)
+	}
+	if !strings.Contains(out, "rm -rf /var/lib/apt/lists/*") {
+		t.Fatalf("uncached APT install leaves package indexes in the image:\n%s", out)
+	}
+}
+
 // Without an id BuildKit scopes a cache mount by its target path alone, so
 // every pip install in every concurrently-built service queues on one
 // sharing=locked mount — including installs that could not share a single

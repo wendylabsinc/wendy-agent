@@ -125,7 +125,9 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	var wg sync.WaitGroup
 	for _, name := range names {
 		job := jobs[name]
-		wg.Go(func() {
+		wg.Add(1)
+		go func(name string, job composeBuildJob) {
+			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
@@ -161,7 +163,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
 			}
 			results <- result{name: name, err: err, log: logBuf.String()}
-		})
+		}(name, job)
 	}
 
 	go func() {
