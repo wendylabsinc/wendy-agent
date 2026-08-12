@@ -152,6 +152,7 @@ jobs:
           EXPECTED=(
             "wendy-SER9.local"
             "wendyos-jetson-thor-ci.local"
+            "wendyos-thor.local"
             "wendyos-dynamic-channel.local"
           )
 
