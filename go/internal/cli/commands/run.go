@@ -1705,7 +1705,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// normal rebuild below exactly as if this block were absent.
 	pushed := false
 	if ociHint != nil && registryPushWouldUseDocker(opts.builder) {
-		if err := tryPushExistingOCILayout(ctx, conn, regPort, ociHint, repo, conn.IsMTLS); err == nil {
+		if err := tryPushExistingOCILayout(ctx, conn, regPort, ociHint, repo); err == nil {
 			cliSuccess("Reused already-built image for the registry push (skipped a redundant rebuild)")
 			pushed = true
 		} else if opts.debug {
@@ -1776,8 +1776,12 @@ func registryPushWouldUseDocker(builder string) bool {
 // "reuse didn't work" by the caller, which then falls back to the normal
 // rebuild — this function never leaves the deploy worse off than skipping it
 // entirely would have.
-func tryPushExistingOCILayout(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, hint *ociReuseHint, repo string, useMTLS bool) error {
-	registryAddr, cleanup, dialErr, err := resolveRegistryForAgent(ctx, conn, regPort)
+func tryPushExistingOCILayout(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, hint *ociReuseHint, repo string) error {
+	// The OCI pusher runs on the host, not inside BuildKit's VM. Resolve a
+	// host-reachable address (and terminate device mTLS on a loopback proxy when
+	// required) instead of using host.docker.internal, which is only meaningful
+	// from inside the builder container.
+	registryAddr, useMTLS, cleanup, dialErr, err := resolveRegistryForSwiftAgent(ctx, conn, regPort)
 	if err != nil {
 		return fmt.Errorf("resolving device registry: %w", err)
 	}
@@ -2464,7 +2468,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		}
 		defer releaseLayout()
 		build := func(stream, logw io.Writer) error {
-			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
+			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
 		}
 
 		// Native fast path: for a Stagefile project whose deps inputs are
@@ -2542,7 +2546,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		defer os.RemoveAll(tmp)
 		ociTar := filepath.Join(tmp, "image.tar")
 		if err := runBuild(func(stream, logw io.Writer) error {
-			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
+			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
 		}); err != nil {
 			return nil, hint, err
 		}
@@ -2576,7 +2580,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
 	headers, err := pushLayersByChunksWithPrepare(ctx, conn.ContainerService, layers, prepare)
 	if err != nil {
-		return nil, err
+		return nil, hint, err
 	}
 	mark("chunk+query+write+prepare")
 	// Carry the post-start agent-hook metadata so the agent runs the in-container

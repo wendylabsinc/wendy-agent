@@ -494,6 +494,81 @@ func TestChunkLayoutDir(t *testing.T) {
 	}
 }
 
+func TestOCIDeploymentCacheKeySeparatesAppAndPlatform(t *testing.T) {
+	if got, want := ociDeploymentCacheKey("Com.Wendy.App", "LINUX/ARM64"), "com.wendy.app\x00linux/arm64"; got != want {
+		t.Fatalf("ociDeploymentCacheKey = %q, want %q", got, want)
+	}
+	if ociDeploymentCacheKey("ab", "c") == ociDeploymentCacheKey("a", "bc") {
+		t.Fatal("app/platform boundary must be unambiguous")
+	}
+}
+
+// Independent OCI solves must overlap. This is the regression test for the
+// process-wide build.lock queue: both fake buildx commands must start before
+// either is allowed to finish. It also verifies they receive distinct local
+// cache destinations, which is the safety condition for concurrent exporters.
+func TestBuildxOCIExportAllowsIndependentConcurrentSolves(t *testing.T) {
+	isolateBuildLockDir(t)
+	originalLock := buildLock
+	buildLock = &processBuildLock{}
+	defer func() { buildLock = originalLock }()
+
+	originalEnsure := ensureOCIExportBuilderForBuild
+	ensureOCIExportBuilderForBuild = func(context.Context, io.Writer) (string, error) {
+		return "wendy-oci", nil
+	}
+	defer func() { ensureOCIExportBuilderForBuild = originalEnsure }()
+
+	entered := make(chan string, 2)
+	allowFinish := make(chan struct{})
+	originalRun := runBuildxOCIExportCommand
+	runBuildxOCIExportCommand = func(_ context.Context, _ string, args, _ []string, _, _ io.Writer) error {
+		cacheDest := ""
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "type=local,dest=") {
+				cacheDest = arg
+			}
+		}
+		entered <- cacheDest
+		<-allowFinish
+		return nil
+	}
+	defer func() { runBuildxOCIExportCommand = originalRun }()
+
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	results := make(chan error, 2)
+	for i, app := range []string{"app-a", "app-b"} {
+		dest := filepath.Join(t.TempDir(), fmt.Sprintf("layout-%d", i))
+		go func(app, dest string) {
+			results <- buildImageWithBuildxOCIExport(context.Background(), cwd, "Dockerfile", "linux/arm64", nil, dest, true, ociDeploymentCacheKey(app, "linux/arm64"), io.Discard, io.Discard)
+		}(app, dest)
+	}
+
+	cacheDests := map[string]bool{}
+	for range 2 {
+		select {
+		case dest := <-entered:
+			cacheDests[dest] = true
+		case <-time.After(2 * time.Second):
+			close(allowFinish)
+			t.Fatal("independent OCI solve was still queued behind the first")
+		}
+	}
+	close(allowFinish)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(cacheDests) != 2 {
+		t.Fatalf("concurrent solves used %d cache destinations, want 2: %v", len(cacheDests), cacheDests)
+	}
+}
+
 func TestBuildxOCIExportArgs(t *testing.T) {
 	t.Run("dir mode, no cache index, sorted build args", func(t *testing.T) {
 		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "/c/buildx", "/dest/layout", true,

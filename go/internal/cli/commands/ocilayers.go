@@ -888,7 +888,7 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 // otherwise it runs `docker buildx build` with `--output type=oci,dest=<dest>`.
 // It mirrors the flag/cache/env setup of buildAndPushImage but skips registry
 // push entirely.
-func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest string, stdout, stderr io.Writer) error {
+func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest, cacheKey string, stdout, stderr io.Writer) error {
 	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
 		builder = imageBuilderBuildkit
 	}
@@ -903,7 +903,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return buildImageToOCILayoutWithBuildkit(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
 	}
 
-	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, stdout, stderr)
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, cacheKey, stdout, stderr)
 }
 
 // buildImageToOCILayoutDirWithDocker builds with the shared buildx builder and
@@ -911,7 +911,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 // the tar export, BuildKit skips blobs already present at dest, so a warm
 // persistent directory turns the per-build export cost from O(image size)
 // into O(changed bytes). Callers own dest's lifecycle (locking and GC).
-func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir string, stdout, stderr io.Writer) error {
+func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir, cacheKey string, stdout, stderr io.Writer) error {
 	// 0700: image layers/config can embed build-time material, and the legacy
 	// temp-tar this replaces lived in a MkdirTemp (0700) dir. Restricting the
 	// top-level dir gates traversal regardless of the modes BuildKit gives the
@@ -919,7 +919,7 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("creating OCI layout directory: %w", err)
 	}
-	if err := buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr); err != nil {
+	if err := buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, cacheKey, stdout, stderr); err != nil {
 		return err
 	}
 	// The export appended this build's manifest; drop every older entry so
@@ -942,6 +942,15 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 func chunkLayoutDir(userCacheDir, appID, platform string) string {
 	return filepath.Join(userCacheDir, "wendy", "ocilayout",
 		sanitizeCacheKey(appID)+"-"+sanitizeCacheKey(platform))
+}
+
+// ociDeploymentCacheKey identifies the local BuildKit cache written by one
+// independently deployable app/service on one target platform. The separator
+// makes the mapping unambiguous before buildxCacheSubdir hashes it ("ab"+"c"
+// cannot collide with "a"+"bc"). Different keys may be exported concurrently;
+// callers serialize the matching OCI layout directory for the same key.
+func ociDeploymentCacheKey(appID, platform string) string {
+	return strings.ToLower(strings.TrimSpace(appID)) + "\x00" + strings.ToLower(strings.TrimSpace(platform))
 }
 
 // buildxOCIExportArgs assembles the `docker buildx build` argument vector for
@@ -983,24 +992,39 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, t
 // buildImageWithBuildxOCIExport is the shared docker-buildx body behind both
 // OCI export shapes: dest is a tar path (tarFalse=false, legacy) or a layout
 // directory (tarFalse=true).
-func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, stdout, stderr io.Writer) error {
+var (
+	ensureOCIExportBuilderForBuild = ensureOCIExportBuilder
+	runBuildxOCIExportCommand      = func(ctx context.Context, cwd string, args, env []string, stdout, stderr io.Writer) error {
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Dir = cwd
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if env != nil {
+			cmd.Env = env
+		}
+		return cmd.Run()
+	}
+)
+
+func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, cacheKey string, stdout, stderr io.Writer) error {
 	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
 	// phase into lock acquisition, builder verification (the buildx inspect
 	// calls), and the actual buildx solve.
 	submark := phaseTimer()
 
-	// Re-use the shared buildx builder (without mTLS; we don't push to a registry).
+	// Serialize only builder discovery/bootstrap. The OCI builder has stable
+	// configuration (it never knows about a deployment's dynamic registry
+	// proxy), so BuildKit can safely execute independent solves concurrently
+	// after setup. Holding this process-wide lock for the whole solve made
+	// unrelated `wendy run` invocations queue behind one another.
 	releaseLock, err := buildLock.acquire(ctx, stderr)
 	if err != nil {
 		return err
 	}
-	defer releaseLock()
-	submark("  build: acquire lock")
+	submark("  build: acquire setup lock")
 
-	// Use a dedicated builder for OCI-layout export. It needs no registry
-	// config, so it is created once and reused without the per-run
-	// config-inject/restart cycle the registry builder pays.
-	buildxBuilder, err := ensureOCIExportBuilder(ctx, stderr)
+	buildxBuilder, err := ensureOCIExportBuilderForBuild(ctx, stderr)
+	releaseLock()
 	if err != nil {
 		return err
 	}
@@ -1010,12 +1034,11 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	// Shared base cache dir (empty key): the chunk-diff fast path builds exactly
-	// one image per invocation and holds the cross-process build lock, so nothing
-	// else exports into this dir concurrently. Per-service isolation is only
-	// needed where builds actually run in parallel (the multibuild path, WDY-1711)
-	// — should this path ever go multi-service, it must pass a cache key too.
-	cacheDir := buildxLocalCacheDir(userCache, "")
+	// Every independently runnable deployment gets an isolated local cache.
+	// BuildKit's local cache exporter is not safe for concurrent writers; this
+	// is what lets the stable OCI builder run solves concurrently without
+	// trading the old global queue for cache corruption.
+	cacheDir := buildxLocalCacheDir(userCache, cacheKey)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1039,16 +1062,7 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	submark("  build: setup (cache/env)")
 
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = cwd
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-
-	if env := dockerConfigEnv(cleanDockerConfigDir); env != nil {
-		cmd.Env = env
-	}
-
-	if err := cmd.Run(); err != nil {
+	if err := runBuildxOCIExportCommand(ctx, cwd, args, dockerConfigEnv(cleanDockerConfigDir), stdout, stderr); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("docker buildx build (OCI export) failed: %w", err)}
 	}
 	return nil
@@ -1069,14 +1083,10 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, stdout, stderr io.Writer) error {
 	submark := phaseTimer()
 
-	// Serialize with the buildx OCI path so two builders never run at once.
-	releaseLock, err := buildLock.acquire(ctx, stderr)
-	if err != nil {
-		return err
-	}
-	defer releaseLock()
-	submark("  build: acquire lock")
-
+	// Apple Container owns its build scheduler and this path already uses a
+	// unique temporary image tag and destination per invocation. It does not
+	// share BuildKit's local cache exporter or the Docker builder configuration,
+	// so it must not participate in Docker's cross-process setup lock.
 	buildContext, err := appleContainerBuildContextPath(cwd)
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)

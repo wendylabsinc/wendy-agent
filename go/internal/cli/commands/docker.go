@@ -2111,6 +2111,27 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	if err != nil {
 		return err
 	}
+
+	// Docker deployments build through the stable OCI-export builder and push
+	// from the host. BuildKit therefore never receives a deployment's temporary
+	// registry address, so one `wendy run` cannot reconfigure/restart the shared
+	// builder underneath another. Independent app/service layouts and local
+	// caches are keyed separately and may build concurrently; the same key is
+	// serialized by lockOCILayoutDir.
+	if normalized == imageBuilderDocker {
+		registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		defer cleanup()
+
+		cliLogln("Building OCI image with %s for %s, then pushing from the host...", imageBuilderDisplayName(normalized), platform)
+		if err := buildAndPushImageViaOCILayout(ctx, dir, registryAddr, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS); err != nil {
+			return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+		}
+		return nil
+	}
+
 	registryAddr, cleanup, useMTLS, dialErr, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
 	if err != nil {
 		return err
@@ -2121,6 +2142,39 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
 	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
 		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+	}
+	return nil
+}
+
+// buildAndPushImageViaOCILayout is the concurrency-safe Docker deployment
+// path. A stable, registry-agnostic BuildKit builder writes a persistent OCI
+// layout; the host then pushes that image to the device. Per-app/service locks
+// protect the lazy OCI files while allowing unrelated deployments to overlap.
+func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	if cacheKey == "" {
+		cacheKey = repo
+	}
+	if err := buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(logOutput, "[registry] pushing OCI image to %s/%s:latest\n", registryAddr, repo)
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
+		return err
 	}
 	return nil
 }
