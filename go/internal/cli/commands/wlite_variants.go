@@ -20,6 +20,12 @@ const wendyLiteCatalogJSON = `
             "flash_size": "4MB"
         },
         {
+            "name": "esp32c5_native",
+            "target": "esp32c5",
+            "board_cfg": "esp32c5_generic_native",
+            "flash_size": "4MB"
+        },
+        {
             "name": "esp32c6",
             "target": "esp32c6",
             "board_cfg": "esp32c6_generic",
@@ -91,6 +97,12 @@ const wendyLiteCatalogJSON = `
             "name": "esp32c5_generic",
             "display_name": "Generic ESP32-C5 board, 4MB flash",
             "binary": "esp32c5",
+            "target": "esp32c5"
+        },
+        {
+            "name": "esp32c5_generic_native",
+            "display_name": "Generic ESP32-C5 board, 4MB flash, native app support",
+            "binary": "esp32c5_native",
             "target": "esp32c5"
         },
         {
