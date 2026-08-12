@@ -25,14 +25,26 @@ import (
 type ConnectFunc func(ctx context.Context, address string) (*grpcclient.AgentConnection, error)
 
 type mcpServer struct {
-	cfg           *config.Config
-	connectFn     ConnectFunc
-	conn          *grpcclient.AgentConnection
-	connType      string
-	cloudTunnels  map[string]*mcpCloudTunnel
-	discoverLANFn func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
-	mu            sync.RWMutex
-	proxyDiag     []proxyDiagEntry
+	cfg              *config.Config
+	connectFn        ConnectFunc
+	startupConnectFn func(context.Context)
+	conn             *grpcclient.AgentConnection
+	connRevision     uint64
+	connType         string
+	cloudTunnels     map[string]*mcpCloudTunnel
+	discoverLANFn    func(ctx context.Context, timeout time.Duration) ([]models.LANDevice, error)
+	mu               sync.RWMutex
+	proxyDiag        []proxyDiagEntry
+}
+
+// SetStartupConnect configures the optional device connection attempted after
+// the MCP stdio server starts accepting requests. Keeping this work off the
+// protocol startup path prevents an offline default device from delaying the
+// initialize handshake until the MCP host times out.
+func (s *mcpServer) SetStartupConnect(fn func(context.Context)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startupConnectFn = fn
 }
 
 func New(cfg *config.Config, connectFn ConnectFunc) *mcpServer {
@@ -58,6 +70,7 @@ func (s *mcpServer) SetConn(conn *grpcclient.AgentConnection) {
 		_ = s.conn.Close()
 	}
 	s.conn = conn
+	s.connRevision++
 	if conn == nil {
 		s.connType = ""
 	}
@@ -101,6 +114,44 @@ func (s *mcpServer) ConnectTo(ctx context.Context, address string) error {
 	return nil
 }
 
+// ConnectToOnStartup connects only if no explicit connection change occurred
+// while the attempt was in flight. Once stdio is serving, a device_connect,
+// cloud_connect, or device_disconnect request must take precedence over the
+// automatic default-device connection.
+func (s *mcpServer) ConnectToOnStartup(ctx context.Context, address string) error {
+	if s.connectFn == nil {
+		return fmt.Errorf("no connect function configured")
+	}
+
+	s.mu.RLock()
+	revision := s.connRevision
+	alreadyConnected := s.conn != nil
+	s.mu.RUnlock()
+	if alreadyConnected {
+		return nil
+	}
+
+	conn, err := s.connectFn(ctx, address)
+	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = conn.Close()
+		return err
+	}
+
+	s.mu.Lock()
+	if s.connRevision != revision || s.conn != nil {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return nil
+	}
+	s.conn = conn
+	s.connRevision++
+	s.mu.Unlock()
+	return nil
+}
+
 // Start registers all tools and begins serving MCP over stdio. Blocks until
 // the client closes the connection.
 func (s *mcpServer) Start(ctx context.Context) error {
@@ -122,13 +173,43 @@ func (s *mcpServer) Start(ctx context.Context) error {
 	s.registerProvisioningTools(srv)
 	s.registerOSTools(srv)
 	s.registerCloudTools(srv)
+
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	go s.runStartupConnect(startupCtx, srv)
+
+	return serveStdio(srv)
+}
+
+// serveStdio is replaceable in tests so startup ordering can be verified
+// without taking over the test process's stdin and stdout.
+var serveStdio = func(srv *server.MCPServer) error {
+	return server.ServeStdio(srv)
+}
+
+func (s *mcpServer) runStartupConnect(ctx context.Context, srv *server.MCPServer) {
+	s.mu.RLock()
+	connect := s.startupConnectFn
+	s.mu.RUnlock()
+	if connect == nil {
+		return
+	}
+
+	connect(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+
+	// MCPServer.AddTool is concurrency-safe and sends tools/list_changed to
+	// initialized clients, so container tools may be discovered after the host
+	// has completed its handshake with Wendy.
 	cleanups := s.registerContainerMCPTools(ctx, srv)
 	defer func() {
-		for _, c := range cleanups {
-			c()
+		for _, cleanup := range cleanups {
+			cleanup()
 		}
 	}()
-	return server.ServeStdio(srv)
+	<-ctx.Done()
 }
 
 func errNotConnected() *mcpgo.CallToolResult {
