@@ -1488,21 +1488,23 @@ func buildkitRegistryConfig(registryAddr string, plainHTTP bool, keypair *[2]str
 	return sb.String()
 }
 
-// removeBuilder removes a buildx builder, falling back to deleting the
-// instance file directly when `docker buildx rm` fails (e.g. because the
-// stored config contains IPv6 brackets that the host TOML parser rejects).
-func removeBuilder(ctx context.Context, name string) {
-	rmCmd := exec.CommandContext(ctx, "docker", "buildx", "rm", name)
-	if rmCmd.Run() == nil {
-		return
+// ensureRegistryBuilderInstance creates builderName only when it does not
+// already exist. Registry configuration changes are deliberately not handled
+// here: callers update the existing container in place so its BuildKit state
+// volume survives dynamic proxy-port and certificate changes.
+func ensureRegistryBuilderInstance(ctx context.Context, builderName string) (created bool, err error) {
+	if exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil {
+		return false, nil
 	}
-	// Fallback: remove the instance file and kill the container directly.
-	home, err := os.UserHomeDir()
-	if err == nil {
-		os.Remove(filepath.Join(home, ".docker", "buildx", "instances", name))
-		os.Remove(filepath.Join(home, ".docker", "buildx", "activity", name))
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		"--name", builderName,
+		"--driver", "docker-container",
+		"--driver-opt", "network=host",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 	}
-	exec.CommandContext(ctx, "docker", "rm", "-f", "buildx_buildkit_"+name+"0").Run()
+	return true, nil
 }
 
 // ensurePlaintextBuilder ensures the "wendy" buildx builder exists with plain
@@ -1522,27 +1524,18 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != fullConfig
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject config into a newly created builder
 	}
 
-	// Inject the real config into the builder container and restart only when needed.
+	// Inject the real config into the existing builder container and restart only
+	// when needed. In particular, do not remove/recreate the builder when the
+	// per-run registry proxy port changes: its /var/lib/buildkit state is held in
+	// a Docker volume, and an in-place restart preserves warm image snapshots.
 	// Also re-inject if the container was destroyed (e.g. after colima restart) or
 	// was bootstrapped without config injection (default buildkitd.toml lacks http=true).
 	containerName := "buildx_buildkit_" + builderName + "0"
@@ -1627,7 +1620,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	// public leaf certificate. The certificate is public material; no private
 	// key material or derivative is persisted (SOC2-C1, NIST-SC-28, ISO27001-A.8).
 	// When the cert changes (rotation, new device), the digest changes and the
-	// builder is torn down and rebuilt.
+	// builder is reconfigured and restarted in place.
 	certDigest := sha256.Sum256([]byte(leafCertPEM))
 	appliedState := fullConfig +
 		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:])
@@ -1635,27 +1628,17 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != appliedState
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject certs and config into a newly created builder
 	}
 
 	// Only copy certs and restart the builder when something actually changed.
+	// Reconfigure an existing builder in place so its /var/lib/buildkit volume —
+	// and therefore its warm image snapshots — survives per-run proxy-port changes.
 	// Restarting while another parallel build uses the same builder kills that build.
 	if configChanged {
 		if err := copyCertsToBuilder(ctx, builderName, hostCertDir, containerCertDir); err != nil {

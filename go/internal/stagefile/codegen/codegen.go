@@ -111,7 +111,11 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			install = &spec.Install{}
 		}
 		if install.Apt != nil {
-			lines = append(lines, aptInstallLines(install.Apt)...)
+			// Include the resolved base-image digest in the APT cache scope. Two
+			// Stagefiles using the same base can safely share indexes and .debs,
+			// while a moved tag (or a different distro) gets a fresh cache.
+			aptBase := s.From + "@" + images[s.From]
+			lines = append(lines, aptInstallLines(install.Apt, aptBase, stagePlatform)...)
 		}
 		if install.Apk != nil {
 			lines = append(lines, apkInstallLines(install.Apk)...)
@@ -373,14 +377,14 @@ func cmakeCacheID(repository, platform string) string {
 // by BuildKit itself (ADD --checksum, so the fetch never runs inside the
 // container and the key can't drift), and one sources.list.d entry per
 // repository.
-func aptRepositoryLines(repos []spec.AptRepository) []string {
+func aptRepositoryLines(repos []spec.AptRepository, base, platform string) []string {
 	if len(repos) == 0 {
 		return nil
 	}
-	lines := []string{
-		"RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \\",
-		"    && rm -rf /var/lib/apt/lists/*",
-	}
+	// The bootstrap can only use the base image's repositories; the declared
+	// repositories are added after ca-certificates and their pinned keys exist.
+	lines := []string{aptRun(base, platform, nil,
+		"apt-get update && apt-get install -y --no-install-recommends ca-certificates")}
 	for _, r := range repos {
 		ext := ".gpg"
 		if r.Key.Format == "armored" {
@@ -400,8 +404,39 @@ func aptRepositoryLines(repos []spec.AptRepository) []string {
 	return lines
 }
 
-func aptInstallLines(a *spec.AptInstall) []string {
-	lines := aptRepositoryLines(a.Repositories)
+// aptCacheScope returns a stable description of every input that controls the
+// contents of APT's indexes and package archive. Package names are deliberately
+// excluded: compatible Stagefiles should share downloads even when they install
+// different subsets. Repository order is preserved because it can affect APT
+// priority when otherwise-equivalent sources are declared more than once.
+func aptCacheScope(base, platform string, repos []spec.AptRepository) []string {
+	parts := []string{base, platform}
+	for _, r := range repos {
+		parts = append(parts, r.Name, r.URL, strings.Join(r.Suites, "\x1f"), strings.Join(r.Components, "\x1f"), r.Key.URL, r.Key.SHA256, r.Key.Format)
+	}
+	return parts
+}
+
+// aptRun gives APT two persistent BuildKit caches: package indexes (so update
+// can use conditional requests instead of downloading every index afresh) and
+// downloaded .debs. Explicit IDs make those caches reusable across separately
+// compiled Stagefiles. sharing=locked is required because APT itself takes
+// exclusive locks in both directories.
+func aptRun(base, platform string, repos []spec.AptRepository, command string) string {
+	scope := aptCacheScope(base, platform, repos)
+	mounts := []cacheMount{
+		{id: scopedCacheID("apt-lists", scope...), target: "/var/lib/apt/lists"},
+		{id: scopedCacheID("apt-archives", scope...), target: "/var/cache/apt"},
+	}
+	// Debian/Ubuntu container images normally install docker-clean, whose APT
+	// hooks delete every downloaded .deb after the command. Removing that hook
+	// is what lets the archive mount actually retain packages for sibling builds;
+	// the mount itself remains outside the resulting image layer.
+	return cacheRunMounts(mounts, "rm -f /etc/apt/apt.conf.d/docker-clean && "+command)
+}
+
+func aptInstallLines(a *spec.AptInstall, base, platform string) []string {
+	lines := aptRepositoryLines(a.Repositories, base, platform)
 	parts := []string{"apt-get", "update", "&&", "apt-get", "install", "-y"}
 	if !a.Recommends {
 		parts = append(parts, "--no-install-recommends")
@@ -409,10 +444,7 @@ func aptInstallLines(a *spec.AptInstall) []string {
 	for _, p := range a.Packages {
 		parts = append(parts, shellQuote(p))
 	}
-	return append(lines,
-		"RUN "+strings.Join(parts, " ")+" \\",
-		"    && rm -rf /var/lib/apt/lists/*",
-	)
+	return append(lines, aptRun(base, platform, a.Repositories, strings.Join(parts, " ")))
 }
 
 func apkInstallLines(a *spec.ApkInstall) []string {

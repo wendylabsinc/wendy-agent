@@ -1,17 +1,79 @@
 package commands
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// A Compose build includes its registry upload in the same builder call. This
+// barrier therefore proves both that service image builds overlap and that a
+// later build need not wait for an earlier service to finish uploading.
+func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
+	origBuild := buildComposeServiceImage
+	origInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = origBuild
+		isInteractiveTerminalFn = origInteractive
+	})
+	isInteractiveTerminalFn = func() bool { return false }
+
+	const count = 4
+	jobs := make(map[string]composeBuildJob, count)
+	for i := range count {
+		name := string(rune('a' + i))
+		jobs[name] = composeBuildJob{contextDir: name, dockerfile: "Dockerfile", repo: "app-" + name}
+	}
+
+	var started sync.WaitGroup
+	started.Add(count)
+	var mu sync.Mutex
+	cacheKeys := map[string]string{}
+	buildComposeServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, repo, _, _ string, _ map[string]string, cacheKey string, _, _ io.Writer) error {
+		mu.Lock()
+		cacheKeys[repo] = cacheKey
+		mu.Unlock()
+		started.Done()
+		started.Wait()
+		return nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", jobs, count)
+		if err == nil && len(failed) != 0 {
+			err = joinServiceErrors(failed)
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("buildComposeServicesParallel: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Compose services did not enter build-and-push concurrently")
+	}
+
+	for _, job := range jobs {
+		if cacheKeys[job.repo] != job.repo {
+			t.Errorf("repo %q used cache key %q; concurrent exports need per-service isolation", job.repo, cacheKeys[job.repo])
+		}
+	}
+}
 
 func writeComposeFile(t *testing.T, dir, name, body string) {
 	t.Helper()

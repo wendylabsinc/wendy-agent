@@ -95,8 +95,9 @@ func TestGenerateAptInstall(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl' 'git' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends 'curl' 'git'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -116,8 +117,9 @@ func TestGenerateAptInstallWithRecommends(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y 'curl' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y 'curl'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)
@@ -473,8 +475,9 @@ func TestGenerateAptInstallQuotesPackageNames(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	want := "FROM debian:12@sha256:abc123 AS app\n" +
-		"RUN apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned' \\\n" +
-		"    && rm -rf /var/lib/apt/lists/*\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-068acc661142d56e,target=/var/lib/apt/lists \\\n" +
+		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-068acc661142d56e,target=/var/cache/apt \\\n" +
+		"    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends 'curl && echo pwned'\n" +
 		"USER 65532\n"
 	if out != want {
 		t.Fatalf("got:\n%q\nwant:\n%q", out, want)

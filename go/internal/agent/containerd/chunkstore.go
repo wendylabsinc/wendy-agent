@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/containerd/errdefs"
 	digest "github.com/opencontainers/go-digest"
@@ -39,9 +40,32 @@ const defaultChunkStagingDir = "/var/lib/wendy/chunk-staging"
 // deploys staging different content do not collide.
 type staging struct {
 	dir string
+	mu  sync.Mutex
+	// changed is closed and replaced whenever a new chunk becomes visible.
+	// Closing broadcasts to every concurrent image preparation waiter, unlike
+	// sending on a shared channel (which would wake only one waiter).
+	changed chan struct{}
 }
 
-func newStaging(dir string) *staging { return &staging{dir: dir} }
+func newStaging(dir string) *staging {
+	return &staging{dir: dir, changed: make(chan struct{})}
+}
+
+// changes returns the current broadcast generation. Callers subscribe before
+// checking availability so a write racing the check either becomes visible to
+// that check or closes the returned channel; no wakeup can be lost.
+func (s *staging) changes() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.changed
+}
+
+func (s *staging) notifyChanged() {
+	s.mu.Lock()
+	close(s.changed)
+	s.changed = make(chan struct{})
+	s.mu.Unlock()
+}
 
 // path returns the on-disk location for a chunk hash.
 func (s *staging) path(h [32]byte) string {
@@ -96,6 +120,7 @@ func (s *staging) write(h [32]byte, data []byte) error {
 		os.Remove(tmpName)
 		return err
 	}
+	s.notifyChanged()
 	return nil
 }
 

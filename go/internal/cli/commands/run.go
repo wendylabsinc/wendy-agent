@@ -489,8 +489,10 @@ type runOptions struct {
 	product              string
 	service              string
 	keepGoing            bool
-	maxConcurrency       int
-	userArgs             []string
+	// maxConcurrency bounds simultaneous service build-and-push jobs for both
+	// standalone multi-service manifests and Compose projects.
+	maxConcurrency int
+	userArgs       []string
 	// env are extra KEY=VALUE environment variables injected into the container
 	// at create time (CreateContainerRequest.Env). Set by --env, and by fleet
 	// deploys to wire cross-component discovery (e.g. WENDY_FLEET_PEERS) into a
@@ -582,7 +584,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies (multi-service projects)")
 	cmd.Flags().BoolVar(&opts.keepGoing, "keep-going", false, "Multi-service: deploy services that build successfully instead of aborting the whole group on the first build/push failure")
-	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service: max service images to build+push at once (0 = auto-throttle large groups)")
+	cmd.Flags().IntVar(&opts.maxConcurrency, "max-concurrency", 0, "Multi-service/Compose: max service images to build+push at once (0 = default limit of 4)")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
 	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable in the container as KEY=VALUE; repeatable, and overrides wendy.json env of the same key")
 	cmd.Flags().StringVar(&opts.chunking, "chunking", chunkingAuto, "Content-defined chunking (CBC) deploy path: auto (try chunk-diff, fall back to registry push), force (chunk-diff only, no fallback), or off (registry push only)")
@@ -713,7 +715,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	if opts.maxConcurrency < 0 {
-		return fmt.Errorf("--max-concurrency must be >= 0 (0 = auto)")
+		return fmt.Errorf("--max-concurrency must be >= 0 (0 = default limit of 4)")
 	}
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
@@ -2457,13 +2459,6 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	}
 	mark("read+decompress layers")
 
-	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
-	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers)
-	if err != nil {
-		return nil, err
-	}
-	mark("chunk+query+write")
-
 	appConfigData, err := json.Marshal(appCfg)
 	if err != nil {
 		return nil, err
@@ -2473,6 +2468,22 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		return nil, fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
 	}
 	imageName := strings.ToLower(appCfg.AppID) + ":latest"
+	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+		_, prepareErr := conn.ContainerService.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
+			ImageName:      imageName,
+			Layers:         headers,
+			ImageConfig:    imageConfig,
+			ImageSignature: imageSignature,
+		})
+		return prepareErr
+	}
+
+	cliLogln("Diffing %s layer(s) against device...", tui.Value(fmt.Sprintf("%d", len(layers))))
+	headers, err := pushLayersByChunksWithPrepare(ctx, conn.ContainerService, layers, prepare)
+	if err != nil {
+		return nil, err
+	}
+	mark("chunk+query+write+prepare")
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)

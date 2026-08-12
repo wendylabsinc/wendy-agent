@@ -39,6 +39,38 @@ func pipStage(platform string, groups ...spec.PipInstall) spec.Stage {
 		Install: &spec.Install{Pip: groups}}
 }
 
+func aptStage(from string, packages ...string) spec.Stage {
+	return spec.Stage{Name: "app", From: from,
+		Install: &spec.Install{Apt: &spec.AptInstall{Packages: packages}}}
+}
+
+// Explicit IDs, rather than target-path defaults, are what make the cache
+// visible to separately compiled Stagefiles and concurrent buildx clients.
+func TestAptCachesAreSharedAcrossCompatibleStagefiles(t *testing.T) {
+	a := mountIDs(t, gen(t, "linux/arm64", aptStage("debian:12", "curl")))
+	b := mountIDs(t, gen(t, "linux/arm64", aptStage("debian:12", "git")))
+	if len(a) != 2 || len(b) != 2 {
+		t.Fatalf("APT must mount lists and archives caches, got %v / %v", a, b)
+	}
+	if a[0] != b[0] || a[1] != b[1] {
+		t.Fatalf("compatible Stagefiles do not share APT caches: %v / %v", a, b)
+	}
+}
+
+// APT indexes and .debs are distribution- and architecture-specific. Keeping
+// those scopes apart prevents a cache hit from crossing incompatible roots.
+func TestAptCachesSeparateBaseImagesAndPlatforms(t *testing.T) {
+	base := mountIDs(t, gen(t, "linux/arm64", aptStage("debian:12", "curl")))
+	otherImage := mountIDs(t, gen(t, "linux/arm64", aptStage("ubuntu:24.04", "curl")))
+	otherPlatform := mountIDs(t, gen(t, "linux/amd64", aptStage("debian:12", "curl")))
+	if base[0] == otherImage[0] || base[1] == otherImage[1] {
+		t.Fatalf("different base images share APT caches: %v / %v", base, otherImage)
+	}
+	if base[0] == otherPlatform[0] || base[1] == otherPlatform[1] {
+		t.Fatalf("different platforms share APT caches: %v / %v", base, otherPlatform)
+	}
+}
+
 // Without an id BuildKit scopes a cache mount by its target path alone, so
 // every pip install in every concurrently-built service queues on one
 // sharing=locked mount — including installs that could not share a single

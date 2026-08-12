@@ -33,6 +33,12 @@ service WendyContainerService {
     // skip decompressing and content-chunking layers the device can reuse as-is
     // — for those layers no dedup is possible, so chunking would be pure waste.
     rpc QueryLayers(QueryLayersRequest) returns (QueryLayersResponse);
+    // PrepareImage assembles chunk-backed layers and unpacks their snapshots
+    // before RunContainer. The CLI starts this RPC before uploading missing
+    // chunks, allowing device-side assembly/unpack to overlap the transfer.
+    // RunContainer remains the source of truth and repeats these idempotent
+    // operations, so callers can fall back safely when this RPC is unavailable.
+    rpc PrepareImage(RunContainerLayersRequest) returns (PrepareImageResponse);
 }
 
 message ListContainersRequest {}
@@ -384,3 +390,5 @@ message PortEntry {
 message MCPChunk {
     bytes data = 1;
 }
+
+message PrepareImageResponse {}
