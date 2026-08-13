@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -40,59 +41,95 @@ func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
 
 // TestBuildSetupStepWriterEmitsRunningDetailAndDone exercises
 // newBuildSetupStepWriter directly: partial lines split across Write calls
-// must still buffer into whole-line Detail updates, finish() must report a
-// positive elapsed Dur, a second finish() call must be a no-op, and every
-// byte written must reach tee untouched (the setupLog failure-replay
-// contract).
+// must still buffer into whole-line Detail updates, a trailing line with no
+// final '\n' must be flushed by finish() rather than silently dropped from
+// the live view, finish() must report a positive elapsed Dur, a second
+// finish() call must be a no-op, and every byte written must reach tee
+// untouched (the setupLog failure-replay contract).
 func TestBuildSetupStepWriterEmitsRunningDetailAndDone(t *testing.T) {
-	var events []tui.BuildStepEvent
-	emit := func(e tui.BuildStepEvent) { events = append(events, e) }
-	var tee bytes.Buffer
-
-	w, finish := newBuildSetupStepWriter(emit, &tee)
-
-	// Split one line across two writes to exercise partial-line buffering.
-	io.WriteString(w, "[buildx] boot")
-	io.WriteString(w, "strapping builder \"wendy\"\n")
-	io.WriteString(w, "[buildx] pulling image\n")
-
-	time.Sleep(time.Millisecond)
-	finish()
-	finish() // idempotent: must not emit a second Done
-
-	wantTee := "[buildx] bootstrapping builder \"wendy\"\n[buildx] pulling image\n"
-	if got := tee.String(); got != wantTee {
-		t.Errorf("tee = %q, want %q (every byte must reach the failure-replay buffer)", got, wantTee)
+	cases := []struct {
+		name        string
+		writes      []string // concatenated and written to w, one Write call each
+		wantRunning []string // expected Running-event Details, in order
+	}{
+		{
+			name: "partial line split across writes",
+			writes: []string{
+				"[buildx] boot",
+				"strapping builder \"wendy\"\n",
+				"[buildx] pulling image\n",
+			},
+			wantRunning: []string{
+				`[buildx] bootstrapping builder "wendy"`,
+				"[buildx] pulling image",
+			},
+		},
+		{
+			name: "trailing unterminated line is flushed by finish",
+			writes: []string{
+				"[buildx] bootstrapping builder \"wendy\"\n",
+				"ERROR: no space left on device", // no trailing '\n'
+			},
+			wantRunning: []string{
+				`[buildx] bootstrapping builder "wendy"`,
+				"ERROR: no space left on device",
+			},
+		},
 	}
 
-	var running, done int
-	for _, e := range events {
-		if e.ID != buildSetupStepID {
-			t.Fatalf("event ID = %q, want %q", e.ID, buildSetupStepID)
-		}
-		if e.Kind != tui.BuildVertexSetup {
-			t.Fatalf("event Kind = %v, want tui.BuildVertexSetup", e.Kind)
-		}
-		if e.Display != "preparing buildx builder" {
-			t.Fatalf("event Display = %q, want %q", e.Display, "preparing buildx builder")
-		}
-		switch e.Status {
-		case tui.BuildStepRunning:
-			running++
-		case tui.BuildStepDone:
-			done++
-			if e.Dur <= 0 {
-				t.Errorf("Done Dur = %v, want > 0", e.Dur)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []tui.BuildStepEvent
+			emit := func(e tui.BuildStepEvent) { events = append(events, e) }
+			var tee bytes.Buffer
+
+			w, finish := newBuildSetupStepWriter(emit, &tee)
+
+			var wantTee strings.Builder
+			for _, chunk := range tc.writes {
+				io.WriteString(w, chunk)
+				wantTee.WriteString(chunk)
 			}
-		default:
-			t.Fatalf("unexpected status %v", e.Status)
-		}
-	}
-	if running != 2 {
-		t.Errorf("running events = %d, want 2 (one per complete line)", running)
-	}
-	if done != 1 {
-		t.Errorf("done events = %d, want 1 (double-finish must be idempotent)", done)
+
+			time.Sleep(time.Millisecond)
+			finish()
+			finish() // idempotent: must not emit a second Done or re-flush
+
+			if got := tee.String(); got != wantTee.String() {
+				t.Errorf("tee = %q, want %q (every byte must reach the failure-replay buffer)", got, wantTee.String())
+			}
+
+			var running []string
+			var done int
+			for _, e := range events {
+				if e.ID != buildSetupStepID {
+					t.Fatalf("event ID = %q, want %q", e.ID, buildSetupStepID)
+				}
+				if e.Kind != tui.BuildVertexSetup {
+					t.Fatalf("event Kind = %v, want tui.BuildVertexSetup", e.Kind)
+				}
+				if e.Display != "preparing buildx builder" {
+					t.Fatalf("event Display = %q, want %q", e.Display, "preparing buildx builder")
+				}
+				switch e.Status {
+				case tui.BuildStepRunning:
+					running = append(running, e.Detail)
+				case tui.BuildStepDone:
+					done++
+					if e.Dur <= 0 {
+						t.Errorf("Done Dur = %v, want > 0", e.Dur)
+					}
+				default:
+					t.Fatalf("unexpected status %v", e.Status)
+				}
+			}
+			if !reflect.DeepEqual(running, tc.wantRunning) {
+				t.Errorf("running Details = %#v, want %#v", running, tc.wantRunning)
+			}
+			if done != 1 {
+				t.Errorf("done events = %d, want 1 (double-finish must be idempotent)", done)
+			}
+		})
 	}
 }
 

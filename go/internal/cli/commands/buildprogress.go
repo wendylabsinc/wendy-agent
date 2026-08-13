@@ -148,7 +148,9 @@ func truncateSetupDetail(s string) string {
 // the interactive renderer shows a spinner row. Kind BuildVertexSetup keeps
 // it out of both renderers' cached/rebuilt tally.
 //
-// finish emits a terminal Done event carrying the elapsed duration; it is
+// finish first flushes any buffered trailing line that never got a '\n' (a
+// message printed just before the process exited) as one last Running event,
+// then emits a terminal Done event carrying the elapsed duration. It is
 // idempotent, and it is a no-op if no setup-log line was ever seen (e.g. the
 // buildx builder was already warm and bootstrapOCIBuilder was never invoked)
 // so a synthetic step never appears out of nowhere. The writer has its own
@@ -188,28 +190,51 @@ func (s *buildSetupStepWriter) Write(p []byte) (int, error) {
 		line := strings.TrimSpace(string(s.buf[:i]))
 		s.buf = s.buf[i+1:]
 		if line == "" {
+			// Deliberate: a blank line alone must not flip started to true —
+			// otherwise a build whose only logw traffic is blank chatter would
+			// still get a synthetic Done, defeating the "no setup output => no
+			// synthetic step" contract that keeps already-warm builds quiet.
 			continue
 		}
-		s.started = true
-		s.emit(tui.BuildStepEvent{
-			ID:      buildSetupStepID,
-			Kind:    tui.BuildVertexSetup,
-			Display: "preparing buildx builder",
-			Status:  tui.BuildStepRunning,
-			Detail:  truncateSetupDetail(line),
-		})
+		s.emitRunning(line)
 	}
 	return len(p), nil
+}
+
+// emitRunning emits a Running event for one detail line and marks the step
+// started. Callers must hold s.mu.
+func (s *buildSetupStepWriter) emitRunning(line string) {
+	s.started = true
+	s.emit(tui.BuildStepEvent{
+		ID:      buildSetupStepID,
+		Kind:    tui.BuildVertexSetup,
+		Display: "preparing buildx builder",
+		Status:  tui.BuildStepRunning,
+		Detail:  truncateSetupDetail(line),
+	})
 }
 
 func (s *buildSetupStepWriter) finish() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.finished || !s.started {
-		s.finished = true
+	if s.finished {
 		return
 	}
 	s.finished = true
+
+	// Flush a trailing unterminated line (e.g. an error printed without a
+	// final newline before the process exits). Write only turns complete
+	// '\n'-terminated lines into Running events, so without this the last
+	// thing the setup command said would reach tee (the failure-replay
+	// buffer) but silently vanish from the live synthetic step.
+	if line := strings.TrimSpace(string(s.buf)); line != "" {
+		s.buf = nil
+		s.emitRunning(line)
+	}
+
+	if !s.started {
+		return
+	}
 	s.emit(tui.BuildStepEvent{
 		ID:      buildSetupStepID,
 		Kind:    tui.BuildVertexSetup,

@@ -889,8 +889,17 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 	// credentials via --build-arg; use buildctl's `--secret` for those.
 	cmd := exec.CommandContext(ctx, "buildctl", args...)
 	cmd.Dir = cwd
+	// BuildKit writes its build progress to stderr, not stdout (see
+	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Point
+	// cmd.Stderr at the *same* stdout value, not a separate writer, so
+	// os/exec collapses stdout+stderr into a single pipe/copy goroutine (the
+	// same same-writer-value trick buildAndPushImage uses, docker.go
+	// ~:2034-2038) — otherwise the whole build's progress lands in the
+	// setup-log buffer instead of the parser, which WDY-2432's synthetic
+	// builder-setup step then renders as a flood of garbled
+	// "preparing buildx builder" lines.
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stderr = stdout
 	if err := cmd.Run(); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("buildctl build (OCI export) failed: %w", err)}
 	}
@@ -1055,8 +1064,19 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Dir = cwd
+	// BuildKit writes its build progress to stderr, not stdout (see
+	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Point
+	// cmd.Stderr at the *same* stdout value, not a separate writer, so
+	// os/exec collapses stdout+stderr into a single pipe/copy goroutine (the
+	// same same-writer-value trick buildAndPushImage uses, docker.go
+	// ~:2034-2038) — otherwise the whole build's progress lands in the
+	// setup-log buffer instead of the parser, which WDY-2432's synthetic
+	// builder-setup step then renders as a flood of garbled
+	// "preparing buildx builder" lines. The announce line above stays on the
+	// stderr *parameter* directly (it's genuine setup chatter, unaffected by
+	// cmd's stdout/stderr wiring).
 	cmd.Stdout = stdout
-	cmd.Stderr = stderr
+	cmd.Stderr = stdout
 
 	if env := dockerConfigEnv(cleanDockerConfigDir); env != nil {
 		cmd.Env = env
