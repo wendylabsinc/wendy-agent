@@ -11,6 +11,15 @@ import (
 	"golang.org/x/term"
 )
 
+// shellNeedsTTY reports whether the invocation is a bare login shell, which
+// only makes sense against a local terminal. An explicit `-- command` is a
+// legitimate batch invocation and runs fine without one: the device-side
+// server always allocates a PTY, so its output arrives CRLF-terminated with
+// stderr merged into stdout.
+func shellNeedsTTY(shellCmd []string) bool {
+	return len(shellCmd) == 0
+}
+
 // buildShellStart builds the first HostShell frame. An empty command tells the
 // agent to resolve and run the login shell; a command after `--` runs that argv.
 func buildShellStart(cmd []string, rows, cols uint32) *agentpb.HostShellRequest {
@@ -35,7 +44,11 @@ func newDeviceShellCmd() *cobra.Command {
 		Long: "Open a full interactive TTY on the device host (the device's root\n" +
 			"filesystem, not a container), running the login shell by default or a\n" +
 			"command given after `--`. Uses the existing mTLS/PKI trust; the shell\n" +
-			"runs as root.",
+			"runs as root.\n\n" +
+			"With `--`, no local terminal is required: the command can be run\n" +
+			"non-interactively (e.g. piped or scripted). The device still runs it\n" +
+			"in a PTY, so output is CRLF-terminated and stderr is merged into\n" +
+			"stdout.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var shellCmd []string
@@ -49,8 +62,9 @@ func newDeviceShellCmd() *cobra.Command {
 
 func runDeviceShell(cmd *cobra.Command, shellCmd []string) error {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return fmt.Errorf("device shell requires an interactive terminal")
+	interactive := term.IsTerminal(fd)
+	if !interactive && shellNeedsTTY(shellCmd) {
+		return fmt.Errorf("interactive device shell requires a terminal; run a command instead: wendy device shell -- <command>")
 	}
 
 	ctx := cmd.Context()
@@ -79,21 +93,24 @@ func runDeviceShell(cmd *cobra.Command, shellCmd []string) error {
 		return fmt.Errorf("sending shell start: %w", err)
 	}
 
-	oldState, rawErr := term.MakeRaw(fd)
-	if rawErr == nil {
-		defer func() { _ = term.Restore(fd, oldState) }()
-	}
-
-	// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on Windows).
-	winch := make(chan os.Signal, 1)
-	stopResize := notifyTerminalResize(winch)
-	defer stopResize()
-	go func() {
-		for range winch {
-			r, c := termSize(fd)
-			_ = send(shellWinSizeFrame(r, c))
+	if interactive {
+		oldState, rawErr := term.MakeRaw(fd)
+		if rawErr == nil {
+			defer func() { _ = term.Restore(fd, oldState) }()
 		}
-	}()
+
+		// Terminal resize -> resize frames (SIGWINCH on Unix; no-op on
+		// Windows). Only meaningful when we actually own a terminal.
+		winch := make(chan os.Signal, 1)
+		stopResize := notifyTerminalResize(winch)
+		defer stopResize()
+		go func() {
+			for range winch {
+				r, c := termSize(fd)
+				_ = send(shellWinSizeFrame(r, c))
+			}
+		}()
+	}
 
 	// stdin -> stream.
 	go func() {
