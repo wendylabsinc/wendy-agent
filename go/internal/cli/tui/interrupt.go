@@ -1,6 +1,10 @@
 package tui
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"os"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // InterruptFilter routes Bubble Tea's InterruptMsg (raised by a SIGINT signal or
 // an explicitly sent interrupt) through the model's normal Ctrl+C handling.
@@ -23,7 +27,12 @@ func InterruptFilter(_ tea.Model, msg tea.Msg) tea.Msg {
 // NewProgressProgram builds a tea.Program for one of the progress models
 // (SpinnerModel, ProgressModel, MultiSpinnerModel, BuildStepsModel) with
 // InterruptFilter installed so the hint is cleared on interrupt instead of
-// lingering. Use it instead of tea.NewProgram when running those models.
+// lingering. It also defaults the program's output to stderr, since these
+// models render transient progress UI rather than a command's actual result,
+// which stays on stdout for piping/redirection. Use it instead of
+// tea.NewProgram when running those models.
 func NewProgressProgram(model tea.Model, opts ...tea.ProgramOption) *tea.Program {
-	return tea.NewProgram(model, append(opts, tea.WithFilter(InterruptFilter))...)
+	// Defaults first so explicit caller opts can override them.
+	return tea.NewProgram(model,
+		append([]tea.ProgramOption{tea.WithOutput(os.Stderr), tea.WithFilter(InterruptFilter)}, opts...)...)
 }
