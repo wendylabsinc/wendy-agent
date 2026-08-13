@@ -100,7 +100,7 @@ The harness skips a test rather than failing it when the host or device cannot s
 | Tests | Skipped unless |
 | --- | --- |
 | `swift-*` | the build host has a `swiftly` toolchain (checked instead of `swift`, which on macOS is an Xcode shim that exists with no usable toolchain behind it) |
-| `*-gpu` | the device reports `gpuVendor: nvidia` and either `gpuArch: sm_87` or no GPU architecture (for compatibility with older agents). The current PyTorch and ONNX fixtures use JetPack-6 / CUDA-12 images built for Orin; CUDA-13 architectures such as Thor's `sm_110` are skipped until their fixtures are hardware-verified. |
+| `*-gpu` | the device reports `gpuVendor: nvidia` and a supported architecture. Orin (`sm_87`) uses the JetPack-6 / CUDA-12 fixtures; Thor (`sm_110`) and Spark (`sm_121`) use Ubuntu-24.04 / CUDA-13 fixtures. An older agent with no architecture uses CUDA 13 when its device type is `jetson-agx-thor` and otherwise retains the CUDA-12 path for compatibility. Other reported architectures are skipped until a matching fixture is hardware-verified. |
 
 #### Stable release gate
 
