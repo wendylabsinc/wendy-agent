@@ -291,9 +291,12 @@ device_field() {
 if [[ -z "$VERSION_JSON" ]]; then
     echo -e "${YELLOW}==> WARNING: 'wendy device info' returned nothing — the agent under test cannot be identified${RESET}"
 fi
+DEVICE_TYPE=$(device_field deviceType '')
+DEVICE_GPU_ARCH=$(device_field gpuArch '')
+
 echo -e "${BOLD}==> Agent version: $(device_field version 'unknown')${RESET}"
 echo -e "${BOLD}==> Device OS: $(device_field os 'unknown') $(device_field osVersion 'unknown')${RESET}"
-echo -e "${BOLD}==> Device type: $(device_field deviceType 'none reported') ($(device_field cpuArchitecture 'unknown'))${RESET}"
+echo -e "${BOLD}==> Device type: ${DEVICE_TYPE:-none reported} ($(device_field cpuArchitecture 'unknown'))${RESET}"
 
 # ── Device capability detection ──────────────────────────────────────
 
@@ -305,7 +308,19 @@ DEVICE_HAS_CUDA=false
 if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
     DEVICE_HAS_CUDA=true
 fi
-echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none})${RESET}"
+
+# The current Python GPU fixtures are JetPack-6 / CUDA-12 images built for
+# Orin's sm_87. An NVIDIA vendor bit alone is not enough: Thor is sm_110 and
+# needs a CUDA-13 userspace image, so running these fixtures there produces
+# CUDA error 801 (PyTorch) and missing libcublasLt.so.12 (ONNX) rather than a
+# meaningful GPU-entitlement verdict. Older agents did not report gpuArch, so
+# preserve their established NVIDIA behavior; every reported architecture is
+# opt-in after its fixture has been hardware-verified.
+DEVICE_SUPPORTS_GPU_FIXTURES=false
+if [[ "$DEVICE_HAS_CUDA" == "true" ]] && [[ -z "$DEVICE_GPU_ARCH" || "$DEVICE_GPU_ARCH" == "sm_87" ]]; then
+    DEVICE_SUPPORTS_GPU_FIXTURES=true
+fi
+echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none}, arch: ${DEVICE_GPU_ARCH:-unknown})${RESET}"
 
 # The Swift tests build their image with swift-container-plugin, so this host
 # needs a Swift toolchain — which the CLI provisions through swiftly, and
@@ -403,6 +418,11 @@ for test_name in "${TESTS[@]}"; do
 
     if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
         skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
+        continue
+    fi
+
+    if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_SUPPORTS_GPU_FIXTURES" != "true" ]]; then
+        skip_test "$test_name" "CI GPU fixtures support sm_87; device reports ${DEVICE_GPU_ARCH:-an unknown architecture}"
         continue
     fi
 
