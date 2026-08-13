@@ -38,7 +38,7 @@ const maxConcurrentLayerPush = 4
 // decompressed or re-chunked. A layer the device already holds in full (reported
 // by the QueryLayers pre-check) is skipped entirely: it is never decompressed,
 // chunked, or transferred.
-func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer) ([]*agentpb.RunContainerLayerHeader, error) {
+func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prog *chunkPushProgress) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
 
 	// Capability probe: a single empty QueryChunks tells us whether the agent
@@ -84,6 +84,7 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 		cliLogln("Reusing %s layer(s) already on device; chunking %s.",
 			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
 	}
+	prog.SetLayerCounts(len(layers), skipped)
 	if len(toPush) == 0 {
 		return headers, nil
 	}
@@ -104,7 +105,7 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 	for _, idx := range toPush {
 		idx, l := idx, layers[idx]
 		g.Go(func() error {
-			h, err := pushLayerByChunks(ctx, cs, l)
+			h, err := pushLayerByChunks(ctx, cs, l, prog)
 			if err != nil {
 				return err
 			}
@@ -153,7 +154,7 @@ func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceCli
 // pushLayerByChunks runs the chunk-diff push for a single layer and returns its
 // reassembly header. The uncompressed tar is spilled to a temp file rather than
 // held in RAM; missing chunk bytes are read back from it on demand.
-func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, l localLayer) (*agentpb.RunContainerLayerHeader, error) {
+func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, l localLayer, prog *chunkPushProgress) (*agentpb.RunContainerLayerHeader, error) {
 	var (
 		diffID        string
 		size          int64
@@ -220,6 +221,18 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 				return nil, err
 			}
 		}
+
+		// refs is now guaranteed populated (either from the cache-miss chunking
+		// above or from decompressAndChunk just now), so the missing byte total
+		// can be computed before opening the WriteChunks stream.
+		var missingBytes int64
+		for _, r := range refs {
+			if missing[r.Hash] {
+				missingBytes += int64(r.Len)
+			}
+		}
+		prog.LayerPlanned(len(orderedHashes), len(missing), missingBytes)
+
 		wc, err := cs.WriteChunks(ctx)
 		if err != nil {
 			return nil, err
@@ -239,10 +252,13 @@ func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClie
 			}); err != nil {
 				return nil, err
 			}
+			prog.ChunkSent(len(buf))
 		}
 		if _, err := wc.CloseAndRecv(); err != nil {
 			return nil, err
 		}
+	} else {
+		prog.LayerPlanned(len(orderedHashes), 0, 0)
 	}
 
 	return &agentpb.RunContainerLayerHeader{

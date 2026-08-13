@@ -96,7 +96,7 @@ func TestPushLayersByChunksWritesOnlyMissing(t *testing.T) {
 		Digest:    "sha256:" + sha256Hex(layerTar),
 		MediaType: "application/vnd.oci.image.layer.v1.tar",
 		Blob:      layerTar,
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestPushLayersByChunksSkipsPresentLayer(t *testing.T) {
 		DiffID:    diffID,
 		MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
 		Blob:      []byte("this is not gzip"),
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestPushLayersByChunksProbeUnimplemented(t *testing.T) {
 		Digest:    "sha256:" + sha256Hex([]byte("x")),
 		MediaType: "application/vnd.oci.image.layer.v1.tar",
 		Blob:      []byte("not gzip either"),
-	}})
+	}}, nil)
 	if !isUnimplementedRPCError(err) {
 		t.Fatalf("expected Unimplemented error from the capability probe, got %v", err)
 	}
@@ -200,4 +200,92 @@ type probeUnsupportedClient struct {
 
 func (probeUnsupportedClient) QueryChunks(_ context.Context, _ *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "QueryChunks not implemented")
+}
+
+// TestPushLayersByChunksReportsProgress verifies that pushLayersByChunks wires
+// a non-nil *chunkPushProgress into the transfer loop: one layer is reused
+// whole (skipped by the QueryLayers pre-check) and one layer needs chunking
+// with exactly one missing chunk, so the resulting snapshot should show the
+// reused layer plus the chunked layer's full manifest size, missing count,
+// and the sent chunk's exact byte length.
+func TestPushLayersByChunksReportsProgress(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := bytes.Repeat([]byte("abc"), 300_000) // multi-chunk
+	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
+	if err != nil {
+		t.Fatalf("chunk.Chunk: %v", err)
+	}
+	if len(refs) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(refs))
+	}
+
+	// Fake device already has every chunk except the first.
+	have := map[[32]byte]bool{}
+	for _, r := range refs[1:] {
+		have[r.Hash] = true
+	}
+
+	reusedDiffID := "sha256:" + strings.Repeat("cd", 32)
+	const reusedSize int64 = 2048
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			var missing [][]byte
+			for _, hb := range req.GetChunkHashes() {
+				var h [32]byte
+				copy(h[:], hb)
+				if !have[h] {
+					missing = append(missing, hb)
+				}
+			}
+			return &agentpb.QueryChunksResponse{MissingHashes: missing}
+		},
+		queryLayersFn: func(req *agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{
+				Present: []*agentpb.PresentLayer{{DiffId: reusedDiffID, Size: reusedSize}},
+			}
+		},
+	}
+
+	prog := newChunkPushProgress()
+	_, err = pushLayersByChunks(context.Background(), fake, []localLayer{
+		{
+			// Present layer: skipped whole by the pre-check. Blob is
+			// intentionally not valid gzip so a decompress attempt would fail.
+			Digest:    "sha256:" + sha256Hex([]byte("reused-blob")),
+			DiffID:    reusedDiffID,
+			MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+			Blob:      []byte("this is not gzip"),
+		},
+		{
+			Digest:    "sha256:" + sha256Hex(layerTar),
+			MediaType: "application/vnd.oci.image.layer.v1.tar",
+			Blob:      layerTar,
+		},
+	}, prog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snap := prog.Snapshot()
+	if snap.LayersTotal != 2 {
+		t.Fatalf("LayersTotal = %d, want 2", snap.LayersTotal)
+	}
+	if snap.LayersReused != 1 {
+		t.Fatalf("LayersReused = %d, want 1", snap.LayersReused)
+	}
+	if snap.TotalChunks != len(refs) {
+		t.Fatalf("TotalChunks = %d, want %d", snap.TotalChunks, len(refs))
+	}
+	if snap.MissingChunks != 1 {
+		t.Fatalf("MissingChunks = %d, want 1", snap.MissingChunks)
+	}
+	if snap.SentChunks != 1 {
+		t.Fatalf("SentChunks = %d, want 1", snap.SentChunks)
+	}
+	if snap.SentBytes != int64(refs[0].Len) {
+		t.Fatalf("SentBytes = %d, want %d", snap.SentBytes, refs[0].Len)
+	}
 }
