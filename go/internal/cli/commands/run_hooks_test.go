@@ -517,7 +517,7 @@ func TestRunPostStartIfReady_ProbesReadinessPortButPresentsHTTPPort(t *testing.T
 	}
 
 	start := time.Now()
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		runPostStartIfReady(context.Background(), context.Background(), conn, appCfg)
 	})
 	if elapsed := time.Since(start); elapsed >= time.Second {

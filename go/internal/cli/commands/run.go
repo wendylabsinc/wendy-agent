@@ -169,12 +169,12 @@ func containerDisplayName(appCfg *appconfig.AppConfig) string {
 	return tui.App(appCfg.ContainerName())
 }
 
-func cliLog(format string, args ...any) {
-	fmt.Print(cliStyle.Render(fmt.Sprintf(format, args...)))
-}
-
+// cliLogln prints a human status line. It writes to stderr: --json is a global
+// persistent flag (root.go) and is auto-enabled when the terminal is
+// non-interactive, so any status line on stdout can corrupt machine-read output.
+// Real payloads (JSON, listings) print via fmt.Println/encoders and stay on stdout.
 func cliLogln(format string, args ...any) {
-	fmt.Println(cliStyle.Render(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(os.Stderr, cliStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 func cliNotice(format string, args ...any) {
@@ -183,8 +183,10 @@ func cliNotice(format string, args ...any) {
 
 var cliSuccessStyle = lipgloss.NewStyle().Foreground(tui.ColorPrimary)
 
+// cliSuccess prints a styled success status line. Writes to stderr for the
+// same reason as cliLogln above — it is a status line, not a payload.
 func cliSuccess(format string, args ...any) {
-	fmt.Println(cliSuccessStyle.Render(fmt.Sprintf(format, args...)))
+	fmt.Fprintln(os.Stderr, cliSuccessStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 func unpackProgressTitle(progress *agentpb.CreateContainerProgress) string {
