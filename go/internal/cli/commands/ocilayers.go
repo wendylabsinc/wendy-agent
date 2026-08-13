@@ -81,6 +81,20 @@ func (l localLayer) decompress() ([]byte, error) {
 	return out, nil
 }
 
+// totalCompressedLayerBytes sums the compressed blob sizes of the image's
+// layers (Size for file-backed layers, len(Blob) for in-memory ones).
+func totalCompressedLayerBytes(layers []localLayer) int64 {
+	var total int64
+	for _, l := range layers {
+		if l.TarPath != "" {
+			total += l.Size
+		} else {
+			total += int64(len(l.Blob))
+		}
+	}
+	return total
+}
+
 // ociDescriptor is a descriptor entry as it appears in an OCI index.json or a
 // nested image-index manifest list.
 type ociDescriptor struct {

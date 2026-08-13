@@ -55,6 +55,28 @@ func TestIsImageBuildFailure(t *testing.T) {
 	}
 }
 
+// TestTotalCompressedLayerBytes covers file-backed layers (Size), in-memory
+// layers (len(Blob)), a mix of both, and the empty-slice case.
+func TestTotalCompressedLayerBytes(t *testing.T) {
+	cases := []struct {
+		name   string
+		layers []localLayer
+		want   int64
+	}{
+		{"empty", nil, 0},
+		{"file-backed", []localLayer{{TarPath: "/tmp/a.tar", Size: 100}, {TarPath: "/tmp/b.tar", Size: 250}}, 350},
+		{"in-memory", []localLayer{{Blob: make([]byte, 10)}, {Blob: make([]byte, 5)}}, 15},
+		{"mixed", []localLayer{{TarPath: "/tmp/a.tar", Size: 100}, {Blob: make([]byte, 5)}, {TarPath: "/tmp/c.tar", Size: 20}}, 125},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := totalCompressedLayerBytes(tc.layers); got != tc.want {
+				t.Fatalf("totalCompressedLayerBytes(%+v) = %d, want %d", tc.layers, got, tc.want)
+			}
+		})
+	}
+}
+
 // sha256Hex returns the lowercase hex-encoded SHA-256 digest of b.
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
