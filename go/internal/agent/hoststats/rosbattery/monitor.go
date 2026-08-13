@@ -178,6 +178,11 @@ func NewMonitor(cfg Config, cache *Cache, logf func(string, ...any)) *Monitor {
 // Battery returns the newest non-stale reading, or nil.
 func (m *Monitor) Battery() *hoststats.Battery { return m.cache.Battery() }
 
+// ThermalZones returns current device-specific temperatures learned from the
+// same DDS sample as Battery. Standard BatteryState topics add no zones;
+// Unitree LowState adds IMU and motor temperatures.
+func (m *Monitor) ThermalZones() []hoststats.ThermalZone { return m.cache.ThermalZones() }
+
 // Run drives the monitor until ctx is cancelled.
 func (m *Monitor) Run(ctx context.Context) {
 	if !m.cfg.Enabled {
@@ -309,7 +314,7 @@ func (m *Monitor) consume(ctx context.Context, p *rtps.Participant, ep rtps.Endp
 		case <-ctx.Done():
 			return
 		case s := <-p.Samples():
-			b, err := decode(s.Payload)
+			reading, err := decode(s.Payload)
 			if err != nil {
 				// Log once per subscription. A layout mismatch repeats at the
 				// topic's publish rate, which would otherwise flood the log.
@@ -319,7 +324,7 @@ func (m *Monitor) consume(ctx context.Context, p *rtps.Participant, ep rtps.Endp
 				}
 				continue
 			}
-			m.cache.Put(b)
+			m.cache.putTelemetry(reading.Battery, reading.ThermalZones)
 		case <-time.After(StaleAfter):
 			m.logf("ros2 battery: %s silent for %s, rescanning", ep.Topic, StaleAfter)
 			return
@@ -327,14 +332,28 @@ func (m *Monitor) consume(ctx context.Context, p *rtps.Participant, ep rtps.Endp
 	}
 }
 
+type decodedTelemetry struct {
+	Battery      *hoststats.Battery
+	ThermalZones []hoststats.ThermalZone
+}
+
 // decoderFor selects a decoder by DDS type name, or nil when the type is one
 // this package cannot read.
-func decoderFor(typeName string) func([]byte) (*hoststats.Battery, error) {
+func decoderFor(typeName string) func([]byte) (*decodedTelemetry, error) {
 	switch {
 	case strings.Contains(typeName, "BatteryState"):
-		return DecodeBatteryState
+		return func(payload []byte) (*decodedTelemetry, error) {
+			battery, err := DecodeBatteryState(payload)
+			return &decodedTelemetry{Battery: battery}, err
+		}
 	case strings.Contains(typeName, "LowState"):
-		return DecodeLowState
+		return func(payload []byte) (*decodedTelemetry, error) {
+			reading, err := DecodeLowStateTelemetry(payload)
+			if err != nil {
+				return nil, err
+			}
+			return &decodedTelemetry{Battery: reading.Battery, ThermalZones: reading.ThermalZones}, nil
+		}
 	default:
 		return nil
 	}
