@@ -80,7 +80,7 @@ func TestGeneratePipIndexFlags(t *testing.T) {
 			},
 		}}},
 	}, nil)
-	want := "RUN --mount=type=cache,sharing=locked,id=stagefile-pip-8982dbbb6e87f5f3,target=/root/.cache/pip pip install --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
+	want := "pip install --root '/opt/stagefile/pip/root' --prefix '/usr/local' --index-url 'https://pypi.jetson-ai-lab.io/jp6/cu126' --extra-index-url 'https://pypi.org/simple' 'torch'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}

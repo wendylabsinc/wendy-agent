@@ -84,6 +84,16 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			return "", fmt.Errorf("stage %q declares cuda: but no GPU target was resolved for this build", s.Name)
 		}
 
+		// Treat pip as a linked filesystem overlay rather than a linear child of
+		// the app's OS-package layer. Both branches now depend directly on the
+		// pinned base, so editing APT cannot invalidate or re-layer pip and
+		// editing pip cannot rebuild APT. pip installs under a compiler-owned
+		// root; COPY --link later promotes only the resulting /usr/local tree.
+		pipDependencyStage := ""
+		if s.Install != nil && len(s.Install.Pip) > 0 {
+			pipDependencyStage = generatedStageName("stagefile-pip-deps", i, f.Stages)
+		}
+
 		// CUDA runtime wheels are by far the largest dependency layer in a GPU
 		// image. Build them from the pinned base in an independent stage so an
 		// unrelated edit to the app stage's APT/CMake dependencies cannot evict
@@ -95,6 +105,11 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			cudaRuntimeStage = cudaRuntimeStageName(i, f.Stages)
 			blocks = append(blocks, strings.Join(cudaRuntimeStageLines(
 				s, digest, pinned, stagePlatform, cudaRuntimeStage, *cudaProfile,
+			), "\n"))
+		}
+		if pipDependencyStage != "" {
+			blocks = append(blocks, strings.Join(pipDependencyStageLines(
+				s, digest, pinned, stagePlatform, pipDependencyStage, cudaProfile,
 			), "\n"))
 		}
 
@@ -116,9 +131,8 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		lines = append(lines, fetches...)
 
 		// An absent install: is compiled as an empty one rather than skipped,
-		// because pipGroupLines is also where a GPU stage's CUDA runtime is
-		// spliced in, and that stage needs the runtime whether or not it
-		// declares any install of its own — the collection below imports it.
+		// because a GPU stage still needs its generated runtime even when it
+		// declares no install of its own — the collection below imports it.
 		// With no fields set, nothing else here emits a line.
 		install := s.Install
 		if install == nil {
@@ -146,7 +160,10 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 			lines = append(lines, fmt.Sprintf("COPY --link --from=%s %s %s",
 				cudaRuntimeStage, cudaPythonRoot, cudaPythonRoot))
 		}
-		lines = append(lines, pipGroupLines(install.Pip, cudaProfile, stagePlatform)...)
+		if pipDependencyStage != "" {
+			lines = append(lines, fmt.Sprintf("COPY --link --from=%s %s/ /",
+				pipDependencyStage, pipOverlayRoot))
+		}
 		if install.Npm != nil {
 			lines = append(lines, npmInstallLines(install.Npm)...)
 		}
@@ -364,8 +381,9 @@ func scopedCacheID(kind string, parts ...string) string {
 	return "stagefile-" + kind + "-" + hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// pipCacheID scopes pip's wheel cache to the index set it can download from and
-// the platform whose wheels it stores.
+// pipCacheID scopes pip's wheel cache to the index set it can download from,
+// the platform whose wheels it stores, and the build-only OS packages that can
+// affect locally compiled wheel contents.
 //
 // Both matter because the mount stays sharing=locked: without an id, BuildKit
 // scopes by target path, so every pip install in every concurrently-built
@@ -380,6 +398,7 @@ func scopedCacheID(kind string, parts ...string) string {
 // is exactly the mixing this ID exists to prevent.
 func pipCacheID(p *spec.PipInstall, index, platform string) string {
 	parts := append([]string{platform, index}, p.ExtraIndex...)
+	parts = append(parts, p.BuildPackages...)
 	return scopedCacheID("pip", parts...)
 }
 
@@ -552,8 +571,10 @@ func cmakeInstallLines(installs []spec.CMakeInstall, platform string) []string {
 
 // pipInstallLines emits one pip group. A group marked cuda: takes its index
 // from cudaProfile instead of the Stagefile, which is what lets the same
-// source resolve GPU wheels for whichever board it is being built for.
-func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform string) []string {
+// source resolve GPU wheels for whichever board it is being built for. root,
+// when non-empty, turns the install into a filesystem overlay whose contents
+// can be promoted onto a sibling stage with COPY --link.
+func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform, root string) []string {
 	var lines []string
 	if p.Requirements != "" {
 		lines = append(lines, fmt.Sprintf("COPY %s %s", p.Requirements, p.Requirements))
@@ -562,6 +583,9 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform stri
 	// cache out of the image layer, and disabling the cache would force a
 	// full wheel re-download every time this layer rebuilds.
 	parts := []string{"pip", "install"}
+	if root != "" {
+		parts = append(parts, "--root", shellQuote(root), "--prefix", shellQuote("/usr/local"))
+	}
 	index := p.Index
 	if p.CUDA && cudaProfile != nil {
 		index = cudaProfile.Index
@@ -588,21 +612,112 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform stri
 // with COPY --link, independently of the app stage's APT/CMake history.
 const cudaPythonRoot = "/opt/stagefile/cuda/python"
 
-// cudaRuntimeStageName returns a generated stage name that cannot collide with
-// a user-declared stage. Stage names are references rather than image-visible
-// state, so the stable stage index is sufficient to keep generated output
-// deterministic.
-func cudaRuntimeStageName(stageIndex int, stages []spec.Stage) string {
+// pipOverlayRoot is the staging root for user-declared pip dependencies. pip
+// recreates the absolute /usr/local hierarchy underneath it; copying the
+// root's contents to / therefore places packages and scripts at their normal
+// runtime paths without copying pip's build-only OS packages.
+const pipOverlayRoot = "/opt/stagefile/pip/root"
+
+// generatedStageName returns a deterministic compiler-owned stage name that
+// cannot collide with a user-declared stage.
+func generatedStageName(prefix string, stageIndex int, stages []spec.Stage) string {
 	used := make(map[string]bool, len(stages))
 	for _, s := range stages {
 		used[s.Name] = true
 	}
-	base := fmt.Sprintf("stagefile-cuda-runtime-%d", stageIndex)
+	base := fmt.Sprintf("%s-%d", prefix, stageIndex)
 	name := base
 	for suffix := 2; used[name]; suffix++ {
 		name = fmt.Sprintf("%s-%d", base, suffix)
 	}
 	return name
+}
+
+// cudaRuntimeStageName returns a generated stage name that cannot collide with
+// a user-declared stage. Stage names are references rather than image-visible
+// state, so the stable stage index is sufficient to keep generated output
+// deterministic.
+func cudaRuntimeStageName(stageIndex int, stages []spec.Stage) string {
+	return generatedStageName("stagefile-cuda-runtime", stageIndex, stages)
+}
+
+// pipDependencyStageLines builds all user pip groups as a sibling of the app
+// stage. BuildPackages are deliberately installed only here: headers and
+// compilers can build wheels, but cannot leak into the runtime root copied to
+// the app stage.
+func pipDependencyStageLines(s spec.Stage, digest string, pinned bool, platform, name string, cudaProfile *gpu.Profile) []string {
+	lines := []string{fromLine(s.From, digest, name, platform)}
+	lines = append(lines, kvLines("ARG", s.Args)...)
+	lines = append(lines, kvLines("ENV", s.Env)...)
+	if s.Workdir != "" {
+		lines = append(lines, "WORKDIR "+s.Workdir)
+	}
+
+	aptBase := ""
+	if pinned {
+		aptBase = s.From + "@" + digest
+	}
+	lines = append(lines, pipBuildPackageLines(s.Install, aptBase, platform)...)
+	lines = append(lines, pipGroupLines(s.Install.Pip, cudaProfile, platform, pipOverlayRoot)...)
+	return lines
+}
+
+// pipBuildPackageLines bootstraps pip when the base does not provide it and
+// installs the de-duplicated build-only package set. A declared apk manager
+// selects apk; apt is the default because Debian/Ubuntu bases are the common
+// case and existing pip-only Stagefiles need no additional syntax.
+func pipBuildPackageLines(inst *spec.Install, aptBase, platform string) []string {
+	var packages []string
+	seen := map[string]bool{}
+	for _, group := range inst.Pip {
+		for _, pkg := range group.BuildPackages {
+			if !seen[pkg] {
+				seen[pkg] = true
+				packages = append(packages, pkg)
+			}
+		}
+	}
+
+	if inst.Apk != nil && inst.Apt == nil {
+		var lines []string
+		if len(inst.Apk.Repositories) > 0 && len(packages) > 0 {
+			var quoted []string
+			for _, repo := range inst.Apk.Repositories {
+				quoted = append(quoted, shellQuote(repo))
+			}
+			lines = append(lines, fmt.Sprintf("RUN printf '%%s\\n' %s >> /etc/apk/repositories", strings.Join(quoted, " ")))
+		}
+		withPip := append([]string{"py3-pip"}, packages...)
+		if len(packages) == 0 {
+			return append(lines, "RUN command -v pip >/dev/null 2>&1 || apk add --no-cache 'py3-pip'")
+		}
+		command := fmt.Sprintf("if command -v pip >/dev/null 2>&1; then apk add --no-cache %s; else apk add --no-cache %s; fi",
+			shellQuoteList(packages), shellQuoteList(withPip))
+		return append(lines, "RUN "+command)
+	}
+
+	var repos []spec.AptRepository
+	if inst.Apt != nil && len(packages) > 0 {
+		repos = inst.Apt.Repositories
+	}
+	lines := aptRepositoryLines(repos, aptBase, platform)
+	if len(packages) == 0 {
+		bootstrap := "command -v pip >/dev/null 2>&1 || " +
+			"(apt-get update && apt-get install -y --no-install-recommends 'python3-pip')"
+		return append(lines, aptRun(aptBase, platform, repos, bootstrap))
+	}
+	withPip := append([]string{"python3-pip"}, packages...)
+	command := fmt.Sprintf("if command -v pip >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends %s; else apt-get update && apt-get install -y --no-install-recommends %s; fi",
+		shellQuoteList(packages), shellQuoteList(withPip))
+	return append(lines, aptRun(aptBase, platform, repos, command))
+}
+
+func shellQuoteList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, shellQuote(value))
+	}
+	return strings.Join(quoted, " ")
 }
 
 // cudaRuntimeStageLines builds the target profile's large, stable runtime in
@@ -818,14 +933,13 @@ func stageEnv(s *spec.Stage, cudaProfile *gpu.Profile) map[string]string {
 	return env
 }
 
-// pipGroupLines emits user-declared pip groups. A CUDA stage's generated
-// runtime is promoted from its independent stage immediately before these
-// lines; only the user-selected GPU wheels and ordinary app dependencies are
-// linear descendants of the app's OS/native dependencies.
-func pipGroupLines(groups []spec.PipInstall, cudaProfile *gpu.Profile, platform string) []string {
+// pipGroupLines emits user-declared pip groups into root. These groups live in
+// an independent generated stage and are promoted onto the app stage as one
+// linked filesystem overlay.
+func pipGroupLines(groups []spec.PipInstall, cudaProfile *gpu.Profile, platform, root string) []string {
 	var lines []string
 	for i := range groups {
-		lines = append(lines, pipInstallLines(&groups[i], cudaProfile, platform)...)
+		lines = append(lines, pipInstallLines(&groups[i], cudaProfile, platform, root)...)
 	}
 	return lines
 }

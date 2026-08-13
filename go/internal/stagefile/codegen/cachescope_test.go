@@ -34,6 +34,17 @@ func mountIDs(t *testing.T, out string) []string {
 	}
 }
 
+func pipMountIDs(t *testing.T, out string) []string {
+	t.Helper()
+	var ids []string
+	for _, id := range mountIDs(t, out) {
+		if strings.HasPrefix(id, "stagefile-pip-") {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 func pipStage(platform string, groups ...spec.PipInstall) spec.Stage {
 	return spec.Stage{Name: "app", From: "python:3.12-slim",
 		Install: &spec.Install{Pip: groups}}
@@ -93,7 +104,7 @@ func TestAptCachesDisabledForUnpinnedBase(t *testing.T) {
 // cached wheel because they pull from different indexes.
 func TestPipCacheMountIsScoped(t *testing.T) {
 	out := gen(t, "linux/arm64", pipStage("linux/arm64", spec.PipInstall{Packages: []string{"flask"}}))
-	ids := mountIDs(t, out)
+	ids := pipMountIDs(t, out)
 	if len(ids) != 1 || ids[0] == "" {
 		t.Fatalf("pip mount carries no id:\n%s", out)
 	}
@@ -107,7 +118,7 @@ func TestPipCacheIDSeparatesIndexes(t *testing.T) {
 		spec.PipInstall{Packages: []string{"torch"}, Index: "https://pypi.jetson-ai-lab.io/jp6/cu126/"},
 		spec.PipInstall{Packages: []string{"nvidia-cudnn-cu12"}},
 	))
-	ids := mountIDs(t, out)
+	ids := pipMountIDs(t, out)
 	if len(ids) != 2 {
 		t.Fatalf("want 2 pip mount ids, got %v:\n%s", ids, out)
 	}
@@ -119,9 +130,9 @@ func TestPipCacheIDSeparatesIndexes(t *testing.T) {
 // extraIndex changes which wheels can land in the cache, so it belongs in the
 // scope too.
 func TestPipCacheIDSeparatesExtraIndexes(t *testing.T) {
-	a := mountIDs(t, gen(t, "linux/arm64", pipStage("linux/arm64",
+	a := pipMountIDs(t, gen(t, "linux/arm64", pipStage("linux/arm64",
 		spec.PipInstall{Packages: []string{"x"}, ExtraIndex: []string{"https://a.example/simple"}})))
-	b := mountIDs(t, gen(t, "linux/arm64", pipStage("linux/arm64",
+	b := pipMountIDs(t, gen(t, "linux/arm64", pipStage("linux/arm64",
 		spec.PipInstall{Packages: []string{"x"}, ExtraIndex: []string{"https://b.example/simple"}})))
 	if a[0] == b[0] {
 		t.Fatalf("different extraIndex sets share cache id %q", a[0])
@@ -131,10 +142,23 @@ func TestPipCacheIDSeparatesExtraIndexes(t *testing.T) {
 // Wheels are platform-specific, so an arm64 and an amd64 build store disjoint
 // content. Serializing them is pure loss.
 func TestPipCacheIDSeparatesPlatforms(t *testing.T) {
-	arm := mountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
-	amd := mountIDs(t, gen(t, "linux/amd64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
+	arm := pipMountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
+	amd := pipMountIDs(t, gen(t, "linux/amd64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
 	if arm[0] == amd[0] {
 		t.Fatalf("arm64 and amd64 pip installs share cache id %q", arm[0])
+	}
+}
+
+// Locally-built wheels may embed or link against headers and libraries from
+// buildPackages. Reusing one after that toolchain changes is a cache hit with
+// the wrong binary, not an optimization.
+func TestPipCacheIDSeparatesBuildPackages(t *testing.T) {
+	a := pipMountIDs(t, gen(t, "linux/arm64", pipStage("",
+		spec.PipInstall{Packages: []string{"native"}, BuildPackages: []string{"gcc"}})))
+	b := pipMountIDs(t, gen(t, "linux/arm64", pipStage("",
+		spec.PipInstall{Packages: []string{"native"}, BuildPackages: []string{"clang"}})))
+	if a[len(a)-1] == b[len(b)-1] {
+		t.Fatalf("different buildPackages share pip cache id %q", a[len(a)-1])
 	}
 }
 
@@ -142,8 +166,8 @@ func TestPipCacheIDSeparatesPlatforms(t *testing.T) {
 // still do. Same index, same platform — different packages — must land on one
 // mount, so the second build gets the first one's downloads.
 func TestPipCacheIDSharesWhenContentCanBeShared(t *testing.T) {
-	a := mountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
-	b := mountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"django"}})))
+	a := pipMountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"flask"}})))
+	b := pipMountIDs(t, gen(t, "linux/arm64", pipStage("", spec.PipInstall{Packages: []string{"django"}})))
 	if a[0] != b[0] {
 		t.Fatalf("same index and platform must share a pip cache: %q vs %q", a[0], b[0])
 	}

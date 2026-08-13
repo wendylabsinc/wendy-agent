@@ -7,7 +7,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
-func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
+func TestGenerateCMakeInstallPinnedDeterministicAndPipIsIndependent(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	out := genOne(t, spec.Stage{
 		Name: "app", From: "python:3.11-slim",
@@ -43,11 +43,19 @@ func TestGenerateCMakeInstallPinnedDeterministicAndBeforePip(t *testing.T) {
 		}
 	}
 
-	aptAt := strings.Index(out, "apt-get install")
+	appAt := strings.Index(out, " AS app\n")
+	if appAt < 0 {
+		t.Fatalf("missing app stage:\n%s", out)
+	}
+	aptAt := strings.Index(out[appAt:], "apt-get install")
+	if aptAt >= 0 {
+		aptAt += appAt
+	}
 	cmakeAt := strings.Index(out, "git init '/tmp/stagefile-cmake-0/source'")
 	pipAt := strings.Index(out, "pip install")
-	if !(aptAt >= 0 && aptAt < cmakeAt && cmakeAt < pipAt) {
-		t.Fatalf("install order must be apt -> cmake -> pip:\n%s", out)
+	overlayAt := strings.Index(out, "COPY --link --from=stagefile-pip-deps-0")
+	if !(pipAt >= 0 && pipAt < appAt && aptAt >= appAt && aptAt < cmakeAt && overlayAt > cmakeAt) {
+		t.Fatalf("pip must branch from the base while APT/CMake finish before its linked overlay:\n%s", out)
 	}
 }
 

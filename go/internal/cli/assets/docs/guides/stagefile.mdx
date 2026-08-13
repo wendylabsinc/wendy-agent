@@ -26,7 +26,7 @@ The compiler puts stable work before frequently changed source and emits persist
 - SwiftPM dependency and incremental compilation caches
 - CMake build trees
 
-For example, a Stagefile copies `requirements.txt` and installs it before copying `app.py`. Editing the application does not reinstall Python packages. If the dependency layer must run again, pip can reuse its wheel cache instead of downloading every unchanged package. These are the same [layer-ordering and cache-mount techniques Docker recommends](https://docs.docker.com/build/cache/optimize/), generated consistently for each supported ecosystem.
+For example, a Stagefile builds pip dependencies in an independent stage and links their `/usr/local` filesystem overlay onto the stage that installs APT packages. Editing application source does not reinstall Python packages; changing APT does not re-layer pip, and changing pip does not rebuild APT. If the pip layer must run again, its wheel cache avoids downloading unchanged packages. These are the same [layer-ordering and cache-mount techniques Docker recommends](https://docs.docker.com/build/cache/optimize/), generated consistently for each supported ecosystem.
 
 ### Skip the image builder on source-only iterations
 
@@ -166,8 +166,11 @@ install:
     packages: [libgomp1]
   pip:
     - requirements: requirements.txt
+      buildPackages: [build-essential, python3-dev]
     - packages: ["numpy==2.3.2"]
 ```
+
+Pip groups are built as a sibling of the stage's APT or APK work, then applied with a linked filesystem overlay. Put compilers and development headers needed to build native wheels in `buildPackages`; Wendy installs them only in the pip dependency stage. Keep shared libraries needed when the application runs under `install.apt.packages` or `install.apk.packages`. Build package names use APK when the stage declares `install.apk`, and APT otherwise.
 
 For Node, commit the matching lockfile. The compiler copies the manifest and lockfile before source and selects the frozen install command:
 

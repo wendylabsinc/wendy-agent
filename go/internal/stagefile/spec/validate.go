@@ -376,6 +376,9 @@ func validateInstall(inst *Install) error {
 				return err
 			}
 		}
+		if len(p.BuildPackages) > 0 && inst.Apt != nil && inst.Apk != nil {
+			return fmt.Errorf("%s.buildPackages cannot choose a package manager because both install.apt and install.apk are set", field)
+		}
 	}
 	if inst.Npm != nil && inst.Npm.Manager != "" {
 		switch inst.Npm.Manager {
@@ -720,6 +723,14 @@ func validateNoInjection(s *Stage) error {
 					return err
 				}
 				if err := rejectLeadingDash(p, "install.pip.packages entry"); err != nil {
+					return err
+				}
+			}
+			for _, p := range pip.BuildPackages {
+				if err := rejectNewline(p, "install.pip.buildPackages entry"); err != nil {
+					return err
+				}
+				if err := rejectLeadingDash(p, "install.pip.buildPackages entry"); err != nil {
 					return err
 				}
 			}
