@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -18,13 +19,20 @@ type fakeCloudAssetServer struct {
 	// OnlineOnly unset/false, modeling the offline-device re-query pickCloudAsset
 	// performs when the online-only lookup finds no match.
 	offlineAssets []*cloudpb.Asset
-	req           *cloudpb.ListAssetsRequest   // last request, kept for existing single-request assertions
-	reqs          []*cloudpb.ListAssetsRequest // every request received, in order
+	// offlineErr, when set, is returned instead of serving offlineAssets for
+	// a query with OnlineOnly unset/false — models a transport failure on
+	// pickCloudAsset's offline-inclusive re-query.
+	offlineErr error
+	req        *cloudpb.ListAssetsRequest   // last request, kept for existing single-request assertions
+	reqs       []*cloudpb.ListAssetsRequest // every request received, in order
 }
 
 func (s *fakeCloudAssetServer) ListAssets(req *cloudpb.ListAssetsRequest, stream grpc.ServerStreamingServer[cloudpb.ListAssetsResponse]) error {
 	s.req = req
 	s.reqs = append(s.reqs, req)
+	if !req.GetOnlineOnly() && s.offlineErr != nil {
+		return s.offlineErr
+	}
 	assets := s.assets
 	if !req.GetOnlineOnly() {
 		assets = s.offlineAssets
@@ -357,5 +365,154 @@ func TestCloudConnect_UnknownDeviceStaysNotFound(t *testing.T) {
 	}
 	if strings.Contains(msg, "offline") {
 		t.Errorf("message = %q, should not mention offline for a device that was never enrolled", msg)
+	}
+}
+
+// TestCloudConnect_MatchesOnlineDeviceByNumericID covers pickCloudAsset's
+// primary matching loop gaining the numeric-id fallback resolveCloudAsset
+// already has in commands/cloud_tunnel.go. Before this fix, a device_name
+// that only matched an asset's numeric id (not its name) missed the
+// name-only primary loop entirely and fell through to offlineDeviceErr's
+// re-query — which DOES match by id via clouddefaults.FindAssetByNameOrID —
+// so an online device targeted by id was permanently reported
+// DEVICE_UNREACHABLE ("offline") even though it was online the whole time.
+// It must also never reach a broker dial for the wrong reason:
+// connectToCloudAgent only calls DialBroker after pickCloudAsset succeeds,
+// so this fixture (whose CloudGRPC address isn't a real broker and whose
+// certificate is empty) failing at the TLS-assembly stage — rather than at
+// resolution — is exactly what proves resolution itself succeeded.
+func TestCloudConnect_MatchesOnlineDeviceByNumericID(t *testing.T) {
+	device := &cloudpb.Asset{
+		Id:              42,
+		OrganizationId:  7,
+		Name:            "edge-one",
+		AssetType:       "device",
+		IsComputeDevice: true,
+	}
+	fake := &fakeCloudAssetServer{
+		// The device is genuinely online, so it appears in both the
+		// online-only listing and the unfiltered (offline-inclusive) one.
+		assets:        []*cloudpb.Asset{device},
+		offlineAssets: []*cloudpb.Asset{device},
+	}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_connect", map[string]any{"device_name": "42"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected an error result (broker dial fails against this fixture), got success: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	msg, _ := sc["message"].(string)
+	if strings.Contains(msg, "enrolled but currently reported offline") {
+		t.Errorf("message = %q, resolution wrongly fell back to reporting an online device (matched by id) as offline", msg)
+	}
+	if strings.Contains(msg, "no device named") {
+		t.Errorf("message = %q, resolution wrongly reported an id-matched device as not found", msg)
+	}
+	if len(fake.reqs) != 1 {
+		t.Errorf("len(fake.reqs) = %d, want 1 (id match in the primary online-only listing; no offline re-query needed)", len(fake.reqs))
+	}
+}
+
+// TestCloudConnect_EmptyOrgWithDeviceName_ReturnsNamedNotFound covers
+// pickCloudAsset's "empty online listing, name given" path: when the
+// online-only listing comes back empty and the offline-inclusive re-query
+// doesn't find deviceName either, the error must be the named NOT_FOUND
+// ("no device named %q found") rather than the org-wide "no enrolled
+// devices ... enroll a device" message — that message is only accurate when
+// no device_name was given at all, and its enroll guidance misleads when
+// the real problem is a typo'd or stale name.
+func TestCloudConnect_EmptyOrgWithDeviceName_ReturnsNamedNotFound(t *testing.T) {
+	fake := &fakeCloudAssetServer{}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_connect", map[string]any{"device_name": "ghost-device"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected error result, got: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeNotFound) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeNotFound)
+	}
+	msg, _ := sc["message"].(string)
+	if !strings.Contains(msg, `no device named "ghost-device" found`) {
+		t.Errorf("message = %q, want it to contain %s", msg, `no device named "ghost-device" found`)
+	}
+	if strings.Contains(msg, "enroll a device with cloud_enroll_device") {
+		t.Errorf("message = %q, should not fall back to the org-wide enroll-a-device message when a specific device_name was given", msg)
+	}
+}
+
+// TestCloudConnect_OfflineRequeryFails_KeepsOriginalNotFound covers
+// offlineDeviceErr's transport-failure path: when the offline-inclusive
+// re-query itself fails (e.g. a transient cloud-API outage), that failure
+// must be swallowed rather than surfaced. Surfacing it would route through
+// cloudErrResult/codeFromGRPC and, for an Unavailable-shaped status,
+// mislabel the outage as DEVICE_UNREACHABLE — which misleadingly implies
+// this specific device is known-and-offline, when the lookup itself simply
+// couldn't be completed. The caller's original NOT_FOUND must stand
+// instead, mirroring upgradeOfflineResolveErr in commands/cloud_tunnel.go.
+func TestCloudConnect_OfflineRequeryFails_KeepsOriginalNotFound(t *testing.T) {
+	fake := &fakeCloudAssetServer{
+		assets: []*cloudpb.Asset{
+			{
+				Id:              42,
+				OrganizationId:  7,
+				Name:            "edge-one",
+				AssetType:       "device",
+				IsComputeDevice: true,
+			},
+		},
+		offlineErr: errors.New("cloud API unavailable"),
+	}
+	addr := startFakeCloudAssetServer(t, fake)
+	srv := New(&config.Config{
+		Auth: []config.AuthConfig{{
+			CloudGRPC: addr,
+			Certificates: []config.CertificateInfo{{
+				OrganizationID: 7,
+			}},
+		}},
+	}, nil)
+
+	result, err := srv.callTool(context.Background(), "cloud_connect", map[string]any{"device_name": "ghost-device"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("expected error result, got: %v", result.Content)
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeNotFound) {
+		t.Errorf("error_code = %v, want %s (the failed offline re-query must not surface as its own error)", sc["error_code"], errCodeNotFound)
+	}
+	msg, _ := sc["message"].(string)
+	if !strings.Contains(msg, `no device named "ghost-device" found`) {
+		t.Errorf("message = %q, want it to contain %s", msg, `no device named "ghost-device" found`)
+	}
+	if len(fake.reqs) != 2 {
+		t.Fatalf("len(fake.reqs) = %d, want 2 (online listing, then the failed offline re-query)", len(fake.reqs))
 	}
 }

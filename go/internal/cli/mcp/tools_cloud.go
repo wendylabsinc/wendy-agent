@@ -467,20 +467,16 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 	if err != nil {
 		return nil, err
 	}
-	if len(assets) == 0 {
-		if deviceName != "" {
-			if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
-				return nil, err
-			}
-		}
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
-	}
 	if deviceName == "" {
+		if len(assets) == 0 {
+			return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
+		}
 		if len(assets) == 1 {
 			return assets[0], nil
 		}
 		return nil, &cloudResolveErr{code: errCodeInvalidArgument, msg: "multiple cloud devices found; pass device_name"}
 	}
+
 	lower := strings.ToLower(deviceName)
 	var matched *cloudpb.Asset
 	for _, a := range assets {
@@ -492,27 +488,54 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		}
 	}
 	if matched == nil {
-		if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
-			return nil, err
+		// Numeric asset-id fallback: allows targeting unnamed (or
+		// differently-named) devices by id, mirroring resolveCloudAsset's
+		// fallback in commands/cloud_tunnel.go. No ambiguity check here —
+		// ids are unique, unlike names, so unlike the name loop above a
+		// second match can't happen.
+		if id, err := strconv.Atoi(strings.TrimSpace(deviceName)); err == nil {
+			for _, a := range assets {
+				if a.GetId() == int32(id) {
+					matched = a
+					break
+				}
+			}
 		}
-		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
 	}
-	return matched, nil
+	if matched != nil {
+		return matched, nil
+	}
+
+	// No match in the online-only listing (by name or id), including the
+	// degenerate case where that listing was empty. Re-check the
+	// offline-inclusive listing before concluding the device doesn't exist:
+	// it may just be enrolled-but-unreachable right now.
+	if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
+		return nil, err
+	}
+	return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
 }
 
 // offlineDeviceErr distinguishes "enrolled but currently offline" from
 // "never enrolled" once the online-only asset listing has failed to produce
 // a match for deviceName. It re-queries the cloud without the online-only
-// filter; if the device turns up there, it's enrolled but unreachable right
+// filter; if the device turns up there (by name or numeric id — see
+// clouddefaults.FindAssetByNameOrID), it's enrolled but unreachable right
 // now, so that's reported as errCodeDeviceUnreachable instead of the
 // generic NOT_FOUND the caller would otherwise return. Returns nil (not an
-// error) when the re-query also misses, so the caller's original NOT_FOUND
-// message is preserved unchanged, and returns the re-query's own error
-// (e.g. a transport failure) unmodified when that occurs.
+// error) both when the re-query also misses AND when the re-query itself
+// fails (e.g. a transient cloud-API outage) — in both cases the caller's
+// original NOT_FOUND message is preserved unchanged, mirroring
+// upgradeOfflineResolveErr in commands/cloud_tunnel.go. Surfacing a re-query
+// transport failure here instead would route through
+// cloudErrResult/codeFromGRPC and, for an Unavailable-shaped status,
+// mislabel a cloud-API outage as DEVICE_UNREACHABLE — implying this
+// specific device is known-and-offline, when the lookup itself simply
+// couldn't be completed.
 func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfig, deviceName string) error {
 	all, err := mcpListCloudAssets(ctx, auth, "", false)
 	if err != nil {
-		return err
+		return nil
 	}
 	if clouddefaults.FindAssetByNameOrID(all, deviceName) == nil {
 		return nil
