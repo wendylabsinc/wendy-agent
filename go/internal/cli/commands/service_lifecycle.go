@@ -71,7 +71,10 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 
 	hookHost, hostOK := resolveHookHost(ctx, r.conn, cfg)
 	if !hostOK {
-		cliNotice("Skipping postStart hook for %s: no routable device address reported; open the app via the URL above once the device IP is known.", cfg.ServiceName)
+		// cfg.ServiceName is "" for the app-level fallback config (see
+		// appLevelLifecycleConfig); containerDisplayName falls back to the
+		// bare AppID in that case rather than printing a dangling "for :".
+		cliNotice("Skipping postStart hook for %s: no routable device address reported; open the app via the URL above once the device IP is known.", containerDisplayName(cfg))
 		return
 	}
 
