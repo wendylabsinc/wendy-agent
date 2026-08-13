@@ -2515,7 +2515,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		sizeClause = fmt.Sprintf(" (%s compressed)", tui.Value(tui.ByteProgress{Current: compressedTotal}.String()))
 	}
 	cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
-	headers, err := pushLayersByChunks(ctx, conn.ContainerService, layers, nil)
+	headers, err := pushLayersWithProgress(ctx, conn.ContainerService, layers)
 	if err != nil {
 		return nil, err
 	}
