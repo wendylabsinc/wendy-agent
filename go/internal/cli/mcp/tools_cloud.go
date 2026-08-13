@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -28,8 +27,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
-
-const mcpDefaultBrokerPort = "50052"
 
 type mcpCloseFunc func()
 
@@ -255,9 +252,9 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return cloudErrResult(err), nil
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
+	brokerConn, err := clouddefaults.DialBroker(auth, stringParam(req, "broker_url"))
 	if err != nil {
-		return errResult(errCodeDeviceUnreachable, err.Error()), nil
+		return cloudErrResult(err), nil
 	}
 
 	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
@@ -403,7 +400,7 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	if err != nil {
 		return nil, nil, err
 	}
-	brokerConn, err := mcpDialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -586,7 +583,7 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
 		certInfo := auth.Certificates[0]
 		keyPEM, err := certInfo.PrivateKeyPEM()
 		if err != nil {
@@ -608,54 +605,6 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	conn, err := grpc.NewClient(auth.CloudGRPC, transport)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to cloud: %w", err)
-	}
-	return conn, nil
-}
-
-func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
-	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, mcpDefaultBrokerPort)
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	certInfo := auth.Certificates[0]
-	keyPEM, err := certInfo.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("loading client key: %w", err)
-	}
-	tlsCfg, err := certs.LoadTLSConfig(
-		certInfo.PemCertificate,
-		certInfo.PemCertificateChain,
-		keyPEM,
-		"",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading broker TLS config: %w", err)
-	}
-	// Broker cert CN is localhost and won't match the cloud host — skip hostname
-	// verification but still validate the chain against the Wendy CA.
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM([]byte(certInfo.PemCertificateChain)) {
-		return nil, fmt.Errorf("no valid CA certificates in PemCertificateChain")
-	}
-	tlsCfg.InsecureSkipVerify = true //nolint:gosec
-	tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-		if len(cs.PeerCertificates) == 0 {
-			return fmt.Errorf("broker presented no TLS certificate")
-		}
-		intermediates := x509.NewCertPool()
-		for _, c := range cs.PeerCertificates[1:] {
-			intermediates.AddCert(c)
-		}
-		_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-			Roots:         caPool,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		})
-		return err
-	}
-	conn, err := grpc.NewClient(brokerURL, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
-	if err != nil {
-		return nil, fmt.Errorf("connecting to broker at %s: %w", brokerURL, err)
 	}
 	return conn, nil
 }
