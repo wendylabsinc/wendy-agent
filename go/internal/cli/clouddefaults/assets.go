@@ -16,6 +16,9 @@ import (
 // package which cannot import commands) just need a single best-effort
 // lookup, not the CLI's ambiguity-reporting UX.
 func FindAssetByNameOrID(assets []*cloudpb.Asset, needle string) *cloudpb.Asset {
+	if needle == "" {
+		return nil
+	}
 	lower := strings.ToLower(needle)
 	for _, a := range assets {
 		if strings.ToLower(a.GetName()) == lower {

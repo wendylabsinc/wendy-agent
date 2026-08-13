@@ -40,4 +40,11 @@ func TestFindAssetByNameOrID(t *testing.T) {
 			t.Fatalf("FindAssetByNameOrID(%q) = %v, want nil", "nope", got)
 		}
 	})
+
+	t.Run("empty needle does not match an asset with an empty name", func(t *testing.T) {
+		got := FindAssetByNameOrID(assets, "")
+		if got != nil {
+			t.Fatalf("FindAssetByNameOrID(%q) = %v, want nil", "", got)
+		}
+	})
 }
