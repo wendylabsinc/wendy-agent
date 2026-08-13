@@ -1641,7 +1641,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
 	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
-		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts); err == nil {
+		// stats is filled by deployByChunkDiff as soon as it has read the built
+		// image's layers, even on a later failure, so the fallback branch below
+		// can size the registry push it's about to fall back to (WDY-2432).
+		var stats chunkDeployStats
+		if diffIDs, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts, &stats); err == nil {
 			if hashErr == nil {
 				// Record the layer diff IDs we deployed so the next run's fast path
 				// can verify the device still holds this content before skipping the
@@ -1674,7 +1678,15 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 			// PATH" failure from the fallback.
 			return fmt.Errorf("on-device deploy failed and no Docker fallback is possible inside the container; the chunk-diff error was: %w", err)
 		} else {
-			cliLogln("Fast deploy unavailable; using registry push.")
+			// Surface the chunk-diff error instead of dropping it — it used to be
+			// silently discarded here, leaving no trail for why a deploy suddenly
+			// fell back to the slower path.
+			cliNotice("%s", formatRegistryFallbackNotice(err, stats.imageBytes))
+			if registryFallbackPlan(stats.imageBytes, isInteractiveTerminal(), opts.yes) == fallbackConfirm {
+				if !confirmFn("Continue with the full registry push?") {
+					return fmt.Errorf("registry-push fallback declined; pass --chunking=off to skip chunk-diff and go straight to a registry push next time, or resolve the chunk-diff failure: %w", err)
+				}
+			}
 		}
 	}
 
@@ -2374,13 +2386,71 @@ func shouldDumpChunkDiffBuildLog(chunking string) func(error) bool {
 // instead of requiring the caller to set it by hand.
 const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 
+// chunkDeployStats is an out-param sink so the caller of deployByChunkDiff
+// knows what a registry-push fallback would cost even though the chunk-diff
+// deploy failed. Filled as soon as the built image's layers are read; stays
+// zero when the failure preceded (or prevented) a successful layer read.
+type chunkDeployStats struct {
+	imageBytes int64
+	layerCount int
+}
+
+// largeRegistryFallbackBytes is the (decimal) image-size threshold above which
+// a registry-push fallback is treated as "large" — big enough that silently
+// re-uploading every layer is worth interrupting an interactive user to
+// confirm, rather than just logging a line they might miss.
+const largeRegistryFallbackBytes = 500 * 1000 * 1000
+
+// registryFallbackAction is the decision registryFallbackPlan hands back: log
+// loudly and proceed, or stop and confirm first.
+type registryFallbackAction int
+
+const (
+	fallbackProceedLoud registryFallbackAction = iota
+	fallbackConfirm
+)
+
+// registryFallbackPlan decides whether a chunk-diff failure can fall back to a
+// full registry push with just a loud notice, or must be confirmed first.
+// Confirmation is gated on all three of: the fallback being large, a human
+// being present to answer (interactive), and the caller not having already
+// pre-approved every prompt (--yes). Non-interactive runs (CI, `wendy watch`)
+// and --yes always proceed on the notice alone — this path must never hard-fail
+// an unattended deploy.
+func registryFallbackPlan(imageBytes int64, interactive, assumeYes bool) registryFallbackAction {
+	if imageBytes >= largeRegistryFallbackBytes && interactive && !assumeYes {
+		return fallbackConfirm
+	}
+	return fallbackProceedLoud
+}
+
+// formatRegistryFallbackNotice explains why the chunk-diff (fast) deploy path
+// failed and what the registry-push fallback is about to do next — the
+// chunk-diff error used to be dropped silently here, leaving no trail for why
+// a deploy suddenly got slower. Large fallbacks (imageBytes unknown/zero counts
+// as small) get a louder, more specific message: re-uploading gigabytes of
+// otherwise-unchanged layers is expensive enough that "using registry push"
+// alone undersells what is about to happen.
+func formatRegistryFallbackNotice(chunkErr error, imageBytes int64) string {
+	if imageBytes >= largeRegistryFallbackBytes {
+		size := tui.ByteProgress{Current: imageBytes}.String()
+		return fmt.Sprintf("Fast deploy unavailable (%v). Falling back to a FULL registry push — ~%s will be re-uploaded.", chunkErr, size)
+	}
+	return fmt.Sprintf("Fast deploy unavailable (%v); falling back to registry push.", chunkErr)
+}
+
 // deployByChunkDiff builds the image to a local OCI layout tar, diffs the
 // layers against what the device already has via content-defined chunking, and
 // calls RunContainer with the resulting layer headers. On success it returns the
 // uncompressed layer diff IDs it deployed, so the caller can record them in the
 // deploy fingerprint and later verify the device still holds this content before
 // skipping a rebuild (WDY-1824).
-func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
+//
+// stats, when non-nil, is filled with the built image's size/layer count as
+// soon as a layer read succeeds — including on failure paths below that point
+// — so a caller whose overall deploy still fails can decide how to handle a
+// registry-push fallback without re-reading the layers itself.
+func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions, stats *chunkDeployStats) ([]string, error) {
 	mark := phaseTimer()
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
@@ -2417,6 +2487,16 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 
 	var layers []localLayer
 	var imageConfig []byte
+	// fillStats snapshots the current layers into the caller's out-param
+	// (A7/WDY-2432). Called after every point below where a layer read just
+	// succeeded, so stats reflects the most recent successful read even if a
+	// later step (another rebuild, the chunk push, RunContainer) fails.
+	fillStats := func() {
+		if stats != nil {
+			stats.imageBytes = totalCompressedLayerBytes(layers)
+			stats.layerCount = len(layers)
+		}
+	}
 	if exportMode == "dir" {
 		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
 		if err != nil {
@@ -2476,6 +2556,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				return nil, err
 			}
 		}
+		fillStats()
 		if nativeEligible && !nativeDone {
 			// After a buildx build, take ownership of the app layers: replace them
 			// with deterministic native rebuilds (verified against the buildx
@@ -2484,6 +2565,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
 					return nil, err
 				}
+				fillStats()
 			}
 		}
 		// Prune blobs superseded by this build once the deploy is done with them.
@@ -2507,6 +2589,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		if err != nil {
 			return nil, err
 		}
+		fillStats()
 	}
 	mark("read+decompress layers")
 
