@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -302,9 +303,32 @@ func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.
 	return assets, nil
 }
 
+// errNoCloudDevicesEnrolled is the "no --device given, org has zero enrolled
+// devices" miss. Kept as a plain sentinel error (not errCloudDeviceNotFound)
+// because it isn't about one specific device by name; upgradeOfflineResolveErr
+// still recognizes it via errors.Is to offer the "all N devices offline"
+// upgrade when an offline-inclusive re-query finds devices after all.
+var errNoCloudDevicesEnrolled = errors.New("no enrolled devices found for this org; enroll a device with 'wendy device enroll' first")
+
+// errCloudDeviceNotFound is returned by resolveCloudAsset when deviceName
+// was given (or the asset list was empty despite a name being given) but no
+// matching device was found in the queried asset list. It is typed so
+// upgradeOfflineResolveErr can distinguish "not found in this list" (which
+// may just mean "found in the offline-inclusive list instead") from other
+// resolveCloudAsset errors such as ambiguity, which should pass through
+// unchanged.
+type errCloudDeviceNotFound struct{ name string }
+
+func (e *errCloudDeviceNotFound) Error() string {
+	return fmt.Sprintf("no device named or with id %q found; run 'wendy cloud discover --json' to list ids", e.name)
+}
+
 func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Asset, error) {
 	if len(assets) == 0 {
-		return nil, fmt.Errorf("no enrolled devices found for this org; enroll a device with 'wendy device enroll' first")
+		if deviceName != "" {
+			return nil, &errCloudDeviceNotFound{name: deviceName}
+		}
+		return nil, errNoCloudDevicesEnrolled
 	}
 	if deviceName != "" {
 		lower := strings.ToLower(deviceName)
@@ -328,7 +352,7 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 				}
 			}
 		}
-		return nil, fmt.Errorf("no device named or with id %q found; run 'wendy cloud discover --json' to list ids", deviceName)
+		return nil, &errCloudDeviceNotFound{name: deviceName}
 	}
 	if len(assets) == 1 {
 		return assets[0], nil
@@ -345,6 +369,39 @@ func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Ass
 		fmt.Fprintf(&b, "%d=%s", a.GetId(), name)
 	}
 	return nil, fmt.Errorf("multiple cloud devices found; rerun with --device <id|name> (%s)", b.String())
+}
+
+// upgradeOfflineResolveErr re-checks a resolveCloudAsset miss against the
+// full (offline-inclusive) asset list, so an enrolled device that merely had
+// a heartbeat flap reads as "offline" rather than "nonexistent". fetchAll is
+// injected (rather than calling fetchCloudAssetsFiltered directly) so this
+// stays a pure function for testing; a fetchAll failure or a still-missing
+// device both keep resolveErr unchanged. Errors that aren't a not-found miss
+// (e.g. ambiguity) pass through without invoking fetchAll at all.
+func upgradeOfflineResolveErr(resolveErr error, deviceName string, fetchAll func() ([]*cloudpb.Asset, error)) error {
+	var notFound *errCloudDeviceNotFound
+	switch {
+	case errors.As(resolveErr, &notFound):
+		allAssets, err := fetchAll()
+		if err != nil {
+			return resolveErr
+		}
+		if clouddefaults.FindAssetByNameOrID(allAssets, deviceName) == nil {
+			return resolveErr
+		}
+		return fmt.Errorf("device %q is enrolled but currently reported offline; check the device's power and network connection, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", deviceName)
+	case errors.Is(resolveErr, errNoCloudDevicesEnrolled):
+		allAssets, err := fetchAll()
+		if err != nil {
+			return resolveErr
+		}
+		if len(allAssets) == 0 {
+			return resolveErr
+		}
+		return fmt.Errorf("all %d enrolled devices are currently reported offline; check their power and network connections, then retry ('wendy cloud discover --all --json' lists all enrolled devices)", len(allAssets))
+	default:
+		return resolveErr
+	}
 }
 
 func pickCloudDevice(ctx context.Context, auth *config.AuthConfig, deviceName, brokerURL string) (*cloudpb.Asset, error) {
@@ -411,15 +468,25 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 		// fall through to picker below
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
-		if err != nil || asset != nil {
+		if err != nil {
+			// The miss may just mean the device is offline: fetchCloudAssets
+			// above only queried online assets. Re-check against the full
+			// (offline-inclusive) list before reporting the device nonexistent.
+			// Bypasses fetchCloudAssets (not fetchCloudAssetsFiltered directly)
+			// so this offline re-query doesn't re-run pin-seeding.
+			return nil, upgradeOfflineResolveErr(err, deviceName, func() ([]*cloudpb.Asset, error) {
+				return fetchCloudAssetsFiltered(ctx, auth, false)
+			})
+		}
+		if asset != nil {
 			// With no --device, resolveCloudAsset picks the org's only enrolled
 			// device without asking. Say so, rather than leaving the target
 			// implicit. Note this is not the configured default device: the
 			// cloud path does not consult that setting.
-			if err == nil && deviceName == "" {
+			if deviceName == "" {
 				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
 			}
-			return asset, err
+			return asset, nil
 		}
 	}
 
