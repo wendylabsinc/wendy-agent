@@ -21,7 +21,7 @@ func highDiskUsage(partitions []*agentpb.DiskPartition, legacyUsed, legacyTotal 
 		bestRatio float64
 	)
 	for _, p := range partitions {
-		if p == nil || p.GetTotalBytes() <= 0 || p.GetUsedBytes() < 0 {
+		if p == nil || p.GetTotalBytes() <= 0 || p.GetUsedBytes() < 0 || p.GetUsedBytes() > p.GetTotalBytes() {
 			continue
 		}
 		ratio := float64(p.GetUsedBytes()) / float64(p.GetTotalBytes())
