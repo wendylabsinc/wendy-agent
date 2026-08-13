@@ -155,6 +155,7 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 		chainID := chainIDs[i]
 
 		if exists[i] {
+			c.refreshSnapshotLabels(ctx, sn, chainID)
 			if progress != nil {
 				progress(UnpackProgress{
 					Phase:       "layer",
@@ -181,7 +182,7 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 			})
 		}
 
-		reused, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, img.Name(), i, layerDesc, parentChainID, chainID)
+		reused, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, img.Name(), i, layerDesc, diffIDs[i].String(), parentChainID, chainID)
 		if err != nil {
 			return err
 		}
@@ -205,37 +206,86 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 	return nil
 }
 
-// applyLayerSnapshot applies one layer descriptor on top of parentChainID and
-// commits it under chainID. The caller must hold a containerd lease. Returning
-// reused=true means another concurrent preparation committed the same chain ID
-// first; that is a successful idempotent outcome.
+// applyLayerSnapshot materializes one layer descriptor and commits it above
+// parentChainID under the ordered chainID. The caller must hold a containerd
+// lease. Returning reused=true means either the immutable layer data or the
+// complete ordered chain was already available.
 func (c *Client) applyLayerSnapshot(
 	ctx, cleanupCtx context.Context,
 	sn snapshots.Snapshotter,
 	imageName string,
 	layer int,
 	layerDesc ocispec.Descriptor,
+	diffID string,
 	parentChainID, chainID string,
 ) (reused bool, err error) {
+	if c.tryReuseLayerSnapshot(ctx, cleanupCtx, sn, imageName, layer, diffID, parentChainID, chainID) {
+		return true, nil
+	}
+	if c.snapshotter == "overlayfs" {
+		reused, err := c.applyLayerSnapshotAttempt(ctx, cleanupCtx, sn, imageName, layer, layerDesc, diffID, parentChainID, chainID, true)
+		if err == nil {
+			return reused, nil
+		}
+		if ctx.Err() != nil {
+			return false, err
+		}
+		// Overlay snapshotters running without the advertised rebase capability
+		// (notably some user namespaces) reject WithParent at commit. Preserve
+		// compatibility by replaying the canonical sequential apply path.
+		c.logger.Debug("Parent-independent layer apply unavailable; applying layer sequentially",
+			zap.Int("layer", layer), zap.String("diff_id", diffID), zap.Error(err))
+	}
+	return c.applyLayerSnapshotAttempt(ctx, cleanupCtx, sn, imageName, layer, layerDesc, diffID, parentChainID, chainID, false)
+}
+
+func (c *Client) applyLayerSnapshotAttempt(
+	ctx, cleanupCtx context.Context,
+	sn snapshots.Snapshotter,
+	imageName string,
+	layer int,
+	layerDesc ocispec.Descriptor,
+	diffID string,
+	parentChainID, chainID string,
+	standalone bool,
+) (reused bool, err error) {
+	snapshotParent := parentChainID
+	if standalone {
+		snapshotParent = ""
+	}
+
 	// Unique per-attempt active key so concurrent unpacks of the same image (or
 	// a stale key from a crashed prior attempt) cannot collide or clobber each
 	// other's in-progress snapshot.
 	activeKey := fmt.Sprintf("extract-%s-%d-%s", imageName, layer, uuid.NewString())
-	mounts, err := sn.Prepare(ctx, activeKey, parentChainID)
+	mounts, err := sn.Prepare(ctx, activeKey, snapshotParent)
 	if err != nil {
 		return false, fmt.Errorf("preparing snapshot for layer %d: %w", layer, err)
 	}
 
+	if standalone && parentChainID != "" {
+		mounts = standaloneLayerApplyMounts(mounts)
+	}
 	if _, err := c.client.DiffService().Apply(ctx, layerDesc, mounts); err != nil {
 		c.removeActiveSnapshot(cleanupCtx, sn, activeKey, "active snapshot after apply failure", layer)
 		return false, fmt.Errorf("applying layer %d: %w", layer, err)
 	}
 
-	gcRootOpt := snapshots.WithLabels(map[string]string{
+	labels := map[string]string{
 		labelKeyGCRoot:        gcTimestamp(),
 		labelKeyWendySnapshot: "true",
-	})
-	commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
+	}
+	if standalone {
+		// Only parent-independent uppers receive this label. Snapshots produced
+		// by the sequential fallback may contain metadata copied from their
+		// parent and must never be reused above another chain.
+		labels[labelKeyWendyDiffID] = diffID
+	}
+	commitOpts := []snapshots.Opt{snapshots.WithLabels(labels)}
+	if standalone && parentChainID != "" {
+		commitOpts = append(commitOpts, snapshots.WithParent(parentChainID))
+	}
+	commitErr := sn.Commit(ctx, chainID, activeKey, commitOpts...)
 	switch {
 	case commitErr == nil:
 		c.logger.Debug("Unpacked layer",

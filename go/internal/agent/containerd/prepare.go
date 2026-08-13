@@ -65,6 +65,7 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 		}
 
 		if _, err := sn.Stat(ctx, chainID); err == nil {
+			c.refreshSnapshotLabels(ctx, sn, chainID)
 			parentChainID = chainID
 			continue
 		} else if !errdefs.IsNotFound(err) {
@@ -80,7 +81,7 @@ func (c *Client) PrepareImage(ctx context.Context, imageName string, layers []*a
 			Digest:    layerDigest,
 			Size:      layer.GetSize(),
 		}
-		if _, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, imageName, i, desc, parentChainID, chainID); err != nil {
+		if _, err := c.applyLayerSnapshot(ctx, cleanupCtx, sn, imageName, i, desc, diffID, parentChainID, chainID); err != nil {
 			return err
 		}
 		parentChainID = chainID
