@@ -1497,7 +1497,13 @@ func bootstrapOCIBuilder(ctx context.Context, builderName string, w io.Writer) e
 	cmd.Stdout = mw
 	cmd.Stderr = mw
 	if err := cmd.Run(); err != nil {
-		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) {
+		// Only claim *our* bootstrap timeout fired if the parent ctx is still
+		// alive: bootstrapCtx also reports DeadlineExceeded when an ancestor
+		// context's own deadline expires first (ctx.Err() != nil in that case),
+		// and blaming that on the bootstrap would misattribute the failure.
+		// Plain Ctrl+C is unaffected — that propagates context.Canceled, not
+		// DeadlineExceeded. (Same convention as buildprogress.go:135,173.)
+		if errors.Is(bootstrapCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			return fmt.Errorf("bootstrapping builder %q timed out after %s (is the Docker daemon healthy?); output so far:\n%s",
 				builderName, ociBuilderBootstrapTimeout, buf.String())
 		}

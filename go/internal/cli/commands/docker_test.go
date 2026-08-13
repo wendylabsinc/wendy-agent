@@ -630,6 +630,46 @@ func TestBootstrapOCIBuilderStreamsOutputLive(t *testing.T) {
 	}
 }
 
+// TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed proves that when an
+// ancestor context's own deadline fires first — not
+// bootstrapOCIBuilder's ociBuilderBootstrapTimeout — the returned error is
+// the plain failure shape, not the "timed out after <ociBuilderBootstrapTimeout>"
+// message. bootstrapCtx (a child of the caller's ctx) also reports
+// DeadlineExceeded in that case, so the check must also confirm the parent
+// ctx itself is not yet done before claiming the bootstrap-specific timeout.
+func TestBootstrapOCIBuilderParentDeadlineIsNotMisattributed(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "helper.log")
+	oldExec := imageBuilderCommandContext
+	imageBuilderCommandContext = fakeImageBuilderCommandContext(logFile)
+	t.Cleanup(func() { imageBuilderCommandContext = oldExec })
+	t.Setenv("IMAGE_BUILDER_HELPER_SLEEP_MS", "2000")
+
+	oldTimeout := ociBuilderBootstrapTimeout
+	ociBuilderBootstrapTimeout = 5 * time.Second // longer than the parent deadline below
+	t.Cleanup(func() { ociBuilderBootstrapTimeout = oldTimeout })
+
+	// Parent deadline is shorter than both the shrunk-but-still-long
+	// ociBuilderBootstrapTimeout and the helper's sleep, so the parent fires
+	// first and the child (bootstrapCtx) inherits DeadlineExceeded from it.
+	parentCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	start := time.Now()
+	err := bootstrapOCIBuilder(parentCtx, "wendy-oci", &out)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("bootstrapOCIBuilder: expected an error, got nil")
+	}
+	if strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("bootstrapOCIBuilder error = %q, must not claim its own bootstrap timeout when the parent context's deadline fired first", err.Error())
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("bootstrapOCIBuilder took %s, want well under the 2s helper sleep (it should have been killed when the 50ms parent deadline fired)", elapsed)
+	}
+}
+
 // setupAppleContainerEnsureSeams installs the fakes ensureAppleContainerSystem
 // depends on (Apple silicon host, container CLI on PATH, fast timeouts) and
 // returns the path to the recorded command log.
