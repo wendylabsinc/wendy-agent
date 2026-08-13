@@ -1,12 +1,16 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
 func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
@@ -26,6 +30,104 @@ func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	got := out.String()
+	if !strings.Contains(got, "cached") || !strings.Contains(got, "4.3s") {
+		t.Errorf("missing step lines:\n%s", got)
+	}
+	if !strings.Contains(got, "1 cached") || !strings.Contains(got, "1 rebuilt") {
+		t.Errorf("missing summary tally:\n%s", got)
+	}
+}
+
+// TestBuildSetupStepWriterEmitsRunningDetailAndDone exercises
+// newBuildSetupStepWriter directly: partial lines split across Write calls
+// must still buffer into whole-line Detail updates, finish() must report a
+// positive elapsed Dur, a second finish() call must be a no-op, and every
+// byte written must reach tee untouched (the setupLog failure-replay
+// contract).
+func TestBuildSetupStepWriterEmitsRunningDetailAndDone(t *testing.T) {
+	var events []tui.BuildStepEvent
+	emit := func(e tui.BuildStepEvent) { events = append(events, e) }
+	var tee bytes.Buffer
+
+	w, finish := newBuildSetupStepWriter(emit, &tee)
+
+	// Split one line across two writes to exercise partial-line buffering.
+	io.WriteString(w, "[buildx] boot")
+	io.WriteString(w, "strapping builder \"wendy\"\n")
+	io.WriteString(w, "[buildx] pulling image\n")
+
+	time.Sleep(time.Millisecond)
+	finish()
+	finish() // idempotent: must not emit a second Done
+
+	wantTee := "[buildx] bootstrapping builder \"wendy\"\n[buildx] pulling image\n"
+	if got := tee.String(); got != wantTee {
+		t.Errorf("tee = %q, want %q (every byte must reach the failure-replay buffer)", got, wantTee)
+	}
+
+	var running, done int
+	for _, e := range events {
+		if e.ID != buildSetupStepID {
+			t.Fatalf("event ID = %q, want %q", e.ID, buildSetupStepID)
+		}
+		if e.Kind != tui.BuildVertexSetup {
+			t.Fatalf("event Kind = %v, want tui.BuildVertexSetup", e.Kind)
+		}
+		if e.Display != "preparing buildx builder" {
+			t.Fatalf("event Display = %q, want %q", e.Display, "preparing buildx builder")
+		}
+		switch e.Status {
+		case tui.BuildStepRunning:
+			running++
+		case tui.BuildStepDone:
+			done++
+			if e.Dur <= 0 {
+				t.Errorf("Done Dur = %v, want > 0", e.Dur)
+			}
+		default:
+			t.Fatalf("unexpected status %v", e.Status)
+		}
+	}
+	if running != 2 {
+		t.Errorf("running events = %d, want 2 (one per complete line)", running)
+	}
+	if done != 1 {
+		t.Errorf("done events = %d, want 1 (double-finish must be idempotent)", done)
+	}
+}
+
+// TestRunBuildWithProgressSurfacesBuilderSetupStep confirms the builder-setup
+// chatter written to logw (WDY-2432 / A5's streamed bootstrapOCIBuilder
+// output) is now surfaced as a synthetic, completed build step in the plain
+// renderer instead of only appearing on failure — while the existing
+// summary/tally line remains driven solely by real Dockerfile steps.
+func TestRunBuildWithProgressSurfacesBuilderSetupStep(t *testing.T) {
+	restore := forceBuildProgressInteractive(false)
+	defer restore()
+	var out strings.Builder
+	restoreOut := setBuildProgressOut(&out)
+	defer restoreOut()
+
+	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(stream, logw io.Writer) error {
+		io.WriteString(logw, "[buildx] bootstrapping builder \"wendy\" (a cold start pulls the BuildKit image; this can take a few minutes)\n")
+		io.WriteString(stream, "#9 [4/6] RUN pip install\n#9 DONE 4.3s\n")
+		io.WriteString(stream, "#6 [1/6] FROM python\n#6 CACHED\n")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "preparing buildx builder") {
+		t.Errorf("missing builder-setup step line:\n%s", got)
+	}
+	if !strings.Contains(got, "done    preparing buildx builder") {
+		t.Errorf("builder-setup step not marked done:\n%s", got)
+	}
+
+	// Existing summary/tally behavior is unchanged: the synthetic setup step
+	// (Kind BuildVertexSetup) does not enter the cached/rebuilt tally.
 	if !strings.Contains(got, "cached") || !strings.Contains(got, "4.3s") {
 		t.Errorf("missing step lines:\n%s", got)
 	}
