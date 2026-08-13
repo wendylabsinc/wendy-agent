@@ -579,10 +579,10 @@ func TestBuildxOCIExportArgs(t *testing.T) {
 			"--platform", "linux/arm64",
 			"--progress", "plain",
 			"-f", "/proj/Dockerfile",
-			"--cache-to", "type=local,dest=/c/buildx",
+			"--cache-to", "type=local,dest=/c/buildx,compression=uncompressed",
 			"--build-arg", "ALPHA=1",
 			"--build-arg", "ZED=2",
-			"--output", "type=oci,dest=/dest/layout,tar=false",
+			"--output", "type=oci,dest=/dest/layout,compression=uncompressed,tar=false",
 			".",
 		}
 		if fmt.Sprint(got) != fmt.Sprint(want) {
@@ -597,8 +597,8 @@ func TestBuildxOCIExportArgs(t *testing.T) {
 			"--platform", "linux/arm64",
 			"--progress", "plain",
 			"--cache-from", "type=local,src=/c/legacy",
-			"--cache-to", "type=local,dest=/c/buildx",
-			"--output", "type=oci,dest=/tmp/image.tar",
+			"--cache-to", "type=local,dest=/c/buildx,compression=uncompressed",
+			"--output", "type=oci,dest=/tmp/image.tar,compression=uncompressed",
 			".",
 		}
 		if fmt.Sprint(got) != fmt.Sprint(want) {

@@ -51,6 +51,7 @@ type chunkIndexProgress struct {
 	reporter chunkIndexProgressWriter
 	current  int64
 	total    int64
+	unknown  int
 	started  time.Time
 	last     time.Time
 }
@@ -74,16 +75,59 @@ func (p *chunkIndexProgress) addProcessed(n int64) {
 	p.reportLocked(now, false)
 }
 
-func (p *chunkIndexProgress) addLayerTotal(rawSize int64) {
-	if p == nil || p.reporter == nil || rawSize <= 0 {
+// startLayer registers a layer before indexing begins. Cache-hit manifests know
+// their uncompressed size up front; cache misses do not, so the aggregate total
+// remains undisclosed until every unknown-size layer has finished. This avoids
+// displaying impossible counters such as 5.0GB/1.3GB while parallel layers are
+// still discovering their raw sizes.
+func (p *chunkIndexProgress) startLayer(knownSize int64) {
+	if p == nil || p.reporter == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Decompression, DiffID hashing, temp-file output, and CDC hashing now share
-	// one pipelined pass over the raw stream.
-	p.total += rawSize
+	if p.started.IsZero() {
+		p.started = time.Now()
+	}
+	if knownSize > 0 {
+		p.total += knownSize
+	} else {
+		p.unknown++
+	}
 	p.reportLocked(time.Now(), true)
+}
+
+// finishLayer replaces the size reserved by startLayer with the actual raw
+// size. For an initially unknown layer this is the point at which its bytes can
+// safely contribute to the displayed denominator.
+func (p *chunkIndexProgress) finishLayer(knownSize, actualSize int64) {
+	if p == nil || p.reporter == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if knownSize > 0 {
+		p.total += actualSize - knownSize
+	} else {
+		if p.unknown > 0 {
+			p.unknown--
+		}
+		p.total += actualSize
+	}
+	p.reportLocked(time.Now(), true)
+}
+
+func (p *chunkIndexProgress) abortLayer(knownSize int64) {
+	if p == nil || p.reporter == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if knownSize > 0 {
+		p.total -= knownSize
+	} else if p.unknown > 0 {
+		p.unknown--
+	}
 }
 
 func (p *chunkIndexProgress) reportLocked(now time.Time, force bool) {
@@ -96,7 +140,11 @@ func (p *chunkIndexProgress) reportLocked(now time.Time, force bool) {
 	if elapsed := now.Sub(p.started).Seconds(); elapsed > 0 {
 		rate = float64(p.current) / elapsed
 	}
-	p.reporter.ReportChunkIndex(p.current, p.total, rate, false)
+	total := p.total
+	if p.unknown > 0 || p.current > total {
+		total = 0
+	}
+	p.reporter.ReportChunkIndex(p.current, total, rate, false)
 }
 
 func (p *chunkIndexProgress) finish() {
@@ -110,7 +158,11 @@ func (p *chunkIndexProgress) finish() {
 	if elapsed := now.Sub(p.started).Seconds(); elapsed > 0 {
 		rate = float64(p.current) / elapsed
 	}
-	p.reporter.ReportChunkIndex(p.current, p.total, rate, true)
+	total := p.total
+	if p.unknown > 0 || p.current > total {
+		total = 0
+	}
+	p.reporter.ReportChunkIndex(p.current, total, rate, true)
 }
 
 func newChunkTransferProgress(output io.Writer) *chunkTransferProgress {
@@ -306,8 +358,6 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 	if err := resolveGroup.Wait(); err != nil {
 		return nil, err
 	}
-	indexProgress.finish()
-
 	prepareCtx, cancelPrepare := context.WithCancel(ctx)
 	defer cancelPrepare()
 	uploadCtx, cancelUpload := context.WithCancel(ctx)
@@ -337,6 +387,7 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 		})
 	}
 	uploadErr := uploadGroup.Wait()
+	indexProgress.finish()
 	if uploadErr != nil {
 		cancelPrepare()
 		if prepareDone != nil {
@@ -433,6 +484,14 @@ func (r *resolvedChunkLayer) ensureDecompressed(progress *chunkIndexProgress) er
 	if r.dl != nil {
 		return nil
 	}
+	knownSize := r.header.GetSize()
+	progress.startLayer(knownSize)
+	finished := false
+	defer func() {
+		if !finished {
+			progress.abortLayer(knownSize)
+		}
+	}()
 	var lastCompleted int64
 	d, refs, err := decompressAndChunkLayerToTemp(r.l, func(completed int64) {
 		progress.addProcessed(completed - lastCompleted)
@@ -441,7 +500,8 @@ func (r *resolvedChunkLayer) ensureDecompressed(progress *chunkIndexProgress) er
 	if err != nil {
 		return err
 	}
-	progress.addLayerTotal(d.size)
+	progress.finishLayer(knownSize, d.size)
+	finished = true
 	// A cache entry is accepted only for the current chunk algorithm version,
 	// so deterministic re-chunking must reproduce its identity and shape.
 	if got := d.diffID; got != r.header.GetDiffId() {
@@ -469,6 +529,13 @@ func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChu
 	// same pass, filling dl/refs/diffID/size. Both entry points run the
 	// identical region+FastCDC algorithm, so these hashes match the device's.
 	decompressAndChunk := func() error {
+		progress.startLayer(0)
+		finished := false
+		defer func() {
+			if !finished {
+				progress.abortLayer(0)
+			}
+		}()
 		var lastCompleted int64
 		d, r, err := decompressAndChunkLayerToTemp(l, func(completed int64) {
 			progress.addProcessed(completed - lastCompleted)
@@ -478,7 +545,8 @@ func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChu
 			return err
 		}
 		dl = d
-		progress.addLayerTotal(d.size)
+		progress.finishLayer(0, d.size)
+		finished = true
 		refs, diffID, size = r, d.diffID, d.size
 		return nil
 	}

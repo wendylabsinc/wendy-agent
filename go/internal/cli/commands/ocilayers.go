@@ -1039,7 +1039,7 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheFromDir, cacheToDir
 	if cacheFromDir != "" {
 		args = append(args, "--cache-from", "type=local,src="+filepath.ToSlash(cacheFromDir))
 	}
-	args = append(args, "--cache-to", "type=local,dest="+filepath.ToSlash(cacheToDir))
+	args = append(args, "--cache-to", "type=local,dest="+filepath.ToSlash(cacheToDir)+",compression=uncompressed")
 	keys := make([]string, 0, len(buildArgs))
 	for k := range buildArgs {
 		keys = append(keys, k)
@@ -1048,7 +1048,13 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheFromDir, cacheToDir
 	for _, k := range keys {
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
-	output := "type=oci,dest=" + dest
+	// The chunk-diff path consumes uncompressed layer tar streams and hashes
+	// their DiffIDs before sending only missing chunks to the agent. Asking the
+	// OCI exporter to gzip those layers first adds a full-image compression pass
+	// (especially expensive for multi-gigabyte CUDA libraries), only for the
+	// chunking path to decompress them again. Keep the persistent layout in the
+	// representation the deploy path actually consumes.
+	output := "type=oci,dest=" + dest + ",compression=uncompressed"
 	if tarFalse {
 		output += ",tar=false"
 	}

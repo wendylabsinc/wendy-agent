@@ -101,10 +101,15 @@ type composeBuildJob struct {
 
 type composeBuildProgressWriter struct {
 	io.Writer
-	emit func(tui.BuildStepEvent)
+	emit          func(tui.BuildStepEvent)
+	progressMu    sync.Mutex
+	uploadStarted bool
 }
 
 func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	w.uploadStarted = true
 	w.emit(tui.BuildStepEvent{
 		ID:      "chunk-upload",
 		Kind:    tui.BuildVertexExport,
@@ -119,9 +124,18 @@ func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate
 	if done {
 		status = tui.BuildStepDone
 	}
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	// Indexing and upload intentionally overlap across layers. The Compose TUI
+	// has one detail line per service, so once upload begins it is the more useful
+	// signal and late index updates must not repeatedly replace it. Still forward
+	// the terminal event so consumers can close the synthetic index step.
+	if w.uploadStarted && status == tui.BuildStepRunning {
+		return
+	}
 	w.emit(tui.BuildStepEvent{
 		ID:      "chunk-index",
-		Kind:    tui.BuildVertexStep,
+		Kind:    tui.BuildVertexSetup,
 		Display: "indexing changed layer content",
 		Status:  status,
 		Bytes:   tui.ByteProgress{Current: current, Total: total, Rate: rate},

@@ -3,17 +3,83 @@ package commands
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type chunkProgressRecorder struct {
+	io.Writer
+	events []tui.BuildStepEvent
+}
+
+func (r *chunkProgressRecorder) ReportChunkIndex(current, total int64, rate float64, done bool) {
+	status := tui.BuildStepRunning
+	if done {
+		status = tui.BuildStepDone
+	}
+	r.events = append(r.events, tui.BuildStepEvent{
+		Status: status,
+		Bytes:  tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
+func TestChunkIndexProgressDoesNotReportPartialTotal(t *testing.T) {
+	recorder := &chunkProgressRecorder{Writer: io.Discard}
+	progress := newChunkIndexProgress(recorder)
+
+	progress.startLayer(100)
+	progress.addProcessed(100)
+	progress.startLayer(0)
+	progress.last = time.Time{} // bypass the live-update throttle for this assertion
+	progress.addProcessed(50)
+
+	last := recorder.events[len(recorder.events)-1]
+	if last.Bytes.Current != 150 || last.Bytes.Total != 0 {
+		t.Fatalf("progress with unknown layer = %d/%d, want 150/unknown", last.Bytes.Current, last.Bytes.Total)
+	}
+
+	progress.finishLayer(0, 50)
+	last = recorder.events[len(recorder.events)-1]
+	if last.Bytes.Current != 150 || last.Bytes.Total != 150 {
+		t.Fatalf("progress after sizes resolve = %d/%d, want 150/150", last.Bytes.Current, last.Bytes.Total)
+	}
+}
+
+func TestComposeChunkProgressKeepsUploadVisible(t *testing.T) {
+	var events []tui.BuildStepEvent
+	w := &composeBuildProgressWriter{
+		Writer: io.Discard,
+		emit:   func(e tui.BuildStepEvent) { events = append(events, e) },
+	}
+
+	w.ReportChunkIndex(50, 100, 10, false)
+	w.ReportChunkTransfer(10, 100, 5)
+	w.ReportChunkIndex(75, 100, 10, false)
+	w.ReportChunkIndex(100, 100, 10, true)
+
+	if len(events) != 3 {
+		t.Fatalf("emitted %d events, want initial index, upload, and index completion", len(events))
+	}
+	if events[0].Display != "indexing changed layer content" || events[0].Kind != tui.BuildVertexSetup {
+		t.Fatalf("first event = %#v, want indexing setup event", events[0])
+	}
+	if events[1].Display != "uploading missing chunks" || events[1].Status != tui.BuildStepRunning {
+		t.Fatalf("second event = %#v, want running upload", events[1])
+	}
+	if events[2].Status != tui.BuildStepDone {
+		t.Fatalf("third event = %#v, want index completion", events[2])
+	}
+}
 
 func TestPushLayersByChunksRoutesStatusToOutput(t *testing.T) {
 	diffID := "sha256:" + strings.Repeat("ab", 32)
