@@ -30,6 +30,19 @@ import (
 
 const maxCloudAssets = 10_000
 
+// The tunneled agent conn's keepalive is a slow END-TO-END BACKSTOP, not the
+// liveness probe: its PINGs are payload bytes inside the broker stream, subject
+// to the same flow control as a multi-GB chunk upload, so during a push their
+// RTT measures queue drain, not liveness. Link liveness/NAT warmth belongs to
+// the broker conn (real TCP, stays at 30s/20s), and a dead tunnel already fails
+// fast via broker-stream errors closing the pipe. Ping stays ≥ the agent's
+// enforced MinTime (10s, mtls/server.go:108). Numbers worth measuring against
+// broker behavior before shipping.
+const (
+	tunneledKeepalivePing       = 5 * time.Minute
+	tunneledKeepaliveACKTimeout = 1 * time.Minute
+)
+
 type closeFunc func()
 
 func (f closeFunc) Close() error {
@@ -141,8 +154,8 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                clouddefaults.KeepalivePing,
-			Timeout:             clouddefaults.KeepaliveACKTimeout,
+			Time:                tunneledKeepalivePing,
+			Timeout:             tunneledKeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)

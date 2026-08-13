@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/clouddefaults"
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
 
@@ -431,5 +432,28 @@ func TestTunnelUplinkClosesPipeOnSendError(t *testing.T) {
 	}
 	if sendCalls.Load() != 1 {
 		t.Fatalf("send called %d times, want exactly 1 (no retry, no send after error)", sendCalls.Load())
+	}
+}
+
+// TestCloudKeepaliveProfiles is a guard-rail, not a behavior test: it pins the
+// invariants the tunneled and broker keepalive profiles must satisfy so a
+// future edit can't silently violate them. Real coverage of the tunneled
+// dial's keepalive-under-flow-control behavior lives in the uplink-pump
+// (A8) and end-to-end (A10) tests.
+func TestCloudKeepaliveProfiles(t *testing.T) {
+	// The agent enforces a minimum client ping interval via
+	// grpc.KeepaliveEnforcementPolicy{MinTime: 10 * time.Second} in
+	// internal/agent/mtls/server.go:108. Any client-side ping interval below
+	// this floor gets the connection torn down with ENHANCE_YOUR_CALM.
+	const agentMinTime = 10 * time.Second
+
+	if tunneledKeepalivePing < agentMinTime {
+		t.Errorf("tunneledKeepalivePing = %v, want >= agent MinTime %v (mtls/server.go:108)", tunneledKeepalivePing, agentMinTime)
+	}
+	if tunneledKeepaliveACKTimeout <= clouddefaults.KeepaliveACKTimeout {
+		t.Errorf("tunneledKeepaliveACKTimeout = %v, want > clouddefaults.KeepaliveACKTimeout (%v) -- the tunneled profile is a slow end-to-end backstop, not the liveness probe", tunneledKeepaliveACKTimeout, clouddefaults.KeepaliveACKTimeout)
+	}
+	if clouddefaults.KeepalivePing < agentMinTime {
+		t.Errorf("clouddefaults.KeepalivePing = %v, want >= agent MinTime %v (mtls/server.go:108) -- this is the broker/cloud-API liveness ping", clouddefaults.KeepalivePing, agentMinTime)
 	}
 }
