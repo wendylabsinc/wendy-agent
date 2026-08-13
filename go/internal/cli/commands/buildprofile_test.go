@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 const swiftStagefileSource = `version: 1
@@ -26,6 +28,30 @@ func writeSwiftStagefileProject(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func TestFrameworkStagefileOptionsInjectROS2Middleware(t *testing.T) {
+	dir := t.TempDir()
+	source := `version: 1
+stages:
+  - name: app
+    from: ros:humble-ros-base
+    pin: false
+`
+	if err := os.WriteFile(filepath.Join(dir, stagefileSourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	frameworks := &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{
+		Distro: "humble",
+		RMW:    "cyclonedds",
+	}}
+	if _, err := compileStagefile(dir, stagefileSourceName, "", frameworkStagefileOptions(frameworks)...); err != nil {
+		t.Fatal(err)
+	}
+	got := generatedDockerfileText(t, dir)
+	if !strings.Contains(got, "'ros-humble-rmw-cyclonedds-cpp'") {
+		t.Fatalf("generated Dockerfile missing framework middleware:\n%s", got)
+	}
 }
 
 func generatedDockerfileText(t *testing.T, dir string) string {

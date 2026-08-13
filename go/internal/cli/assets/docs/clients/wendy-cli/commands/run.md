@@ -156,8 +156,8 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure (multi-service projects only). |
-| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
-| `--user-args <args>` | Extra arguments to append to the image's own entrypoint/`CMD` at runtime. Repeatable, and also accepts a comma-separated list. |
+| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = default limit of 4. |
+| `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--env <KEY=VALUE>` | Set an environment variable in the container. Repeatable. Overrides a `wendy.json` `env` entry of the same key. See [Environment variables](#environment-variables). |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
@@ -180,6 +180,17 @@ rapid sequence of saves is coalesced by the debounce window (default 400 ms) so 
 single redeploy runs after edits settle. Build output is hidden unless a build
 fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
 period.
+
+For multi-service `wendy.json` and Compose projects deployed to WendyOS, watch
+mode fingerprints each service's build inputs and effective runtime configuration
+independently. After the initial deploy, services that are unchanged and still
+running are left untouched: they are not rebuilt, recreated, or restarted.
+Changed services are redeployed in dependency order. A missing, stopped, or
+otherwise non-running service is not preserved and goes through the normal
+deploy path.
+When the primary of a `shared-network` or `shared-ipc` group changes, the group
+is restarted together because its other containers share that primary's Linux
+namespaces.
 
 > **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
 > backward compatibility, but `wendy run --watch` is the supported entry point.

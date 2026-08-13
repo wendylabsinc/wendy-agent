@@ -83,6 +83,27 @@ func TestValidatePipIndexMustBeURL(t *testing.T) {
 	}}}}), "http(s)")
 }
 
+func TestValidatePipBuildPackages(t *testing.T) {
+	stage := func(buildPackages ...string) *File {
+		return oneStage(Stage{Name: "app", From: "python:3.12", Install: &Install{Pip: []PipInstall{{
+			Packages: []string{"native"}, BuildPackages: buildPackages,
+		}}}})
+	}
+	wantErr(t, stage("gcc\nRUN evil"), "newline")
+	wantErr(t, stage("--privileged"), "must not start")
+	if err := stage("gcc", "python3-dev").Validate(); err != nil {
+		t.Fatalf("valid pip build packages must validate: %v", err)
+	}
+}
+
+func TestValidatePipBuildPackagesNeedOneOSPackageManager(t *testing.T) {
+	wantErr(t, oneStage(Stage{Name: "app", From: "custom", Install: &Install{
+		Apt: &AptInstall{Packages: []string{"curl"}},
+		Apk: &ApkInstall{Packages: []string{"curl"}},
+		Pip: []PipInstall{{Packages: []string{"native"}, BuildPackages: []string{"gcc"}}},
+	}}), "both install.apt and install.apk")
+}
+
 func TestValidateBuildFieldCombinations(t *testing.T) {
 	wantErr(t, oneStage(Stage{Name: "app", From: "rust:1", Build: &Build{Lang: "rust", Script: "build"}}), "build.script")
 	wantErr(t, oneStage(Stage{Name: "app", From: "node:22", Build: &Build{Lang: "npm", Product: "x"}}), "build.product")

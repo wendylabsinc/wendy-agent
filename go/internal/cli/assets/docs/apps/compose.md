@@ -53,6 +53,16 @@ Wendy selects a device, builds each service image, pushes them to the device, an
 [worker]  Processing item 1
 ```
 
+Service builds run in parallel, while the device-intensive image preparation
+phase is limited to two services at a time so a high `--max-concurrency` value
+does not overload device storage. After a successful chunk-based preparation,
+Wendy records the service's complete desired-state hash and exact layer IDs. A
+later run with unchanged source and runtime configuration skips image building,
+chunking, transfer, and preparation only after confirming that the service's
+container and every recorded layer are still present on the device. Missing or
+unverifiable content fails closed and performs a normal preparation. Set
+`WENDY_PUSH_SKIP=0` to disable this optimization while diagnosing builds.
+
 Press **Ctrl-C** to stop all services. Services are stopped in reverse dependency order; the CLI prints `Stopping <name>...` for each service and then a final `Stopped N service(s).` summary.
 
 ## Detached mode hint

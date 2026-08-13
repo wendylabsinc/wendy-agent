@@ -7,7 +7,45 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
+
+func TestRunBuildWithProgressCtrlCCancelsAndJoinsBuilder(t *testing.T) {
+	restoreInteractive := forceBuildProgressInteractive(true)
+	defer restoreInteractive()
+	originalProgram := buildProgressProgram
+	defer func() { buildProgressProgram = originalProgram }()
+	buildProgressProgram = func(model tea.Model) *tea.Program {
+		return tui.NewProgressProgram(model,
+			tea.WithInput(strings.NewReader("\x03")),
+			tea.WithOutput(io.Discard),
+		)
+	}
+
+	started := make(chan struct{})
+	exited := make(chan struct{})
+	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(ctx context.Context, _, _ io.Writer) error {
+		close(started)
+		<-ctx.Done()
+		close(exited)
+		return ctx.Err()
+	})
+	if !errors.Is(err, ErrUserCancelled) {
+		t.Fatalf("err = %v, want ErrUserCancelled", err)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("builder never started")
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("runBuildWithProgress returned before the cancelled builder exited")
+	}
+}
 
 func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
 	// Force non-interactive rendering and capture stdout via the package sink.
@@ -17,7 +55,7 @@ func TestRunBuildWithProgressPlainSuccess(t *testing.T) {
 	restoreOut := setBuildProgressOut(&out)
 	defer restoreOut()
 
-	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(stream, logw io.Writer) error {
+	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(_ context.Context, stream, logw io.Writer) error {
 		io.WriteString(stream, "#9 [4/6] RUN pip install\n#9 DONE 4.3s\n")
 		io.WriteString(stream, "#6 [1/6] FROM python\n#6 CACHED\n")
 		return nil
@@ -40,9 +78,16 @@ func TestRunBuildWithProgressPrintsRawOnFailure(t *testing.T) {
 	var out strings.Builder
 	restoreOut := setBuildProgressOut(&out)
 	defer restoreOut()
+	originalPersist := persistBuildFailureLog
+	defer func() { persistBuildFailureLog = originalPersist }()
+	var saved string
+	persistBuildFailureLog = func(_ string, raw string) (string, error) {
+		saved = raw
+		return "/tmp/wendy-build-image-test.log", nil
+	}
 
 	wantErr := errors.New("docker buildx build failed")
-	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(stream, logw io.Writer) error {
+	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(_ context.Context, stream, logw io.Writer) error {
 		io.WriteString(stream, "#9 [4/6] RUN pip install\n")
 		io.WriteString(stream, "#9 12.34 ERROR: could not find a version\n")
 		io.WriteString(logw, "[buildx] bootstrapping builder\n")
@@ -52,12 +97,15 @@ func TestRunBuildWithProgressPrintsRawOnFailure(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
 	got := out.String()
-	// Raw build output AND setup log are surfaced on failure.
+	// The terminal gets the useful cause and a pointer to the retained full log.
 	if !strings.Contains(got, "could not find a version") {
-		t.Errorf("raw build output not surfaced:\n%s", got)
+		t.Errorf("build cause not summarized:\n%s", got)
 	}
-	if !strings.Contains(got, "bootstrapping builder") {
-		t.Errorf("setup log not surfaced on failure:\n%s", got)
+	if !strings.Contains(got, "Build log: /tmp/wendy-build-image-test.log") {
+		t.Errorf("full log path not surfaced:\n%s", got)
+	}
+	if !strings.Contains(saved, "bootstrapping builder") || !strings.Contains(saved, "could not find a version") {
+		t.Errorf("full raw and setup logs not retained:\n%s", saved)
 	}
 }
 
@@ -69,7 +117,7 @@ func TestRunBuildWithProgressSuppressesRawOnFailureWhenDumpDisabled(t *testing.T
 	defer restoreOut()
 
 	wantErr := errors.New("oci layout build failed")
-	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", func(error) bool { return false }, func(stream, logw io.Writer) error {
+	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", func(error) bool { return false }, func(_ context.Context, stream, logw io.Writer) error {
 		io.WriteString(stream, "#5 [3/5] RUN apt-get install\n")
 		io.WriteString(stream, "#5 12.34 ERROR: package not found\n")
 		io.WriteString(logw, "[buildx] starting builder instance\n")
@@ -98,9 +146,16 @@ func TestChunkDiffBuildLogDumpedForImageBuildFailureUnderAutoChunking(t *testing
 	var out strings.Builder
 	restoreOut := setBuildProgressOut(&out)
 	defer restoreOut()
+	originalPersist := persistBuildFailureLog
+	defer func() { persistBuildFailureLog = originalPersist }()
+	var saved string
+	persistBuildFailureLog = func(_ string, raw string) (string, error) {
+		saved = raw
+		return "/tmp/wendy-build-image-test.log", nil
+	}
 
 	wantErr := &imageBuildFailedError{errors.New("container build (OCI layout) failed: exit status 1")}
-	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", shouldDumpChunkDiffBuildLog(chunkingAuto), func(stream, logw io.Writer) error {
+	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", shouldDumpChunkDiffBuildLog(chunkingAuto), func(_ context.Context, stream, logw io.Writer) error {
 		io.WriteString(stream, "#5 [3/5] COPY Package.swift .\n")
 		io.WriteString(stream, "#5 ERROR: failed to compute cache key: \"/Package.swift\": not found\n")
 		io.WriteString(logw, "[apple-container] building OCI image: container build --progress plain ...\n")
@@ -113,9 +168,9 @@ func TestChunkDiffBuildLogDumpedForImageBuildFailureUnderAutoChunking(t *testing
 	if !strings.Contains(got, "failed to compute cache key") {
 		t.Errorf("raw build output not surfaced on image-build failure:\n%s", got)
 	}
-	// The setup log carries the exact builder command line for manual reproduction.
-	if !strings.Contains(got, "building OCI image: container build") {
-		t.Errorf("builder command line not surfaced on image-build failure:\n%s", got)
+	// The retained log carries the exact builder command line for reproduction.
+	if !strings.Contains(saved, "building OCI image: container build") {
+		t.Errorf("builder command line not retained in full log:\n%s", saved)
 	}
 }
 

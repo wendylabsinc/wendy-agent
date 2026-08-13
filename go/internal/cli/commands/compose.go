@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,7 +13,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/distribution/reference"
 	"google.golang.org/grpc/codes"
@@ -38,6 +42,44 @@ func normalizeImageRef(ref string) string {
 		return ref
 	}
 	return reference.TagNameOnly(named).String()
+}
+
+func composeServiceWatchHash(imageIdentity string, cfg *appconfig.AppConfig, cmd string, userArgs []string, restartPolicy *agentpb.RestartPolicy, env []string) (string, error) {
+	return watchDesiredHash(struct {
+		ImageIdentity string
+		Config        *appconfig.AppConfig
+		Cmd           string
+		UserArgs      []string
+		RestartPolicy *agentpb.RestartPolicy
+		Env           []string
+	}{imageIdentity, cfg, cmd, userArgs, restartPolicy, env})
+}
+
+// planComposeBuildSkips returns built-image services whose complete desired
+// state matches the last successful device preparation, whose container is
+// still known to the device, and whose exact uncompressed image layers remain
+// in its content store. Every check fails closed: a stale local fingerprint or
+// a device-side GC can only cause an unnecessary preparation, never stale code.
+func planComposeBuildSkips(ctx context.Context, conn *grpcclient.AgentConnection, deviceKey string, desiredHashes map[string]string, svcCfgs map[string]*appconfig.AppConfig, states map[string]agentpb.AppRunningState) map[string]bool {
+	skip := map[string]bool{}
+	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
+		return skip
+	}
+	for name, desiredHash := range desiredHashes {
+		cfg := svcCfgs[name]
+		if cfg == nil || desiredHash == "" {
+			continue
+		}
+		if _, present := states[strings.ToLower(cfg.ContainerName())]; !present {
+			continue
+		}
+		fp, ok := loadDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), deviceKey)
+		if !ok || fp.InputHash != desiredHash || !deviceHasAllLayers(ctx, conn, fp.LayerDiffIDs) {
+			continue
+		}
+		skip[name] = true
+	}
+	return skip
 }
 
 // composeConfig is a minimal representation of a docker-compose file.
@@ -71,6 +113,293 @@ type composeService struct {
 	Profiles    yaml.Node `yaml:"profiles"`
 	Secrets     yaml.Node `yaml:"secrets"`
 	ExtraHosts  yaml.Node `yaml:"extra_hosts"`
+}
+
+// composeBuildJob is all per-service state needed after Compose parsing and
+// Stagefile compilation have completed. Keeping preparation out of the build
+// goroutines avoids duplicate writes when several services intentionally share
+// one context and build file.
+type composeBuildJob struct {
+	contextDir string
+	dockerfile string
+	repo       string
+	buildArgs  map[string]string
+}
+
+type composeBuildProgressWriter struct {
+	io.Writer
+	emit          func(tui.BuildStepEvent)
+	reportContent func([]string)
+	progressMu    sync.Mutex
+	uploadStarted bool
+}
+
+func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
+	if w.emit != nil {
+		w.emit(e)
+	}
+}
+
+// ReportImageContent records the uncompressed identities of the image that was
+// prepared on the device. Keeping this on the same writer used for chunk
+// progress lets the Compose scheduler persist a fail-closed deploy fingerprint
+// without coupling its generic build function signature to OCI internals.
+func (w *composeBuildProgressWriter) ReportImageContent(diffIDs []string) {
+	if w.reportContent != nil {
+		w.reportContent(append([]string(nil), diffIDs...))
+	}
+}
+
+func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	w.uploadStarted = true
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "chunk-upload",
+		Kind:    tui.BuildVertexExport,
+		Display: "uploading missing chunks",
+		Status:  tui.BuildStepRunning,
+		Bytes:   tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
+	status := tui.BuildStepRunning
+	if done {
+		status = tui.BuildStepDone
+	}
+	w.progressMu.Lock()
+	defer w.progressMu.Unlock()
+	// Indexing and upload intentionally overlap across layers. The Compose TUI
+	// has one detail line per service, so once upload begins it is the more useful
+	// signal and late index updates must not repeatedly replace it. Still forward
+	// the terminal event so consumers can close the synthetic index step.
+	if w.uploadStarted && status == tui.BuildStepRunning {
+		return
+	}
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "chunk-index",
+		Kind:    tui.BuildVertexSetup,
+		Display: "indexing changed layer content",
+		Status:  status,
+		Bytes:   tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
+	detail := "chunk preparation unavailable"
+	if reason != nil {
+		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
+	}
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "registry-fallback",
+		Kind:    tui.BuildVertexExport,
+		Display: "uploading image via registry fallback",
+		Status:  tui.BuildStepRunning,
+		Detail:  detail,
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportImagePreparation() {
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "image-prepare",
+		Kind:    tui.BuildVertexExport,
+		Display: "preparing image on device",
+		Status:  tui.BuildStepRunning,
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportImagePreparationQueued() {
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "image-prepare-queue",
+		Kind:    tui.BuildVertexExport,
+		Display: "waiting for device preparation slot",
+		Status:  tui.BuildStepRunning,
+	})
+}
+
+// buildComposeServiceImage is replaceable in tests so the parallel scheduler
+// can be exercised without Docker or a device registry.
+var buildComposeServiceImage = buildAndPrepareComposeImageForAgent
+
+const maxConcurrentComposePrepares = 2
+
+type composePrepareLimiterKey struct{}
+
+func withComposePrepareLimiter(ctx context.Context) context.Context {
+	return context.WithValue(ctx, composePrepareLimiterKey{}, make(chan struct{}, maxConcurrentComposePrepares))
+}
+
+func acquireComposePrepare(ctx context.Context) (func(), error) {
+	limiter, _ := ctx.Value(composePrepareLimiterKey{}).(chan struct{})
+	if limiter == nil {
+		return func() {}, nil
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// buildComposeServicesParallel runs independent Compose image jobs
+// concurrently. By default each job builds a persistent OCI layout and sends
+// only content chunks the device does not already have; --chunking=off keeps
+// the registry-push path for compatibility.
+func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, platform, chunking string, jobs map[string]composeBuildJob, maxConcurrency int, quietBuild bool) (map[string]error, map[string][]string, error) {
+	buildCtx, cancelBuild := context.WithCancel(ctx)
+	defer cancelBuild()
+	buildCtx = withComposePrepareLimiter(buildCtx)
+
+	names := make([]string, 0, len(jobs))
+	for name := range jobs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if len(names) == 0 {
+		return map[string]error{}, map[string][]string{}, nil
+	}
+
+	concurrency := resolveBuildConcurrency(len(names), maxConcurrency)
+	if !quietBuild && maxConcurrency > 0 && concurrency < len(names) {
+		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
+	}
+
+	type result struct {
+		name         string
+		err          error
+		log          string
+		layerDiffIDs []string
+	}
+	results := make(chan result, len(names))
+	sem := make(chan struct{}, concurrency)
+
+	var prog *tea.Program
+	if !quietBuild && isInteractiveTerminal() {
+		prog = tui.NewProgressProgram(tui.NewMultiSpinner(fmt.Sprintf("Building %d Compose service(s)...", len(names)), names))
+	}
+
+	var wg sync.WaitGroup
+	for _, name := range names {
+		job := jobs[name]
+		wg.Add(1)
+		go func(name string, job composeBuildJob) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-buildCtx.Done():
+				results <- result{name: name, err: buildCtx.Err()}
+				return
+			}
+			defer func() { <-sem }()
+			if err := buildCtx.Err(); err != nil {
+				results <- result{name: name, err: err}
+				return
+			}
+
+			if prog != nil {
+				prog.Send(tui.MultiSpinnerStartMsg{Name: name})
+			} else if !quietBuild {
+				cliLogln("Building service %s for %s...", name, tui.Value(platform))
+			}
+
+			start := time.Now()
+			var logBuf bytes.Buffer
+			var buildOut io.Writer = os.Stdout
+			var logOut io.Writer = os.Stderr
+			var layerDiffIDs []string
+			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
+			var emit func(tui.BuildStepEvent)
+			if prog != nil {
+				var getTally func() tui.BuildTally
+				emit, getTally = newServiceProgressEmitter(prog, name)
+				tally = getTally
+				buildOut = io.MultiWriter(tui.NewBuildParser(emit), &logBuf)
+				logOut = &logBuf
+			} else if quietBuild {
+				buildOut = &logBuf
+				logOut = &logBuf
+			}
+			buildOut = &composeBuildProgressWriter{
+				Writer: buildOut,
+				emit:   emit,
+				reportContent: func(ids []string) {
+					layerDiffIDs = ids
+				},
+			}
+
+			// The repo also scopes buildx's local cache export. Concurrent writers
+			// must not share that directory; BuildKit cache mounts inside the
+			// builder (APT, pip, etc.) remain shared by their explicit mount IDs.
+			buildImage := buildComposeServiceImage
+			if chunking == chunkingOff {
+				buildImage = buildAndPushImageForAgent
+			} else if chunking == chunkingForce {
+				buildImage = buildAndPrepareComposeImageForAgentForce
+			}
+			err := buildImage(buildCtx, conn, regPort, agentOS, builder, job.contextDir, job.repo, platform, job.dockerfile, job.buildArgs, job.repo, buildOut, logOut)
+			dur := time.Since(start)
+			if prog != nil {
+				t := tally()
+				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur, Cached: t.Cached, Rebuilt: t.Rebuilt})
+			} else if err != nil {
+				if buildCtx.Err() == nil {
+					if !quietBuild {
+						cliLogln("Service %s build failed: %v", name, err)
+					}
+				}
+			} else if !quietBuild {
+				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
+			}
+			results <- result{name: name, err: err, log: logBuf.String(), layerDiffIDs: layerDiffIDs}
+		}(name, job)
+	}
+
+	go func() {
+		wg.Wait()
+		close(results)
+		if prog != nil {
+			prog.Send(tui.MultiSpinnerAllDoneMsg{})
+		}
+	}()
+
+	var progressErr error
+	if prog != nil {
+		final, runErr := prog.Run()
+		if runErr != nil {
+			cancelBuild()
+			progressErr = fmt.Errorf("compose build progress TUI: %w", runErr)
+		} else if fm, ok := final.(tui.MultiSpinnerModel); !ok {
+			cancelBuild()
+			progressErr = fmt.Errorf("compose build progress TUI: unexpected final model %T", final)
+		} else if errors.Is(fm.Err(), tui.ErrCancelled) {
+			cancelBuild()
+			progressErr = ErrUserCancelled
+		}
+	}
+
+	failed := map[string]error{}
+	content := map[string][]string{}
+	for r := range results {
+		if r.err == nil {
+			if len(r.layerDiffIDs) > 0 {
+				content[r.name] = r.layerDiffIDs
+			}
+			continue
+		}
+		failed[r.name] = r.err
+		if progressErr == nil && buildCtx.Err() == nil && r.log != "" && !isRegistryUnavailable(r.err) {
+			fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
+		}
+	}
+	if progressErr != nil {
+		return nil, nil, progressErr
+	}
+	if ctx.Err() != nil {
+		return nil, nil, ctx.Err()
+	}
+	return failed, content, nil
 }
 
 // unsupportedComposeWarnings returns field names from svc that Wendy does not
@@ -204,6 +533,14 @@ func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (
 	if err != nil {
 		return "", nil, err
 	}
+	companion, _, err := appconfig.LoadComposeCompanion(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("companion wendy.json: %w", err)
+	}
+	serviceConfigs, _, err := buildComposeServiceConfigs(strings.ToLower(filepath.Base(dir)), cfg, companion)
+	if err != nil {
+		return "", nil, err
+	}
 	overrides := map[string]any{}
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, _, err := composeBuildContext(svc, dir)
@@ -213,7 +550,9 @@ func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (
 		if ctxDir == "" || !stagefile.IsSourceName(dockerfile) {
 			continue
 		}
-		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...)
+		serviceOpts := append([]stagefile.Option{}, sfOpts...)
+		serviceOpts = append(serviceOpts, frameworkStagefileOptions(serviceConfigs[name].Frameworks)...)
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, serviceOpts...)
 		if err != nil {
 			return "", nil, fmt.Errorf("service %s: %w", name, err)
 		}
@@ -342,6 +681,11 @@ func composeEnv(svc composeService) []string {
 				result = append(result, k+"="+fmt.Sprint(v))
 			}
 		}
+		// Mapping nodes decode into a Go map, whose iteration order is
+		// deliberately randomized. Keep this representation canonical so
+		// build-input and watch desired-state hashes do not change between
+		// otherwise identical deploy cycles.
+		sort.Strings(result)
 	case yaml.SequenceNode:
 		var list []string
 		if err := svc.Environment.Decode(&list); err == nil {
@@ -793,8 +1137,8 @@ func (w *serviceLogWriter) Flush() {
 }
 
 // runComposeWithAgent orchestrates a docker-compose project on a WendyOS device:
-// builds service images, pushes them to the device registry, creates containers,
-// and streams their combined output. When a companion wendy.json exists in the
+// builds and prepares service images, creates containers, and streams their
+// combined output. When a companion wendy.json exists in the
 // same directory it is merged to supply Wendy-specific config (entitlements,
 // isolation, frameworks) without modifying the compose file.
 func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, projectDir string, opts runOptions) error {
@@ -880,20 +1224,22 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	// Resolved once for the project: every service lands on this one device,
 	// so a cuda: stage in any of them compiles against its GPU architecture.
 	gpuArch := composeGPUArch(ctx, projectDir, cfg, conn)
+	deviceKey := deviceFingerprintKey(versionResp)
+	states := map[string]agentpb.AppRunningState{}
+	if opts.watchState != nil || os.Getenv("WENDY_PUSH_SKIP") != "0" {
+		states = deviceContainerStates(ctx, conn)
+	}
+	preserve := map[string]bool{}
+	desiredHashes := map[string]string{}
+	candidates := map[string]watchServiceCandidate{}
 
-	// Build and push each service that has a build directive.
+	// Prepare each build before starting the parallel scheduler. In particular,
+	// compile Stagefiles to their generated Dockerfiles once, while errors can
+	// still be attributed directly to the declaring service.
+	jobs := make(map[string]composeBuildJob)
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, buildArgs, err := composeBuildContext(svc, projectDir)
 		if err != nil {
-			return fmt.Errorf("service %s: %w", name, err)
-		}
-		if ctxDir == "" {
-			continue // uses pre-built image
-		}
-		// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
-		// same way the single-service path does — docker build itself knows
-		// nothing about build.stagefile.yaml.
-		if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
 			return fmt.Errorf("service %s: %w", name, err)
 		}
 
@@ -908,14 +1254,83 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			allBuildArgs[k] = v
 		}
 
-		repo := fmt.Sprintf("%s-%s", projectName, name)
-		// Compose builds run sequentially, so they share the local cache dir
-		// (empty cache key) — no concurrent cache-export race to isolate.
-		composeBuildTitle := fmt.Sprintf("Building service %s for %s...", name, tui.Value(platform))
-		if err := runBuildWithProgress(ctx, composeBuildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
-			return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, ctxDir, repo, platform, dockerfile, allBuildArgs, "", stream, logw)
-		}); err != nil {
-			return fmt.Errorf("building service %s: %w", name, err)
+		appCfg := svcCfgs[name]
+		imageIdentity := normalizeImageRef(svc.Image)
+		if ctxDir != "" {
+			// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
+			// same way the single-service path does — docker build itself knows
+			// nothing about build.stagefile.yaml.
+			sfOpts := append(debugStagefileOptions(opts.debug), frameworkStagefileOptions(appCfg.Frameworks)...)
+			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
+				return fmt.Errorf("service %s: %w", name, err)
+			}
+			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, allBuildArgs, composeEnv(svc))
+			if err != nil {
+				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
+			}
+			// The prepared image name is part of the desired identity. A project
+			// directory rename changes the Compose repository even when its source
+			// bytes do not, so reusing the old preparation would be unsafe.
+			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
+		}
+
+		restartPolicy := resolveRestartPolicy(opts)
+		if restartPolicy.GetMode() == agentpb.RestartPolicyMode_DEFAULT && svc.Restart != "" {
+			restartPolicy = composeRestartPolicy(svc.Restart)
+		}
+		cmd, extraArgs := composeArgv(svc)
+		desiredHash, hashErr := composeServiceWatchHash(imageIdentity, appCfg, cmd, extraArgs, restartPolicy, composeEnv(svc))
+		if hashErr == nil {
+			desiredHashes[name] = desiredHash
+			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
+		}
+		if ctxDir == "" {
+			continue // uses pre-built image
+		}
+
+		jobs[name] = composeBuildJob{
+			contextDir: ctxDir,
+			dockerfile: dockerfile,
+			repo:       fmt.Sprintf("%s-%s", projectName, name),
+			buildArgs:  allBuildArgs,
+		}
+	}
+
+	// Persistent fingerprints skip the expensive local OCI/chunk/device image
+	// pipeline for ordinary runs. Watch preservation is stronger: it also leaves
+	// an unchanged running container untouched, so merge those services into the
+	// build skip set after evaluating the session-scoped watch state.
+	skipBuild := planComposeBuildSkips(ctx, conn, deviceKey, desiredHashes, svcCfgs, states)
+	if opts.watchState != nil {
+		preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
+		for name := range preserve {
+			skipBuild[name] = true
+		}
+	}
+	for name := range skipBuild {
+		delete(jobs, name)
+	}
+	if n := len(preserve); n > 0 {
+		cliLogln("%d of %d Compose services unchanged and running; leaving them untouched.", n, len(cfg.Services))
+	} else if n := len(skipBuild); n > 0 {
+		cliLogln("%d of %d Compose services unchanged and already on device; skipping image preparation.", n, len(cfg.Services))
+	}
+
+	failedBuilds, preparedContent, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
+	if err != nil {
+		return err
+	}
+	if len(failedBuilds) > 0 {
+		return joinServiceErrors(failedBuilds)
+	}
+	for name, diffIDs := range preparedContent {
+		if desiredHash := desiredHashes[name]; desiredHash != "" && len(diffIDs) > 0 {
+			appCfg := svcCfgs[name]
+			saveDeployFingerprint(serviceFingerprintKey(appCfg.AppID, name), deviceKey, deployFingerprint{
+				InputHash:    desiredHash,
+				AppVersion:   appCfg.Version,
+				LayerDiffIDs: diffIDs,
+			})
 		}
 	}
 
@@ -925,6 +1340,23 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	ordered, err := serviceOrder(cfg)
 	if err != nil {
 		return err
+	}
+	if len(ordered) > 0 {
+		adjustedPreserve := adjustSharedNamespacePreserve(ordered, preserve, svcCfgs[ordered[0]].Isolation)
+		if len(adjustedPreserve) < len(preserve) {
+			cliLogln("Shared-namespace primary changed; restarting the affected Compose service group.")
+		}
+		preserve = adjustedPreserve
+	}
+	if len(preserve) > 0 {
+		ordered = filterPreservedServices(ordered, preserve)
+		if len(ordered) == 0 {
+			cliLogln("All Compose services are unchanged and running; nothing to redeploy.")
+			return nil
+		}
+		// A partial watch cycle does not own the preserved services, so it must
+		// not re-run the app-level lifecycle fallback for the whole group.
+		appLevelCfg = nil
 	}
 
 	for _, name := range ordered {
@@ -1023,7 +1455,18 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	}()
 
 	if opts.detach {
-		return composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName)
+		if err := composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName); err != nil {
+			return err
+		}
+		if ctx.Err() == nil {
+			for _, name := range ordered {
+				if h := desiredHashes[name]; h != "" {
+					appCfg := svcCfgs[name]
+					opts.watchState.record(watchServiceKey(deviceKey, appCfg.AppID, name), h)
+				}
+			}
+		}
+		return nil
 	}
 
 	// Attached mode: stream output from all containers concurrently with

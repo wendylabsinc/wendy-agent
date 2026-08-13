@@ -28,9 +28,10 @@ func init() {
 // browseResult identifies one mDNS browse answer: the instance and domain
 // dns_sd.h reported, plus the interface it arrived on.
 type browseResult struct {
-	instanceName  string
-	domain        string
-	interfaceName string
+	instanceName   string
+	domain         string
+	interfaceName  string
+	interfaceIndex uint32
 }
 
 func darwinCachedInterfaceLinkSpeed(ctx context.Context, interfaceName string, linkSpeeds map[string]string) string {

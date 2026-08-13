@@ -290,6 +290,61 @@ func TestOrderDialCandidates(t *testing.T) {
 	})
 }
 
+func TestOrderRoutedDialCandidatesPrefersEthernetBeforeCandidateCap(t *testing.T) {
+	original := dialCandidateRoutePreferenceFn
+	dialCandidateRoutePreferenceFn = func(ip string) routePreference {
+		if ip == "10.0.0.4" {
+			return routeWired
+		}
+		return routeWireless
+	}
+	t.Cleanup(func() { dialCandidateRoutePreferenceFn = original })
+
+	got := orderRoutedDialCandidates([]string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"})
+	want := []string{"10.0.0.4", "10.0.0.1", "10.0.0.2"}
+	if len(got) != len(want) {
+		t.Fatalf("orderRoutedDialCandidates = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("orderRoutedDialCandidates = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestCachedWiFiAddressDoesNotBypassFreshResolution(t *testing.T) {
+	original := networkInterfaceRoutePreferenceFn
+	originalRoute := routeInterfaceForIPFn
+	t.Cleanup(func() {
+		networkInterfaceRoutePreferenceFn = original
+		routeInterfaceForIPFn = originalRoute
+	})
+	routeInterfaceForIPFn = func(string) string { return "en0" }
+
+	networkInterfaceRoutePreferenceFn = func(string) routePreference { return routeWireless }
+	if shouldUseCachedDeviceAddress("en0", "192.168.1.20") {
+		t.Fatal("a cached Wi-Fi route must not suppress fresh multi-address resolution")
+	}
+	networkInterfaceRoutePreferenceFn = func(string) routePreference { return routeWired }
+	if !shouldUseCachedDeviceAddress("en0", "192.168.1.30") {
+		t.Fatal("a cached wired route should retain the last-known-good fast path")
+	}
+	networkInterfaceRoutePreferenceFn = func(string) routePreference { return routeUnknown }
+	if !shouldUseCachedDeviceAddress("", "192.168.1.40") {
+		t.Fatal("a legacy cache row with no interface metadata should retain the fast path")
+	}
+
+	networkInterfaceRoutePreferenceFn = func(name string) routePreference {
+		if name == "en7" {
+			return routeWired
+		}
+		return routeWireless
+	}
+	if shouldUseCachedDeviceAddress("en7", "192.168.1.50") {
+		t.Fatal("a cached address routed over en0 must not be trusted merely because its sighting was labelled en7")
+	}
+}
+
 // deadLoopbackAddr reserves and releases two consecutive ports on a loopback
 // host, so both the address itself and its port+1 mTLS rung refuse instantly
 // rather than hanging. It skips rather than fails when the host cannot be bound

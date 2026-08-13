@@ -4,9 +4,10 @@ stages:
     from: python:3.12-slim
     install:
       apt:
-        packages: [build-essential]
+        packages: [libgomp1]
       pip:
         - requirements: requirements.txt
+          buildPackages: [build-essential]
 
   - name: app
     from: python:3.12-slim
