@@ -2526,7 +2526,7 @@ type GpuStats struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Index         uint32                 `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	UtilPercent   float64                `protobuf:"fixed64,3,opt,name=util_percent,json=utilPercent,proto3" json:"util_percent,omitempty"` // instantaneous utilization as reported by the sampler
+	UtilPercent   float64                `protobuf:"fixed64,3,opt,name=util_percent,json=utilPercent,proto3" json:"util_percent,omitempty"` // utilization over the sampler's observation window
 	MemUsedBytes  int64                  `protobuf:"varint,4,opt,name=mem_used_bytes,json=memUsedBytes,proto3" json:"mem_used_bytes,omitempty"`
 	MemTotalBytes int64                  `protobuf:"varint,5,opt,name=mem_total_bytes,json=memTotalBytes,proto3" json:"mem_total_bytes,omitempty"`
 	TempC         *float64               `protobuf:"fixed64,6,opt,name=temp_c,json=tempC,proto3,oneof" json:"temp_c,omitempty"`
