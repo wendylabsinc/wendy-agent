@@ -180,6 +180,16 @@ func SetDeviceCapabilities(spec *Spec) {
 func applyGPU(spec *Spec) {
 	// Add the nvidia group GID for device access.
 	spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, nvidiaGroupGID)
+	// Jetson's integrated GPU also requires the host render group. Resolve the
+	// live GID instead of assuming a distro-specific value (104 on the G1's
+	// JetPack 6 image). Group membership alone exposes no additional node: the
+	// exact GPU devices and cgroup rules below remain the access boundary.
+	boardInfo := boardDetect()
+	if boardInfo.IsJetson() {
+		if gid, ok := lookupRenderGID(); ok {
+			spec.Process.User.AdditionalGids = appendUnique(spec.Process.User.AdditionalGids, gid)
+		}
+	}
 
 	// Derive the device list from the live host nodes: nvidia-uvm's major is
 	// dynamically allocated on modern drivers (487 on Thor/JetPack 7, not the
@@ -264,7 +274,7 @@ func applyGPU(spec *Spec) {
 	// On Raspberry Pi, also expose the VideoCore mailbox device for board
 	// telemetry. The node is absent on Jetson/generic hosts, where this is
 	// skipped entirely.
-	if boardDetect().IsRaspberryPi() {
+	if boardInfo.IsRaspberryPi() {
 		applyVCIO(spec)
 	}
 }

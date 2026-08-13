@@ -169,6 +169,83 @@ func TestApplyEntitlements_GPU(t *testing.T) {
 	}
 }
 
+func TestApplyGPU_JetsonAddsResolvedRenderGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	lookupRenderGID = func() (uint32, bool) { return 104, true }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if !hasGID(spec, nvidiaGroupGID) {
+		t.Errorf("Jetson GPU entitlement missing NVIDIA/video GID %d", nvidiaGroupGID)
+	}
+	if !hasGID(spec, 104) {
+		t.Error("Jetson GPU entitlement missing resolved render GID 104")
+	}
+}
+
+func TestApplyGPU_JetsonWithoutRenderGroupKeepsVideoGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
+	lookupRenderGID = func() (uint32, bool) { return 0, false }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+
+	if !hasGID(spec, nvidiaGroupGID) {
+		t.Errorf("Jetson GPU entitlement missing NVIDIA/video GID %d", nvidiaGroupGID)
+	}
+	if hasGID(spec, 0) {
+		t.Error("Jetson GPU entitlement added a render GID when lookup failed")
+	}
+}
+
+func TestApplyGPU_NonJetsonDoesNotAddRenderGID(t *testing.T) {
+	origBoard := boardDetect
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		boardDetect = origBoard
+		lookupRenderGID = origRender
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+	lookupRenderGID = func() (uint32, bool) {
+		t.Fatal("non-Jetson GPU entitlement must not resolve the render group")
+		return 0, false
+	}
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{
+		AppID:        "test-app",
+		Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}},
+	}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements() error = %v", err)
+	}
+}
+
 // installFakeVCIO points vcioDevicePath at a temp file, makes statMajor report
 // the given major for it, and reports the host as a Raspberry Pi — so the
 // vcio branch of applyGPU can be exercised without a real /dev/vcio (which only
