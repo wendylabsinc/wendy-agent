@@ -75,6 +75,11 @@ const labelKeyGCRoot = "containerd.io/gc.root"
 // labelKeyWendyLayer marks a content blob as a Wendy-pushed layer.
 const labelKeyWendyLayer = "sh.wendy.layer"
 
+// labelKeyWendySnapshot marks a committed layer snapshot created by Wendy's
+// custom unpacker. It lets cache pruning avoid touching GC roots owned by other
+// containerd clients in the same namespace.
+const labelKeyWendySnapshot = "sh.wendy.snapshot"
+
 // labelKeyAppID is the app identity (appId from wendy.json) for every
 // Wendy-managed container. Always set, regardless of whether the app uses
 // multi-service naming. Used to find all containers belonging to an app without

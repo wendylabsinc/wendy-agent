@@ -198,7 +198,8 @@ func (c *Client) UnpackImage(ctx context.Context, img containerd.Image, progress
 		}
 
 		gcRootOpt := snapshots.WithLabels(map[string]string{
-			labelKeyGCRoot: gcTimestamp(),
+			labelKeyGCRoot:        gcTimestamp(),
+			labelKeyWendySnapshot: "true",
 		})
 		commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
 		switch {
