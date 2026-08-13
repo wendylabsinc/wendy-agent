@@ -2146,10 +2146,12 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	}
 
 	origGlobs := nvidiaDeviceGlobs
+	origRenderGlobs := jetsonRenderDeviceGlobs
 	origStat := statCharDevice
 	origBoard := boardDetect
 	t.Cleanup(func() {
 		nvidiaDeviceGlobs = origGlobs
+		jetsonRenderDeviceGlobs = origRenderGlobs
 		statCharDevice = origStat
 		boardDetect = origBoard
 	})
@@ -2160,6 +2162,7 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 		filepath.Join(dev, "nvhost-*gpu"),
 		filepath.Join(dev, "nvgpu", "igpu*", "*"),
 	}
+	jetsonRenderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
 	statCharDevice = func(p string) (int64, int64, error) {
 		rel, err := filepath.Rel(dev, p)
 		if err != nil {
@@ -2173,6 +2176,63 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	}
 	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
 	return dev
+}
+
+func TestApplyGPU_JetsonAddsOnlyDRMRenderNodes(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":        {195, 0},
+		"dri/renderD128": {226, 128},
+		"dri/renderD129": {226, 129},
+		"dri/card0":      {226, 0},
+		"dri/renderDfoo": {226, 200},
+	})
+
+	spec := gpuSpec(t)
+	for path, minor := range map[string]int64{
+		filepath.Join(dev, "dri", "renderD128"): 128,
+		filepath.Join(dev, "dri", "renderD129"): 129,
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("Jetson GPU entitlement did not add %s", path)
+			continue
+		}
+		if d.Major != 226 || d.Minor != minor {
+			t.Errorf("%s = c %d:%d, want c 226:%d", path, d.Major, d.Minor, minor)
+		}
+		if !hasExactDeviceRule(spec, 226, minor) {
+			t.Errorf("Jetson GPU entitlement did not allow c 226:%d", minor)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dev, "dri", "card0"),
+		filepath.Join(dev, "dri", "renderDfoo"),
+	} {
+		if _, ok := deviceForPath(spec, path); ok {
+			t.Errorf("Jetson GPU entitlement granted non-render node %s", path)
+		}
+	}
+	if hasMountDest(spec, "/dev/dri") {
+		t.Error("GPU entitlement must not bind the whole /dev/dri tree")
+	}
+}
+
+func TestApplyGPU_NonJetsonOmitsDRMRenderNodes(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvidia0":        {195, 0},
+		"dri/renderD128": {226, 128},
+	})
+	boardDetect = func() board.Info { return board.Info{Kind: board.Generic} }
+
+	spec := DefaultSpec("/rootfs", []string{"/bin/sh"})
+	cfg := &appconfig.AppConfig{AppID: "test", Entitlements: []appconfig.Entitlement{{Type: appconfig.EntitlementGPU}}}
+	if err := ApplyEntitlements(spec, cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("ApplyEntitlements: %v", err)
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "renderD128")); ok {
+		t.Error("non-Jetson GPU entitlement must not add DRM render nodes")
+	}
 }
 
 func TestApplyGPU_SupplementsStaleJetsonCSVWithSchedulerControlDevices(t *testing.T) {

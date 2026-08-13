@@ -241,28 +241,14 @@ func applyGPU(spec *Spec) {
 		// recorded here — the host path is never re-opened by the runtime on
 		// this (root) path, so a post-scan swap of the host node cannot
 		// change what the container receives.
-		seen := map[[2]int64]bool{}
-		for _, n := range nodes {
-			spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
-				Path:  n.path,
-				Type:  "c",
-				Major: n.major,
-				Minor: n.minor,
-			})
-			key := [2]int64{n.major, n.minor}
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			maj, min := n.major, n.minor
-			spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
-				Allow:  true,
-				Type:   "c",
-				Major:  &maj,
-				Minor:  &min,
-				Access: "rw",
-			})
-		}
+		addExactDeviceNodes(spec, nodes)
+	}
+
+	// JetPack 6 requires access to the DRM render node for CUDA initialization
+	// on the integrated GPU. Grant renderD* only; card* nodes and compositor
+	// sockets remain exclusive to the separate display entitlement.
+	if boardInfo.IsJetson() {
+		addExactDeviceNodes(spec, discoverJetsonRenderDeviceNodes())
 	}
 
 	// Add environment variables for NVIDIA.
@@ -293,6 +279,11 @@ var nvidiaDeviceGlobs = []string{
 	"/dev/nvgpu/igpu*/*",
 }
 
+// jetsonRenderDeviceGlobs is separate from the generic NVIDIA node scan so
+// discrete-GPU hosts keep their existing entitlement shape. Behind a var so
+// tests can redirect it into a temporary device tree.
+var jetsonRenderDeviceGlobs = []string{"/dev/dri/renderD*"}
+
 // nvidiaDeviceNameRe is the allowlist of node names the GPU entitlement will
 // grant from the globs above. Glob results are host filesystem input; an
 // unexpected name (say, a planted /dev/nvidia-evil char device) is rejected
@@ -309,6 +300,7 @@ var nvhostGPUDeviceNameRe = regexp.MustCompile(`^nvhost-(gpu|(?:as|ctrl|ctxsw|db
 // sufficient to grant it to a container.
 var nvgpuDeviceNameRe = regexp.MustCompile(`^(as|channel|ctrl|ctxsw|dbg|nvsched|nvsched_ctrl_fifo|power|prof|prof-ctx|prof-dev|sched|tsg)$`)
 var nvgpuDirNameRe = regexp.MustCompile(`^igpu[0-9]+$`)
+var renderDeviceNameRe = regexp.MustCompile(`^renderD[0-9]+$`)
 
 type nvidiaDeviceNode struct {
 	path         string
@@ -339,6 +331,52 @@ func discoverNvidiaDeviceNodes() []nvidiaDeviceNode {
 		}
 	}
 	return nodes
+}
+
+func discoverJetsonRenderDeviceNodes() []nvidiaDeviceNode {
+	var nodes []nvidiaDeviceNode
+	for _, pattern := range jetsonRenderDeviceGlobs {
+		matches, _ := filepath.Glob(pattern)
+		for _, p := range matches {
+			if filepath.Base(filepath.Dir(p)) != "dri" || !renderDeviceNameRe.MatchString(filepath.Base(p)) {
+				continue
+			}
+			major, minor, err := statCharDevice(p)
+			if err != nil {
+				continue
+			}
+			nodes = append(nodes, nvidiaDeviceNode{path: p, major: major, minor: minor})
+		}
+	}
+	return nodes
+}
+
+// addExactDeviceNodes adds runc device definitions and least-privilege cgroup
+// rules for live host nodes. Rules are exact major:minor pairs and grant open
+// access only (rw, never mknod).
+func addExactDeviceNodes(spec *Spec, nodes []nvidiaDeviceNode) {
+	seen := map[[2]int64]bool{}
+	for _, n := range nodes {
+		spec.Linux.Devices = append(spec.Linux.Devices, LinuxDevice{
+			Path:  n.path,
+			Type:  "c",
+			Major: n.major,
+			Minor: n.minor,
+		})
+		key := [2]int64{n.major, n.minor}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		maj, min := n.major, n.minor
+		spec.Linux.Resources.Devices = append(spec.Linux.Resources.Devices, LinuxDeviceCgroup{
+			Allow:  true,
+			Type:   "c",
+			Major:  &maj,
+			Minor:  &min,
+			Access: "rw",
+		})
+	}
 }
 
 func isAllowedNvidiaDevicePath(p string) bool {
