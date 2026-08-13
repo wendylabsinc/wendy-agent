@@ -1,10 +1,15 @@
 package commands
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
 )
@@ -205,4 +210,226 @@ func TestUpgradeOfflineResolveErr(t *testing.T) {
 			t.Fatalf("got %q, want it to mention all 3 enrolled devices being offline", got.Error())
 		}
 	})
+}
+
+// TestTunnelUplinkAcceptsWritesWhileSendStalls is the core WDY-2433
+// regression test: with send() gated shut (simulating stream.Send blocked on
+// broker flow control during a bulk chunk upload), writes on the local pipe
+// end must still complete promptly -- the bounded queue decouples remote.Read
+// from send so a stalled Send never blocks the pipe (and, in the real
+// tunneled transport, never starves keepalive PING/ACK frames behind it).
+func TestTunnelUplinkAcceptsWritesWhileSendStalls(t *testing.T) {
+	local, remote := net.Pipe()
+
+	gate := make(chan struct{})
+	var mu sync.Mutex
+	var got [][]byte
+	send := func(payload []byte, halfClose bool) error {
+		<-gate
+		if halfClose {
+			return nil
+		}
+		mu.Lock()
+		got = append(got, append([]byte(nil), payload...))
+		mu.Unlock()
+		return nil
+	}
+	var closeSendCalls atomic.Int32
+	closeSend := func() error {
+		closeSendCalls.Add(1)
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runTunnelUplink(remote, send, closeSend)
+		close(done)
+	}()
+
+	const (
+		numChunks = 64
+		chunkSize = 4096
+	)
+	var chunks [][]byte
+	for i := 0; i < numChunks; i++ {
+		chunk := make([]byte, chunkSize)
+		for j := range chunk {
+			chunk[j] = byte(i)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		for _, chunk := range chunks {
+			if _, err := local.Write(chunk); err != nil {
+				writeErr <- err
+				return
+			}
+		}
+		writeErr <- nil
+	}()
+
+	select {
+	case err := <-writeErr:
+		if err != nil {
+			t.Fatalf("local.Write failed while send was stalled: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("writes did not complete within 2s while send was stalled -- reader blocked behind send?")
+	}
+
+	// Release the gated sends and let the pump drain to completion.
+	close(gate)
+	local.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runTunnelUplink did not finish after send was unblocked")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != numChunks {
+		t.Fatalf("got %d payloads, want %d", len(got), numChunks)
+	}
+	if !bytes.Equal(bytes.Join(got, nil), bytes.Join(chunks, nil)) {
+		t.Fatal("concatenated payloads do not match writes byte-for-byte and in order")
+	}
+	if closeSendCalls.Load() != 1 {
+		t.Fatalf("closeSend called %d times, want 1", closeSendCalls.Load())
+	}
+}
+
+// TestTunnelUplinkForwardsHalfCloseAndClosesSend closes the local pipe end
+// (the caller-side half-close), which must surface as io.EOF on remote.Read,
+// forward a half-close item through the queue, and finally call closeSend
+// exactly once -- after the half-close has drained, not before or instead.
+func TestTunnelUplinkForwardsHalfCloseAndClosesSend(t *testing.T) {
+	local, remote := net.Pipe()
+
+	var mu sync.Mutex
+	var events []string
+	send := func(payload []byte, halfClose bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if halfClose {
+			events = append(events, "halfClose")
+			return nil
+		}
+		events = append(events, fmt.Sprintf("data:%s", payload))
+		return nil
+	}
+	closeSend := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, "closeSend")
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runTunnelUplink(remote, send, closeSend)
+		close(done)
+	}()
+
+	if _, err := local.Write([]byte("hello")); err != nil {
+		t.Fatalf("local.Write: %v", err)
+	}
+	if err := local.Close(); err != nil {
+		t.Fatalf("local.Close: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runTunnelUplink did not finish after local half-close")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"data:hello", "halfClose", "closeSend"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	}
+}
+
+// TestTunnelUplinkClosesPipeOnSendError verifies the sender is the sole
+// toucher of send/closeSend, and that a send error closes remote so a caller
+// blocked writing into the local pipe end unblocks with an error instead of
+// hanging forever (the latent hang the old single-goroutine pump had: on a
+// send failure it broke its loop without ever closing remote). It also
+// checks for goroutine leaks via a done-signal: both the reader and sender
+// must exit promptly once the pipe is torn down.
+func TestTunnelUplinkClosesPipeOnSendError(t *testing.T) {
+	local, remote := net.Pipe()
+
+	sendErr := errors.New("broker send boom")
+	var sendCalls atomic.Int32
+	send := func(payload []byte, halfClose bool) error {
+		sendCalls.Add(1)
+		return sendErr
+	}
+	var closeSendCalls atomic.Int32
+	closeSend := func() error {
+		closeSendCalls.Add(1)
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		runTunnelUplink(remote, send, closeSend)
+		close(done)
+	}()
+
+	// First write rendezvous with the reader and triggers the failing send.
+	if _, err := local.Write([]byte("x")); err != nil {
+		t.Fatalf("first local.Write: %v", err)
+	}
+
+	// A subsequent write must fail once remote is closed behind the send
+	// error. remote.Close() runs asynchronously right after the failing
+	// send() returns, so a single write can legitimately win the race and
+	// rendezvous with the reader's next Read just before the close lands;
+	// retry until one fails (or the deadline expires) rather than asserting
+	// on exactly one attempt.
+	writeErr := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := local.Write([]byte("y")); err != nil {
+				writeErr <- err
+				return
+			}
+		}
+		writeErr <- nil
+	}()
+
+	select {
+	case err := <-writeErr:
+		if err == nil {
+			t.Fatal("local.Write did not fail within deadline after send error -- remote not closed? goroutine leak?")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("write-retry loop did not report within deadline after send error")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runTunnelUplink did not exit after send error -- goroutine leak")
+	}
+
+	if closeSendCalls.Load() != 1 {
+		t.Fatalf("closeSend called %d times, want 1", closeSendCalls.Load())
+	}
+	if sendCalls.Load() != 1 {
+		t.Fatalf("send called %d times, want exactly 1 (no retry, no send after error)", sendCalls.Load())
+	}
 }

@@ -262,6 +262,50 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 		}
 	}()
 
+	go runTunnelUplink(remote, func(payload []byte, halfClose bool) error {
+		return stream.Send(&cloudpb.ClientTunnelMessage{
+			Content: &cloudpb.ClientTunnelMessage_Data{
+				Data: &cloudpb.TunnelData{Payload: payload, HalfClose: halfClose},
+			},
+		})
+	}, stream.CloseSend)
+
+	return local, nil
+}
+
+// tunnelUplinkQueueSlots bounds the uplink queue: reads are ≤256KiB, so 128
+// slots ≈ 32MB — 2× the tunneled conn's 16MB connection window, more than gRPC
+// can have in flight before its own flow control pushes back. Derived from the
+// window, not tuned: the queue only guarantees pipe writes (data AND the
+// keepalive PING/ACK control frames queued behind them) keep completing while
+// stream.Send is momentarily blocked on broker flow control.
+const tunnelUplinkQueueSlots = 128
+
+// tunnelUplinkItem is one unit of queued uplink work: either a data payload
+// (halfClose false) or the terminal half-close marker (payload nil,
+// halfClose true) — never both, mirroring net.Pipe's Read contract of never
+// returning n>0 together with an error.
+type tunnelUplinkItem struct {
+	payload   []byte
+	halfClose bool
+}
+
+// runTunnelUplink pumps remote→broker through a bounded queue, decoupling
+// remote.Read from send. Previously one goroutine did both, so a Send stalled
+// on broker flow control blocked net.Pipe writes, starving the tunneled
+// transport's keepalive until the ACK window tore the connection down
+// mid-push (WDY-2433). Closes remote on send failure; closeSend after EOF
+// drain.
+//
+// runTunnelUplink itself is the sender — the sole toucher of send/closeSend,
+// which also fixes a latent Send/CloseSend concurrency hazard from the old
+// single-goroutine pump. It spawns one more goroutine, the reader — the sole
+// toucher of remote.Read — which feeds the bounded queue. A full queue blocks
+// the reader (and, transitively, remote.Read): that backpressure is
+// intentional, not a bug.
+func runTunnelUplink(remote net.Conn, send func(payload []byte, halfClose bool) error, closeSend func() error) {
+	q := make(chan tunnelUplinkItem, tunnelUplinkQueueSlots)
+
 	go func() {
 		buf := make([]byte, 256*1024)
 		for {
@@ -269,29 +313,32 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 			if n > 0 {
 				payload := make([]byte, n)
 				copy(payload, buf[:n])
-				if err := stream.Send(&cloudpb.ClientTunnelMessage{
-					Content: &cloudpb.ClientTunnelMessage_Data{
-						Data: &cloudpb.TunnelData{Payload: payload},
-					},
-				}); err != nil {
-					break
-				}
+				q <- tunnelUplinkItem{payload: payload}
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
-					_ = stream.Send(&cloudpb.ClientTunnelMessage{
-						Content: &cloudpb.ClientTunnelMessage_Data{
-							Data: &cloudpb.TunnelData{HalfClose: true},
-						},
-					})
+					q <- tunnelUplinkItem{halfClose: true}
 				}
-				break
+				close(q)
+				return
 			}
 		}
-		_ = stream.CloseSend()
 	}()
 
-	return local, nil
+	defer closeSend()
+	for item := range q {
+		if err := send(item.payload, item.halfClose); err != nil {
+			// Sole toucher of remote.Close() on this path: unblocks any
+			// caller mid-Write on the local pipe end instead of leaving it
+			// hanging forever behind a reader that has nowhere left to send,
+			// and unblocks the reader itself so it can close q and let this
+			// drain loop (and the deferred closeSend) finish.
+			remote.Close()
+			for range q {
+			}
+			return
+		}
+	}
 }
 
 func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Asset, error) {
