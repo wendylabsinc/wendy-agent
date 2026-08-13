@@ -25,9 +25,15 @@ type fakeAgentVersionClient struct {
 
 	resp *agentpb.GetAgentVersionResponse
 	err  error
+
+	// calls counts GetAgentVersion invocations, so tests can assert the agent
+	// was never queried at all (e.g. a hook-less/readiness-less app has
+	// nothing to announce and must short-circuit before reaching the agent).
+	calls int
 }
 
 func (f *fakeAgentVersionClient) GetAgentVersion(_ context.Context, _ *agentpb.GetAgentVersionRequest, _ ...grpc.CallOption) (*agentpb.GetAgentVersionResponse, error) {
+	f.calls++
 	return f.resp, f.err
 }
 
@@ -531,6 +537,55 @@ func TestRunPostStartIfReady_CloudReadinessDialsReportedIP(t *testing.T) {
 	}
 	if opened != "http://127.0.0.1:3001" {
 		t.Errorf("openURL = %q, want the reported-IP URL", opened)
+	}
+}
+
+// TestRunPostStartIfReady_CloudHooklessAppPrintsNothing is a final-review-fix
+// regression test (WDY-2440): an app with no postStart hook, no TCP
+// readiness, and no http entitlement has nothing for runPostStartIfReady to
+// probe or fire — on a cloud connection, resolveHookHost's isCloud branch
+// used to still run (announceReachableURL short-circuits to "" without
+// querying the agent when there's no hookURL/port to build a URL from),
+// tripping the "no reported IP" guard and printing a "Skipping postStart
+// hook" notice for a hook that was never configured. runPostStartIfReady
+// must short-circuit before any of that — no output, no browserOpen, no
+// agent query at all — mirroring service_lifecycle.go's
+// serviceHookRunner.runOne guard (readiness == nil && hooks == nil).
+func TestRunPostStartIfReady_CloudHooklessAppPrintsNothing(t *testing.T) {
+	original := browserOpen
+	t.Cleanup(func() { browserOpen = original })
+	opened := false
+	browserOpen = func(string) error {
+		opened = true
+		return nil
+	}
+
+	appCfg := &appconfig.AppConfig{
+		AppID: "cloud-hookless-app",
+		// No Hooks, no Readiness, no http entitlement: nothing to probe or fire.
+	}
+	agentClient := &fakeAgentVersionClient{resp: &agentpb.GetAgentVersionResponse{
+		NetworkInterfaces: []*agentpb.NetworkInterface{{Name: "eth0", IpAddresses: []string{"10.0.0.9"}}},
+	}}
+	conn := &grpcclient.AgentConnection{
+		Host:         "cctv",
+		Reconnect:    neverReconnect,
+		AgentService: agentClient,
+	}
+
+	out := captureStderr(t, func() {
+		if cmd := runPostStartIfReady(context.Background(), context.Background(), conn, appCfg); cmd != nil {
+			t.Errorf("expected nil cmd for a hook-less, readiness-less app, got %v", cmd)
+		}
+	})
+	if opened {
+		t.Errorf("browserOpen called for a hook-less app")
+	}
+	if out != "" {
+		t.Errorf("expected no output for a hook-less, readiness-less cloud app, got:\n%s", out)
+	}
+	if agentClient.calls != 0 {
+		t.Errorf("AgentService.GetAgentVersion called %d times, want 0 (nothing to announce or resolve)", agentClient.calls)
 	}
 }
 

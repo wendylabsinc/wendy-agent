@@ -2276,6 +2276,21 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
 	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
+	hooks := synthesizedOpenURLHook(appCfg)
+
+	// Nothing to probe or fire: an app with no TCP readiness (explicit or
+	// http-entitlement-synthesized) and no postStart hook (explicit or
+	// http-entitlement-synthesized) has nothing for this function to do.
+	// Returning before resolveHookHost matters specifically for cloud
+	// connections: resolveHookHost's isCloud branch would otherwise still run
+	// and, since announceReachableURL short-circuits to "" without ever
+	// querying the agent when there's no hookURL/port to build a URL from,
+	// report "no reported IP" and print a "Skipping postStart hook" notice
+	// for a hook that was never configured. Mirrors
+	// service_lifecycle.go's serviceHookRunner.runOne guard.
+	if readiness == nil && hooks == nil {
+		return nil
+	}
 
 	// Resolve the host BEFORE probing readiness: for a cloud connection,
 	// conn.Host is the tunnel's asset name, which does not resolve from this
@@ -2287,7 +2302,7 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	// user watches for regardless of when the probe finishes.
 	hookHost, hostOK := resolveHookHost(ctx, conn, appCfg)
 	if !hostOK {
-		cliNotice("Skipping postStart hook: no routable device address reported; open the app via the URL above once the device IP is known.")
+		cliNotice("Skipping postStart hook: no routable device address reported; open the app manually once the device IP is known.")
 		return nil
 	}
 
@@ -2307,7 +2322,7 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		return nil
 	}
 	effectiveCfg := appCfg
-	if hooks := synthesizedOpenURLHook(appCfg); hooks != appCfg.Hooks {
+	if hooks != appCfg.Hooks {
 		clone := *appCfg
 		clone.Hooks = hooks
 		effectiveCfg = &clone
