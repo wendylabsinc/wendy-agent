@@ -269,6 +269,19 @@ func (e *emitter) node(n ir.Node, i int) (llb.State, error) {
 		if n.Image == nil {
 			return llb.State{}, fmt.Errorf("node %d has kind %q but nil Image payload", i, n.Kind)
 		}
+		if n.Image.FromStage {
+			base, err := e.input(n, 0)
+			if err != nil {
+				return llb.State{}, fmt.Errorf("stage image node %d: %w", i, err)
+			}
+			for _, key := range sortedKeys(n.Image.Env) {
+				base = base.AddEnv(key, n.Image.Env[key])
+			}
+			if n.Image.Workdir != "" {
+				base = base.Dir(n.Image.Workdir)
+			}
+			return base, nil
+		}
 		return e.baseImage(n.Image)
 
 	case ir.OpFetch:
@@ -586,6 +599,13 @@ func (e *emitter) copyState(n ir.Node, base llb.State) (llb.State, error) {
 	action, err := copyActionInfo(src, n.Copy.Paths, n.Copy.Dest, info)
 	if err != nil {
 		return llb.State{}, err
+	}
+	if n.Copy.Link {
+		// Match Dockerfile COPY --link: build the copy as an independent
+		// scratch layer, then merge it over the destination state. This keeps
+		// dependency overlays reusable when an unrelated base layer changes.
+		linked := llb.Scratch().File(action, e.constraints...)
+		return llb.Merge([]llb.State{base, linked}, e.constraints...), nil
 	}
 	return base.File(action, e.constraints...), nil
 }

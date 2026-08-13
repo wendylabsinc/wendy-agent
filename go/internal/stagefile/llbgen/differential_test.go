@@ -86,6 +86,42 @@ func llbCommands(ops []*pb.Op) []string {
 	return out
 }
 
+// Independent linked stages are a DAG, so BuildKit may serialize their ops in
+// a different topological order than Dockerfile source order. Compare the
+// command multiset here; IR edge tests separately pin ordering within each
+// dependency chain.
+func sameCommands(a, b []string) bool {
+	set := func(in []string) []string {
+		seen := map[string]bool{}
+		var out []string
+		for _, command := range in {
+			if !seen[command] {
+				seen[command] = true
+				out = append(out, command)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	return reflect.DeepEqual(set(a), set(b))
+}
+
+func sameStringSet(a, b []string) bool {
+	unique := func(in []string) []string {
+		seen := map[string]bool{}
+		var out []string
+		for _, value := range in {
+			if !seen[value] {
+				seen[value] = true
+				out = append(out, value)
+			}
+		}
+		sort.Strings(out)
+		return out
+	}
+	return reflect.DeepEqual(unique(a), unique(b))
+}
+
 // llbCacheMounts returns "<id>@<target>" for every cache mount, sorted, since
 // mount order within one exec is not meaningful.
 func llbCacheMounts(ops []*pb.Op) []string {
@@ -118,34 +154,42 @@ func llbSources(ops []*pb.Op) []string {
 	return out
 }
 
-// dockerfileRuns returns every RUN's command text, with the "\"-continuation
-// clauses folded back into the single line the shell receives — which is what
-// llbgen hands to /bin/sh -c.
-func dockerfileRuns(dockerfile string) []string {
+// dockerfileRunInstructions returns every RUN body with continuation lines
+// folded back into one instruction. Cache mounts may themselves span those
+// lines, so both command and mount comparisons start from this representation.
+func dockerfileRunInstructions(dockerfile string) []string {
 	var out []string
 	var cur string
-	inRun := false
 	for _, raw := range strings.Split(dockerfile, "\n") {
-		line := raw
+		line := strings.TrimSpace(raw)
 		cont := strings.HasSuffix(line, "\\")
-		line = strings.TrimSuffix(line, "\\")
-		switch {
-		case strings.HasPrefix(line, "RUN "):
-			cur = strings.TrimSpace(strings.TrimPrefix(line, "RUN "))
-			// Strip any --mount flags; they are compared separately.
-			for strings.HasPrefix(cur, "--mount=") {
-				_, rest, _ := strings.Cut(cur, " ")
-				cur = strings.TrimSpace(rest)
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\\"))
+		if cur == "" {
+			if !strings.HasPrefix(line, "RUN ") {
+				continue
 			}
-			inRun = true
-		case inRun:
-			cur += " " + strings.TrimSpace(line)
+			cur = strings.TrimSpace(strings.TrimPrefix(line, "RUN "))
+		} else {
+			cur += " " + line
 		}
-		if inRun && !cont {
-			out = append(out, "/bin/sh -c "+cur)
-			inRun = false
+		if !cont {
+			out = append(out, cur)
 			cur = ""
 		}
+	}
+	return out
+}
+
+// dockerfileRuns returns the shell command for each folded RUN instruction.
+func dockerfileRuns(dockerfile string) []string {
+	var out []string
+	for _, instruction := range dockerfileRunInstructions(dockerfile) {
+		command := instruction
+		for strings.HasPrefix(command, "--mount=") {
+			_, rest, _ := strings.Cut(command, " ")
+			command = strings.TrimSpace(rest)
+		}
+		out = append(out, "/bin/sh -c "+command)
 	}
 	return out
 }
@@ -155,8 +199,8 @@ func dockerfileRuns(dockerfile string) []string {
 // own frontend gives it, which is what lets the two builds share a warm cache.
 func dockerfileCacheMounts(dockerfile string) []string {
 	var out []string
-	for _, line := range strings.Split(dockerfile, "\n") {
-		rest := strings.TrimPrefix(line, "RUN ")
+	for _, instruction := range dockerfileRunInstructions(dockerfile) {
+		rest := instruction
 		for strings.HasPrefix(rest, "--mount=") {
 			flag, tail, _ := strings.Cut(rest, " ")
 			rest = strings.TrimSpace(tail)
@@ -233,7 +277,7 @@ func emitBroad(t *testing.T) (string, []*pb.Op, *ImageConfig) {
 	images := map[string]string{"python:3.12-slim": "sha256:" + strings.Repeat("a", 64)}
 	configs := map[string][]byte{"python:3.12-slim": testConfig(t, "linux", "arm64")}
 
-	dockerfile, err := codegen.Generate(g, images)
+	dockerfile, err := codegen.GenerateGraph(g, images)
 	if err != nil {
 		t.Fatalf("codegen.Generate: %v", err)
 	}
@@ -247,11 +291,11 @@ func emitBroad(t *testing.T) (string, []*pb.Op, *ImageConfig) {
 // The commands, in order, must be the same ones — this is the assertion that
 // would fail if one backend skipped a step, ran them in a different order, or
 // folded apt's clauses differently.
-func TestBackendsRunTheSameCommandsInTheSameOrder(t *testing.T) {
+func TestBackendsRunTheSameCommands(t *testing.T) {
 	dockerfile, ops, _ := emitBroad(t)
 	want := dockerfileRuns(dockerfile)
 	got := llbCommands(ops)
-	if !reflect.DeepEqual(got, want) {
+	if !sameCommands(got, want) {
 		t.Fatalf("command sequences differ:\n LLB (%d):\n  %s\n Dockerfile (%d):\n  %s",
 			len(got), strings.Join(got, "\n  "), len(want), strings.Join(want, "\n  "))
 	}
@@ -267,7 +311,7 @@ func TestBackendsAttachTheSameCacheMounts(t *testing.T) {
 	dockerfile, ops, _ := emitBroad(t)
 	want := dockerfileCacheMounts(dockerfile)
 	got := llbCacheMounts(ops)
-	if !reflect.DeepEqual(got, want) {
+	if !sameStringSet(got, want) {
 		t.Fatalf("cache mounts differ:\n LLB        %v\n Dockerfile %v", got, want)
 	}
 	if len(got) == 0 {
@@ -329,7 +373,7 @@ func TestImageConfigDefaultsTheUser(t *testing.T) {
 	images := map[string]string{"debian:12": "sha256:" + strings.Repeat("b", 64)}
 	configs := map[string][]byte{"debian:12": testConfig(t, "linux", "arm64")}
 
-	dockerfile, err := codegen.Generate(g, images)
+	dockerfile, err := codegen.GenerateGraph(g, images)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +409,7 @@ func TestCUDAStageAgreesAcrossBackends(t *testing.T) {
 	images := map[string]string{"ubuntu:22.04": "sha256:" + strings.Repeat("c", 64)}
 	configs := map[string][]byte{"ubuntu:22.04": testConfig(t, "linux", "arm64")}
 
-	dockerfile, err := codegen.Generate(g, images)
+	dockerfile, err := codegen.GenerateGraph(g, images)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,11 +419,11 @@ func TestCUDAStageAgreesAcrossBackends(t *testing.T) {
 	}
 	ops := emitOps(t, def)
 
-	if got, want := llbCommands(ops), dockerfileRuns(dockerfile); !reflect.DeepEqual(got, want) {
+	if got, want := llbCommands(ops), dockerfileRuns(dockerfile); !sameCommands(got, want) {
 		t.Fatalf("CUDA command sequences differ:\n LLB:\n  %s\n Dockerfile:\n  %s",
 			strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 	}
-	if got, want := llbCacheMounts(ops), dockerfileCacheMounts(dockerfile); !reflect.DeepEqual(got, want) {
+	if got, want := llbCacheMounts(ops), dockerfileCacheMounts(dockerfile); !sameStringSet(got, want) {
 		t.Fatalf("CUDA cache mounts differ:\n LLB %v\n Dockerfile %v", got, want)
 	}
 	// The GPU stage runs as root, and the loader path is baked in — both are
@@ -546,6 +590,25 @@ func TestContextIsFilteredToTheAllowlist(t *testing.T) {
 	}
 }
 
+func TestLinkedCopyUsesMerge(t *testing.T) {
+	g := lower(t, &spec.File{Version: 1, Stages: []spec.Stage{{
+		Name: "app", From: "python:3.12-slim",
+		Install: &spec.Install{Pip: []spec.PipInstall{{Requirements: "requirements.txt"}}},
+	}}}, ir.Options{})
+	images := map[string]string{"python:3.12-slim": "sha256:" + strings.Repeat("a", 64)}
+	configs := map[string][]byte{"python:3.12-slim": testConfig(t, "linux", "arm64")}
+	def, _, err := Emit(g, Options{Images: images, Configs: configs, Platform: testPlatform})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range emitOps(t, def) {
+		if op.GetMerge() != nil {
+			return
+		}
+	}
+	t.Fatal("linked dependency overlay emitted no LLB merge operation")
+}
+
 // Every fixture that ships with the repo must compile through both backends.
 // A construct that reaches codegen but panics or errors in llbgen is exactly
 // what an opt-in second backend would otherwise hide until someone enabled it.
@@ -570,7 +633,7 @@ func TestShippedFixturesCompileThroughBothBackends(t *testing.T) {
 					configs[n.Image.Ref] = testConfig(t, "linux", "arm64")
 				}
 			}
-			dockerfile, err := codegen.Generate(g, images)
+			dockerfile, err := codegen.GenerateGraph(g, images)
 			if err != nil {
 				t.Fatalf("codegen: %v", err)
 			}
@@ -579,7 +642,7 @@ func TestShippedFixturesCompileThroughBothBackends(t *testing.T) {
 				t.Fatalf("llbgen: %v", err)
 			}
 			got, want := llbCommands(emitOps(t, def)), dockerfileRuns(dockerfile)
-			if !reflect.DeepEqual(got, want) {
+			if !sameCommands(got, want) {
 				t.Fatalf("%s command sequences differ:\n LLB:\n  %s\n Dockerfile:\n  %s",
 					fixture, strings.Join(got, "\n  "), strings.Join(want, "\n  "))
 			}

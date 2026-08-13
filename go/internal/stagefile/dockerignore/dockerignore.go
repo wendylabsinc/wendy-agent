@@ -97,43 +97,58 @@ func LocalPathsFromGraph(g *ir.Graph) ([]string, error) {
 			paths = append(paths, p)
 		}
 	}
-	// Walked per stage, copies before installs — the order LocalPaths visits
-	// the spec in, not the order the nodes sit in (where installs precede
-	// copies). Derive preserves the order it is given, so producing the same
-	// sequence here is what makes the two routes byte-identical rather than
-	// merely equivalent as sets. A "!" allowlist is last-match-wins, so equal
-	// sets in different orders are not something to rely on being the same
-	// filter.
+	// Generated dependency stages now precede their app stage in the graph.
+	// Collect declared local copies first and recipe inputs second, matching
+	// LocalPaths' externally visible order while de-duplicating helper stages.
 	start := 0
+	type stageRange struct{ source, start, final int }
+	var ranges []stageRange
+	maxSource := -1
 	for si, st := range g.Stages {
 		if st.Final < start || st.Final >= len(g.Nodes) {
 			return nil, fmt.Errorf("stage %d: final node %d is outside the graph's %d nodes", si, st.Final, len(g.Nodes))
 		}
-		for i := start; i <= st.Final; i++ {
-			n := g.Nodes[i]
-			if n.Kind == ir.OpCopy && n.Copy != nil && n.Copy.FromLocal {
-				for _, p := range n.Copy.Paths {
+		ranges = append(ranges, stageRange{st.SourceIndex, start, st.Final})
+		if st.SourceIndex > maxSource {
+			maxSource = st.SourceIndex
+		}
+		start = st.Final + 1
+	}
+	for source := 0; source <= maxSource; source++ {
+		for _, r := range ranges {
+			if r.source != source {
+				continue
+			}
+			for i := r.start; i <= r.final; i++ {
+				n := g.Nodes[i]
+				if n.Kind == ir.OpCopy && n.Copy != nil && n.Copy.FromLocal {
+					for _, p := range n.Copy.Paths {
+						add(p)
+					}
+				}
+			}
+		}
+		for _, r := range ranges {
+			if r.source != source {
+				continue
+			}
+			for i := r.start; i <= r.final; i++ {
+				n := g.Nodes[i]
+				if n.Kind != ir.OpExec {
+					continue
+				}
+				if n.Exec == nil {
+					return nil, fmt.Errorf("node %d has kind %q but nil Exec payload", i, n.Kind)
+				}
+				staged, err := recipe.StagedFiles(n.Exec)
+				if err != nil {
+					return nil, fmt.Errorf("node %d: %w", i, err)
+				}
+				for _, p := range staged {
 					add(p)
 				}
 			}
 		}
-		for i := start; i <= st.Final; i++ {
-			n := g.Nodes[i]
-			if n.Kind != ir.OpExec {
-				continue
-			}
-			if n.Exec == nil {
-				return nil, fmt.Errorf("node %d has kind %q but nil Exec payload", i, n.Kind)
-			}
-			staged, err := recipe.StagedFiles(n.Exec)
-			if err != nil {
-				return nil, fmt.Errorf("node %d: %w", i, err)
-			}
-			for _, p := range staged {
-				add(p)
-			}
-		}
-		start = st.Final + 1
 	}
 	return paths, nil
 }
