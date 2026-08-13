@@ -100,7 +100,7 @@ The harness skips a test rather than failing it when the host or device cannot s
 | Tests | Skipped unless |
 | --- | --- |
 | `swift-*` | the build host has a `swiftly` toolchain (checked instead of `swift`, which on macOS is an Xcode shim that exists with no usable toolchain behind it) |
-| `*-gpu` | the device reports `gpuVendor: nvidia` — these are CUDA tests, and `hasGpu` is also true for a non-NVIDIA GPU with a `/dev/dri` node |
+| `*-gpu` | the device reports `gpuVendor: nvidia` and either `gpuArch: sm_87` or no GPU architecture (for compatibility with older agents). The current PyTorch and ONNX fixtures use JetPack-6 / CUDA-12 images built for Orin; CUDA-13 architectures such as Thor's `sm_110` are skipped until their fixtures are hardware-verified. |
 
 #### Stable release gate
 
