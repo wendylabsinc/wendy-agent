@@ -169,5 +169,16 @@ func (s chunkPushSnapshot) Summary() string {
 		return fmt.Sprintf("All %d chunk(s) already on device (%d full layer(s) reused).", already, s.LayersReused)
 	}
 	return fmt.Sprintf("Sent %d chunk(s) (%s) in %s; device already had %d chunk(s) and %d full layer(s).",
-		s.SentChunks, tui.ByteProgress{Current: s.SentBytes}.String(), s.Elapsed, already, s.LayersReused)
+		s.SentChunks, tui.ByteProgress{Current: s.SentBytes}.String(), formatChunkPushElapsed(s.Elapsed), already, s.LayersReused)
+}
+
+// formatChunkPushElapsed renders an elapsed duration to one decimal place
+// ("12.3s"), rounding away the sub-millisecond noise a real time.Now()-derived
+// Elapsed otherwise carries (e.g. "12.847293831s") — Duration.String() only
+// trims trailing zeros, it doesn't round, so an unrounded Elapsed would blow
+// past Summary()'s one-decimal example. Same %.1fs-after-rounding convention
+// as tui's formatDuration (buildplain.go) and formatElapsedSeconds
+// (helpers.go), for consistency with the rest of the CLI's elapsed-time text.
+func formatChunkPushElapsed(d time.Duration) string {
+	return fmt.Sprintf("%.1fs", d.Round(time.Millisecond).Seconds())
 }

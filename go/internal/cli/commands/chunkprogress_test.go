@@ -102,7 +102,31 @@ func TestChunkPushSnapshotLineAndSummary(t *testing.T) {
 			},
 			elapsed:     10 * time.Second,
 			wantLine:    "40%  100.0MB/250.0MB  10.0MB/s (device already has 1846/2258 chunks, 3 layers)",
-			wantSummary: "Sent 400 chunk(s) (100.0MB) in 10s; device already had 1846 chunk(s) and 3 full layer(s).",
+			wantSummary: "Sent 400 chunk(s) (100.0MB) in 10.0s; device already had 1846 chunk(s) and 3 full layer(s).",
+		},
+		{
+			// Regression for the real production shape of Elapsed: it comes
+			// from an actual time.Now() difference, so it carries
+			// sub-millisecond noise (unlike every other row here, which uses
+			// a clean round-number clock). Duration.String() only trims
+			// trailing zeros — it doesn't round — so an unrounded Elapsed
+			// would render "in 12.847293831s" instead of "in 12.8s". This
+			// pins Summary()'s rounding (%.1fs after Round(time.Millisecond),
+			// the same convention as tui's formatDuration and
+			// commands.formatElapsedSeconds) against exactly that noise.
+			name: "in-progress send with a non-round (real time.Now()-shaped) elapsed",
+			build: func() *chunkPushProgress {
+				p := newChunkPushProgress()
+				p.SetLayerCounts(1, 0)
+				p.LayerPlanned(20, 20, 300_000_000)
+				for i := 0; i < 20; i++ {
+					p.ChunkSent(5_000_000) // 20 * 5_000_000 = 100_000_000 exactly
+				}
+				return p
+			},
+			elapsed:     12*time.Second + 847293831*time.Nanosecond, // 12.847293831s
+			wantLine:    "33%  100.0MB/300.0MB  7.8MB/s (device already has 0/20 chunks, 0 layers)",
+			wantSummary: "Sent 20 chunk(s) (100.0MB) in 12.8s; device already had 0 chunk(s) and 0 full layer(s).",
 		},
 		{
 			name: "fully sent, fractional-second rate matching the brief's numbers",
