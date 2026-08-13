@@ -33,7 +33,7 @@ func TestGenerateGoldenExampleFixture(t *testing.T) {
 		"    --mount=type=cache,sharing=locked,id=stagefile-apt-archives-c27f20c14e43eb07,target=/var/cache/apt \\\n" +
 		"    rm -f /etc/apt/apt.conf.d/docker-clean && if command -v pip >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends 'build-essential'; else apt-get update && apt-get install -y --no-install-recommends 'python3-pip' 'build-essential'; fi\n" +
 		"COPY requirements.txt requirements.txt\n" +
-		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-7cf413641a7e1ab6,target=/root/.cache/pip pip install --root '/opt/stagefile/pip/root' --prefix '/usr/local' -r 'requirements.txt'\n" +
+		"RUN --mount=type=cache,sharing=locked,id=stagefile-pip-7cf413641a7e1ab6,target=/root/.cache/pip pip install --root '/opt/stagefile/pip/root' -r 'requirements.txt'\n" +
 		"\n" +
 		"FROM python:3.12-slim@sha256:abc123 AS deps\n" +
 		"RUN --mount=type=cache,sharing=locked,id=stagefile-apt-lists-c27f20c14e43eb07,target=/var/lib/apt/lists \\\n" +

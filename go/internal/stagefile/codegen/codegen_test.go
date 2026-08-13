@@ -181,7 +181,7 @@ func TestGeneratePipInstallFromRequirements(t *testing.T) {
 	for _, want := range []string{
 		"FROM python:3.12-slim@sha256:abc123 AS stagefile-pip-deps-0",
 		"COPY requirements.txt requirements.txt",
-		"pip install --root '/opt/stagefile/pip/root' --prefix '/usr/local' -r 'requirements.txt'",
+		"pip install --root '/opt/stagefile/pip/root' -r 'requirements.txt'",
 		"FROM python:3.12-slim@sha256:abc123 AS app",
 		"COPY --link --from=stagefile-pip-deps-0 /opt/stagefile/pip/root/ /",
 		"USER 65532",
@@ -225,7 +225,7 @@ func TestGeneratePipInstallFromPackages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "pip install --root '/opt/stagefile/pip/root' --prefix '/usr/local' 'flask' 'gunicorn'"
+	want := "pip install --root '/opt/stagefile/pip/root' 'flask' 'gunicorn'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}
@@ -496,7 +496,7 @@ func TestGeneratePipInstallQuotesVersionSpecifiers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	want := "pip install --root '/opt/stagefile/pip/root' --prefix '/usr/local' 'flask>=2.0,<3.0'"
+	want := "pip install --root '/opt/stagefile/pip/root' 'flask>=2.0,<3.0'"
 	if !strings.Contains(out, want) {
 		t.Fatalf("missing %q in:\n%s", want, out)
 	}

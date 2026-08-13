@@ -587,7 +587,11 @@ func pipInstallLines(p *spec.PipInstall, cudaProfile *gpu.Profile, platform, roo
 	// full wheel re-download every time this layer rebuilds.
 	parts := []string{"pip", "install"}
 	if root != "" {
-		parts = append(parts, "--root", shellQuote(root), "--prefix", shellQuote("/usr/local"))
+		// Let pip select the base image's default installation scheme underneath
+		// the overlay root. Passing --prefix /usr/local is not portable: Debian's
+		// patched sysconfig scheme expands it to /usr/local/local, leaving copied
+		// packages outside Python's import path in Debian and ROS images.
+		parts = append(parts, "--root", shellQuote(root))
 	}
 	index := p.Index
 	if p.CUDA && cudaProfile != nil {
