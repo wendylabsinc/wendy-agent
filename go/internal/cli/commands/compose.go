@@ -55,6 +55,33 @@ func composeServiceWatchHash(imageIdentity string, cfg *appconfig.AppConfig, cmd
 	}{imageIdentity, cfg, cmd, userArgs, restartPolicy, env})
 }
 
+// planComposeBuildSkips returns built-image services whose complete desired
+// state matches the last successful device preparation, whose container is
+// still known to the device, and whose exact uncompressed image layers remain
+// in its content store. Every check fails closed: a stale local fingerprint or
+// a device-side GC can only cause an unnecessary preparation, never stale code.
+func planComposeBuildSkips(ctx context.Context, conn *grpcclient.AgentConnection, deviceKey string, desiredHashes map[string]string, svcCfgs map[string]*appconfig.AppConfig, states map[string]agentpb.AppRunningState) map[string]bool {
+	skip := map[string]bool{}
+	if os.Getenv("WENDY_PUSH_SKIP") == "0" {
+		return skip
+	}
+	for name, desiredHash := range desiredHashes {
+		cfg := svcCfgs[name]
+		if cfg == nil || desiredHash == "" {
+			continue
+		}
+		if _, present := states[strings.ToLower(cfg.ContainerName())]; !present {
+			continue
+		}
+		fp, ok := loadDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), deviceKey)
+		if !ok || fp.InputHash != desiredHash || !deviceHasAllLayers(ctx, conn, fp.LayerDiffIDs) {
+			continue
+		}
+		skip[name] = true
+	}
+	return skip
+}
+
 // composeConfig is a minimal representation of a docker-compose file.
 type composeConfig struct {
 	Services map[string]composeService `yaml:"services"`
@@ -102,15 +129,32 @@ type composeBuildJob struct {
 type composeBuildProgressWriter struct {
 	io.Writer
 	emit          func(tui.BuildStepEvent)
+	reportContent func([]string)
 	progressMu    sync.Mutex
 	uploadStarted bool
+}
+
+func (w *composeBuildProgressWriter) emitEvent(e tui.BuildStepEvent) {
+	if w.emit != nil {
+		w.emit(e)
+	}
+}
+
+// ReportImageContent records the uncompressed identities of the image that was
+// prepared on the device. Keeping this on the same writer used for chunk
+// progress lets the Compose scheduler persist a fail-closed deploy fingerprint
+// without coupling its generic build function signature to OCI internals.
+func (w *composeBuildProgressWriter) ReportImageContent(diffIDs []string) {
+	if w.reportContent != nil {
+		w.reportContent(append([]string(nil), diffIDs...))
+	}
 }
 
 func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
 	w.progressMu.Lock()
 	defer w.progressMu.Unlock()
 	w.uploadStarted = true
-	w.emit(tui.BuildStepEvent{
+	w.emitEvent(tui.BuildStepEvent{
 		ID:      "chunk-upload",
 		Kind:    tui.BuildVertexExport,
 		Display: "uploading missing chunks",
@@ -133,7 +177,7 @@ func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate
 	if w.uploadStarted && status == tui.BuildStepRunning {
 		return
 	}
-	w.emit(tui.BuildStepEvent{
+	w.emitEvent(tui.BuildStepEvent{
 		ID:      "chunk-index",
 		Kind:    tui.BuildVertexSetup,
 		Display: "indexing changed layer content",
@@ -147,7 +191,7 @@ func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
 	if reason != nil {
 		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
 	}
-	w.emit(tui.BuildStepEvent{
+	w.emitEvent(tui.BuildStepEvent{
 		ID:      "registry-fallback",
 		Kind:    tui.BuildVertexExport,
 		Display: "uploading image via registry fallback",
@@ -156,17 +200,57 @@ func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
 	})
 }
 
+func (w *composeBuildProgressWriter) ReportImagePreparation() {
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "image-prepare",
+		Kind:    tui.BuildVertexExport,
+		Display: "preparing image on device",
+		Status:  tui.BuildStepRunning,
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportImagePreparationQueued() {
+	w.emitEvent(tui.BuildStepEvent{
+		ID:      "image-prepare-queue",
+		Kind:    tui.BuildVertexExport,
+		Display: "waiting for device preparation slot",
+		Status:  tui.BuildStepRunning,
+	})
+}
+
 // buildComposeServiceImage is replaceable in tests so the parallel scheduler
 // can be exercised without Docker or a device registry.
 var buildComposeServiceImage = buildAndPrepareComposeImageForAgent
+
+const maxConcurrentComposePrepares = 2
+
+type composePrepareLimiterKey struct{}
+
+func withComposePrepareLimiter(ctx context.Context) context.Context {
+	return context.WithValue(ctx, composePrepareLimiterKey{}, make(chan struct{}, maxConcurrentComposePrepares))
+}
+
+func acquireComposePrepare(ctx context.Context) (func(), error) {
+	limiter, _ := ctx.Value(composePrepareLimiterKey{}).(chan struct{})
+	if limiter == nil {
+		return func() {}, nil
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // buildComposeServicesParallel runs independent Compose image jobs
 // concurrently. By default each job builds a persistent OCI layout and sends
 // only content chunks the device does not already have; --chunking=off keeps
 // the registry-push path for compatibility.
-func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, platform, chunking string, jobs map[string]composeBuildJob, maxConcurrency int, quietBuild bool) (map[string]error, error) {
+func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, platform, chunking string, jobs map[string]composeBuildJob, maxConcurrency int, quietBuild bool) (map[string]error, map[string][]string, error) {
 	buildCtx, cancelBuild := context.WithCancel(ctx)
 	defer cancelBuild()
+	buildCtx = withComposePrepareLimiter(buildCtx)
 
 	names := make([]string, 0, len(jobs))
 	for name := range jobs {
@@ -174,7 +258,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	}
 	sort.Strings(names)
 	if len(names) == 0 {
-		return map[string]error{}, nil
+		return map[string]error{}, map[string][]string{}, nil
 	}
 
 	concurrency := resolveBuildConcurrency(len(names), maxConcurrency)
@@ -183,9 +267,10 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	}
 
 	type result struct {
-		name string
-		err  error
-		log  string
+		name         string
+		err          error
+		log          string
+		layerDiffIDs []string
 	}
 	results := make(chan result, len(names))
 	sem := make(chan struct{}, concurrency)
@@ -223,18 +308,25 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 			var logBuf bytes.Buffer
 			var buildOut io.Writer = os.Stdout
 			var logOut io.Writer = os.Stderr
+			var layerDiffIDs []string
 			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
+			var emit func(tui.BuildStepEvent)
 			if prog != nil {
-				emit, getTally := newServiceProgressEmitter(prog, name)
+				var getTally func() tui.BuildTally
+				emit, getTally = newServiceProgressEmitter(prog, name)
 				tally = getTally
-				buildOut = &composeBuildProgressWriter{
-					Writer: io.MultiWriter(tui.NewBuildParser(emit), &logBuf),
-					emit:   emit,
-				}
+				buildOut = io.MultiWriter(tui.NewBuildParser(emit), &logBuf)
 				logOut = &logBuf
 			} else if quietBuild {
 				buildOut = &logBuf
 				logOut = &logBuf
+			}
+			buildOut = &composeBuildProgressWriter{
+				Writer: buildOut,
+				emit:   emit,
+				reportContent: func(ids []string) {
+					layerDiffIDs = ids
+				},
 			}
 
 			// The repo also scopes buildx's local cache export. Concurrent writers
@@ -260,7 +352,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 			} else if !quietBuild {
 				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
 			}
-			results <- result{name: name, err: err, log: logBuf.String()}
+			results <- result{name: name, err: err, log: logBuf.String(), layerDiffIDs: layerDiffIDs}
 		}(name, job)
 	}
 
@@ -288,8 +380,12 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	}
 
 	failed := map[string]error{}
+	content := map[string][]string{}
 	for r := range results {
 		if r.err == nil {
+			if len(r.layerDiffIDs) > 0 {
+				content[r.name] = r.layerDiffIDs
+			}
 			continue
 		}
 		failed[r.name] = r.err
@@ -298,12 +394,12 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 		}
 	}
 	if progressErr != nil {
-		return nil, progressErr
+		return nil, nil, progressErr
 	}
 	if ctx.Err() != nil {
-		return nil, ctx.Err()
+		return nil, nil, ctx.Err()
 	}
-	return failed, nil
+	return failed, content, nil
 }
 
 // unsupportedComposeWarnings returns field names from svc that Wendy does not
@@ -1130,7 +1226,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	gpuArch := composeGPUArch(ctx, projectDir, cfg, conn)
 	deviceKey := deviceFingerprintKey(versionResp)
 	states := map[string]agentpb.AppRunningState{}
-	if opts.watchState != nil {
+	if opts.watchState != nil || os.Getenv("WENDY_PUSH_SKIP") != "0" {
 		states = deviceContainerStates(ctx, conn)
 	}
 	preserve := map[string]bool{}
@@ -1172,6 +1268,10 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			if err != nil {
 				return fmt.Errorf("hashing service %s build inputs: %w", name, err)
 			}
+			// The prepared image name is part of the desired identity. A project
+			// directory rename changes the Compose repository even when its source
+			// bytes do not, so reusing the old preparation would be unsafe.
+			imageIdentity = fmt.Sprintf("localhost:%d/%s-%s:latest@%s", regPort, projectName, name, imageIdentity)
 		}
 
 		restartPolicy := resolveRestartPolicy(opts)
@@ -1184,13 +1284,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			desiredHashes[name] = desiredHash
 			candidates[name] = watchServiceCandidate{appID: appCfg.AppID, containerName: appCfg.ContainerName(), desiredHash: desiredHash}
 		}
-		if opts.watchState != nil {
-			preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
-			if preserve[name] {
-				continue
-			}
-		}
-
 		if ctxDir == "" {
 			continue // uses pre-built image
 		}
@@ -1202,16 +1295,43 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			buildArgs:  allBuildArgs,
 		}
 	}
+
+	// Persistent fingerprints skip the expensive local OCI/chunk/device image
+	// pipeline for ordinary runs. Watch preservation is stronger: it also leaves
+	// an unchanged running container untouched, so merge those services into the
+	// build skip set after evaluating the session-scoped watch state.
+	skipBuild := planComposeBuildSkips(ctx, conn, deviceKey, desiredHashes, svcCfgs, states)
+	if opts.watchState != nil {
+		preserve = selectPreservedWatchServices(opts.watchState, deviceKey, candidates, states)
+		for name := range preserve {
+			skipBuild[name] = true
+		}
+	}
+	for name := range skipBuild {
+		delete(jobs, name)
+	}
 	if n := len(preserve); n > 0 {
 		cliLogln("%d of %d Compose services unchanged and running; leaving them untouched.", n, len(cfg.Services))
+	} else if n := len(skipBuild); n > 0 {
+		cliLogln("%d of %d Compose services unchanged and already on device; skipping image preparation.", n, len(cfg.Services))
 	}
 
-	failedBuilds, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
+	failedBuilds, preparedContent, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
 	if err != nil {
 		return err
 	}
 	if len(failedBuilds) > 0 {
 		return joinServiceErrors(failedBuilds)
+	}
+	for name, diffIDs := range preparedContent {
+		if desiredHash := desiredHashes[name]; desiredHash != "" && len(diffIDs) > 0 {
+			appCfg := svcCfgs[name]
+			saveDeployFingerprint(serviceFingerprintKey(appCfg.AppID, name), deviceKey, deployFingerprint{
+				InputHash:    desiredHash,
+				AppVersion:   appCfg.Version,
+				LayerDiffIDs: diffIDs,
+			})
+		}
 	}
 
 	cliRestartPolicy := resolveRestartPolicy(opts)

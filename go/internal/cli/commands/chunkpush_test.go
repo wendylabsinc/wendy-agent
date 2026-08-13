@@ -22,6 +22,16 @@ type chunkProgressRecorder struct {
 	events []tui.BuildStepEvent
 }
 
+type imagePreparationRecorder struct {
+	io.Writer
+	once   sync.Once
+	called chan struct{}
+}
+
+func (r *imagePreparationRecorder) ReportImagePreparation() {
+	r.once.Do(func() { close(r.called) })
+}
+
 func (r *chunkProgressRecorder) ReportChunkIndex(current, total int64, rate float64, done bool) {
 	status := tui.BuildStepRunning
 	if done {
@@ -208,6 +218,38 @@ func TestPushLayersByChunksStrictPrepareReturnsUnimplemented(t *testing.T) {
 	}, nil)
 	if status.Code(err) != codes.Unimplemented {
 		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
+	}
+}
+
+func TestPushLayersByChunksReportsPostUploadPreparation(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 1}}}
+		},
+	}
+	release := make(chan struct{})
+	recorder := &imagePreparationRecorder{Writer: io.Discard, called: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), fake, []localLayer{{DiffID: diffID}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+			<-release
+			return nil
+		}, recorder)
+		done <- err
+	}()
+
+	select {
+	case <-recorder.called:
+		close(release)
+	case <-time.After(time.Second):
+		t.Fatal("device preparation progress was not reported after upload completed")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

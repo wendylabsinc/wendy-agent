@@ -52,7 +52,7 @@ func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, count, false)
+		failed, _, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, count, false)
 		if err == nil && len(failed) != 0 {
 			err = joinServiceErrors(failed)
 		}
@@ -108,7 +108,7 @@ func TestBuildComposeServicesParallelCancellationDoesNotStartQueuedBuilds(t *tes
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		failed, err := buildComposeServicesParallel(ctx, nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, false)
+		failed, _, err := buildComposeServicesParallel(ctx, nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, false)
 		done <- outcome{failed: failed, err: err}
 	}()
 
@@ -138,6 +138,43 @@ func TestBuildComposeServicesParallelCancellationDoesNotStartQueuedBuilds(t *tes
 	}
 }
 
+func TestComposePreparationConcurrencyIsBoundedSeparately(t *testing.T) {
+	ctx := withComposePrepareLimiter(context.Background())
+	releases := make([]func(), 0, maxConcurrentComposePrepares)
+	for range maxConcurrentComposePrepares {
+		release, err := acquireComposePrepare(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		releases = append(releases, release)
+	}
+
+	acquired := make(chan func(), 1)
+	go func() {
+		release, err := acquireComposePrepare(ctx)
+		if err == nil {
+			acquired <- release
+		}
+	}()
+	select {
+	case release := <-acquired:
+		release()
+		t.Fatal("device preparation exceeded its independent concurrency bound")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releases[0]()
+	select {
+	case release := <-acquired:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("queued device preparation did not start after a slot opened")
+	}
+	for _, release := range releases[1:] {
+		release()
+	}
+}
+
 func TestBuildComposeServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
 	originalBuild := buildComposeServiceImage
 	originalInteractive := isInteractiveTerminalFn
@@ -159,13 +196,16 @@ func TestBuildComposeServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
 		}
 		_, _ = io.WriteString(stream, "builder progress\n")
 		_, _ = io.WriteString(logw, "builder setup\n")
+		if reporter, ok := stream.(interface{ ReportImageContent([]string) }); ok {
+			reporter.ReportImageContent([]string{"sha256:layer"})
+		}
 		return nil
 	}
 
 	jobs := map[string]composeBuildJob{
 		"api": {contextDir: "api", dockerfile: "Dockerfile", repo: "app-api"},
 	}
-	failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, true)
+	failed, content, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, true)
 	if err != nil {
 		t.Fatalf("quiet Compose build: %v", err)
 	}
@@ -174,6 +214,9 @@ func TestBuildComposeServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("quiet Compose builder was not called")
+	}
+	if got := content["api"]; len(got) != 1 || got[0] != "sha256:layer" {
+		t.Fatalf("prepared content = %v, want reported layer identity", got)
 	}
 }
 
@@ -208,6 +251,59 @@ func TestComposeServiceWatchHashTracksCreateRequest(t *testing.T) {
 				t.Fatalf("%s change did not invalidate watch hash", tc.name)
 			}
 		})
+	}
+}
+
+func TestPlanComposeBuildSkipsVerifiedUnchangedService(t *testing.T) {
+	isolateFingerprintCache(t)
+	const (
+		name      = "api"
+		deviceKey = "device"
+		desired   = "sha256:desired"
+		layerDiff = "sha256:layer"
+	)
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: name, Version: "1"}
+	states := map[string]agentpb.AppRunningState{
+		strings.ToLower(cfg.ContainerName()): agentpb.AppRunningState_STOPPED,
+	}
+	saveDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), deviceKey, deployFingerprint{
+		InputHash: desired, LayerDiffIDs: []string{layerDiff},
+	})
+	fake := &multiSvcContainerClient{presentLayers: map[string]bool{layerDiff: true}}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+
+	skip := planComposeBuildSkips(context.Background(), conn, deviceKey,
+		map[string]string{name: desired}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if !skip[name] {
+		t.Fatal("verified unchanged Compose service was not skipped")
+	}
+}
+
+func TestPlanComposeBuildSkipsFailsClosed(t *testing.T) {
+	isolateFingerprintCache(t)
+	const name = "api"
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: name}
+	states := map[string]agentpb.AppRunningState{
+		strings.ToLower(cfg.ContainerName()): agentpb.AppRunningState_RUNNING,
+	}
+	saveDeployFingerprint(serviceFingerprintKey(cfg.AppID, name), "device", deployFingerprint{
+		InputHash: "wanted", LayerDiffIDs: []string{"sha256:missing"},
+	})
+	fake := &multiSvcContainerClient{presentLayers: map[string]bool{}}
+	conn := &grpcclient.AgentConnection{ContainerService: fake}
+
+	skip := planComposeBuildSkips(context.Background(), conn, "device",
+		map[string]string{name: "wanted"}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if skip[name] {
+		t.Fatal("Compose service skipped despite missing device image content")
+	}
+
+	delete(states, strings.ToLower(cfg.ContainerName()))
+	fake.presentLayers["sha256:missing"] = true
+	skip = planComposeBuildSkips(context.Background(), conn, "device",
+		map[string]string{name: "wanted"}, map[string]*appconfig.AppConfig{name: cfg}, states)
+	if skip[name] {
+		t.Fatal("Compose service skipped despite missing device container")
 	}
 }
 

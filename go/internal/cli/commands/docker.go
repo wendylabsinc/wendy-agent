@@ -2180,7 +2180,7 @@ func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo,
 		return err
 	}
 	if native {
-		fmt.Fprintln(logOutput, "[stagefile] app layer(s) rebuilt from content; buildx and cache export skipped")
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
 	}
 
 	fmt.Fprintf(logOutput, "[registry] pushing OCI image to %s/%s:latest\n", registryAddr, repo)
@@ -2240,17 +2240,38 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 		return err
 	}
 	if native {
-		fmt.Fprintln(logOutput, "[stagefile] app layer(s) rebuilt from content; buildx and cache export skipped")
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
 	}
 
 	layers, imageConfig, err := readOCILayoutDirLayers(layoutDir, platform)
 	if err != nil {
 		return err
 	}
+	if reporter, ok := streamOutput.(interface{ ReportImageContent([]string) }); ok {
+		diffIDs := make([]string, 0, len(layers))
+		for _, layer := range layers {
+			if layer.DiffID == "" {
+				diffIDs = nil
+				break
+			}
+			diffIDs = append(diffIDs, layer.DiffID)
+		}
+		if len(diffIDs) > 0 {
+			reporter.ReportImageContent(diffIDs)
+		}
+	}
 	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
 	if err != nil {
 		return fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
 	}
+	if reporter, ok := streamOutput.(interface{ ReportImagePreparationQueued() }); ok {
+		reporter.ReportImagePreparationQueued()
+	}
+	releasePrepare, err := acquireComposePrepare(ctx)
+	if err != nil {
+		return err
+	}
+	defer releasePrepare()
 	// Match the reference Compose passes to CreateContainer below. PrepareImage
 	// records this exact name in containerd even though no registry is involved.
 	imageName := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)

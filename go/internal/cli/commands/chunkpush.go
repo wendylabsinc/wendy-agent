@@ -37,6 +37,10 @@ type chunkIndexProgressWriter interface {
 	ReportChunkIndex(current, total int64, rate float64, done bool)
 }
 
+type imagePreparationProgressWriter interface {
+	ReportImagePreparation()
+}
+
 type chunkTransferProgress struct {
 	mu       sync.Mutex
 	reporter chunkTransferProgressWriter
@@ -399,7 +403,17 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 	}
 
 	if prepareDone != nil {
-		if err := <-prepareDone; err != nil {
+		var prepareErr error
+		select {
+		case prepareErr = <-prepareDone:
+			// Preparation already finished while chunks were uploading.
+		default:
+			if reporter, ok := output.(imagePreparationProgressWriter); ok {
+				reporter.ReportImagePreparation()
+			}
+			prepareErr = <-prepareDone
+		}
+		if err := prepareErr; err != nil {
 			if strictPrepare {
 				return nil, err
 			}

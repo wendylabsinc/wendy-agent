@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
@@ -483,6 +484,30 @@ func TestAdoptAndSpliceNativeLayers(t *testing.T) {
 	st2, _ := loadNativeState(dir)
 	if st2 == nil || st2.AppLayerDigests[0] != layers2[1].Digest {
 		t.Fatal("state must track the rebuilt layer")
+	}
+
+	// A second pass with byte-identical app inputs must be a true no-op. In
+	// particular, do not rewrite index/state merely because the native fast path
+	// was entered; those writes made zero-change Compose runs look dirty.
+	indexPath := filepath.Join(dir, "index.json")
+	statePath := filepath.Join(dir, nativeStateName)
+	indexBefore, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateBefore, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	unchanged, err := tryNativeRebuild(dir, "linux/arm64", proj, sf, st2)
+	if err != nil || !unchanged {
+		t.Fatalf("unchanged native rebuild = %v, %v", unchanged, err)
+	}
+	indexAfter, _ := os.Stat(indexPath)
+	stateAfter, _ := os.Stat(statePath)
+	if !indexAfter.ModTime().Equal(indexBefore.ModTime()) || !stateAfter.ModTime().Equal(stateBefore.ModTime()) {
+		t.Fatal("unchanged native rebuild rewrote index.json or state.json")
 	}
 }
 

@@ -40,6 +40,18 @@ func TestPipOverlayDoesNotChangeWhenRuntimeAPTChanges(t *testing.T) {
 	}
 }
 
+func TestPipOverlayUsesBaseImageDefaultInstallScheme(t *testing.T) {
+	out := genOne(t, pipOverlayStage(nil, []string{"flask==3.1.0"}), nil)
+	pip := namedStageBlock(t, out, "stagefile-pip-deps-0")
+
+	if !strings.Contains(pip, "pip install --root '/opt/stagefile/pip/root' 'flask==3.1.0'") {
+		t.Fatalf("pip dependency stage does not install beneath the overlay root:\n%s", pip)
+	}
+	if strings.Contains(pip, "--prefix") {
+		t.Fatalf("pip dependency stage overrides the base image install scheme:\n%s", pip)
+	}
+}
+
 func TestRuntimeAPTDoesNotChangeWhenPipChanges(t *testing.T) {
 	before := genOne(t, pipOverlayStage([]string{"libgomp1"}, []string{"flask==3.1.0"}), nil)
 	after := genOne(t, pipOverlayStage([]string{"libgomp1"}, []string{"flask==3.2.0"}), nil)

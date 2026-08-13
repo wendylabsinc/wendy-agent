@@ -697,6 +697,19 @@ func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState)
 	if err != nil {
 		return false, nil
 	}
+	unchanged := len(native) == len(st.AppLayerDigests)
+	for i, nl := range native {
+		if !unchanged || nl.Digest != st.AppLayerDigests[i] {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		// The layout already names these deterministic layers. Rewriting the
+		// config, manifest, index, and native state would produce identical bytes
+		// while invalidating mtimes and making an unchanged run look like work.
+		return true, nil
+	}
 	newDigest, err := spliceNativeLayers(dir, platform, st.AppLayerDigests, native)
 	if err != nil {
 		return false, nil
