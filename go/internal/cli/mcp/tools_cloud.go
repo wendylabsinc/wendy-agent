@@ -468,6 +468,11 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		return nil, err
 	}
 	if len(assets) == 0 {
+		if deviceName != "" {
+			if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
+				return nil, err
+			}
+		}
 		return nil, &cloudResolveErr{code: errCodeNotFound, msg: "no enrolled devices found for this org; enroll a device with cloud_enroll_device"}
 	}
 	if deviceName == "" {
@@ -487,9 +492,32 @@ func (s *mcpServer) pickCloudAsset(ctx context.Context, auth *config.AuthConfig,
 		}
 	}
 	if matched == nil {
+		if err := s.offlineDeviceErr(ctx, auth, deviceName); err != nil {
+			return nil, err
+		}
 		return nil, &cloudResolveErr{code: errCodeNotFound, msg: fmt.Sprintf("no device named %q found; call cloud_discover to list devices", deviceName)}
 	}
 	return matched, nil
+}
+
+// offlineDeviceErr distinguishes "enrolled but currently offline" from
+// "never enrolled" once the online-only asset listing has failed to produce
+// a match for deviceName. It re-queries the cloud without the online-only
+// filter; if the device turns up there, it's enrolled but unreachable right
+// now, so that's reported as errCodeDeviceUnreachable instead of the
+// generic NOT_FOUND the caller would otherwise return. Returns nil (not an
+// error) when the re-query also misses, so the caller's original NOT_FOUND
+// message is preserved unchanged, and returns the re-query's own error
+// (e.g. a transport failure) unmodified when that occurs.
+func (s *mcpServer) offlineDeviceErr(ctx context.Context, auth *config.AuthConfig, deviceName string) error {
+	all, err := mcpListCloudAssets(ctx, auth, "", false)
+	if err != nil {
+		return err
+	}
+	if clouddefaults.FindAssetByNameOrID(all, deviceName) == nil {
+		return nil
+	}
+	return &cloudResolveErr{code: errCodeDeviceUnreachable, msg: fmt.Sprintf("device %q is enrolled but currently reported offline; check the device's power and network connection, or call cloud_discover with online_only=false to list enrolled devices", deviceName)}
 }
 
 func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig, name string) (*cloudpb.CreateAssetEnrollmentTokenResponse, error) {
