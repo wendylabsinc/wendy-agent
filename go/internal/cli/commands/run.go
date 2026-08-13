@@ -2044,6 +2044,35 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 	return ip
 }
 
+// resolveHookHost returns the host the developer-side readiness probe and
+// postStart hook should target. conn.Host is perfect for LAN connections, but
+// a cloud tunnel sets it to the ASSET NAME (cloud_tunnel.go: agentConn.Host =
+// asset.GetName()), which does not resolve from this machine — and an IPv6
+// literal needs the agent-reported IP too, since it is often an RFC 4941
+// temporary (privacy) address that rotates away. In both cases prefer the
+// routable IP the agent reports via GetAgentVersion (announceReachableURL).
+//
+// conn.Reconnect != nil is the cloud marker: it is the sole assignment
+// (cloud_tunnel.go, on the connection cloud_tunnel.go builds) for a
+// transport where the connection identity can't be re-derived from Host
+// alone. conn.Addr can't be used instead — it is empty for NewFromConn
+// conns, cloud tunnels included.
+//
+// ok=false means no usable host exists (a cloud conn with no reported IP):
+// the caller must skip host-side probes/hooks with guidance instead of
+// dialing a dead asset name.
+func resolveHookHost(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) (host string, ok bool) {
+	ip := announceReachableURL(ctx, conn, appCfg)
+	isCloud := conn.Reconnect != nil
+	if ip != "" && (isCloud || isIPv6Literal(conn.Host)) {
+		return ip, true
+	}
+	if isCloud && ip == "" {
+		return "", false
+	}
+	return conn.Host, true
+}
+
 // synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
 // configures an explicit openURL. Otherwise, when the app declares an `http`
 // entitlement, it returns a copied HooksConfig whose postStart opens that port
@@ -2098,7 +2127,22 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
 	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
-	err := waitForReadiness(ctx, readiness, conn.Host)
+
+	// Resolve the host BEFORE probing readiness: for a cloud connection,
+	// conn.Host is the tunnel's asset name, which does not resolve from this
+	// machine — dialing it always fails, so the postStart hook logic below
+	// would never even be reached unless the probe target is swapped too.
+	// This also means the "App reachable at ..." line (printed inside
+	// resolveHookHost/announceReachableURL) now prints before readiness is
+	// confirmed rather than after — acceptable since it is the same URL the
+	// user watches for regardless of when the probe finishes.
+	hookHost, hostOK := resolveHookHost(ctx, conn, appCfg)
+	if !hostOK {
+		cliNotice("Skipping postStart hook: no routable device address reported; open the app via the URL above once the device IP is known.")
+		return nil
+	}
+
+	err := waitForReadiness(ctx, readiness, hookHost)
 	rp("  ↳ runcontainer: readiness wait")
 	if err != nil {
 		if ctx.Err() == nil {
@@ -2112,14 +2156,6 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 	}
 	if ctx.Err() != nil {
 		return nil
-	}
-	hookHost := conn.Host
-	if ip := announceReachableURL(ctx, conn, appCfg); ip != "" && isIPv6Literal(conn.Host) {
-		// The CLI dialed the device at a bare IPv6 literal — often an RFC 4941
-		// temporary (privacy) address picked up from mDNS that rotates away.
-		// Point the hook at the device's best self-reported IP (IPv4-preferred)
-		// so the URL it opens matches the "App reachable at" line.
-		hookHost = ip
 	}
 	effectiveCfg := appCfg
 	if hooks := synthesizedOpenURLHook(appCfg); hooks != appCfg.Hooks {
