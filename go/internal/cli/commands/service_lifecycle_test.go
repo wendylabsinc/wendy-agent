@@ -287,7 +287,7 @@ func TestServiceHookRunner_ReadinessTimeoutSuppressesAutomaticHTTPSideEffects(t 
 	}
 
 	start := time.Now()
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		r.runOne(context.Background(), context.Background(), cfg)
 	})
 	elapsed := time.Since(start)
@@ -345,7 +345,7 @@ func TestServiceHookRunner_ReadinessWarningIncludesGroupExitDetail(t *testing.T)
 		},
 	}
 
-	out := captureStdout(t, func() {
+	out := captureStderr(t, func() {
 		r.runOne(context.Background(), context.Background(), cfg)
 	})
 
