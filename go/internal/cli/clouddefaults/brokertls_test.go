@@ -254,3 +254,45 @@ func TestBrokerTLSConfig_BadChainPEM(t *testing.T) {
 		t.Errorf("BrokerTLSConfig() error = %v, want it to contain %q", err, want)
 	}
 }
+
+// TestDialBroker_NoCertificates covers the guard shared by both former
+// package-local broker-dial functions in commands and mcp (now deleted in
+// favor of this one): an auth entry with no certificates can't build client
+// mTLS, so DialBroker must fail fast with the standard re-login message
+// rather than reaching gRPC dial machinery.
+func TestDialBroker_NoCertificates(t *testing.T) {
+	auth := &config.AuthConfig{CloudGRPC: "localhost:50051"}
+
+	_, err := DialBroker(auth, "")
+	if err == nil {
+		t.Fatal("DialBroker() error = nil, want an error for an auth entry with no certificates")
+	}
+	const want = "re-run 'wendy auth login'"
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("DialBroker() error = %v, want it to contain %q", err, want)
+	}
+}
+
+// TestDialBroker_ReturnsLazyConn drives DialBroker with a valid certificate
+// fixture against a non-:443 broker URL. grpc.NewClient dials lazily (no
+// network I/O until the first RPC), so this only proves DialBroker assembles
+// a connection without error; BrokerTLSConfig's own tests already prove the
+// TLS assembly (pinning vs WebPKI) is correct.
+func TestDialBroker_ReturnsLazyConn(t *testing.T) {
+	certInfo, _ := testCertInfo(t)
+	auth := &config.AuthConfig{
+		CloudGRPC:    "localhost:50051",
+		Certificates: []config.CertificateInfo{certInfo},
+	}
+
+	conn, err := DialBroker(auth, "localhost:50052")
+	if err != nil {
+		t.Fatalf("DialBroker() error = %v, want nil", err)
+	}
+	if conn == nil {
+		t.Fatal("DialBroker() conn = nil, want a non-nil lazy *grpc.ClientConn")
+	}
+	if err := conn.Close(); err != nil {
+		t.Errorf("conn.Close() error = %v, want nil", err)
+	}
+}

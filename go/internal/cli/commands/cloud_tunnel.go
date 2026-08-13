@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -28,21 +27,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-const (
-	defaultBrokerPort = "50052"
-	maxCloudAssets    = 10_000
-
-	// cloudKeepalivePing is how often the client sends an HTTP/2 keepalive
-	// ping over the tunnel. It must stay >= the agent's MinTime enforcement
-	// policy (10s) and frequent enough to keep the tunnel/NAT warm.
-	cloudKeepalivePing = 30 * time.Second
-	// cloudKeepaliveACKTimeout is how long to wait for a keepalive ACK before
-	// declaring the connection dead. It is generous because long OS-update
-	// streams run while the device is saturated (artifact download + OS
-	// install), and a busy device can take well over the usual 10s to ACK a
-	// ping; a tighter window tears down the stream mid-install.
-	cloudKeepaliveACKTimeout = 20 * time.Second
-)
+const maxCloudAssets = 10_000
 
 type closeFunc func()
 
@@ -98,7 +83,7 @@ func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL s
 }
 
 func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *cloudpb.Asset, brokerURL string) (*grpcclient.AgentConnection, error) {
-	brokerConn, err := dialCloudBroker(auth, brokerURL)
+	brokerConn, err := clouddefaults.DialBroker(auth, brokerURL)
 	if err != nil {
 		return nil, err
 	}
@@ -155,8 +140,8 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
+			Time:                clouddefaults.KeepalivePing,
+			Timeout:             clouddefaults.KeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
@@ -227,71 +212,6 @@ func waitForCloudAgentRestart(ctx context.Context, auth *config.AuthConfig, asse
 			return nil, restartErr()
 		}
 	}
-}
-
-func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientConn, error) {
-	brokerURL = clouddefaults.BrokerURL(auth.CloudGRPC, brokerURL, defaultBrokerPort)
-
-	if len(auth.Certificates) == 0 {
-		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
-	}
-	cert := auth.Certificates[0]
-	keyPEM, err := cert.PrivateKeyPEM()
-	if err != nil {
-		return nil, fmt.Errorf("loading client key: %w", err)
-	}
-	tlsCfg, err := certs.LoadTLSConfig(
-		cert.PemCertificate,
-		cert.PemCertificateChain,
-		keyPEM,
-		"",
-	)
-	if err != nil {
-		return nil, fmt.Errorf("loading broker TLS config: %w", err)
-	}
-
-	if !strings.HasSuffix(brokerURL, ":443") {
-		// For non-standard ports (local/on-prem broker) the server presents a cert
-		// signed by the Wendy CA, not a public CA. Skip hostname verification but
-		// validate the chain against the stored Wendy CA bundle.
-		caPool := x509.NewCertPool()
-		if !caPool.AppendCertsFromPEM([]byte(cert.PemCertificateChain)) {
-			return nil, fmt.Errorf("no valid CA certificates in PemCertificateChain")
-		}
-		tlsCfg.InsecureSkipVerify = true //nolint:gosec // Hostname verification is intentionally skipped for non-standard broker endpoints; VerifyConnection validates the chain against the Wendy CA.
-		tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
-			if len(cs.PeerCertificates) == 0 {
-				return fmt.Errorf("broker presented no TLS certificate")
-			}
-			intermediates := x509.NewCertPool()
-			for _, c := range cs.PeerCertificates[1:] {
-				intermediates.AddCert(c)
-			}
-			_, err := cs.PeerCertificates[0].Verify(x509.VerifyOptions{
-				Roots:         caPool,
-				Intermediates: intermediates,
-				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-			})
-			return err
-		}
-	}
-
-	conn, err := grpc.NewClient(brokerURL,
-		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
-		grpc.WithInitialWindowSize(8*1024*1024),
-		grpc.WithInitialConnWindowSize(16*1024*1024),
-		grpc.WithReadBufferSize(256*1024),
-		grpc.WithWriteBufferSize(256*1024),
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
-			PermitWithoutStream: true,
-		}),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("connecting to broker at %s: %w", brokerURL, err)
-	}
-	return conn, nil
 }
 
 func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
@@ -529,7 +449,7 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	}
 	cert := auth.Certificates[0]
 	var transport grpc.DialOption
-	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+	if clouddefaults.UsesPublicCA(auth.CloudGRPC) {
 		keyPEM, err := cert.PrivateKeyPEM()
 		if err != nil {
 			return nil, fmt.Errorf("loading client key: %w", err)
@@ -554,8 +474,8 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 		grpc.WithReadBufferSize(256*1024),
 		grpc.WithWriteBufferSize(256*1024),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                cloudKeepalivePing,
-			Timeout:             cloudKeepaliveACKTimeout,
+			Time:                clouddefaults.KeepalivePing,
+			Timeout:             clouddefaults.KeepaliveACKTimeout,
 			PermitWithoutStream: true,
 		}),
 	)
