@@ -188,17 +188,6 @@ func normalizeImageBuilder(builder string) (string, error) {
 	}
 }
 
-func imageBuilderDisplayName(builder string) string {
-	switch builder {
-	case imageBuilderAppleContainer:
-		return "Apple Container"
-	case imageBuilderBuildkit:
-		return "BuildKit"
-	default:
-		return "Docker"
-	}
-}
-
 func imageBuilderWasExplicit(builder string) bool {
 	return strings.TrimSpace(builder) != ""
 }
@@ -2143,7 +2132,6 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 		}
 		defer cleanup()
 
-		cliLogln("Building OCI image with %s for %s, then pushing from the host...", imageBuilderDisplayName(normalized), platform)
 		if err := buildAndPushImageViaOCILayout(ctx, dir, registryAddr, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS); err != nil {
 			return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
 		}
@@ -2157,7 +2145,6 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	defer cleanup()
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
-	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
 	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
 		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
 	}
