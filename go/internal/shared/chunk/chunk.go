@@ -121,17 +121,17 @@ func ChunkStream(r io.Reader, progress func(completed int64)) ([]Ref, int64, err
 			break
 		}
 
-		buf = buf[:n]
+		region := buf[:n]
 		base := total
 		total += int64(n)
 		part := &regionResult{}
 		parts = append(parts, part)
 		g.Go(func() error {
 			defer func() { <-readerAtRegionSlots }()
-			part.refs = fastCDCRegion(buf, uint64(base))
+			part.refs = fastCDCRegion(region, uint64(base))
 			if progress != nil {
 				progressMu.Lock()
-				completed += int64(len(buf))
+				completed += int64(len(region))
 				progress(completed)
 				progressMu.Unlock()
 			}
