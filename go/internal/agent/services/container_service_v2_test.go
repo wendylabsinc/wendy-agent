@@ -62,3 +62,46 @@ func TestContainerServiceV2_ListContainers_Empty(t *testing.T) {
 		t.Errorf("expected EOF for empty list, got %v", err)
 	}
 }
+
+type cachePruningContainerdClient struct {
+	*mockContainerdClient
+	result CachePruneResult
+	dryRun bool
+}
+
+func (c *cachePruningContainerdClient) PruneCache(_ context.Context, dryRun bool) (CachePruneResult, error) {
+	c.dryRun = dryRun
+	return c.result, nil
+}
+
+func TestContainerServiceV2_PruneCache(t *testing.T) {
+	mc := &cachePruningContainerdClient{
+		mockContainerdClient: &mockContainerdClient{},
+		result: CachePruneResult{
+			ContentBlobs: 2, ContentBytes: 30, Snapshots: 4, SnapshotBytes: 50, MinimumAgeSeconds: 3600,
+		},
+	}
+	client, cleanup := startContainerV2Server(t, mc)
+	defer cleanup()
+
+	resp, err := client.PruneCache(context.Background(), &agentpbv2.PruneCacheRequest{DryRun: true})
+	if err != nil {
+		t.Fatalf("PruneCache: %v", err)
+	}
+	if !mc.dryRun {
+		t.Fatal("dry_run was not forwarded")
+	}
+	if resp.GetContentBlobs() != 2 || resp.GetContentBytes() != 30 || resp.GetSnapshots() != 4 || resp.GetSnapshotBytes() != 50 || resp.GetMinimumAgeSeconds() != 3600 {
+		t.Fatalf("response = %+v", resp)
+	}
+}
+
+func TestContainerServiceV2_PruneCacheUnsupported(t *testing.T) {
+	client, cleanup := startContainerV2Server(t, &mockContainerdClient{})
+	defer cleanup()
+
+	_, err := client.PruneCache(context.Background(), &agentpbv2.PruneCacheRequest{})
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("code = %v; want Unimplemented", status.Code(err))
+	}
+}

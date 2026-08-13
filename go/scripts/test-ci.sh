@@ -121,6 +121,24 @@ run_test() {
     return $rc
 }
 
+# A per-run docker-container builder is shared by every integration fixture.
+# If buildkitd is OOM-killed or loses its gRPC socket, leaving that dead builder
+# in place turns one transient host failure into a long list of unrelated test
+# failures. This recovery is deliberately gated on WENDY_BUILDX_BUILDER, which
+# the CI workflows set to their disposable builder; local user builders are
+# never removed automatically.
+recover_ci_oci_builder() {
+    local output="$1"
+    [[ -n "${WENDY_BUILDX_BUILDER:-}" ]] || return 1
+    grep -qiE \
+        'failed to receive status:.*(EOF|Unavailable)|error reading from server: EOF|/run/buildkit/buildkitd\.sock: connect: connection refused|failed to list workers:.*Unavailable|ResourceExhausted:.*cannot allocate memory' \
+        <<<"$output" || return 1
+
+    local builder="${WENDY_BUILDX_BUILDER}-oci"
+    echo "    BuildKit daemon failed; recreating disposable CI builder $builder and retrying once"
+    docker buildx rm "$builder" --force >/dev/null 2>&1 || true
+}
+
 # ── Container verdict ────────────────────────────────────────────────
 # An attached `wendy run` exits 0 whatever the container did, so its exit code
 # only tells us the deploy worked. Every standard test asserts inside the app
@@ -193,12 +211,17 @@ run_container_test() {
     app_id=$(app_id_for_test "$test_dir")
 
     container_test_passes() {
-        local out
+        local out rc
         # --no-restart stops the agent restarting a test app that has done its
         # job and exited, which otherwise churns the recorded state (a
         # short-lived app reads back as CRASH_LOOPING).
         out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
-        local rc=$?
+        rc=$?
+        if [[ $rc -ne 0 ]] && recover_ci_oci_builder "$out"; then
+            echo "$out"
+            out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
+            rc=$?
+        fi
         echo "$out"
         if [[ $rc -ne 0 ]]; then
             return $rc
@@ -291,9 +314,12 @@ device_field() {
 if [[ -z "$VERSION_JSON" ]]; then
     echo -e "${YELLOW}==> WARNING: 'wendy device info' returned nothing — the agent under test cannot be identified${RESET}"
 fi
+DEVICE_TYPE=$(device_field deviceType '')
+DEVICE_GPU_ARCH=$(device_field gpuArch '')
+
 echo -e "${BOLD}==> Agent version: $(device_field version 'unknown')${RESET}"
 echo -e "${BOLD}==> Device OS: $(device_field os 'unknown') $(device_field osVersion 'unknown')${RESET}"
-echo -e "${BOLD}==> Device type: $(device_field deviceType 'none reported') ($(device_field cpuArchitecture 'unknown'))${RESET}"
+echo -e "${BOLD}==> Device type: ${DEVICE_TYPE:-none reported} ($(device_field cpuArchitecture 'unknown'))${RESET}"
 
 # ── Device capability detection ──────────────────────────────────────
 
@@ -305,7 +331,32 @@ DEVICE_HAS_CUDA=false
 if [[ "$DEVICE_GPU_VENDOR" == "nvidia" ]]; then
     DEVICE_HAS_CUDA=true
 fi
-echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none})${RESET}"
+
+# GPU framework wheels are architecture-specific. Pick a userspace that
+# matches the device instead of treating the NVIDIA vendor bit as sufficient:
+# Orin (sm_87) uses the existing JetPack-6 / CUDA-12 fixture, while Thor
+# (sm_110) uses the Ubuntu-24.04 / CUDA-13 fixture. Older agents did not report
+# gpuArch, so identify Thor by device type and preserve CUDA-12 behavior for
+# other older NVIDIA devices. Every other reported architecture remains opt-in
+# after its fixture is hardware-verified.
+DEVICE_GPU_FIXTURE_DOCKERFILE=""
+if [[ "$DEVICE_HAS_CUDA" == "true" ]]; then
+    case "$DEVICE_GPU_ARCH" in
+        sm_87)          DEVICE_GPU_FIXTURE_DOCKERFILE="Dockerfile" ;;
+        sm_110|sm_121)  DEVICE_GPU_FIXTURE_DOCKERFILE="Dockerfile.cuda13" ;;
+        "")
+            # gpuArch was added after Thor support. Device type lets those
+            # older Thor agents select CUDA 13 without regressing older Orin
+            # and generic NVIDIA agents, which retain the CUDA-12 fixture.
+            if [[ "$DEVICE_TYPE" == "jetson-agx-thor" ]]; then
+                DEVICE_GPU_FIXTURE_DOCKERFILE="Dockerfile.cuda13"
+            else
+                DEVICE_GPU_FIXTURE_DOCKERFILE="Dockerfile"
+            fi
+            ;;
+    esac
+fi
+echo -e "${BOLD}==> CUDA GPU: ${DEVICE_HAS_CUDA} (vendor: ${DEVICE_GPU_VENDOR:-none}, arch: ${DEVICE_GPU_ARCH:-unknown})${RESET}"
 
 # The Swift tests build their image with swift-container-plugin, so this host
 # needs a Swift toolchain — which the CLI provisions through swiftly, and
@@ -403,6 +454,11 @@ for test_name in "${TESTS[@]}"; do
 
     if [[ "$test_name" == *"-gpu"* ]] && [[ "$DEVICE_HAS_CUDA" != "true" ]]; then
         skip_test "$test_name" "no NVIDIA GPU (vendor: ${DEVICE_GPU_VENDOR:-none})"
+        continue
+    fi
+
+    if [[ "$test_name" == *"-gpu"* ]] && [[ -z "$DEVICE_GPU_FIXTURE_DOCKERFILE" ]]; then
+        skip_test "$test_name" "CI GPU fixtures support sm_87, sm_110, and sm_121; device reports ${DEVICE_GPU_ARCH:-an unknown architecture}"
         continue
     fi
 
@@ -620,7 +676,13 @@ for test_name in "${TESTS[@]}"; do
     fi
 
     # ── Standard single-container tests ─────────────────────────────────
-    run_container_test "$test_name" "$test_dir"
+    if [[ "$test_name" == *"-gpu"* ]]; then
+        # Both GPU test directories contain architecture-specific Dockerfiles,
+        # so name the selected one explicitly and avoid an interactive picker.
+        run_container_test "$test_name" "$test_dir" --dockerfile "$DEVICE_GPU_FIXTURE_DOCKERFILE"
+    else
+        run_container_test "$test_name" "$test_dir"
+    fi
 done
 
 # ── Summary ──────────────────────────────────────────────────────────

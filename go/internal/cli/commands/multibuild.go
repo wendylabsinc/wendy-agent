@@ -345,6 +345,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	if err != nil {
 		return fmt.Errorf("querying device version: %w", err)
 	}
+	printRunDiskUsageWarning(versionResp)
 	agentOS := versionResp.GetOs()
 	architecture := versionResp.GetCpuArchitecture()
 	if architecture == "" {

@@ -310,28 +310,41 @@ func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyCont
 
 	prepareCtx, cancelPrepare := context.WithCancel(ctx)
 	defer cancelPrepare()
+	uploadCtx, cancelUpload := context.WithCancel(ctx)
+	defer cancelUpload()
 	var prepareDone chan error
 	if prepare != nil {
 		prepareDone = make(chan error, 1)
 		go func() {
-			prepareDone <- prepare(prepareCtx, headers)
+			err := prepare(prepareCtx, headers)
+			prepareDone <- err
+			// Compose cannot complete without strict preparation. Stop sending
+			// chunks as soon as an old or unhealthy agent rejects PrepareImage;
+			// otherwise we upload the entire delta before discovering the error
+			// and then upload the full image again through the registry fallback.
+			if strictPrepare && err != nil {
+				cancelUpload()
+			}
 		}()
 	}
 
-	uploadGroup, uploadCtx := errgroup.WithContext(ctx)
+	uploadGroup, uploadGroupCtx := errgroup.WithContext(uploadCtx)
 	uploadGroup.SetLimit(limit)
 	for _, idx := range toPush {
 		r := resolved[idx]
 		uploadGroup.Go(func() error {
-			return r.upload(uploadCtx, cs, indexProgress, transferProgress)
+			return r.upload(uploadGroupCtx, cs, indexProgress, transferProgress)
 		})
 	}
-	if err := uploadGroup.Wait(); err != nil {
+	uploadErr := uploadGroup.Wait()
+	if uploadErr != nil {
 		cancelPrepare()
 		if prepareDone != nil {
-			<-prepareDone
+			if prepareErr := <-prepareDone; strictPrepare && prepareErr != nil {
+				return nil, prepareErr
+			}
 		}
-		return nil, err
+		return nil, uploadErr
 	}
 
 	if prepareDone != nil {

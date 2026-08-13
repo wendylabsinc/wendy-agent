@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -327,15 +326,16 @@ func TestComposeEnv(t *testing.T) {
 
 	t.Run("mapping with mixed types", func(t *testing.T) {
 		svc := parse(t, "services:\n  svc:\n    environment:\n      STR: hello\n      NUM: 42\n      BOOL: true\n")
-		got := composeEnv(svc)
-		sort.Strings(got)
 		want := []string{"BOOL=true", "NUM=42", "STR=hello"}
-		if len(got) != len(want) {
-			t.Fatalf("got %v want %v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("got %v want %v", got, want)
+		for i := 0; i < 100; i++ {
+			got := composeEnv(svc)
+			if len(got) != len(want) {
+				t.Fatalf("iteration %d: got %v want %v", i, got, want)
+			}
+			for j := range want {
+				if got[j] != want[j] {
+					t.Fatalf("iteration %d: got %v want stable order %v", i, got, want)
+				}
 			}
 		}
 	})
@@ -353,8 +353,7 @@ func TestComposeEnv(t *testing.T) {
 		t.Setenv("WENDY_TEST_LIST", "from-list")
 		svc := parse(t, "services:\n  svc:\n    environment:\n      - WENDY_TEST_LIST\n      - EXPLICIT=value\n")
 		got := composeEnv(svc)
-		sort.Strings(got)
-		want := []string{"EXPLICIT=value", "WENDY_TEST_LIST=from-list"}
+		want := []string{"WENDY_TEST_LIST=from-list", "EXPLICIT=value"}
 		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 			t.Fatalf("got %v want %v", got, want)
 		}

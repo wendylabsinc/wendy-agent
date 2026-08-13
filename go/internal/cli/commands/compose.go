@@ -128,6 +128,20 @@ func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate
 	})
 }
 
+func (w *composeBuildProgressWriter) ReportRegistryFallback(reason error) {
+	detail := "chunk preparation unavailable"
+	if reason != nil {
+		detail = fmt.Sprintf("chunk preparation unavailable: %v", reason)
+	}
+	w.emit(tui.BuildStepEvent{
+		ID:      "registry-fallback",
+		Kind:    tui.BuildVertexExport,
+		Display: "uploading image via registry fallback",
+		Status:  tui.BuildStepRunning,
+		Detail:  detail,
+	})
+}
+
 // buildComposeServiceImage is replaceable in tests so the parallel scheduler
 // can be exercised without Docker or a device registry.
 var buildComposeServiceImage = buildAndPrepareComposeImageForAgent
@@ -557,6 +571,11 @@ func composeEnv(svc composeService) []string {
 				result = append(result, k+"="+fmt.Sprint(v))
 			}
 		}
+		// Mapping nodes decode into a Go map, whose iteration order is
+		// deliberately randomized. Keep this representation canonical so
+		// build-input and watch desired-state hashes do not change between
+		// otherwise identical deploy cycles.
+		sort.Strings(result)
 	case yaml.SequenceNode:
 		var list []string
 		if err := svc.Environment.Decode(&list); err == nil {

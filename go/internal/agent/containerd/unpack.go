@@ -232,7 +232,8 @@ func (c *Client) applyLayerSnapshot(
 	}
 
 	gcRootOpt := snapshots.WithLabels(map[string]string{
-		labelKeyGCRoot: gcTimestamp(),
+		labelKeyGCRoot:        gcTimestamp(),
+		labelKeyWendySnapshot: "true",
 	})
 	commitErr := sn.Commit(ctx, chainID, activeKey, gcRootOpt)
 	switch {

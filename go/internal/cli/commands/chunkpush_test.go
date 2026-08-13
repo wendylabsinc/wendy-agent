@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -48,6 +49,9 @@ type fakeContainerClient struct {
 	queryLayersFn                       func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse
 	writeFn                             func(*agentpb.WriteChunksRequest) error
 	chunksWritten                       int
+	writeStarted                        chan struct{}
+	blockWrites                         bool
+	writeOnce                           sync.Once
 }
 
 // TestPushLayersByChunksPreparesDuringUpload proves the preparation RPC is
@@ -141,6 +145,51 @@ func TestPushLayersByChunksStrictPrepareReturnsUnimplemented(t *testing.T) {
 	}
 }
 
+func TestPushLayersByChunksStrictPrepareCancelsUploadOnPrepareFailure(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := bytes.Repeat([]byte("cancel-on-prepare-failure-"), 100_000)
+	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(refs))
+	}
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			if len(req.GetChunkHashes()) == 0 {
+				return &agentpb.QueryChunksResponse{}
+			}
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+		writeStarted: make(chan struct{}),
+		blockWrites:  true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = pushLayersByChunksWithStrictPrepareOutput(ctx, fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+		<-fake.writeStarted
+		return status.Error(codes.Unimplemented, "old agent")
+	}, nil)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("prepare failure took %s to cancel chunk upload", elapsed)
+	}
+	if fake.chunksWritten != 1 {
+		t.Fatalf("wrote %d chunks after preparation failed, want 1 in-flight chunk", fake.chunksWritten)
+	}
+}
+
 func (f *fakeContainerClient) QueryChunks(_ context.Context, in *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
 	return f.queryFn(in), nil
 }
@@ -155,18 +204,26 @@ func (f *fakeContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLa
 	return f.queryLayersFn(in), nil
 }
 
-func (f *fakeContainerClient) WriteChunks(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
-	return &fakeWriteChunksStream{parent: f}, nil
+func (f *fakeContainerClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	return &fakeWriteChunksStream{parent: f, ctx: ctx}, nil
 }
 
 // fakeWriteChunksStream satisfies grpc.ClientStreamingClient via embedding.
 type fakeWriteChunksStream struct {
 	grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse] // embedded nil
 	parent                                                                              *fakeContainerClient
+	ctx                                                                                 context.Context
 }
 
 func (s *fakeWriteChunksStream) Send(req *agentpb.WriteChunksRequest) error {
 	s.parent.chunksWritten++
+	if s.parent.writeStarted != nil {
+		s.parent.writeOnce.Do(func() { close(s.parent.writeStarted) })
+	}
+	if s.parent.blockWrites {
+		<-s.ctx.Done()
+		return s.ctx.Err()
+	}
 	if s.parent.writeFn != nil {
 		return s.parent.writeFn(req)
 	}

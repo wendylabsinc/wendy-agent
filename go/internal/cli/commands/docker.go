@@ -2287,6 +2287,9 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
 	} else {
 		fmt.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+		if reporter, ok := streamOutput.(interface{ ReportRegistryFallback(error) }); ok {
+			reporter.ReportRegistryFallback(chunkErr)
+		}
 	}
 
 	registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
