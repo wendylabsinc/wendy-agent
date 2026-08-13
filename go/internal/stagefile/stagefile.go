@@ -383,15 +383,18 @@ func downloadURLs(f *spec.File) []string {
 
 func imageRefs(f *spec.File) []string {
 	seen := map[string]bool{}
+	priorStages := map[string]bool{}
 	var refs []string
 	for _, s := range f.Stages {
-		if s.Pin != nil && !*s.Pin {
+		if priorStages[s.From] || s.Pin != nil && !*s.Pin {
+			priorStages[s.Name] = true
 			continue
 		}
 		if !seen[s.From] {
 			seen[s.From] = true
 			refs = append(refs, s.From)
 		}
+		priorStages[s.Name] = true
 	}
 	return refs
 }

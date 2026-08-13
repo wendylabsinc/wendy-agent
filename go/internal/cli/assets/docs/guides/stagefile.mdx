@@ -172,6 +172,28 @@ install:
 
 Pip groups are built as a sibling of the stage's APT or APK work, then applied with a linked filesystem overlay. Put compilers and development headers needed to build native wheels in `buildPackages`; Wendy installs them only in the pip dependency stage. Keep shared libraries needed when the application runs under `install.apt.packages` or `install.apk.packages`. Build package names use APK when the stage declares `install.apk`, and APT otherwise.
 
+When a pip build depends on a library produced by an earlier Stagefile stage,
+use that stage's name as `from`. The pip overlay then inherits the built native
+filesystem without coupling it to unrelated changes in the final application
+stage:
+
+```yaml
+stages:
+  - name: native
+    from: python:3.11-slim
+    install:
+      apt:
+        packages: [build-essential, cmake, git]
+      cmake:
+        - repository: https://example.com/native.git
+          commit: 0123456789abcdef0123456789abcdef01234567
+  - name: app
+    from: native
+    install:
+      pip:
+        - packages: [native-python-binding==1.0.0]
+```
+
 For Node, commit the matching lockfile. The compiler copies the manifest and lockfile before source and selects the frozen install command:
 
 ```yaml

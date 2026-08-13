@@ -174,3 +174,35 @@ func TestCompileFileSkipsResolutionForUnpinnedStage(t *testing.T) {
 		t.Fatalf("unpinned FROM must have no digest:\n%s", dockerfile)
 	}
 }
+
+func TestCompileFileDoesNotResolvePriorStageAsImage(t *testing.T) {
+	dir := t.TempDir()
+	source := `version: 1
+stages:
+  - name: native
+    from: python:3.11-slim
+  - name: app
+    from: native
+    install:
+      pip:
+        - packages: [cyclonedds==0.10.2]
+`
+	if err := os.WriteFile(filepath.Join(dir, SourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var refs []string
+	resolver := func(ref string) (string, error) {
+		refs = append(refs, ref)
+		return "sha256:abc123", nil
+	}
+	dockerfile, _, err := compileFile(dir, SourceName, "linux/arm64", "", "", resolver, refuseHasher(t))
+	if err != nil {
+		t.Fatalf("compileFile: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != "python:3.11-slim" {
+		t.Fatalf("resolved refs = %v, want only the external base image", refs)
+	}
+	if !strings.Contains(dockerfile, "FROM --platform=linux/arm64 native AS stagefile-pip-deps-1") {
+		t.Fatalf("pip overlay does not inherit the prior stage:\n%s", dockerfile)
+	}
+}

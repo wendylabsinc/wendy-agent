@@ -64,9 +64,11 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 	}
 	var blocks []string
 	lastIdx := len(f.Stages) - 1
+	priorStages := make(map[string]bool, len(f.Stages))
 
 	for i, s := range f.Stages {
-		pinned := s.Pin == nil || *s.Pin
+		fromPriorStage := priorStages[s.From]
+		pinned := !fromPriorStage && (s.Pin == nil || *s.Pin)
 		digest := images[s.From]
 		if pinned && digest == "" {
 			return "", fmt.Errorf("stage %q: no resolved digest for %q; run `stagefile lock`", s.Name, s.From)
@@ -221,6 +223,7 @@ func Generate(f *spec.File, images, downloads map[string]string, platform string
 		}
 
 		blocks = append(blocks, strings.Join(lines, "\n"))
+		priorStages[s.Name] = true
 	}
 
 	return strings.Join(blocks, "\n\n") + "\n", nil

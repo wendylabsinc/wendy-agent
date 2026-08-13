@@ -59,6 +59,42 @@ func TestGenerateCMakeInstallPinnedDeterministicAndPipIsIndependent(t *testing.T
 	}
 }
 
+func TestGeneratePipOverlayCanBuildFromPriorNativeStage(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	f := &spec.File{Version: 1, Stages: []spec.Stage{
+		{
+			Name: "native", From: "python:3.11-slim",
+			Install: &spec.Install{CMake: []spec.CMakeInstall{{
+				Repository: "https://github.com/eclipse-cyclonedds/cyclonedds.git",
+				Commit:     commit,
+			}}},
+		},
+		{
+			Name: "builder", From: "native",
+			Install: &spec.Install{Pip: []spec.PipInstall{{
+				Packages: []string{"cyclonedds==0.10.2"},
+			}}},
+		},
+	}}
+	out, err := Generate(f, map[string]string{"python:3.11-slim": "sha256:abc123"}, nil, "linux/arm64", nil)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	for _, want := range []string{
+		"FROM --platform=linux/arm64 python:3.11-slim@sha256:abc123 AS native",
+		"FROM --platform=linux/arm64 native AS stagefile-pip-deps-1",
+		"FROM --platform=linux/arm64 native AS builder",
+		"COPY --link --from=stagefile-pip-deps-1 /opt/stagefile/pip/root/ /",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "native@sha256:") {
+		t.Fatalf("prior stage reference was treated as an external image:\n%s", out)
+	}
+}
+
 // A cmake install is the most expensive step the DSL can express, and it was
 // the only one emitting a bare RUN. The build tree has to survive the layer so
 // bumping the pinned commit recompiles the delta instead of the project.
