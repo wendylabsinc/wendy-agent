@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -52,7 +53,7 @@ func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", jobs, count)
+		failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, count, false)
 		if err == nil && len(failed) != 0 {
 			err = joinServiceErrors(failed)
 		}
@@ -72,6 +73,108 @@ func TestBuildComposeServicesParallelOverlapsBuildAndPush(t *testing.T) {
 		if cacheKeys[job.repo] != job.repo {
 			t.Errorf("repo %q used cache key %q; concurrent exports need per-service isolation", job.repo, cacheKeys[job.repo])
 		}
+	}
+}
+
+func TestBuildComposeServicesParallelCancellationDoesNotStartQueuedBuilds(t *testing.T) {
+	originalBuild := buildComposeServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	isInteractiveTerminalFn = func() bool { return false }
+
+	jobs := map[string]composeBuildJob{}
+	for _, name := range []string{"a", "b", "c", "d"} {
+		jobs[name] = composeBuildJob{contextDir: name, dockerfile: "Dockerfile", repo: "app-" + name}
+	}
+
+	started := make(chan struct{}, len(jobs))
+	var mu sync.Mutex
+	startCount := 0
+	buildComposeServiceImage = func(ctx context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		startCount++
+		mu.Unlock()
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		failed map[string]error
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		failed, err := buildComposeServicesParallel(ctx, nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, false)
+		done <- outcome{failed: failed, err: err}
+	}()
+
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Compose service build did not start")
+	}
+
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", got.err)
+		}
+		if got.failed != nil {
+			t.Fatalf("failed = %v, want nil for operation cancellation", got.failed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Compose builder did not return after cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if startCount != 1 {
+		t.Fatalf("started %d Compose builders after cancellation, want exactly the active one", startCount)
+	}
+}
+
+func TestBuildComposeServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
+	originalBuild := buildComposeServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildComposeServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	// quietBuild must short-circuit the terminal/TUI branch entirely.
+	isInteractiveTerminalFn = func() bool {
+		t.Fatal("quiet Compose build queried interactive terminal state")
+		return true
+	}
+
+	called := false
+	buildComposeServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, stream, logw io.Writer) error {
+		called = true
+		if stream == os.Stdout || stream == os.Stderr || logw == os.Stdout || logw == os.Stderr {
+			t.Fatal("quiet Compose build streamed builder output to the terminal")
+		}
+		_, _ = io.WriteString(stream, "builder progress\n")
+		_, _ = io.WriteString(logw, "builder setup\n")
+		return nil
+	}
+
+	jobs := map[string]composeBuildJob{
+		"api": {contextDir: "api", dockerfile: "Dockerfile", repo: "app-api"},
+	}
+	failed, err := buildComposeServicesParallel(context.Background(), nil, 5000, "linux", "docker", "linux/arm64", chunkingAuto, jobs, 1, true)
+	if err != nil {
+		t.Fatalf("quiet Compose build: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("quiet Compose failures = %v", failed)
+	}
+	if !called {
+		t.Fatal("quiet Compose builder was not called")
 	}
 }
 
@@ -1253,6 +1356,19 @@ func TestComposeStagefileOverride(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, "docker-compose.yml"), []byte(compose), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	companion := `{
+  "appId": "sh.wendy.compose-test",
+  "services": {
+    "server": {
+      "frameworks": {
+        "ros2": {"distro": "humble", "rmw": "cyclonedds"}
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(filepath.Join(proj, "wendy.json"), []byte(companion), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	path, cleanup, err := composeStagefileOverride(proj, "")
 	if err != nil {
@@ -1291,6 +1407,9 @@ func TestComposeStagefileOverride(t *testing.T) {
 	}
 	if !strings.Contains(string(generated), "sha256:fakepindigest") {
 		t.Fatalf("generated Dockerfile missing pinned digest:\n%s", generated)
+	}
+	if !strings.Contains(string(generated), "'ros-humble-rmw-cyclonedds-cpp'") {
+		t.Fatalf("generated Dockerfile missing service framework middleware:\n%s", generated)
 	}
 }
 

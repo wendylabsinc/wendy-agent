@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
 
@@ -22,6 +23,7 @@ import (
 var (
 	buildProgressInteractive           = func() bool { return isInteractiveTerminal() }
 	buildProgressOut         io.Writer = os.Stdout
+	buildProgressProgram               = func(model tea.Model) *tea.Program { return tui.NewProgressProgram(model) }
 )
 
 func forceBuildProgressInteractive(v bool) func() {
@@ -98,8 +100,8 @@ func detectBuildxProgressMode(ctx context.Context) string {
 // progress UI (the same renderer used by the buildx/buildctl paths).
 func runAppleContainerBuildWithProgress(ctx context.Context, dir, imageName, platform, dockerfile string) error {
 	title := fmt.Sprintf("Building Apple Container image %s for %s...", tui.Value(imageName), tui.Value(platform))
-	return runBuildWithProgress(ctx, title, dumpRawAlways, func(stream, logw io.Writer) error {
-		return buildImageWithAppleContainer(ctx, dir, imageName, platform, dockerfile, nil, stream, logw)
+	return runBuildWithProgress(ctx, title, dumpRawAlways, func(buildCtx context.Context, stream, logw io.Writer) error {
+		return buildImageWithAppleContainer(buildCtx, dir, imageName, platform, dockerfile, nil, stream, logw)
 	})
 }
 
@@ -119,7 +121,7 @@ func dumpRawUnlessRegistryUnavailable(err error) bool { return !isRegistryUnavai
 // written to logw is buffered and surfaced under the same condition. Callers
 // whose failures can trigger a fallback rebuild (which would replay the same
 // output) use the predicate to stay quiet in exactly those cases.
-func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure func(error) bool, build func(stream, logw io.Writer) error) error {
+func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure func(error) bool, build func(context.Context, io.Writer, io.Writer) error) error {
 	start := time.Now()
 	raw := &boundedBuffer{max: maxRawBuildCapture}
 	var setupLog bytes.Buffer
@@ -129,7 +131,7 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 		parser := tui.NewBuildParser(emit)
 		stream := io.MultiWriter(parser, raw)
 		fmt.Fprintf(buildProgressOut, "%s\n", title)
-		err := build(stream, &setupLog)
+		err := build(ctx, stream, &setupLog)
 		stopHeartbeat()
 		if err != nil {
 			if ctx.Err() == nil && dumpRawOnFailure(err) {
@@ -144,29 +146,42 @@ func runBuildWithProgress(ctx context.Context, title string, dumpRawOnFailure fu
 
 	// Interactive: run the steps model while the build streams events to it.
 	m := tui.NewBuildStepsModel(title)
-	prog := tui.NewProgressProgram(m)
+	prog := buildProgressProgram(m)
 	parser := tui.NewBuildParser(func(e tui.BuildStepEvent) {
 		prog.Send(tui.BuildStepMsg(e))
 	})
 	stream := io.MultiWriter(parser, raw)
+	buildCtx, cancelBuild := context.WithCancel(ctx)
+	defer cancelBuild()
 
 	buildErrC := make(chan error, 1)
 	go func() {
-		err := build(stream, &setupLog)
+		err := build(buildCtx, stream, &setupLog)
 		prog.Send(tui.BuildAllDoneMsg{Err: err})
 		buildErrC <- err
 	}()
 
 	final, runErr := prog.Run()
 	if runErr != nil {
+		cancelBuild()
+		<-buildErrC
 		return fmt.Errorf("build progress UI: %w", runErr)
 	}
 	fm, ok := final.(tui.BuildStepsModel)
 	if !ok {
+		cancelBuild()
+		<-buildErrC
 		return fmt.Errorf("build progress UI: unexpected final model %T", final)
 	}
 	if cancelErr := fm.Err(); cancelErr == tui.ErrCancelled {
-		return cancelErr
+		// Bubble Tea consumes SIGINT for its own event loop. Explicitly cancel
+		// the solve as well, then wait for the builder goroutine to exit before
+		// returning. Without this, the UI disappeared while docker/buildctl/
+		// Apple Container kept running and later fallbacks could start another
+		// build after the user had already cancelled.
+		cancelBuild()
+		<-buildErrC
+		return ErrUserCancelled
 	}
 	buildErr := <-buildErrC
 	if buildErr != nil {

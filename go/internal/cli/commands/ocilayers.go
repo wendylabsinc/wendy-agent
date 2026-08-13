@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
 // localLayer addresses a single image layer's COMPRESSED blob plus the metadata
@@ -746,6 +747,21 @@ func (d *decompressedLayer) Close() {
 // (a few MiB) rather than the whole layer. The returned file is positioned for
 // random access via ReadAt; the caller must Close it.
 func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
+	return decompressLayerToTempProgress(l, nil)
+}
+
+type progressWriteFunc func(int64)
+
+func (fn progressWriteFunc) Write(p []byte) (int, error) {
+	if fn != nil {
+		fn(int64(len(p)))
+	}
+	return len(p), nil
+}
+
+// decompressLayerToTempProgress is decompressLayerToTemp with byte telemetry
+// for the uncompressed stream. The callback runs on the copying goroutine.
+func decompressLayerToTempProgress(l localLayer, progress func(int64)) (*decompressedLayer, error) {
 	cr, err := l.compressedReader()
 	if err != nil {
 		return nil, err
@@ -762,7 +778,11 @@ func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
 		return nil, fmt.Errorf("create layer temp file: %w", err)
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
+	writers := []io.Writer{f, h}
+	if progress != nil {
+		writers = append(writers, progressWriteFunc(progress))
+	}
+	n, err := io.Copy(io.MultiWriter(writers...), r)
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
@@ -773,6 +793,41 @@ func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
 		size:   n,
 		diffID: "sha256:" + hex.EncodeToString(h.Sum(nil)),
 	}, nil
+}
+
+// decompressAndChunkLayerToTemp fuses decompression, DiffID hashing, temp-file
+// materialization, and content indexing into one pass over the raw tar. The
+// previous cache-miss path wrote the whole layer and then reread it through
+// ChunkReaderAt, which made a multi-GiB CUDA layer pay two full disk passes
+// before upload could begin.
+func decompressAndChunkLayerToTemp(l localLayer, progress func(completed int64)) (*decompressedLayer, []chunk.Ref, error) {
+	cr, err := l.compressedReader()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cr.Close()
+	r, cleanup, err := layerTarReader(cr, l.MediaType)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
+
+	f, err := os.CreateTemp("", "wendy-layer-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create layer temp file: %w", err)
+	}
+	h := sha256.New()
+	refs, n, err := chunk.ChunkStream(io.TeeReader(r, io.MultiWriter(f, h)), progress)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, nil, fmt.Errorf("decompress and index layer: %w", err)
+	}
+	return &decompressedLayer{
+		f:      f,
+		size:   n,
+		diffID: "sha256:" + hex.EncodeToString(h.Sum(nil)),
+	}, refs, nil
 }
 
 // digestToHex converts a "sha256:<hex>" digest string to the bare hex portion.
@@ -953,13 +1008,25 @@ func ociDeploymentCacheKey(appID, platform string) string {
 	return strings.ToLower(strings.TrimSpace(appID)) + "\x00" + strings.ToLower(strings.TrimSpace(platform))
 }
 
+// legacyOCICacheKey recovers the pre-platform cache key from a current OCI
+// deployment key. It is used only as a read-through migration source: new
+// exports always remain platform-isolated, while the first build after an
+// upgrade can still consume gigabytes of valid dependency cache accumulated
+// under the former app-only namespace.
+func legacyOCICacheKey(cacheKey string) (string, bool) {
+	appID, platform, ok := strings.Cut(cacheKey, "\x00")
+	if !ok || appID == "" || platform == "" {
+		return "", false
+	}
+	return appID, true
+}
+
 // buildxOCIExportArgs assembles the `docker buildx build` argument vector for
 // an OCI export (tar or layout-dir). Pure function for testability; build-arg
 // keys are sorted for a reproducible command line.
-func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, tarFalse bool, buildArgs map[string]string, haveCacheIndex bool) []string {
+func buildxOCIExportArgs(builder, platform, dockerfile, cacheFromDir, cacheToDir, dest string, tarFalse bool, buildArgs map[string]string) []string {
 	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
 	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
-	cacheDirSlash := filepath.ToSlash(cacheDir)
 	args := []string{
 		"buildx", "build",
 		"--builder", builder,
@@ -969,10 +1036,10 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, t
 	if dockerfile != "" {
 		args = append(args, "-f", dockerfile)
 	}
-	if haveCacheIndex {
-		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
+	if cacheFromDir != "" {
+		args = append(args, "--cache-from", "type=local,src="+filepath.ToSlash(cacheFromDir))
 	}
-	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
+	args = append(args, "--cache-to", "type=local,dest="+filepath.ToSlash(cacheToDir))
 	keys := make([]string, 0, len(buildArgs))
 	for k := range buildArgs {
 		keys = append(keys, k)
@@ -1056,8 +1123,17 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 			return err
 		}
 	}
-	_, cacheIndexErr := os.Stat(filepath.Join(cacheDir, "index.json"))
-	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheDir, dest, tarFalse, buildArgs, cacheIndexErr == nil)
+	cacheFromDir := ""
+	if _, statErr := os.Stat(filepath.Join(cacheDir, "index.json")); statErr == nil {
+		cacheFromDir = cacheDir
+	} else if legacyKey, ok := legacyOCICacheKey(cacheKey); ok {
+		legacyDir := buildxLocalCacheDir(userCache, legacyKey)
+		if _, legacyErr := os.Stat(filepath.Join(legacyDir, "index.json")); legacyErr == nil {
+			cacheFromDir = legacyDir
+			fmt.Fprintf(stderr, "[buildx] importing legacy cache %s into platform-scoped cache\n", legacyDir)
+		}
+	}
+	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheFromDir, cacheDir, dest, tarFalse, buildArgs)
 
 	submark("  build: setup (cache/env)")
 

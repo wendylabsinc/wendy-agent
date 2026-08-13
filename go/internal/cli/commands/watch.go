@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/signal"
@@ -182,19 +183,25 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var stopOnce sync.Once
+	stopWatch := func() {
+		stopOnce.Do(func() {
+			cliLogln("\nStopping watch.")
+			cancel()
+		})
+	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 	go func() {
 		select {
 		case <-sigCh:
-			cliLogln("\nStopping watch.")
-			cancel()
+			stopWatch()
 		case <-ctx.Done():
 		}
 	}()
 
-	deployer := &debouncedDeployer{opts: opts}
+	deployer := &debouncedDeployer{opts: opts, stopWatch: stopWatch}
 
 	cliLogln("Watching %s for changes (Ctrl-C to stop)...", root)
 	deployer.trigger(ctx) // initial deploy
@@ -243,9 +250,12 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 // recent one.
 type debouncedDeployer struct {
 	opts      runOptions
+	stopWatch context.CancelFunc
 	mu        sync.Mutex
 	cancelCur context.CancelFunc
 }
+
+var watchRunCommand = runCommand
 
 func (d *debouncedDeployer) trigger(parent context.Context) {
 	d.mu.Lock()
@@ -259,9 +269,18 @@ func (d *debouncedDeployer) trigger(parent context.Context) {
 	go func() {
 		start := time.Now()
 		cliLogln("↻ change detected — redeploying...")
-		if err := runCommand(runCtx, d.opts); err != nil {
+		if err := watchRunCommand(runCtx, d.opts); err != nil {
 			if runCtx.Err() != nil {
 				return // superseded by a newer change or shutting down
+			}
+			if errors.Is(err, ErrUserCancelled) {
+				// Ctrl-C read by an interactive build UI arrives as a key event,
+				// not an OS signal. Treat it exactly like the signal path instead
+				// of reporting a failed deploy and continuing to watch.
+				if d.stopWatch != nil {
+					d.stopWatch()
+				}
+				return
 			}
 			cliLogln("✗ deploy failed: %v (still watching)", err)
 			return

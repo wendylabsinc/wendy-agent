@@ -50,6 +50,7 @@ var dnssdResolveTimeout = 1 * time.Second
 type dnssdSession struct {
 	onBrowse  func(flags uint32, ifIndex uint32, name, domain string)
 	onResolve func(host string, port int, txt []byte)
+	onAddress func(flags uint32, ifIndex uint32, address string)
 
 	// err and stop are written by the reply callback and read by the poll loop
 	// that invoked DNSServiceProcessResult. Callbacks run synchronously on that
@@ -126,6 +127,26 @@ func wendyDNSSDResolveReply(handle C.uintptr_t, errCode C.int32_t, host *C.char,
 	s.stop = true
 }
 
+//export wendyDNSSDAddrReply
+func wendyDNSSDAddrReply(handle C.uintptr_t, flags C.uint32_t, ifIndex C.uint32_t, errCode C.int32_t, address *C.char) {
+	s := lookupSession(uintptr(handle))
+	if s == nil {
+		return
+	}
+	if err := dnssdError(C.DNSServiceErrorType(errCode)); err != nil {
+		s.err = err
+		s.stop = true
+		return
+	}
+	s.onAddress(uint32(flags), uint32(ifIndex), C.GoString(address))
+	// mDNSResponder marks all but the final answer in the current batch with
+	// MoreComing. Waiting for that final callback lets the caller prefer IPv4
+	// without turning a single address lookup into a long-lived browse.
+	if uint32(flags)&uint32(C.kDNSServiceFlagsMoreComing) == 0 {
+		s.stop = true
+	}
+}
+
 // runDNSSDSession starts an operation and pumps its socket until ctx ends, the
 // callback sets stop, or an error occurs. Deallocating the ref closes the
 // daemon connection, so nothing survives this function.
@@ -191,9 +212,10 @@ func dnssdBrowseStream(ctx context.Context, serviceType string, onResult func(br
 				interfaceName = iface.Name
 			}
 			onResult(browseResult{
-				instanceName:  name,
-				domain:        domain,
-				interfaceName: interfaceName,
+				instanceName:   name,
+				domain:         domain,
+				interfaceName:  interfaceName,
+				interfaceIndex: ifIndex,
 			})
 		},
 	}
@@ -266,7 +288,7 @@ func dnssdResolveInstance(ctx context.Context, inst browseResult, serviceType st
 	}
 
 	err := runDNSSDSession(ctx, session, func(ref *C.DNSServiceRef, handle C.uintptr_t) C.DNSServiceErrorType {
-		return C.wendy_dnssd_resolve(ref, cName, cServiceType, cDomain, handle)
+		return C.wendy_dnssd_resolve(ref, cName, cServiceType, cDomain, C.uint32_t(inst.interfaceIndex), handle)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return "", 0, nil, err
@@ -278,4 +300,46 @@ func dnssdResolveInstance(ctx context.Context, inst browseResult, serviceType st
 		txtRecords = make(map[string]string)
 	}
 	return hostname, port, txtRecords, nil
+}
+
+// dnssdResolveAddresses asks mDNSResponder for addresses on the exact
+// interface that produced the browse answer. A global LookupHost here can
+// return a Wi-Fi A record for an instance seen over USB Ethernet, producing an
+// internally inconsistent "en7 + Wi-Fi IP" device and routing the deployment
+// over the wrong link.
+func dnssdResolveAddresses(ctx context.Context, hostname string, inst browseResult) ([]string, error) {
+	cHostname := C.CString(hostname)
+	defer C.free(unsafe.Pointer(cHostname))
+
+	var addresses []string
+	session := &dnssdSession{
+		onAddress: func(_ uint32, ifIndex uint32, address string) {
+			if address == "" {
+				return
+			}
+			ip := net.ParseIP(address)
+			if ip != nil && ip.IsLinkLocalUnicast() && strings.Contains(address, ":") {
+				zone := inst.interfaceName
+				if zone == "" {
+					if iface, err := net.InterfaceByIndex(int(ifIndex)); err == nil {
+						zone = iface.Name
+					}
+				}
+				if zone != "" {
+					address += "%" + zone
+				}
+			}
+			addresses = append(addresses, address)
+		},
+	}
+	err := runDNSSDSession(ctx, session, func(ref *C.DNSServiceRef, handle C.uintptr_t) C.DNSServiceErrorType {
+		return C.wendy_dnssd_getaddrinfo(ref, cHostname, C.uint32_t(inst.interfaceIndex), handle)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
+	}
+	if len(addresses) == 0 {
+		return nil, fmt.Errorf("could not resolve address for %q on interface %q", hostname, inst.interfaceName)
+	}
+	return addresses, nil
 }

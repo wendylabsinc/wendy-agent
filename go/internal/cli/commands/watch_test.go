@@ -1,12 +1,32 @@
 package commands
 
 import (
+	"context"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestDebouncedDeployerUserCancellationStopsWatch(t *testing.T) {
+	originalRun := watchRunCommand
+	t.Cleanup(func() { watchRunCommand = originalRun })
+	watchRunCommand = func(context.Context, runOptions) error { return ErrUserCancelled }
+
+	stopped := make(chan struct{})
+	d := &debouncedDeployer{
+		stopWatch: func() { close(stopped) },
+	}
+	d.trigger(context.Background())
+
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch did not stop after the build UI returned ErrUserCancelled")
+	}
+}
 
 func TestWatchShouldIgnore(t *testing.T) {
 	root := t.TempDir()

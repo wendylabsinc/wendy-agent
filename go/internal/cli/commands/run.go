@@ -559,17 +559,19 @@ func newRunCmd() *cobra.Command {
 		Short: "Build and run application on a WendyOS device",
 		Long:  "Reads wendy.json from the current directory or --prefix directory, builds a container image, and deploys it to the target device.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateEnvFlag(opts.env); err != nil {
-				return err
-			}
-			if watch {
-				// In watch mode, hide build output unless a build fails (unless
-				// --verbose); detached + non-interactive are enforced by
-				// watchCommand. This mirrors `wendy watch`.
-				opts.quietBuild = !verbose
-				return watchCommand(cmd.Context(), opts, time.Duration(debounceMS)*time.Millisecond)
-			}
-			return runCommand(cmd.Context(), opts)
+			return runWithInterruptContext(cmd.Context(), func(runCtx context.Context) error {
+				if err := validateEnvFlag(opts.env); err != nil {
+					return err
+				}
+				if watch {
+					// In watch mode, hide build output unless a build fails (unless
+					// --verbose); detached + non-interactive are enforced by
+					// watchCommand. This mirrors `wendy watch`.
+					opts.quietBuild = !verbose
+					return watchCommand(runCtx, opts, time.Duration(debounceMS)*time.Millisecond)
+				}
+				return runCommand(runCtx, opts)
+			})
 		},
 	}
 
@@ -597,6 +599,50 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&verbose, "verbose", false, "Watch mode (--watch): always show build output (default: hidden unless the build fails)")
 
 	return cmd
+}
+
+// runWithInterruptContext gives every phase of `wendy run` the same
+// cancellation signal, including provider builds that do not use Wendy's build
+// progress UI. Previously only the individual Bubble Tea program observed
+// Ctrl-C during a build; its docker/OrbStack/Apple Container subprocess kept a
+// live parent context, so parallel services and fallback builders each surfaced
+// another cancellation of their own.
+func runWithInterruptContext(parent context.Context, run func(context.Context) error) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	return runWithInterruptChannel(parent, sigCh, run)
+}
+
+func runWithInterruptChannel(parent context.Context, sigCh <-chan os.Signal, run func(context.Context) error) error {
+	ctx, cancel := context.WithCancelCause(parent)
+	done := make(chan struct{})
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		select {
+		case <-sigCh:
+			cancel(ErrUserCancelled)
+		case <-done:
+		}
+	}()
+
+	err := run(ctx)
+	// If the operation returned from the subprocess's copy of SIGINT before
+	// the goroutine above was scheduled, consume the already-buffered signal
+	// here so cancellation is still classified consistently.
+	select {
+	case <-sigCh:
+		cancel(ErrUserCancelled)
+	default:
+	}
+	close(done)
+	<-handlerDone
+	cancel(nil)
+	if errors.Is(context.Cause(ctx), ErrUserCancelled) && err != nil {
+		return ErrUserCancelled
+	}
+	return err
 }
 
 // resolveRunTarget resolves the target device for the run command. It first
@@ -857,6 +903,25 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		}
 	}
 	mark("resolve + connect device")
+
+	// Build-file selection happens before wendy.json is loaded so device
+	// discovery and picker behavior stay cheap. Once both config and target are
+	// known, recompile a selected Stagefile with framework-derived runtime
+	// packages. This is idempotent and touches no project source; it only updates
+	// Wendy's generated Dockerfile/lock artifacts.
+	if sfOpts := ros2StagefileOptions(appCfg.ResolveROS2ConfigForService(opts.service)); len(sfOpts) > 0 {
+		if source, ok := stagefileSourceForGenerated(opts.dockerfile); ok {
+			if _, statErr := os.Stat(filepath.Join(cwd, source)); statErr == nil {
+				sfOpts = append(debugStagefileOptions(opts.debug), sfOpts...)
+				resolved, compileErr := prepareDockerBuildFile(cwd, source,
+					resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)), sfOpts...)
+				if compileErr != nil {
+					return compileErr
+				}
+				opts.dockerfile = resolved
+			}
+		}
+	}
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
@@ -1721,8 +1786,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		// Single-service build: no concurrency, so keep the shared local cache dir
 		// (empty cache key) for cross-run cache reuse.
 		buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
-		if err := runBuildWithProgress(ctx, buildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
-			return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
+		if err := runBuildWithProgress(ctx, buildTitle, dumpRawUnlessRegistryUnavailable, func(buildCtx context.Context, stream, logw io.Writer) error {
+			return buildAndPushImageForAgent(buildCtx, conn, regPort, agentOS, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
 		}); err != nil {
 			if isRegistryUnavailable(err) {
 				// Return the friendly error bare (matching the Swift path above) —
@@ -2432,12 +2497,12 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	var hint *ociReuseHint
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
-	runBuild := func(build func(stream, logw io.Writer) error) error {
+	runBuild := func(build func(context.Context, io.Writer, io.Writer) error) error {
 		if opts.quietBuild {
 			// wendy watch: keep the legacy quiet behavior (buffer, surface only on
 			// genuine failure) rather than rendering a live UI under the watcher.
 			var buildLog bytes.Buffer
-			if err := build(&buildLog, &buildLog); err != nil {
+			if err := build(ctx, &buildLog, &buildLog); err != nil {
 				if ctx.Err() == nil {
 					_, _ = os.Stderr.Write(buildLog.Bytes())
 				}
@@ -2471,8 +2536,8 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 			return nil, hint, err
 		}
 		defer releaseLayout()
-		build := func(stream, logw io.Writer) error {
-			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+		build := func(buildCtx context.Context, stream, logw io.Writer) error {
+			return buildImageToOCILayoutDirWithDocker(buildCtx, cwd, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
 		}
 
 		// Native fast path: for a Stagefile project whose deps inputs are
@@ -2549,8 +2614,8 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		}
 		defer os.RemoveAll(tmp)
 		ociTar := filepath.Join(tmp, "image.tar")
-		if err := runBuild(func(stream, logw io.Writer) error {
-			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+		if err := runBuild(func(buildCtx context.Context, stream, logw io.Writer) error {
+			return buildImageToOCILayout(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
 		}); err != nil {
 			return nil, hint, err
 		}

@@ -3,7 +3,10 @@ package commands
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
+	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 
@@ -22,6 +25,138 @@ import (
 // already parallelized across cores (chunk.ChunkReaderAt), so this need not
 // equal the core count.
 const maxConcurrentLayerPush = 4
+
+// chunkTransferProgressWriter is implemented by interactive build output
+// adapters that can display chunk-upload bytes directly. Keeping this as an
+// optional extension of io.Writer preserves quiet and non-interactive callers.
+type chunkTransferProgressWriter interface {
+	ReportChunkTransfer(current, total int64, rate float64)
+}
+
+type chunkIndexProgressWriter interface {
+	ReportChunkIndex(current, total int64, rate float64, done bool)
+}
+
+type chunkTransferProgress struct {
+	mu       sync.Mutex
+	reporter chunkTransferProgressWriter
+	current  int64
+	total    int64
+	started  time.Time
+	last     time.Time
+}
+
+type chunkIndexProgress struct {
+	mu       sync.Mutex
+	reporter chunkIndexProgressWriter
+	current  int64
+	total    int64
+	started  time.Time
+	last     time.Time
+}
+
+func newChunkIndexProgress(output io.Writer) *chunkIndexProgress {
+	reporter, _ := output.(chunkIndexProgressWriter)
+	return &chunkIndexProgress{reporter: reporter}
+}
+
+func (p *chunkIndexProgress) addProcessed(n int64) {
+	if p == nil || p.reporter == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if p.started.IsZero() {
+		p.started = now
+	}
+	p.current += n
+	p.reportLocked(now, false)
+}
+
+func (p *chunkIndexProgress) addLayerTotal(rawSize int64) {
+	if p == nil || p.reporter == nil || rawSize <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Decompression, DiffID hashing, temp-file output, and CDC hashing now share
+	// one pipelined pass over the raw stream.
+	p.total += rawSize
+	p.reportLocked(time.Now(), true)
+}
+
+func (p *chunkIndexProgress) reportLocked(now time.Time, force bool) {
+	const interval = 100 * time.Millisecond
+	if !force && !p.last.IsZero() && now.Sub(p.last) < interval {
+		return
+	}
+	p.last = now
+	rate := float64(0)
+	if elapsed := now.Sub(p.started).Seconds(); elapsed > 0 {
+		rate = float64(p.current) / elapsed
+	}
+	p.reporter.ReportChunkIndex(p.current, p.total, rate, false)
+}
+
+func (p *chunkIndexProgress) finish() {
+	if p == nil || p.reporter == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	rate := float64(0)
+	if elapsed := now.Sub(p.started).Seconds(); elapsed > 0 {
+		rate = float64(p.current) / elapsed
+	}
+	p.reporter.ReportChunkIndex(p.current, p.total, rate, true)
+}
+
+func newChunkTransferProgress(output io.Writer) *chunkTransferProgress {
+	reporter, _ := output.(chunkTransferProgressWriter)
+	return &chunkTransferProgress{reporter: reporter}
+}
+
+func (p *chunkTransferProgress) addTotal(n int64) {
+	if p == nil || p.reporter == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.started.IsZero() {
+		p.started = time.Now()
+	}
+	p.total += n
+	p.reportLocked(time.Now(), true)
+}
+
+func (p *chunkTransferProgress) addSent(n int64) {
+	if p == nil || p.reporter == nil || n <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if p.started.IsZero() {
+		p.started = now
+	}
+	p.current += n
+	p.reportLocked(now, p.current >= p.total)
+}
+
+func (p *chunkTransferProgress) reportLocked(now time.Time, force bool) {
+	const interval = 100 * time.Millisecond
+	if !force && !p.last.IsZero() && now.Sub(p.last) < interval {
+		return
+	}
+	p.last = now
+	rate := float64(0)
+	if elapsed := now.Sub(p.started).Seconds(); elapsed > 0 {
+		rate = float64(p.current) / elapsed
+	}
+	p.reporter.ReportChunkTransfer(p.current, p.total, rate)
+}
 
 // pushLayersByChunks implements chunk-diff layer push for a set of OCI layers,
 // processing up to maxConcurrentLayerPush layers concurrently. For each layer it:
@@ -50,12 +185,44 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 // preparation is complete (or the context is cancelled).
 type imagePrepareFunc func(context.Context, []*agentpb.RunContainerLayerHeader) error
 
+// blocksChunkPrepareFallback marks integrity and identity failures that must
+// not be retried through a transport with a different trust boundary.
+func blocksChunkPrepareFallback(err error) bool {
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.FailedPrecondition, codes.DataLoss,
+		codes.PermissionDenied, codes.Unauthenticated:
+		return true
+	default:
+		return false
+	}
+}
+
 // pushLayersByChunksWithPrepare resolves every layer manifest first, then runs
 // prepare concurrently with missing-chunk upload. The short resolution barrier
 // is necessary because the agent must authenticate the image config (which
 // binds the ordered diff IDs) and know each layer's chunk set before it can
 // safely create persistent snapshots.
 func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc) ([]*agentpb.RunContainerLayerHeader, error) {
+	return pushLayersByChunksWithPrepareOutput(ctx, cs, layers, prepare, nil)
+}
+
+// pushLayersByChunksWithPrepareOutput is the writer-aware form used while a
+// live build renderer owns the terminal. Status goes through output instead of
+// printing over Bubble Tea's frame. A nil output preserves the ordinary CLI
+// behavior for callers without a live renderer.
+func pushLayersByChunksWithPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, false)
+}
+
+// pushLayersByChunksWithStrictPrepareOutput is for callers, such as Compose,
+// that will create a container by image name after this function returns. They
+// cannot use the single-container path's lenient "finish during RunContainer"
+// behavior: PrepareImage must have registered the named image first.
+func pushLayersByChunksWithStrictPrepareOutput(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer) ([]*agentpb.RunContainerLayerHeader, error) {
+	return pushLayersByChunksWithPrepareMode(ctx, cs, layers, prepare, output, true)
+}
+
+func pushLayersByChunksWithPrepareMode(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, prepare imagePrepareFunc, output io.Writer, strictPrepare bool) ([]*agentpb.RunContainerLayerHeader, error) {
 	headers := make([]*agentpb.RunContainerLayerHeader, len(layers))
 
 	// Capability probe: a single empty QueryChunks tells us whether the agent
@@ -70,7 +237,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 	// can skip them entirely. A layer the device already holds yields no dedup, so
 	// decompressing and content-chunking it would be pure waste. Degrades to
 	// chunking every layer when the agent is too old or the query fails.
-	present := queryPresentLayers(ctx, cs, layers)
+	present := queryPresentLayers(ctx, cs, layers, output)
 
 	// Build the present-layer headers up front and collect the indices that still
 	// need a chunk-diff push. A present-layer header carries no chunk hashes, so
@@ -98,7 +265,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 		toPush = append(toPush, i)
 	}
 	if skipped > 0 {
-		cliLogln("Reusing %s layer(s) already on device; chunking %s.",
+		chunkPushLogln(output, "Reusing %s layer(s) already on device; chunking %s.",
 			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
 	}
 	limit := maxConcurrentLayerPush
@@ -113,6 +280,8 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 	}
 
 	resolved := make([]*resolvedChunkLayer, len(layers))
+	indexProgress := newChunkIndexProgress(output)
+	transferProgress := newChunkTransferProgress(output)
 	defer func() {
 		for _, r := range resolved {
 			if r != nil {
@@ -125,7 +294,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 	for _, idx := range toPush {
 		idx, l := idx, layers[idx]
 		resolveGroup.Go(func() error {
-			r, err := resolveChunkLayer(l)
+			r, err := resolveChunkLayer(l, indexProgress)
 			if err != nil {
 				return err
 			}
@@ -137,6 +306,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 	if err := resolveGroup.Wait(); err != nil {
 		return nil, err
 	}
+	indexProgress.finish()
 
 	prepareCtx, cancelPrepare := context.WithCancel(ctx)
 	defer cancelPrepare()
@@ -153,7 +323,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 	for _, idx := range toPush {
 		r := resolved[idx]
 		uploadGroup.Go(func() error {
-			return r.upload(uploadCtx, cs)
+			return r.upload(uploadCtx, cs, indexProgress, transferProgress)
 		})
 	}
 	if err := uploadGroup.Wait(); err != nil {
@@ -166,6 +336,9 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 
 	if prepareDone != nil {
 		if err := <-prepareDone; err != nil {
+			if strictPrepare {
+				return nil, err
+			}
 			switch status.Code(err) {
 			case codes.InvalidArgument, codes.FailedPrecondition, codes.DataLoss, codes.PermissionDenied, codes.Unauthenticated:
 				// Security failures must not silently fall through to the registry
@@ -176,7 +349,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 			default:
 				// Preparation is an optimization. RunContainer repeats all work
 				// idempotently and remains the authoritative error path.
-				cliLogln("Image prewarming unavailable (%v); finishing during start.", err)
+				chunkPushLogln(output, "Image prewarming unavailable (%v); finishing during start.", err)
 			}
 		}
 	}
@@ -188,7 +361,7 @@ func pushLayersByChunksWithPrepare(ctx context.Context, cs agentpb.WendyContaine
 // known diff ID are not queried. The pre-check is a pure optimization: an agent
 // too old to implement QueryLayers (Unimplemented), or any query error, yields a
 // nil map so the caller chunks every layer as before.
-func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer) map[string]int64 {
+func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceClient, layers []localLayer, output io.Writer) map[string]int64 {
 	diffIDs := make([]string, 0, len(layers))
 	for _, l := range layers {
 		if l.DiffID != "" {
@@ -204,7 +377,7 @@ func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceCli
 			// The agent supports chunk-diff (the probe succeeded) but the layer
 			// pre-check failed for another reason; chunk everything rather than
 			// abort the deploy over a missed optimization.
-			cliLogln("Layer pre-check unavailable (%v); chunking all layers.", err)
+			chunkPushLogln(output, "Layer pre-check unavailable (%v); chunking all layers.", err)
 		}
 		return nil
 	}
@@ -213,6 +386,14 @@ func queryPresentLayers(ctx context.Context, cs agentpb.WendyContainerServiceCli
 		out[p.GetDiffId()] = p.GetSize()
 	}
 	return out
+}
+
+func chunkPushLogln(output io.Writer, format string, args ...any) {
+	if output == nil {
+		cliLogln(format, args...)
+		return
+	}
+	fmt.Fprintln(output, cliStyle.Render(fmt.Sprintf(format, args...)))
 }
 
 // pushLayerByChunks runs the chunk-diff push for a single layer and returns its
@@ -235,19 +416,19 @@ func (r *resolvedChunkLayer) close() {
 // ensureDecompressed materializes and chunks a cache-hit layer only when the
 // device reports missing chunk bytes. Cache misses already did this during
 // manifest resolution and retain the temporary file through upload.
-func (r *resolvedChunkLayer) ensureDecompressed() error {
+func (r *resolvedChunkLayer) ensureDecompressed(progress *chunkIndexProgress) error {
 	if r.dl != nil {
 		return nil
 	}
-	d, err := decompressLayerToTemp(r.l)
+	var lastCompleted int64
+	d, refs, err := decompressAndChunkLayerToTemp(r.l, func(completed int64) {
+		progress.addProcessed(completed - lastCompleted)
+		lastCompleted = completed
+	})
 	if err != nil {
 		return err
 	}
-	refs, err := chunk.ChunkReaderAt(d.f, d.size)
-	if err != nil {
-		d.Close()
-		return err
-	}
+	progress.addLayerTotal(d.size)
 	// A cache entry is accepted only for the current chunk algorithm version,
 	// so deterministic re-chunking must reproduce its identity and shape.
 	if got := d.diffID; got != r.header.GetDiffId() {
@@ -262,7 +443,7 @@ func (r *resolvedChunkLayer) ensureDecompressed() error {
 	return nil
 }
 
-func resolveChunkLayer(l localLayer) (*resolvedChunkLayer, error) {
+func resolveChunkLayer(l localLayer, progress *chunkIndexProgress) (*resolvedChunkLayer, error) {
 	var (
 		diffID        string
 		size          int64
@@ -271,20 +452,20 @@ func resolveChunkLayer(l localLayer) (*resolvedChunkLayer, error) {
 		refs          []chunk.Ref        // chunk offsets into dl; populated alongside dl
 	)
 
-	// decompressAndChunk spills the layer to a temp file and chunks it, filling
-	// dl/refs/diffID/size. Both entry points (CLI here and the agent) run the
+	// decompressAndChunk streams the layer to a temp file and chunks it in the
+	// same pass, filling dl/refs/diffID/size. Both entry points run the
 	// identical region+FastCDC algorithm, so these hashes match the device's.
 	decompressAndChunk := func() error {
-		d, err := decompressLayerToTemp(l)
+		var lastCompleted int64
+		d, r, err := decompressAndChunkLayerToTemp(l, func(completed int64) {
+			progress.addProcessed(completed - lastCompleted)
+			lastCompleted = completed
+		})
 		if err != nil {
 			return err
 		}
 		dl = d
-		r, err := chunk.ChunkReaderAt(d.f, d.size)
-		if err != nil {
-			d.Close()
-			return err
-		}
+		progress.addLayerTotal(d.size)
 		refs, diffID, size = r, d.diffID, d.size
 		return nil
 	}
@@ -317,7 +498,7 @@ func resolveChunkLayer(l localLayer) (*resolvedChunkLayer, error) {
 	}, nil
 }
 
-func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient) error {
+func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContainerServiceClient, indexProgress *chunkIndexProgress, transferProgress *chunkTransferProgress) error {
 	orderedHashes := r.header.GetChunkHashes()
 	qresp, err := cs.QueryChunks(ctx, &agentpb.QueryChunksRequest{ChunkHashes: orderedHashes})
 	if err != nil {
@@ -336,9 +517,16 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 		// reproduces the exact hashes in `missing` only because chunking is
 		// deterministic and loadManifestCache rejects manifests from a different
 		// AlgoVersion — so the cached hashes always match what ChunkReaderAt emits.
-		if err := r.ensureDecompressed(); err != nil {
+		if err := r.ensureDecompressed(indexProgress); err != nil {
 			return err
 		}
+		var missingBytes int64
+		for _, ref := range r.refs {
+			if missing[ref.Hash] {
+				missingBytes += int64(ref.Len)
+			}
+		}
+		transferProgress.addTotal(missingBytes)
 		wc, err := cs.WriteChunks(ctx)
 		if err != nil {
 			return err
@@ -358,6 +546,7 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 			}); err != nil {
 				return err
 			}
+			transferProgress.addSent(int64(len(buf)))
 		}
 		if _, err := wc.CloseAndRecv(); err != nil {
 			return err
@@ -367,12 +556,12 @@ func (r *resolvedChunkLayer) upload(ctx context.Context, cs agentpb.WendyContain
 }
 
 func pushLayerByChunks(ctx context.Context, cs agentpb.WendyContainerServiceClient, l localLayer) (*agentpb.RunContainerLayerHeader, error) {
-	r, err := resolveChunkLayer(l)
+	r, err := resolveChunkLayer(l, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer r.close()
-	if err := r.upload(ctx, cs); err != nil {
+	if err := r.upload(ctx, cs, nil, nil); err != nil {
 		return nil, err
 	}
 	return r.header, nil

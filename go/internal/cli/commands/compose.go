@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -98,14 +99,47 @@ type composeBuildJob struct {
 	buildArgs  map[string]string
 }
 
+type composeBuildProgressWriter struct {
+	io.Writer
+	emit func(tui.BuildStepEvent)
+}
+
+func (w *composeBuildProgressWriter) ReportChunkTransfer(current, total int64, rate float64) {
+	w.emit(tui.BuildStepEvent{
+		ID:      "chunk-upload",
+		Kind:    tui.BuildVertexExport,
+		Display: "uploading missing chunks",
+		Status:  tui.BuildStepRunning,
+		Bytes:   tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
+func (w *composeBuildProgressWriter) ReportChunkIndex(current, total int64, rate float64, done bool) {
+	status := tui.BuildStepRunning
+	if done {
+		status = tui.BuildStepDone
+	}
+	w.emit(tui.BuildStepEvent{
+		ID:      "chunk-index",
+		Kind:    tui.BuildVertexStep,
+		Display: "indexing changed layer content",
+		Status:  status,
+		Bytes:   tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
 // buildComposeServiceImage is replaceable in tests so the parallel scheduler
 // can be exercised without Docker or a device registry.
-var buildComposeServiceImage = buildAndPushImageForAgent
+var buildComposeServiceImage = buildAndPrepareComposeImageForAgent
 
-// buildComposeServicesParallel runs independent Compose build-and-push jobs
-// concurrently. A Wendy image push is part of the BuildKit invocation, so this
-// also means another service can start building while an earlier one uploads.
-func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, platform string, jobs map[string]composeBuildJob, maxConcurrency int) (map[string]error, error) {
+// buildComposeServicesParallel runs independent Compose image jobs
+// concurrently. By default each job builds a persistent OCI layout and sends
+// only content chunks the device does not already have; --chunking=off keeps
+// the registry-push path for compatibility.
+func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, platform, chunking string, jobs map[string]composeBuildJob, maxConcurrency int, quietBuild bool) (map[string]error, error) {
+	buildCtx, cancelBuild := context.WithCancel(ctx)
+	defer cancelBuild()
+
 	names := make([]string, 0, len(jobs))
 	for name := range jobs {
 		names = append(names, name)
@@ -116,7 +150,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	}
 
 	concurrency := resolveBuildConcurrency(len(names), maxConcurrency)
-	if maxConcurrency > 0 && concurrency < len(names) {
+	if !quietBuild && maxConcurrency > 0 && concurrency < len(names) {
 		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
 	}
 
@@ -129,7 +163,7 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 	sem := make(chan struct{}, concurrency)
 
 	var prog *tea.Program
-	if isInteractiveTerminal() {
+	if !quietBuild && isInteractiveTerminal() {
 		prog = tui.NewProgressProgram(tui.NewMultiSpinner(fmt.Sprintf("Building %d Compose service(s)...", len(names)), names))
 	}
 
@@ -139,12 +173,21 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 		wg.Add(1)
 		go func(name string, job composeBuildJob) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-buildCtx.Done():
+				results <- result{name: name, err: buildCtx.Err()}
+				return
+			}
 			defer func() { <-sem }()
+			if err := buildCtx.Err(); err != nil {
+				results <- result{name: name, err: err}
+				return
+			}
 
 			if prog != nil {
 				prog.Send(tui.MultiSpinnerStartMsg{Name: name})
-			} else {
+			} else if !quietBuild {
 				cliLogln("Building service %s for %s...", name, tui.Value(platform))
 			}
 
@@ -156,21 +199,37 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 			if prog != nil {
 				emit, getTally := newServiceProgressEmitter(prog, name)
 				tally = getTally
-				buildOut = io.MultiWriter(tui.NewBuildParser(emit), &logBuf)
+				buildOut = &composeBuildProgressWriter{
+					Writer: io.MultiWriter(tui.NewBuildParser(emit), &logBuf),
+					emit:   emit,
+				}
+				logOut = &logBuf
+			} else if quietBuild {
+				buildOut = &logBuf
 				logOut = &logBuf
 			}
 
 			// The repo also scopes buildx's local cache export. Concurrent writers
 			// must not share that directory; BuildKit cache mounts inside the
 			// builder (APT, pip, etc.) remain shared by their explicit mount IDs.
-			err := buildComposeServiceImage(ctx, conn, regPort, agentOS, builder, job.contextDir, job.repo, platform, job.dockerfile, job.buildArgs, job.repo, buildOut, logOut)
+			buildImage := buildComposeServiceImage
+			if chunking == chunkingOff {
+				buildImage = buildAndPushImageForAgent
+			} else if chunking == chunkingForce {
+				buildImage = buildAndPrepareComposeImageForAgentForce
+			}
+			err := buildImage(buildCtx, conn, regPort, agentOS, builder, job.contextDir, job.repo, platform, job.dockerfile, job.buildArgs, job.repo, buildOut, logOut)
 			dur := time.Since(start)
 			if prog != nil {
 				t := tally()
 				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur, Cached: t.Cached, Rebuilt: t.Rebuilt})
 			} else if err != nil {
-				cliLogln("Service %s build failed: %v", name, err)
-			} else {
+				if buildCtx.Err() == nil {
+					if !quietBuild {
+						cliLogln("Service %s build failed: %v", name, err)
+					}
+				}
+			} else if !quietBuild {
 				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
 			}
 			results <- result{name: name, err: err, log: logBuf.String()}
@@ -185,9 +244,18 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 		}
 	}()
 
+	var progressErr error
 	if prog != nil {
-		if _, err := prog.Run(); err != nil {
-			return nil, fmt.Errorf("compose build progress TUI: %w", err)
+		final, runErr := prog.Run()
+		if runErr != nil {
+			cancelBuild()
+			progressErr = fmt.Errorf("compose build progress TUI: %w", runErr)
+		} else if fm, ok := final.(tui.MultiSpinnerModel); !ok {
+			cancelBuild()
+			progressErr = fmt.Errorf("compose build progress TUI: unexpected final model %T", final)
+		} else if errors.Is(fm.Err(), tui.ErrCancelled) {
+			cancelBuild()
+			progressErr = ErrUserCancelled
 		}
 	}
 
@@ -197,9 +265,15 @@ func buildComposeServicesParallel(ctx context.Context, conn *grpcclient.AgentCon
 			continue
 		}
 		failed[r.name] = r.err
-		if r.log != "" && !isRegistryUnavailable(r.err) {
+		if progressErr == nil && buildCtx.Err() == nil && r.log != "" && !isRegistryUnavailable(r.err) {
 			fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 		}
+	}
+	if progressErr != nil {
+		return nil, progressErr
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	return failed, nil
 }
@@ -335,6 +409,14 @@ func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (
 	if err != nil {
 		return "", nil, err
 	}
+	companion, _, err := appconfig.LoadComposeCompanion(dir)
+	if err != nil {
+		return "", nil, fmt.Errorf("companion wendy.json: %w", err)
+	}
+	serviceConfigs, _, err := buildComposeServiceConfigs(strings.ToLower(filepath.Base(dir)), cfg, companion)
+	if err != nil {
+		return "", nil, err
+	}
 	overrides := map[string]any{}
 	for name, svc := range cfg.Services {
 		ctxDir, dockerfile, _, err := composeBuildContext(svc, dir)
@@ -344,7 +426,9 @@ func composeStagefileOverride(dir, gpuArch string, sfOpts ...stagefile.Option) (
 		if ctxDir == "" || !stagefile.IsSourceName(dockerfile) {
 			continue
 		}
-		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...)
+		serviceOpts := append([]stagefile.Option{}, sfOpts...)
+		serviceOpts = append(serviceOpts, frameworkStagefileOptions(serviceConfigs[name].Frameworks)...)
+		compiled, err := prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, serviceOpts...)
 		if err != nil {
 			return "", nil, fmt.Errorf("service %s: %w", name, err)
 		}
@@ -924,8 +1008,8 @@ func (w *serviceLogWriter) Flush() {
 }
 
 // runComposeWithAgent orchestrates a docker-compose project on a WendyOS device:
-// builds service images, pushes them to the device registry, creates containers,
-// and streams their combined output. When a companion wendy.json exists in the
+// builds and prepares service images, creates containers, and streams their
+// combined output. When a companion wendy.json exists in the
 // same directory it is merged to supply Wendy-specific config (entitlements,
 // isolation, frameworks) without modifying the compose file.
 func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, projectDir string, opts runOptions) error {
@@ -1041,12 +1125,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			allBuildArgs[k] = v
 		}
 
+		appCfg := svcCfgs[name]
 		imageIdentity := normalizeImageRef(svc.Image)
 		if ctxDir != "" {
 			// Compile a Stagefile (or apply safe in-memory Dockerfile fixes) the
 			// same way the single-service path does — docker build itself knows
 			// nothing about build.stagefile.yaml.
-			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, debugStagefileOptions(opts.debug)...); err != nil {
+			sfOpts := append(debugStagefileOptions(opts.debug), frameworkStagefileOptions(appCfg.Frameworks)...)
+			if dockerfile, err = prepareDockerBuildFile(ctxDir, dockerfile, gpuArch, sfOpts...); err != nil {
 				return fmt.Errorf("service %s: %w", name, err)
 			}
 			imageIdentity, err = computeBuildInputHash(ctxDir, dockerfile, platform, allBuildArgs, composeEnv(svc))
@@ -1055,7 +1141,6 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 			}
 		}
 
-		appCfg := svcCfgs[name]
 		restartPolicy := resolveRestartPolicy(opts)
 		if restartPolicy.GetMode() == agentpb.RestartPolicyMode_DEFAULT && svc.Restart != "" {
 			restartPolicy = composeRestartPolicy(svc.Restart)
@@ -1088,7 +1173,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		cliLogln("%d of %d Compose services unchanged and running; leaving them untouched.", n, len(cfg.Services))
 	}
 
-	failedBuilds, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, jobs, opts.maxConcurrency)
+	failedBuilds, err := buildComposeServicesParallel(ctx, conn, regPort, agentOS, opts.builder, platform, opts.chunking, jobs, opts.maxConcurrency, opts.quietBuild)
 	if err != nil {
 		return err
 	}

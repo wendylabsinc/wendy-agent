@@ -439,7 +439,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// Build all service images in parallel, then create and start containers.
-	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency, sfOpts...)
+	failed, buildErr := buildServicesParallel(ctx, conn, regPort, agentOS, cwd, appCfg.AppID, services, platform, buildArgs, opts.builder, skip, dockerfiles, opts.maxConcurrency, opts.quietBuild, sfOpts...)
 	if buildErr != nil {
 		return buildErr
 	}
@@ -611,8 +611,12 @@ func buildServicesParallel(
 	skip map[string]bool,
 	dockerfiles map[string]string,
 	maxConcurrency int,
+	quietBuild bool,
 	sfOpts ...stagefile.Option,
 ) (map[string]error, error) {
+	buildCtx, cancelBuild := context.WithCancel(ctx)
+	defer cancelBuild()
+
 	names := make([]string, 0, len(services))
 	for n := range services {
 		names = append(names, n)
@@ -621,7 +625,7 @@ func buildServicesParallel(
 
 	// Resolved once for the group: every service deploys to this one device,
 	// so they share its GPU architecture.
-	gpuArch := serviceGPUArch(ctx, cwd, services, conn)
+	gpuArch := serviceGPUArch(buildCtx, cwd, services, conn)
 
 	type result struct {
 		name string
@@ -641,13 +645,13 @@ func buildServicesParallel(
 		}
 	}
 	concurrency := resolveBuildConcurrency(buildCount, maxConcurrency)
-	if maxConcurrency > 0 && concurrency < buildCount {
+	if !quietBuild && maxConcurrency > 0 && concurrency < buildCount {
 		cliLogln("Building up to %d service(s) at a time (--max-concurrency).", concurrency)
 	}
 	sem := make(chan struct{}, concurrency)
 
 	var prog *tea.Program
-	if isInteractiveTerminal() {
+	if !quietBuild && isInteractiveTerminal() {
 		title := fmt.Sprintf("Building %d service(s)...", len(names))
 		m := tui.NewMultiSpinner(title, names)
 		prog = tui.NewProgressProgram(m)
@@ -664,19 +668,28 @@ func buildServicesParallel(
 				if prog != nil {
 					prog.Send(tui.MultiSpinnerStartMsg{Name: name})
 					prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: nil, Dur: 0})
-				} else {
+				} else if !quietBuild {
 					cliLogln("Service %s unchanged; skipping build/push (already on device).", name)
 				}
 				results <- result{name: name}
 				return
 			}
 
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-buildCtx.Done():
+				results <- result{name: name, err: buildCtx.Err()}
+				return
+			}
 			defer func() { <-sem }()
+			if err := buildCtx.Err(); err != nil {
+				results <- result{name: name, err: err}
+				return
+			}
 
 			if prog != nil {
 				prog.Send(tui.MultiSpinnerStartMsg{Name: name})
-			} else {
+			} else if !quietBuild {
 				cliLogln("Building service %s...", name)
 			}
 
@@ -700,11 +713,13 @@ func buildServicesParallel(
 				tally = getTally
 				parser := tui.NewBuildParser(emit)
 				buildOut = io.MultiWriter(parser, &logBuf)
+			} else if quietBuild {
+				buildOut = &logBuf
 			} else {
 				buildOut = os.Stdout
 			}
 			var logOutW io.Writer = &logBuf
-			if prog == nil {
+			if prog == nil && !quietBuild {
 				logOutW = os.Stderr
 			}
 			err := dockerfileErr
@@ -712,7 +727,7 @@ func buildServicesParallel(
 				// Pass the per-service repo as the build's cache key so each concurrent
 				// build gets its own isolated local buildx cache dir (WDY-1689); sharing
 				// one dir corrupts BuildKit's cache-export ingest store under concurrency.
-				err = buildServiceImage(ctx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
+				err = buildServiceImage(buildCtx, conn, regPort, agentOS, builder, contextDir, repo, platform, dockerfile, buildArgs, repo, buildOut, logOutW)
 			}
 			dur := time.Since(start)
 
@@ -720,8 +735,12 @@ func buildServicesParallel(
 				t := tally()
 				prog.Send(tui.MultiSpinnerDoneMsg{Name: name, Err: err, Dur: dur, Cached: t.Cached, Rebuilt: t.Rebuilt})
 			} else if err != nil {
-				cliLogln("Service %s build failed: %v", name, err)
-			} else {
+				if buildCtx.Err() == nil {
+					if !quietBuild {
+						cliLogln("Service %s build failed: %v", name, err)
+					}
+				}
+			} else if !quietBuild {
 				cliLogln("Service %s built (%s).", name, dur.Round(time.Millisecond))
 			}
 
@@ -738,9 +757,21 @@ func buildServicesParallel(
 		}
 	}()
 
+	var progressErr error
 	if prog != nil {
-		if _, runErr := prog.Run(); runErr != nil {
-			return nil, fmt.Errorf("build progress TUI: %w", runErr)
+		final, runErr := prog.Run()
+		if runErr != nil {
+			cancelBuild()
+			progressErr = fmt.Errorf("build progress TUI: %w", runErr)
+		} else if fm, ok := final.(tui.MultiSpinnerModel); !ok {
+			cancelBuild()
+			progressErr = fmt.Errorf("build progress TUI: unexpected final model %T", final)
+		} else if errors.Is(fm.Err(), tui.ErrCancelled) {
+			// One Ctrl-C owns cancellation for the entire service group. Queued
+			// services never start, and all active builder commands share this
+			// context so they unwind before we return.
+			cancelBuild()
+			progressErr = ErrUserCancelled
 		}
 	}
 
@@ -754,10 +785,16 @@ func buildServicesParallel(
 			failed[r.name] = r.err
 			// Skip the raw replay for the friendly "no registry on the Mac agent"
 			// error — the retried-push spam would bury the actionable message.
-			if r.log != "" && !isRegistryUnavailable(r.err) {
+			if progressErr == nil && buildCtx.Err() == nil && r.log != "" && !isRegistryUnavailable(r.err) {
 				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
 			}
 		}
+	}
+	if progressErr != nil {
+		return nil, progressErr
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	return failed, nil
 }

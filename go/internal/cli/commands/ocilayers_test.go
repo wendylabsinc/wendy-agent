@@ -571,8 +571,8 @@ func TestBuildxOCIExportAllowsIndependentConcurrentSolves(t *testing.T) {
 
 func TestBuildxOCIExportArgs(t *testing.T) {
 	t.Run("dir mode, no cache index, sorted build args", func(t *testing.T) {
-		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "/c/buildx", "/dest/layout", true,
-			map[string]string{"ZED": "2", "ALPHA": "1"}, false)
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "/proj/Dockerfile", "", "/c/buildx", "/dest/layout", true,
+			map[string]string{"ZED": "2", "ALPHA": "1"})
 		want := []string{
 			"buildx", "build",
 			"--builder", "wendy-oci",
@@ -590,13 +590,13 @@ func TestBuildxOCIExportArgs(t *testing.T) {
 		}
 	})
 	t.Run("tar mode with cache index, no dockerfile", func(t *testing.T) {
-		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/buildx", "/tmp/image.tar", false, nil, true)
+		got := buildxOCIExportArgs("wendy-oci", "linux/arm64", "", "/c/legacy", "/c/buildx", "/tmp/image.tar", false, nil)
 		want := []string{
 			"buildx", "build",
 			"--builder", "wendy-oci",
 			"--platform", "linux/arm64",
 			"--progress", "plain",
-			"--cache-from", "type=local,src=/c/buildx",
+			"--cache-from", "type=local,src=/c/legacy",
 			"--cache-to", "type=local,dest=/c/buildx",
 			"--output", "type=oci,dest=/tmp/image.tar",
 			".",
@@ -605,6 +605,17 @@ func TestBuildxOCIExportArgs(t *testing.T) {
 			t.Fatalf("args mismatch:\n got  %q\n want %q", got, want)
 		}
 	})
+}
+
+func TestLegacyOCICacheKey(t *testing.T) {
+	key := ociDeploymentCacheKey("RobotKit-Yolo-Fruits", "linux/arm64")
+	got, ok := legacyOCICacheKey(key)
+	if !ok || got != "robotkit-yolo-fruits" {
+		t.Fatalf("legacyOCICacheKey(%q) = %q, %v", key, got, ok)
+	}
+	if _, ok := legacyOCICacheKey("ordinary-cache-key"); ok {
+		t.Fatal("ordinary cache key must not be treated as a migrated OCI key")
+	}
 }
 
 // readOCILayoutLayers must reference layer blobs by their byte range in the

@@ -627,6 +627,24 @@ func debugStagefileOptions(debug bool) []stagefile.Option {
 	return []stagefile.Option{stagefile.WithBuildProfile(stagefile.BuildProfileDebug)}
 }
 
+// frameworkStagefileOptions translates runtime framework configuration into
+// compiler inputs. The project declares ROS 2 once in wendy.json; Stagefile
+// then supplies the matching middleware package instead of making every
+// service repeat Wendy's resolved distro/RMW choice in install.apt.
+func frameworkStagefileOptions(frameworks *appconfig.FrameworksConfig) []stagefile.Option {
+	if frameworks == nil || frameworks.ROS2 == nil {
+		return nil
+	}
+	return ros2StagefileOptions(frameworks.ROS2)
+}
+
+func ros2StagefileOptions(ros2 *appconfig.ROS2Config) []stagefile.Option {
+	if ros2 == nil {
+		return nil
+	}
+	return []stagefile.Option{stagefile.WithROS2Runtime(ros2.ResolvedDistro(), ros2.ResolvedRMW())}
+}
+
 // hasContainerBuildFile reports whether dir holds any docker build source
 // (Stagefile, Dockerfile/Containerfile, or a variant of either) without the
 // compile / write side effects resolveDockerfile now has — for callers that
@@ -2168,13 +2186,116 @@ func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo,
 	if cacheKey == "" {
 		cacheKey = repo
 	}
-	if err := buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput); err != nil {
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+	})
+	if err != nil {
 		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) rebuilt from content; buildx and cache export skipped")
 	}
 
 	fmt.Fprintf(logOutput, "[registry] pushing OCI image to %s/%s:latest\n", registryAddr, repo)
 	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
 		return err
+	}
+	return nil
+}
+
+// buildAndPrepareComposeImageForAgent is the default Compose image path. It
+// builds into the same persistent OCI layout used by single-service chunk
+// deploys, updates Stagefile app layers natively when dependencies are stable,
+// and transfers missing content-defined chunks straight to the agent. The
+// prepared image is registered under repo:latest, so Compose's existing
+// CreateContainer orchestration can consume it without a registry round-trip.
+//
+// Agents that predate PrepareImage (or any other non-build chunk-path failure)
+// fall back to pushing this exact already-built layout to the device registry;
+// the image is never rebuilt for the fallback.
+func buildAndPrepareComposeImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, true)
+}
+
+func buildAndPrepareComposeImageForAgentForce(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, false)
+}
+
+func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, allowRegistryFallback bool) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if normalized != imageBuilderDocker {
+		return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+	}
+
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	if cacheKey == "" {
+		cacheKey = repo
+	}
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+	})
+	if err != nil {
+		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) rebuilt from content; buildx and cache export skipped")
+	}
+
+	layers, imageConfig, err := readOCILayoutDirLayers(layoutDir, platform)
+	if err != nil {
+		return err
+	}
+	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
+	if err != nil {
+		return fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+	}
+	// Match the reference Compose passes to CreateContainer below. PrepareImage
+	// records this exact name in containerd even though no registry is involved.
+	imageName := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+		_, prepareErr := conn.ContainerService.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
+			ImageName:      imageName,
+			Layers:         headers,
+			ImageConfig:    imageConfig,
+			ImageSignature: imageSignature,
+		})
+		return prepareErr
+	}
+	if _, chunkErr := pushLayersByChunksWithStrictPrepareOutput(ctx, conn.ContainerService, layers, prepare, streamOutput); chunkErr == nil {
+		fmt.Fprintf(logOutput, "[chunks] prepared %s from missing content\n", imageName)
+		return nil
+	} else if ctx.Err() != nil {
+		return chunkErr
+	} else if blocksChunkPrepareFallback(chunkErr) {
+		return chunkErr
+	} else if !allowRegistryFallback {
+		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
+	} else {
+		fmt.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+	}
+
+	registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	defer cleanup()
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
+		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
 	}
 	return nil
 }

@@ -14,6 +14,30 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func TestPushLayersByChunksRoutesStatusToOutput(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{
+				Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 4096}},
+			}
+		},
+	}
+	var output bytes.Buffer
+	_, err := pushLayersByChunksWithPrepareOutput(context.Background(), fake, []localLayer{{
+		DiffID: diffID,
+	}}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Reusing 1 layer(s) already on device; chunking 0.") {
+		t.Fatalf("routed status = %q", got)
+	}
+}
+
 // fakeContainerClient satisfies agentpb.WendyContainerServiceClient via the
 // embedded-interface trick. Only QueryChunks, QueryLayers, and WriteChunks are
 // overridden; all other methods panic (they must not be called by
@@ -92,6 +116,28 @@ func TestPushLayersByChunksPrepareUnimplementedFallsBack(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Unimplemented preparation must fall back to RunContainer, got %v", err)
+	}
+}
+
+func TestPushLayersByChunksStrictPrepareReturnsUnimplemented(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := []byte("already available layer")
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+	}
+	_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+		return status.Error(codes.Unimplemented, "old agent")
+	}, nil)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
 	}
 }
 

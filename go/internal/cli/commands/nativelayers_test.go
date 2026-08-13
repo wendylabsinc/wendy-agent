@@ -486,6 +486,51 @@ func TestAdoptAndSpliceNativeLayers(t *testing.T) {
 	}
 }
 
+func TestBuildOrUpdateOCILayoutSkipsBuildxAfterAdoption(t *testing.T) {
+	proj := t.TempDir()
+	writeFile(t, proj, "build.stagefile.yaml", `version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    copy:
+      - from: local
+        paths: [main.py]
+        dest: app/
+`)
+	writeFile(t, proj, "Dockerfile.generated", "FROM python:3.11-slim AS app\nCOPY main.py app/\n")
+	writeFile(t, proj, "main.py", "print('v1')\n")
+
+	layout := t.TempDir()
+	buildxCalls := 0
+	buildx := func() error {
+		buildxCalls++
+		depsTar := tarBytes(t, map[string]string{"usr/lib/python/dep.py": "dep"})
+		appTar := tarBytes(t, map[string]string{"app/": "", "app/main.py": "print('v1')\n"})
+		writeTwoLayerLayoutDir(t, layout, depsTar, appTar, "")
+		return nil
+	}
+
+	native, err := buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native || buildxCalls != 1 {
+		t.Fatalf("first build: native=%v buildxCalls=%d, want false/1", native, buildxCalls)
+	}
+	if _, ok := loadNativeState(layout); !ok {
+		t.Fatal("first build should adopt native app layers")
+	}
+
+	writeFile(t, proj, "main.py", "print('v2')\n")
+	native, err = buildOrUpdateOCILayout(proj, "Dockerfile.generated", "linux/arm64", nil, layout, buildx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !native || buildxCalls != 1 {
+		t.Fatalf("warm app edit: native=%v buildxCalls=%d, want true/1", native, buildxCalls)
+	}
+}
+
 func TestAdoptNativeLayersRejectsFileSetMismatch(t *testing.T) {
 	proj := t.TempDir()
 	writeFile(t, proj, "main.py", "print('v1')\n")
