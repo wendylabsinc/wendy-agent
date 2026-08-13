@@ -2049,10 +2049,9 @@ func TestApplyEntitlements_NoBuild_LeavesSandboxHardened(t *testing.T) {
 
 // ---------- GPU fallback device derivation (WDY-1804) ----------
 
-// installFakeNvidiaDevTree builds a fake /dev with the Jetson AGX Thor
-// (JetPack 7.2) NVIDIA node layout and injects each node's real-world
-// major:minor via statCharDevice (plain files can't carry device numbers
-// without root/mknod). Restored on cleanup.
+// installFakeNvidiaDevTree builds a fake /dev with NVIDIA device nodes and
+// injects each node's real-world major:minor via statCharDevice (plain files
+// can't carry device numbers without root/mknod). Restored on cleanup.
 func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string {
 	t.Helper()
 	dev := t.TempDir()
@@ -2060,7 +2059,11 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 		t.Fatal(err)
 	}
 	for name := range numbers {
-		if err := os.WriteFile(filepath.Join(dev, name), nil, 0o644); err != nil {
+		devicePath := filepath.Join(dev, name)
+		if err := os.MkdirAll(filepath.Dir(devicePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(devicePath, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2077,6 +2080,8 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	nvidiaDeviceGlobs = []string{
 		filepath.Join(dev, "nvidia*"),
 		filepath.Join(dev, "nvidia-caps", "*"),
+		filepath.Join(dev, "nvhost-*gpu"),
+		filepath.Join(dev, "nvgpu", "igpu*", "*"),
 	}
 	statCharDevice = func(p string) (int64, int64, error) {
 		rel, err := filepath.Rel(dev, p)
@@ -2091,6 +2096,52 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	}
 	boardDetect = func() board.Info { return board.Info{Kind: board.Jetson} }
 	return dev
+}
+
+func TestApplyGPU_SupplementsStaleJetsonCSVWithSchedulerControlDevices(t *testing.T) {
+	dev := installFakeNvidiaDevTree(t, map[string][2]int64{
+		"nvhost-nvsched_ctrl_fifo-gpu":  {487, 10},
+		"nvgpu/igpu0/nvsched_ctrl_fifo": {487, 22},
+		"nvhost-evil-gpu":               {8, 1},
+		"nvgpu/igpu0/evil":              {8, 2},
+	})
+
+	spec := gpuSpec(t)
+
+	for path, want := range map[string][2]int64{
+		filepath.Join(dev, "nvhost-nvsched_ctrl_fifo-gpu"):        {487, 10},
+		filepath.Join(dev, "nvgpu", "igpu0", "nvsched_ctrl_fifo"): {487, 22},
+	} {
+		d, ok := deviceForPath(spec, path)
+		if !ok {
+			t.Errorf("GPU entitlement did not add %s", path)
+			continue
+		}
+		if d.Major != want[0] || d.Minor != want[1] {
+			t.Errorf("%s = c %d:%d, want c %d:%d", path, d.Major, d.Minor, want[0], want[1])
+		}
+		if !hasExactDeviceRule(spec, want[0], want[1]) {
+			t.Errorf("GPU entitlement did not allow c %d:%d", want[0], want[1])
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dev, "nvhost-evil-gpu"),
+		filepath.Join(dev, "nvgpu", "igpu0", "evil"),
+	} {
+		if _, ok := deviceForPath(spec, path); ok {
+			t.Errorf("GPU entitlement granted unexpected node %s", path)
+		}
+	}
+}
+
+func hasExactDeviceRule(spec *Spec, major, minor int64) bool {
+	for _, d := range spec.Linux.Resources.Devices {
+		if d.Allow && d.Major != nil && d.Minor != nil && *d.Major == major && *d.Minor == minor && d.Access == "rw" {
+			return true
+		}
+	}
+	return false
 }
 
 func gpuSpec(t *testing.T) *Spec {

@@ -272,15 +272,33 @@ func applyGPU(spec *Spec) {
 // nvidiaDeviceGlobs are the NVIDIA device-node patterns the GPU entitlement
 // scans to build its fallback device list. /dev/nvidia* covers nvidia0..N,
 // nvidiactl, nvidia-uvm, nvidia-uvm-tools and nvidia-modeset; nvidia-caps/*
-// covers the capability nodes (major 501 on Thor). Behind a var so tests can
-// redirect into a tempdir.
-var nvidiaDeviceGlobs = []string{"/dev/nvidia*", "/dev/nvidia-caps/*"}
+// covers the capability nodes (major 501 on Thor). Jetson's L4T CSV can lag
+// the live nvgpu driver node set, so also discover the tightly allowlisted
+// nvhost and integrated-GPU nodes. Behind a var so tests can redirect into a
+// tempdir.
+var nvidiaDeviceGlobs = []string{
+	"/dev/nvidia*",
+	"/dev/nvidia-caps/*",
+	"/dev/nvhost-*gpu",
+	"/dev/nvgpu/igpu*/*",
+}
 
 // nvidiaDeviceNameRe is the allowlist of node names the GPU entitlement will
 // grant from the globs above. Glob results are host filesystem input; an
 // unexpected name (say, a planted /dev/nvidia-evil char device) is rejected
 // rather than handed to the container.
 var nvidiaDeviceNameRe = regexp.MustCompile(`^(nvidia[0-9]+|nvidiactl|nvidia-uvm|nvidia-uvm-tools|nvidia-modeset|nvidia-cap[0-9]+)$`)
+
+// nvhostGPUDeviceNameRe admits only the GPU-specific nvhost nodes exposed by
+// NVIDIA's nvgpu driver. In particular, JetPack 6.2 adds the scheduler control
+// FIFO that older L4T devices.csv files omit.
+var nvhostGPUDeviceNameRe = regexp.MustCompile(`^nvhost-(gpu|(?:as|ctrl|ctxsw|dbg|nvsched|nvsched_ctrl_fifo|power|prof|prof-ctx|prof-dev|sched|tsg)-gpu)$`)
+
+// nvgpuDeviceNameRe is restricted to children of an igpuN directory by
+// isAllowedNvidiaDevicePath; matching a generic basename elsewhere is not
+// sufficient to grant it to a container.
+var nvgpuDeviceNameRe = regexp.MustCompile(`^(as|channel|ctrl|ctxsw|dbg|nvsched|nvsched_ctrl_fifo|power|prof|prof-ctx|prof-dev|sched|tsg)$`)
+var nvgpuDirNameRe = regexp.MustCompile(`^igpu[0-9]+$`)
 
 type nvidiaDeviceNode struct {
 	path         string
@@ -304,13 +322,21 @@ func discoverNvidiaDeviceNodes() []nvidiaDeviceNode {
 			if err != nil {
 				continue
 			}
-			if !nvidiaDeviceNameRe.MatchString(filepath.Base(p)) {
+			if !isAllowedNvidiaDevicePath(p) {
 				continue
 			}
 			nodes = append(nodes, nvidiaDeviceNode{path: p, major: major, minor: minor})
 		}
 	}
 	return nodes
+}
+
+func isAllowedNvidiaDevicePath(p string) bool {
+	base := filepath.Base(p)
+	if nvidiaDeviceNameRe.MatchString(base) || nvhostGPUDeviceNameRe.MatchString(base) {
+		return true
+	}
+	return nvgpuDirNameRe.MatchString(filepath.Base(filepath.Dir(p))) && nvgpuDeviceNameRe.MatchString(base)
 }
 
 // statCharDevice resolves a host path to its character-device major:minor,
