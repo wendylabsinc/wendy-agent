@@ -40,6 +40,13 @@ func TestRunBuildWithProgressPrintsRawOnFailure(t *testing.T) {
 	var out strings.Builder
 	restoreOut := setBuildProgressOut(&out)
 	defer restoreOut()
+	originalPersist := persistBuildFailureLog
+	defer func() { persistBuildFailureLog = originalPersist }()
+	var saved string
+	persistBuildFailureLog = func(_ string, raw string) (string, error) {
+		saved = raw
+		return "/tmp/wendy-build-image-test.log", nil
+	}
 
 	wantErr := errors.New("docker buildx build failed")
 	err := runBuildWithProgress(context.Background(), "Building image...", dumpRawAlways, func(stream, logw io.Writer) error {
@@ -52,12 +59,15 @@ func TestRunBuildWithProgressPrintsRawOnFailure(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
 	got := out.String()
-	// Raw build output AND setup log are surfaced on failure.
+	// The terminal gets the useful cause and a pointer to the retained full log.
 	if !strings.Contains(got, "could not find a version") {
-		t.Errorf("raw build output not surfaced:\n%s", got)
+		t.Errorf("build cause not summarized:\n%s", got)
 	}
-	if !strings.Contains(got, "bootstrapping builder") {
-		t.Errorf("setup log not surfaced on failure:\n%s", got)
+	if !strings.Contains(got, "Build log: /tmp/wendy-build-image-test.log") {
+		t.Errorf("full log path not surfaced:\n%s", got)
+	}
+	if !strings.Contains(saved, "bootstrapping builder") || !strings.Contains(saved, "could not find a version") {
+		t.Errorf("full raw and setup logs not retained:\n%s", saved)
 	}
 }
 
@@ -98,6 +108,13 @@ func TestChunkDiffBuildLogDumpedForImageBuildFailureUnderAutoChunking(t *testing
 	var out strings.Builder
 	restoreOut := setBuildProgressOut(&out)
 	defer restoreOut()
+	originalPersist := persistBuildFailureLog
+	defer func() { persistBuildFailureLog = originalPersist }()
+	var saved string
+	persistBuildFailureLog = func(_ string, raw string) (string, error) {
+		saved = raw
+		return "/tmp/wendy-build-image-test.log", nil
+	}
 
 	wantErr := &imageBuildFailedError{errors.New("container build (OCI layout) failed: exit status 1")}
 	err := runBuildWithProgress(context.Background(), "Building image (OCI layout)...", shouldDumpChunkDiffBuildLog(chunkingAuto), func(stream, logw io.Writer) error {
@@ -113,9 +130,9 @@ func TestChunkDiffBuildLogDumpedForImageBuildFailureUnderAutoChunking(t *testing
 	if !strings.Contains(got, "failed to compute cache key") {
 		t.Errorf("raw build output not surfaced on image-build failure:\n%s", got)
 	}
-	// The setup log carries the exact builder command line for manual reproduction.
-	if !strings.Contains(got, "building OCI image: container build") {
-		t.Errorf("builder command line not surfaced on image-build failure:\n%s", got)
+	// The retained log carries the exact builder command line for reproduction.
+	if !strings.Contains(saved, "building OCI image: container build") {
+		t.Errorf("builder command line not retained in full log:\n%s", saved)
 	}
 }
 

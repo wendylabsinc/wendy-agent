@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -641,7 +640,7 @@ func buildServicesParallel(
 			}
 
 			var buildOut io.Writer
-			var logBuf bytes.Buffer
+			logBuf := boundedBuffer{max: maxRawBuildCapture}
 			var tally func() tui.BuildTally = func() tui.BuildTally { return tui.BuildTally{} }
 			if prog != nil {
 				// Parse this service's stream into per-row detail updates and
@@ -695,8 +694,9 @@ func buildServicesParallel(
 		}
 	}
 
-	// Collect per-service failures. For failed services, print their buffered
-	// output now that the spinner has exited and the terminal is clean. The caller
+	// Collect per-service failures. For failed services, summarize their buffered
+	// output now that the spinner has exited and the terminal is clean, retaining
+	// the full raw log in a temporary file for deeper inspection. The caller
 	// decides whether any failure aborts the group (default) or only its own
 	// service is dropped (--keep-going, WDY-1691).
 	failed := map[string]error{}
@@ -706,7 +706,7 @@ func buildServicesParallel(
 			// Skip the raw replay for the friendly "no registry on the Mac agent"
 			// error — the retried-push spam would bury the actionable message.
 			if r.log != "" && !isRegistryUnavailable(r.err) {
-				fmt.Fprintf(os.Stderr, "\n[%s] build log:\n%s", r.name, r.log)
+				renderBuildFailure(os.Stderr, r.name, r.log, r.err)
 			}
 		}
 	}
