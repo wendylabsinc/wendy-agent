@@ -912,7 +912,7 @@ func resolveInitDestAndID(cwd string, args []string, opts initOptions) (string, 
 
 		appID := strings.TrimSpace(filepath.Base(cwd))
 		if err := validateNewProjectName(appID); err != nil {
-			return "", "", fmt.Errorf("current directory name %q is not a valid app id; pass one explicitly: wendy init --here <name>: %w", appID, err)
+			return "", "", fmt.Errorf("current directory name %q is not a valid app id: %w; pass one explicitly: wendy init --here <name>", appID, err)
 		}
 		return cwd, appID, nil
 	}
