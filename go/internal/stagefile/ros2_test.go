@@ -15,7 +15,7 @@ func TestApplyROS2RuntimeAddsResolvedMiddlewareToFinalStage(t *testing.T) {
 	}}
 
 	applyROS2Runtime(f, "humble", "rmw_cyclonedds_cpp")
-	if len(f.Stages[0].Install.LocalFiles()) != 0 {
+	if f.Stages[0].Install != nil {
 		t.Fatal("framework runtime must not modify build-only stages")
 	}
 	got := f.Stages[1].Install.Apt.Packages
