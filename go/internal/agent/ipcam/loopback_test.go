@@ -891,3 +891,240 @@ func TestLoopback_ShutdownStopsAllPumps(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Fix-up round: closing the Shutdown/wg.Add race and giving idle-grace
+// timers per-cycle identity.
+// ---------------------------------------------------------------------------
+
+// Once Shutdown has set shuttingDown, a later reconcile — here, a
+// demand-raising SetContainerConsumers — must be a no-op: no supervisor
+// starts, and in particular no wg.Add happens. Go's WaitGroup documents
+// concurrent Add(positive)/Wait as misuse that can panic — not a data race,
+// so -race cannot flag it — which is exactly why this needs its own
+// deterministic test rather than relying on -race to catch a regression.
+func TestLoopback_ShutdownDeclinesConcurrentReconcileStart(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+
+	l.Shutdown() // nothing running yet; sets shuttingDown and returns immediately.
+
+	l.SetContainerConsumers([]string{"com.example.app"}) // must be a no-op now.
+
+	assertNoFurtherAttemptWithin(t, pump, 200*time.Millisecond)
+	l.mu.Lock()
+	remaining := len(l.pumps)
+	shuttingDown := l.shuttingDown
+	l.mu.Unlock()
+	if !shuttingDown {
+		t.Fatal("shuttingDown was not set by Shutdown")
+	}
+	if remaining != 0 {
+		t.Fatalf("pumps map has %d entries after a post-Shutdown reconcile, want 0", remaining)
+	}
+}
+
+// Stress the actual race the fix closes, rather than only the deterministic
+// half above: Shutdown and demand-raising reconcile calls firing
+// concurrently and repeatedly. A regression that dropped the shuttingDown
+// check has many chances here — amplified further by -race and -count=N at
+// the go test invocation — to surface as either a WaitGroup misuse panic or
+// a supervisor that outlives Shutdown.
+func TestLoopback_ShutdownConcurrentWithReconcileNeverPanics(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			if i%2 == 0 {
+				l.SetContainerConsumers([]string{"com.example.app"})
+			} else {
+				l.SetContainerConsumers(nil)
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		l.Shutdown() // must never panic, no matter how it interleaves with the loop above.
+	}()
+
+	wg.Wait()
+
+	// Once both goroutines have returned, Shutdown has definitely completed
+	// (its own goroutine cannot have returned otherwise) and shuttingDown is
+	// permanently true, so nothing the loop goroutine did — including any
+	// call still in flight at the moment Shutdown finished — can have left a
+	// supervisor behind.
+	l.mu.Lock()
+	remaining := len(l.pumps)
+	l.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("pumps map has %d entries after a concurrent Shutdown drained, want 0", remaining)
+	}
+}
+
+// fireIdleGrace's guard must key off the specific arming episode (idleGen),
+// not just cp identity and idleCancel presence: across a drop→reacquire→drop
+// cycle on the same camPump, a call carrying the FIRST arming's generation —
+// standing in for a stale awaitIdleGrace goroutine from that first drop,
+// finally reaching its post-timer action late — must not be able to stop a
+// pump that the SECOND arming is now the one watching. Driving fireIdleGrace
+// directly (rather than via awaitIdleGrace's real select) tests the guard
+// deterministically instead of depending on how the Go scheduler happens to
+// interleave two goroutines.
+func TestLoopback_IdleGraceStaleGenerationDoesNotStopPump(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	cam := registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+	pump.next(t) // attempt 1 starts and blocks.
+
+	l.SetContainerConsumers(nil)                         // drop 1: arms idleGen 1.
+	l.SetContainerConsumers([]string{"com.example.app"}) // reacquire: cancels it.
+	l.SetContainerConsumers(nil)                         // drop 2: arms idleGen 2 on the same camPump.
+
+	l.mu.Lock()
+	cp, running := l.pumps[cam.ID]
+	currentGen := cp.idleGen
+	l.mu.Unlock()
+	if !running {
+		t.Fatal("supervisor no longer registered after drop->reacquire->drop")
+	}
+	if currentGen != 2 {
+		t.Fatalf("idleGen = %d after a second arming on the same camPump, want 2", currentGen)
+	}
+
+	// A stale, first-cycle generation must not touch cycle 2's pending timer.
+	l.fireIdleGrace(cam.ID, cp, currentGen-1)
+
+	l.mu.Lock()
+	stillPendingCurrent := l.pumps[cam.ID] == cp && cp.idleCancel != nil
+	l.mu.Unlock()
+	if !stillPendingCurrent {
+		t.Fatal("a stale-generation fireIdleGrace cleared the current (gen 2) idle-grace timer")
+	}
+	if n := pump.attemptCount(); n != 1 {
+		t.Fatalf("pump attempts = %d after a stale-generation fireIdleGrace, want still 1 (must not have stopped)", n)
+	}
+
+	// The current generation, by contrast, must still be able to stop it —
+	// proving the guard discriminates rather than refusing unconditionally.
+	l.fireIdleGrace(cam.ID, cp, currentGen)
+	l.mu.Lock()
+	cleared := cp.idleCancel == nil
+	l.mu.Unlock()
+	if !cleared {
+		t.Fatal("fireIdleGrace with the current generation did not clear idleCancel")
+	}
+}
+
+// End-to-end companion to the white-box test above, driven only through the
+// public API and the fake clock: a drop→reacquire→drop cycle leaves cycle
+// 1's stale waiter dangling in fc (see fakeClock's doc comment — a canceled
+// idle-grace goroutine never consumes the channel it registered), so
+// advancing to cycle 1's original deadline must not stop the pump; only
+// advancing to cycle 2's own full grace duration, measured from when it was
+// actually armed, does.
+func TestLoopback_DropReacquireDropRunsSecondGraceFully(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+	pump.next(t) // attempt 1 starts and blocks.
+
+	l.SetContainerConsumers(nil) // drop 1, at t+0: arms a grace ending at t+10s.
+	fc.blockUntilWaiters(t, 1)
+
+	fc.Advance(4 * time.Second)                          // some idle time passes first.
+	l.SetContainerConsumers([]string{"com.example.app"}) // reacquire at t+4s.
+
+	l.SetContainerConsumers(nil) // drop 2, at t+4s: arms a grace ending at t+14s.
+	fc.blockUntilWaiters(t, 2)   // cycle 1's dangling waiter, plus cycle 2's fresh one.
+
+	fc.Advance(6 * time.Second) // now at t+10s: cycle 1's stale deadline, well short of cycle 2's.
+	assertNoFurtherAttemptWithin(t, pump, 200*time.Millisecond)
+	if n := pump.attemptCount(); n != 1 {
+		t.Fatalf("pump attempts = %d at cycle 1's stale deadline, want still 1 (not stopped)", n)
+	}
+
+	fc.Advance(4 * time.Second) // now at t+14s: cycle 2's real deadline.
+	waitDrained(t, l)
+	if n := pump.attemptCount(); n != 1 {
+		t.Fatalf("pump attempts = %d after cycle 2's full grace elapsed, want still 1 (stopped once, not restarted)", n)
+	}
+}
+
+// A demanded, credentialed camera whose loopback node does not exist yet
+// must not block forever or give up: the supervisor backs off and retries
+// exactly like a failed attempt would (it just never invokes the pump func,
+// since there is nothing to feed), and starts for real the moment the node
+// appears — e.g. because a container's entitlement hook ran EnsureNodes.
+func TestLoopback_PumpRetriesUntilNodeAppears(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	cam, err := reg.Upsert(Camera{MAC: "ec:71:db:2a:ae:7e", Address: "10.98.0.10"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := creds.Set(cam.MAC, Credential{Username: "admin", Password: "hunter2"}); err != nil {
+		t.Fatalf("set credentials: %v", err)
+	}
+	// Deliberately no EnsureNodes yet: demand and credentials are both
+	// present, but the node itself does not exist.
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+
+	fc.blockUntilWaiters(t, 1)
+	if got := fc.pendingDelay(t); got != 1*time.Second {
+		t.Fatalf("backoff before the node exists = %v, want 1s", got)
+	}
+	if n := pump.attemptCount(); n != 0 {
+		t.Fatalf("pump invoked %d times before its node exists, want 0", n)
+	}
+	fc.Advance(1 * time.Second)
+
+	fc.blockUntilWaiters(t, 1)
+	if got := fc.pendingDelay(t); got != 2*time.Second {
+		t.Fatalf("backoff on the second still-missing-node retry = %v, want 2s", got)
+	}
+	if n := pump.attemptCount(); n != 0 {
+		t.Fatalf("pump invoked %d times before its node exists, want 0", n)
+	}
+
+	// The node appears.
+	if err := l.EnsureNodes(context.Background()); err != nil {
+		t.Fatalf("EnsureNodes: %v", err)
+	}
+	fc.Advance(2 * time.Second)
+
+	a := pump.next(t) // the pump starts for real now that the node exists.
+	joined := strings.Join(a.args, " ")
+	wantDevice := "device=/dev/video" + strconv.FormatUint(uint64(cam.ID), 10)
+	if !strings.Contains(joined, wantDevice) {
+		t.Fatalf("pump args = %q, want to contain %q", joined, wantDevice)
+	}
+}

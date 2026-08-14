@@ -113,6 +113,17 @@ type camPump struct {
 	// stopped). Canceling it — done by reconcile when demand returns before
 	// the grace period elapses — prevents that timer from stopping the pump.
 	idleCancel context.CancelFunc
+
+	// idleGen is bumped each time reconcile arms a new idle-grace timer for
+	// this camPump. presence checks alone (l.pumps[camID]==cp,
+	// cp.idleCancel!=nil) cannot tell one arming episode from the next: a
+	// drop→reacquire→drop sequence reuses the same cp, so a stale
+	// awaitIdleGrace goroutine from the first drop and the current one from
+	// the second both see a non-nil idleCancel and the same cp. Each
+	// goroutine captures the generation it was armed with and compares it
+	// here before acting, so only the most recent arming can ever stop the
+	// pump.
+	idleGen uint64
 }
 
 // loopbackDeps seams every syscall and subprocess the loopback node manager
@@ -170,6 +181,15 @@ type Loopback struct {
 	// wg tracks every supervisor and idle-grace goroutine, so Shutdown can
 	// wait for all of them to actually exit rather than just signaling them.
 	wg sync.WaitGroup
+	// shuttingDown is set (under mu) before Shutdown cancels ctx or waits on
+	// wg. Go's sync.WaitGroup documents concurrent Add(positive)/Wait as
+	// misuse that can panic — a data race -race cannot catch, since it is a
+	// contract violation rather than an unsynchronized memory access — so
+	// every wg.Add call in reconcile happens inside the same mu-guarded
+	// section that checks this flag, guaranteeing no Add can start after
+	// Shutdown has begun (any Add either fully happens-before shuttingDown is
+	// set, or sees it set and declines).
+	shuttingDown bool
 }
 
 // NewLoopback returns a node manager. Detection of the v4l2loopback module is
@@ -393,7 +413,15 @@ func (l *Loopback) CredentialsChanged(camID uint32) {
 // the pumps feeding them stop, not the nodes themselves, since a node
 // disappearing out from under a container is a much more disruptive failure
 // mode than a stream freezing.
+//
+// shuttingDown is set under l.mu before cancel/Wait, specifically so it can
+// never observe wg's counter at zero concurrently with a reconcile call that
+// is about to Add to it — see the field's doc comment.
 func (l *Loopback) Shutdown() {
+	l.mu.Lock()
+	l.shuttingDown = true
+	l.mu.Unlock()
+
 	l.cancel()
 	l.wg.Wait()
 }
@@ -404,9 +432,15 @@ func (l *Loopback) Shutdown() {
 // entry point (AcquireView/its release func, SetContainerConsumers,
 // CredentialsChanged) and the supervisor's own self-heal after it exits all
 // funnel through it, so there is exactly one place the start/stop decision is
-// made.
+// made — and the one place that must never call wg.Add once Shutdown has
+// started, which is why both branches below check shuttingDown inside the
+// same locked section that calls it.
 func (l *Loopback) reconcile(camID uint32) {
 	l.mu.Lock()
+	if l.shuttingDown {
+		l.mu.Unlock()
+		return
+	}
 	demand := len(l.containerOwners) > 0 || l.viewRefs[camID] > 0
 	cp, running := l.pumps[camID]
 	if running {
@@ -422,12 +456,20 @@ func (l *Loopback) reconcile(camID uint32) {
 		}
 		// Demand just dropped to zero: start the idle-grace timer, unless one
 		// is already pending (a second drop with no reacquire in between
-		// should not restart the clock).
+		// should not restart the clock). Bumping idleGen — even though this
+		// is a fresh camPump the first time, and idleCancel==nil implies no
+		// previous timer's goroutine could still be running — keeps arming
+		// uniform: every arming episode gets a generation strictly greater
+		// than any that came before it, so a stale awaitIdleGrace from an
+		// earlier drop→reacquire→drop cycle can never be mistaken for the
+		// current one (see camPump.idleGen).
 		if cp.idleCancel == nil {
 			idleCtx, idleCancel := context.WithCancel(l.ctx)
 			cp.idleCancel = idleCancel
+			cp.idleGen++
+			gen := cp.idleGen
 			l.wg.Add(1)
-			go l.awaitIdleGrace(idleCtx, camID, cp)
+			go l.awaitIdleGrace(idleCtx, camID, cp, gen)
 		}
 		l.mu.Unlock()
 		return
@@ -458,8 +500,11 @@ func (l *Loopback) reconcile(camID uint32) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// Re-check under the lock: another goroutine may have already started a
-	// supervisor, or demand may have dropped again, while the precondition
-	// checks above ran without l.mu held.
+	// supervisor, demand may have dropped again, or Shutdown may have begun,
+	// while the precondition checks above ran without l.mu held.
+	if l.shuttingDown {
+		return
+	}
 	if _, alreadyRunning := l.pumps[camID]; alreadyRunning {
 		return
 	}
@@ -558,31 +603,35 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 // finishSupervisor removes cp from l.pumps, if it is still the current entry
 // for camID (a fresh supervisor cannot yet exist — reconcile only starts one
 // when none is registered — but the check keeps this safe even if that ever
-// changes), and then re-reconciles unless Loopback is shutting down.
+// changes), and then re-reconciles.
 //
 // The re-reconcile is what makes idle-grace expiry and a credentials bounce
 // self-healing: if a reacquire or a CredentialsChanged raced this
 // supervisor's exit closely enough that reconcile did not see it, demand (or
 // credentials) will still read correctly here, moments later, and a fresh
 // supervisor starts immediately rather than staying stuck until some
-// unrelated future call happens to reconcile this camera again.
+// unrelated future call happens to reconcile this camera again. Calling
+// reconcile unconditionally — even while Shutdown is in progress — is safe:
+// reconcile's own shuttingDown check (taken under the same l.mu this delete
+// used) makes that case a no-op, so there is only one place that decision is
+// made.
 func (l *Loopback) finishSupervisor(camID uint32, cp *camPump) {
 	l.mu.Lock()
 	if l.pumps[camID] == cp {
 		delete(l.pumps, camID)
 	}
-	shuttingDown := l.ctx.Err() != nil
 	l.mu.Unlock()
 
-	if !shuttingDown {
-		l.reconcile(camID)
-	}
+	l.reconcile(camID)
 }
 
 // awaitIdleGrace waits out a demanded-to-zero camera's idle grace period and
 // then stops its pump, unless ctx is canceled first (a reacquire within the
-// grace period, via reconcile, or Shutdown).
-func (l *Loopback) awaitIdleGrace(ctx context.Context, camID uint32, cp *camPump) {
+// grace period, via reconcile, or Shutdown). gen is the idle-grace generation
+// this goroutine was armed for (see camPump.idleGen); fireIdleGrace uses it
+// to refuse to act if a later drop→reacquire→drop cycle has since armed a new
+// one on the same camPump.
+func (l *Loopback) awaitIdleGrace(ctx context.Context, camID uint32, cp *camPump, gen uint64) {
 	defer l.wg.Done()
 
 	select {
@@ -591,13 +640,23 @@ func (l *Loopback) awaitIdleGrace(ctx context.Context, camID uint32, cp *camPump
 	case <-l.clock.After(pumpIdleGrace):
 	}
 
+	l.fireIdleGrace(camID, cp, gen)
+}
+
+// fireIdleGrace is awaitIdleGrace's post-timer action, split out so it can be
+// driven directly (bypassing the select, and so bypassing any dependence on
+// goroutine scheduling) to test its guard in isolation.
+//
+// The guard checks three things, all under l.mu: that cp is still the
+// current supervisor for camID (not removed, not replaced by a fresh one),
+// that a pending idle-grace timer is still expected at all (idleCancel !=
+// nil — a reacquire clears it), and — the fix for the case those two alone
+// miss — that gen is still the current arming's generation. Presence and
+// non-nilness alone cannot distinguish an earlier drop→reacquire→drop cycle's
+// arming from the current one on the same camPump; idleGen can.
+func (l *Loopback) fireIdleGrace(camID uint32, cp *camPump, gen uint64) {
 	l.mu.Lock()
-	// Re-check identity and that this timer is still the active one: it may
-	// have already been canceled and superseded (or, in a vanishingly narrow
-	// window, this goroutine could have already been past its select when a
-	// cancel arrived). Either way, if idleCancel no longer points at this
-	// invocation, someone else already resolved this camera's state.
-	if l.pumps[camID] != cp || cp.idleCancel == nil {
+	if l.pumps[camID] != cp || cp.idleCancel == nil || cp.idleGen != gen {
 		l.mu.Unlock()
 		return
 	}
