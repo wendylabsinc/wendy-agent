@@ -160,28 +160,32 @@ var regsESP32S3 = chipRegs{
 	spiW0:         0x60002058,
 }
 
-// ESP32-C61 shares C6's unified LP_WDT block (same base address even), but
-// its SPI1 controller's USER1/CLOCK registers moved to different offsets
-// than C5/C6/P4's -- verified against the ESP-IDF v5.5.4 register headers,
-// not assumed from the older chips' layout.
+// ESP32-C61 shares C6's unified LP_WDT block (same base address, same SWD
+// key/auto-feed bit) and its SPI1 controller is byte-for-byte identical to
+// C6's too -- verified against the ESP-IDF v5.5.4 register headers
+// (spi1_mem_reg.h, lp_wdt_reg.h). Only the eFuse base differs, matching C5's
+// instead of C6's.
 var regsESP32C61 = chipRegs{
-	name:       "ESP32-C61",
-	wdtProtect: 0x600b1c18,
-	wdtConfig0: 0x600b1c00,
-	swdProtect: 0x600b1c20,
-	swdConf:    0x600b1c1c,
-	efuseA:     0x600b4830,
-	efuseB:     0x600b4838,
-	chipID0:    0x600b4850,
-	chipID1:    0x600b4854,
-	macLow:     0x600b4844,
-	macHigh:    0x600b4848,
-	spiCmd:     0x60003000,
-	spiUser:    0x60003018,
-	spiUser1:   0x6000301c,
-	spiClock:   0x60003014,
-	spiW0:      0x60003058,
+	name:          "ESP32-C61",
+	wdtProtect:    0x600b1c18,
+	wdtConfig0:    0x600b1c00,
+	swdProtect:    0x600b1c20,
+	swdConf:       0x600b1c1c,
+	swdWkey:       0x50d83aa1,
+	swdAutoFeedEn: 0x00040000, // 1<<18
+	efuseA:        0x600b4830,
+	efuseB:        0x600b4838,
+	chipID0:       0x600b4850,
+	chipID1:       0x600b4854,
+	macLow:        0x600b4844,
+	macHigh:       0x600b4848,
+	spiCmd:        0x60003000,
+	spiUser:       0x60003018,
+	spiUser2:      0x60003020,
+	spiMisoDlen:   0x60003028,
+	spiW0:         0x60003058,
 }
+
 // SLIP framing bytes.
 const (
 	slipEnd    = 0xC0
