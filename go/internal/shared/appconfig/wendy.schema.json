@@ -221,6 +221,14 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Allowed camera device paths. Accepted for compatibility with the deprecated video entitlement."
+            },
+            "user": {
+              "type": "string",
+              "description": "Username for a registered IP camera. Ignored for local cameras."
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for a registered IP camera. Ignored for local cameras. Stored on the device at deploy; prefer `wendy device camera login` for interactive use."
             }
           },
           "required": ["type"],
