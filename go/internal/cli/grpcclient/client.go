@@ -78,6 +78,7 @@ type AgentConnection struct {
 	ProvisioningService agentpb.WendyProvisioningServiceClient
 	TelemetryService    agentpb.WendyTelemetryServiceClient
 	FileSyncService     agentpb.WendyFileSyncServiceClient
+	FileSyncServiceV2   agentpbv2.WendyFileSyncServiceClient
 	TimeSyncService     agentpbv2.WendyTimeSyncServiceClient
 	// observedServerOrg holds the org ID read from the device's server
 	// certificate during the TLS handshake (set by the OnServerIdentity sink
@@ -512,6 +513,7 @@ func newAgentConnection(conn *grpc.ClientConn) *AgentConnection {
 		ProvisioningService: agentpb.NewWendyProvisioningServiceClient(conn),
 		TelemetryService:    agentpb.NewWendyTelemetryServiceClient(conn),
 		FileSyncService:     agentpb.NewWendyFileSyncServiceClient(conn),
+		FileSyncServiceV2:   agentpbv2.NewWendyFileSyncServiceClient(conn),
 		TimeSyncService:     agentpbv2.NewWendyTimeSyncServiceClient(conn),
 	}
 }

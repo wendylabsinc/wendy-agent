@@ -19,6 +19,9 @@ func newVolumesCmd() *cobra.Command {
 	cmd.AddCommand(
 		newVolumesListCmd(),
 		newVolumesRemoveCmd(),
+		newVolumesPushCmd(),
+		newVolumesFilesCmd(),
+		newVolumesRemoveFileCmd(),
 	)
 	return cmd
 }
