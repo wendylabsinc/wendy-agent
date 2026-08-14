@@ -26,6 +26,22 @@ message FileSyncRequest {
 message FileSyncStart {
     string           app_id   = 1;
     FileSyncManifest manifest = 2;
+
+    // Sync into a persistent volume (/var/lib/wendy/volumes/<volume>) instead
+    // of an app sync root. Mutually exclusive with app_id: exactly one of the
+    // two selects the sync root. The Linux agent implements volume mode only;
+    // app_id mode is the macOS agent's native-app sync.
+    string volume = 3;
+
+    // Restrict the session to this subtree of the sync root. The manifest the
+    // agent replies with covers only paths under the prefix, and every path in
+    // the session (chunk, commit, chmod, delete) is interpreted relative to it.
+    //
+    // Without this, pushing one file into a volume makes the agent hash every
+    // file already in that volume to build its manifest — for a volume holding
+    // several 50 MB models that is seconds of wasted I/O per push — and the
+    // client sees unrelated files as candidates for deletion.
+    string path_prefix = 4;
 }
 
 message FileSyncChunk {

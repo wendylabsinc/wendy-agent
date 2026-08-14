@@ -220,9 +220,23 @@ func (*FileSyncRequest_Chmod) isFileSyncRequest_RequestType() {}
 func (*FileSyncRequest_Delete) isFileSyncRequest_RequestType() {}
 
 type FileSyncStart struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	AppId         string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	Manifest      *FileSyncManifest      `protobuf:"bytes,2,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	AppId    string                 `protobuf:"bytes,1,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	Manifest *FileSyncManifest      `protobuf:"bytes,2,opt,name=manifest,proto3" json:"manifest,omitempty"`
+	// Sync into a persistent volume (/var/lib/wendy/volumes/<volume>) instead
+	// of an app sync root. Mutually exclusive with app_id: exactly one of the
+	// two selects the sync root. The Linux agent implements volume mode only;
+	// app_id mode is the macOS agent's native-app sync.
+	Volume string `protobuf:"bytes,3,opt,name=volume,proto3" json:"volume,omitempty"`
+	// Restrict the session to this subtree of the sync root. The manifest the
+	// agent replies with covers only paths under the prefix, and every path in
+	// the session (chunk, commit, chmod, delete) is interpreted relative to it.
+	//
+	// Without this, pushing one file into a volume makes the agent hash every
+	// file already in that volume to build its manifest — for a volume holding
+	// several 50 MB models that is seconds of wasted I/O per push — and the
+	// client sees unrelated files as candidates for deletion.
+	PathPrefix    string `protobuf:"bytes,4,opt,name=path_prefix,json=pathPrefix,proto3" json:"path_prefix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -269,6 +283,20 @@ func (x *FileSyncStart) GetManifest() *FileSyncManifest {
 		return x.Manifest
 	}
 	return nil
+}
+
+func (x *FileSyncStart) GetVolume() string {
+	if x != nil {
+		return x.Volume
+	}
+	return ""
+}
+
+func (x *FileSyncStart) GetPathPrefix() string {
+	if x != nil {
+		return x.PathPrefix
+	}
+	return ""
 }
 
 type FileSyncChunk struct {
@@ -757,10 +785,13 @@ const file_wendy_agent_services_v2_file_sync_service_proto_rawDesc = "" +
 	"\x06commit\x18\x03 \x01(\v2'.wendy.agent.services.v2.FileSyncCommitH\x00R\x06commit\x12>\n" +
 	"\x05chmod\x18\x04 \x01(\v2&.wendy.agent.services.v2.FileSyncChmodH\x00R\x05chmod\x12A\n" +
 	"\x06delete\x18\x05 \x01(\v2'.wendy.agent.services.v2.FileSyncDeleteH\x00R\x06deleteB\x0e\n" +
-	"\frequest_type\"m\n" +
+	"\frequest_type\"\xa6\x01\n" +
 	"\rFileSyncStart\x12\x15\n" +
 	"\x06app_id\x18\x01 \x01(\tR\x05appId\x12E\n" +
-	"\bmanifest\x18\x02 \x01(\v2).wendy.agent.services.v2.FileSyncManifestR\bmanifest\"\x94\x01\n" +
+	"\bmanifest\x18\x02 \x01(\v2).wendy.agent.services.v2.FileSyncManifestR\bmanifest\x12\x16\n" +
+	"\x06volume\x18\x03 \x01(\tR\x06volume\x12\x1f\n" +
+	"\vpath_prefix\x18\x04 \x01(\tR\n" +
+	"pathPrefix\"\x94\x01\n" +
 	"\rFileSyncChunk\x12\x12\n" +
 	"\x04path\x18\x01 \x01(\tR\x04path\x12\x12\n" +
 	"\x04data\x18\x02 \x01(\fR\x04data\x12\x1a\n" +

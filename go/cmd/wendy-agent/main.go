@@ -261,6 +261,7 @@ func main() {
 	bluetoothSvc := services.NewBluetoothService(logger, btManager)
 	agentUpdateSvc := services.NewAgentUpdateService(logger, installer)
 	osUpdateSvc := services.NewOSUpdateService(logger)
+	fileSyncSvcV2 := services.NewFileSyncServiceV2(logger)
 	containerSvcV2 := services.NewContainerServiceV2(containerSvc)
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
@@ -579,6 +580,14 @@ func main() {
 		// plaintext pre-provisioning server (handing anyone on the LAN a host
 		// root shell) and on the local admin socket.
 		agentpb.RegisterWendyShellServiceServer(srv, shellSvc)
+
+		// WendyFileSyncService writes into persistent volumes. It is registered
+		// only here for the same reason as the shell service: on the plaintext
+		// pre-provisioning server it would let anyone on the LAN write files
+		// that a GPU app later loads, and on the local admin socket it would
+		// add nothing (an admin-entitled container already has the volume
+		// bind-mounted).
+		agentpbv2.RegisterWendyFileSyncServiceServer(srv, fileSyncSvcV2)
 
 		// Compute mTLS port = agentPort + 1.
 		portNum, err := strconv.Atoi(agentPort)
