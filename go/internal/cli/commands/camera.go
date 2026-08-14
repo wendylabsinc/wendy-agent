@@ -288,7 +288,14 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 			diagnosticStream := &cameraDiagnosticStream{videoStream: stream}
 
-			cliLogln("Streaming video (Ctrl+C to stop)...")
+			// In --stdout mode stdout carries the encoded video, so progress
+			// text belongs on stderr: a viewer reading the pipe would otherwise
+			// have to resynchronise past this line before its first frame.
+			if toStdout {
+				cliNotice("Streaming video (Ctrl+C to stop)...")
+			} else {
+				cliLogln("Streaming video (Ctrl+C to stop)...")
+			}
 
 			if toStdout {
 				return pipeVideoToStdout(diagnosticStream, cmd.OutOrStdout())

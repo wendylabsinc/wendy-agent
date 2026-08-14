@@ -388,6 +388,26 @@ func (h *deviceHub) now() time.Time {
 	return time.Now()
 }
 
+// describeStreamParams renders the shared capture/encode settings for an error
+// message. A caller that is refused needs to know which value to match, not
+// merely that something differed: on a device where an app already holds the
+// camera, matching it is the only way in.
+func describeStreamParams(width, height, framerate, keyframeInterval uint32) string {
+	dims := "device default size"
+	if width > 0 || height > 0 {
+		dims = fmt.Sprintf("%dx%d", width, height)
+	}
+	fps := "device default fps"
+	if framerate > 0 {
+		fps = fmt.Sprintf("%d fps", framerate)
+	}
+	keyint := "default keyframe interval"
+	if keyframeInterval > 0 {
+		keyint = fmt.Sprintf("keyframe interval %d", keyframeInterval)
+	}
+	return dims + ", " + fps + ", " + keyint
+}
+
 // maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
 // camera producer. Exceeding this returns ResourceExhausted to the caller.
 // The cap bounds per-device channel memory and broadcast work proportionally.
@@ -488,10 +508,11 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	// of a corrupt fraction of it.
 	paceable := frame.codec == agentpb.VideoCodec_VIDEO_CODEC_H264
 	groupStart := false
+	pictures := 1
 	if h.paced > 0 && paceable {
-		// Scanning costs a pass over the frame, so it happens only while some
+		// Scanning costs a pass over the buffer, so it happens only while some
 		// subscriber is actually paced.
-		groupStart = startsH264Keyframe(frame.data)
+		groupStart, pictures = scanH264(frame.data)
 	}
 	if h.paced > 0 && !paceable && !h.warnedUnpaceable {
 		h.warnedUnpaceable = true
@@ -526,7 +547,11 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 			continue
 		}
 		if sub.minInterval > 0 && paceable {
-			sub.nextDue = sub.nextDue.Add(sub.minInterval)
+			// Charge for every picture in the buffer, not for the buffer. Only
+			// the native V4L2 path hands over one frame at a time; a GStreamer
+			// pipe read can carry several, and charging it as one delivered a
+			// measured 6 fps against a 2 fps request on real hardware.
+			sub.nextDue = sub.nextDue.Add(time.Duration(pictures) * sub.minInterval)
 		}
 		select {
 		case sub.ch <- frame:
@@ -536,22 +561,29 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	return true
 }
 
-// H.264 Annex-B NAL unit types that mean a decoder can start here: an IDR
-// picture, or the parameter sets that always immediately precede one.
+// H.264 Annex-B NAL unit types. IDR and the parameter sets that precede it mark
+// a point a decoder can start from; the VCL types are the coded pictures
+// themselves.
 const (
-	h264NALTypeIDR = 5
-	h264NALTypeSPS = 7
+	h264NALTypeNonIDR = 1
+	h264NALTypeIDR    = 5
+	h264NALTypeSPS    = 7
 )
 
-// startsH264Keyframe reports whether an Annex-B byte range contains the start of
-// a keyframe-anchored group.
+// scanH264 reports whether an Annex-B buffer begins a keyframe-anchored group,
+// and how many coded pictures it contains.
 //
-// It scans for a start code rather than assuming the buffer begins on a frame
+// It scans for start codes rather than assuming the buffer begins on a frame
 // boundary, because only the native V4L2 path hands over whole frames: the
 // GStreamer and network-camera paths deliver whatever a pipe read returned, so a
-// group can begin anywhere inside a buffer. Anchoring on the byte pattern works
-// for both, and is the same thing a decoder does to resynchronise.
-func startsH264Keyframe(data []byte) bool {
+// group can begin anywhere inside a buffer and several pictures can share one.
+// Anchoring on the byte pattern works for both, and is what a decoder does to
+// resynchronise.
+//
+// The picture count is what the rate budget is charged against, so it counts
+// pictures and not slices: a multi-slice encoder emits several VCL NAL units per
+// picture, and only the one whose first_mb_in_slice is zero starts a new one.
+func scanH264(data []byte) (groupStart bool, pictures int) {
 	for i := 0; i+3 < len(data); i++ {
 		// Annex-B start code: 00 00 01, optionally preceded by another 00.
 		if data[i] != 0x00 || data[i+1] != 0x00 {
@@ -567,18 +599,48 @@ func startsH264Keyframe(data []byte) bool {
 			continue
 		}
 		if nalIdx >= len(data) {
-			return false
+			break
 		}
-		// forbidden_zero_bit must be 0; the low five bits carry the type.
-		if data[nalIdx]&0x80 != 0 {
+		header := data[nalIdx]
+		// forbidden_zero_bit must be 0.
+		if header&0x80 != 0 {
 			continue
 		}
-		switch data[nalIdx] & 0x1f {
+		switch nalType := header & 0x1f; nalType {
 		case h264NALTypeIDR, h264NALTypeSPS:
-			return true
+			if nalType == h264NALTypeIDR {
+				if startsNewPicture(data[nalIdx+1:]) {
+					pictures++
+				}
+			}
+			groupStart = true
+		case h264NALTypeNonIDR:
+			if startsNewPicture(data[nalIdx+1:]) {
+				pictures++
+			}
 		}
+		i = nalIdx
 	}
-	return false
+	if pictures == 0 {
+		// Either a parameter-set-only buffer or a slice continuation. Charging
+		// it as one picture keeps a stream the scanner cannot read from being
+		// delivered for free.
+		pictures = 1
+	}
+	return groupStart, pictures
+}
+
+// startsNewPicture reads first_mb_in_slice, the first ue(v) of a slice header,
+// and reports whether it is zero — which is what distinguishes the first slice
+// of a picture from a continuation of the previous one.
+func startsNewPicture(sliceHeader []byte) bool {
+	if len(sliceHeader) == 0 {
+		return false
+	}
+	// ue(v): a run of leading zero bits, then a 1, then that many value bits.
+	// first_mb_in_slice == 0 is encoded as the single bit 1, so only the top bit
+	// has to be read.
+	return sliceHeader[0]&0x80 != 0
 }
 
 // videoSourceKind distinguishes a local V4L2 node from a network camera.
@@ -991,7 +1053,11 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 					zap.Uint32("existing_w", h.width), zap.Uint32("existing_h", h.height),
 					zap.Uint32("existing_fps", h.framerate),
 					zap.Uint32("existing_keyint", h.keyframeInterval))
-				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
+				return nil, 0, nil, status.Errorf(codes.InvalidArgument,
+					"device already in use with different stream parameters "+
+						"(in use: %s; requested: %s) — max_framerate is per subscriber and may differ, these may not",
+					describeStreamParams(h.width, h.height, h.framerate, h.keyframeInterval),
+					describeStreamParams(req.GetWidth(), req.GetHeight(), req.GetFramerate(), req.GetKeyframeIntervalFrames()))
 			}
 			id, ch, err = h.subscribe(req.GetMaxFramerate())
 			s.mu.Unlock()

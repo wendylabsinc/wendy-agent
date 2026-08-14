@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/status"
 
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -62,7 +63,7 @@ func drain(ch chan *videoFrame) []*videoFrame {
 	}
 }
 
-func TestStartsH264Keyframe(t *testing.T) {
+func TestScanH264GroupStart(t *testing.T) {
 	tests := []struct {
 		name string
 		data []byte
@@ -82,8 +83,8 @@ func TestStartsH264Keyframe(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := startsH264Keyframe(tc.data); got != tc.want {
-				t.Errorf("startsH264Keyframe(%x) = %v, want %v", tc.data, got, tc.want)
+			if got, _ := scanH264(tc.data); got != tc.want {
+				t.Errorf("scanH264(%x) group start = %v, want %v", tc.data, got, tc.want)
 			}
 		})
 	}
@@ -169,11 +170,11 @@ func TestPacingDropsWholeGroups(t *testing.T) {
 	}
 	// Whole groups only: the first frame delivered must be the keyframe, or the
 	// rest cannot be decoded.
-	if !startsH264Keyframe(got[0].data) {
+	if start, _ := scanH264(got[0].data); !start {
 		t.Error("delivered group does not start with a keyframe")
 	}
 	for _, f := range got[1:] {
-		if startsH264Keyframe(f.data) {
+		if start, _ := scanH264(f.data); start {
 			t.Error("a second group leaked through")
 		}
 	}
@@ -452,5 +453,114 @@ func TestPacedCountSurvivesAbsurdRate(t *testing.T) {
 	h.unsubscribe(id)
 	if h.paced != 0 {
 		t.Errorf("paced = %d after unsubscribe, want 0", h.paced)
+	}
+}
+
+// The rate budget is charged per coded picture, so a buffer carrying several of
+// them — what a GStreamer pipe read routinely delivers — costs several
+// intervals. Charging per buffer measured 6 fps against a 2 fps request on real
+// hardware.
+func TestScanH264CountsPictures(t *testing.T) {
+	sps := []byte{0, 0, 0, 1, 0x67, 0x42}
+	idr := []byte{0, 0, 0, 1, 0x65, 0x88}       // first_mb_in_slice = 0
+	pFrame := []byte{0, 0, 0, 1, 0x41, 0x9a}    // first_mb_in_slice = 0
+	contSlice := []byte{0, 0, 0, 1, 0x41, 0x0a} // continuation: first bit clear
+	pps := []byte{0, 0, 0, 1, 0x68, 0xce}
+
+	tests := []struct {
+		name         string
+		data         []byte
+		wantStart    bool
+		wantPictures int
+	}{
+		{"one inter frame", pFrame, false, 1},
+		{"keyframe: sps + idr", append(append([]byte{}, sps...), idr...), true, 1},
+		{"three inter frames in one buffer", concat(pFrame, pFrame, pFrame), false, 3},
+		{"keyframe plus two inter frames", concat(sps, pps, idr, pFrame, pFrame), true, 3},
+		// A multi-slice picture must not be counted once per slice.
+		{"one picture in two slices", concat(pFrame, contSlice), false, 1},
+		{"parameter sets only still cost one", concat(sps, pps), true, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			start, pictures := scanH264(tc.data)
+			if start != tc.wantStart {
+				t.Errorf("group start = %v, want %v", start, tc.wantStart)
+			}
+			if pictures != tc.wantPictures {
+				t.Errorf("pictures = %d, want %d", pictures, tc.wantPictures)
+			}
+		})
+	}
+}
+
+func concat(parts ...[]byte) []byte {
+	var out []byte
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
+}
+
+// A buffer holding several pictures must be charged for all of them, or the
+// delivered rate overshoots by however many frames share a buffer.
+func TestPacingChargesEveryPictureInABuffer(t *testing.T) {
+	h, clock, cancel := newPacingHub(t)
+	defer cancel()
+
+	id, ch, err := h.subscribe(2) // 2 fps
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	defer h.unsubscribe(id)
+
+	// Each buffer is a keyframe followed by four inter frames: five pictures,
+	// which at 2 fps costs 2.5 seconds of budget.
+	multi := &videoFrame{
+		data: concat(
+			[]byte{0, 0, 0, 1, 0x67, 0x42}, []byte{0, 0, 0, 1, 0x65, 0x88},
+			[]byte{0, 0, 0, 1, 0x41, 0x9a}, []byte{0, 0, 0, 1, 0x41, 0x9a},
+			[]byte{0, 0, 0, 1, 0x41, 0x9a}, []byte{0, 0, 0, 1, 0x41, 0x9a},
+		),
+		codec: agentpb.VideoCodec_VIDEO_CODEC_H264,
+	}
+
+	var delivered int
+	for i := 0; i < 20; i++ { // 5 seconds, one buffer every 250ms
+		h.broadcast(multi)
+		delivered += len(drain(ch))
+		clock.advance(250 * time.Millisecond)
+	}
+
+	// Five seconds at 2 fps earns ten pictures, i.e. two of these buffers.
+	if delivered != 2 {
+		t.Errorf("delivered %d buffers over 5s at 2 fps, want 2 (10 pictures)", delivered)
+	}
+}
+
+// On a real device an app already holds the camera, so a refused caller needs to
+// be told which values to match rather than merely that something differed.
+func TestMismatchErrorNamesTheConflict(t *testing.T) {
+	svc := newTestVideoService(nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	held := &agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30}
+	h, id, _, err := svc.getOrCreateHub(ctx, "/dev/video0", held)
+	if err != nil {
+		t.Fatalf("first getOrCreateHub failed: %v", err)
+	}
+	defer h.unsubscribe(id)
+
+	_, _, _, err = svc.getOrCreateHub(ctx, "/dev/video0",
+		&agentpb.StreamVideoRequest{Width: 1280, Height: 720, Framerate: 30, KeyframeIntervalFrames: 1})
+	if err == nil {
+		t.Fatal("expected a mismatch error")
+	}
+	msg := status.Convert(err).Message()
+	for _, want := range []string{"1280x720", "30 fps", "keyframe interval 1", "max_framerate"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message missing %q: %s", want, msg)
+		}
 	}
 }
