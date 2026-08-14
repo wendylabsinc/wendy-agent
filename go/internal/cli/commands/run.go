@@ -1653,10 +1653,13 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 				saveDeployFingerprint(appCfg.AppID, deviceKey, deployFingerprint{InputHash: inputHash, AppVersion: appCfg.Version, LayerDiffIDs: diffIDs})
 			}
 			return nil
-		} else if ctx.Err() != nil {
-			// The deploy was cancelled (e.g. `wendy watch` superseded it with a
-			// newer change, or the user hit Ctrl-C). Don't fall back to a full
-			// registry push — just surface the cancellation.
+		} else if isChunkDeployCancellation(ctx, err) {
+			// The deploy was cancelled — either the context (e.g. `wendy watch`
+			// superseded it with a newer change) or the user backing out of the
+			// interactive chunk-push progress bar (ErrUserCancelled; ctx itself
+			// is NOT cancelled there). Don't fall back to a full registry push,
+			// which is often a BIGGER upload than the one just cancelled — just
+			// surface the cancellation.
 			return err
 		} else if opts.chunking == chunkingForce {
 			// --chunking=force opts out of the registry-push fallback so the
@@ -2392,7 +2395,19 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // zero when the failure preceded (or prevented) a successful layer read.
 type chunkDeployStats struct {
 	imageBytes int64
-	layerCount int
+}
+
+// isChunkDeployCancellation reports whether a deployByChunkDiff failure was a
+// cancellation rather than a genuine deploy failure — either the context was
+// cancelled (e.g. `wendy watch` superseded the deploy with a newer change, or
+// the user hit Ctrl-C before the interactive chunk-push progress bar started)
+// or the user backed out of that progress bar itself. Bubble Tea captures
+// Ctrl-C as a key event there (see pushLayersWithProgress), so the parent ctx
+// is NOT cancelled in that case — err is the only signal, via ErrUserCancelled.
+// Either way, the fallback ladder must never proceed to a registry push (often
+// a bigger upload than the one just cancelled) after the user said stop.
+func isChunkDeployCancellation(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, ErrUserCancelled)
 }
 
 // largeRegistryFallbackBytes is the (decimal) image-size threshold above which
@@ -2494,7 +2509,6 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	fillStats := func() {
 		if stats != nil {
 			stats.imageBytes = totalCompressedLayerBytes(layers)
-			stats.layerCount = len(layers)
 		}
 	}
 	if exportMode == "dir" {

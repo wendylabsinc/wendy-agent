@@ -453,6 +453,9 @@ func TestCloudKeepaliveProfiles(t *testing.T) {
 	if tunneledKeepaliveACKTimeout <= clouddefaults.KeepaliveACKTimeout {
 		t.Errorf("tunneledKeepaliveACKTimeout = %v, want > clouddefaults.KeepaliveACKTimeout (%v) -- the tunneled profile is a slow end-to-end backstop, not the liveness probe", tunneledKeepaliveACKTimeout, clouddefaults.KeepaliveACKTimeout)
 	}
+	if tunneledKeepalivePing <= clouddefaults.KeepalivePing {
+		t.Errorf("tunneledKeepalivePing = %v, want > clouddefaults.KeepalivePing (%v) -- the tunneled profile is a slow end-to-end backstop, not the liveness probe", tunneledKeepalivePing, clouddefaults.KeepalivePing)
+	}
 	if clouddefaults.KeepalivePing < agentMinTime {
 		t.Errorf("clouddefaults.KeepalivePing = %v, want >= agent MinTime %v (mtls/server.go:108) -- this is the broker/cloud-API liveness ping", clouddefaults.KeepalivePing, agentMinTime)
 	}

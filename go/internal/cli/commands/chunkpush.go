@@ -80,7 +80,16 @@ func pushLayersByChunks(ctx context.Context, cs agentpb.WendyContainerServiceCli
 		}
 		toPush = append(toPush, i)
 	}
-	if skipped > 0 {
+	// Interactive mode already renders this same reused-layer count live, via
+	// the progress bar's ticker (chunkPushSnapshot.Line(), fed by
+	// SetLayerCounts below) and again in its post-exit Summary() — printing it
+	// here too would race cliLogln's direct write to os.Stderr against the
+	// live Bubble Tea program rendering to that same fd, garbling the bar on
+	// every deploy with layer reuse (WDY-2432/2433 final-review fix wave,
+	// finding 3). The non-interactive/plain path renders nothing else to
+	// stderr, so it keeps this as its only feedback until the end-of-push
+	// Summary() line.
+	if skipped > 0 && !buildProgressInteractive() {
 		cliLogln("Reusing %s layer(s) already on device; chunking %s.",
 			tui.Value(fmt.Sprintf("%d", skipped)), tui.Value(fmt.Sprintf("%d", len(toPush))))
 	}

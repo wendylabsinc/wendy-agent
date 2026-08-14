@@ -289,3 +289,67 @@ func TestPushLayersByChunksReportsProgress(t *testing.T) {
 		t.Fatalf("SentBytes = %d, want %d", snap.SentBytes, refs[0].Len)
 	}
 }
+
+// TestPushLayersByChunksReuseLineSkipsInteractive verifies the mid-push
+// "Reusing N layer(s)..." status line is suppressed while the interactive
+// chunk-push progress bar is live: cliLogln writes straight to os.Stderr, and
+// so does the live Bubble Tea program in pushLayersWithProgress, so printing
+// it there garbles the bar on every deploy with layer reuse (finding 3,
+// WDY-2432/2433 final-review fix wave). The aggregator's Snapshot().Line()
+// (ticker) and Summary() (printed once the TUI exits) already carry the same
+// reused-layer count, so nothing is lost. The non-interactive/plain path is
+// unaffected — nothing else renders to stderr there — so it keeps the line.
+func TestPushLayersByChunksReuseLineSkipsInteractive(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	const presentSize int64 = 4096
+
+	newFake := func() *fakeContainerClient {
+		return &fakeContainerClient{
+			queryFn: func(_ *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+				return &agentpb.QueryChunksResponse{}
+			},
+			queryLayersFn: func(_ *agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+				return &agentpb.QueryLayersResponse{
+					Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: presentSize}},
+				}
+			},
+		}
+	}
+	// A single present layer: the whole push resolves via the layer pre-check
+	// (skipped > 0), which is exactly the case that fires the "Reusing" line.
+	layers := []localLayer{{
+		Digest:    "sha256:" + sha256Hex([]byte("compressed-bytes")),
+		DiffID:    diffID,
+		MediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+		Blob:      []byte("this is not gzip"),
+	}}
+
+	t.Run("interactive: suppressed", func(t *testing.T) {
+		restore := forceBuildProgressInteractive(true)
+		defer restore()
+		out := captureStderr(t, func() {
+			if _, err := pushLayersByChunks(context.Background(), newFake(), layers, newChunkPushProgress()); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if strings.Contains(out, "Reusing") {
+			t.Fatalf("interactive mode must not print the mid-push reuse line (races the live progress bar), got %q", out)
+		}
+	})
+
+	t.Run("non-interactive/plain: unchanged", func(t *testing.T) {
+		restore := forceBuildProgressInteractive(false)
+		defer restore()
+		out := captureStderr(t, func() {
+			if _, err := pushLayersByChunks(context.Background(), newFake(), layers, newChunkPushProgress()); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if !strings.Contains(out, "Reusing") {
+			t.Fatalf("non-interactive/plain mode should keep the reuse line (nothing else renders to stderr there), got %q", out)
+		}
+	})
+}

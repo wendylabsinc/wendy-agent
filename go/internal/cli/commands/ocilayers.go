@@ -1146,8 +1146,19 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	fmt.Fprintf(stderr, "[apple-container] building OCI image: container %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 	buildCmd := imageBuilderCommandContext(ctx, "container", args...)
 	buildCmd.Dir = buildContext
+	// The container CLI writes its --progress plain build output to stderr,
+	// not stdout; only stdout feeds the build parser (stream). Point
+	// buildCmd.Stderr at the *same* stdout value, not the separate stderr
+	// param, so os/exec collapses stdout+stderr into a single pipe/copy
+	// goroutine (the same same-writer-value trick buildAndPushImage uses,
+	// docker.go ~:2034-2038, and A6 applied to the buildx/buildctl OCI-export
+	// paths above) — otherwise the whole build's progress lands in the
+	// setup-log writer instead of the parser, which WDY-2432's synthetic
+	// builder-setup step then renders as a flood of garbled lines. The
+	// announce line above stays on the stderr *parameter* directly (it's
+	// genuine setup chatter, unaffected by cmd's stdout/stderr wiring).
 	buildCmd.Stdout = stdout
-	buildCmd.Stderr = stderr
+	buildCmd.Stderr = stdout
 	if err := buildCmd.Run(); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("container build (OCI layout) failed: %w", contextMonitor.wrapBuildError(err))}
 	}
@@ -1161,8 +1172,11 @@ func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfil
 	saveArgs := []string{"image", "save", imageRef, "--platform", platform, "-o", dest}
 	fmt.Fprintf(stderr, "[apple-container] exporting OCI layout: container %s\n", strings.Join(saveArgs, " "))
 	saveCmd := imageBuilderCommandContext(ctx, "container", saveArgs...)
+	// Same same-writer-value trick as buildCmd above, for the same reason:
+	// route saveCmd's stderr into the parser feed (stdout), not the separate
+	// setup-log writer.
 	saveCmd.Stdout = stdout
-	saveCmd.Stderr = stderr
+	saveCmd.Stderr = stdout
 	if err := saveCmd.Run(); err != nil {
 		return fmt.Errorf("container image save (OCI layout) failed: %w", err)
 	}

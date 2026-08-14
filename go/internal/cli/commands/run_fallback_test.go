@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -79,6 +81,44 @@ func TestFormatRegistryFallbackNotice(t *testing.T) {
 		got := formatRegistryFallbackNotice(chunkErr, largeRegistryFallbackBytes-1)
 		if strings.Contains(got, "will be re-uploaded") {
 			t.Fatalf("notice %q should not contain the large-fallback size clause below the threshold", got)
+		}
+	})
+}
+
+// TestIsChunkDeployCancellation covers the predicate the fallback ladder uses
+// to decide "the user said stop" versus "chunk-diff genuinely failed". Both a
+// cancelled context (e.g. `wendy watch` superseding a deploy, or Ctrl-C before
+// the interactive progress bar starts) and ErrUserCancelled (the user backing
+// out of the interactive chunk-push progress bar — Bubble Tea captures Ctrl-C
+// as a key event there, so ctx itself is NOT cancelled in that case) must
+// short-circuit the ladder before it ever reaches the registry-push fallback
+// notice/prompt: falling back would start a bigger upload after the user
+// asked to stop (finding 1, WDY-2432/2433 final-review fix wave).
+func TestIsChunkDeployCancellation(t *testing.T) {
+	t.Run("ErrUserCancelled with a live context", func(t *testing.T) {
+		if !isChunkDeployCancellation(context.Background(), ErrUserCancelled) {
+			t.Fatal("want true: the user cancelled the interactive progress bar")
+		}
+	})
+
+	t.Run("wrapped ErrUserCancelled", func(t *testing.T) {
+		err := fmt.Errorf("pushing changed layers: %w", ErrUserCancelled)
+		if !isChunkDeployCancellation(context.Background(), err) {
+			t.Fatal("want true: errors.Is must see through the wrap")
+		}
+	})
+
+	t.Run("context cancelled, ordinary error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if !isChunkDeployCancellation(ctx, errors.New("QueryChunks unimplemented")) {
+			t.Fatal("want true: a cancelled context is itself a cancellation, regardless of err's shape")
+		}
+	})
+
+	t.Run("neither cancelled: a genuine chunk-diff failure", func(t *testing.T) {
+		if isChunkDeployCancellation(context.Background(), errors.New("QueryChunks unimplemented")) {
+			t.Fatal("want false: this must fall through to the registry-push fallback classifiers")
 		}
 	})
 }
