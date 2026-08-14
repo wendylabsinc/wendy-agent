@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // loopbackHarness wires a Loopback whose every seam is captured in memory, so
@@ -28,6 +30,12 @@ type loopbackHarness struct {
 	addNodeCalls []addNodeCall
 	addNodeErr   error
 	removeCalls  []int
+
+	// removeSignal, if set by a test, receives the removed nr each time
+	// removeNode is called — a proper synchronization primitive (rather than
+	// a polling read of removeCalls) for tests that need to prove an exact
+	// interleaving, e.g. "removeNode was not yet called at this point."
+	removeSignal chan int
 }
 
 type addNodeCall struct {
@@ -70,9 +78,13 @@ func (h *loopbackHarness) deps() loopbackDeps {
 		},
 		removeNode: func(nr int) error {
 			h.mu.Lock()
-			defer h.mu.Unlock()
 			h.removeCalls = append(h.removeCalls, nr)
 			delete(h.nodes, nr)
+			sig := h.removeSignal
+			h.mu.Unlock()
+			if sig != nil {
+				sig <- nr
+			}
 			return nil
 		},
 		nodeExists: func(nr int) bool {
@@ -384,10 +396,19 @@ type pumpAttempt struct {
 // pumpBehavior configures how a single numbered pump attempt resolves. A
 // zero value (no release channel) returns err immediately; a non-nil release
 // channel makes the attempt block — simulating a healthy running pump — until
-// the test closes or sends on it (or ctx is canceled first).
+// the test closes or sends on it (or ctx is canceled first, unless
+// ignoreCancel is set).
 type pumpBehavior struct {
 	release <-chan struct{}
 	err     error
+	// ignoreCancel, when true, makes this attempt block on release alone,
+	// deaf to ctx cancellation — modeling a pump that takes real, observable
+	// time (or hangs outright) tearing down after being asked to stop. Tests
+	// that need to see the gap between "canceled" and "actually exited" (a
+	// pump the default ctx-respecting behavior would close instantly) use
+	// this; whoever sets it is responsible for eventually closing/sending on
+	// release so the goroutine does not leak past the test.
+	ignoreCancel bool
 }
 
 // fakePump is a controllable PumpFunc for exercising Loopback's supervisor
@@ -401,12 +422,17 @@ type fakePump struct {
 	behaviors map[int]pumpBehavior
 
 	started chan pumpAttempt
+	// finished receives an attempt the moment its call actually returns —
+	// distinct from started, and needed wherever a test must prove something
+	// did NOT happen before the pump exited, not just that it eventually did.
+	finished chan pumpAttempt
 }
 
 func newFakePump() *fakePump {
 	return &fakePump{
 		behaviors: make(map[int]pumpBehavior),
 		started:   make(chan pumpAttempt, 64),
+		finished:  make(chan pumpAttempt, 64),
 	}
 }
 
@@ -429,20 +455,29 @@ func (f *fakePump) Func() PumpFunc {
 		f.mu.Unlock()
 
 		f.started <- pumpAttempt{n: n, args: args}
+		err := f.run(ctx, b, configured)
+		f.finished <- pumpAttempt{n: n, args: args}
+		return err
+	}
+}
 
-		if !configured {
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		if b.release != nil {
-			select {
-			case <-b.release:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
+func (f *fakePump) run(ctx context.Context, b pumpBehavior, configured bool) error {
+	if !configured {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if b.ignoreCancel {
+		<-b.release
 		return b.err
 	}
+	if b.release != nil {
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.err
 }
 
 func (f *fakePump) attemptCount() int {
@@ -1126,5 +1161,198 @@ func TestLoopback_PumpRetriesUntilNodeAppears(t *testing.T) {
 	wantDevice := "device=/dev/video" + strconv.FormatUint(uint64(cam.ID), 10)
 	if !strings.Contains(joined, wantDevice) {
 		t.Fatalf("pump args = %q, want to contain %q", joined, wantDevice)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Final-review fix wave: RemoveCamera must stop the pump before removing the
+// node, and a permanently node-less camera must not retry in total silence.
+// ---------------------------------------------------------------------------
+
+// RemoveCamera must stop a camera's running pump and wait for it to actually
+// exit before removing its loopback node — not remove the node first (or
+// concurrently), which would return EBUSY while the pump's v4l2sink still
+// holds it open, and would leave an already-authenticated RTSP session
+// streaming with credentials the caller may have just deleted.
+//
+// This is proven via a genuine race between "removeNode fires" and "the pump
+// is released," not by inspecting state after the fact: the fake pump is
+// configured to ignore its context cancellation until explicitly released,
+// so if RemoveCamera's implementation ever regressed to removing the node
+// without waiting, this test would observe removeNode (or RemoveCamera
+// itself returning) before the release.
+func TestLoopback_RemoveCameraStopsPumpThenRemovesNode(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	h.removeSignal = make(chan int, 4)
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	release := make(chan struct{})
+	pump.on(1, pumpBehavior{ignoreCancel: true, release: release})
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	cam := registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+	pump.next(t) // attempt 1 starts; it will ignore cancellation until released.
+
+	// Mirrors VideoService.ForgetCamera's real ordering: the camera is gone
+	// from the registry before RemoveCamera is ever called.
+	if !reg.Forget(cam.ID) {
+		t.Fatalf("Forget(%d) = false", cam.ID)
+	}
+
+	removeDone := make(chan struct{})
+	go func() {
+		l.RemoveCamera(cam.ID)
+		close(removeDone)
+	}()
+
+	select {
+	case <-h.removeSignal:
+		t.Fatal("removeNode was called before the pump exited")
+	case <-removeDone:
+		t.Fatal("RemoveCamera returned before its pump exited")
+	case <-pump.finished:
+		t.Fatal("the fake pump reported finishing before being released")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: RemoveCamera has had time to reach its wait, and none of
+		// the above fired — this bound is a synchronization mechanic (giving
+		// the RemoveCamera goroutine a chance to run), not a stand-in for
+		// removeCameraGrace or any other business duration.
+	}
+
+	close(release) // let the pump actually return now.
+
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveCamera did not return after its pump exited")
+	}
+
+	select {
+	case nr := <-h.removeSignal:
+		if nr != int(cam.ID) {
+			t.Fatalf("removeNode called for nr=%d, want %d", nr, cam.ID)
+		}
+	default:
+		t.Fatal("removeNode was never called")
+	}
+	if path, ok := l.NodePath(cam.ID); ok {
+		t.Fatalf("NodePath(%d) = (%q, true) after RemoveCamera, want false", cam.ID, path)
+	}
+	l.mu.Lock()
+	_, stillRunning := l.pumps[cam.ID]
+	l.mu.Unlock()
+	if stillRunning {
+		t.Fatal("supervisor still registered after RemoveCamera")
+	}
+}
+
+// If a pump never notices its cancellation (hung, or simply slower than
+// removeCameraGrace), RemoveCamera must not hang its caller — a gRPC
+// ForgetCamera handler — waiting on it forever. It gives up on the wait,
+// logs it, and still attempts removeNode: the ioctl's own EBUSY-on-a-held-
+// open-node behavior is the backstop for a pump that is still holding it,
+// not an unbounded wait here. This is the documented contract for the
+// "removeNode initially errors" case: RemoveCamera does not retry — it
+// already waited once, bounded, which is the one retry this design affords —
+// it just doesn't let a stuck pump turn into a stuck RPC.
+func TestLoopback_RemoveCameraProceedsAfterGraceIfPumpNeverExits(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	h.removeSignal = make(chan int, 4)
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+	release := make(chan struct{})
+	pump.on(1, pumpBehavior{ignoreCancel: true, release: release})
+	l, reg, creds := newSupervisedLoopback(t, h, fc, pump.Func())
+	cam := registerReadyCamera(t, l, reg, creds, "ec:71:db:2a:ae:7e", "10.98.0.10")
+	// Let the stuck attempt actually exit once the test is done, so
+	// t.Cleanup(l.Shutdown) — registered first, so it runs after this one —
+	// does not hang waiting on a goroutine that would otherwise never notice
+	// cancellation at all.
+	t.Cleanup(func() { close(release) })
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+	pump.next(t)
+	if !reg.Forget(cam.ID) {
+		t.Fatalf("Forget(%d) = false", cam.ID)
+	}
+
+	removeDone := make(chan struct{})
+	go func() {
+		l.RemoveCamera(cam.ID)
+		close(removeDone)
+	}()
+
+	fc.blockUntilWaiters(t, 1) // RemoveCamera is now parked on its bounded timer.
+	fc.Advance(removeCameraGrace)
+
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RemoveCamera did not return after its grace period elapsed")
+	}
+
+	select {
+	case nr := <-h.removeSignal:
+		if nr != int(cam.ID) {
+			t.Fatalf("removeNode called for nr=%d, want %d", nr, cam.ID)
+		}
+	default:
+		t.Fatal("removeNode was never attempted after the grace period elapsed")
+	}
+}
+
+// A camera stuck permanently node-less (demand and credentials present, but
+// no node ever appears) must not spin in total silence — but it also must
+// not spam a warning on every 1s/2s/4s.../30s-capped retry. superviseCam logs
+// it exactly once per supervisor lifetime.
+func TestLoopback_LogsNodeNotReadyOnceThenStaysQuiet(t *testing.T) {
+	h := newLoopbackHarness()
+	h.controlExists = true
+	fc := newFakeClock(time.Unix(1_700_000_000, 0))
+	pump := newFakePump()
+
+	core, logs := observer.New(zapcore.WarnLevel)
+	logger := zap.New(core)
+
+	reg := NewRegistry(filepath.Join(t.TempDir(), "cameras.json"))
+	if err := reg.Load(); err != nil {
+		t.Fatalf("registry load: %v", err)
+	}
+	creds := NewCredentialStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := creds.Load(); err != nil {
+		t.Fatalf("credentials load: %v", err)
+	}
+	l := NewLoopback(context.Background(), logger, reg, creds, pump.Func())
+	l.deps = h.deps()
+	l.clock = fc
+	t.Cleanup(l.Shutdown)
+
+	cam, err := reg.Upsert(Camera{MAC: "ec:71:db:2a:ae:7e", Address: "10.98.0.10"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := creds.Set(cam.MAC, Credential{Username: "admin", Password: "hunter2"}); err != nil {
+		t.Fatalf("set credentials: %v", err)
+	}
+	// Deliberately no EnsureNodes: demand and credentials are both present,
+	// but the node itself never appears for the life of this test.
+
+	l.SetContainerConsumers([]string{"com.example.app"})
+
+	fc.blockUntilWaiters(t, 1)
+	fc.Advance(1 * time.Second) // retry 1 -> 2
+	fc.blockUntilWaiters(t, 1)
+	fc.Advance(2 * time.Second) // retry 2 -> 3
+	fc.blockUntilWaiters(t, 1)
+	fc.Advance(4 * time.Second) // retry 3 -> 4: several retries in, still nothing logs again.
+
+	if n := pump.attemptCount(); n != 0 {
+		t.Fatalf("pump invoked %d times for a camera with no node, want 0", n)
+	}
+	if entries := logs.All(); len(entries) != 1 {
+		t.Fatalf("warnings logged = %d across multiple node-not-ready retries, want exactly 1: %v", len(entries), entries)
 	}
 }

@@ -63,6 +63,15 @@ const (
 	// continuation of a crash loop: the backoff level resets to base after an
 	// attempt that ran at least this long.
 	pumpStableRun = 1 * time.Minute
+
+	// removeCameraGrace bounds how long RemoveCamera waits for a running
+	// pump to notice its supervisor was canceled and actually exit before
+	// the node is removed anyway. It exists so a pump that hangs tearing
+	// down cannot turn ForgetCamera into an unbounded RPC: removeNode is
+	// always attempted afterward regardless of whether the wait succeeded or
+	// timed out, and the ioctl's own EBUSY-on-a-held-open-node behavior —
+	// logged, not retried — is the backstop for the timeout case.
+	removeCameraGrace = 5 * time.Second
 )
 
 // pumpBackoffDelay returns the wait before a pump's level'th restart attempt
@@ -90,11 +99,14 @@ func pumpBackoffDelay(level int) time.Duration {
 	return d
 }
 
-// errPumpNodeNotReady is an internal sentinel logged (never returned to a
-// caller) when a supervised camera's loopback node does not exist yet. It is
-// treated exactly like a failed pump attempt — backed off and retried — since
-// EnsureNodes creating the node is a race this loop should absorb rather than
-// give up over.
+// errPumpNodeNotReady is an internal sentinel (never returned to a caller)
+// for when a supervised camera's loopback node does not exist yet. It is
+// treated exactly like a failed pump attempt — backed off and retried —
+// since EnsureNodes creating the node is a race this loop should absorb
+// rather than give up over. superviseCam logs it once per supervisor
+// lifetime (not on every retry — a camera stuck permanently node-less would
+// otherwise retry, and so log, forever on the 1s..30s backoff ladder) so a
+// permanently node-less camera is not invisibly spinning in the background.
 var errPumpNodeNotReady = errors.New("v4l2loopback node for this camera does not exist yet")
 
 // camPump is the supervision state for one camera's demanded pump.
@@ -124,6 +136,13 @@ type camPump struct {
 	// here before acting, so only the most recent arming can ever stop the
 	// pump.
 	idleGen uint64
+
+	// done is closed by finishSupervisor once this camPump's supervisor
+	// goroutine has fully exited — meaning its current pump attempt, if any,
+	// has already returned. RemoveCamera waits on it (bounded by
+	// removeCameraGrace) before removing the camera's node, so removeNode is
+	// never attempted while the pump's v4l2sink might still hold it open.
+	done chan struct{}
 }
 
 // loopbackDeps seams every syscall and subprocess the loopback node manager
@@ -314,11 +333,59 @@ func (l *Loopback) NodePath(camID uint32) (string, bool) {
 	return fmt.Sprintf("/dev/video%d", nr), true
 }
 
-// RemoveCamera deletes a camera's v4l2loopback node, if the module is
-// available. It is best-effort and has no error to report: a camera being
-// forgotten should not fail because its node was already gone, and the
-// underlying removeNode already treats "no such node" as success.
+// RemoveCamera stops a camera's pump — if one is running, or about to be (a
+// pending idle-grace timer) — and waits, bounded by removeCameraGrace, for
+// it to actually exit before deleting the camera's v4l2loopback node. If
+// nothing was running for this camera, or the module is unavailable, it goes
+// straight to removeNode exactly as before.
+//
+// The ordering matters for two reasons. First, a still-running pump keeps an
+// already-authenticated RTSP session alive on credentials the caller may
+// have just deleted (see VideoService.ForgetCamera, which deletes
+// credentials and forgets the camera from the registry before calling this —
+// both of which make superviseCam's own re-resolution exit the supervisor on
+// its next attempt regardless, but that is not a substitute for actively
+// canceling the one already in flight). Second, V4L2LOOPBACK_CTL_REMOVE
+// returns EBUSY while the pump's v4l2sink still holds the node open, which
+// would leave the node orphaned: a forgotten camera drops out of
+// reg.List(), so nothing ever retries removal for it again short of a
+// reboot.
+//
+// It is best-effort and has no error to report, matching its existing
+// contract: a camera being forgotten should not fail because its node was
+// already gone, or because its pump outlived removeCameraGrace — removeNode
+// is attempted regardless (logged if it fails, EBUSY-shaped or otherwise),
+// and the underlying removeNode already treats "no such node" as success.
+// There is deliberately no retry loop around removeNode beyond that single
+// post-wait attempt: removeCameraGrace is the one wait this affords, so a
+// pump that is still somehow holding the node past it becomes a logged
+// anomaly rather than an unbounded RPC.
 func (l *Loopback) RemoveCamera(camID uint32) {
+	l.mu.Lock()
+	cp, running := l.pumps[camID]
+	var supCancel context.CancelFunc
+	if running {
+		supCancel = cp.cancel
+		// Same bounce pattern CredentialsChanged uses: cancel any pending
+		// idle-grace timer too, so it cannot independently act on a cp that
+		// is already on its way out from under it.
+		if cp.idleCancel != nil {
+			cp.idleCancel()
+			cp.idleCancel = nil
+		}
+	}
+	l.mu.Unlock()
+
+	if supCancel != nil {
+		supCancel()
+		select {
+		case <-cp.done:
+		case <-l.clock.After(removeCameraGrace):
+			l.logger.Warn("camera's pump did not exit before its loopback node was removed",
+				zap.Uint32("cameraId", camID), zap.Duration("waited", removeCameraGrace))
+		}
+	}
+
 	if err := l.Available(); err != nil {
 		return
 	}
@@ -512,7 +579,7 @@ func (l *Loopback) reconcile(camID uint32) {
 		return
 	}
 	ctx, cancel := context.WithCancel(l.ctx)
-	cp = &camPump{cancel: cancel}
+	cp = &camPump{cancel: cancel, done: make(chan struct{})}
 	l.pumps[camID] = cp
 	l.wg.Add(1)
 	go l.superviseCam(ctx, camID, cp)
@@ -536,6 +603,7 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 	defer l.wg.Done()
 
 	level := 0
+	loggedNodeNotReady := false
 	for {
 		if ctx.Err() != nil {
 			l.finishSupervisor(camID, cp)
@@ -559,6 +627,14 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 		switch {
 		case !pathOK:
 			runErr = errPumpNodeNotReady
+			// Once per supervisor lifetime, not every retry: a camera stuck
+			// permanently node-less would otherwise log on every attempt of
+			// an otherwise-infinite 1s..30s backoff ladder forever.
+			if !loggedNodeNotReady {
+				loggedNodeNotReady = true
+				l.logger.Warn("camera has demand and stored credentials but no v4l2loopback node yet; pump waiting and retrying",
+					zap.Uint32("cameraId", camID))
+			}
 		default:
 			streamURL, err := StreamURL(cam, cred, StreamAuto)
 			if err != nil {
@@ -621,6 +697,7 @@ func (l *Loopback) finishSupervisor(camID uint32, cp *camPump) {
 		delete(l.pumps, camID)
 	}
 	l.mu.Unlock()
+	close(cp.done)
 
 	l.reconcile(camID)
 }

@@ -228,7 +228,7 @@
             },
             "password": {
               "type": "string",
-              "description": "Password for a registered IP camera. Ignored for local cameras. Stored on the device at deploy; prefer `wendy device camera login` for interactive use."
+              "description": "Password for a registered IP camera. Ignored for local cameras. Not read at deploy or container-create time: the CLI consults it only the first time `wendy device camera view` needs a login for that camera. Run `wendy device camera login` (or `camera view` once) so a container-only consumer has it stored before it starts."
             }
           },
           "required": ["type"],
