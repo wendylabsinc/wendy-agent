@@ -45,6 +45,34 @@ message StreamVideoRequest {
     uint32 width      = 2; // pixels; 0 = device default
     uint32 height     = 3; // pixels; 0 = device default
     uint32 framerate  = 4; // fps; 0 = device default
+
+    // Upper bound on how many frames per second THIS subscriber receives; 0 =
+    // every frame (the historical behaviour). Unlike width/height/framerate this
+    // is a property of one connection, not of the camera: subscribers sharing a
+    // camera may each set a different value, and none of them is rejected for
+    // disagreeing. Nothing about capture or encoding changes — the same frames
+    // are produced either way — so this saves uplink bytes, not device CPU.
+    //
+    // Delivery is anchored to keyframes, because an H.264 frame is only
+    // decodable with the frames it depends on. A limited subscriber therefore
+    // receives whole keyframe-to-keyframe groups, and its effective rate is
+    // rounded to that granularity: with the default keyframe interval of half a
+    // second, asking for 1 fps yields one group per second, not one frame. Set
+    // keyframe_interval_frames to make the granularity finer.
+    //
+    // Only applies to H.264. A VP8 stream is delivered whole regardless, because
+    // its frames are wrapped in a WebM container that cannot be cut mid-stream.
+    uint32 max_framerate = 5;
+
+    // Frames between keyframes for the shared encoder; 0 = half a second's worth
+    // (framerate/2). Unlike max_framerate this reconfigures the encoder everyone
+    // shares, so it takes part in the stream-parameter compatibility check.
+    //
+    // It exists because it sets the floor on how finely max_framerate can be
+    // honoured, and how quickly a new subscriber gets a decodable picture. Short
+    // intervals cost bitrate (keyframes are large); 1 makes every frame
+    // independent and every rate exactly achievable, at the highest byte cost.
+    uint32 keyframe_interval_frames = 6;
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any

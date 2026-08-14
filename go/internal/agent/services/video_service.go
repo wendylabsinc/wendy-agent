@@ -316,10 +316,42 @@ type videoFrame struct {
 	codec agentpb.VideoCodec
 }
 
+// subscriber is one gRPC stream attached to a hub, plus the pacing state that
+// lets it receive fewer frames than the camera produces.
+//
+// Pacing is per subscriber and never affects the producer: the camera captures
+// and encodes exactly as it would with no limit set, and the frames a limited
+// subscriber skips are still built and still sent to everyone else. What it
+// saves is bytes on that subscriber's connection, which on a metered uplink is
+// the cost worth saving.
+type subscriber struct {
+	ch chan *videoFrame
+	// minInterval is the shortest gap between the starts of two delivered
+	// groups. Zero means unlimited, which is the historical behaviour and the
+	// path every existing client takes.
+	minInterval time.Duration
+	// admitting says whether the group currently in flight is being delivered
+	// to this subscriber. Decided once, when the group starts, and then applied
+	// to every frame until the next group — an H.264 frame is meaningless
+	// without the frames it references, so a group is delivered whole or not at
+	// all.
+	admitting bool
+	// nextDue is when this subscriber has earned its next frame. Every frame
+	// delivered pushes it one interval further out, so a group of fifteen frames
+	// costs fifteen intervals and the *average* delivered rate is what the
+	// caller asked for.
+	//
+	// Charging per frame rather than per group is what makes the limit mean
+	// something: gating on the gap between group starts would hand a subscriber
+	// asking for 2 fps every frame of a 30 fps camera, since a group starts
+	// twice a second at the default keyframe interval.
+	nextDue time.Time
+}
+
 // deviceHub multiplexes one camera producer to multiple gRPC subscribers.
 type deviceHub struct {
 	mu     sync.Mutex
-	subs   map[int]chan *videoFrame
+	subs   map[int]*subscriber
 	nextID int
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -327,10 +359,33 @@ type deviceHub struct {
 	// err is set by runProducer to the terminal error before closing subscriber
 	// channels. Nil on graceful shutdown (context cancelled). Protected by h.mu.
 	err error
-	// width, height, framerate are copied from the request that started this hub.
-	// Storing scalars (not a proto pointer) prevents data races if the caller's
-	// proto message is ever mutated by middleware after the hub is created.
-	width, height, framerate uint32
+	// width, height, framerate and keyframeInterval are copied from the request
+	// that started this hub. Storing scalars (not a proto pointer) prevents data
+	// races if the caller's proto message is ever mutated by middleware after
+	// the hub is created.
+	//
+	// max_framerate is deliberately absent: it configures nothing on the device,
+	// so two subscribers may disagree about it freely.
+	width, height, framerate, keyframeInterval uint32
+	// paced counts subscribers with a rate limit. While it is zero the hub skips
+	// keyframe detection entirely, so a device serving only unlimited
+	// subscribers does exactly the work it did before.
+	paced int
+	// warnedUnpaceable keeps the "cannot pace this codec" warning to once per
+	// hub rather than once per frame.
+	warnedUnpaceable bool
+
+	logger *zap.Logger
+	// now is the clock used for pacing. A seam so tests can advance time without
+	// sleeping; production leaves it nil and gets time.Now.
+	nowFn func() time.Time
+}
+
+func (h *deviceHub) now() time.Time {
+	if h.nowFn != nil {
+		return h.nowFn()
+	}
+	return time.Now()
 }
 
 // maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
@@ -342,7 +397,7 @@ const maxSubscribersPerHub = 16
 // Returns codes.Unavailable if the hub's context has already been cancelled
 // (checked atomically under h.mu so no subscriber can be added to a dying hub),
 // or codes.ResourceExhausted if the hub already has maxSubscribersPerHub active subscribers.
-func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
+func (h *deviceHub) subscribe(maxFramerate uint32) (int, chan *videoFrame, error) {
 	ch := make(chan *videoFrame, 4)
 	h.mu.Lock()
 	if h.ctx.Err() != nil {
@@ -355,7 +410,22 @@ func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
 	}
 	id := h.nextID
 	h.nextID++
-	h.subs[id] = ch
+	sub := &subscriber{ch: ch}
+	if maxFramerate > 0 {
+		// Clamped to a non-zero interval: a rate so high that a second divides
+		// to nothing would otherwise leave minInterval at 0, which reads as
+		// "unlimited" everywhere else and would leak the paced count on
+		// unsubscribe. A 1ns interval is unlimited in practice anyway.
+		sub.minInterval = max(time.Second/time.Duration(maxFramerate), time.Nanosecond)
+		h.paced++
+		// A paced subscriber starts by waiting for a group boundary rather than
+		// joining mid-group. It costs at most one keyframe interval before the
+		// first picture and buys a stream that is decodable from its first byte.
+		sub.admitting = false
+	} else {
+		sub.admitting = true
+	}
+	h.subs[id] = sub
 	h.mu.Unlock()
 	return id, ch, nil
 }
@@ -365,6 +435,9 @@ func (h *deviceHub) subscribe() (int, chan *videoFrame, error) {
 // getOrCreateHub could observe h.ctx.Err()==nil between the delete and the cancel call.
 func (h *deviceHub) unsubscribe(id int) {
 	h.mu.Lock()
+	if sub, ok := h.subs[id]; ok && sub.minInterval > 0 {
+		h.paced--
+	}
 	delete(h.subs, id)
 	if len(h.subs) == 0 {
 		h.cancel()
@@ -407,13 +480,105 @@ func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	if len(h.subs) == 0 {
 		return false
 	}
-	for _, ch := range h.subs {
+
+	// Cutting a stream is only safe where the cut lands on a keyframe, and only
+	// H.264 is inspected for one here. VP8 arrives wrapped in WebM, where the
+	// bytes on the wire are container structure rather than a plain frame
+	// sequence, so a paced subscriber on VP8 is given the whole stream instead
+	// of a corrupt fraction of it.
+	paceable := frame.codec == agentpb.VideoCodec_VIDEO_CODEC_H264
+	groupStart := false
+	if h.paced > 0 && paceable {
+		// Scanning costs a pass over the frame, so it happens only while some
+		// subscriber is actually paced.
+		groupStart = startsH264Keyframe(frame.data)
+	}
+	if h.paced > 0 && !paceable && !h.warnedUnpaceable {
+		h.warnedUnpaceable = true
+		if h.logger != nil {
+			h.logger.Warn("max_framerate ignored: stream is not H.264",
+				zap.String("codec", frame.codec.String()))
+		}
+	}
+
+	// Monotonic, not the frame timestamp: this agent steps its wall clock from
+	// Roughtime, and a backwards step computed from timestamps would stall every
+	// paced subscriber until the clock caught up.
+	now := h.now()
+
+	for _, sub := range h.subs {
+		switch {
+		case sub.minInterval <= 0 || !paceable:
+			// Unlimited subscribers, and any subscriber of a stream that must
+			// not be cut, take every frame — byte for byte the old behaviour.
+			sub.admitting = true
+		case groupStart:
+			sub.admitting = sub.nextDue.IsZero() || !now.Before(sub.nextDue)
+			if sub.admitting && sub.nextDue.Before(now) {
+				// Behind the clock, because the camera stalled or this
+				// subscriber has been skipping for a while. Restart the budget
+				// from now, so catching up cannot deliver a burst of everything
+				// that was skipped.
+				sub.nextDue = now
+			}
+		}
+		if !sub.admitting {
+			continue
+		}
+		if sub.minInterval > 0 && paceable {
+			sub.nextDue = sub.nextDue.Add(sub.minInterval)
+		}
 		select {
-		case ch <- frame:
+		case sub.ch <- frame:
 		default:
 		}
 	}
 	return true
+}
+
+// H.264 Annex-B NAL unit types that mean a decoder can start here: an IDR
+// picture, or the parameter sets that always immediately precede one.
+const (
+	h264NALTypeIDR = 5
+	h264NALTypeSPS = 7
+)
+
+// startsH264Keyframe reports whether an Annex-B byte range contains the start of
+// a keyframe-anchored group.
+//
+// It scans for a start code rather than assuming the buffer begins on a frame
+// boundary, because only the native V4L2 path hands over whole frames: the
+// GStreamer and network-camera paths deliver whatever a pipe read returned, so a
+// group can begin anywhere inside a buffer. Anchoring on the byte pattern works
+// for both, and is the same thing a decoder does to resynchronise.
+func startsH264Keyframe(data []byte) bool {
+	for i := 0; i+3 < len(data); i++ {
+		// Annex-B start code: 00 00 01, optionally preceded by another 00.
+		if data[i] != 0x00 || data[i+1] != 0x00 {
+			continue
+		}
+		var nalIdx int
+		switch {
+		case data[i+2] == 0x01:
+			nalIdx = i + 3
+		case data[i+2] == 0x00 && i+4 < len(data) && data[i+3] == 0x01:
+			nalIdx = i + 4
+		default:
+			continue
+		}
+		if nalIdx >= len(data) {
+			return false
+		}
+		// forbidden_zero_bit must be 0; the low five bits carry the type.
+		if data[nalIdx]&0x80 != 0 {
+			continue
+		}
+		switch data[nalIdx] & 0x1f {
+		case h264NALTypeIDR, h264NALTypeSPS:
+			return true
+		}
+	}
+	return false
 }
 
 // videoSourceKind distinguishes a local V4L2 node from a network camera.
@@ -815,14 +980,20 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 			break
 		}
 		if h.ctx.Err() == nil {
-			if h.width != req.GetWidth() || h.height != req.GetHeight() || h.framerate != req.GetFramerate() {
+			// max_framerate is deliberately not compared: it configures nothing
+			// on the camera, so subscribers are free to disagree about it. Every
+			// other field here reconfigures the single shared capture/encode,
+			// which is why a mismatch is still refused.
+			if h.width != req.GetWidth() || h.height != req.GetHeight() || h.framerate != req.GetFramerate() ||
+				h.keyframeInterval != req.GetKeyframeIntervalFrames() {
 				s.mu.Unlock()
 				s.logger.Debug("stream parameter mismatch", zap.String("device", path),
 					zap.Uint32("existing_w", h.width), zap.Uint32("existing_h", h.height),
-					zap.Uint32("existing_fps", h.framerate))
+					zap.Uint32("existing_fps", h.framerate),
+					zap.Uint32("existing_keyint", h.keyframeInterval))
 				return nil, 0, nil, status.Errorf(codes.InvalidArgument, "device already in use with different stream parameters")
 			}
-			id, ch, err = h.subscribe()
+			id, ch, err = h.subscribe(req.GetMaxFramerate())
 			s.mu.Unlock()
 			if err != nil {
 				if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
@@ -879,16 +1050,18 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 
 	hctx, cancel := context.WithCancel(s.ctx)
 	h = &deviceHub{
-		subs:      make(map[int]chan *videoFrame),
-		ctx:       hctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		width:     req.GetWidth(),
-		height:    req.GetHeight(),
-		framerate: req.GetFramerate(),
+		subs:             make(map[int]*subscriber),
+		ctx:              hctx,
+		cancel:           cancel,
+		done:             make(chan struct{}),
+		width:            req.GetWidth(),
+		height:           req.GetHeight(),
+		framerate:        req.GetFramerate(),
+		keyframeInterval: req.GetKeyframeIntervalFrames(),
+		logger:           s.logger,
 	}
 	// New hub: the first subscriber is always within the cap.
-	id, ch, _ = h.subscribe()
+	id, ch, _ = h.subscribe(req.GetMaxFramerate())
 	s.hubs[path] = h
 	s.mu.Unlock()
 
@@ -949,8 +1122,8 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	if err != nil && ctx.Err() == nil {
 		h.err = err
 	}
-	for _, ch := range h.subs {
-		close(ch)
+	for _, sub := range h.subs {
+		close(sub.ch)
 	}
 	h.mu.Unlock()
 
@@ -1288,7 +1461,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 
 	// Best-effort: cap the camera encoder's keyframe interval. Non-fatal — many
 	// UVC cameras reject this and keep their firmware default.
-	s.setV4L2KeyframeInterval(fd, keyframeIntervalFrames(req.GetFramerate()))
+	s.setV4L2KeyframeInterval(fd, effectiveKeyframeInterval(req))
 
 	// Two buffers: one dequeued/in-flight, one queued for the camera to fill.
 	// More buffers increase kernel-side lag when the broadcast lags the camera.
@@ -1799,6 +1972,26 @@ func keyframeIntervalFrames(fps uint32) int {
 	return gop
 }
 
+// maxKeyframeIntervalFrames bounds a caller-supplied keyframe interval. Past a
+// few seconds the interval stops being a tuning knob and becomes a way to make
+// paced subscribers appear broken — and to make every new subscriber wait that
+// long for its first decodable picture.
+const maxKeyframeIntervalFrames = 300
+
+// effectiveKeyframeInterval returns the GOP length to configure the encoder
+// with: what the caller asked for, or half a second's worth of frames when
+// unset. Both encoder paths route through here so a request cannot be honoured
+// on one and silently ignored on the other.
+func effectiveKeyframeInterval(req *agentpb.StreamVideoRequest) int {
+	if n := req.GetKeyframeIntervalFrames(); n > 0 {
+		if n > maxKeyframeIntervalFrames {
+			return maxKeyframeIntervalFrames
+		}
+		return int(n)
+	}
+	return keyframeIntervalFrames(req.GetFramerate())
+}
+
 // leakyRawQueue is a GStreamer queue placed between the V4L2 source and the
 // encoder. The agent reads a continuous encoded byte stream from the encoder, so
 // arbitrary encoded bytes cannot be dropped; instead this queue drops *raw*
@@ -1832,7 +2025,7 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// otherwise v4l2src on the device path. libcameraID is validated inside
 	// buildSourceElement, so it is not subject to the devicePath/encoder check above.
 	src := buildSourceElement(devicePath, transport, libcameraID, available)
-	gop := keyframeIntervalFrames(req.GetFramerate())
+	gop := effectiveKeyframeInterval(req)
 
 	// libcamerasrc (CSI/PiSP) must be pinned to a processed format or it
 	// negotiates raw Bayer (e.g. the Raspberry Pi 5 rp1-cfe/PiSP pipeline), which
@@ -2000,7 +2193,7 @@ func buildArgusGStreamerArgs(gstPath string, req *agentpb.StreamVideoRequest, se
 		framerate = argusDefaultFramerate
 	}
 	nvmmCaps := fmt.Sprintf("video/x-raw(memory:NVMM),width=%d,height=%d,framerate=%d/1,format=NV12", width, height, framerate)
-	gop := keyframeIntervalFrames(req.GetFramerate())
+	gop := effectiveKeyframeInterval(req)
 
 	var tail string
 	if encoder == "nvv4l2h264enc" {

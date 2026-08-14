@@ -225,7 +225,7 @@ func newCameraWatchCmd() *cobra.Command {
 // "view" is the canonical, listed command; "watch" reuses the same logic as a
 // hidden alias.
 func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
-	var deviceID, width, height, fps uint32
+	var deviceID, width, height, fps, maxFPS, keyframeInterval uint32
 	var toStdout bool
 
 	cmd := &cobra.Command{
@@ -256,10 +256,12 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 			}
 
 			req := &agentpb.StreamVideoRequest{
-				DeviceId:  deviceID,
-				Width:     width,
-				Height:    height,
-				Framerate: fps,
+				DeviceId:               deviceID,
+				Width:                  width,
+				Height:                 height,
+				Framerate:              fps,
+				MaxFramerate:           maxFPS,
+				KeyframeIntervalFrames: keyframeInterval,
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
@@ -299,6 +301,8 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	cmd.Flags().Uint32Var(&width, "width", 0, "Frame width (0 = device default)")
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
+	cmd.Flags().Uint32Var(&maxFPS, "max-fps", 0, "Cap the frames this viewer receives, leaving other viewers untouched (0 = every frame). Saves uplink bandwidth, not device CPU")
+	cmd.Flags().Uint32Var(&keyframeInterval, "keyframe-interval", 0, "Frames between keyframes for the shared encoder (0 = half a second). Lower values make --max-fps more precise and cost bitrate")
 	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)")
 
 	return cmd
