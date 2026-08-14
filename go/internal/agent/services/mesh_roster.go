@@ -122,7 +122,7 @@ func (r *MeshRoster) Sync(ctx context.Context) error {
 		return nil
 	}
 
-	dialOpts, md, err := brokerDialOpts(r.logger, orgID, assetID, certPEM, keyPEM, chainPEM)
+	dialOpts, md, err := brokerDialOpts(r.logger, orgID, assetID, certPEM, keyPEM, chainPEM, nil)
 	if err != nil {
 		return err
 	}

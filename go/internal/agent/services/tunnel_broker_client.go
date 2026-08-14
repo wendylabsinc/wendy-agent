@@ -8,10 +8,13 @@ import (
 	"io"
 	"math"
 	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
@@ -40,6 +43,11 @@ type TunnelBrokerClient struct {
 	keyPEM   string
 	chainPEM string
 	mtlsPort int
+
+	dialObs *dialObserver
+	// pmtuSuspectCount tracks consecutive connection failures that look like a
+	// path-MTU black hole. Only touched from the Run goroutine.
+	pmtuSuspectCount int
 }
 
 func NewTunnelBrokerClient(logger *zap.Logger, url string, orgID, assetID int32, certPEM, keyPEM, chainPEM string, mtlsPort int) *TunnelBrokerClient {
@@ -52,6 +60,85 @@ func NewTunnelBrokerClient(logger *zap.Logger, url string, orgID, assetID int32,
 		keyPEM:   keyPEM,
 		chainPEM: chainPEM,
 		mtlsPort: mtlsPort,
+		dialObs:  &dialObserver{},
+	}
+}
+
+// dialObserver records whether the current connection attempt reached the
+// broker at TCP level, so a failed RPC can be told apart from a generically
+// unreachable broker: TCP connecting while the TLS handshake never completes
+// is the signature of a path-MTU black hole (carrier LTE/CGNAT links that
+// silently drop full-size packets, WDY-2443).
+type dialObserver struct {
+	mu           sync.Mutex
+	tcpConnected bool
+}
+
+func (o *dialObserver) DialContext(ctx context.Context, addr string) (net.Conn, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err == nil {
+		o.markConnected()
+	}
+	return conn, err
+}
+
+func (o *dialObserver) markConnected() {
+	o.mu.Lock()
+	o.tcpConnected = true
+	o.mu.Unlock()
+}
+
+func (o *dialObserver) Reset() {
+	o.mu.Lock()
+	o.tcpConnected = false
+	o.mu.Unlock()
+}
+
+func (o *dialObserver) TCPConnected() bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.tcpConnected
+}
+
+// isSuspectedPMTUBlackhole reports whether a broker connection failure looks
+// like a path-MTU black hole: TCP connected, but the TLS handshake died
+// without a TLS alert (EOF, timeout, reset). A genuine certificate rejection
+// carries a TLS alert marker and is excluded, mirroring the CLI-side
+// classification in cmd/wendy/main.go.
+func isSuspectedPMTUBlackhole(err error, tcpConnected bool) bool {
+	if err == nil || !tcpConnected {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "tls:") ||
+		strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "certificate required") {
+		return false
+	}
+	if !strings.Contains(msg, "authentication handshake failed") {
+		return false
+	}
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe")
+}
+
+// notePMTUSuspicion classifies a runOnce failure and, on the second
+// consecutive suspected black hole, emits a single diagnostic pointing at the
+// path MTU. Without this, a black-holed uplink is indistinguishable from an
+// offline broker in the logs and has cost multi-hour field investigations.
+func (c *TunnelBrokerClient) notePMTUSuspicion(err error) {
+	if !isSuspectedPMTUBlackhole(err, c.dialObs.TCPConnected()) {
+		c.pmtuSuspectCount = 0
+		return
+	}
+	c.pmtuSuspectCount++
+	if c.pmtuSuspectCount == 2 {
+		c.logger.Warn("suspected PMTU black hole: TCP connects to the broker but the TLS handshake never completes; check the uplink path MTU (WDY-2443)",
+			zap.String("event", "broker_suspected_pmtu_blackhole"),
+			zap.String("url", c.url))
 	}
 }
 
@@ -68,6 +155,7 @@ func (c *TunnelBrokerClient) Run(ctx context.Context) {
 			))
 			c.logger.Warn("broker connection failed, reconnecting",
 				zap.Error(err), zap.Duration("backoff", backoff))
+			c.notePMTUSuspicion(err)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -76,11 +164,13 @@ func (c *TunnelBrokerClient) Run(ctx context.Context) {
 			attempt++
 		} else {
 			attempt = 0
+			c.pmtuSuspectCount = 0
 		}
 	}
 }
 
 func (c *TunnelBrokerClient) runOnce(ctx context.Context) error {
+	c.dialObs.Reset()
 	dialOpts, devMD, err := c.buildDialOpts()
 	if err != nil {
 		return err
@@ -149,7 +239,7 @@ func (c *TunnelBrokerClient) runOnce(ctx context.Context) error {
 }
 
 func (c *TunnelBrokerClient) buildDialOpts() ([]grpc.DialOption, metadata.MD, error) {
-	return brokerDialOpts(c.logger, c.orgID, c.assetID, c.certPEM, c.keyPEM, c.chainPEM)
+	return brokerDialOpts(c.logger, c.orgID, c.assetID, c.certPEM, c.keyPEM, c.chainPEM, c.dialObs)
 }
 
 // brokerDialOpts returns gRPC dial options and identity metadata for any
@@ -217,7 +307,9 @@ func brokerTLSConfig(logger *zap.Logger, certPEM, keyPEM, chainPEM string) (*tls
 
 // agent-originated connection to the tunnel broker. Shared by the presence
 // client (serving side) and the mesh dialer (dialing side).
-func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string) ([]grpc.DialOption, metadata.MD, error) {
+// obs may be nil; when set, it observes raw TCP dials so connection failures
+// can be classified as suspected PMTU black holes (see dialObserver).
+func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, chainPEM string, obs *dialObserver) ([]grpc.DialOption, metadata.MD, error) {
 	// Identity is asserted two ways during the mTLS rollout:
 	//
 	//   1. The device's client certificate (mTLS). We present the ECDSA leaf +
@@ -243,18 +335,29 @@ func brokerDialOpts(logger *zap.Logger, orgID, assetID int32, certPEM, keyPEM, c
 		"x-wendy-client-cert", certHeader,
 		"x-forwarded-client-cert", certHeader,
 	)
-	return []grpc.DialOption{
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
 			Time:                brokerKeepaliveTime,
 			Timeout:             brokerKeepaliveTimeout,
 			PermitWithoutStream: true,
 		}),
+		// Codify the default 20s connect bound so a TLS handshake stalled by a
+		// PMTU black hole (WDY-2443) surfaces as an error deterministically
+		// instead of depending on gRPC's internal default.
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff:           backoff.DefaultConfig,
+			MinConnectTimeout: 20 * time.Second,
+		}),
 		grpc.WithInitialWindowSize(8 * 1024 * 1024),
 		grpc.WithInitialConnWindowSize(16 * 1024 * 1024),
 		grpc.WithReadBufferSize(256 * 1024),
 		grpc.WithWriteBufferSize(256 * 1024),
-	}, md, nil
+	}
+	if obs != nil {
+		dialOpts = append(dialOpts, grpc.WithContextDialer(obs.DialContext))
+	}
+	return dialOpts, md, nil
 }
 
 func (c *TunnelBrokerClient) handleDialRequest(ctx context.Context, client cloudpb.TunnelBrokerServiceClient,
