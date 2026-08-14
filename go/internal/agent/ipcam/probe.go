@@ -93,6 +93,14 @@ func ProbeCredentials(ctx context.Context, cam Camera, cred Credential) (ProbeRe
 		return ProbeUnreachable, RedactText(FormatUnreachable(cam), cred.Username, cred.Password)
 	}
 
+	// challenged records whether the response being classified followed an
+	// authenticated retry, or is the camera's first answer. A 404/454 means
+	// something different in each case: after a challenge it means the login
+	// was evaluated and accepted; on the first response it means the camera
+	// never evaluated the login at all, which classifyProbeResponse's detail
+	// string has to say honestly rather than imply the credentials were
+	// checked.
+	challenged := false
 	if resp.status == 401 {
 		authorization, ok := buildAuthorization(resp.headers["www-authenticate"], cred, uri)
 		if !ok {
@@ -107,15 +115,18 @@ func ProbeCredentials(ctx context.Context, cam Camera, cred Credential) (ProbeRe
 		if err != nil {
 			return ProbeUnreachable, RedactText(FormatUnreachable(cam), cred.Username, cred.Password)
 		}
+		challenged = true
 	}
 
-	return classifyProbeResponse(resp, cam, cred)
+	return classifyProbeResponse(resp, cam, cred, challenged)
 }
 
 // classifyProbeResponse turns the final RTSP status of the exchange into a
 // ProbeResult. It only ever sees the last response: either the first one, if
-// it was not a 401, or the one that followed an authenticated retry.
-func classifyProbeResponse(resp rtspResponse, cam Camera, cred Credential) (ProbeResult, string) {
+// it was not a 401, or the one that followed an authenticated retry —
+// challenged says which, since a 404/454 means something different in each
+// case.
+func classifyProbeResponse(resp rtspResponse, cam Camera, cred Credential, challenged bool) (ProbeResult, string) {
 	switch {
 	case resp.status >= 200 && resp.status < 300:
 		return ProbeOK, RedactText(fmt.Sprintf(
@@ -125,15 +136,26 @@ func classifyProbeResponse(resp rtspResponse, cam Camera, cred Credential) (Prob
 			"camera %d at %s rejected the credentials (RTSP %d)", cam.ID, cam.Address, resp.status),
 			cred.Username, cred.Password)
 	case resp.status == 404 || resp.status == 454:
-		// The login was not what stopped this request: the camera accepted (or
-		// never challenged) it and objected to the path instead. Credentials are
-		// the only thing this probe promises to answer for.
+		if challenged {
+			// The login was not what stopped this request: the camera evaluated
+			// and accepted it, then objected to the path instead. Credentials are
+			// the only thing this probe promises to answer for.
+			return ProbeOK, RedactText(fmt.Sprintf(
+				"camera %d at %s accepted the credentials; the stream path returned RTSP %d, which is a separate issue",
+				cam.ID, cam.Address, resp.status), cred.Username, cred.Password)
+		}
+		// No challenge means the camera never evaluated the credentials at all —
+		// saying it "accepted" them here would overclaim. Still ProbeOK, because
+		// nothing rejected the login; the path is what needs a look.
 		return ProbeOK, RedactText(fmt.Sprintf(
-			"camera %d at %s accepted the credentials; the stream path returned RTSP %d, which is a separate issue",
+			"camera %d at %s did not request authentication; the stream path returned RTSP %d and may be wrong",
 			cam.ID, cam.Address, resp.status), cred.Username, cred.Password)
 	default:
+		// Neither an accept nor a recognized auth rejection: treated as
+		// AuthFailed because ProbeOK would overclaim, but the message says only
+		// what happened rather than asserting the credentials were the problem.
 		return ProbeAuthFailed, RedactText(fmt.Sprintf(
-			"camera %d at %s returned unexpected RTSP status %d to DESCRIBE",
+			"camera %d at %s returned unexpected RTSP status %d to DESCRIBE, which this probe cannot read as a credential verdict",
 			cam.ID, cam.Address, resp.status), cred.Username, cred.Password)
 	}
 }

@@ -379,3 +379,139 @@ func TestProbeCredentials_UnreachableAfterConnectHangs(t *testing.T) {
 		t.Fatalf("ProbeCredentials took %v, want it bounded by probeIOTimeout (%v)", elapsed, probeIOTimeout)
 	}
 }
+
+// parseAuthParams must handle both quoting styles a camera might send, and
+// must not let a comma inside a quoted value (legal in a realm string) end
+// the parameter early.
+func TestParseAuthParams(t *testing.T) {
+	cases := []struct {
+		name      string
+		challenge string
+		want      map[string]string
+	}{
+		{
+			name:      "quoted values, comma inside a quoted realm",
+			challenge: `Digest realm="Login, Please", nonce="abc123"`,
+			want:      map[string]string{"realm": "Login, Please", "nonce": "abc123"},
+		},
+		{
+			name:      "quoted nonce containing a comma",
+			challenge: `Digest realm="IP Camera", nonce="a,b,c-nonce"`,
+			want:      map[string]string{"realm": "IP Camera", "nonce": "a,b,c-nonce"},
+		},
+		{
+			name:      "unquoted values",
+			challenge: `Digest realm=IPCam, nonce=abc123`,
+			want:      map[string]string{"realm": "IPCam", "nonce": "abc123"},
+		},
+		{
+			name:      "mixed quoted and unquoted",
+			challenge: `Digest realm="IP Camera", nonce=abc123`,
+			want:      map[string]string{"realm": "IP Camera", "nonce": "abc123"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAuthParams(tc.challenge)
+			for key, want := range tc.want {
+				if got[key] != want {
+					t.Errorf("params[%q] = %q, want %q (all params: %v)", key, got[key], want, got)
+				}
+			}
+		})
+	}
+}
+
+// selectChallenge must recognize Digest and Basic regardless of case, and
+// must prefer Digest over Basic no matter which order the headers arrived in.
+func TestSelectChallenge(t *testing.T) {
+	cases := []struct {
+		name       string
+		challenges []string
+		wantScheme string
+		wantOK     bool
+	}{
+		{"lowercase digest", []string{`digest realm="x", nonce="y"`}, "digest", true},
+		{"mixed-case Digest", []string{`DiGeSt realm="x", nonce="y"`}, "digest", true},
+		{"uppercase BASIC", []string{`BASIC realm="x"`}, "basic", true},
+		{"lowercase basic only", []string{`basic realm="x"`}, "basic", true},
+		{"basic then digest, digest still wins", []string{`Basic realm="x"`, `Digest realm="x", nonce="y"`}, "digest", true},
+		{"digest then basic, digest still wins", []string{`Digest realm="x", nonce="y"`, `Basic realm="x"`}, "digest", true},
+		{"unrecognized scheme only", []string{`NTLM realm="x"`}, "", false},
+		{"empty list", nil, "", false},
+		{"blank entries ignored", []string{"", "   ", `Basic realm="x"`}, "basic", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme, _, ok := selectChallenge(tc.challenges)
+			if scheme != tc.wantScheme || ok != tc.wantOK {
+				t.Fatalf("selectChallenge(%v) = (%q, %v), want (%q, %v)",
+					tc.challenges, scheme, ok, tc.wantScheme, tc.wantOK)
+			}
+		})
+	}
+}
+
+// A Digest challenge with no nonce cannot be answered — there is nothing to
+// compute the response over — so this must resolve as ProbeAuthFailed rather
+// than sending a malformed Authorization header or panicking.
+func TestProbeCredentials_DigestChallengeMissingNonceIsAuthFailed(t *testing.T) {
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r) // unauthenticated DESCRIBE
+
+		// realm with no nonce: a Digest challenge this probe cannot answer.
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			"WWW-Authenticate: Digest realm=\"IP Camera\"\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+		// No second request: ProbeCredentials must give up rather than resend.
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeAuthFailed {
+		t.Fatalf("result = %v, want ProbeAuthFailed; detail=%q", result, detail)
+	}
+	if strings.Contains(detail, "hunter2") {
+		t.Fatalf("detail leaked the password: %q", detail)
+	}
+}
+
+// A camera that returns 404/454 on the very FIRST request — no 401 challenge
+// at all — never evaluated the credentials, unlike the post-auth 404 case in
+// TestProbeCredentials_404AfterAuthIsOK. The result is still ProbeOK (nothing
+// rejected the login), but the detail must say the camera never asked for
+// authentication rather than claiming it "accepted the credentials", which
+// would overclaim what actually happened.
+func TestProbeCredentials_404OnFirstRequestIsOKWithPathNote(t *testing.T) {
+	var requests int
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r)
+		requests++
+		if _, err := conn.Write([]byte("RTSP/1.0 404 Not Found\r\nCSeq: 1\r\n\r\n")); err != nil {
+			t.Fatalf("server: writing 404: %v", err)
+		}
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeOK {
+		t.Fatalf("result = %v, want ProbeOK (nothing rejected the login); detail=%q", result, detail)
+	}
+	if requests != 1 {
+		t.Fatalf("server saw %d requests, want exactly 1 (a bare 404 is not a 401 challenge)", requests)
+	}
+	if !strings.Contains(detail, "did not request authentication") {
+		t.Fatalf("detail = %q, want it to note the camera never challenged for credentials", detail)
+	}
+	if strings.Contains(detail, "accepted the credentials") {
+		t.Fatalf("detail = %q, overclaims credentials were evaluated when no challenge occurred", detail)
+	}
+}
