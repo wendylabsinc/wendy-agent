@@ -77,15 +77,15 @@ func ChooseStream(width uint32) StreamChoice {
 // ErrNoAddress is returned when a camera has no known address to dial.
 var ErrNoAddress = errors.New("camera has no known address")
 
-// StreamURL builds the RTSP URL for a camera.
+// streamPath returns the RTSP request path for the requested stream,
+// normalized to a leading slash and falling back to the widely-implemented
+// default when the camera has no stored path for that stream yet.
 //
-// Credentials go through url.UserPassword so they are percent-encoded: a password
-// containing '@' or ':' would otherwise change which host the pipeline connects
-// to.
-func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
-	if c.Address == "" {
-		return "", ErrNoAddress
-	}
+// Extracted from StreamURL so the URL builder and the credential probe
+// (probe.go, which needs a path to DESCRIBE but has no use for the rest of a
+// stream URL) cannot drift onto two different notions of "the camera's
+// stream path".
+func streamPath(c Camera, choice StreamChoice) string {
 	var path string
 	switch choice {
 	case StreamMainOnly:
@@ -102,10 +102,22 @@ func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
+	return path
+}
+
+// StreamURL builds the RTSP URL for a camera.
+//
+// Credentials go through url.UserPassword so they are percent-encoded: a password
+// containing '@' or ':' would otherwise change which host the pipeline connects
+// to.
+func StreamURL(c Camera, cred Credential, choice StreamChoice) (string, error) {
+	if c.Address == "" {
+		return "", ErrNoAddress
+	}
 	u := &url.URL{
 		Scheme: "rtsp",
 		Host:   net.JoinHostPort(c.Address, strconv.Itoa(defaultRTSPPort)),
-		Path:   path,
+		Path:   streamPath(c, choice),
 	}
 	if cred.Username != "" {
 		u.User = url.UserPassword(cred.Username, cred.Password)
