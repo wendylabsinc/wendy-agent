@@ -38,6 +38,12 @@ const wendyLiteCatalogJSON = `
             "flash_size": "4MB"
         },
         {
+            "name": "esp32c61_native",
+            "target": "esp32c61",
+            "board_cfg": "esp32c61_generic_native",
+            "flash_size": "4MB"
+        },
+        {
             "name": "esp32p4_waveshare_lcd_4b",
             "target": "esp32p4",
             "board_cfg": "waveshare_lcd_4b",
@@ -84,6 +90,10 @@ const wendyLiteCatalogJSON = `
             "display_name": "ESP32-C6"
         },
         {
+            "name": "esp32c61",
+            "display_name": "ESP32-C61"
+        },
+        {
             "name": "esp32p4",
             "display_name": "ESP32-P4"
         },
@@ -116,6 +126,12 @@ const wendyLiteCatalogJSON = `
             "display_name": "Generic ESP32-C6 board, 4MB flash, native app support",
             "binary": "esp32c6_native",
             "target": "esp32c6"
+        },
+        {
+            "name": "esp32c61_generic_native",
+            "display_name": "Generic ESP32-C61 board, 4MB flash, native app support",
+            "binary": "esp32c61_native",
+            "target": "esp32c61"
         },
         {
             "name": "esp32p4_waveshare_lcd_4b",
