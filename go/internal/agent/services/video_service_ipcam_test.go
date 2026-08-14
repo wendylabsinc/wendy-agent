@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,96 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// fakeLoopback is a recording double for cameraLoopback: it never touches the
+// kernel, so tests can assert on the calls VideoService makes without a real
+// v4l2loopback module (or a Linux host) present. newIPTestService installs one
+// by default so no test in this file exercises the real ipcam.Loopback's
+// module-detection path (which shells out to modprobe on Linux); tests that
+// care about a specific call type-assert s.loopback back to *fakeLoopback.
+type fakeLoopback struct {
+	mu sync.Mutex
+
+	availableErr error
+	nodePaths    map[uint32]string
+
+	acquireCount map[uint32]int
+	releaseCount map[uint32]int
+
+	ensureNodesCalls int
+	ensureNodesErr   error
+
+	containerConsumers [][]string
+	credChanged        []uint32
+	removed            []uint32
+	shutdownCalled     bool
+}
+
+func newFakeLoopback() *fakeLoopback {
+	return &fakeLoopback{
+		nodePaths:    make(map[uint32]string),
+		acquireCount: make(map[uint32]int),
+		releaseCount: make(map[uint32]int),
+	}
+}
+
+func (f *fakeLoopback) Available() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.availableErr
+}
+
+func (f *fakeLoopback) EnsureNodes(context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureNodesCalls++
+	return f.ensureNodesErr
+}
+
+func (f *fakeLoopback) NodePath(camID uint32) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	path, ok := f.nodePaths[camID]
+	return path, ok
+}
+
+func (f *fakeLoopback) AcquireView(camID uint32) func() {
+	f.mu.Lock()
+	f.acquireCount[camID]++
+	f.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			f.mu.Lock()
+			f.releaseCount[camID]++
+			f.mu.Unlock()
+		})
+	}
+}
+
+func (f *fakeLoopback) SetContainerConsumers(containerIDs []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.containerConsumers = append(f.containerConsumers, append([]string(nil), containerIDs...))
+}
+
+func (f *fakeLoopback) CredentialsChanged(camID uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credChanged = append(f.credChanged, camID)
+}
+
+func (f *fakeLoopback) RemoveCamera(camID uint32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, camID)
+}
+
+func (f *fakeLoopback) Shutdown() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shutdownCalled = true
+}
 
 // fakeVideoStream is a minimal ServerStreamingServer so tests drive the real
 // StreamVideo path rather than a nil-stream special case in production code.
@@ -76,6 +167,16 @@ func newIPTestService(t *testing.T) *VideoService {
 	// Reachable by default so tests exercise the path under test rather than the
 	// preflight; the tests that care about reachability override this.
 	s.cameraReachable = func(string) bool { return true }
+	// Replaces the real ipcam.Loopback that NewVideoService just constructed
+	// (pointed, at that point, at the default /var/lib/wendy paths rather than
+	// the temp-dir registry/credentials just assigned above). Beyond that
+	// staleness, exercising the real module-detection path in every test that
+	// touches a registered camera would mean shelling out to modprobe on every
+	// Linux run; the fake keeps these tests deterministic and fast on every
+	// platform. Tests asserting on a specific loopback call type-assert this
+	// back to *fakeLoopback; tests simulating "no loopback wired in" overwrite
+	// it with nil instead.
+	s.loopback = newFakeLoopback()
 	return s
 }
 
@@ -511,4 +612,160 @@ func TestStreamVideoStreamsOfflineButReachableCamera(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+// A v4l2loopback node numbered inside the reserved network-camera band would
+// otherwise glob-enumerate as an indistinguishable local device, double-listing
+// the same camera: once correctly through the registry, once bogusly as a local
+// node with no address, no credentials flag, and the wrong transport.
+func TestListCameras_SkipsGlobNodesInIPCameraBand(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	nodePath := fmt.Sprintf("/dev/video%d", cam.ID)
+	s.globDevices = func() ([]string, error) { return []string{nodePath}, nil }
+	// The loopback node itself opens and reports VIDEO_CAPTURE like any other
+	// V4L2 device; hasVideoCapture alone cannot tell it apart from a local one.
+	s.hasVideoCapture = func(path string) bool { return path == nodePath }
+
+	devices, err := s.listCameras(context.Background())
+	if err != nil {
+		t.Fatalf("listCameras: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("got %d devices, want exactly 1 (the glob-enumerated node in the IP band must not double-list): %+v", len(devices), devices)
+	}
+	if devices[0].GetId() != cam.ID || devices[0].GetTransport() != agentpb.VideoTransport_VIDEO_TRANSPORT_IP {
+		t.Fatalf("device = %+v, want the single IP-transport registry entry", devices[0])
+	}
+}
+
+// Once EnsureNodes (or the pump supervisor) has created a camera's loopback
+// node, the listing must name it: a container-visible /dev/video<id> a caller
+// cannot yet learn about is not meaningfully different from one that does not
+// exist.
+func TestListIPCameras_PathFilledWhenLoopbackNodeExists(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	fake := s.loopback.(*fakeLoopback)
+	wantPath := fmt.Sprintf("/dev/video%d", cam.ID)
+	fake.nodePaths[cam.ID] = wantPath
+
+	resp, err := s.ListVideoDevices(context.Background(), &agentpb.ListVideoDevicesRequest{})
+	if err != nil {
+		t.Fatalf("ListVideoDevices: %v", err)
+	}
+	if got := resp.GetDevices()[0].GetPath(); got != wantPath {
+		t.Fatalf("path = %q, want %q", got, wantPath)
+	}
+}
+
+// Without a loopback node the path must stay empty rather than naming a device
+// node that does not exist yet.
+func TestListIPCameras_PathEmptyWithoutNode(t *testing.T) {
+	s := newIPTestService(t)
+	registerTestCamera(t, s)
+	// s.loopback is the harness's default fakeLoopback, with no node recorded.
+
+	resp, err := s.ListVideoDevices(context.Background(), &agentpb.ListVideoDevicesRequest{})
+	if err != nil {
+		t.Fatalf("ListVideoDevices: %v", err)
+	}
+	if got := resp.GetDevices()[0].GetPath(); got != "" {
+		t.Fatalf("path = %q, want empty (no loopback node exists)", got)
+	}
+}
+
+// Attaching to a network camera's stream counts as a `camera view` consumer
+// per the spec ("started when ... `camera view` attaches"), and must release
+// that ref once streaming ends rather than pinning the pump up forever.
+func TestStreamIPCamera_AcquiresAndReleasesViewRef(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "p"}); err != nil {
+		t.Fatalf("set credential: %v", err)
+	}
+	fake := s.loopback.(*fakeLoopback)
+	s.runGStreamer = func(ctx context.Context, args []string, onFrame func([]byte)) error {
+		onFrame([]byte{0x00, 0x00, 0x00, 0x01, 0x67})
+		return nil
+	}
+
+	// The fake capture returns immediately, so the producer stops and
+	// StreamVideo returns with it; by then the view ref must have been both
+	// acquired and released.
+	_ = s.StreamVideo(&agentpb.StreamVideoRequest{DeviceId: cam.ID}, newFakeVideoStream(context.Background()))
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.acquireCount[cam.ID] != 1 {
+		t.Fatalf("acquire count = %d, want 1", fake.acquireCount[cam.ID])
+	}
+	if fake.releaseCount[cam.ID] != 1 {
+		t.Fatalf("release count = %d, want 1 (the view ref must be released once streaming ends)", fake.releaseCount[cam.ID])
+	}
+}
+
+// A build with no v4l2loopback wired in (s.loopback nil) must still stream a
+// network camera through the direct hub path: the loopback integration is
+// best-effort and must never gate streaming.
+func TestStreamIPCamera_StreamsWhenLoopbackUnavailable(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "p"}); err != nil {
+		t.Fatalf("set credential: %v", err)
+	}
+	s.loopback = nil
+	s.runGStreamer = func(ctx context.Context, args []string, onFrame func([]byte)) error {
+		onFrame([]byte{0x00, 0x00, 0x00, 0x01, 0x67})
+		return nil
+	}
+
+	fake := newFakeVideoStream(context.Background())
+	_ = s.StreamVideo(&agentpb.StreamVideoRequest{DeviceId: cam.ID}, fake)
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.frames) == 0 {
+		t.Fatal("no frames reached the stream with s.loopback == nil")
+	}
+}
+
+// Storing a login must nudge the loopback supervisor: a pump already demanded
+// but blocked on missing credentials can start now, and a running one with a
+// stale login needs to pick the new one up.
+func TestSetCameraCredentials_NudgesLoopback(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	fake := s.loopback.(*fakeLoopback)
+
+	if _, err := s.SetCameraCredentials(context.Background(), &agentpb.SetCameraCredentialsRequest{
+		DeviceId: cam.ID, Username: "admin", Password: "hunter2",
+	}); err != nil {
+		t.Fatalf("SetCameraCredentials: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.credChanged) != 1 || fake.credChanged[0] != cam.ID {
+		t.Fatalf("CredentialsChanged calls = %v, want [%d]", fake.credChanged, cam.ID)
+	}
+}
+
+// Forgetting a camera must remove its loopback node along with its registry
+// entry and credentials, or a container-visible /dev/videoN node would outlive
+// the camera it named.
+func TestForgetCamera_RemovesLoopback(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	fake := s.loopback.(*fakeLoopback)
+
+	if _, err := s.ForgetCamera(context.Background(), &agentpb.ForgetCameraRequest{DeviceId: cam.ID}); err != nil {
+		t.Fatalf("ForgetCamera: %v", err)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.removed) != 1 || fake.removed[0] != cam.ID {
+		t.Fatalf("RemoveCamera calls = %v, want [%d]", fake.removed, cam.ID)
+	}
 }
