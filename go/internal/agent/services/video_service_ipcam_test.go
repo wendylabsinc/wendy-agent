@@ -769,3 +769,134 @@ func TestForgetCamera_RemovesLoopback(t *testing.T) {
 		t.Fatalf("RemoveCamera calls = %v, want [%d]", fake.removed, cam.ID)
 	}
 }
+
+// TestCameraCredentials validates a stored login by probing the camera's RTSP
+// port directly, without starting a capture pipeline (unlike StreamVideo's
+// preflight, which would have to start a producer just to learn "401"). A
+// probe that accepts the credentials must surface as RESULT_OK, carrying the
+// camera's address and the probe's redacted detail string verbatim.
+func TestTestCameraCredentials_OK(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "hunter2"}); err != nil {
+		t.Fatalf("set credential: %v", err)
+	}
+	s.probeCamera = func(_ context.Context, c ipcam.Camera, cred ipcam.Credential) (ipcam.ProbeResult, string) {
+		if c.ID != cam.ID {
+			t.Fatalf("probeCamera called with camera %+v, want id %d", c, cam.ID)
+		}
+		if cred.Username != "admin" || cred.Password != "hunter2" {
+			t.Fatalf("probeCamera called with credential %+v, want the stored login", cred)
+		}
+		return ipcam.ProbeOK, "camera 200 at 10.98.0.50 accepted the credentials"
+	}
+
+	resp, err := s.TestCameraCredentials(context.Background(), &agentpb.TestCameraCredentialsRequest{DeviceId: cam.ID})
+	if err != nil {
+		t.Fatalf("TestCameraCredentials: %v", err)
+	}
+	if resp.GetResult() != agentpb.TestCameraCredentialsResponse_RESULT_OK {
+		t.Fatalf("result = %v, want RESULT_OK", resp.GetResult())
+	}
+	if resp.GetAddress() != cam.Address {
+		t.Fatalf("address = %q, want %q", resp.GetAddress(), cam.Address)
+	}
+	if resp.GetDetail() != "camera 200 at 10.98.0.50 accepted the credentials" {
+		t.Fatalf("detail = %q, want the probe's detail string verbatim", resp.GetDetail())
+	}
+}
+
+// A probe that rejects the login must surface as RESULT_AUTH_FAILED, a value
+// the RPC returns as ordinary response data rather than a gRPC error: bad
+// credentials are an expected outcome of a credential test, not a failure of
+// the RPC itself.
+func TestTestCameraCredentials_AuthFailed(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "wrong"}); err != nil {
+		t.Fatalf("set credential: %v", err)
+	}
+	s.probeCamera = func(context.Context, ipcam.Camera, ipcam.Credential) (ipcam.ProbeResult, string) {
+		return ipcam.ProbeAuthFailed, "camera 200 at 10.98.0.50 rejected the credentials (RTSP 401)"
+	}
+
+	resp, err := s.TestCameraCredentials(context.Background(), &agentpb.TestCameraCredentialsRequest{DeviceId: cam.ID})
+	if err != nil {
+		t.Fatalf("TestCameraCredentials: %v", err)
+	}
+	if resp.GetResult() != agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED {
+		t.Fatalf("result = %v, want RESULT_AUTH_FAILED", resp.GetResult())
+	}
+	if !strings.Contains(resp.GetDetail(), "rejected") {
+		t.Fatalf("detail = %q, want it to describe the rejection", resp.GetDetail())
+	}
+}
+
+// A probe that cannot reach the camera at all must surface as
+// RESULT_UNREACHABLE, again as data rather than an RPC error.
+func TestTestCameraCredentials_Unreachable(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "hunter2"}); err != nil {
+		t.Fatalf("set credential: %v", err)
+	}
+	s.probeCamera = func(context.Context, ipcam.Camera, ipcam.Credential) (ipcam.ProbeResult, string) {
+		return ipcam.ProbeUnreachable, "camera 200 at 10.98.0.50 is unreachable"
+	}
+
+	resp, err := s.TestCameraCredentials(context.Background(), &agentpb.TestCameraCredentialsRequest{DeviceId: cam.ID})
+	if err != nil {
+		t.Fatalf("TestCameraCredentials: %v", err)
+	}
+	if resp.GetResult() != agentpb.TestCameraCredentialsResponse_RESULT_UNREACHABLE {
+		t.Fatalf("result = %v, want RESULT_UNREACHABLE", resp.GetResult())
+	}
+	if !strings.Contains(resp.GetDetail(), "unreachable") {
+		t.Fatalf("detail = %q, want it to describe the unreachable camera", resp.GetDetail())
+	}
+}
+
+// A camera with no stored login must fail exactly the way StreamVideo does:
+// FailedPrecondition with the IP_CAMERA_NO_CREDENTIALS reason, verbatim, so
+// the CLI's existing `camera login` diagnostic applies with zero new mapping.
+// The probe seam must not be reached at all.
+func TestTestCameraCredentials_NoCredentialsReason(t *testing.T) {
+	s := newIPTestService(t)
+	cam := registerTestCamera(t, s)
+	s.probeCamera = func(context.Context, ipcam.Camera, ipcam.Credential) (ipcam.ProbeResult, string) {
+		t.Fatal("probeCamera must not be called without stored credentials")
+		return ipcam.ProbeUnreachable, ""
+	}
+
+	_, err := s.TestCameraCredentials(context.Background(), &agentpb.TestCameraCredentialsRequest{DeviceId: cam.ID})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
+	}
+	if !hasErrorReason(err, reasonIPCameraNoCredentials) {
+		t.Fatalf("error %v missing reason %s", err, reasonIPCameraNoCredentials)
+	}
+}
+
+// A local (V4L2) device ID has no credentials to test at all, and must be
+// rejected before any probe is attempted.
+func TestTestCameraCredentials_LocalCameraRejected(t *testing.T) {
+	s := newIPTestService(t)
+	_, err := s.TestCameraCredentials(context.Background(), &agentpb.TestCameraCredentialsRequest{DeviceId: 0})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("code = %v, want InvalidArgument", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "local camera") {
+		t.Fatalf("error %v does not explain that this is a local camera", err)
+	}
+}
+
+// An unregistered ID inside the reserved network-camera band is NotFound, the
+// same as every other RPC that resolves a device ID through resolveSource.
+func TestTestCameraCredentials_UnknownCameraNotFound(t *testing.T) {
+	s := newIPTestService(t)
+	_, err := s.TestCameraCredentials(context.Background(),
+		&agentpb.TestCameraCredentialsRequest{DeviceId: ipcam.IDBandStart + 5})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("code = %v, want NotFound", status.Code(err))
+	}
+}
