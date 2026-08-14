@@ -23,6 +23,7 @@ Tests:
   python-gpu                Python with GPU entitlement (CUDA verification)
   python-onnx-gpu           Python with GPU entitlement (ONNX Runtime CUDA inference)
   python-bluetooth          Python with bluetooth entitlement
+  python-audio              Python with audio entitlement
   python-notifications      Verify notifications System API socket access WITH entitlement
   python-no-notifications   Verify notifications System API access is blocked WITHOUT entitlement
   python-no-network         Verify network is blocked WITHOUT entitlement
@@ -340,6 +341,7 @@ ALL_TESTS=(
     python-gpu
     python-onnx-gpu
     python-bluetooth
+    python-audio
     python-notifications
     python-no-notifications
     python-no-network

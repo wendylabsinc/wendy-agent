@@ -65,6 +65,9 @@ const labelKeyRestartPolicy = "sh.wendy/restart.policy"
 // labelKeyMCPPort stores the MCP server port for containers with an mcp entitlement.
 const labelKeyMCPPort = "sh.wendy/mcp.port"
 
+// labelKeyHTTPPort stores the HTTP port for containers with an http entitlement.
+const labelKeyHTTPPort = "sh.wendy/http.port"
+
 // labelKeyGCRoot prevents garbage collection of content blobs.
 const labelKeyGCRoot = "containerd.io/gc.root"
 
@@ -288,6 +291,13 @@ func wendyLabels(appName, serviceName, version string, restartPolicy *agentpb.Re
 	for _, e := range entitlements {
 		if e.Type == appconfig.EntitlementMCP && e.Port > 0 {
 			labels[labelKeyMCPPort] = strconv.FormatUint(uint64(e.Port), 10)
+			break
+		}
+	}
+
+	for _, e := range entitlements {
+		if e.Type == appconfig.EntitlementHTTP && e.Port > 0 {
+			labels[labelKeyHTTPPort] = strconv.FormatUint(uint64(e.Port), 10)
 			break
 		}
 	}

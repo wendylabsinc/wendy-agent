@@ -1,0 +1,24 @@
+version: 1
+sourceHash: sha256:0e0a4576df88e5b7c8dd33192e1dd69bdecaaadda3ff448a2ea669d5b764e048
+images:
+    ubuntu:22.04: sha256:3b06811b2afd352be909dd088a004166d665dc76d38b13eada33522a9d915c6f
+cuda:
+    sm_87:
+        board: NVIDIA Jetson Orin
+        cudaVersion: "12.6"
+        index: https://pypi.jetson-ai-lab.io/jp6/cu126/
+        runtime:
+            - nvidia-cuda-runtime-cu12
+            - nvidia-cuda-nvrtc-cu12
+            - nvidia-cuda-cupti-cu12
+            - nvidia-cublas-cu12
+            - nvidia-cudnn-cu12
+            - nvidia-cufft-cu12
+            - nvidia-curand-cu12
+            - nvidia-cusolver-cu12
+            - nvidia-cusparse-cu12
+            - nvidia-cusparselt-cu12
+            - nvidia-nccl-cu12
+            - nvidia-nvtx-cu12
+            - nvidia-nvjitlink-cu12
+        libDir: /opt/cuda12/lib

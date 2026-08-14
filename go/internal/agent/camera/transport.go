@@ -30,6 +30,10 @@ const (
 	TransportUnknown Transport = iota
 	TransportUSB
 	TransportCSI
+	// TransportIP is a network camera reached over RTSP rather than a local
+	// device node. It has no sysfs entry, so Classify never returns it: the
+	// video service assigns it from the network camera registry.
+	TransportIP
 )
 
 // String returns a lowercase, human-readable transport label.
@@ -39,6 +43,8 @@ func (t Transport) String() string {
 		return "usb"
 	case TransportCSI:
 		return "csi"
+	case TransportIP:
+		return "ip"
 	default:
 		return "unknown"
 	}

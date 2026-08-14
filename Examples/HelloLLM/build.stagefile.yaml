@@ -1,0 +1,33 @@
+version: 1
+stages:
+  - name: app
+    from: ubuntu:22.04
+    workdir: /app
+    # See PyTorchGPU for what cuda: resolves. Nothing here names a board.
+    cuda: true
+    env:
+      PYTHONUNBUFFERED: "1"
+      HF_HOME: /app/.cache/huggingface
+      TRANSFORMERS_CACHE: /app/.cache/huggingface
+    install:
+      apt:
+        # libopenblas/libgomp1 back the PyTorch wheel's CPU BLAS and OpenMP.
+        packages:
+          - python3-pip
+          - python3-dev
+          - build-essential
+          - git
+          - libopenblas-dev
+          - libblas-dev
+          - liblapack-dev
+          - libgomp1
+      pip:
+        - packages: ["torch==2.8.0"]
+          cuda: true
+        # NumPy pinned to 1.x — the GPU PyTorch wheel is compiled against
+        # NumPy 1.x.
+        - packages: ["numpy==1.26.4", transformers, accelerate, sentencepiece, flask]
+    copy:
+      - from: local
+        paths: [app.py]
+    cmd: [python3, app.py]

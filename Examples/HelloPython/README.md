@@ -128,11 +128,11 @@ Then attach your debugger to `localhost:5678`.
 
 ```
 .
-├── app.py              # Main Python server
-├── requirements.txt    # Python dependencies
-├── Dockerfile         # Docker configuration
-├── .dockerignore      # Docker ignore file
-└── README.md          # This file
+├── app.py                       # Main Python server
+├── requirements.txt             # Python dependencies
+├── build.stagefile.yaml         # Build definition (compiles to a Dockerfile)
+├── build.stagefile.lock.yaml    # Resolved base-image digest, committed
+└── README.md                    # This file
 ```
 
 ## Development

@@ -1,12 +1,21 @@
 # WendyOS
 
-**You can deploy an app to an iPhone over a USB cable. Why isn't it that easy for NVIDIA Jetsons and Raspberry Pis?**
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+![NVIDIA Jetson Orin Nano](https://img.shields.io/badge/NVIDIA-Jetson%20Orin%20Nano-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Orin](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Orin-76B900?logo=nvidia&logoColor=white)
+![NVIDIA Jetson AGX Thor](https://img.shields.io/badge/NVIDIA-Jetson%20AGX%20Thor-76B900?logo=nvidia&logoColor=white)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-Supported-E95420?logo=ubuntu&logoColor=white)
+![Arch Linux](https://img.shields.io/badge/Arch%20Linux-Supported-1793D1?logo=arch-linux&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-Supported-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-Supported-0078D6?logo=windows&logoColor=white)
 
-WendyOS makes building robots, drones, and edge products feel like mobile
-development. Plug in your device over USB-C from your Mac, Windows, or Linux
-machine, run `wendy run`, and your app builds, deploys, and streams logs back to
-your laptop. No SD card juggling, no SSH setup, no internet required on the
-device.
+### Ship AI apps to robots, drones, and edge devices like you ship an app to a phone.
+
+⭐ Star WendyOS to follow new hardware support and one-command robotics templates.
+
+No need to spend hundreds of dollars on a monitor, a DisplayPort-to-HDMI adapter, a keyboard, or a mouse.
+Plug in your device over USB-C from your Mac, Windows, or Linux machine, run `wendy run`, and your app builds, deploys, and streams logs back to your laptop.
+No SD card juggling, no SSH setup, no internet required on the device.
 
 <p align="center">
   <img src="go/internal/cli/assets/docs/media/overhead-quick-install.gif" alt="Deploying an app to an NVIDIA Jetson with wendy run" width="640">
@@ -33,7 +42,8 @@ wendy os install
 # 3. Plug the device in over USB-C, then find it
 wendy discover
 
-# 4. Build, deploy, and stream logs from any app with a Dockerfile
+# 4. Build, deploy, and stream logs from any app with a build descriptor
+#    (build.stagefile.yaml, Dockerfile/Containerfile, or a compose file)
 wendy run
 ```
 
@@ -128,6 +138,18 @@ containerd is installed and running:
 ```sh
 sudo systemctl enable --now containerd
 ```
+
+## Supported Platforms
+
+| Hardware         | Install | Deploy |    GPU | Camera | Status  |
+| ---------------- | ------: | -----: | -----: | -----: | ------- |
+| Jetson Orin Nano |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
+| Jetson AGX Orin  |       ✅ |      ✅ |      ✅ |      ✅ | Stable  |
+| Raspberry Pi 5   |       ✅ |      ✅ |      — |      ✅ | Stable  |
+| Jetson AGX Thor  |       ✅ |      ✅ |      ✅ |      ✅ | Preview |
+| Standard Linux   |   Agent |      ✅ | Varies | Varies | Stable  |
+| ESP32 Wendy Lite |   Flash |      ✅ |      — | Varies | Preview |
+
 
 ## Building from Source
 

@@ -230,7 +230,7 @@ type pickerDevice struct {
 	Version    string // display version (e.g. "0.10.5 (nightly)")
 	RawVersion string // exact version key for manifest lookup
 	IsESP32    bool
-	ESP32Chip  string          // e.g. "esp32c6", "esp32c5", "esp32s3", "esp32c61"
+	ESP32Board string
 	Manifest   *deviceManifest // cached manifest for Linux devices
 }
 
@@ -269,6 +269,31 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 		return "", deviceInfo{}, err
 	}
 	return key, deviceMap[key], nil
+}
+
+// pickWendyLiteBoard asks which Wendy Lite board to install. When target is
+// non-empty, only boards for that ESP32 target are offered; an empty target
+// lists every catalog board with published firmware. nightly selects which
+// release channel a board's firmware must be published on to be offered.
+// Returns ErrUserCancelled when the user quits the picker.
+func pickWendyLiteBoard(target string, nightly bool) (string, error) {
+	boards, err := WendyLiteBoardsWithFirmware(nightly)
+	if err != nil {
+		return "", err
+	}
+	items := make([]tui.PickerItem, 0, len(boards))
+	for _, v := range boards {
+		if target != "" && v.Target != target {
+			continue
+		}
+		items = append(items, tui.PickerItem{
+			Name:    v.DisplayName,
+			SortKey: strings.ToLower(v.DisplayName),
+			Value:   v.Board,
+		})
+	}
+	fmt.Println()
+	return pickFromItems("Select your board model", items)
 }
 
 func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
@@ -316,6 +341,31 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		log.Printf("WARNING: could not fetch Linux device manifest: %v", err)
 	}
 
+	// Fetch Wendy Lite boards and targets, keeping only boards with published
+	// firmware — a catalog entry with no build yet would otherwise reach the
+	// picker and fail immediately after selection.
+	wliteBoards, err := WendyLiteBoardsWithFirmware(nightly)
+	if err != nil {
+		log.Printf("WARNING: could not fetch Wendy Lite board catalog: %v", err)
+	}
+	wliteTargets, err := WendyLiteTargets()
+	if err != nil {
+		log.Printf("WARNING: could not fetch Wendy Lite target catalog: %v", err)
+	}
+	// Drop targets with no board left so the picker never offers a target
+	// that leads to an empty second picker.
+	boardTargets := make(map[string]bool, len(wliteBoards))
+	for _, b := range wliteBoards {
+		boardTargets[b.Target] = true
+	}
+	var targetsWithBoards []WendyLiteTarget
+	for _, t := range wliteTargets {
+		if boardTargets[t.Name] {
+			targetsWithBoards = append(targetsWithBoards, t)
+		}
+	}
+	wliteTargets = targetsWithBoards
+
 	// Build picker items.
 	var items []tui.PickerItem
 	deviceMap := make(map[string]pickerDevice)
@@ -353,27 +403,21 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	// ignores prNumber, so offering ESP32 here would silently install release
 	// firmware instead of a PR build.
 	if flagDeviceType == "" && prNumber == 0 {
-		espVersion := "(latest)"
-		for _, esp := range []struct {
-			key, name, chip string
-		}{
-			{"esp32-c6", "ESP32-C6", "esp32c6"},
-			{"esp32-c5", "ESP32-C5", "esp32c5"},
-			{"esp32-s3", "ESP32-S3", "esp32s3"},
-			{"esp32-c61", "ESP32-C61", "esp32c61"},
-		} {
-			deviceMap[esp.key] = pickerDevice{
-				Name:      esp.name,
-				Version:   espVersion,
-				IsESP32:   true,
-				ESP32Chip: esp.chip,
+		for _, v := range wliteBoards {
+			deviceMap["wlite_"+v.Board] = pickerDevice{
+				Name:       v.DisplayName,
+				Version:    v.Version,
+				IsESP32:    true,
+				ESP32Board: v.Board,
 			}
+		}
+
+		for _, t := range wliteTargets {
 			items = append(items, tui.PickerItem{
-				Name:        esp.name,
-				Description: espVersion,
-				Section:     "Wendy Lite",
-				SortKey:     "1_lite_" + strings.ToLower(esp.name),
-				Value:       esp.key,
+				Name:    t.DisplayName,
+				Section: "Wendy Lite",
+				SortKey: "1_lite_" + strings.ToLower(t.DisplayName),
+				Value:   "wlite_target_" + t.Name,
 			})
 		}
 
@@ -426,6 +470,14 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if err != nil {
 			return err
 		}
+
+		if target, ok := strings.CutPrefix(selected, "wlite_target_"); ok {
+			board, err := pickWendyLiteBoard(target, nightly)
+			if err != nil {
+				return err
+			}
+			selected = "wlite_" + board
+		}
 	}
 
 	// Thor flashes over USB recovery via its flashpack, never to a drive. The
@@ -456,7 +508,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 	device := deviceMap[selected]
 
 	if device.IsESP32 {
-		return installESP32Firmware(ctx, nightly, device.ESP32Chip, wifi, deviceName, preOpts)
+		return installESP32Firmware(ctx, nightly, device.ESP32Board, "", wifi, deviceName, preOpts)
 	}
 	if storageOverride == "emmc" && selected != orinDeviceType {
 		return fmt.Errorf("--storage emmc is supported only for --device-type %s", orinDeviceType)
@@ -590,14 +642,15 @@ func shouldPromptFlashMode(deviceType, installMode string, rootfsOnlyExplicit bo
 		interactive
 }
 
-// chooseT234FlashMode prompts the user to pick between full USB recovery
-// (firmware + OS) and OS-image-only imaging, returning rootfsOnly=true for the
-// image-only choice. A cancelled picker surfaces ErrUserCancelled, which the
-// top-level command maps to a clean exit.
+// chooseT234FlashMode prompts the user to pick between OS-image-only imaging
+// and a full recovery flash (firmware + OS), returning rootfsOnly=true for the
+// image-only choice. Image-only is listed first because it is the common case;
+// a full flash needs the device jumpered into recovery mode. A cancelled picker
+// surfaces ErrUserCancelled, which the top-level command maps to a clean exit.
 func chooseT234FlashMode() (rootfsOnly bool, err error) {
 	choice, err := pickFromItems("Select flash mode", []tui.PickerItem{
-		{Name: "Full flash over USB", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 		{Name: "OS image only (no firmware update)", Description: "Write to an NVMe/SD drive attached to this computer", Value: "rootfs"},
+		{Name: "Full flash over UART", Description: "Updates boot firmware + OS (device in recovery mode)", Value: "full"},
 	})
 	if err != nil {
 		return false, err // ErrUserCancelled propagates unchanged
@@ -983,6 +1036,7 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 	}
 
 	hasProvisioningData := provisioningRequired(provCreds, provDeviceName, provisioningJSON)
+	var provisionErr error
 
 	if !configPartitionSupported {
 		// writeConfigPartition is not supported on this platform. Skip the
@@ -998,11 +1052,22 @@ func installLinuxImage(ctx context.Context, deviceKey string, device pickerDevic
 		// A provisioning failure is not a flash failure: the OS image already
 		// landed on the drive above. provisionConfigWithRetry warns and offers
 		// an interactive retry rather than aborting, so the user knows the
-		// device still boots.
-		provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
+		// device still boots. It returns an error only when the user asked for
+		// provisioning and it was not applied — reported below, after the eject,
+		// so the drive is still safe to remove.
+		provisionErr = provisionConfigWithRetry(targetDrive, provCreds, provDeviceName, provisioningJSON, hasProvisioningData)
 	}
 
 	ejectDisk(targetDrive)
+
+	// Requested provisioning that never reached the card is a failed install:
+	// the device would boot with none of the configuration the user asked for,
+	// and reporting success here is what made WendyOS#1562 look like a device
+	// bug. The image itself is fine, which the warning above already said.
+	if provisionErr != nil {
+		return fmt.Errorf("%s %s was written to %s, but the requested provisioning was not applied: %w",
+			device.Name, imgInfo.Version, targetDrive.Name, provisionErr)
+	}
 
 	fmt.Printf("\nSuccessfully installed %s %s on %s.\n", device.Name, imgInfo.Version, targetDrive.Name)
 	fmt.Println("You can now insert the drive into your device and power it on.")
@@ -2306,11 +2371,18 @@ var confirmProvisioningRetry = func() (bool, error) {
 // --device-name / --pre-enroll (that input did not reach the device), and on an
 // interactive terminal we offer to retry — e.g. after re-seating an SD card
 // whose config partition could not be located.
-func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) {
+// It returns the final provisioning error when the user explicitly asked for
+// provisioning and it was not applied, so the caller can exit non-zero instead
+// of printing "Successfully installed" over dropped input (WendyOS#1562: the
+// config-partition write failed, --wifi and --device-name never reached the
+// card, and the install still reported success — which read as the device
+// ignoring its configuration rather than never receiving it). When provisioning
+// was not requested it stays advisory and returns nil.
+func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte, requested bool) error {
 	for {
 		err := provisionConfigPartitionFn(d, creds, deviceName, provisioningJSON)
 		if err == nil {
-			return
+			return nil
 		}
 
 		if requested {
@@ -2323,16 +2395,18 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 		if !isInteractiveTerminal() {
 			if requested {
 				fmt.Println("Re-run 'wendy os install' to apply WiFi / device-name / pre-enrollment, or configure the device after it boots.")
+				return err
 			}
-			return
+			return nil
 		}
 
-		retry, err := confirmProvisioningRetry()
-		if err != nil || !retry {
+		retry, confirmErr := confirmProvisioningRetry()
+		if confirmErr != nil || !retry {
 			if requested {
 				fmt.Println("Skipping provisioning. Re-run 'wendy os install' to apply it, or configure the device after it boots.")
+				return err
 			}
-			return
+			return nil
 		}
 	}
 }
@@ -2340,7 +2414,7 @@ func provisionConfigWithRetry(d drive, creds []wendyconf.WifiCredential, deviceN
 // provisionConfigPartition downloads the latest stable arm64 wendy-agent binary
 func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceName string, provisioningJSON []byte) error {
 	fmt.Printf("Downloading wendy-agent for device...\n")
-	agentBinary, agentVer, _, err := resolveAgentBinary("arm64", false)
+	agentBinary, agentVer, _, err := resolveAgentArtifact("linux", "arm64", false)
 	if err != nil {
 		return fmt.Errorf("resolving agent binary: %w", err)
 	}
@@ -2349,9 +2423,41 @@ func provisionConfigPartition(d drive, creds []wendyconf.WifiCredential, deviceN
 	return writeConfigPartition(d, agentBinary, creds, deviceName, provisioningJSON)
 }
 
+// maxFlashAttempts bounds installESP32Firmware's retry loop so a permanently
+// unresolvable failure (an unkillable port holder, a device that never comes
+// back) stops instead of looping on default-Yes prompts forever.
+const maxFlashAttempts = 5
+
+// flashRetryAction decides what happens after a flash attempt finished with
+// flashErr. Pure — no prompting, no I/O — so the rules stay testable without
+// hardware. Exactly one of the results is meaningful:
+//
+//	retry=false, fatal=nil   the flash succeeded; stop
+//	retry=false, fatal!=nil  give up and return fatal
+//	retry=true,  fatal=nil   the caller may run its interactive retry flow
+func flashRetryAction(flashErr error, interactive bool) (retry bool, fatal error) {
+	if flashErr == nil {
+		return false, nil
+	}
+
+	// User cancellation is not a flash failure. tui.ProgressModel reports q,
+	// Ctrl+C and SIGINT as context.Canceled, and the retry prompt defaults to
+	// Yes — without this, one Enter after Ctrl+C restarts the very flash the
+	// user just stopped. Same guard the disk-flash path above uses.
+	if errors.Is(flashErr, context.Canceled) {
+		return false, flashErr
+	}
+
+	if !interactive {
+		return false, fmt.Errorf("flashing failed: %w", flashErr)
+	}
+	return true, nil
+}
+
 // installESP32Firmware handles the ESP32 path: detect device → download → flash.
-// chip is e.g. "esp32c6", "esp32c5", "esp32s3", or "esp32c61".
-func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
+// board is a Wendy Lite catalog board name, e.g. "esp32c6_generic". serialPort
+// is optional: when empty, the device is located by scanning the serial ports.
+func installESP32Firmware(ctx context.Context, nightly bool, board, serialPort string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions) error {
 	provCreds, err := resolveWiFiCredentialsList(wifi)
 	if err != nil {
 		return err
@@ -2387,56 +2493,53 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 		return fmt.Errorf("this device only supports one Wi-Fi network")
 	}
 
-	fmt.Println("\nScanning for ESP32 devices...")
+	// An empty serialPort means "find it for me", which stays true across
+	// retries below: a reset re-enumerates the USB device and the node can
+	// come back under a different path. An explicitly requested port is used
+	// verbatim, every attempt.
+	autoDiscoverPort := serialPort == ""
+	if autoDiscoverPort {
+		fmt.Println("\nScanning for ESP32 devices...")
 
-	serialPort, err := discovery.ResolveESP32SerialPort()
-	if err != nil {
-		fmt.Println("\nNo ESP32 device detected.")
-		fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
-		fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
-		return fmt.Errorf("ESP32 not found: %w", err)
+		// A device that's rebooting on its own can drop off and reappear on
+		// the USB bus as it re-enumerates, so a single scan can miss it.
+		// Retry briefly rather than failing on the very first attempt.
+		deadline := time.Now().Add(1 * time.Second)
+		for {
+			serialPort, err = discovery.ResolveESP32SerialPort()
+			if err == nil || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if err != nil {
+			fmt.Println("\nNo ESP32 device detected.")
+			fmt.Println("Make sure your ESP32 is connected via USB and in bootloader mode.")
+			fmt.Println("To enter bootloader mode: hold the BOOT button, press RESET, then release BOOT.")
+			return fmt.Errorf("ESP32 not found: %w", err)
+		}
+
+		fmt.Printf("Found ESP32 at %s\n", serialPort)
 	}
 
-	fmt.Printf("Found ESP32 at %s\n", serialPort)
-
 	fmt.Println("Fetching latest Wendy Lite firmware...")
-	asset, err := fetchFirmwareFromManifest(chip, nightly)
+	firmwareID, err := WendyLiteFirmwareID(board)
+	if err != nil {
+		return err
+	}
+	asset, err := fetchFirmwareFromManifest(firmwareID, nightly)
 	if err != nil {
 		return fmt.Errorf("fetching firmware: %w", err)
 	}
 	fmt.Printf("Found firmware: %s v%s\n", asset.Name, asset.Version)
 
-	// Download with progress bar.
-
-	prog := tui.NewProgress(fmt.Sprintf("Downloading %s %s...", asset.Name, asset.Version))
-	p := tui.NewProgressProgram(prog)
-
-	var fwPath string
-	var dlErr error
-
-	go func() {
-		fwPath, dlErr = downloadFirmware(asset, func(downloaded, total int64) {
-			if total > 0 {
-				p.Send(tui.ProgressUpdateMsg{Percent: float64(downloaded) / float64(total)})
-			}
-		})
-		if dlErr != nil {
-			p.Send(tui.ProgressDoneMsg{Err: dlErr})
-		} else {
-			p.Send(tui.ProgressDoneMsg{})
-		}
-	}()
-
-	finalModel, err := p.Run()
+	// Reuse a cached download from a previous run when one exists; otherwise
+	// download with a progress bar. The cached file persists across runs and
+	// is only removed via `wendy cache clear`/`cache list`.
+	fwPath, err := resolveFirmware(asset)
 	if err != nil {
-		return fmt.Errorf("progress TUI: %w", err)
+		return fmt.Errorf("resolving firmware: %w", err)
 	}
-
-	model := finalModel.(tui.ProgressModel)
-	if model.Err() != nil {
-		return model.Err()
-	}
-	defer os.Remove(fwPath)
 
 	// Include configuration into the flash image.
 
@@ -2457,27 +2560,67 @@ func installESP32Firmware(ctx context.Context, nightly bool, chip string, wifi w
 		return fmt.Errorf("writing config to firmware image: %w", err)
 	}
 
-	// Flash with progress bar.
+	// Flash with progress bar. Retries on failure: a busy port gets an extra
+	// offer to identify and kill whatever holds it; any other failure just
+	// gets the plain retry prompt. Prompting is skipped entirely when the run
+	// isn't interactive or is producing JSON, so those fail immediately on the
+	// first attempt, unchanged from before this loop existed.
+	interactive := !jsonOutput && isInteractiveTerminal()
+	for attempt := 1; ; attempt++ {
+		// espResetViaUsbJtag forces USB re-enumeration, after which the device
+		// node can reappear at a different path (macOS: /dev/cu.usbmodem101 →
+		// /dev/cu.usbmodem1101). Re-scan before each retry so the loop follows
+		// the device instead of hammering a path that no longer exists. A
+		// failed re-scan keeps the last known path and lets the attempt report
+		// the real error.
+		if attempt > 1 && autoDiscoverPort {
+			if rescanned, rescanErr := discovery.ResolveESP32SerialPort(); rescanErr == nil && rescanned != serialPort {
+				fmt.Printf("ESP32 reappeared at %s\n", rescanned)
+				serialPort = rescanned
+			}
+		}
 
-	fmt.Println()
-	flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
-	fp := tui.NewProgressProgram(flashProg)
+		fmt.Println()
+		flashProg := tui.NewProgress(fmt.Sprintf("Flashing to %s...", serialPort))
+		fp := tui.NewProgressProgram(flashProg)
 
-	go func() {
-		flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
-			fp.Send(tui.ProgressUpdateMsg{Percent: pct})
-		})
-		fp.Send(tui.ProgressDoneMsg{Err: flashErr})
-	}()
+		go func() {
+			flashErr := flashFirmwareImage(serialPort, img, func(pct float64) {
+				fp.Send(tui.ProgressUpdateMsg{Percent: pct})
+			})
+			fp.Send(tui.ProgressDoneMsg{Err: flashErr})
+		}()
 
-	flashFinal, err := fp.Run()
-	if err != nil {
-		return fmt.Errorf("flash TUI: %w", err)
-	}
+		flashFinal, err := fp.Run()
+		if err != nil {
+			return fmt.Errorf("flash TUI: %w", err)
+		}
 
-	flashModel := flashFinal.(tui.ProgressModel)
-	if flashModel.Err() != nil {
-		return fmt.Errorf("flashing failed: %w", flashModel.Err())
+		flashModel := flashFinal.(tui.ProgressModel)
+		flashErr := flashModel.Err()
+
+		retry, fatal := flashRetryAction(flashErr, interactive)
+		if fatal != nil {
+			return fatal
+		}
+		if !retry {
+			break
+		}
+
+		// Cap the attempts: a holder that can't be killed (root-owned, say)
+		// would otherwise fail busy identically forever, and every prompt in
+		// this loop defaults to Yes.
+		if attempt >= maxFlashAttempts {
+			return fmt.Errorf("flashing failed after %d attempts: %w", attempt, flashErr)
+		}
+
+		retriedAutomatically := false
+		if errors.Is(flashErr, errPortBusy) {
+			retriedAutomatically = offerPortBusyRetry(serialPort)
+		}
+		if !retriedAutomatically && !confirmFn("Do you want to try again?") {
+			return fmt.Errorf("flashing failed: %w", flashErr)
+		}
 	}
 
 	fmt.Printf("\nSuccessfully flashed Wendy Lite %s!\n", asset.Version)

@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"gopkg.in/yaml.v3"
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
@@ -33,6 +34,8 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/models"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -496,6 +499,10 @@ type runOptions struct {
 	// quietBuild suppresses the image build (buildx) output, surfacing it only
 	// when the build fails. Set by `wendy watch` to keep the redeploy loop quiet.
 	quietBuild bool
+	// gpuArch overrides the GPU architecture a Stagefile cuda: stage compiles
+	// against. Normally the selected device answers this; the flag exists for
+	// building against a board that isn't the one in front of you.
+	gpuArch string
 	// chunking controls the content-defined chunking (CBC) deploy path:
 	// chunkingAuto (default/empty) tries chunk-diff and falls back to a registry
 	// push on failure, chunkingForce uses chunk-diff with no fallback, and
@@ -563,9 +570,10 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when Dockerfile/Containerfile is present alongside Package.swift or Python project markers: docker, swift, or python")
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
+	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
-	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container but do not stream logs")
+	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
 	cmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "Automatically accept all interactive prompts")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart on failure")
@@ -619,6 +627,75 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 	return &SelectedDevice{Agent: cloudConn}, nil
 }
 
+// debugRequiresDebugpy fails fast when a --debug deploy would crash-loop for
+// want of debugpy. The agent unconditionally rewrites a Python entrypoint to
+// run under debugpy when debug mode is requested (wrapWithDebugpy), but
+// nothing injects debugpy into the image itself: 70493f702 ("Remove debugpy
+// injection") deliberately deleted that step from the registry-push path,
+// so an image that doesn't already bundle debugpy fails immediately on
+// device with "No module named debugpy".
+//
+// This check only has enough information to catch that failure mode for
+// Stagefile projects, where the CLI knows which pip requirements file(s)
+// feed the build. It is a no-op (returns nil) for anything else: non-python
+// apps, and non-Stagefile projects (Dockerfile-authored Python images are
+// covered by the printed note below instead, since the CLI cannot inspect
+// an opaque Dockerfile's installed packages).
+//
+// stagefileSourceName ("build.stagefile.yaml") is not defined on this
+// branch — that constant lives on the not-yet-merged Stagefile-native-layers
+// work — so the literal filename is used here instead.
+func debugRequiresDebugpy(cwd string, appCfg *appconfig.AppConfig) error {
+	if appCfg == nil || appCfg.Language != "python" {
+		return nil
+	}
+
+	data, err := os.ReadFile(filepath.Join(cwd, "build.stagefile.yaml"))
+	if err != nil {
+		// Not a Stagefile project (or unreadable) — nothing more to check here.
+		return nil
+	}
+
+	var stagefile struct {
+		Stages []struct {
+			Install struct {
+				Pip struct {
+					Requirements string `yaml:"requirements"`
+				} `yaml:"pip"`
+			} `yaml:"install"`
+		} `yaml:"stages"`
+	}
+	if err := yaml.Unmarshal(data, &stagefile); err != nil {
+		// Malformed Stagefile: let the normal build path surface the real
+		// parse error instead of failing here on an unrelated check.
+		return nil
+	}
+
+	var reqFiles []string
+	for _, stage := range stagefile.Stages {
+		if req := strings.TrimSpace(stage.Install.Pip.Requirements); req != "" {
+			reqFiles = append(reqFiles, req)
+		}
+	}
+	if len(reqFiles) == 0 {
+		return nil
+	}
+
+	for _, req := range reqFiles {
+		content, err := os.ReadFile(filepath.Join(cwd, req))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "debugpy") {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf(`--debug requires debugpy in the image: add "debugpy" to requirements.txt, or run without --debug`)
+}
+
 func runCommand(ctx context.Context, opts runOptions) error {
 	mark := phaseTimer()
 	// Step 1: Load and validate wendy.json.
@@ -665,11 +742,35 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
+	// The CLI owns the selected connection lifetime for both the preflight and
+	// normal run paths; lower-level run helpers do not close it. Declared here
+	// because a GPU project resolves its target earlier than the rest do — see
+	// below.
+	var target *SelectedDevice
+	defer func() {
+		if target != nil && target.Agent != nil {
+			target.Agent.Close()
+		}
+	}()
+
 	// For docker-type projects, resolve which build file to use before
 	// connecting to the target — so the picker shows regardless of whether
 	// we end up on the agent path or a provider path (Docker, etc.).
 	if projectType == "docker" && opts.dockerfile == "" {
-		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
+		// Exception: a Stagefile with a cuda: stage compiles against the GPU
+		// architecture of the device it is being deployed to, so for those
+		// projects the device has to come first. Only they pay for it, and
+		// only when --gpu-arch didn't already answer the question. Step 2
+		// below reuses whatever is resolved here.
+		if opts.gpuArch == "" && stagefile.NeedsGPUTarget(cwd) {
+			target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
+			if err != nil {
+				return err
+			}
+		}
+		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(),
+			resolveGPUArch(ctx, cwd, opts.gpuArch, agentConn(target)),
+			debugStagefileOptions(opts.debug)...)
 		if err != nil {
 			return err
 		}
@@ -684,19 +785,13 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// If wendy.json is missing, resolve the target before prompting to create
 	// one. That lets Mac beta targets reject container-only project shapes with
-	// the real project/target mismatch instead of first asking about config. The
-	// CLI owns the selected connection lifetime for both the preflight and normal
-	// run paths; lower-level run helpers do not close it.
-	var target *SelectedDevice
-	defer func() {
-		if target != nil && target.Agent != nil {
-			target.Agent.Close()
-		}
-	}()
+	// the real project/target mismatch instead of first asking about config.
 	if cfgMissing {
-		target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
-		if err != nil {
-			return err
+		if target == nil {
+			target, err = resolveRunTarget(ctx, runResolveOptions(opts)...)
+			if err != nil {
+				return err
+			}
 		}
 		if err := preflightMissingAppConfigForMacTarget(ctx, target, projectType); err != nil {
 			return err
@@ -717,6 +812,12 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Debug mode requires host networking for remote debugger access.
 	if opts.debug {
+		// Fail fast, before any build/deploy work starts, when this is a
+		// Stagefile Python project whose pip requirements don't include
+		// debugpy. See debugRequiresDebugpy.
+		if err := debugRequiresDebugpy(cwd, appCfg); err != nil {
+			return err
+		}
 		appCfg.Debug = true
 		foundNetwork := false
 		for i, e := range appCfg.Entitlements {
@@ -1210,6 +1311,9 @@ func resolveRunProjectType(dir, requestedType string) (string, error) {
 			}
 		}
 	case "docker":
+		if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+			return "docker", nil
+		}
 		// Accept Dockerfile/Containerfile and dot/hyphen variants.
 		entries, readErr := os.ReadDir(dir)
 		if readErr != nil {
@@ -1301,7 +1405,7 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if projectType == "swift" {
 		if ib, ok := p.(providers.ImageBuilder); ok {
 			cliLogln("Building Swift project for %s...", p.DisplayName())
-			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, &dimWriter{}, os.Stderr)
+			imageName, err := buildSwiftDockerImage(ctx, projectPath, product, runtime.GOARCH, swiftBuildConfig(opts.debug), &dimWriter{}, os.Stderr)
 			if err != nil {
 				return fmt.Errorf("building Swift Docker image: %w", err)
 			}
@@ -1312,16 +1416,12 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 	if app == nil {
 		cliLogln("Building with %s provider...", p.DisplayName())
 		var err error
-		// Pass the resolved project type and Dockerfile to providers that support it.
-		if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
-			app, err = db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
-		} else if tb, ok := p.(providers.TypedBuilder); ok {
-			app, err = tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
-		} else {
-			app, err = p.Build(ctx, device, projectPath, projectType, product, opts.debug)
-		}
+		app, err = providerBuild(ctx, p, device, projectPath, projectType, product, opts)
 		if err != nil {
-			return fmt.Errorf("provider build: %w", err)
+			app, err = offerLiteReinstallAndRebuild(ctx, p, device, projectPath, projectType, product, opts, err)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1376,6 +1476,142 @@ func runWithProvider(ctx context.Context, p providers.DeviceProvider, device mod
 		return nil // cancelled by signal
 	}
 	return runErr
+}
+
+// providerBuild dispatches a build to the most specific builder interface the
+// provider implements.
+func providerBuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions) (*providers.BuiltApp, error) {
+	if db, ok := p.(providers.DockerfileBuilder); ok && opts.dockerfile != "" {
+		return db.BuildWithDockerfile(ctx, device, projectPath, product, projectType, opts.dockerfile, opts.debug)
+	}
+	if tb, ok := p.(providers.TypedBuilder); ok {
+		return tb.BuildWithType(ctx, device, projectPath, product, projectType, opts.debug)
+	}
+	return p.Build(ctx, device, projectPath, projectType, product, opts.debug)
+}
+
+// shouldOfferLiteReinstall reports whether a failed provider build should turn
+// into an interactive offer to install (or reinstall) Wendy Lite, and returns
+// the unsupported-requirements error when it should. This fires both when
+// existing firmware rejected the app's requirements and when the device has
+// no Wendy Lite firmware at all yet (see MicroWendyProvider.GetDeviceInfo's
+// needsInstall short-circuit) — either way GetDeviceInfo returns the same
+// error type. The offer only makes sense when reflashing can happen over the
+// same USB cable, and only in a session where a human can answer.
+func shouldOfferLiteReinstall(buildErr error, device models.ExternalDevice, interactive bool) (*providers.AppRequirementsUnsupportedError, bool) {
+	var unsupported *providers.AppRequirementsUnsupportedError
+	if !errors.As(buildErr, &unsupported) {
+		return nil, false
+	}
+	if device.ConnectionType() != "USB" || !interactive {
+		return nil, false
+	}
+	return unsupported, true
+}
+
+// deviceNeedsInstall reports whether device is a serial ESP32 board with no
+// Wendy Lite firmware installed yet, as opposed to one whose existing
+// firmware simply doesn't support what the app requires.
+func deviceNeedsInstall(device models.ExternalDevice) bool {
+	return device.ConnectionInfo["needsInstall"] == "true"
+}
+
+// offerLiteReinstallAndRebuild handles a provider build that failed because
+// the device cannot host the app: either its existing firmware does not
+// support the app's requirements (native or WASM apps), or it has no Wendy
+// Lite firmware installed at all. Either way, it offers to (re)install Wendy
+// Lite (the classic `wendy os install` flow) and, once the device is back,
+// builds again. In every other case — including --yes, which must not
+// silently accept a destructive reinstall — it returns the build error
+// unchanged.
+func offerLiteReinstallAndRebuild(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, projectPath, projectType, product string, opts runOptions, buildErr error) (*providers.BuiltApp, error) {
+	wrapped := fmt.Errorf("provider build: %w", buildErr)
+	unsupported, ok := shouldOfferLiteReinstall(buildErr, device, !opts.yes && isInteractiveTerminal())
+	if !ok {
+		return nil, wrapped
+	}
+
+	freshInstall := deviceNeedsInstall(device)
+	var confirmPrompt string
+	if freshInstall {
+		cliLogln("Device %s has no Wendy Lite firmware installed.", tui.Value(device.DisplayName))
+		confirmPrompt = "Would you like to install Wendy Lite on it now?"
+	} else {
+		cliLogln("Device %s does not support %s.", tui.Value(device.DisplayName), unsupported.Missing)
+		confirmPrompt = "Would you like to reinstall it with a different version of Wendy Lite? This will erase all data on the device."
+	}
+	confirmed, err := tui.Confirm(confirmPrompt)
+	if err != nil {
+		if errors.Is(err, tui.ErrCancelled) {
+			return nil, ErrUserCancelled
+		}
+		return nil, err
+	}
+	if !confirmed {
+		return nil, wrapped
+	}
+
+	board, err := pickWendyLiteBoard("", false)
+	if err != nil {
+		if errors.Is(err, ErrUserCancelled) {
+			return nil, wrapped
+		}
+		return nil, err
+	}
+
+	if err := installESP32Firmware(ctx, false, board, device.ConnectionInfo["serialPort"], wifiCLIOptions{}, "", preEnrollOptions{mode: preEnrollAuto}); err != nil {
+		return nil, fmt.Errorf("reinstalling Wendy Lite: %w", err)
+	}
+
+	// The device now has firmware where it had none (or different firmware),
+	// so the needsInstall short-circuit in GetDeviceInfo must not fire again —
+	// clear it before probing/building against the freshly flashed board.
+	if freshInstall {
+		delete(device.ConnectionInfo, "needsInstall")
+	}
+
+	cliLogln("Waiting for the device to restart...")
+
+	// Give the device time to start booting and be discovered by the OS before
+	// probing it.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	if err := waitForDeviceReady(ctx, p, device, 30*time.Second); err != nil {
+		return nil, fmt.Errorf("device did not come back after reinstall: %w", err)
+	}
+
+	cliLogln("Building with %s provider...", p.DisplayName())
+	app, err := providerBuild(ctx, p, device, projectPath, projectType, product, opts)
+	if err != nil {
+		return nil, fmt.Errorf("provider build: %w", err)
+	}
+	return app, nil
+}
+
+// waitForDeviceReady polls the provider until the device answers again after
+// a reboot, or the timeout elapses.
+func waitForDeviceReady(ctx context.Context, p providers.DeviceProvider, device models.ExternalDevice, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		if _, err := p.GetDeviceInfo(ctx, device); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // runWithAgent is the existing gRPC agent pipeline.
@@ -1436,11 +1672,11 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	if projectType == "swift" {
 		targetIsDarwin := platformOS(platform) == "darwin"
 		explicitSwift := normalizeBuildType(opts.buildType) == "swift"
-		resolvedBuildFile, dockerfileResolveErr := resolveDockerfile(cwd, "", false)
-		if dockerfileResolveErr != nil {
-			return dockerfileResolveErr
-		}
-		needsHostSwift := explicitSwift || resolvedBuildFile == ""
+		// Read-only existence probe: resolveDockerfile would compile a
+		// Stagefile (registry resolution, lockfile write) or write an
+		// auto-fixed Dockerfile.generated just to answer a yes/no question
+		// whose result is discarded on the host-swift path.
+		needsHostSwift := explicitSwift || !hasContainerBuildFile(cwd)
 
 		if needsHostSwift {
 			if targetIsDarwin && runtime.GOOS != "darwin" {
@@ -1576,9 +1812,14 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Single-service build: no concurrency, so keep the shared local cache dir
 	// (empty cache key) for cross-run cache reuse.
 	buildTitle := fmt.Sprintf("Building and pushing image for %s...", tui.Value(platform))
-	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
-		return buildAndPushImageForAgent(ctx, conn, regPort, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
+	if err := runBuildWithProgress(ctx, buildTitle, dumpRawUnlessRegistryUnavailable, func(stream, logw io.Writer) error {
+		return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, opts.builder, cwd, repo, platform, opts.dockerfile, buildArgs, "", stream, logw)
 	}); err != nil {
+		if isRegistryUnavailable(err) {
+			// Return the friendly error bare (matching the Swift path above) —
+			// the "building and pushing image" prefix adds nothing to it.
+			return err
+		}
 		return fmt.Errorf("building and pushing image: %w", err)
 	}
 
@@ -1718,9 +1959,8 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 			return fmt.Errorf("waiting for container start: %w", err)
 		}
 		cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-		// Announce + fire-and-forget post-start hook (outlives the CLI process),
-		// but only if the app passes readiness.
-		runPostStartIfReady(ctx, context.Background(), conn, appCfg)
+		// Detached returns as soon as the container is started — see
+		// runPostStartIfReady's doc comment.
 		return nil
 	}
 
@@ -1907,7 +2147,9 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil {
 		hookURL = appCfg.Hooks.PostStart.OpenURL
 	}
-	hasPort := appCfg.Readiness != nil && appCfg.Readiness.TCPSocket != nil && appCfg.Readiness.TCPSocket.Port != 0
+	readiness := effectiveReadiness(appCfg)
+	httpPort, hasHTTPPort := httpEntitlementPort(appCfg.Entitlements)
+	hasPort := hasHTTPPort || (readiness != nil && readiness.TCPSocket != nil && readiness.TCPSocket.Port != 0)
 	if hookURL == "" && !hasPort {
 		return ""
 	}
@@ -1917,12 +2159,37 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 		return ""
 	}
 	ip := bestReachableIP(resp.GetNetworkInterfaces())
-	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, appCfg.Readiness)
+	url := reachableAppURL(hookURL, appCfg.AppID, appCfg.ServiceName, ip, httpPort, readiness)
 	if url == "" {
 		return ""
 	}
 	cliLogln("App reachable at %s", tui.Value(url))
 	return ip
+}
+
+// synthesizedOpenURLHook returns appCfg.Hooks unchanged when the app already
+// configures an explicit openURL. Otherwise, when the app declares an `http`
+// entitlement, it returns a copied HooksConfig whose postStart opens that port
+// automatically while preserving any explicit cli/agent actions.
+func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig {
+	if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil && appCfg.Hooks.PostStart.OpenURL != "" {
+		return appCfg.Hooks
+	}
+	port, ok := httpEntitlementPort(appCfg.Entitlements)
+	if !ok {
+		return appCfg.Hooks
+	}
+	hooks := &appconfig.HooksConfig{}
+	if appCfg.Hooks != nil {
+		*hooks = *appCfg.Hooks
+	}
+	postStart := &appconfig.HookCommand{}
+	if hooks.PostStart != nil {
+		*postStart = *hooks.PostStart
+	}
+	postStart.OpenURL = fmt.Sprintf("http://${WENDY_HOSTNAME}:%d", port)
+	hooks.PostStart = postStart
+	return hooks
 }
 
 // runPostStartIfReady gates `wendy run`'s post-start side effects on the
@@ -1931,11 +2198,32 @@ func announceReachableURL(ctx context.Context, conn *grpcclient.AgentConnection,
 // probe reported a success that never happened — "App reachable at ..." and a
 // browser tab pointed at a container that had already exited.
 //
+// ATTACHED RUNS ONLY. Detached deploys (--detach, and --watch, which sets
+// opts.detach) never call this. The readiness probe waits out the app's own
+// boot — measured at ~500-660ms for a trivial Python app, several times the
+// CLI's entire remaining overhead — which an attached run can afford because
+// it stays to stream logs anyway, but a detached run cannot: its whole point
+// is to return once the container is started, and --watch paid that wait on
+// every single redeploy.
+//
+// The host-side hook goes with it rather than being fired early, because it
+// is only meaningful once the app is listening: an app declaring an `http`
+// entitlement gets an openURL hook synthesized automatically (see
+// synthesizedOpenURLHook), so firing it without the gate would open a browser
+// at a port nothing is bound to yet — and in watch mode, one per redeploy.
+//
+// The agent-side (in-container) hook is unaffected: it rides on the
+// RunContainer/StartContainer RPC context and still runs on the device.
+//
 // hookCtx bounds the hook's CLI child process; detached callers pass
 // context.Background() so the hook outlives the CLI. Returns the hook's cmd
 // for the caller to reap, nil when no CLI hook ran.
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
-	if err := waitForReadiness(ctx, appCfg.Readiness, conn.Host); err != nil {
+	rp := phaseTimer()
+	readiness := effectiveReadiness(appCfg)
+	err := waitForReadiness(ctx, readiness, conn.Host)
+	rp("  ↳ runcontainer: readiness wait")
+	if err != nil {
 		if ctx.Err() == nil {
 			warnReadiness(ctx, conn, appCfg.AppID, err)
 			if appCfg.Hooks != nil && appCfg.Hooks.PostStart != nil &&
@@ -1956,7 +2244,15 @@ func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentCon
 		// so the URL it opens matches the "App reachable at" line.
 		hookHost = ip
 	}
-	return startPostStartHook(hookCtx, appCfg, hookHost, appCfg.ServiceName)
+	effectiveCfg := appCfg
+	if hooks := synthesizedOpenURLHook(appCfg); hooks != appCfg.Hooks {
+		clone := *appCfg
+		clone.Hooks = hooks
+		effectiveCfg = &clone
+	}
+	cmd := startPostStartHook(hookCtx, effectiveCfg, hookHost, appCfg.ServiceName)
+	rp("  ↳ runcontainer: announce + postStart hook")
+	return cmd
 }
 
 // startPostStartHook fires the postStart hook actions for appCfg. serviceName
@@ -2054,6 +2350,11 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 	// when the stream ends (matching startAndStreamContainer's runCtx handling).
 	// Cleanup runs in a defer so the hook is killed and reaped on every exit
 	// path, including stream errors.
+	// Splits the runcontainer phase into its device-side and host-side halves:
+	// everything up to Started is the agent creating and starting the
+	// container, everything after is the CLI waiting on the app and firing
+	// hooks. They have completely different causes when one is slow.
+	rc := phaseTimer()
 	hookCtx, hookCancel := context.WithCancel(ctx)
 	var postStartCmd *exec.Cmd
 	defer func() {
@@ -2072,17 +2373,17 @@ func streamRunContainer(ctx context.Context, conn *grpcclient.AgentConnection, s
 			return fmt.Errorf("receiving container output: %w", err)
 		}
 		if resp.GetStarted() != nil {
+			rc("  ↳ runcontainer: device create+start")
 			if opts.deploy {
 				cliLogln("Container %s created (not started).", containerDisplayName(appCfg))
 				return nil
 			}
 			if opts.detach {
 				// Mirror startAndStreamContainer's detach branch: the container
-				// is started; wait for readiness, fire the host post-start hook,
-				// then return without tailing logs. The container keeps running
-				// independently of this (now-abandoned) output stream.
+				// is started, so return without tailing logs or waiting on
+				// readiness (see runPostStartIfReady's doc comment). The container keeps
+				// running independently of this (now-abandoned) output stream.
 				cliLogln("Application %s running in detached mode.", containerDisplayName(appCfg))
-				runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 				return nil
 			}
 			// Attached: mirror startAndStreamContainer's attached branch — wait
@@ -2153,35 +2454,131 @@ const imageSignaturePathEnv = "WENDY_IMAGE_SIGNATURE_PATH"
 // skipping a rebuild (WDY-1824).
 func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cwd string, appCfg *appconfig.AppConfig, platform, dockerfile string, buildArgs map[string]string, deployEnv []string, opts runOptions) ([]string, error) {
 	mark := phaseTimer()
-	tmp, err := os.MkdirTemp("", "wendy-oci-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	ociTar := filepath.Join(tmp, "image.tar")
 
 	buildTitle := fmt.Sprintf("Building image (OCI layout) for %s...", tui.Value(platform))
-	if opts.quietBuild {
-		// wendy watch: keep the legacy quiet behavior (buffer, surface only on
-		// genuine failure) rather than rendering a live UI under the watcher.
-		var buildLog bytes.Buffer
-		if err := buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, &buildLog, &buildLog); err != nil {
-			if ctx.Err() == nil {
-				_, _ = os.Stderr.Write(buildLog.Bytes())
+	runBuild := func(build func(stream, logw io.Writer) error) error {
+		if opts.quietBuild {
+			// wendy watch: keep the legacy quiet behavior (buffer, surface only on
+			// genuine failure) rather than rendering a live UI under the watcher.
+			var buildLog bytes.Buffer
+			if err := build(&buildLog, &buildLog); err != nil {
+				if ctx.Err() == nil {
+					_, _ = os.Stderr.Write(buildLog.Bytes())
+				}
+				return err
 			}
+			return nil
+		}
+		return runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), build)
+	}
+
+	// The docker backend exports into a persistent per-app OCI layout DIRECTORY:
+	// BuildKit skips blobs already present there, so a warm rebuild writes only
+	// the changed layers instead of re-serializing the whole image (which costs
+	// seconds per GB of image on every iteration). Tar-only backends and the
+	// WENDY_CHUNK_EXPORT=tar escape hatch keep the legacy temp tar.
+	exportMode := chunkExportPlan(opts.builder)
+	var layoutDir string
+	if exportMode == "dir" {
+		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
+			layoutDir = chunkLayoutDir(userCache, appCfg.AppID, platform)
+		} else {
+			exportMode = "tar"
+		}
+	}
+
+	var layers []localLayer
+	var imageConfig []byte
+	if exportMode == "dir" {
+		releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+		if err != nil {
 			return nil, err
 		}
+		defer releaseLayout()
+		build := func(stream, logw io.Writer) error {
+			return buildImageToOCILayoutDirWithDocker(ctx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
+		}
+
+		// Native fast path: for a Stagefile project whose deps inputs are
+		// unchanged since the layout dir's last build, rebuild only the app COPY
+		// layer(s) in-process and splice them into the layout — no Docker at
+		// all. Every guard failure silently falls through to buildx.
+		sf, nativeEligible := nativeBuildEligibility(cwd, dockerfile)
+		var depsHash string
+		if nativeEligible {
+			if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+				depsHash = h
+			} else {
+				nativeEligible = false
+			}
+		}
+		nativeDone := false
+		if nativeEligible {
+			if st, ok := loadNativeState(layoutDir); ok && st.DepsHash == depsHash {
+				if done, rebuildErr := tryNativeRebuild(layoutDir, platform, cwd, sf, st); rebuildErr == nil && done {
+					nativeDone = true
+					cliLogln("App layer(s) rebuilt natively (deps unchanged; buildx skipped)")
+				}
+			}
+		}
+
+		if nativeDone {
+			mark("build (native layers)")
+		} else {
+			if err := runBuild(build); err != nil {
+				return nil, err
+			}
+			mark("build (oci export)")
+		}
+		layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform)
+		if err != nil {
+			// Self-heal exactly once: a corrupt or partially-written layout dir is
+			// wiped and rebuilt from scratch, which is precisely the legacy cold
+			// behavior. A second failure is a real bug and surfaces. The wipe also
+			// removes state.json, so the native path stays off until re-adoption.
+			cliLogln("OCI layout cache unreadable (%v); rebuilding it from scratch", err)
+			if rmErr := os.RemoveAll(layoutDir); rmErr != nil {
+				return nil, fmt.Errorf("resetting OCI layout cache %s: %w", layoutDir, rmErr)
+			}
+			nativeDone = false
+			if err := runBuild(build); err != nil {
+				return nil, err
+			}
+			if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
+				return nil, err
+			}
+		}
+		if nativeEligible && !nativeDone {
+			// After a buildx build, take ownership of the app layers: replace them
+			// with deterministic native rebuilds (verified against the buildx
+			// layers' file sets) so every following iteration can skip buildx.
+			if adopted, adoptErr := adoptNativeLayers(layoutDir, platform, cwd, sf, depsHash); adoptErr == nil && adopted {
+				if layers, imageConfig, err = readOCILayoutDirLayers(layoutDir, platform); err != nil {
+					return nil, err
+				}
+			}
+		}
+		// Prune blobs superseded by this build once the deploy is done with them.
+		// Best-effort: reachable blobs are never touched, so a failed GC only
+		// leaves garbage for the next run to collect.
+		defer func() { _ = gcOCILayoutDir(layoutDir) }()
 	} else {
-		if err := runBuildWithProgress(ctx, buildTitle, shouldDumpChunkDiffBuildLog(opts.chunking), func(stream, logw io.Writer) error {
+		tmp, err := os.MkdirTemp("", "wendy-oci-*")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(tmp)
+		ociTar := filepath.Join(tmp, "image.tar")
+		if err := runBuild(func(stream, logw io.Writer) error {
 			return buildImageToOCILayout(ctx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return nil, err
 		}
-	}
-	mark("build (oci export)")
-	layers, imageConfig, err := readOCILayoutLayers(ociTar, platform)
-	if err != nil {
-		return nil, err
+		mark("build (oci export)")
+		layers, imageConfig, err = readOCILayoutLayers(ociTar, platform)
+		if err != nil {
+			return nil, err
+		}
 	}
 	mark("read+decompress layers")
 

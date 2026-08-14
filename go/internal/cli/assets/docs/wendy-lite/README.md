@@ -6,6 +6,8 @@ Wendy Lite is the WebAssembly runtime layer for ESP32 microcontrollers. It runs 
 
 The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetson, Mac) via WendyOS and wendy-agent. Wendy Lite covers the other end: bare-metal MCUs where containers and a full OS are not viable. The same hardware APIs (BLE, WiFi, sockets, TLS, OTel) are available from WASM guests as are exposed by wendy-agent to containerised apps, making the programming model portable across device classes.
 
+> **Scope note:** wendy-lite host imports cover GPIO, I2C, SPI, UART, RMT, NeoPixel, Timer, Storage, System, OTel, BLE, WiFi, Sockets, TLS, and USB. **Camera and display/framebuffer peripherals are not exposed to WASM guests.** Boards with cameras or RGB LCD panels (e.g. ESP32-S31-Korvo-1, ESP32-P4-Function-EV) must drive those peripherals with native ESP-IDF drivers; the wendy-lite runtime can run alongside a native display loop but does not control the panel.
+
 ## Supported Targets
 
 | Target | Status |
@@ -14,6 +16,8 @@ The broader Wendy platform targets Linux/macOS edge devices (Raspberry Pi, Jetso
 | ESP32-C5 | CI-built, nightly releases |
 | ESP32-S3 | CI-built, nightly releases |
 | ESP32-C61 | CI-built, nightly releases |
+
+All other ESP32 variants (including ESP32-S3, ESP32-P4, and the preview ESP32-S31) are **not currently supported** by wendy-lite. The firmware build image is pinned to `espressif/idf:v5.5.1`; chips that require IDF 6.x / `master` (such as ESP32-S31) cannot be built with this image. There is no camera or display/framebuffer host API — imaging peripherals cannot be driven through a WASM guest today.
 
 Firmware is built with [ESP-IDF v5.5.1](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32c6/index.html) via the official Espressif Docker image.
 
@@ -54,6 +58,8 @@ wendy-lite/
 ## CI and Releases
 
 Every push to `main` and every pull request against `main` runs a matrix build for `esp32c5` and `esp32c6` using `espressif/idf:v5.5.1`. On merge to `main`, a `nightly` pre-release is created (or replaced) on GitHub containing both merged firmware `.bin` files. On a `v*` tag push, the firmware is attached to the corresponding GitHub release.
+
+> **IDF version constraint:** the pinned `v5.5.1` image does not support chips that require IDF 6.x or later (such as ESP32-S31). Adding a new chip target requires either upgrading the pinned IDF version or introducing a parallel `master`/nightly IDF build lane.
 
 ## Guest Languages
 

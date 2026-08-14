@@ -63,6 +63,20 @@ type AppSystemAPISocketProvider interface {
 	ReleaseApp(appID string)
 }
 
+// restartSuppressor is the narrow capability the client needs from the
+// container-restart monitor: pause automatic restarts for a container name
+// while a replace or stop operation holds the handle, so the monitor's
+// periodic tick cannot resurrect the task the client is mid-way through
+// killing and deleting (see suppressRestarts). Declared here — rather than
+// importing internal/agent/container, which would cycle back through
+// internal/agent/services — so *container.ContainerMonitor satisfies it
+// structurally; wired in from main.go via SetRestartSuppressor.
+type restartSuppressor interface {
+	// Suppress pauses restarts for containerName until the returned resume
+	// func runs.
+	Suppress(containerName string) func()
+}
+
 type Client struct {
 	client                  *containerd.Client
 	logger                  *zap.Logger
@@ -131,6 +145,35 @@ type Client struct {
 	// c.mu would deadlock there, while stopOne runs without c.mu held.
 	meshMu      sync.Mutex
 	meshDNSHeld map[string]bool
+
+	// restartMonitor lets replace/stop pause the restart monitor's tick for
+	// the container they are tearing down (see suppressRestarts). nil when
+	// containerd came up without a monitor being wired in (e.g. many unit
+	// tests construct a bare *Client) — suppressRestarts no-ops in that case,
+	// same nil-tolerant treatment as meshDNS above.
+	restartMonitor restartSuppressor
+}
+
+// SetRestartSuppressor injects the container-restart monitor's suppression
+// handle. Called once from main.go at agent startup, after the monitor is
+// constructed (the monitor itself is constructed from the client, so this
+// necessarily wires in after SetMeshDNS/SetAppSystemAPISocketProvider). Not
+// protected by c.mu: set once during single-threaded startup before the
+// Client is exposed to concurrent callers, mirroring SetMeshDNS.
+func (c *Client) SetRestartSuppressor(s restartSuppressor) {
+	c.restartMonitor = s
+}
+
+// suppressRestarts pauses the restart monitor for containerName for the
+// duration of the caller's replace/stop operation. Returns a no-op resume
+// func when no monitor is wired (containerd came up without one, or a unit
+// test constructed a bare *Client), so callers can unconditionally
+// `defer resume()` without a nil check.
+func (c *Client) suppressRestarts(containerName string) func() {
+	if c.restartMonitor == nil {
+		return func() {}
+	}
+	return c.restartMonitor.Suppress(containerName)
 }
 
 // SetMeshDNS injects the shared mesh DNS server used by applyMeshEgress and
@@ -970,6 +1013,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		// Pause the restart monitor for this name for the rest of this
+		// function: without it, a crash-looping app's next tick can call
+		// StartContainer on this same container between our kill and delete
+		// below, resurrecting the task and racing us (observed live:
+		// "cannot delete running task: failed precondition"). Held through
+		// the new container's creation further down too, so the monitor
+		// cannot also race the fresh task being started.
+		resumeRestarts := c.suppressRestarts(containerName)
+		defer resumeRestarts()
+
 		oldHadSystemAPI := false
 		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
 			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
@@ -990,7 +1043,30 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			// service directly so the runtime clears the old task ID.
 			c.forceDeleteTask(ctx, containerName)
 		}
-		if delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup); delErr != nil && !errdefs.IsNotFound(delErr) {
+		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {
+			// A task exists again despite the kill above — most likely the
+			// restart monitor's tick winning a race against suppressRestarts
+			// (a tick already past its check when Suppress was called), or an
+			// unrelated in-flight start. Kill it again and retry the delete
+			// once rather than failing the whole replace outright.
+			c.logger.Warn("Existing container still has a running task after kill; retrying",
+				zap.String("container_name", containerName), zap.Error(delErr))
+			if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
+				if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+					// Mirror the first attempt's fallback above: if the
+					// re-kill itself fails, fall back to force-deleting the
+					// task via the runtime directly before retrying, rather
+					// than retrying the container delete against a task we
+					// know we failed to kill.
+					c.logger.Error("Failed to kill racing task during replace retry; forcing runtime delete",
+						zap.String("container_name", containerName), zap.Error(termErr))
+					c.forceDeleteTask(ctx, containerName)
+				}
+			}
+			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		}
+		if delErr != nil && !errdefs.IsNotFound(delErr) {
 			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
 		}
 		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
@@ -1129,7 +1205,13 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	env = append(env, req.GetEnv()...)
 	env = appendFallbackEnv(env)
 	env = append(env, wendyEnv...)
-	env = append(env, buildROS2Env(appCfg, appID, serviceName)...)
+	ros2Env, err := buildROS2Env(appCfg, appID, serviceName)
+	if err != nil {
+		// Fail the create rather than start a ROS 2 container with no
+		// ROS_DOMAIN_ID, which silently lands it on the global default domain 0.
+		return fmt.Errorf("resolving ROS 2 environment for %q: %w", appID, err)
+	}
+	env = append(env, ros2Env...)
 	env = injectOTELEnvIfNeeded(env, appCfg, appID)
 
 	// Build OCI spec using local oci package, then apply entitlements.
@@ -1478,22 +1560,16 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	}()
 	ctx = c.withNamespace(ctx)
 
-	container, err := c.client.LoadContainer(ctx, appName)
+	// Start streams one container's output, so a bare appID naming a group is
+	// an error here rather than a fan-out.
+	ctrs, _, _, err := c.resolveTargets(ctx, appName)
 	if err != nil {
-		// Fall back to a label-based lookup so that callers can pass the bare
-		// appID (e.g. "myapp") even when the container was created under a
-		// multi-service name (e.g. "myapp/api" for serviceName="api").
-		// If the label query returns exactly one container we use it; if it
-		// returns multiple the caller must be more specific.
-		ctrs, labelErr := c.containersForApp(ctx, appName)
-		if labelErr != nil || len(ctrs) == 0 {
-			return nil, fmt.Errorf("loading container %q: %w", appName, err)
-		}
-		if len(ctrs) > 1 {
-			return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
-		}
-		container = ctrs[0]
+		return nil, fmt.Errorf("loading container %q: %w", appName, err)
 	}
+	if len(ctrs) > 1 {
+		return nil, fmt.Errorf("app %q has multiple service containers; use the full container name (appID_serviceName) to start a specific service", appName)
+	}
+	container := ctrs[0]
 
 	// Name parsing is ambiguous for multi-service containers because '_' is
 	// also legal inside appIDs: "app_talker" parses as a bare appID, which
@@ -1612,7 +1688,10 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// getIsolation requires c.mu (held here via muHeld).
 	isolation := c.getIsolation(appID)
 	if appconfig.IsSharedNamespaceIsolation(isolation) {
-		if _, alreadyHasPrimary := c.getPrimaryPID(appID); !alreadyHasPrimary {
+		// Presence alone is not enough: a per-service stop leaves the group
+		// entry behind, so a dead PID must be replaced rather than kept.
+		primaryPID, hasPrimary := c.getPrimaryPID(appID)
+		if !hasPrimary || !c.primaryTaskAlive(ctx, appID, primaryPID) {
 			c.setPrimaryPID(appID, task.Pid())
 		}
 	}
@@ -2202,20 +2281,30 @@ const cycloneDDSInlineConfig = `<CycloneDDS><Domain><SharedMemory><Enable>false<
 // buildROS2Env returns ROS2 environment variables for the container resolved
 // from the app's frameworks.ros2 config (group-level, overridden by the
 // service-level config for multi-service apps). The injected set is
-// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and
-// ROS_LOCALHOST_ONLY (WDY-884).
-func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []string {
+// ROS_DOMAIN_ID, RMW_IMPLEMENTATION, CYCLONEDDS_URI (CycloneDDS only), and both
+// discovery-scope variables (WDY-884).
+//
+// Returns an error rather than nil for an invalid config. It used to return nil,
+// which meant the container started with *no* ROS 2 environment at all — so
+// ROS_DOMAIN_ID fell back to 0, the global default domain everything else is on.
+// A validation gap upstream therefore produced maximum exposure instead of a
+// failure, which is the wrong direction for a mechanism whose job is isolation.
+func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]string, error) {
 	ros2 := appCfg.ResolveROS2ConfigForService(serviceName)
 	if ros2 == nil {
-		return nil
+		return nil, nil
 	}
 	domainID := ros2.ResolvedDomainID(appID)
 	if domainID < 0 {
-		return nil // invalid explicit domain ID; caller should have validated at config parse time
+		return nil, fmt.Errorf("frameworks.ros2.domainId is outside [%d,%d]; refusing to start "+
+			"the container without ROS_DOMAIN_ID isolation (it would default to domain 0)",
+			appconfig.ROS2DomainIDMin, appconfig.ROS2DomainIDMax)
 	}
 	discoveryScope := ros2.ResolvedDiscoveryScope()
 	if discoveryScope == "" {
-		return nil // invalid scope; caller should have validated at config parse time
+		return nil, fmt.Errorf("frameworks.ros2.discoveryScope %q is not %q or %q; refusing to "+
+			"start the container with an undefined DDS discovery scope",
+			ros2.DiscoveryScope, appconfig.ROS2DiscoveryScopeApp, appconfig.ROS2DiscoveryScopeHost)
 	}
 	env := []string{fmt.Sprintf("ROS_DOMAIN_ID=%d", domainID)}
 	// ResolvedRMW validates against a fixed allowlist and returns "" for
@@ -2229,12 +2318,19 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) []stri
 	}
 	// Services are app-local by default. Host-scoped tools such as Foxglove
 	// explicitly opt in to discovering ROS 2 participants on the device network.
+	//
+	// Both variables are set, not just ROS_LOCALHOST_ONLY. That one has been
+	// deprecated since Iron in favour of ROS_AUTOMATIC_DISCOVERY_RANGE, and
+	// ROS2Config.Distro explicitly advertises "jazzy" — so on the newer distros we
+	// claim to support, the sole mechanism enforcing app-local isolation was at
+	// best deprecated. For an app carrying `network: host` it is the only thing
+	// between that app and every other DDS participant on the device.
 	if discoveryScope == appconfig.ROS2DiscoveryScopeHost {
-		env = append(env, "ROS_LOCALHOST_ONLY=0")
+		env = append(env, "ROS_LOCALHOST_ONLY=0", "ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET")
 	} else {
-		env = append(env, "ROS_LOCALHOST_ONLY=1")
+		env = append(env, "ROS_LOCALHOST_ONLY=1", "ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST")
 	}
-	return env
+	return env, nil
 }
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
@@ -2410,12 +2506,111 @@ func (c *Client) deleteStaleTask(ctx context.Context, container containerd.Conta
 	}
 }
 
+// isMissingRuncStateDir reports whether err is runc's own "cannot open
+// directory" failure for a task's state directory under
+// /run/containerd/runc/<namespace>/<containerID>. Observed live: a half-dead
+// task whose state dir had been removed out from under it wedged both
+// StopContainer and `ctr tasks rm -f` indefinitely — runc's delete path
+// stats the directory before it will proceed, so an absent (even empty) dir
+// is a permanent failure until the directory exists again. Returns the
+// missing directory path so the caller can recreate it and retry.
+//
+// The literal string this matches was captured from the error observed on
+// hardware:
+//
+//	cannot open directory `/run/containerd/runc/default/com.wendylabs.examples.mcp-example`: No such file or directory
+func isMissingRuncStateDir(err error) (dir string, ok bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	const marker = "cannot open directory `"
+	idx := strings.Index(msg, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := msg[idx+len(marker):]
+	end := strings.IndexByte(rest, '`')
+	if end < 0 {
+		return "", false
+	}
+	dir = rest[:end]
+	if !strings.HasPrefix(dir, "/run/containerd/runc/") {
+		return "", false
+	}
+	return dir, true
+}
+
+// recoverMissingRuncStateDir classifies err via isMissingRuncStateDir and, if
+// it matches, delegates the actual recovery (mkdir + retry) to
+// recreateRuncStateDirAndRetry. Any other error — including nil — passes
+// through unchanged and retry is never called.
+//
+// Shared by forceDeleteTask (replace path) and terminateTask (stop path,
+// task_teardown.go): both ultimately delete a containerd task and both can
+// hit the exact same live-observed wedge, so both need the same recovery
+// rather than only the replace path having it (the stop path was the one
+// actually observed wedged on hardware).
+func (c *Client) recoverMissingRuncStateDir(containerID string, err error, retry func() error) error {
+	dir, ok := isMissingRuncStateDir(err)
+	if !ok {
+		return err
+	}
+	return c.recreateRuncStateDirAndRetry(containerID, dir, err, retry)
+}
+
+// runcStateDirMkdirAll is a seam over os.MkdirAll: recreateRuncStateDirAndRetry
+// calls through it rather than os.MkdirAll directly so tests can verify the
+// full forceDeleteTask/terminateTask recovery wiring — including
+// isMissingRuncStateDir's hardcoded /run/containerd/runc/ prefix check —
+// without needing real root-owned /run filesystem access on the test host.
+// Production code never reassigns it.
+var runcStateDirMkdirAll = os.MkdirAll
+
+// recreateRuncStateDirAndRetry recreates dir (the runc task state directory
+// isMissingRuncStateDir extracted from origErr) and, if that succeeds, calls
+// retry and returns its result. If MkdirAll fails, origErr is returned
+// unchanged and retry is never called. Split out from
+// recoverMissingRuncStateDir so it can be unit-tested directly against an
+// arbitrary writable directory, independent of isMissingRuncStateDir's
+// /run/containerd/runc/ prefix requirement (which a test can't satisfy
+// without root on a real Linux host).
+func (c *Client) recreateRuncStateDirAndRetry(containerID, dir string, origErr error, retry func() error) error {
+	// Mode 0o711 matches runc's own permissions for per-container state
+	// dirs: traversable by root, opaque to other users.
+	if mkErr := runcStateDirMkdirAll(dir, 0o711); mkErr != nil {
+		c.logger.Warn("Failed to recreate missing runc state dir",
+			zap.String("container_id", containerID),
+			zap.String("dir", dir),
+			zap.Error(mkErr),
+		)
+		return origErr
+	}
+	c.logger.Info("Recreated missing runc state dir, retrying delete",
+		zap.String("container_id", containerID),
+		zap.String("dir", dir),
+	)
+	return retry()
+}
+
 // forceDeleteTask uses the low-level containerd task service to delete a task
 // by container ID. This handles orphaned tasks where container.Task() fails
 // because the shim process is gone but task metadata remains in the runtime.
+//
+// If the delete fails because runc's state directory for the task is missing
+// (recoverMissingRuncStateDir), it recreates the empty directory runc expects
+// and retries once — otherwise the caller (and any subsequent
+// `ctr tasks rm -f`) would fail this exact way forever, since nothing else
+// ever recreates it.
 func (c *Client) forceDeleteTask(ctx context.Context, containerID string) {
 	_, err := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
 		ContainerID: containerID,
+	})
+	err = c.recoverMissingRuncStateDir(containerID, err, func() error {
+		_, retryErr := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
+			ContainerID: containerID,
+		})
+		return retryErr
 	})
 	if err != nil {
 		c.logger.Debug("Force task delete attempt",
@@ -2747,6 +2942,13 @@ func (c *Client) streamOutput(
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
 	code, exitedAt, err := exitStatus.Result()
+	// taskExited is true only once we know the process has actually
+	// terminated (see the context.Canceled branch below, where it hasn't).
+	// Gates the IO drain below: task.IO().Wait() blocks until the task's
+	// stdio FIFOs reach EOF, which only happens once the process's fds
+	// close — calling it while the container is genuinely still running
+	// would hang this goroutine forever.
+	taskExited := err == nil
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
@@ -2777,14 +2979,116 @@ func (c *Client) streamOutput(
 		cancel()
 	}
 
-	// Close the write ends to unblock readers.
-	stdoutW.Close()
-	stderrW.Close()
+	if taskExited {
+		// The exit status arriving does NOT mean containerd has finished
+		// copying the task's stdout/stderr FIFOs into stdoutW/stderrW: that
+		// copy runs on containerd's own goroutines (cio.copyIO), a path
+		// independent of the process-exit signal task.Wait() delivers here.
+		// For a container that prints one line and exits immediately — the
+		// crash-loop case — that copy can still be in flight when the exit
+		// status arrives, so closing stdoutW/stderrW right away can slam the
+		// pipe shut before the in-flight Write() lands, silently dropping
+		// the very output a crash-looping container needs most (live
+		// symptom: `wendy device logs --tail` returned zero lines for an
+		// actively crash-looping app). drainTaskIOThenClose waits for that
+		// copy to finish before closing, mirroring the same fix already
+		// applied to ExecContainer/ROS2 exec (proc.IO().Wait()) in this
+		// package.
+		drainTaskIOThenClose(task.IO(), stdoutW, stderrW)
+	} else {
+		// Task not confirmed exited (context.Canceled path, effectively
+		// unreachable since taskCtx derives from context.Background() and is
+		// never canceled): preserve prior behavior and close unconditionally
+		// rather than risk blocking forever in task.IO().Wait().
+		stdoutW.Close()
+		stderrW.Close()
+	}
 
 	// Wait for readers to finish.
 	wg.Wait()
 
 	outputCh <- services.ContainerOutput{Done: true}
+}
+
+// drainTaskIOThenClose blocks until taskIO's stdio copy goroutines (if any)
+// have finished flushing container output into stdoutW/stderrW, then closes
+// both writers. Must only be called once the task is confirmed to have
+// exited — see the taskExited gate in streamOutput's caller — since
+// taskIO.Wait() blocks until the underlying FIFOs reach EOF, which a still-
+// running task never delivers. taskIO may be nil (some cio.IO
+// implementations, e.g. NullIO, are legitimately IO-less).
+func drainTaskIOThenClose(taskIO cio.IO, stdoutW, stderrW io.Closer) {
+	if taskIO != nil {
+		taskIO.Wait()
+	}
+	stdoutW.Close()
+	stderrW.Close()
+}
+
+// resolveTargets resolves name to the containers it addresses:
+//
+//  1. a container whose ID equals name — a single-container app, or one service
+//     addressed as "{appID}_{serviceName}"
+//  2. containers whose labelKeyAppID equals name — every service in the group
+//  3. neither — errdefs.ErrNotFound
+//
+// Container IDs are unique within the namespace, so rule 1 has at most one hit.
+// appID is the label-derived group identity; wholeApp reports whether name
+// addressed every container in the group.
+//
+// Caller must hold c.mu. ctx must already have the containerd namespace set.
+func (c *Client) resolveTargets(ctx context.Context, name string) (ctrs []containerd.Container, appID string, wholeApp bool, err error) {
+	// name reaches the containerd filter expression via containersForApp
+	// (SOC2-CC6, ISO27001-A.8, NIST-SI-10).
+	if verr := appconfig.ValidateAppID(name); verr != nil {
+		return nil, "", false, fmt.Errorf("invalid app name: %w", verr)
+	}
+
+	ctr, loadErr := c.client.LoadContainer(ctx, name)
+	switch {
+	case loadErr == nil:
+		// The "default" namespace is shared with anything else that speaks to
+		// containerd, so an ID match alone is not proof this is ours: require
+		// the app-id label (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+		if id, ok := c.wendyAppIDOf(ctx, ctr); ok {
+			group, groupErr := c.containersForApp(ctx, id)
+			if groupErr != nil {
+				return nil, "", false, groupErr
+			}
+			return []containerd.Container{ctr}, id, len(group) <= 1, nil
+		}
+		// Unlabelled or foreign: fall through, which reports NotFound.
+	case !errdefs.IsNotFound(loadErr):
+		// A real lookup failure must not be laundered into NotFound.
+		return nil, "", false, fmt.Errorf("loading container %q: %w",
+			sanitizeForLog(name, 253), loadErr)
+	}
+
+	group, err := c.containersForApp(ctx, name)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if len(group) == 0 {
+		return nil, "", false, fmt.Errorf("%w: no app or service named %q",
+			errdefs.ErrNotFound, sanitizeForLog(name, 253))
+	}
+	return group, name, true, nil
+}
+
+// wendyAppIDOf returns ctr's group identity from its app-id label, and whether
+// ctr is Wendy-managed at all. The container ID cannot stand in for a missing
+// label: '_' is legal inside an appID, so "myapp_alpha" is ambiguous. Labels are
+// external state, so the value is re-validated (SOC2-CC6, NIST-SI-10).
+func (c *Client) wendyAppIDOf(ctx context.Context, ctr containerd.Container) (string, bool) {
+	labels, err := ctr.Labels(ctx)
+	if err != nil {
+		return "", false
+	}
+	id := labels[labelKeyAppID]
+	if id == "" || appconfig.ValidateAppID(id) != nil {
+		return "", false
+	}
+	return id, true
 }
 
 // containersForApp returns all Wendy-managed containers whose labelKeyAppID
@@ -2827,6 +3131,23 @@ func (c *Client) containersForApp(ctx context.Context, appID string) ([]containe
 func (c *Client) ContainerIDsForApp(ctx context.Context, appID string) ([]string, error) {
 	ctx = c.withNamespace(ctx)
 	ctrs, err := c.containersForApp(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, len(ctrs))
+	for i, ctr := range ctrs {
+		ids[i] = ctr.ID()
+	}
+	return ids, nil
+}
+
+// ResolveAppContainerIDs returns the container IDs addressed by name. See
+// resolveTargets.
+func (c *Client) ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error) {
+	ctx = c.withNamespace(ctx)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ctrs, _, _, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		return nil, err
 	}
@@ -2934,12 +3255,12 @@ func (c *Client) stopOne(ctx context.Context, containerID string) error {
 	return nil
 }
 
-// StopContainer stops all containers belonging to appID. For single-container
-// apps this is one container; for multi-service apps it stops every service.
+// StopContainer stops the containers addressed by name: a bare appID stops
+// every service, "{appID}_{serviceName}" stops one. See resolveTargets.
 // c.mu is held for the full duration to prevent a concurrent
 // CreateContainerWithProgress from inserting a new service container between
 // the list query and the stop loop (TOCTOU, SOC2-CC6, NIST-AC-4).
-func (c *Client) StopContainer(ctx context.Context, appID string) error {
+func (c *Client) StopContainer(ctx context.Context, name string) error {
 	ctx = c.withNamespace(ctx)
 
 	// Hold mutex only long enough to enumerate containers and resolve stop order.
@@ -2947,17 +3268,10 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	// blocking I/O (SIGTERM wait, 10 s timeout), which would starve concurrent
 	// StartContainer / CreateContainerWithProgress calls (SOC2-CC6, NIST-AC-3).
 	c.mu.Lock()
-	ctrs, err := c.containersForApp(ctx, appID)
+	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		c.mu.Unlock()
 		return err
-	}
-	if len(ctrs) == 0 {
-		// Idempotent: already stopped / never created.
-		c.logger.Info("StopContainer: no containers found, already stopped",
-			zap.String(logfields.AppID, sanitizeForLog(appID, 253)))
-		c.mu.Unlock()
-		return nil
 	}
 	stopOrder := c.resolveStopOrder(ctx, appID, ctrs)
 	// Mark app as stopping before releasing the mutex so any concurrent
@@ -2967,6 +3281,21 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	}
 	c.appStopping[appID] = true
 	c.mu.Unlock()
+
+	// Pause the restart monitor for every container about to be stopped, for
+	// the whole rest of this function: without it, a crash-looping member's
+	// automatic restart can race stopOne's kill+delete below and wedge the
+	// stop (same "cannot delete running task: failed precondition" race as
+	// the replace path in CreateContainerWithProgress).
+	resumeFns := make([]func(), 0, len(stopOrder))
+	for _, ctrID := range stopOrder {
+		resumeFns = append(resumeFns, c.suppressRestarts(ctrID))
+	}
+	defer func() {
+		for _, resume := range resumeFns {
+			resume()
+		}
+	}()
 
 	var errs []error
 	for _, ctrID := range stopOrder {
@@ -2978,26 +3307,30 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 		}
 	}
 
-	// Re-acquire mutex for map cleanup. Both reads and writes of these maps
-	// are protected by c.mu to prevent data races with concurrent callers
-	// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
-	// clearPrimaryPID under the lock; other per-app metadata is kept alive until
-	// after the late sweep so that appIsolation is still readable by any
-	// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
-	c.mu.Lock()
-	c.clearPrimaryPID(appID)
-	c.mu.Unlock()
+	// Per-app state is only released once the whole group is stopped; siblings
+	// still need it.
+	if wholeApp {
+		// Re-acquire mutex for map cleanup. Both reads and writes of these maps
+		// are protected by c.mu to prevent data races with concurrent callers
+		// (SOC2-CC6, NIST-AC-3, ISO27001-A.8).
+		// clearPrimaryPID under the lock; other per-app metadata is kept alive until
+		// after the late sweep so that appIsolation is still readable by any
+		// concurrent code that observes appStopping (SOC2-CC6, NIST-AC-3).
+		c.mu.Lock()
+		c.clearPrimaryPID(appID)
+		c.mu.Unlock()
 
-	// Re-enumerate unconditionally to catch any containers that appeared after
-	// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
-	// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
-	// appStopping is still set during this sweep to block new concurrent creates.
-	if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
-		for _, ctr := range lateCtrs {
-			if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
-				c.logger.Error("StopContainer: failed to stop late-appearing container",
-					zap.String("container_id", ctr.ID()), zap.Error(stopErr))
-				errs = append(errs, stopErr)
+		// Re-enumerate to catch any containers that appeared after
+		// resolveStopOrder snapshotted the list (e.g. a concurrent StartContainer
+		// mid-CNI-ADD). stopOne is idempotent for already-stopped containers.
+		// appStopping is still set during this sweep to block new concurrent creates.
+		if lateCtrs, lateErr := c.containersForApp(ctx, appID); lateErr == nil && len(lateCtrs) > 0 {
+			for _, ctr := range lateCtrs {
+				if stopErr := c.stopOne(ctx, ctr.ID()); stopErr != nil {
+					c.logger.Error("StopContainer: failed to stop late-appearing container",
+						zap.String("container_id", ctr.ID()), zap.Error(stopErr))
+					errs = append(errs, stopErr)
+				}
 			}
 		}
 	}
@@ -3008,9 +3341,11 @@ func (c *Client) StopContainer(ctx context.Context, appID string) error {
 	// appStopping) until this section completes (SOC2-CC6, NIST-AC-3, NIST-SI-16,
 	// ISO27001-A.8, SOC2-CC8/ISO27001-A.12 unbounded-growth prevention).
 	c.mu.Lock()
-	delete(c.appServices, appID)
-	delete(c.appIsolation, appID)
-	delete(c.serviceIPs, appID)
+	if wholeApp {
+		delete(c.appServices, appID)
+		delete(c.appIsolation, appID)
+		delete(c.serviceIPs, appID)
+	}
 	delete(c.appStopping, appID)
 	c.mu.Unlock()
 
@@ -3205,20 +3540,15 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 // DeleteContainer deletes all containers belonging to appID. For multi-service
 // apps all service containers are removed. When deleteImage is true, each
 // distinct image is deleted once (services sharing an image are handled safely).
-func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage bool) error {
+func (c *Client) DeleteContainer(ctx context.Context, name string, deleteImage bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	ctx = c.withNamespace(ctx)
-	ctrs, err := c.containersForApp(ctx, appID)
+	// A bare appID deletes every service; "{appID}_{serviceName}" deletes one.
+	ctrs, appID, wholeApp, err := c.resolveTargets(ctx, name)
 	if err != nil {
 		return err
-	}
-	if len(ctrs) == 0 {
-		if c.systemAPISocketProvider != nil {
-			c.systemAPISocketProvider.ReleaseApp(appID)
-		}
-		return nil // Already gone.
 	}
 
 	seen := make(map[string]bool)
@@ -3242,7 +3572,8 @@ func (c *Client) DeleteContainer(ctx context.Context, appID string, deleteImage 
 			}
 		}
 	}
-	if len(errs) == 0 && c.systemAPISocketProvider != nil {
+	// The system-API socket is per app: only release it once the app is gone.
+	if len(errs) == 0 && wholeApp && c.systemAPISocketProvider != nil {
 		c.systemAPISocketProvider.ReleaseApp(appID)
 	}
 	return errors.Join(errs...)
@@ -3425,6 +3756,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 		version      string
 		runningState agentpb.AppRunningState
 		mcpPort      uint32
+		httpPort     uint32
 		services     []serviceEntry
 		exitCode     int32
 		exitReason   string // "" until an exit label is seen for this app
@@ -3454,6 +3786,13 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 		}
 
+		var httpPort uint32
+		if portStr, ok := info.Labels[labelKeyHTTPPort]; ok && portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 32); err == nil {
+				httpPort = uint32(p)
+			}
+		}
+
 		// labelKeyAppID is always set by wendyLabels; fall back to container ID
 		// for containers created before this label was introduced.
 		appID := info.Labels[labelKeyAppID]
@@ -3476,6 +3815,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 				version:      appVersion,
 				runningState: runningState,
 				mcpPort:      mcpPort,
+				httpPort:     httpPort,
 				services:     []serviceEntry{svc},
 			}
 			if hasExit {
@@ -3488,6 +3828,9 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			}
 			if mcpPort != 0 && e.mcpPort == 0 {
 				e.mcpPort = mcpPort
+			}
+			if httpPort != 0 && e.httpPort == 0 {
+				e.httpPort = httpPort
 			}
 			// Keep the first exit reason seen for the app (multi-service apps
 			// aggregate; a single stopped service's cause is better than none).
@@ -3532,6 +3875,7 @@ func (c *Client) ListContainers(ctx context.Context) ([]*agentpb.AppContainer, e
 			AppVersion:   e.version,
 			RunningState: e.runningState,
 			McpPort:      e.mcpPort,
+			HttpPort:     e.httpPort,
 			Services:     services,
 		}
 		// Exit diagnostics are only meaningful for a stopped app; a running app

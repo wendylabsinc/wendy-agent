@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -395,6 +396,73 @@ func TestFormatOSUpdateStatus(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOSUpdateStatusError pins the `os update-status` friendly-error fix: a
+// Mac agent's Unimplemented response must not tell the user to "update the
+// agent first" — no agent update makes OS update status available on macOS,
+// since there is no WendyOS OTA there at all. It reuses the fake
+// WendyAgentServiceServer from macos_unsupported_test.go, whose embedded
+// UnimplementedWendyAgentServiceServer returns a real Unimplemented status for
+// GetOSUpdateStatus, giving osUpdateStatusError the exact error shape it sees
+// in production.
+func TestOSUpdateStatusError(t *testing.T) {
+	tests := []struct {
+		name         string
+		agentOS      string
+		wantContains string
+		wantExcludes string
+	}{
+		{
+			name:         "darwin agent gets the macOS-beta-unsupported message",
+			agentOS:      "darwin",
+			wantContains: "current Wendy Agent for macOS beta",
+			wantExcludes: "update the agent first",
+		},
+		{
+			name:         "linux agent keeps the update-the-agent message",
+			agentOS:      "wendyos",
+			wantContains: "update the agent first",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			client := startUnsupportedAgentClient(t, tc.agentOS)
+
+			_, rpcErr := client.GetOSUpdateStatus(ctx, &agentpb.GetOSUpdateStatusRequest{IncludeEngineStatus: true})
+			if status.Code(rpcErr) != codes.Unimplemented {
+				t.Fatalf("GetOSUpdateStatus code = %s, want Unimplemented", status.Code(rpcErr))
+			}
+
+			err := osUpdateStatusError(ctx, client, rpcErr)
+			if err == nil {
+				t.Fatal("osUpdateStatusError returned nil, want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantContains) {
+				t.Errorf("osUpdateStatusError() = %q, want substring %q", err, tc.wantContains)
+			}
+			if tc.wantExcludes != "" && strings.Contains(err.Error(), tc.wantExcludes) {
+				t.Errorf("osUpdateStatusError() = %q, should not contain %q", err, tc.wantExcludes)
+			}
+		})
+	}
+}
+
+// TestOSUpdateStatusErrorNonUnimplementedPassesThrough locks in that a
+// non-Unimplemented failure (e.g. a real network error) keeps its own wrapped
+// message instead of being reinterpreted as an unsupported-agent case.
+func TestOSUpdateStatusErrorNonUnimplementedPassesThrough(t *testing.T) {
+	client := startUnsupportedAgentClient(t, "darwin")
+	wantErr := status.Error(codes.Unavailable, "connection reset")
+
+	err := osUpdateStatusError(context.Background(), client, wantErr)
+	if err == nil {
+		t.Fatal("osUpdateStatusError returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "querying OS update status") || !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("osUpdateStatusError() = %q, want wrapped query error", err)
 	}
 }
 

@@ -16,6 +16,10 @@
       "type": "persist",
       "name": "hellovlm-runs",
       "path": "/Runs"
+    },
+    {
+      "type": "http",
+      "port": 8080
     }
   ],
   "run": {

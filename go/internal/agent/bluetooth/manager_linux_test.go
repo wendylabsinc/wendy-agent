@@ -3,13 +3,19 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"go.uber.org/zap"
+
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 )
 
 // deviceProps builds an org.bluez.Device1 property map for tests.
@@ -205,6 +211,87 @@ func TestConnectFailureErrorPrefersNotFound(t *testing.T) {
 		err := m.connectFailureError("AA:BB:CC:DD:EE:FF", nil, connErr)
 		if !strings.Contains(err.Error(), "refused") {
 			t.Errorf("err = %q, want the connect failure text", err.Error())
+		}
+	})
+}
+
+func TestRetryConnect(t *testing.T) {
+	m := &BlueZManager{logger: zap.NewNop()}
+	const testDelay = time.Millisecond
+
+	t.Run("succeeds on first attempt without retrying", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1", calls)
+		}
+	})
+
+	t.Run("retries a transient failure and succeeds", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			if calls < 3 {
+				return dbus.Error{Name: "org.bluez.Error.Failed", Body: []any{"br-connection-unknown"}}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("err = %v, want nil after retries", err)
+		}
+		if calls != 3 {
+			t.Errorf("calls = %d, want 3", calls)
+		}
+	})
+
+	t.Run("does not retry a non-transient failure", func(t *testing.T) {
+		calls := 0
+		wantErr := dbus.Error{Name: "org.bluez.Error.AuthenticationRejected"}
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return wantErr
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (no retry for a non-transient error)", calls)
+		}
+		if err == nil {
+			t.Fatal("want the non-transient error returned")
+		}
+	})
+
+	t.Run("gives up after the max attempts", func(t *testing.T) {
+		calls := 0
+		err := m.retryConnect(context.Background(), testDelay, func() error {
+			calls++
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != maxConnectAttempts {
+			t.Errorf("calls = %d, want %d", calls, maxConnectAttempts)
+		}
+		if err == nil {
+			t.Fatal("want an error after exhausting retries")
+		}
+	})
+
+	t.Run("stops early when the context is done", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		calls := 0
+		err := m.retryConnect(ctx, time.Hour, func() error {
+			calls++
+			cancel()
+			return dbus.Error{Name: "org.bluez.Error.InProgress"}
+		})
+		if calls != 1 {
+			t.Errorf("calls = %d, want 1 (context canceled before the retry delay elapses)", calls)
+		}
+		if err == nil {
+			t.Fatal("want an error")
 		}
 	})
 }
@@ -438,5 +525,140 @@ func TestIsDefaultAlias(t *testing.T) {
 		if got := isDefaultAlias(tt.alias, tt.address); got != tt.want {
 			t.Errorf("isDefaultAlias(%q, %q) = %v, want %v", tt.alias, tt.address, got, tt.want)
 		}
+	}
+}
+
+func TestAudioProfileUUID(t *testing.T) {
+	const (
+		hfp  = "0000111e-0000-1000-8000-00805f9b34fb"
+		avrc = "0000110e-0000-1000-8000-00805f9b34fb"
+	)
+	tests := []struct {
+		name  string
+		uuids []string
+		want  string
+	}{
+		// Speakers and headsets advertise a sink; that is the direction we want
+		// even when they also advertise a source, which is what made a Bose
+		// SoundLink claim our sink endpoint and land on the audio-gateway profile.
+		{"sink only", []string{a2dpSinkUUID, avrc}, a2dpSinkUUID},
+		{"sink and source", []string{a2dpSourceUUID, a2dpSinkUUID, hfp}, a2dpSinkUUID},
+		{"sink and source, source listed first", []string{a2dpSourceUUID, a2dpSinkUUID}, a2dpSinkUUID},
+		// A microphone has no sink role to offer, so the fallback picks it up
+		// without needing to inspect the class of device.
+		{"source only", []string{a2dpSourceUUID, avrc}, a2dpSourceUUID},
+		// Non-audio peripherals fall back to a whole-device Connect.
+		{"no audio profiles", []string{avrc, hfp}, ""},
+		{"empty", nil, ""},
+		// BlueZ reports lowercase, but the property is not guaranteed to be.
+		{"uppercase", []string{strings.ToUpper(a2dpSinkUUID)}, a2dpSinkUUID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := audioProfileUUID(tt.uuids); got != tt.want {
+				t.Errorf("audioProfileUUID(%v) = %q, want %q", tt.uuids, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStringsProp(t *testing.T) {
+	props := map[string]dbus.Variant{
+		"UUIDs":  dbus.MakeVariant([]string{a2dpSinkUUID}),
+		"Paired": dbus.MakeVariant(true),
+	}
+	if got := stringsProp(props, "UUIDs"); len(got) != 1 || got[0] != a2dpSinkUUID {
+		t.Errorf("stringsProp(UUIDs) = %v", got)
+	}
+	// Wrong type and missing key both yield nil rather than panicking: BlueZ
+	// omits UUIDs entirely for a device it has only seen advertising.
+	if got := stringsProp(props, "Paired"); got != nil {
+		t.Errorf("stringsProp on non-slice = %v, want nil", got)
+	}
+	if got := stringsProp(props, "Missing"); got != nil {
+		t.Errorf("stringsProp on missing key = %v, want nil", got)
+	}
+}
+
+func TestClaimBootReconnect(t *testing.T) {
+	dir := t.TempDir()
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	bootReconnectMarker = filepath.Join(dir, "marker")
+
+	logger := zap.NewNop()
+	// The agent restarts for upgrades and crash recovery on machines that stay
+	// powered for weeks. Only the first start after a boot may walk the device
+	// list; later ones must be no-ops so the radio is not paged repeatedly and
+	// a deliberate disconnect is not undone.
+	if !claimBootReconnect(logger) {
+		t.Fatal("first claim should succeed")
+	}
+	for i := range 3 {
+		if claimBootReconnect(logger) {
+			t.Errorf("claim %d after the first should fail", i+2)
+		}
+	}
+
+	// /run is tmpfs, so a real reboot clears the marker and the next start
+	// claims it again.
+	if err := os.Remove(bootReconnectMarker); err != nil {
+		t.Fatal(err)
+	}
+	if !claimBootReconnect(logger) {
+		t.Error("claim after reboot (marker cleared) should succeed")
+	}
+}
+
+func TestClaimBootReconnectUnwritable(t *testing.T) {
+	orig := bootReconnectMarker
+	t.Cleanup(func() { bootReconnectMarker = orig })
+	// An unwritable location must not panic or claim; the reconnect is simply
+	// skipped rather than taking down agent startup.
+	bootReconnectMarker = filepath.Join(t.TempDir(), "no-such-dir", "marker")
+	if claimBootReconnect(zap.NewNop()) {
+		t.Error("claim should fail when the marker cannot be created")
+	}
+}
+
+func TestWaitForAudioSession(t *testing.T) {
+	origAvailable, origTimeout := audio.Available, audioSessionTimeout
+	t.Cleanup(func() { audio.Available, audioSessionTimeout = origAvailable, origTimeout })
+
+	// Present already: returns immediately, which is the agent-restart case on
+	// a machine whose audio has been up for weeks. (What counts as a session —
+	// a listening socket owned by the wendy user, not a plain file — is the
+	// audio package's contract, covered by its own RuntimeDir tests; here the
+	// seam is stubbed because no test environment can own a socket as wendy.)
+	audio.Available = func() bool { return true }
+	if !waitForAudioSession(context.Background()) {
+		t.Error("should report ready when the session is already up")
+	}
+
+	// Appears later: the wait polls until the session comes up.
+	probes := 0
+	audio.Available = func() bool { probes++; return probes >= 2 }
+	audioSessionTimeout = time.Minute
+	if !waitForAudioSession(context.Background()) {
+		t.Error("should become ready once the session appears")
+	}
+	if probes < 2 {
+		t.Errorf("expected repeated probes, got %d", probes)
+	}
+
+	// Cancellation is the only false: the reconnect is skipped only when the
+	// agent is shutting down.
+	audio.Available = func() bool { return false }
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if waitForAudioSession(ctx) {
+		t.Error("cancelled context should report not-ready")
+	}
+
+	// A timeout still proceeds, so a board with no working audio stack still
+	// attempts the reconnect.
+	audioSessionTimeout = 0
+	if !waitForAudioSession(context.Background()) {
+		t.Error("timeout should proceed anyway rather than skip the reconnect")
 	}
 }

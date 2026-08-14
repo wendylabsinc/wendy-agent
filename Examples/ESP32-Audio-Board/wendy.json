@@ -1,0 +1,10 @@
+{
+  "appId": "ESP32-Audio-Board",
+  "version": "0.1.0",
+  "platform": "lite",
+  "entitlements": [
+    {
+      "type": "network"
+    }
+  ]
+}

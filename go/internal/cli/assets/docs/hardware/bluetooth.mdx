@@ -70,6 +70,23 @@ wendy device bluetooth forget AA:BB:CC:DD:EE:FF
 
 Or select the paired device in the interactive table and press `f`.
 
+## Audio Peripherals
+
+A trusted speaker, headset, or microphone reconnects on its own in the cases that matter for an unattended device:
+
+| Situation | Reconnects |
+| --- | --- |
+| The peripheral is switched on while the device is running | Yes — the peripheral initiates |
+| The peripheral goes out of range and returns | Yes, if it returns within about two minutes |
+| The device reboots with the peripheral already on | Yes, shortly after boot |
+| The peripheral is switched off | No, by design |
+
+Reconnection after a reboot happens once per boot, and only for peripherals that are **trusted** — the default when you connect with `wendy device bluetooth connect`. It will not undo a deliberate `disconnect`, and it waits for the audio stack to be ready, so on a Raspberry Pi expect it a minute or two after boot rather than immediately.
+
+At most one output and one input are reconnected automatically. Connect any others yourself.
+
+Playback and capture need the `audio` entitlement, not just `bluetooth`; see [Speaker Access](/docs/hardware/speakers) and [Microphone Access](/docs/hardware/microphone).
+
 ## App Configuration
 
 A minimal Bluetooth app uses:

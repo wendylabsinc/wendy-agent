@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -27,7 +28,9 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/shared/version"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 // ---------- mocks for integration test ----------
@@ -254,6 +257,27 @@ func (m *statefulContainerdClient) ContainerIDsForApp(_ context.Context, appID s
 	return ids, nil
 }
 
+// ResolveAppContainerIDs mirrors the real resolver: an exact container name
+// first, then the app-id, then NotFound.
+func (m *statefulContainerdClient) ResolveAppContainerIDs(_ context.Context, name string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.containers[name]; ok {
+		return []string{name}, nil
+	}
+	var ids []string
+	prefix := name + "_"
+	for ctr := range m.containers {
+		if strings.HasPrefix(ctr, prefix) {
+			ids = append(ids, ctr)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("%w: no app or service named %q", errdefs.ErrNotFound, name)
+	}
+	return ids, nil
+}
+
 func (m *statefulContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
 	return hashes, nil
 }
@@ -336,7 +360,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	agentpb.RegisterWendyAgentServiceServer(srv, agentSvc)
 	agentpb.RegisterWendyContainerServiceServer(srv, containerSvc)
 	agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
-	otelpb.RegisterLogsServiceServer(srv, otelLogs)
+	collogspb.RegisterLogsServiceServer(srv, otelLogs)
 
 	go func() { _ = srv.Serve(lis) }()
 	defer func() {
@@ -360,7 +384,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 	agentClient := agentpb.NewWendyAgentServiceClient(conn)
 	containerClient := agentpb.NewWendyContainerServiceClient(conn)
 	telemetryClient := agentpb.NewWendyTelemetryServiceClient(conn)
-	otelLogsClient := otelpb.NewLogsServiceClient(conn)
+	otelLogsClient := collogspb.NewLogsServiceClient(conn)
 
 	ctx := context.Background()
 
@@ -434,7 +458,7 @@ func TestFullAgentLifecycle(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Publish a log via OTEL receiver.
-		_, err = otelLogsClient.Export(ctx, &otelpb.ExportLogsServiceRequest{})
+		_, err = otelLogsClient.Export(ctx, &collogspb.ExportLogsServiceRequest{})
 		if err != nil {
 			t.Fatalf("OTEL Export: %v", err)
 		}
@@ -797,7 +821,7 @@ func TestStreamMetrics(t *testing.T) {
 
 	srv := grpc.NewServer()
 	agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
-	otelpb.RegisterMetricsServiceServer(srv, otelMetrics)
+	colmetricspb.RegisterMetricsServiceServer(srv, otelMetrics)
 
 	go func() { _ = srv.Serve(lis) }()
 	defer func() {
@@ -818,7 +842,7 @@ func TestStreamMetrics(t *testing.T) {
 	defer conn.Close()
 
 	telemetryClient := agentpb.NewWendyTelemetryServiceClient(conn)
-	otelMetricsClient := otelpb.NewMetricsServiceClient(conn)
+	otelMetricsClient := colmetricspb.NewMetricsServiceClient(conn)
 
 	ctx := context.Background()
 
@@ -834,7 +858,7 @@ func TestStreamMetrics(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish metrics via OTEL receiver.
-	_, err = otelMetricsClient.Export(ctx, &otelpb.ExportMetricsServiceRequest{})
+	_, err = otelMetricsClient.Export(ctx, &colmetricspb.ExportMetricsServiceRequest{})
 	if err != nil {
 		t.Fatalf("OTEL Metrics Export: %v", err)
 	}
@@ -865,7 +889,7 @@ func TestStreamTraces(t *testing.T) {
 
 	srv := grpc.NewServer()
 	agentpb.RegisterWendyTelemetryServiceServer(srv, telemetrySvc)
-	otelpb.RegisterTraceServiceServer(srv, otelTraces)
+	coltracepb.RegisterTraceServiceServer(srv, otelTraces)
 
 	go func() { _ = srv.Serve(lis) }()
 	defer func() {
@@ -886,7 +910,7 @@ func TestStreamTraces(t *testing.T) {
 	defer conn.Close()
 
 	telemetryClient := agentpb.NewWendyTelemetryServiceClient(conn)
-	otelTraceClient := otelpb.NewTraceServiceClient(conn)
+	otelTraceClient := coltracepb.NewTraceServiceClient(conn)
 
 	ctx := context.Background()
 
@@ -902,7 +926,7 @@ func TestStreamTraces(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish traces via OTEL receiver.
-	_, err = otelTraceClient.Export(ctx, &otelpb.ExportTraceServiceRequest{})
+	_, err = otelTraceClient.Export(ctx, &coltracepb.ExportTraceServiceRequest{})
 	if err != nil {
 		t.Fatalf("OTEL Trace Export: %v", err)
 	}
@@ -1224,7 +1248,7 @@ func TestOTELEndpointEnvVarReachable(t *testing.T) {
 
 	broadcaster := services.NewTelemetryBroadcaster()
 	srv := grpc.NewServer()
-	otelpb.RegisterLogsServiceServer(srv, services.NewOTELLogsReceiver(broadcaster))
+	collogspb.RegisterLogsServiceServer(srv, services.NewOTELLogsReceiver(broadcaster))
 	go srv.Serve(lis)
 	t.Cleanup(srv.Stop)
 
@@ -1247,7 +1271,7 @@ func TestOTELEndpointEnvVarReachable(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = otelpb.NewLogsServiceClient(conn).Export(ctx, &otelpb.ExportLogsServiceRequest{})
+	_, err = collogspb.NewLogsServiceClient(conn).Export(ctx, &collogspb.ExportLogsServiceRequest{})
 	if err != nil {
 		t.Fatalf("OTLP endpoint %q unreachable: %v", endpoint, err)
 	}

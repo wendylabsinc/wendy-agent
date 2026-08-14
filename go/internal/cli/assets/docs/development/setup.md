@@ -23,17 +23,40 @@ export CGO_ENABLED=1
 
 No additional system packages are needed on macOS for a standard CLI build.
 
+#### Swiftly and the clang shim
+
+If [Swiftly](https://github.com/swiftlang/swiftly) is installed, its `clang`
+shim (`~/.swiftly/bin/clang`) often appears ahead of `/usr/bin` on `PATH`. The
+shim refuses to run when the repository's `.swift-version` does not match an
+installed Swift toolchain, causing cgo builds to fail with an opaque
+`exit status 2` and no output.
+
+The `go/Makefile` works around this by setting `CC ?= /usr/bin/clang` on
+Darwin so Go's cgo toolchain falls back to Apple's real clang whenever `CC`
+isn't already set. This is applied automatically when you use any `make`
+target. If you invoke `go build` directly (not via `make`), set the variable
+yourself:
+
+```sh
+export CC=/usr/bin/clang
+```
+
 #### Linux
 
 The audio subsystem uses ALSA. Install the development headers before running tests or building the agent:
 
 ```sh
 # Debian / Ubuntu
-sudo apt-get install -y libasound2-dev
+sudo apt-get install -y libasound2-dev libusb-1.0-0-dev pkg-config
 
 # Fedora / RHEL
-sudo dnf install -y alsa-lib-devel
+sudo dnf install -y alsa-lib-devel libusb1-devel pkgconf-pkg-config
 ```
+
+`libusb-1.0-0-dev` and `pkg-config` are required by the CLI's CGO dependency
+(USB recovery flashing via `gousb`) and by the SBOM integration test
+(`scripts/test/generate-sbom.integration.sh`), which builds `wendy` with
+`CGO_ENABLED=1`.
 
 #### Windows
 
@@ -56,6 +79,9 @@ The bypass applies only to that PowerShell invocation. Run it from a non-elevate
 | `golangci-lint` | Local linting (mirrors CI) | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` |
 | `containerd` | Running the agent locally on Linux | `sudo apt install containerd` |
 | Node.js 24 + npm | Optional; only for developer screencast tooling in `screencast/` | [nodejs.org](https://nodejs.org) or `nvm install 24` |
+| `syft` | Generate SPDX SBOMs locally (`scripts/generate-sbom.sh`) | [github.com/anchore/syft](https://github.com/anchore/syft) or `brew install syft` |
+| `gh` | Verify release attestations (`gh attestation verify`) | [cli.github.com](https://cli.github.com) or `brew install gh` |
+| `cosign` | Alternative attestation verification | [docs.sigstore.dev](https://docs.sigstore.dev/cosign/system_config/installation/) or `brew install cosign` |
 
 ### Environment Variables
 
@@ -187,7 +213,7 @@ make proto
 # runs scripts/generate-proto.sh
 ```
 
-The script reads `.proto` sources from `proto-defs/` at the repo root and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `otelpb`, and `cloudpb`.
+The script reads `.proto` sources from `proto-defs/` at the repo root and writes generated Go files to `go/proto/gen/` under three packages: `agentpb`, `agentpb/v2`, and `cloudpb`. OpenTelemetry protos are not generated here — they map to the upstream `go.opentelemetry.io/proto/otlp/...` packages.
 
 ## Device Setup (for running the agent locally)
 

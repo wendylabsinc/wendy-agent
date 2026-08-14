@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -49,6 +50,9 @@ type mockContainerdClient struct {
 	listeningPorts        []*agentpb.PortEntry
 	listeningPortsErr     error
 	stoppedByUserCalls    []stoppedByUserCall
+	stopCalls             []string
+	resolveCalls          []string
+	resolveErr            error
 	declaredVolumes       map[string][]string
 	declaredVolumesErr    error
 	assembleImageCalls    int
@@ -79,7 +83,8 @@ func (m *mockContainerdClient) ListContainers(_ context.Context) ([]*agentpb.App
 func (m *mockContainerdClient) AppDeclaredVolumes(_ context.Context) (map[string][]string, error) {
 	return m.declaredVolumes, m.declaredVolumesErr
 }
-func (m *mockContainerdClient) StopContainer(_ context.Context, _ string) error {
+func (m *mockContainerdClient) StopContainer(_ context.Context, name string) error {
+	m.stopCalls = append(m.stopCalls, name)
 	return m.stopErr
 }
 func (m *mockContainerdClient) DeleteContainer(_ context.Context, _ string, _ bool) error {
@@ -151,6 +156,43 @@ func (m *mockContainerdClient) GetContainerRestartPolicyLabel(_ context.Context,
 
 func (m *mockContainerdClient) ContainerIDsForApp(_ context.Context, appID string) ([]string, error) {
 	return []string{appID}, nil
+}
+
+// mockContainerIDs mirrors appconfig.AppConfig.ContainerName.
+func mockContainerIDs(c *agentpb.AppContainer) []string {
+	svcs := c.GetServices()
+	if len(svcs) <= 1 {
+		return []string{c.GetAppName()}
+	}
+	ids := make([]string, 0, len(svcs))
+	for _, s := range svcs {
+		ids = append(ids, c.GetAppName()+"_"+s.GetName())
+	}
+	return ids
+}
+
+// ResolveAppContainerIDs mirrors the real resolver: an exact container ID
+// first, then the app-id, then NotFound. Faithful on purpose — a mock that
+// accepts any name cannot observe a name that resolves to nothing.
+func (m *mockContainerdClient) ResolveAppContainerIDs(_ context.Context, name string) ([]string, error) {
+	m.resolveCalls = append(m.resolveCalls, name)
+	if m.resolveErr != nil {
+		return nil, m.resolveErr
+	}
+	// Rule 1 wins globally, so scan all apps for an ID match first.
+	for _, c := range m.containers {
+		for _, id := range mockContainerIDs(c) {
+			if id == name {
+				return []string{id}, nil
+			}
+		}
+	}
+	for _, c := range m.containers {
+		if c.GetAppName() == name {
+			return mockContainerIDs(c), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: no app or service named %q", errdefs.ErrNotFound, name)
 }
 
 func (m *mockContainerdClient) MissingChunks(_ context.Context, hashes [][32]byte) ([][32]byte, error) {
@@ -270,7 +312,9 @@ func TestListContainers(t *testing.T) {
 }
 
 func TestStopContainer(t *testing.T) {
-	client, cleanup := startContainerServer(t, &mockContainerdClient{})
+	client, cleanup := startContainerServer(t, &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "test-app"}},
+	})
 	defer cleanup()
 
 	_, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{
@@ -284,7 +328,9 @@ func TestStopContainer(t *testing.T) {
 // TestStopContainer_PersistsStoppedByUser verifies a deliberate stop is
 // recorded as a container label so the boot reconcile won't undo it on reboot.
 func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
-	mock := &mockContainerdClient{}
+	mock := &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "test-app"}},
+	}
 	client, cleanup := startContainerServer(t, mock)
 	defer cleanup()
 
@@ -304,7 +350,9 @@ func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
 }
 
 func TestDeleteContainer(t *testing.T) {
-	client, cleanup := startContainerServer(t, &mockContainerdClient{})
+	client, cleanup := startContainerServer(t, &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "test-app"}},
+	})
 	defer cleanup()
 
 	_, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
@@ -317,7 +365,9 @@ func TestDeleteContainer(t *testing.T) {
 }
 
 func TestDeleteContainer_WithImage(t *testing.T) {
-	client, cleanup := startContainerServer(t, &mockContainerdClient{})
+	client, cleanup := startContainerServer(t, &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "test-app"}},
+	})
 	defer cleanup()
 
 	_, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
@@ -601,6 +651,7 @@ type mockMonitorRegistrar struct {
 	registerCalls     []registerCall
 	explicitStopCalls []string
 	clearStopCalls    []string
+	unregisterCalls   []string
 }
 
 type registerCall struct {
@@ -613,7 +664,9 @@ func (m *mockMonitorRegistrar) Register(appName string, policy int, maxRetries i
 	m.registerCalls = append(m.registerCalls, registerCall{appName, policy, maxRetries})
 }
 
-func (m *mockMonitorRegistrar) Unregister(_ string) {}
+func (m *mockMonitorRegistrar) Unregister(appName string) {
+	m.unregisterCalls = append(m.unregisterCalls, appName)
+}
 
 func (m *mockMonitorRegistrar) MarkExplicitStop(appName string) {
 	m.explicitStopCalls = append(m.explicitStopCalls, appName)
@@ -702,7 +755,9 @@ func TestStartContainer_RegistersMonitor_UnlessStopped(t *testing.T) {
 // TestStopContainer_CallsMarkExplicitStop verifies that StopContainer calls
 // MarkExplicitStop on the monitor before stopping the container.
 func TestStopContainer_CallsMarkExplicitStop(t *testing.T) {
-	mc := &mockContainerdClient{}
+	mc := &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "my-app"}},
+	}
 	mon := &mockMonitorRegistrar{}
 	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
 	defer cleanup()
@@ -719,6 +774,140 @@ func TestStopContainer_CallsMarkExplicitStop(t *testing.T) {
 	}
 	if mon.explicitStopCalls[0] != "my-app" {
 		t.Errorf("MarkExplicitStop appName = %q; want my-app", mon.explicitStopCalls[0])
+	}
+}
+
+// multiServiceMock deploys one app with containers "myapp_alpha"/"myapp_beta".
+func multiServiceMock() *mockContainerdClient {
+	return &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{
+			AppName: "myapp",
+			Services: []*agentpb.ServiceEntry{
+				{Name: "alpha"},
+				{Name: "beta"},
+			},
+		}},
+	}
+}
+
+// A service-qualified name matches no app-id label, so label-only resolution
+// found nothing, invented the ID back, and reported a stop it never issued.
+func TestStopContainer_ServiceQualifiedName_StopsOnlyThatService(t *testing.T) {
+	mc := multiServiceMock()
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{
+		AppName: "myapp_alpha",
+	}); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+
+	// The assertion the old code fails: it resolved via ContainerIDsForApp and
+	// fell back to the name itself, leaving everything below looking correct.
+	if len(mc.resolveCalls) != 1 || mc.resolveCalls[0] != "myapp_alpha" {
+		t.Errorf("ResolveAppContainerIDs calls = %v; want [myapp_alpha]", mc.resolveCalls)
+	}
+	if len(mc.stopCalls) != 1 || mc.stopCalls[0] != "myapp_alpha" {
+		t.Errorf("stopCalls = %v; want [myapp_alpha]", mc.stopCalls)
+	}
+	if len(mon.explicitStopCalls) != 1 || mon.explicitStopCalls[0] != "myapp_alpha" {
+		t.Errorf("MarkExplicitStop = %v; want [myapp_alpha]", mon.explicitStopCalls)
+	}
+	if len(mc.stoppedByUserCalls) != 1 {
+		t.Fatalf("stoppedByUserCalls = %v; want exactly one", mc.stoppedByUserCalls)
+	}
+	if got := mc.stoppedByUserCalls[0]; got.containerID != "myapp_alpha" || !got.stopped {
+		t.Errorf("stoppedByUser = %+v; want {myapp_alpha true}", got)
+	}
+}
+
+// The group form must still fan out to every service.
+func TestStopContainer_BareAppID_StopsEveryService(t *testing.T) {
+	mc := multiServiceMock()
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{
+		AppName: "myapp",
+	}); err != nil {
+		t.Fatalf("StopContainer: %v", err)
+	}
+
+	if len(mon.explicitStopCalls) != 2 {
+		t.Errorf("MarkExplicitStop = %v; want both services", mon.explicitStopCalls)
+	}
+	marked := map[string]bool{}
+	for _, c := range mc.stoppedByUserCalls {
+		marked[c.containerID] = c.stopped
+	}
+	if !marked["myapp_alpha"] || !marked["myapp_beta"] {
+		t.Errorf("stoppedByUser = %+v; want both services marked", mc.stoppedByUserCalls)
+	}
+}
+
+// A name that resolves to nothing must error and leave no trace.
+func TestStopContainer_UnknownName_NotFound(t *testing.T) {
+	mc := multiServiceMock()
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	_, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{
+		AppName: "no-such-app",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("StopContainer error = %v; want NotFound", err)
+	}
+	if len(mc.stopCalls) != 0 {
+		t.Errorf("stopCalls = %v; want none", mc.stopCalls)
+	}
+	if len(mon.explicitStopCalls) != 0 {
+		t.Errorf("MarkExplicitStop = %v; want none", mon.explicitStopCalls)
+	}
+	if len(mc.stoppedByUserCalls) != 0 {
+		t.Errorf("stoppedByUserCalls = %v; want none", mc.stoppedByUserCalls)
+	}
+}
+
+// Delete must resolve through the shared resolver and unregister only the
+// named service.
+func TestDeleteContainer_ServiceQualifiedName_ResolvesOneService(t *testing.T) {
+	mc := multiServiceMock()
+	mon := &mockMonitorRegistrar{}
+	client, cleanup := startContainerServerWithMonitor(t, mc, mon)
+	defer cleanup()
+
+	if _, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName: "myapp_alpha",
+	}); err != nil {
+		t.Fatalf("DeleteContainer: %v", err)
+	}
+
+	if len(mc.resolveCalls) != 1 || mc.resolveCalls[0] != "myapp_alpha" {
+		t.Errorf("ResolveAppContainerIDs calls = %v; want [myapp_alpha]", mc.resolveCalls)
+	}
+	if len(mon.unregisterCalls) != 1 || mon.unregisterCalls[0] != "myapp_alpha" {
+		t.Errorf("Unregister = %v; want [myapp_alpha]", mon.unregisterCalls)
+	}
+	if len(mon.explicitStopCalls) != 0 {
+		t.Errorf("MarkExplicitStop = %v; want none on the delete path", mon.explicitStopCalls)
+	}
+}
+
+// Delete carried the same invented-ID fallback as stop.
+func TestDeleteContainer_UnknownName_NotFound(t *testing.T) {
+	mc := multiServiceMock()
+	client, cleanup := startContainerServer(t, mc)
+	defer cleanup()
+
+	_, err := client.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
+		AppName: "no-such-app",
+	})
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("DeleteContainer error = %v; want NotFound", err)
 	}
 }
 
@@ -989,7 +1178,9 @@ func TestListVolumes_UsedByFromDeclaredVolumes(t *testing.T) {
 
 // deleteVolumesTestSetup creates volume dirs and starts a server whose mock
 // reports the given declared-volumes map.
-func deleteVolumesTestSetup(t *testing.T, dirs []string, declared map[string][]string, declaredErr error) (agentpb.WendyContainerServiceClient, string) {
+// deployedApps names the apps that exist on the fake device; a delete must
+// resolve before it reaches the volume logic.
+func deleteVolumesTestSetup(t *testing.T, dirs []string, declared map[string][]string, declaredErr error, deployedApps ...string) (agentpb.WendyContainerServiceClient, string) {
 	t.Helper()
 	tmp := t.TempDir()
 	old := volumesDir
@@ -1002,7 +1193,11 @@ func deleteVolumesTestSetup(t *testing.T, dirs []string, declared map[string][]s
 		}
 	}
 
-	mock := &mockContainerdClient{declaredVolumes: declared, declaredVolumesErr: declaredErr}
+	ctrs := make([]*agentpb.AppContainer, 0, len(deployedApps))
+	for _, app := range deployedApps {
+		ctrs = append(ctrs, &agentpb.AppContainer{AppName: app})
+	}
+	mock := &mockContainerdClient{containers: ctrs, declaredVolumes: declared, declaredVolumesErr: declaredErr}
 	cl, cleanup := startContainerServer(t, mock)
 	t.Cleanup(cleanup)
 	return cl, tmp
@@ -1035,7 +1230,7 @@ func TestDeleteContainer_DeleteVolumes_DeclaredNotPrefixed(t *testing.T) {
 		map[string][]string{
 			"autotest-churn":             {"autotest-churn-data", "autotest-orphanvol"},
 			"sh.wendy.examples.hellovlm": {"hellovlm-models"},
-		}, nil)
+		}, nil, "autotest-churn")
 
 	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 		AppName:       "autotest-churn",
@@ -1059,7 +1254,7 @@ func TestDeleteContainer_DeleteVolumes_PrefixCollision(t *testing.T) {
 		map[string][]string{
 			"hellovlm":                   {"hellovlm-data"},
 			"sh.wendy.examples.hellovlm": {"hellovlm-models"},
-		}, nil)
+		}, nil, "hellovlm")
 
 	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 		AppName:       "hellovlm",
@@ -1081,7 +1276,7 @@ func TestDeleteContainer_DeleteVolumes_SharedVolumeKept(t *testing.T) {
 		map[string][]string{
 			"app-a": {"app-a-data", "shared-cache"},
 			"app-b": {"shared-cache"},
-		}, nil)
+		}, nil, "app-a")
 
 	_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 		AppName:       "app-a",
@@ -1102,7 +1297,7 @@ func TestDeleteContainer_DeleteVolumes_OwnershipUnknown(t *testing.T) {
 	t.Run("lookup error", func(t *testing.T) {
 		cl, tmp := deleteVolumesTestSetup(t,
 			[]string{"legacy-app-data"},
-			nil, fmt.Errorf("containerd unavailable"))
+			nil, fmt.Errorf("containerd unavailable"), "legacy-app")
 
 		_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 			AppName:       "legacy-app",
@@ -1117,7 +1312,7 @@ func TestDeleteContainer_DeleteVolumes_OwnershipUnknown(t *testing.T) {
 	t.Run("no persist labels", func(t *testing.T) {
 		cl, tmp := deleteVolumesTestSetup(t,
 			[]string{"legacy-app-data"},
-			map[string][]string{}, nil)
+			map[string][]string{}, nil, "legacy-app")
 
 		_, err := cl.DeleteContainer(context.Background(), &agentpb.DeleteContainerRequest{
 			AppName:       "legacy-app",

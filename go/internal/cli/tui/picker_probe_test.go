@@ -49,6 +49,8 @@ func TestProbeColumnValue(t *testing.T) {
 		{"ok shows version", ProbeOK, "0.10.4", "0.10.4"},
 		{"failed without version shows triangle", ProbeFailed, "", ProbeFailedGlyph},
 		{"failed with cached version keeps it", ProbeFailed, "0.10.4", "0.10.4"},
+		{"offline shows offline text", ProbeOffline, "1.2.3", "offline"},
+		{"offline suppresses version", ProbeOffline, "", "offline"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

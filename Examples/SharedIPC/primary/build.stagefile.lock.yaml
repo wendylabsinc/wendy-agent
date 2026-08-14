@@ -1,0 +1,4 @@
+version: 1
+sourceHash: sha256:b8bdd5d3fecdf4d972cc7351eb2dfa06f6184d9c7ad16a4966c0245ebb193a3c
+images:
+    python:3.11-slim: sha256:94c50be2dc994b873b55bc123e95e6dbade08095b3dfd790f51c34de3f08cbb7

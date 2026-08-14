@@ -11,8 +11,9 @@ import (
 
 // serviceHookRunner runs the per-service "wait for readiness → announce URL →
 // fire postStart" sequence for multi-service runs (compose + services map).
-// Semantics mirror the single-container paths: a readiness failure warns and
-// still fires the hook; only context cancellation suppresses it.
+// A readiness failure warns and still fires explicitly configured hooks, but
+// suppresses the success announcement and HTTP-entitlement-synthesized browser
+// open. Only context cancellation suppresses every side effect.
 //
 // Zero-value-ready except conn: construct with &serviceHookRunner{conn: conn}.
 type serviceHookRunner struct {
@@ -34,15 +35,28 @@ type serviceHookRunner struct {
 // never call reap since there is nothing left to wait on (openURL is
 // synchronous, and cli hooks deliberately keep running).
 //
-// A nil cfg, or a cfg that declares neither Readiness nor Hooks, is a no-op:
-// most services in a multi-service app don't opt into per-service lifecycle
-// hooks, so runOne must not dial, warn, or print anything for them.
+// A nil cfg, or a cfg that declares neither Readiness/Hooks nor an `http`
+// entitlement, is a no-op: most services in a multi-service app don't opt
+// into per-service lifecycle hooks, so runOne must not dial, warn, or print
+// anything for them. Readiness and the postStart hook are both computed via
+// effectiveReadiness/synthesizedOpenURLHook (the same helpers run.go's
+// single-container path uses) rather than reading cfg.Readiness/cfg.Hooks
+// directly: a service that declares only an `http` entitlement — no explicit
+// readiness.tcpSocket — must still get an actual readiness wait and an
+// auto-opened browser tab, not just the announceReachableURL text that
+// already (via effectiveReadiness) assumes readiness was probed.
 func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.AppConfig) {
-	if cfg == nil || (cfg.Readiness == nil && cfg.Hooks == nil) {
+	if cfg == nil {
+		return
+	}
+	readiness := effectiveReadiness(cfg)
+	hooks := synthesizedOpenURLHook(cfg)
+	if readiness == nil && hooks == nil {
 		return
 	}
 
-	if err := waitForReadiness(ctx, cfg.Readiness, r.conn.Host); err != nil {
+	readinessSucceeded := true
+	if err := waitForReadiness(ctx, readiness, r.conn.Host); err != nil {
 		if ctx.Err() != nil {
 			// Canceled (e.g. Ctrl+C, or the run ending) — stay silent and skip
 			// the hook entirely; this is not a readiness failure to report.
@@ -54,14 +68,27 @@ func (r *serviceHookRunner) runOne(ctx, hookCtx context.Context, cfg *appconfig.
 		// group appID, and aggregates exit code/reason onto that group entry —
 		// so pass cfg.AppID, never cfg.ContainerName().
 		warnReadiness(ctx, r.conn, cfg.AppID, err)
+		readinessSucceeded = false
 	}
 	if ctx.Err() != nil {
 		return
 	}
 
-	announceReachableURL(ctx, r.conn, cfg)
+	if readinessSucceeded {
+		announceReachableURL(ctx, r.conn, cfg)
+	}
 
-	cmd := startPostStartHook(hookCtx, cfg, r.conn.Host, cfg.ServiceName)
+	effectiveCfg := cfg
+	// A failed probe must not synthesize an automatic browser open from an HTTP
+	// entitlement. Explicit hooks retain the established multi-service behavior
+	// and still run after a non-cancellation timeout.
+	if readinessSucceeded && hooks != cfg.Hooks {
+		clone := *cfg
+		clone.Hooks = hooks
+		effectiveCfg = &clone
+	}
+
+	cmd := startPostStartHook(hookCtx, effectiveCfg, r.conn.Host, cfg.ServiceName)
 	if cmd != nil {
 		r.mu.Lock()
 		r.cmds = append(r.cmds, cmd)
@@ -115,14 +142,36 @@ func (r *serviceHookRunner) reap() {
 	}
 }
 
-// appLevelLifecycleConfig returns a synthetic AppConfig carrying only the
-// group identity and the top-level readiness/hooks, for the app-level
-// fallback that fires once after ALL services have started. Returns nil when
-// the config declares neither. Its hooks.postStart.agent is never sent to the
-// agent (there is no app-level container); ValidateJSON already warns.
-func appLevelLifecycleConfig(appID string, top *appconfig.AppConfig) *appconfig.AppConfig {
-	if top == nil || (top.Readiness == nil && top.Hooks == nil) {
+// lifecycleConfig returns a private synthetic AppConfig for CLI-side lifecycle
+// execution. Only HTTP entitlements declared at this exact scope are copied;
+// all other entitlements belong in the container create payload, not in the
+// readiness/browser pipeline.
+func lifecycleConfig(appID, serviceName string, readiness *appconfig.ReadinessConfig, hooks *appconfig.HooksConfig, entitlements []appconfig.Entitlement) *appconfig.AppConfig {
+	httpEntitlements := make([]appconfig.Entitlement, 0, 1)
+	for _, entitlement := range entitlements {
+		if entitlement.Type == appconfig.EntitlementHTTP {
+			httpEntitlements = append(httpEntitlements, entitlement)
+		}
+	}
+	if readiness == nil && hooks == nil && len(httpEntitlements) == 0 {
 		return nil
 	}
-	return &appconfig.AppConfig{AppID: appID, Readiness: top.Readiness, Hooks: top.Hooks}
+	return &appconfig.AppConfig{
+		AppID:        appID,
+		ServiceName:  serviceName,
+		Entitlements: httpEntitlements,
+		Readiness:    readiness,
+		Hooks:        hooks,
+	}
+}
+
+// appLevelLifecycleConfig returns a private config carrying the top-level HTTP
+// entitlement, readiness (including timeoutSeconds), and hooks. It fires once
+// after ALL services have started. Its hooks.postStart.agent is never sent to
+// the agent because there is no app-level container; validation/callers warn.
+func appLevelLifecycleConfig(appID string, top *appconfig.AppConfig) *appconfig.AppConfig {
+	if top == nil {
+		return nil
+	}
+	return lifecycleConfig(appID, "", top.Readiness, top.Hooks, top.Entitlements)
 }

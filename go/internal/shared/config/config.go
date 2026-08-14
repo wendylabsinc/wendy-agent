@@ -41,6 +41,11 @@ type Config struct {
 	// (YYYY-MM-DD) of the last time the tip (or a build-time optimize scan) was
 	// surfaced for that project.
 	OptimizeTipShownAt map[string]string `json:"optimizeTipShownAt,omitempty"`
+	// ImplicitDeviceHintShownAt throttles the follow-up hint that explains how to
+	// override an implicitly chosen device, to once per day. The line naming the
+	// device is always shown; only the explanation is rate-limited. Value is a
+	// date (YYYY-MM-DD).
+	ImplicitDeviceHintShownAt string `json:"implicitDeviceHintShownAt,omitempty"`
 	// DevicePins binds a device hostname to the organisation + cloud host its
 	// TLS identity must belong to (WDY-1149), so a different trust domain
 	// answering at that hostname is caught. Renewal/re-enrollment within the
@@ -176,14 +181,34 @@ func Load() (*Config, error) {
 	return &cfg, nil
 }
 
-// Save writes the configuration to ~/.wendy/config.json.
+// Save writes the configuration to ~/.wendy/config.json. On platforms with
+// a credential store, inline secrets are moved into it and the file holds
+// only references (see secrets.go); the caller's cfg is never mutated. If
+// cfg cannot be cloned, Save fails rather than falling back to mutating the
+// caller's struct in place.
 func Save(cfg *Config) error {
 	path, err := configPath()
 	if err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	out, err := cfg.clone()
+	if err != nil {
+		return fmt.Errorf("cloning config: %w", err)
+	}
+	if dehydrateEnabled() {
+		dehydrate(out)
+	} else {
+		// This branch covers two cases: WENDY_SECRET_STORE=file (explicit
+		// de-migration — resolve any existing refs back inline) and
+		// non-darwin platforms (no store; refs only exist if the config
+		// file was copied over from a Mac, in which case resolution fails
+		// and the ref is left as-is — normal non-darwin configs contain no
+		// refs, so this is a no-op for them).
+		inlineSecrets(out)
+	}
+
+	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}

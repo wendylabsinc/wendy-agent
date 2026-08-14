@@ -61,21 +61,25 @@ func certXFCC(cert config.CertificateInfo) string {
 	return ""
 }
 
-func cloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
+func cloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
 	if len(auth.Certificates) == 0 {
-		return ctx
+		return ctx, nil
 	}
 	cert := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.APIKey != "" {
-		md.Set("authorization", "Bearer "+auth.APIKey)
+	if auth.HasAPIKey() {
+		bearerToken, err := auth.BearerToken()
+		if err != nil {
+			return nil, fmt.Errorf("loading API token: %w", err)
+		}
+		md.Set("authorization", "Bearer "+bearerToken)
 	}
 	certHeader := certXFCC(cert)
 	if certHeader != "" {
 		md.Set("x-wendy-client-cert", certHeader)
 		md.Set("x-forwarded-client-cert", certHeader)
 	}
-	return metadata.NewOutgoingContext(ctx, md)
+	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
 func connectToCloudAgent(ctx context.Context, cloudGRPC, deviceName, brokerURL string) (*grpcclient.AgentConnection, error) {
@@ -117,7 +121,12 @@ func connectCloudAsset(ctx context.Context, auth *config.AuthConfig, asset *clou
 	dialOpt, closeTunnel := tunnelDialer(tunnelConn)
 
 	cert := auth.Certificates[0]
-	x509Cert, err := tls.X509KeyPair([]byte(cert.PemCertificate), []byte(cert.PemPrivateKey))
+	keyPEM, err := cert.PrivateKeyPEM()
+	if err != nil {
+		closeTunnel()
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
+	x509Cert, err := tls.X509KeyPair([]byte(cert.PemCertificate), []byte(keyPEM))
 	if err != nil {
 		closeTunnel()
 		return nil, fmt.Errorf("loading agent mTLS cert: %w", err)
@@ -227,10 +236,14 @@ func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientCon
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	cert := auth.Certificates[0]
+	keyPEM, err := cert.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
 	tlsCfg, err := certs.LoadTLSConfig(
 		cert.PemCertificate,
 		cert.PemCertificateChain,
-		cert.PemPrivateKey,
+		keyPEM,
 		"",
 	)
 	if err != nil {
@@ -284,7 +297,11 @@ func dialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.ClientCon
 func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
 
-	stream, err := client.ClientTunnel(cloudContext(ctx, auth))
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := client.ClientTunnel(cloudCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening tunnel stream: %w", err)
 	}
@@ -357,7 +374,12 @@ func openBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *co
 }
 
 func fetchCloudAssets(ctx context.Context, auth *config.AuthConfig) ([]*cloudpb.Asset, error) {
-	return fetchCloudAssetsFiltered(ctx, auth, true)
+	assets, err := fetchCloudAssetsFiltered(ctx, auth, true)
+	if err != nil {
+		return nil, err
+	}
+	seedPinsFromAssetsBestEffort(auth, assets)
+	return assets, nil
 }
 
 func resolveCloudAsset(assets []*cloudpb.Asset, deviceName string) (*cloudpb.Asset, error) {
@@ -470,6 +492,13 @@ func pickCloudDeviceWithRelogin(ctx context.Context, auth *config.AuthConfig, de
 	} else {
 		asset, err := resolveCloudAsset(assets, deviceName)
 		if err != nil || asset != nil {
+			// With no --device, resolveCloudAsset picks the org's only enrolled
+			// device without asking. Say so, rather than leaving the target
+			// implicit. Note this is not the configured default device: the
+			// cloud path does not consult that setting.
+			if err == nil && deviceName == "" {
+				noteImplicitDevice(asset.GetName(), implicitSoleCloudDevice)
+			}
 			return asset, err
 		}
 	}
@@ -501,10 +530,14 @@ func dialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	cert := auth.Certificates[0]
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		keyPEM, err := cert.PrivateKeyPEM()
+		if err != nil {
+			return nil, fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			cert.PemCertificate,
 			cert.PemCertificateChain,
-			cert.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {

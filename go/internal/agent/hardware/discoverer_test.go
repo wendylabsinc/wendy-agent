@@ -2,10 +2,12 @@ package hardware
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 )
 
@@ -126,5 +128,85 @@ func TestDiscoverCamera_TransportPropertyCSI_WithLibcameraID(t *testing.T) {
 	}
 	if got := caps[0].GetProperties()["libcamera_id"]; got != "/base/cam@1a" {
 		t.Errorf("expected libcamera_id=/base/cam@1a, got %q", got)
+	}
+}
+
+func TestDiscoverAudio(t *testing.T) {
+	// A Bluetooth speaker (the default sink) and a USB microphone. The speaker
+	// has no ALSA card, so reading /proc/asound/cards never found it.
+	orig := audio.DumpRun
+	t.Cleanup(func() { audio.DumpRun = orig })
+	audio.DumpRun = func(context.Context) ([]byte, error) {
+		return []byte(`[
+		  {
+		    "id": 30, "type": "PipeWire:Interface:Metadata",
+		    "props": { "metadata.name": "default" },
+		    "metadata": [
+		      { "key": "default.audio.sink", "value": { "name": "bluez_output.78_2B_64_76_F3_CE.1" } }
+		    ]
+		  },
+		  {
+		    "id": 55, "type": "PipeWire:Interface:Node",
+		    "info": { "props": {
+		      "media.class": "Audio/Source",
+		      "node.name": "alsa_input.usb-046d_C920",
+		      "node.description": "HD Pro Webcam C920"
+		    } }
+		  },
+		  {
+		    "id": 43, "type": "PipeWire:Interface:Node",
+		    "info": { "props": {
+		      "media.class": "Audio/Sink",
+		      "node.name": "bluez_output.78_2B_64_76_F3_CE.1",
+		      "node.description": "Bose Revolve II SoundLink"
+		    } }
+		  }
+		]`), nil
+	}
+
+	caps := NewSystemHardwareDiscoverer(zap.NewNop()).discoverAudio(context.Background())
+	if len(caps) != 2 {
+		t.Fatalf("got %d capabilities, want 2", len(caps))
+	}
+
+	// Sorted by node ID, so the speaker comes first.
+	speaker := caps[0]
+	if speaker.GetCategory() != "audio" {
+		t.Errorf("category = %q", speaker.GetCategory())
+	}
+	if speaker.GetDevicePath() != "bluez_output.78_2B_64_76_F3_CE.1" {
+		t.Errorf("device = %q, want the PipeWire node name", speaker.GetDevicePath())
+	}
+	if speaker.GetDescription() != "Bose Revolve II SoundLink" {
+		t.Errorf("description = %q", speaker.GetDescription())
+	}
+	want := map[string]string{"node_id": "43", "direction": "sink", "default": "true"}
+	for k, v := range want {
+		if got := speaker.GetProperties()[k]; got != v {
+			t.Errorf("property %s = %q, want %q", k, got, v)
+		}
+	}
+
+	mic := caps[1]
+	if mic.GetProperties()["direction"] != "source" {
+		t.Errorf("mic direction = %q", mic.GetProperties()["direction"])
+	}
+	// Only the current default carries the marker.
+	if _, ok := mic.GetProperties()["default"]; ok {
+		t.Error("non-default device marked as default")
+	}
+}
+
+func TestDiscoverAudioNoSession(t *testing.T) {
+	// No PipeWire session: report nothing rather than failing the whole
+	// hardware listing.
+	orig := audio.DumpRun
+	t.Cleanup(func() { audio.DumpRun = orig })
+	audio.DumpRun = func(context.Context) ([]byte, error) {
+		return nil, errors.New("no PipeWire session found")
+	}
+
+	if caps := NewSystemHardwareDiscoverer(zap.NewNop()).discoverAudio(context.Background()); caps != nil {
+		t.Errorf("got %d capabilities, want none", len(caps))
 	}
 }

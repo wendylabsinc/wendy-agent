@@ -142,7 +142,10 @@ func saveDeployFingerprint(appID, deviceKey string, fp deployFingerprint) {
 // rebuild, never a missed change.
 func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[string]string, deployEnv []string) (string, error) {
 	h := sha256.New()
-	io.WriteString(h, "wendy-deploy-fingerprint-v1\n")
+	// v2: invalidates fingerprints recorded while the stale-manifest bug
+	// (fixed 2026-08-08 in this PR) could pair a fresh input hash with a
+	// stale deploy — forces one honest rebuild per app after upgrade.
+	io.WriteString(h, "wendy-deploy-fingerprint-v2\n")
 	io.WriteString(h, "platform="+platform+"\n")
 
 	// deployEnv arrives sorted from resolveServiceEnv; --env order is the
@@ -176,8 +179,11 @@ func computeBuildInputHash(cwd, dockerfile, platform string, buildArgs map[strin
 	io.WriteString(h, fmt.Sprintf("dockerfile %d\n", len(dfData)))
 	h.Write(dfData)
 
-	// Hash the build context, honoring .dockerignore.
-	ignore := loadDockerIgnore(cwd)
+	// Hash the build context, honoring the ignore file the build itself uses:
+	// BuildKit gives <dockerfile>.dockerignore precedence over .dockerignore
+	// (the Stagefile flow derives a deny-all allowlist there), so the walk must
+	// follow the same file or it hashes paths the build can never see.
+	ignore := loadDockerIgnoreForBuild(cwd, dfPath)
 	var files []string
 	err = filepath.WalkDir(cwd, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -236,8 +242,25 @@ type dockerIgnore struct {
 }
 
 func loadDockerIgnore(cwd string) *dockerIgnore {
+	return loadDockerIgnoreFile(filepath.Join(cwd, ".dockerignore"))
+}
+
+// loadDockerIgnoreForBuild picks the ignore file BuildKit would use for this
+// dockerfile: <dockerfile>.dockerignore when present, else the context's
+// .dockerignore.
+func loadDockerIgnoreForBuild(cwd, dockerfilePath string) *dockerIgnore {
+	if dockerfilePath != "" {
+		perDockerfile := dockerfilePath + ".dockerignore"
+		if fi, err := os.Stat(perDockerfile); err == nil && fi.Mode().IsRegular() {
+			return loadDockerIgnoreFile(perDockerfile)
+		}
+	}
+	return loadDockerIgnore(cwd)
+}
+
+func loadDockerIgnoreFile(path string) *dockerIgnore {
 	di := &dockerIgnore{}
-	f, err := os.Open(filepath.Join(cwd, ".dockerignore"))
+	f, err := os.Open(path)
 	if err != nil {
 		return di
 	}
@@ -273,8 +296,16 @@ func loadDockerIgnore(cwd string) *dockerIgnore {
 // keeps the matcher safe — it can only over-hash, never under-detect a change.
 func (di *dockerIgnore) matches(rel string) bool {
 	clean := strings.TrimSuffix(rel, "/")
+	isDir := strings.HasSuffix(rel, "/")
 	for _, neg := range di.negations {
 		if matchIgnorePattern(neg, clean) {
+			return false
+		}
+		// A directory with a re-included descendant must stay walkable: with
+		// "*" + "!src/app.py", skipping src/ wholesale would hide the allowlisted
+		// file's changes (the unsafe direction — a missed change, not an extra
+		// rebuild).
+		if isDir && strings.HasPrefix(neg, clean+"/") {
 			return false
 		}
 	}
@@ -337,7 +368,10 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		// The container is untouched, so the agent-side (in-container) hook can't
 		// be re-run, but fire the host-side postStart hook so `wendy run` behaves
 		// the same whether or not it took the fast path (e.g. re-opening the URL).
-		runPostStartHostHook(ctx, conn, appCfg)
+		// No host-side postStart hook: the fast path only ever runs detached
+		// (see the opts.detach gate on tryDeployFastPath's caller), and
+		// detached deploys don't block on readiness — see
+		// runPostStartIfReady's doc comment.
 		return true, nil
 	}
 
@@ -353,19 +387,9 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 		return false, nil
 	}
 	cliLogln("No changes detected; started existing %s.", containerDisplayName(appCfg))
-	runPostStartHostHook(ctx, conn, appCfg)
+	// No host-side postStart hook here either — see runPostStartIfReady's doc
+	// comment for why detached deploys skip it.
 	return true, nil
-}
-
-// runPostStartHostHook mirrors the normal detached deploy path's host-side
-// postStart handling: wait for readiness, then announce the reachable URL and
-// fire the host hook fire-and-forget on a background context so it outlives
-// the CLI process. A failed readiness probe skips both (see
-// runPostStartIfReady). The agent-side (in-container) hook is attached
-// separately to the StartContainer RPC's context, so it only runs when the
-// fast path actually (re)starts the container.
-func runPostStartHostHook(ctx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) {
-	runPostStartIfReady(ctx, context.Background(), conn, appCfg)
 }
 
 // containerExitDetail returns a short human summary of why appID's container

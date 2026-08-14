@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 func TestParseKmsgLine(t *testing.T) {
@@ -129,18 +129,18 @@ func TestParseKmsgLine(t *testing.T) {
 func TestKernelLevelToOTEL(t *testing.T) {
 	tests := []struct {
 		level          int
-		wantNumber     otelpb.SeverityNumber
+		wantNumber     logspb.SeverityNumber
 		wantText       string
 		wantTextPrefix string // SeverityText must start with the base name
 	}{
-		{7, otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE", "TRACE"},
-		{6, otelpb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE4", "TRACE"},
-		{5, otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", "DEBUG"},
-		{4, otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG2", "DEBUG"},
-		{3, otelpb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG3", "DEBUG"},
-		{2, otelpb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", "WARN"},
-		{1, otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", "ERROR"},
-		{0, otelpb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL", "FATAL"},
+		{7, logspb.SeverityNumber_SEVERITY_NUMBER_TRACE, "TRACE", "TRACE"},
+		{6, logspb.SeverityNumber_SEVERITY_NUMBER_TRACE4, "TRACE4", "TRACE"},
+		{5, logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG, "DEBUG", "DEBUG"},
+		{4, logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG2, "DEBUG2", "DEBUG"},
+		{3, logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG3, "DEBUG3", "DEBUG"},
+		{2, logspb.SeverityNumber_SEVERITY_NUMBER_WARN, "WARN", "WARN"},
+		{1, logspb.SeverityNumber_SEVERITY_NUMBER_ERROR, "ERROR", "ERROR"},
+		{0, logspb.SeverityNumber_SEVERITY_NUMBER_FATAL, "FATAL", "FATAL"},
 	}
 
 	for _, tc := range tests {

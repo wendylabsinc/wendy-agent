@@ -2,17 +2,42 @@ Builds your WendyOS app. Leverages `wendy.json` for metadata. If `wendy.json` is
 
 The build command is mainly used to verify your app can build/compile.
 
+## Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--build-type` | auto-detected | Build type to use when multiple project markers are present: `docker`, `swift`, or `python`. |
+| `--dockerfile` | auto-detected | Dockerfile or Containerfile to build from; shows a selection menu when multiple build files exist. |
+| `--builder` | auto | Image builder to force for Dockerfile/Containerfile builds: `docker`, `apple-container`, or `buildkit`. |
+| `--gpu-arch` | from the device | GPU architecture a Stagefile `cuda:` stage targets; taken from the device when one is selected. |
+| `--debug` | `false` | Build compiled languages unoptimized instead of the release default — see below. |
+
+### `--debug`
+
+`--debug` switches compiled-language stages from the release default to an unoptimized build:
+
+- **Stagefile projects** — Swift stages emit `swift build -c debug` and Rust stages drop `--release`. It overrides the profile a stage declares in `build.stagefile.yaml`. Go and Node (`npm`/`yarn`/`pnpm`) stages have no optimization level to switch and are unaffected.
+- **Compose projects** — applies to services built from a Stagefile.
+- **Swift packages without a build file** — the host cross-compile runs `swift build -c debug`.
+
+Hand-written Dockerfiles are not rewritten, and `wendy build` passes no build-args, so `--debug` has no effect on them here. To gate a hand-written Dockerfile on it, branch on the `WENDY_DEBUG` build-arg that [`wendy run`](run.md) passes (see the build-arg table below).
+
+The same flag on [`wendy run`](run.md) and `wendy fleet run` additionally enables debug logging, and on `fleet run` host networking. On `wendy build` it only selects the build configuration.
+
 ## Manifest detection
 
 `wendy build` scans the project directory for a build manifest in the following priority order:
 
 1. `docker-compose.yml` / `compose.yml` — multi-service Compose project
-2. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
-3. `Package.swift` — Swift Package Manager project
-4. `*.xcodeproj` — Xcode project (macOS targets only)
-5. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
+2. `build.stagefile.yaml` — Stagefile, compiled to a digest-pinned Dockerfile (wins over a `Dockerfile` in the same directory)
+3. `Dockerfile` / `Containerfile` (or dot/hyphen variants) — container image build
+4. `Package.swift` — Swift Package Manager project
+5. `*.xcodeproj` — Xcode project (macOS targets only)
+6. `requirements.txt` / `setup.py` / `pyproject.toml` — Python project (Dockerfile auto-generated)
 
 If multiple manifests are present you can override detection with `--build-type`.
+
+A Stagefile is a YAML build descriptor that compiles to a real Dockerfile with guarantees a hand-written one does not get by default: base images are digest-pinned through a committed `build.stagefile.lock.yaml`, each install step is emitted with the correct flags and a scoped cache mount, the `.dockerignore` is derived from the declared copy paths, and there is no raw-shell escape hatch. The compiled `Dockerfile.generated` and its `Dockerfile.generated.dockerignore` are written next to the source as build output. Most projects under [`Examples/`](https://github.com/wendylabsinc/wendyos/tree/main/Examples) use this format and are worth reading as reference. `--dockerfile build.stagefile.yaml` is not supported — the Stagefile is picked up by detection, not by an explicit override.
 
 ## Compatibility
 
@@ -26,7 +51,7 @@ If multiple manifests are present you can override detection with `--build-type`
 
 ### Dockerfile and Containerfile projects
 
-`wendy build` invokes an image builder targeting the device's CPU architecture. It passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them:
+`wendy build` invokes an image builder targeting the device's CPU architecture. [`wendy run`](run.md) passes the following build-args so the Dockerfile or Containerfile can adapt to the target hardware — declare them with `ARG` to use them. `wendy build` compiles the same image but passes no build-args, so a Dockerfile that branches on them takes its `ARG` defaults here:
 
 On Apple silicon Macs with [Apple `container`](https://github.com/apple/container)
 installed, Wendy tries Apple Container first for Dockerfile and
@@ -71,7 +96,9 @@ FROM ${WENDY_PLATFORM}-base-image
 ### Swift Package Manager projects
 
 - **macOS target**: builds locally with `swift build` and syncs the binary to the device.
-- **Container target (WendyOS / Docker)**: uses [swift-container-plugin](https://github.com/apple/swift-container-plugin) to cross-compile the app for the target device architecture. The plugin takes a Swift base container image and appends your compiled executable and bundle resources.
+- **Container target (WendyOS / Docker)**: uses [swift-container-plugin](https://github.com/apple/swift-container-plugin) to cross-compile the app for the target device architecture. The plugin takes a Swift base container image and appends your compiled executable and bundle resources. The cross-compile runs in **release** configuration by default; pass `--debug` to build in debug configuration instead.
+
+Swift projects that build through a Stagefile (`build.stagefile.yaml`) instead follow the Stagefile path, where `--debug` overrides the stage's declared profile.
 
 ### Xcode projects
 
@@ -80,6 +107,14 @@ Builds with `xcodebuild`. Xcode project support exists for native Mac packages t
 Wendy passes `-skipMacroValidation` and `-skipPackagePluginValidation` so `xcodebuild` can run from a headless CLI/agent session. Xcode's macro/plugin prompts are an interactive consent layer on top of SwiftPM's build-time code and package-plugin sandbox model; headless Wendy builds treat invoking the build as consent, similar to CLI build tools. Only use Xcode projects with trusted, pinned package dependencies.
 
 For native Mac runs, if a `Brewfile.wendy` is present in the project root, Wendy applies it on the target Mac before starting the app. A plain project-root `Brewfile` is left for developer-machine setup unless explicitly referenced by `wendy.json`.
+
+## Build progress output
+
+In an interactive terminal, image builds render a live list of Dockerfile steps. BuildKit runs steps concurrently, so several can advance at once; each running step gets a dim sub-line showing whatever progress its output exposes — a compiler's `[525/1027]` counter, `pip`/`apt`/`wget` download percentages, or the byte counter and transfer rate BuildKit reports for base-image pulls and build-context transfer. Steps that produce no recognised progress fall back to their last line of output. Finished steps collapse to a single line.
+
+When stdout is not a TTY (CI, piped output), a plain-text renderer is used instead. It prints a heartbeat line for each running step every 15 seconds so a long silent step is distinguishable from a hung build.
+
+Progress detail for Docker builds comes from `docker buildx --progress=rawjson`, which requires buildx 0.13 or newer. The CLI probes the installed buildx version once per run and falls back to plain progress on older versions; set [`WENDY_BUILD_PROGRESS`](../global-flags.md#environment-variables) to override the choice.
 
 ## Post-build optimization hint
 

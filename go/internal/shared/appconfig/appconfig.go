@@ -60,6 +60,10 @@ const (
 	// (container→host escape surface); grant only to fully-trusted first-party
 	// apps. See entitlements.md for the blast radius.
 	EntitlementBuild = "build"
+	// EntitlementHTTP grants no additional container privileges by itself; it
+	// declares the app's primary HTTP port so clients (wendy run, remote
+	// management apps) can discover and open it. See entitlements.md.
+	EntitlementHTTP = "http"
 )
 
 // ValidEntitlementTypes is the set of all recognized entitlement type strings.
@@ -82,7 +86,17 @@ var ValidEntitlementTypes = []string{
 	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
+	EntitlementHTTP,
 }
+
+// FrameworkROS2 is the "ros2" key under wendy.json's "frameworks" object.
+const FrameworkROS2 = "ros2"
+
+// ValidFrameworkTypes is the set of all recognized top-level keys under the
+// "frameworks" object in wendy.json (currently just ROS 2 — see
+// FrameworksConfig). Kept alongside ValidEntitlementTypes so both surfaces
+// give the same quality of "here's what's actually valid" feedback.
+var ValidFrameworkTypes = []string{FrameworkROS2}
 
 var deprecatedEntitlementReplacements = map[string]string{
 	EntitlementVideo: EntitlementCamera,
@@ -96,7 +110,7 @@ var allowedKeys = map[string][]string{
 	EntitlementGPU:           {"type"},
 	EntitlementPersist:       {"type", "name", "path"},
 	EntitlementAudio:         {"type"},
-	EntitlementCamera:        {"type", "mode", "allowlist"},
+	EntitlementCamera:        {"type", "mode", "allowlist", "user", "password"},
 	EntitlementUSB:           {"type"},
 	EntitlementI2C:           {"type", "device"},
 	EntitlementGPIO:          {"type", "pins"},
@@ -108,6 +122,7 @@ var allowedKeys = map[string][]string{
 	EntitlementNotifications: {"type"},
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},
+	EntitlementHTTP:          {"type", "port"},
 }
 
 // Platform constants identify the target hardware family.
@@ -335,7 +350,15 @@ type Entitlement struct {
 	Device    string        `json:"device,omitempty"`    // I2C, Serial
 	Pins      []int         `json:"pins,omitempty"`      // GPIO
 	Ports     []PortMapping `json:"ports,omitempty"`     // Network
-	Port      int           `json:"port,omitempty"`      // MCP
+	Port      int           `json:"port,omitempty"`      // MCP, HTTP
+	// User and Password are optional credentials for a network camera. Local
+	// cameras need none, so they are only consulted for an IP camera that reports
+	// it has no stored login. Supplying them here means an unattended deploy does
+	// not have to answer a prompt; leaving them out means the command line asks
+	// once and the agent remembers.
+	User     string `json:"user,omitempty"`     // Camera
+	Password string `json:"password,omitempty"` // Camera
+
 	// ServiceCIDR is the mesh service CIDR policy for network mode "mesh".
 	// The agent derives the gateway from the bridge subnet separately; this
 	// field only carries the service CIDR policy.
@@ -439,6 +462,10 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 			if e.Port < 1 || e.Port > 65535 {
 				return fmt.Errorf("%s[%d]: mcp port must be between 1 and 65535, got %d", prefix, i, e.Port)
 			}
+		case EntitlementHTTP:
+			if e.Port < 1 || e.Port > 65535 {
+				return fmt.Errorf("%s[%d]: http port must be between 1 and 65535, got %d", prefix, i, e.Port)
+			}
 		}
 	}
 
@@ -450,6 +477,16 @@ func validateEntitlements(entitlements []Entitlement, prefix string) error {
 	}
 	if mcpCount > 1 {
 		return fmt.Errorf("at most one mcp entitlement is allowed in %s, found %d", prefix, mcpCount)
+	}
+
+	httpCount := 0
+	for _, e := range entitlements {
+		if e.Type == EntitlementHTTP {
+			httpCount++
+		}
+	}
+	if httpCount > 1 {
+		return fmt.Errorf("at most one http entitlement is allowed in %s, found %d", prefix, httpCount)
 	}
 
 	displayCount := 0
@@ -1048,8 +1085,17 @@ func unknownKeyWarnings(raw map[string]json.RawMessage, where string, known map[
 	)}
 }
 
-// validateFrameworksJSON warns on unknown keys under frameworks.ros2 so a typo
-// like "domian_id" surfaces instead of being silently ignored (WDY-1706 M5).
+// validateFrameworksJSON warns on an unrecognized top-level key under
+// "frameworks" (e.g. a typo'd "ros3", or a framework wendy.json doesn't
+// support) and on unknown keys under frameworks.ros2, so a typo like
+// "domian_id" surfaces instead of being silently ignored (WDY-1706 M5).
+//
+// Unlike validateEntitlementsJSON's unknown-type case, this is a warning, not
+// a hard Validate() error: entitlements are a list of required declarations,
+// but frameworks is optional nested config, and encoding/json already drops
+// the unrecognized key silently — a warning is the minimum needed to make
+// that visible without changing the error/warning split used elsewhere in
+// this file for top-level unknown keys (see unknownKeyWarnings).
 func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []string {
 	if len(frameworksRaw) == 0 {
 		return nil
@@ -1058,13 +1104,29 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 	if err := json.Unmarshal(frameworksRaw, &fw); err != nil {
 		return nil
 	}
-	ros2Raw, ok := fw["ros2"]
+
+	var warnings []string
+	var unknownFrameworks []string
+	for k := range fw {
+		if !slices.Contains(ValidFrameworkTypes, k) {
+			unknownFrameworks = append(unknownFrameworks, k)
+		}
+	}
+	if len(unknownFrameworks) > 0 {
+		sort.Strings(unknownFrameworks)
+		warnings = append(warnings, fmt.Sprintf(
+			"Unknown key(s) in %s: %s, ignored. Valid frameworks are: %s",
+			prefix, strings.Join(unknownFrameworks, ", "), strings.Join(ValidFrameworkTypes, ", "),
+		))
+	}
+
+	ros2Raw, ok := fw[FrameworkROS2]
 	if !ok || len(ros2Raw) == 0 {
-		return nil
+		return warnings
 	}
 	var ros2 map[string]json.RawMessage
 	if err := json.Unmarshal(ros2Raw, &ros2); err != nil {
-		return nil
+		return warnings
 	}
 	allowed := map[string]bool{"domainId": true, "rmw": true, "distro": true, "discoveryScope": true}
 	var unknown []string
@@ -1074,10 +1136,11 @@ func validateFrameworksJSON(frameworksRaw json.RawMessage, prefix string) []stri
 		}
 	}
 	if len(unknown) == 0 {
-		return nil
+		return warnings
 	}
 	sort.Strings(unknown)
-	return []string{fmt.Sprintf("Unknown key(s) in %s.ros2: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, strings.Join(unknown, ", "))}
+	warnings = append(warnings, fmt.Sprintf("Unknown key(s) in %s.%s: %s. Allowed keys are: discoveryScope, distro, domainId, rmw", prefix, FrameworkROS2, strings.Join(unknown, ", ")))
+	return warnings
 }
 
 // validateEntitlementsJSON checks raw JSON entitlements for deprecated types

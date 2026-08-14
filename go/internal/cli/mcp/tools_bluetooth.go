@@ -17,6 +17,7 @@ func (s *mcpServer) registerBluetoothTools(srv *server.MCPServer) {
 		mcpgo.WithNumber("timeout_seconds",
 			mcpgo.Description("Scan duration in seconds (default 5)"),
 		),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	scanOpts = append(scanOpts, readOnly()...)
 	scanOpts = append(scanOpts, openWorld()...)
@@ -101,7 +102,7 @@ func (s *mcpServer) handleBluetoothScan(ctx context.Context, req mcpgo.CallToolR
 	for _, d := range seen {
 		devices = append(devices, d)
 	}
-	return okList("devices", devices), nil
+	return okListBounded("devices", devices, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleBluetoothConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

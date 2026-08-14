@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/errdefs"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/hoststats"
+	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/sigverify"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
@@ -314,6 +316,14 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	// digest, or any other derived value. When the verifier is disabled (no
 	// pinned key embedded yet), Verify is a fail-safe no-op and RunContainer
 	// proceeds exactly as before this check existed.
+	// Phase timings for the chunk-diff deploy's device-side half. The CLI sees
+	// this whole RPC as a single number (its "runcontainer: device
+	// create+start" mark), which is the largest remaining block of a warm
+	// deploy; these fields say which part of it actually costs.
+	runStartedAt := time.Now()
+	phaseStart := runStartedAt
+	var verifyDur, layerAssembleDur, imageAssembleDur, createDur time.Duration
+
 	imageDigest := sha256.Sum256(req.GetImageConfig())
 	if err := s.imageVerifier.Verify(imageDigest[:], req.GetImageSignature()); err != nil {
 		switch {
@@ -325,6 +335,9 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 			return status.Errorf(codes.Internal, "container image signature verification error: %v", err)
 		}
 	}
+
+	verifyDur = time.Since(phaseStart)
+	phaseStart = time.Now()
 
 	if layers := req.GetLayers(); len(layers) > 0 {
 		for _, l := range layers {
@@ -346,10 +359,14 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 				}
 			}
 		}
+		layerAssembleDur = time.Since(phaseStart)
+		phaseStart = time.Now()
 		if err := s.containerd.AssembleImage(ctx, req.GetImageName(), layers, req.GetImageConfig()); err != nil {
 			return status.Errorf(codes.Internal, "failed to assemble image: %v", err)
 		}
+		imageAssembleDur = time.Since(phaseStart)
 	}
+	phaseStart = time.Now()
 
 	// Same CreateContainer call the registry path makes, so both transports
 	// apply caller env identically and through the same validateUserEnv checks.
@@ -367,6 +384,16 @@ func (s *ContainerService) RunContainer(req *agentpb.RunContainerLayersRequest, 
 	if err := s.containerd.CreateContainer(ctx, createReq, appCfg); err != nil {
 		return status.Errorf(codes.Internal, "failed to create container: %v", err)
 	}
+	createDur = time.Since(phaseStart)
+
+	s.logger.Info("RunContainer phase timings",
+		zap.String(logfields.AppID, req.GetAppName()),
+		zap.Int("layers", len(req.GetLayers())),
+		zap.Duration("verify_signature", verifyDur),
+		zap.Duration("assemble_layers", layerAssembleDur),
+		zap.Duration("assemble_image", imageAssembleDur),
+		zap.Duration("create_container", createDur),
+		zap.Duration("total_before_start", time.Since(runStartedAt)))
 
 	return s.streamContainerOutput(ctx, req.GetAppName(), postStartAgentHookFromContext(ctx), nil, stream)
 }
@@ -907,16 +934,14 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 	unlock := s.appMu.lockApp(appName)
 	defer unlock()
 
-	// Resolve every container ID that belongs to this app (one for
-	// single-container apps, one per service for multi-service apps) so the
-	// monitor can mark each before any stop is issued. Marking only the bare
-	// appName would miss {appID}_{serviceName} entries registered by the monitor.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	// Shared with the stop below, so monitor marks and stopped-by-user labels
+	// are only ever written against containers that were actually stopped.
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Mark BEFORE stop so the monitor cannot observe the exit and restart in
@@ -964,19 +989,20 @@ func (s *ContainerService) DeleteContainer(ctx context.Context, req *agentpb.Del
 	// each one. Unregistering only the bare appName would leave
 	// {appID}_{serviceName} monitor entries alive and potentially trigger
 	// spurious restart attempts while the container is being removed.
-	ids, err := s.containerd.ContainerIDsForApp(ctx, appName)
+	ids, err := s.containerd.ResolveAppContainerIDs(ctx, appName)
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, status.Errorf(codes.NotFound, "no app or service named %q", appName)
+		}
 		return nil, status.Errorf(codes.Internal, "resolving containers for app %q: %v", appName, err)
-	}
-	if len(ids) == 0 {
-		ids = []string{appName}
 	}
 
 	// Unregister from the monitor BEFORE deletion to close the window where the
 	// monitor could attempt a restart while containers are being removed.
 	if s.monitor != nil {
 		for _, id := range ids {
-			s.monitor.MarkExplicitStop(id)
+			// Unregister alone closes the restart window: the monitor only
+			// restarts containers it still has state for.
 			s.monitor.Unregister(id)
 		}
 	}
@@ -1204,6 +1230,7 @@ func (s *ContainerService) GetResourceStats(ctx context.Context, _ *agentpb.GetR
 	}
 	host.Gpus = gpuStatsToProto(hoststats.SampleGPU(ctx))
 	host.ThermalZones = thermalZonesToProto(hoststats.SampleThermal())
+	host.Battery = batteryToProto(hoststats.ResolveBattery())
 
 	return &agentpb.GetResourceStatsResponse{
 		Host:       host,
@@ -1221,6 +1248,42 @@ func thermalZonesToProto(zones []hoststats.ThermalZone) []*agentpb.ThermalZone {
 		out[i] = &agentpb.ThermalZone{Name: z.Name, TempC: z.TempC}
 	}
 	return out
+}
+
+// batteryToProto converts a sampled battery to its proto form, passing nil
+// through: a device without a battery reports no BatteryStats at all, which is
+// what lets the CLI show nothing rather than a misleading 0%. Shared by
+// GetResourceStats and GetAgentVersion.
+func batteryToProto(b *hoststats.Battery) *agentpb.BatteryStats {
+	if b == nil {
+		return nil
+	}
+	out := &agentpb.BatteryStats{
+		Percent: b.Percent,
+		State:   batteryStateToProto(b.State),
+	}
+	// Zero means "no usable rate" — leave the optional field absent rather than
+	// claiming zero seconds remaining.
+	if b.SecondsRemaining > 0 {
+		secs := b.SecondsRemaining
+		out.SecondsRemaining = &secs
+	}
+	return out
+}
+
+func batteryStateToProto(s hoststats.BatteryState) agentpb.BatteryState {
+	switch s {
+	case hoststats.BatteryCharging:
+		return agentpb.BatteryState_BATTERY_STATE_CHARGING
+	case hoststats.BatteryDischarging:
+		return agentpb.BatteryState_BATTERY_STATE_DISCHARGING
+	case hoststats.BatteryFull:
+		return agentpb.BatteryState_BATTERY_STATE_FULL
+	case hoststats.BatteryNotCharging:
+		return agentpb.BatteryState_BATTERY_STATE_NOT_CHARGING
+	default:
+		return agentpb.BatteryState_BATTERY_STATE_UNKNOWN
+	}
 }
 
 // GetContainerPorts returns the listening TCP and bound UDP sockets for the

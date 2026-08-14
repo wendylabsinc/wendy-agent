@@ -73,6 +73,7 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 		mcpgo.WithString("filter",
 			mcpgo.Description("Optional cloud-side asset filter"),
 		),
+		mcpgo.WithNumber("max_bytes", mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)")),
 	}
 	discoverOpts = append(discoverOpts, readOnly()...)
 	discoverOpts = append(discoverOpts, openWorld()...)
@@ -94,23 +95,6 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	connectOpts = append(connectOpts, idempotent()...)
 	connectOpts = append(connectOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("cloud_connect", connectOpts...), s.handleCloudConnect)
-
-	deviceConnectOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Alias for cloud_connect; connects existing MCP device tools through the Wendy Cloud tunnel"),
-		mcpgo.WithString("device_name",
-			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
-		),
-		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
-		),
-		mcpgo.WithString("broker_url",
-			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
-		),
-	}
-	deviceConnectOpts = append(deviceConnectOpts, mutating()...)
-	deviceConnectOpts = append(deviceConnectOpts, idempotent()...)
-	deviceConnectOpts = append(deviceConnectOpts, openWorld()...)
-	srv.AddTool(mcpgo.NewTool("cloud_device_connect", deviceConnectOpts...), s.handleCloudConnect)
 
 	enrollOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Enroll the currently connected device with Wendy Cloud"),
@@ -191,47 +175,6 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	runOpts = append(runOpts, mutating()...)
 	runOpts = append(runOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("run", runOpts...), s.handleRun)
-
-	cloudRunOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Deprecated: use run instead. Run 'wendy cloud run' for a local project and return bounded command output. The project's wendy.json entitlements apply on the device; a denied entitlement returns error_code ENTITLEMENT_DENIED."),
-		mcpgo.WithString("project_path",
-			mcpgo.Required(),
-			mcpgo.Description("Project directory containing wendy.json"),
-		),
-		mcpgo.WithString("device_name",
-			mcpgo.Description("Cloud device name"),
-		),
-		mcpgo.WithString("cloud_grpc",
-			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
-		),
-		mcpgo.WithString("broker_url",
-			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
-		),
-		mcpgo.WithString("build_type",
-			mcpgo.Description("Build type: docker, swift, or python"),
-		),
-		mcpgo.WithString("product",
-			mcpgo.Description("Swift Package Manager product to build and run"),
-		),
-		mcpgo.WithBoolean("debug",
-			mcpgo.Description("Enable debug logging"),
-		),
-		mcpgo.WithBoolean("deploy",
-			mcpgo.Description("Create container but do not start it"),
-		),
-		mcpgo.WithBoolean("detach",
-			mcpgo.Description("Start container but do not stream logs (default true for MCP)"),
-		),
-		mcpgo.WithNumber("timeout_seconds",
-			mcpgo.Description("Maximum command runtime in seconds (default 300)"),
-		),
-		mcpgo.WithNumber("max_bytes",
-			mcpgo.Description("Maximum output size in bytes before the result is truncated (default 100000)"),
-		),
-	}
-	cloudRunOpts = append(cloudRunOpts, mutating()...)
-	cloudRunOpts = append(cloudRunOpts, openWorld()...)
-	srv.AddTool(mcpgo.NewTool("cloud_run", cloudRunOpts...), s.handleRun)
 }
 
 func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -247,7 +190,7 @@ func (s *mcpServer) handleCloudDiscover(ctx context.Context, req mcpgo.CallToolR
 	for _, a := range assets {
 		out = append(out, cloudAssetToMap(a))
 	}
-	return okList("devices", out), nil
+	return okListBounded("devices", out, intParam(req, "max_bytes", 100000)), nil
 }
 
 func (s *mcpServer) handleCloudConnect(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -478,7 +421,12 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	dialOpt, closeTunnel := mcpTunnelDialer(tunnelConn)
 
 	certInfo := auth.Certificates[0]
-	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		closeTunnel()
+		return nil, nil, fmt.Errorf("loading client key: %w", err)
+	}
+	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 	if err != nil {
 		closeTunnel()
 		return nil, nil, fmt.Errorf("loading agent mTLS cert: %w", err)
@@ -553,7 +501,11 @@ func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig,
 		return nil, err
 	}
 	defer conn.Close()
-	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(mcpCloudContext(ctx, auth), &cloudpb.CreateAssetEnrollmentTokenRequest{
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
 		OrganizationId: int32(auth.Certificates[0].OrganizationID),
 		Name:           name,
 		TtlSeconds:     600,
@@ -581,7 +533,11 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 		req.OnlineOnly = boolPtr(true)
 	}
 	client := cloudpb.NewAssetServiceClient(conn)
-	stream, err := client.ListAssets(mcpCloudContext(ctx, auth), req)
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := client.ListAssets(cloudCtx, req)
 	if err != nil {
 		return nil, fmt.Errorf("listing devices: %w", err)
 	}
@@ -603,14 +559,18 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 	return assets, nil
 }
 
-func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
+func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
 	if len(auth.Certificates) == 0 {
-		return ctx
+		return ctx, nil
 	}
 	certInfo := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.APIKey != "" {
-		md.Set("authorization", "Bearer "+auth.APIKey)
+	if auth.HasAPIKey() {
+		bearerToken, err := auth.BearerToken()
+		if err != nil {
+			return nil, fmt.Errorf("loading API token: %w", err)
+		}
+		md.Set("authorization", "Bearer "+bearerToken)
 	}
 	certHeader := fmt.Sprintf("URI=urn:wendy:org:%d:user:unknown", certInfo.OrganizationID)
 	if certInfo.UserID != "" {
@@ -618,7 +578,7 @@ func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) context.Conte
 	}
 	md.Set("x-wendy-client-cert", certHeader)
 	md.Set("x-forwarded-client-cert", certHeader)
-	return metadata.NewOutgoingContext(ctx, md)
+	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
 func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
@@ -628,10 +588,14 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
 		certInfo := auth.Certificates[0]
+		keyPEM, err := certInfo.PrivateKeyPEM()
+		if err != nil {
+			return nil, fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			certInfo.PemCertificate,
 			certInfo.PemCertificateChain,
-			certInfo.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {
@@ -654,10 +618,14 @@ func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.Client
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	certInfo := auth.Certificates[0]
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
 	tlsCfg, err := certs.LoadTLSConfig(
 		certInfo.PemCertificate,
 		certInfo.PemCertificateChain,
-		certInfo.PemPrivateKey,
+		keyPEM,
 		"",
 	)
 	if err != nil {
@@ -693,7 +661,11 @@ func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.Client
 }
 
 func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
-	stream, err := cloudpb.NewTunnelBrokerServiceClient(brokerConn).ClientTunnel(mcpCloudContext(ctx, auth))
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := cloudpb.NewTunnelBrokerServiceClient(brokerConn).ClientTunnel(cloudCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening tunnel stream: %w", err)
 	}

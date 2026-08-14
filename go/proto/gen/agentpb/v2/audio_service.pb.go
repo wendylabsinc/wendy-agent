@@ -77,6 +77,7 @@ type AudioDevice struct {
 	Description   string                 `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
 	Type          AudioDeviceType        `protobuf:"varint,4,opt,name=type,proto3,enum=wendy.agent.services.v2.AudioDeviceType" json:"type,omitempty"`
 	IsDefault     bool                   `protobuf:"varint,5,opt,name=is_default,json=isDefault,proto3" json:"is_default,omitempty"`
+	VolumePercent *uint32                `protobuf:"varint,6,opt,name=volume_percent,json=volumePercent,proto3,oneof" json:"volume_percent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -144,6 +145,13 @@ func (x *AudioDevice) GetIsDefault() bool {
 		return x.IsDefault
 	}
 	return false
+}
+
+func (x *AudioDevice) GetVolumePercent() uint32 {
+	if x != nil && x.VolumePercent != nil {
+		return *x.VolumePercent
+	}
+	return 0
 }
 
 type ListAudioDevicesRequest struct {
@@ -330,6 +338,118 @@ func (x *SetDefaultAudioDeviceResponse) GetErrorMessage() string {
 	return ""
 }
 
+type SetAudioVolumeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DeviceId      uint32                 `protobuf:"varint,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	VolumePercent uint32                 `protobuf:"varint,2,opt,name=volume_percent,json=volumePercent,proto3" json:"volume_percent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAudioVolumeRequest) Reset() {
+	*x = SetAudioVolumeRequest{}
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAudioVolumeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAudioVolumeRequest) ProtoMessage() {}
+
+func (x *SetAudioVolumeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAudioVolumeRequest.ProtoReflect.Descriptor instead.
+func (*SetAudioVolumeRequest) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SetAudioVolumeRequest) GetDeviceId() uint32 {
+	if x != nil {
+		return x.DeviceId
+	}
+	return 0
+}
+
+func (x *SetAudioVolumeRequest) GetVolumePercent() uint32 {
+	if x != nil {
+		return x.VolumePercent
+	}
+	return 0
+}
+
+type SetAudioVolumeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	ErrorMessage  *string                `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3,oneof" json:"error_message,omitempty"`
+	VolumePercent *uint32                `protobuf:"varint,3,opt,name=volume_percent,json=volumePercent,proto3,oneof" json:"volume_percent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetAudioVolumeResponse) Reset() {
+	*x = SetAudioVolumeResponse{}
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetAudioVolumeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetAudioVolumeResponse) ProtoMessage() {}
+
+func (x *SetAudioVolumeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetAudioVolumeResponse.ProtoReflect.Descriptor instead.
+func (*SetAudioVolumeResponse) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *SetAudioVolumeResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *SetAudioVolumeResponse) GetErrorMessage() string {
+	if x != nil && x.ErrorMessage != nil {
+		return *x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *SetAudioVolumeResponse) GetVolumePercent() uint32 {
+	if x != nil && x.VolumePercent != nil {
+		return *x.VolumePercent
+	}
+	return 0
+}
+
 type StreamAudioLevelsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId      uint32                 `protobuf:"varint,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
@@ -340,7 +460,7 @@ type StreamAudioLevelsRequest struct {
 
 func (x *StreamAudioLevelsRequest) Reset() {
 	*x = StreamAudioLevelsRequest{}
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -352,7 +472,7 @@ func (x *StreamAudioLevelsRequest) String() string {
 func (*StreamAudioLevelsRequest) ProtoMessage() {}
 
 func (x *StreamAudioLevelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -365,7 +485,7 @@ func (x *StreamAudioLevelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamAudioLevelsRequest.ProtoReflect.Descriptor instead.
 func (*StreamAudioLevelsRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{5}
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *StreamAudioLevelsRequest) GetDeviceId() uint32 {
@@ -393,7 +513,7 @@ type AudioLevelUpdate struct {
 
 func (x *AudioLevelUpdate) Reset() {
 	*x = AudioLevelUpdate{}
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -405,7 +525,7 @@ func (x *AudioLevelUpdate) String() string {
 func (*AudioLevelUpdate) ProtoMessage() {}
 
 func (x *AudioLevelUpdate) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -418,7 +538,7 @@ func (x *AudioLevelUpdate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AudioLevelUpdate.ProtoReflect.Descriptor instead.
 func (*AudioLevelUpdate) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{6}
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *AudioLevelUpdate) GetPeakDb() float32 {
@@ -453,7 +573,7 @@ type StreamAudioRequest struct {
 
 func (x *StreamAudioRequest) Reset() {
 	*x = StreamAudioRequest{}
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -465,7 +585,7 @@ func (x *StreamAudioRequest) String() string {
 func (*StreamAudioRequest) ProtoMessage() {}
 
 func (x *StreamAudioRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -478,7 +598,7 @@ func (x *StreamAudioRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamAudioRequest.ProtoReflect.Descriptor instead.
 func (*StreamAudioRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{7}
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *StreamAudioRequest) GetDeviceId() uint32 {
@@ -514,7 +634,7 @@ type AudioChunk struct {
 
 func (x *AudioChunk) Reset() {
 	*x = AudioChunk{}
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -526,7 +646,7 @@ func (x *AudioChunk) String() string {
 func (*AudioChunk) ProtoMessage() {}
 
 func (x *AudioChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v2_audio_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +659,7 @@ func (x *AudioChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AudioChunk.ProtoReflect.Descriptor instead.
 func (*AudioChunk) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{8}
+	return file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *AudioChunk) GetPcmData() []byte {
@@ -574,14 +694,16 @@ var File_wendy_agent_services_v2_audio_service_proto protoreflect.FileDescriptor
 
 const file_wendy_agent_services_v2_audio_service_proto_rawDesc = "" +
 	"\n" +
-	"+wendy/agent/services/v2/audio_service.proto\x12\x17wendy.agent.services.v2\"\xbd\x01\n" +
+	"+wendy/agent/services/v2/audio_service.proto\x12\x17wendy.agent.services.v2\"\xfc\x01\n" +
 	"\vAudioDevice\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12 \n" +
 	"\vdescription\x18\x03 \x01(\tR\vdescription\x12<\n" +
 	"\x04type\x18\x04 \x01(\x0e2(.wendy.agent.services.v2.AudioDeviceTypeR\x04type\x12\x1d\n" +
 	"\n" +
-	"is_default\x18\x05 \x01(\bR\tisDefault\"y\n" +
+	"is_default\x18\x05 \x01(\bR\tisDefault\x12*\n" +
+	"\x0evolume_percent\x18\x06 \x01(\rH\x00R\rvolumePercent\x88\x01\x01B\x11\n" +
+	"\x0f_volume_percent\"y\n" +
 	"\x17ListAudioDevicesRequest\x12N\n" +
 	"\vtype_filter\x18\x01 \x01(\x0e2(.wendy.agent.services.v2.AudioDeviceTypeH\x00R\n" +
 	"typeFilter\x88\x01\x01B\x0e\n" +
@@ -593,7 +715,16 @@ const file_wendy_agent_services_v2_audio_service_proto_rawDesc = "" +
 	"\x1dSetDefaultAudioDeviceResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12(\n" +
 	"\rerror_message\x18\x02 \x01(\tH\x00R\ferrorMessage\x88\x01\x01B\x10\n" +
-	"\x0e_error_message\"]\n" +
+	"\x0e_error_message\"[\n" +
+	"\x15SetAudioVolumeRequest\x12\x1b\n" +
+	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12%\n" +
+	"\x0evolume_percent\x18\x02 \x01(\rR\rvolumePercent\"\xad\x01\n" +
+	"\x16SetAudioVolumeResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12(\n" +
+	"\rerror_message\x18\x02 \x01(\tH\x00R\ferrorMessage\x88\x01\x01\x12*\n" +
+	"\x0evolume_percent\x18\x03 \x01(\rH\x01R\rvolumePercent\x88\x01\x01B\x10\n" +
+	"\x0e_error_messageB\x11\n" +
+	"\x0f_volume_percent\"]\n" +
 	"\x18StreamAudioLevelsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12$\n" +
 	"\x0eupdate_rate_hz\x18\x02 \x01(\rR\fupdateRateHz\"e\n" +
@@ -616,10 +747,11 @@ const file_wendy_agent_services_v2_audio_service_proto_rawDesc = "" +
 	"\x0fAudioDeviceType\x12!\n" +
 	"\x1dAUDIO_DEVICE_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17AUDIO_DEVICE_TYPE_INPUT\x10\x01\x12\x1c\n" +
-	"\x18AUDIO_DEVICE_TYPE_OUTPUT\x10\x022\xed\x03\n" +
+	"\x18AUDIO_DEVICE_TYPE_OUTPUT\x10\x022\xe0\x04\n" +
 	"\x11WendyAudioService\x12w\n" +
 	"\x10ListAudioDevices\x120.wendy.agent.services.v2.ListAudioDevicesRequest\x1a1.wendy.agent.services.v2.ListAudioDevicesResponse\x12\x86\x01\n" +
-	"\x15SetDefaultAudioDevice\x125.wendy.agent.services.v2.SetDefaultAudioDeviceRequest\x1a6.wendy.agent.services.v2.SetDefaultAudioDeviceResponse\x12s\n" +
+	"\x15SetDefaultAudioDevice\x125.wendy.agent.services.v2.SetDefaultAudioDeviceRequest\x1a6.wendy.agent.services.v2.SetDefaultAudioDeviceResponse\x12q\n" +
+	"\x0eSetAudioVolume\x12..wendy.agent.services.v2.SetAudioVolumeRequest\x1a/.wendy.agent.services.v2.SetAudioVolumeResponse\x12s\n" +
 	"\x11StreamAudioLevels\x121.wendy.agent.services.v2.StreamAudioLevelsRequest\x1a).wendy.agent.services.v2.AudioLevelUpdate0\x01\x12a\n" +
 	"\vStreamAudio\x12+.wendy.agent.services.v2.StreamAudioRequest\x1a#.wendy.agent.services.v2.AudioChunk0\x01B>Z<github.com/wendylabsinc/wendy/proto/gen/agentpb/v2;agentpbv2b\x06proto3"
 
@@ -636,7 +768,7 @@ func file_wendy_agent_services_v2_audio_service_proto_rawDescGZIP() []byte {
 }
 
 var file_wendy_agent_services_v2_audio_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_wendy_agent_services_v2_audio_service_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_wendy_agent_services_v2_audio_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_wendy_agent_services_v2_audio_service_proto_goTypes = []any{
 	(AudioDeviceType)(0),                  // 0: wendy.agent.services.v2.AudioDeviceType
 	(*AudioDevice)(nil),                   // 1: wendy.agent.services.v2.AudioDevice
@@ -644,28 +776,32 @@ var file_wendy_agent_services_v2_audio_service_proto_goTypes = []any{
 	(*ListAudioDevicesResponse)(nil),      // 3: wendy.agent.services.v2.ListAudioDevicesResponse
 	(*SetDefaultAudioDeviceRequest)(nil),  // 4: wendy.agent.services.v2.SetDefaultAudioDeviceRequest
 	(*SetDefaultAudioDeviceResponse)(nil), // 5: wendy.agent.services.v2.SetDefaultAudioDeviceResponse
-	(*StreamAudioLevelsRequest)(nil),      // 6: wendy.agent.services.v2.StreamAudioLevelsRequest
-	(*AudioLevelUpdate)(nil),              // 7: wendy.agent.services.v2.AudioLevelUpdate
-	(*StreamAudioRequest)(nil),            // 8: wendy.agent.services.v2.StreamAudioRequest
-	(*AudioChunk)(nil),                    // 9: wendy.agent.services.v2.AudioChunk
+	(*SetAudioVolumeRequest)(nil),         // 6: wendy.agent.services.v2.SetAudioVolumeRequest
+	(*SetAudioVolumeResponse)(nil),        // 7: wendy.agent.services.v2.SetAudioVolumeResponse
+	(*StreamAudioLevelsRequest)(nil),      // 8: wendy.agent.services.v2.StreamAudioLevelsRequest
+	(*AudioLevelUpdate)(nil),              // 9: wendy.agent.services.v2.AudioLevelUpdate
+	(*StreamAudioRequest)(nil),            // 10: wendy.agent.services.v2.StreamAudioRequest
+	(*AudioChunk)(nil),                    // 11: wendy.agent.services.v2.AudioChunk
 }
 var file_wendy_agent_services_v2_audio_service_proto_depIdxs = []int32{
-	0, // 0: wendy.agent.services.v2.AudioDevice.type:type_name -> wendy.agent.services.v2.AudioDeviceType
-	0, // 1: wendy.agent.services.v2.ListAudioDevicesRequest.type_filter:type_name -> wendy.agent.services.v2.AudioDeviceType
-	1, // 2: wendy.agent.services.v2.ListAudioDevicesResponse.devices:type_name -> wendy.agent.services.v2.AudioDevice
-	2, // 3: wendy.agent.services.v2.WendyAudioService.ListAudioDevices:input_type -> wendy.agent.services.v2.ListAudioDevicesRequest
-	4, // 4: wendy.agent.services.v2.WendyAudioService.SetDefaultAudioDevice:input_type -> wendy.agent.services.v2.SetDefaultAudioDeviceRequest
-	6, // 5: wendy.agent.services.v2.WendyAudioService.StreamAudioLevels:input_type -> wendy.agent.services.v2.StreamAudioLevelsRequest
-	8, // 6: wendy.agent.services.v2.WendyAudioService.StreamAudio:input_type -> wendy.agent.services.v2.StreamAudioRequest
-	3, // 7: wendy.agent.services.v2.WendyAudioService.ListAudioDevices:output_type -> wendy.agent.services.v2.ListAudioDevicesResponse
-	5, // 8: wendy.agent.services.v2.WendyAudioService.SetDefaultAudioDevice:output_type -> wendy.agent.services.v2.SetDefaultAudioDeviceResponse
-	7, // 9: wendy.agent.services.v2.WendyAudioService.StreamAudioLevels:output_type -> wendy.agent.services.v2.AudioLevelUpdate
-	9, // 10: wendy.agent.services.v2.WendyAudioService.StreamAudio:output_type -> wendy.agent.services.v2.AudioChunk
-	7, // [7:11] is the sub-list for method output_type
-	3, // [3:7] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	0,  // 0: wendy.agent.services.v2.AudioDevice.type:type_name -> wendy.agent.services.v2.AudioDeviceType
+	0,  // 1: wendy.agent.services.v2.ListAudioDevicesRequest.type_filter:type_name -> wendy.agent.services.v2.AudioDeviceType
+	1,  // 2: wendy.agent.services.v2.ListAudioDevicesResponse.devices:type_name -> wendy.agent.services.v2.AudioDevice
+	2,  // 3: wendy.agent.services.v2.WendyAudioService.ListAudioDevices:input_type -> wendy.agent.services.v2.ListAudioDevicesRequest
+	4,  // 4: wendy.agent.services.v2.WendyAudioService.SetDefaultAudioDevice:input_type -> wendy.agent.services.v2.SetDefaultAudioDeviceRequest
+	6,  // 5: wendy.agent.services.v2.WendyAudioService.SetAudioVolume:input_type -> wendy.agent.services.v2.SetAudioVolumeRequest
+	8,  // 6: wendy.agent.services.v2.WendyAudioService.StreamAudioLevels:input_type -> wendy.agent.services.v2.StreamAudioLevelsRequest
+	10, // 7: wendy.agent.services.v2.WendyAudioService.StreamAudio:input_type -> wendy.agent.services.v2.StreamAudioRequest
+	3,  // 8: wendy.agent.services.v2.WendyAudioService.ListAudioDevices:output_type -> wendy.agent.services.v2.ListAudioDevicesResponse
+	5,  // 9: wendy.agent.services.v2.WendyAudioService.SetDefaultAudioDevice:output_type -> wendy.agent.services.v2.SetDefaultAudioDeviceResponse
+	7,  // 10: wendy.agent.services.v2.WendyAudioService.SetAudioVolume:output_type -> wendy.agent.services.v2.SetAudioVolumeResponse
+	9,  // 11: wendy.agent.services.v2.WendyAudioService.StreamAudioLevels:output_type -> wendy.agent.services.v2.AudioLevelUpdate
+	11, // 12: wendy.agent.services.v2.WendyAudioService.StreamAudio:output_type -> wendy.agent.services.v2.AudioChunk
+	8,  // [8:13] is the sub-list for method output_type
+	3,  // [3:8] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v2_audio_service_proto_init() }
@@ -673,15 +809,17 @@ func file_wendy_agent_services_v2_audio_service_proto_init() {
 	if File_wendy_agent_services_v2_audio_service_proto != nil {
 		return
 	}
+	file_wendy_agent_services_v2_audio_service_proto_msgTypes[0].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_audio_service_proto_msgTypes[1].OneofWrappers = []any{}
 	file_wendy_agent_services_v2_audio_service_proto_msgTypes[4].OneofWrappers = []any{}
+	file_wendy_agent_services_v2_audio_service_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v2_audio_service_proto_rawDesc), len(file_wendy_agent_services_v2_audio_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

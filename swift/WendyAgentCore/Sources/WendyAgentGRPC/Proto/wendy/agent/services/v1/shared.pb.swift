@@ -177,6 +177,10 @@ public nonisolated struct AppContainer: Sendable {
   /// exited | crashed | oom_killed | start_failed | entitlement_denied; empty if unknown.
   public var terminationReason: String = String()
 
+  /// wendy.json `http` entitlement's declared port, if any. Static/declared —
+  /// mirrors mcp_port; 0 when the app declares no `http` entitlement.
+  public var httpPort: UInt32 = 0
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public init() {}
@@ -264,7 +268,7 @@ nonisolated extension ServiceEntry: SwiftProtobuf.Message, SwiftProtobuf._Messag
 
 nonisolated extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = "AppContainer"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{3}running_state\0\u{3}failure_count\0\u{3}mcp_port\0\u{1}services\0\u{4}\u{5}exit_code\0\u{3}termination_reason\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{3}app_name\0\u{3}app_version\0\u{3}running_state\0\u{3}failure_count\0\u{3}mcp_port\0\u{1}services\0\u{4}\u{5}exit_code\0\u{3}termination_reason\0\u{3}http_port\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -280,6 +284,7 @@ nonisolated extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._Messag
       case 6: try { try decoder.decodeRepeatedMessageField(value: &self.services) }()
       case 11: try { try decoder.decodeSingularInt32Field(value: &self.exitCode) }()
       case 12: try { try decoder.decodeSingularStringField(value: &self.terminationReason) }()
+      case 13: try { try decoder.decodeSingularUInt32Field(value: &self.httpPort) }()
       default: break
       }
     }
@@ -310,6 +315,9 @@ nonisolated extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._Messag
     if !self.terminationReason.isEmpty {
       try visitor.visitSingularStringField(value: self.terminationReason, fieldNumber: 12)
     }
+    if self.httpPort != 0 {
+      try visitor.visitSingularUInt32Field(value: self.httpPort, fieldNumber: 13)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -322,6 +330,7 @@ nonisolated extension AppContainer: SwiftProtobuf.Message, SwiftProtobuf._Messag
     if lhs.services != rhs.services {return false}
     if lhs.exitCode != rhs.exitCode {return false}
     if lhs.terminationReason != rhs.terminationReason {return false}
+    if lhs.httpPort != rhs.httpPort {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -94,6 +94,8 @@ Firmware versions are served from the same GCS manifest used for WendyOS images.
 
 With `--nightly`, `latest_nightly` is used instead of `latest`.
 
+If the detected chip ID is not present in the manifest (for example, `esp32s31` or other unsupported variants), the CLI returns an error: `fetching firmware: chip <chip> not found in manifest`. Wendy Lite currently supports only `esp32c5` and `esp32c6`; the interactive device picker does not offer other ESP32 chips.
+
 The downloaded `.bin` is a merged firmware image (same format as the CI artifact `wendy_mcu_<chip>.bin`) that covers the full flash from offset 0.
 
 ### 3. Serial flash protocol
@@ -148,12 +150,12 @@ For Raspberry Pi devices—and Orin with `--rootfs-only`, the interactive flash-
 2. **Resolve drive** — `--drive` if provided, otherwise an interactive picker of external drives. Internal drives require `--yes-overwrite-internal` in non-interactive mode; in interactive mode the user must type the device path to confirm.
 3. **Download image** — fetched from GCS with a progress bar. Downloaded to `~/Library/Caches/wendy/os-images/` (macOS) or `~/.cache/wendy/os-images/` (Linux). Zip archives are streamed through to the first `.img`, `.raw`, `.wic`, or `.sdimg` entry; gzip-compressed images (`.img.gz`, detected by magic bytes regardless of extension) are decompressed and streamed on the fly. Seekable-zstd images (`.img.zst`) are downloaded and cached directly; when a block map is present, only mapped ranges are decoded during the write step, skipping hole frames entirely. Parallel download (8 workers) is used when the server supports HTTP range requests.
 4. **Write image** — `dd`-equivalent write with elevated privileges (`sudo` on Unix, UAC on Windows), progress bar. When a block map is used and the bmap write fails (e.g. checksum mismatch or a stale/incorrect published bmap), the CLI automatically falls back to a full sequential write using the already-cached `.img.zst` or `.zip` — no re-download is required. A failure *during* the fallback write is fatal.
-5. **Write config partition** — downloads the latest stable `wendy-agent-linux-arm64` binary from GitHub, writes it along with any pre-seeded WiFi credentials and device name to the config partition on the newly written drive. Skipped silently on platforms that don't support config-partition writes. This step is **not** fatal: the OS image is already on the drive by this point, so a failure here prints a warning (never an error) and the install is still reported as successful. The device boots regardless — it runs the agent baked into the image and fetches updates and configuration after first boot. On an interactive terminal the CLI offers to retry the write (useful after, e.g., re-seating an SD card whose config partition couldn't be located); non-interactively it prints guidance and continues.
+5. **Write config partition** — downloads the latest stable `wendy-agent-linux-arm64` binary from GitHub, writes it along with any pre-seeded WiFi credentials and device name to the config partition on the newly written drive. Skipped silently on platforms that don't support config-partition writes. The OS image is already on the drive by this point, and the device boots regardless of this step — it runs the agent baked into the image and fetches updates and configuration after first boot. When provisioning was **not** explicitly requested, a failure here is advisory: a warning is printed and the install is still reported as successful. When `--wifi`, `--device-name`, or `--pre-enroll` **was** requested and could not be applied, the install exits non-zero (see the exit-code note below). On an interactive terminal the CLI offers to retry the write after each failed attempt (useful after, e.g., re-seating an SD card whose config partition couldn't be located); non-interactively it prints guidance and does not retry.
 6. **Eject** — the drive is ejected automatically after writing.
 
-> **Exit code:** `wendy install` exits `0` as long as the OS image was written to the drive, regardless of whether the config-partition provisioning step succeeded. A non-zero exit indicates only that the image itself could not be written. When `--wifi`, `--device-name`, or `--pre-enroll` were requested but couldn't be applied, the warning calls this out explicitly so the values can be re-applied with another `wendy install`, or configured after the device boots.
+> **Exit code:** `wendy install` exits `0` when the OS image was written to the drive and any explicitly requested provisioning (`--wifi`, `--device-name`, `--pre-enroll`) was applied. It exits non-zero when the image itself could not be written, or when provisioning was explicitly requested but could not be applied — in the latter case the drive is still ejected first and the OS image is already safely on it, and the error names the image, version, and drive to make that clear, so the values can be re-applied with another `wendy install` or configured after the device boots. Unrequested provisioning (e.g. a failed agent-binary download when none of those flags were given) remains advisory: a warning is printed and the command exits `0`.
 
-> **Provisioning retry:** When the config-partition write fails on an interactive terminal, the CLI asks `Retry writing provisioning data to the config partition?`. Answering yes re-attempts the write (download + config-partition write); answering no, or running non-interactively, prints guidance and exits successfully — the OS image is already on the drive.
+> **Provisioning retry:** When the config-partition write fails on an interactive terminal, the CLI asks `Retry writing provisioning data to the config partition?` after each attempt. Answering yes re-attempts the write (download + config-partition write); answering no, or running non-interactively, prints guidance and stops retrying — the command then exits non-zero if provisioning was explicitly requested (`--wifi`, `--device-name`, `--pre-enroll`), and successfully otherwise. The OS image is already on the drive either way.
 
 ## Jetson Orin full recovery path
 
@@ -190,6 +192,10 @@ A Stage 2 failure can leave the Thor booting only into the UEFI shell; the CLI p
 | `USB access denied opening the flashing gadget` | Linux: install the wendy udev rule (USB vendor 0955) or run with sudo. macOS: quit whatever holds the gadget (e.g. `adb kill-server`). |
 
 Every failure prints the path of the full flash log (`thor-flash-<timestamp>.log`), which contains the complete tooling output.
+
+## Linux Desktop / Headless Mac path
+
+Choosing **Linux Desktop** or **Headless Mac** (or `--device-type linux-desktop` / `--device-type headless-mac`) does not write a drive. The command prints the `agent.sh` one-liner from the [Linux installation guide](/docs/installation/linux) (the script auto-detects the target platform). When `--pre-enroll` is supplied and a valid auth session exists, a 1-hour enrollment token is embedded in the command; the agent self-enrolls on first startup without a separate `wendy device enroll` step. Run `wendy discover` afterwards to find the device.
 
 ### Privileges
 
@@ -248,7 +254,8 @@ Requires an active `wendy auth login` session. The CLI creates an enrollment tok
 | `--wifi` | — | Pre-configure one WiFi network; repeatable |
 | `--no-wifi` | false | Skip WiFi setup entirely |
 | `--device-name` | interactive | Set device name on first boot (lowercase letters, digits, hyphens; must start with a letter, 3–55 chars) |
-| `--pre-enroll` | auto | Pre-enroll with Wendy Cloud during imaging |
+| `--pre-enroll` | auto | Pre-enroll with Wendy Cloud. For WendyOS/Jetson targets, embeds a certificate during imaging. For Linux Desktop / Headless Mac, mints a short-lived token printed with the `agent.sh` one-liner. |
+| `--cloud-grpc` | auto | Cloud gRPC endpoint of the auth session to use for pre-enrollment (applies to both drive imaging and Linux Desktop / Headless Mac); defaults to the session set via `wendy auth use`. |
 | `--storage` | auto | Storage variant: `nvme`/`sd` for raw imaging; AGX Orin recovery requires `nvme` or `emmc` non-interactively |
 | `--no-bmap` | false | Disable bmap-accelerated flashing even when a block map is available |
 

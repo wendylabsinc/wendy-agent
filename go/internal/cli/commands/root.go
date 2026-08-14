@@ -3,10 +3,10 @@ package commands
 
 import (
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
@@ -43,9 +43,11 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			// Provider availability is probed lazily on first use (see
+			// providers.ensureAvailable) rather than here: the probes shell out
+			// to `docker`/`container` and most commands never consult a
+			// provider at all.
 			premark := phaseTimer()
-			providers.Initialize(cmd.Context())
-			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -77,6 +79,14 @@ func NewRootCmd() *cobra.Command {
 			// the update-check goroutine below also mutates and saves cfg.
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
+
+			// Move plaintext credentials into the macOS Keychain (see
+			// specs/2026-08-08-client-secrets-keychain-design.md). Runs in the
+			// synchronous zone: the update-check goroutine below saves cfg too,
+			// and its Save must observe an already-migrated on-disk state.
+			if config.MigrateSecretsIfNeeded(cfg) {
+				cmd.PrintErrln("Moved wendy credentials into the macOS Keychain (older wendy versions will need 'wendy auth login' again).")
+			}
 
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
@@ -122,13 +132,13 @@ func NewRootCmd() *cobra.Command {
 	initCmd.GroupID = "develop"
 	runCmd := newRunCmd()
 	runCmd.GroupID = "develop"
-	appCmd := newAppCmd()
-	appCmd.GroupID = "develop"
 	// `wendy install` is the surfaced alias for `wendy os install` (the `os`
 	// group is hidden). A fresh command instance is used because a cobra
 	// command can only be attached to one parent.
 	installCmd := newOSInstallCmd()
 	installCmd.GroupID = "develop"
+	docsCmd := newDocsCmd()
+	docsCmd.GroupID = "develop"
 
 	// Manage
 	projectCmd := newProjectCmd()
@@ -212,8 +222,8 @@ func NewRootCmd() *cobra.Command {
 		// Develop & Deploy
 		initCmd,
 		runCmd,
-		appCmd,
 		installCmd,
+		docsCmd,
 		// Manage
 		projectCmd,
 		deviceCmd,
@@ -244,8 +254,40 @@ func NewRootCmd() *cobra.Command {
 	root.SetHelpCommandGroupID("settings")
 	root.SetCompletionCommandGroupID("settings")
 
+	rejectStrayArguments(root)
+
 	root.Version = version.Version
 	return root
+}
+
+// rejectStrayArguments gives every command that takes no positional arguments a
+// NoArgs validator, so a stray word is reported instead of silently dropped.
+//
+// Without a validator cobra defaults to accepting anything, which means
+// `wendy device wifi connect MyNetwork` discards "MyNetwork" and proceeds as if
+// no network had been named -- the SSID is supplied with --ssid. Around ninety
+// commands were in that state; none of them had opted into it deliberately.
+//
+// A command is only treated as argument-free when its Use string declares no
+// placeholder. Anything documenting a positional, such as "logs [app]" or
+// "record [topics...]", already states its own contract and is left alone, as is
+// any command that already sets Args.
+func rejectStrayArguments(cmd *cobra.Command) {
+	for _, child := range cmd.Commands() {
+		rejectStrayArguments(child)
+	}
+	if !cmd.Runnable() || cmd.Args != nil {
+		return
+	}
+	for _, token := range strings.Fields(cmd.Use)[1:] {
+		if token == "[flags]" {
+			continue
+		}
+		if strings.HasPrefix(token, "<") || strings.HasPrefix(token, "[") {
+			return
+		}
+	}
+	cmd.Args = cobra.NoArgs
 }
 
 // nextStepHint returns a one-line suggestion for the next command to run after

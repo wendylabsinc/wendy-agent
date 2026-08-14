@@ -27,7 +27,9 @@ Choose the speaker or output device ID, then set it as default:
 wendy device audio set-default --id 2
 ```
 
-The selected output becomes the default device used by apps that play through ALSA defaults.
+The selected output becomes the default sink, which is what apps play through unless they name a device explicitly.
+
+Device IDs come from the audio graph and are **not stable across reconnects** — a speaker that sleeps and wakes, or switches profile, comes back under a different ID. List the devices again rather than reusing an ID you saw earlier.
 
 ## Test Audio Routing
 
@@ -39,7 +41,30 @@ wendy device audio listen
 
 The CLI auto-selects a microphone or shows a picker if multiple devices are available. Pass `--id` to specify a device explicitly.
 
-For speaker playback inside your deployed app, make sure the app uses ALSA or a media framework that targets the default audio output. USB speakerphones usually expose both an input and output device, so `wendy device audio list` is the fastest way to confirm WendyOS sees both sides.
+USB speakerphones usually expose both an input and output device, so `wendy device audio list` is the fastest way to confirm WendyOS sees both sides.
+
+## Playing Audio From Your App
+
+WendyOS routes audio through PipeWire. Play through PipeWire or its PulseAudio compatibility layer — `pw-play`, `paplay`, GStreamer's `pulsesink`, or any library that targets the default output:
+
+```bash
+pw-play alert.wav
+```
+
+The `audio` entitlement also bind-mounts `/dev/snd`, so `aplay` and other raw ALSA tools work, but **they only reach sound cards**. A Bluetooth speaker has no sound card behind it, so `aplay` cannot play to one no matter how it is configured. Prefer a PipeWire-aware player unless you specifically need a wired card.
+
+## Bluetooth Speakers
+
+A paired Bluetooth speaker appears in `wendy device audio list` alongside wired outputs once it is connected, and can be made the default the same way. Your app needs the `audio` entitlement to reach it — the `bluetooth` entitlement governs scanning and pairing, not playback.
+
+Pair and connect the speaker first (see [Bluetooth Access](/docs/hardware/bluetooth)), then:
+
+```bash
+wendy device audio list
+wendy device audio set-default --id <speaker id>
+```
+
+Outputs that report no connected display — HDMI ports with nothing plugged in, for example — are not listed, because there is nothing to play to.
 
 ## App Configuration
 

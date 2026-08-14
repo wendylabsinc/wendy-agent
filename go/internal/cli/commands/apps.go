@@ -54,7 +54,7 @@ func newAppsListCmd() *cobra.Command {
 		Short: "List deployed applications",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -151,6 +151,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			FailureCount      uint32        `json:"failureCount,omitempty"`
 			ExitCode          *int32        `json:"exitCode,omitempty"` // pointer so a clean exit 0 is still emitted alongside terminationReason
 			TerminationReason string        `json:"terminationReason,omitempty"`
+			HTTPPort          uint32        `json:"httpPort,omitempty"`
 			Services          []jsonService `json:"services,omitempty"`
 		}
 		apps := make([]jsonApp, len(containers))
@@ -174,6 +175,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				FailureCount:      c.GetFailureCount(),
 				ExitCode:          exitCode,
 				TerminationReason: c.GetTerminationReason(),
+				HTTPPort:          c.GetHttpPort(),
 				Services:          svcs,
 			}
 		}
@@ -189,7 +191,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 		cliLogln("No applications deployed.")
 		return nil
 	}
-	headers := []string{"", "Name", "Version", "Failures", "Reason"}
+	headers := []string{"", "Name", "Version", "Port", "Failures", "Reason"}
 	var rows [][]string
 	for _, c := range containers {
 		services := c.GetServices()
@@ -199,6 +201,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName() + " " + lipgloss.NewStyle().Foreground(tui.ColorDim).Render("[group]"),
 				c.GetAppVersion(),
+				httpPortColumn(c.GetHttpPort()),
 				fmt.Sprintf("%d", c.GetFailureCount()),
 				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
@@ -210,6 +213,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 					"",
 					"",
 					"",
+					"",
 				})
 			}
 		} else {
@@ -217,6 +221,7 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 				stateIcon(c.GetRunningState().String()),
 				c.GetAppName(),
 				c.GetAppVersion(),
+				httpPortColumn(c.GetHttpPort()),
 				fmt.Sprintf("%d", c.GetFailureCount()),
 				terminationSummary(c.GetTerminationReason(), c.GetExitCode()),
 			})
@@ -224,6 +229,15 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 	}
 	fmt.Print(tui.RenderTable(headers, rows))
 	return nil
+}
+
+// httpPortColumn renders an app's declared http entitlement port for the
+// apps-list table, or "" when the app declares none.
+func httpPortColumn(port uint32) string {
+	if port == 0 {
+		return ""
+	}
+	return fmt.Sprintf(":%d", port)
 }
 
 // terminationSummary renders a stopped app's exit reason for display. Empty for
@@ -536,7 +550,7 @@ func newAppsStopCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -605,7 +619,7 @@ func newAppsRemoveCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}

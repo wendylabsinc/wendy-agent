@@ -1,0 +1,281 @@
+// Package stagefile is the library facade for the Stagefile compiler — a
+// YAML build descriptor (build.stagefile.yaml) that compiles to a real
+// Dockerfile with structural safety guarantees a hand-written Dockerfile
+// doesn't get by default (lockfile digest-pinning, shell-safe quoting, no
+// raw-shell escape hatch). It exposes a single entry point, CompileFile.
+// Vendored from github.com/joannisorlandos/stagefile (same author) so
+// wendy build/wendy run has no external dependency on that private repo.
+package stagefile
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/codegen"
+	dockerignorepkg "github.com/wendylabsinc/wendy/go/internal/stagefile/dockerignore"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/lock"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
+)
+
+// baseResolver is the underlying registry lookup every CompileFile ultimately
+// reaches. It is a package var purely so tests can exercise the memoization in
+// sharedResolver without touching a live registry.
+var baseResolver lock.Resolver = lock.CraneResolver
+
+// baseHasher is the underlying download hash every CompileFile ultimately
+// reaches, and a package var for the same reason baseResolver is: so tests
+// can exercise the memoization without fetching anything.
+var baseHasher lock.Hasher = lock.HTTPHasher
+
+// sharedResolver is the process-wide resolver CompileFile uses. Memoizing here
+// rather than per-call is what makes a compose project cheap: its services each
+// compile their own Stagefile, they typically share a base image, and those
+// compiles run concurrently — so without a shared memo they would all issue the
+// same registry lookup simultaneously. The indirection through baseResolver
+// keeps the memo established once while leaving the underlying lookup
+// swappable in tests.
+var sharedResolver = lock.Memoize(func(ref string) (string, error) {
+	return baseResolver(ref)
+})
+
+// sharedHasher memoizes download hashing for the same reason sharedResolver
+// memoizes registry lookups, and it matters more here: the compose services
+// of one project can declare the same model URL, and hashing it twice means
+// downloading it twice.
+var sharedHasher = lock.Hasher(lock.Memoize(func(url string) (string, error) {
+	return baseHasher(url)
+}))
+
+// Option configures a CompileFile call.
+type Option func(*options)
+
+type options struct {
+	progress     func(url string)
+	gpuArch      string
+	buildProfile string
+}
+
+// BuildProfileDebug and BuildProfileRelease are the two compile profiles a
+// Stagefile build stage understands.
+const (
+	BuildProfileRelease = "release"
+	BuildProfileDebug   = "debug"
+)
+
+// WithGPUArch names the GPU architecture (the gpu_arch a device reports, e.g.
+// "sm_87") this build targets. It is required if any stage declares cuda: and
+// ignored otherwise, which is why it is an option rather than a parameter:
+// the overwhelming majority of builds have no GPU stage and should not have to
+// answer the question.
+func WithGPUArch(arch string) Option {
+	return func(o *options) { o.gpuArch = arch }
+}
+
+// WithProgress registers a callback invoked before each download that has to
+// be fetched to be pinned. Without it a first build hashing a few hundred
+// megabytes of model weights is indistinguishable from a hang: resolution
+// runs inline inside CompileFile, which otherwise prints nothing at all.
+func WithProgress(f func(url string)) Option {
+	return func(o *options) { o.progress = f }
+}
+
+// WithBuildProfile overrides the profile of every build stage that has one, so
+// `wendy run --debug` produces a debuggable binary from a Stagefile whose
+// checked-in profile is release. Stages of a language with no release/debug
+// notion (go, npm/yarn/pnpm) are unaffected.
+//
+// Only "release" and "debug" are accepted; any other value is ignored rather
+// than applied, because this override lands after spec validation and the
+// profile is interpolated into the generated RUN line.
+func WithBuildProfile(profile string) Option {
+	return func(o *options) {
+		if profile == BuildProfileRelease || profile == BuildProfileDebug {
+			o.buildProfile = profile
+		}
+	}
+}
+
+// CompileFile reads build.stagefile.yaml from dir, resolves any missing
+// lockfile image refs against a live registry (existing pins are never
+// touched — only an explicit re-lock changes them), writes/updates
+// build.stagefile.lock.yaml in dir, and returns the compiled Dockerfile
+// text and the derived .dockerignore text.
+//
+// Safe to call concurrently for different directories: the lockfile and both
+// generated files are written via temp-file + rename, and the registry lookups
+// behind sharedResolver are deduplicated across callers.
+func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore string, err error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	hasher := sharedHasher
+	if o.progress != nil {
+		hasher = func(url string) (string, error) {
+			o.progress(url)
+			return sharedHasher(url)
+		}
+	}
+	return compileFile(dir, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
+}
+
+// NeedsGPUTarget reports whether dir's Stagefile declares a cuda: stage, and
+// therefore cannot be compiled without knowing the GPU architecture it is
+// being built for.
+//
+// The CLI asks before it compiles: a GPU project has to resolve its target
+// device first, while every other project keeps the cheaper ordering that
+// compiles without connecting to anything. A missing or unparseable Stagefile
+// is not this function's error to report — it answers false and lets the
+// compile produce the real diagnostic.
+func NeedsGPUTarget(dir string) bool {
+	raw, err := os.ReadFile(filepath.Join(dir, "build.stagefile.yaml"))
+	if err != nil {
+		return false
+	}
+	f, err := spec.Parse(raw)
+	if err != nil {
+		return false
+	}
+	for _, s := range f.Stages {
+		if s.CUDA {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveCUDAProfile returns the GPU profile the stages in f need, or nil if
+// none declares cuda:. A GPU stage with no target is an error here rather
+// than a CPU-only image, because the difference would only show up on the
+// device.
+func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, error) {
+	needed := false
+	for _, s := range f.Stages {
+		if s.CUDA {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return nil, nil
+	}
+	if arch == "" {
+		return nil, fmt.Errorf(
+			"a stage declares cuda: but this build has no GPU target; run against a device (`wendy run --device ...`), which reads its gpu_arch, or pass --gpu-arch (known: %s)",
+			strings.Join(gpu.KnownArches(), ", "))
+	}
+	p, err := l.ResolveCUDA(arch)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// compileFile is the resolver-injectable implementation behind
+// CompileFile, allowing tests to exercise it with a fake resolver and hasher
+// instead of a live registry and live URLs.
+func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
+	raw, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", "", fmt.Errorf("reading %s: %w", sourcePath, err)
+	}
+	f, err := spec.Parse(raw)
+	if err != nil {
+		return "", "", err
+	}
+	applyBuildProfile(f, buildProfile)
+
+	lockPath := filepath.Join(dir, "build.stagefile.lock.yaml")
+	existing, err := lock.Load(lockPath)
+	if err != nil {
+		return "", "", err
+	}
+	updated, _, err := lock.Resolve(existing, spec.SourceHash(raw), imageRefs(f), nil, resolver)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := updated.ResolveDownloads(downloadURLs(f), nil, hasher); err != nil {
+		return "", "", err
+	}
+	// Resolved before Save so a first GPU build records its profile in the
+	// same write as its image digests, and after Resolve so it can reuse a
+	// profile an earlier build already pinned.
+	cudaProfile, err := resolveCUDAProfile(f, gpuArch, updated)
+	if err != nil {
+		return "", "", err
+	}
+	if err := updated.Save(lockPath); err != nil {
+		return "", "", err
+	}
+
+	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile)
+	if err != nil {
+		return "", "", err
+	}
+	dockerignore = dockerignorepkg.Derive(dockerignorepkg.LocalPaths(f))
+	return dockerfile, dockerignore, nil
+}
+
+// applyBuildProfile overrides the compile profile of every build stage that has
+// one. Node package scripts are skipped: spec validation rejects a profile on
+// them outright, so setting one here would generate a Stagefile the same file
+// could not have declared. Go is skipped for the same reason it ignores
+// profile in codegen — `go build` has no release/debug split.
+func applyBuildProfile(f *spec.File, profile string) {
+	if profile == "" {
+		return
+	}
+	for i := range f.Stages {
+		b := f.Stages[i].Build
+		if b == nil {
+			continue
+		}
+		switch b.Lang {
+		case "rust", "swift":
+			b.Profile = profile
+		}
+	}
+}
+
+// imageRefs collects every distinct from: value across f's stages, in
+// file order, without duplicates. Stages that opt out of digest pinning
+// (pin: false — local-only images with no registry digest) are skipped so
+// the resolver never tries to look them up.
+// downloadURLs collects every download url across f's stages that needs
+// resolving, in file order, without duplicates. A download that carries its
+// own sha256 is skipped: it is already pinned, and fetching it here would
+// download the file just to confirm what the Stagefile already states.
+func downloadURLs(f *spec.File) []string {
+	seen := map[string]bool{}
+	var urls []string
+	for _, s := range f.Stages {
+		for _, d := range s.Download {
+			if d.SHA256 != "" || seen[d.URL] {
+				continue
+			}
+			seen[d.URL] = true
+			urls = append(urls, d.URL)
+		}
+	}
+	return urls
+}
+
+func imageRefs(f *spec.File) []string {
+	seen := map[string]bool{}
+	var refs []string
+	for _, s := range f.Stages {
+		if s.Pin != nil && !*s.Pin {
+			continue
+		}
+		if !seen[s.From] {
+			seen[s.From] = true
+			refs = append(refs, s.From)
+		}
+	}
+	return refs
+}

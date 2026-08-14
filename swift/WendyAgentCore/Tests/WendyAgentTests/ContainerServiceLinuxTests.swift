@@ -9,6 +9,7 @@ import WendyAgentGRPC
 actor FakeLinuxBackend: LinuxContainerBackend {
     private(set) var pulled: [String] = []
     private(set) var started: [String] = []
+    private(set) var startedImages: [String] = []
     private(set) var stopped: [String] = []
     private(set) var removed: [String] = []
     /// Retains the process handed to `ContainerService` so `stop`/`remove` can
@@ -25,6 +26,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         terminationHandler: (@Sendable (Foundation.Process) -> Void)?
     ) async throws -> (process: Foundation.Process, stdout: Pipe, stderr: Pipe) {
         started.append(appName)
+        startedImages.append(imageName)
         let p = Foundation.Process()
         // Long-lived: the app must be observably `.running` until the test stops
         // it. A short-lived process (e.g. `/bin/echo`) would exit immediately and
@@ -56,6 +58,7 @@ actor FakeLinuxBackend: LinuxContainerBackend {
 
     func pulledImages() -> [String] { pulled }
     func startedApps() -> [String] { started }
+    func startedImageNames() -> [String] { startedImages }
     func stoppedApps() -> [String] { stopped }
     func removedApps() -> [String] { removed }
 }
@@ -113,8 +116,12 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         let runningInfo = try #require(await service.appInfo(forAppID: "svc"))
         #expect(runningInfo.status == .running)
 
-        #expect(await backend.pulledImages() == ["localhost:5555/svc:latest"])
+        // The stored ref keeps what the CLI sent (localhost:5555, the push
+        // listener); the backend must receive the loopback pull-listener
+        // rewrite, and pull/createAndStart must see the identical string.
+        #expect(await backend.pulledImages() == ["127.0.0.1:5556/svc:latest"])
         #expect(await backend.startedApps() == ["svc"])
+        #expect(await backend.startedImageNames() == ["127.0.0.1:5556/svc:latest"])
 
         // stopContainer routes to the backend's stop(appName:), which ends the
         // container's process and lets the streaming producer return.
@@ -145,6 +152,135 @@ actor FakeLinuxBackend: LinuxContainerBackend {
         )
         #expect(await backend.removedApps() == ["svc"])
         #expect(await service.appInfo(forAppID: "svc") == nil)
+    }
+
+    @Test func listContainersReportsHTTPAndMCPPortsFromEntitlements() async throws {
+        let backend = FakeLinuxBackend()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/true",
+            stateDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("cs-\(UUID().uuidString)"),
+            linuxBackend: backend
+        )
+        let config = WendyAppConfig(
+            appId: "svc-ports",
+            platform: "linux/arm64",
+            entitlements: [
+                WendyEntitlement(
+                    type: "http",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 8080
+                ),
+                WendyEntitlement(
+                    type: "mcp",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 3000
+                ),
+            ],
+            brewfile: nil
+        )
+        let configData = try JSONEncoder().encode(config)
+
+        var createReq = Wendy_Agent_Services_V1_CreateContainerRequest()
+        createReq.appName = "svc-ports"
+        createReq.imageName = "localhost:5555/svc-ports:latest"
+        createReq.appConfig = configData
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: createReq),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        let listResponse = try await service.listContainers(
+            request: ServerRequest(
+                metadata: [:],
+                message: Wendy_Agent_Services_V1_ListContainersRequest()
+            ),
+            context: makeServerContext(method: "ListContainers")
+        )
+        let contents = try listResponse.accepted.get()
+        let writer = CollectingWriter<Wendy_Agent_Services_V1_ListContainersResponse>()
+        _ = try await contents.producer(RPCWriter(wrapping: writer))
+        let containers = writer.snapshot().compactMap(\.container)
+
+        let svc = try #require(containers.first { $0.appName == "svc-ports" })
+        #expect(svc.httpPort == 8080)
+        #expect(svc.mcpPort == 3000)
+    }
+
+    // Final-review-fix regression test: `entitlement.port` is an arbitrary Int
+    // decoded straight from wendy.json, with no range check on the Swift
+    // side. `UInt32(port)` traps (crashes the process) on out-of-range input,
+    // unlike Go's `uint32(port)` which silently wraps — so a wendy.json with
+    // e.g. "port": 5000000000 must not crash listContainers; it must be
+    // treated the same as an absent/non-positive port (0), matching the Go
+    // side's 1-65535 validation range.
+    @Test func listContainersTreatsOutOfRangePortAsAbsent() async throws {
+        let backend = FakeLinuxBackend()
+        let service = ContainerService(
+            broadcaster: TelemetryBroadcaster(),
+            executablePath: "/usr/bin/true",
+            stateDirectory: FileManager.default.temporaryDirectory
+                .appendingPathComponent("cs-\(UUID().uuidString)"),
+            linuxBackend: backend
+        )
+        let config = WendyAppConfig(
+            appId: "svc-bad-port",
+            platform: "linux/arm64",
+            entitlements: [
+                WendyEntitlement(
+                    type: "http",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 5_000_000_000
+                ),
+                WendyEntitlement(
+                    type: "mcp",
+                    mode: nil,
+                    name: nil,
+                    path: nil,
+                    ports: nil,
+                    port: 65536
+                ),
+            ],
+            brewfile: nil
+        )
+        let configData = try JSONEncoder().encode(config)
+
+        var createReq = Wendy_Agent_Services_V1_CreateContainerRequest()
+        createReq.appName = "svc-bad-port"
+        createReq.imageName = "localhost:5555/svc-bad-port:latest"
+        createReq.appConfig = configData
+        _ = try await service.createContainer(
+            request: ServerRequest(metadata: [:], message: createReq),
+            context: makeServerContext(method: "CreateContainer")
+        )
+
+        // Must not crash (UInt32(port) trapping was the bug); the call
+        // completing at all is the primary assertion.
+        let listResponse = try await service.listContainers(
+            request: ServerRequest(
+                metadata: [:],
+                message: Wendy_Agent_Services_V1_ListContainersRequest()
+            ),
+            context: makeServerContext(method: "ListContainers")
+        )
+        let contents = try listResponse.accepted.get()
+        let writer = CollectingWriter<Wendy_Agent_Services_V1_ListContainersResponse>()
+        _ = try await contents.producer(RPCWriter(wrapping: writer))
+        let containers = writer.snapshot().compactMap(\.container)
+
+        let svc = try #require(containers.first { $0.appName == "svc-bad-port" })
+        #expect(svc.httpPort == 0)
+        #expect(svc.mcpPort == 0)
     }
 
     @Test func createContainerFailsPreconditionWithoutABackend() async throws {

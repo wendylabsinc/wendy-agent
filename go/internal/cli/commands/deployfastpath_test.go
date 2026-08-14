@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,65 @@ func TestComputeBuildInputHash_HonorsDockerignore(t *testing.T) {
 	}
 }
 
+// The fingerprint must hash the build's REAL input set: when the resolved
+// dockerfile carries its own <dockerfile>.dockerignore (BuildKit's
+// per-Dockerfile precedence — the Stagefile flow derives a deny-all allowlist
+// there), that file governs the walk, not the context's .dockerignore.
+// Otherwise editing a README invalidates the fingerprint and forces a rebuild
+// of an identical image.
+func TestComputeBuildInputHash_PerDockerfileIgnoreAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python:3.11-slim\nCOPY main.py main.py\n")
+	writeFile(t, dir, "Dockerfile.generated.dockerignore", "*\n!main.py\n!requirements.txt\n")
+	writeFile(t, dir, "main.py", "print('v1')\n")
+	writeFile(t, dir, "requirements.txt", "mcp\n")
+	writeFile(t, dir, "README.md", "docs v1\n")
+
+	hash := func() string {
+		t.Helper()
+		h, err := computeBuildInputHash(dir, "Dockerfile.generated", "linux/arm64", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "README.md", "docs v2\n")
+	if got := hash(); got != base {
+		t.Fatal("hash changed after editing a file excluded by the per-Dockerfile allowlist")
+	}
+	writeFile(t, dir, "main.py", "print('v2')\n")
+	if got := hash(); got == base {
+		t.Fatal("hash unchanged after editing an allowlisted file")
+	}
+}
+
+// A directory with a re-included descendant must stay walkable: with
+// "*" + "!src/app.py", the walk may not SkipDir at src/ or the allowlisted
+// file's changes would be missed entirely (stale-skip, the unsafe direction).
+func TestComputeBuildInputHash_NestedNegationDescends(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "Dockerfile.generated", "FROM python:3.11-slim\nCOPY src/app.py app.py\n")
+	writeFile(t, dir, "Dockerfile.generated.dockerignore", "*\n!src/app.py\n")
+	writeFile(t, dir, "src/app.py", "print('v1')\n")
+
+	hash := func() string {
+		t.Helper()
+		h, err := computeBuildInputHash(dir, "Dockerfile.generated", "linux/arm64", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+
+	base := hash()
+	writeFile(t, dir, "src/app.py", "print('v2')\n")
+	if got := hash(); got == base {
+		t.Fatal("hash unchanged after editing a re-included file inside an excluded directory")
+	}
+}
+
 func TestDockerIgnoreMatcher(t *testing.T) {
 	di := &dockerIgnore{patterns: []string{"node_modules", "*.pyc", "dist", "secrets/key.pem"}}
 	cases := []struct {
@@ -158,5 +218,32 @@ func TestComputeBuildInputHash_EnvChangesHash(t *testing.T) {
 	}
 	if withEnv == changed {
 		t.Error("changing an env value did not change the hash")
+	}
+}
+
+func TestBuildInputHashSaltIsV2(t *testing.T) {
+	// The v1→v2 bump deliberately invalidates fingerprints recorded while
+	// the stale-manifest bug (2026-08-08) could pair a current input hash
+	// with a stale deploy. Do not revert to v1; bump again only with a
+	// matching migration rationale.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := computeBuildInputHash(dir, "Dockerfile", "linux/arm64", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recompute what v1 would have produced by checking the source constant
+	// is gone: the simplest stable assertion is on the salt itself.
+	data, err := os.ReadFile("deployfastpath.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"wendy-deploy-fingerprint-v2\n"`) {
+		t.Fatalf("deploy fingerprint salt must be v2 (see comment); hash was %s", h)
+	}
+	if strings.Contains(string(data), `"wendy-deploy-fingerprint-v1\n"`) {
+		t.Fatal("v1 salt string still present in deployfastpath.go")
 	}
 }

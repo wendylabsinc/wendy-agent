@@ -92,6 +92,7 @@ func TestReachableAppURL(t *testing.T) {
 		hookURL   string
 		appID     string
 		deviceIP  string
+		httpPort  int
 		readiness *appconfig.ReadinessConfig
 		want      string
 	}{
@@ -112,6 +113,21 @@ func TestReachableAppURL(t *testing.T) {
 			hookURL:  "http://%WENDY_HOSTNAME%:8080",
 			deviceIP: "192.168.1.42",
 			want:     "http://192.168.1.42:8080",
+		},
+		{
+			name:      "http entitlement port wins over readiness port",
+			deviceIP:  "192.168.1.42",
+			httpPort:  8080,
+			readiness: tcpReadiness,
+			want:      "http://192.168.1.42:8080",
+		},
+		{
+			name:      "hostname-templated hook wins over http entitlement port",
+			hookURL:   "http://${WENDY_HOSTNAME}:7000/custom",
+			deviceIP:  "192.168.1.42",
+			httpPort:  8080,
+			readiness: tcpReadiness,
+			want:      "http://192.168.1.42:7000/custom",
 		},
 		{
 			name:      "hook URL without a hostname placeholder falls back to readiness port",
@@ -146,7 +162,7 @@ func TestReachableAppURL(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := reachableAppURL(tc.hookURL, tc.appID, "", tc.deviceIP, tc.readiness)
+			got := reachableAppURL(tc.hookURL, tc.appID, "", tc.deviceIP, tc.httpPort, tc.readiness)
 			if got != tc.want {
 				t.Errorf("reachableAppURL() = %q, want %q", got, tc.want)
 			}

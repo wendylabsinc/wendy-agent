@@ -1,0 +1,9 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    copy:
+      - from: local
+        paths: [main.py]
+    entrypoint:
+      exec: [python3, main.py]

@@ -81,20 +81,6 @@ func resolveAppImage(ctx context.Context, base, appID string) (appImageResolutio
 	return out, nil
 }
 
-// newAppCmd is the top-level "app" command group, the AppStore-facing entry
-// point. Device-scoped management (list/start/stop/remove) lives under
-// "wendy device apps"; this group surfaces "wendy app install <app-id>" to match
-// the install command shown on https://appstore.wendy.dev.
-func newAppCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "app",
-		Short: "Install apps from the Wendy AppStore",
-		Long:  "Browse https://appstore.wendy.dev, then install an app onto a device with 'wendy app install <app-id>'.",
-	}
-	cmd.AddCommand(newAppsInstallCmd())
-	return cmd
-}
-
 func newAppsInstallCmd() *cobra.Command {
 	var apiBase string
 	var noStart bool

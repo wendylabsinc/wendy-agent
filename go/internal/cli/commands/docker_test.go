@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -82,6 +83,7 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 		io.Discard,
 		io.Discard,
 		false,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("buildAndPushImageWithBuilder: %v", err)
@@ -1197,7 +1199,7 @@ func TestResolveRunDockerfile_SingleDockerfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1214,7 +1216,7 @@ func TestResolveRunDockerfile_ExplicitFlag(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1231,7 +1233,7 @@ func TestResolveRunDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 		}
 	}
 
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -1311,9 +1313,12 @@ func TestResolveRegistryForAgentUsesConnectionDialer(t *testing.T) {
 		},
 	}
 
-	registryAddr, cleanup, err := resolveRegistryForAgent(ctx, conn, 5000)
+	registryAddr, cleanup, dialErr, err := resolveRegistryForAgent(ctx, conn, 5000)
 	if err != nil {
 		t.Fatalf("resolveRegistryForAgent: %v", err)
+	}
+	if dialErr == nil {
+		t.Fatal("resolveRegistryForAgent returned nil dialErr accessor")
 	}
 	defer cleanup()
 
@@ -1758,6 +1763,208 @@ func TestMTLSRegistryHTTPProxy_RecordsDialError(t *testing.T) {
 	}
 }
 
+func TestMaybeRegistryUnavailable(t *testing.T) {
+	refused := fmt.Errorf("dial tcp 192.168.1.20:5555: connect: %w", syscall.ECONNREFUSED)
+	buildErr := errors.New("docker buildx build failed: exit status 1")
+
+	t.Run("darwin refused converts", func(t *testing.T) {
+		err := maybeRegistryUnavailable("darwin", "wendys-mac.local", func() error { return refused }, buildErr)
+		if !isRegistryUnavailable(err) {
+			t.Fatalf("err = %v; want registryUnavailableError", err)
+		}
+		msg := err.Error()
+		for _, want := range []string{
+			"wendys-mac.local",
+			"isn't running a container registry",
+			"update the",
+			`"platform": "darwin"`,
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("message %q missing %q", msg, want)
+			}
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Error("friendly error does not unwrap to the dial error")
+		}
+	})
+	t.Run("linux refused passes through", func(t *testing.T) {
+		if err := maybeRegistryUnavailable("linux", "device.local", func() error { return refused }, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+	t.Run("darwin nil accessor passes through", func(t *testing.T) {
+		if err := maybeRegistryUnavailable("darwin", "device.local", nil, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+	t.Run("darwin non-refused dial error passes through", func(t *testing.T) {
+		timeout := errors.New("dial tcp: i/o timeout")
+		if err := maybeRegistryUnavailable("darwin", "device.local", func() error { return timeout }, buildErr); err != buildErr {
+			t.Fatalf("err = %v; want original build error", err)
+		}
+	})
+}
+
+func TestRegistryProxy_ClearsDialErrorOnSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var dials atomic.Int32
+	proxy, err := startRegistryProxyWithDialer(ctx, "127.0.0.1:0", func(context.Context) (net.Conn, error) {
+		if dials.Add(1) == 1 {
+			return nil, fmt.Errorf("dial tcp: connect: %w", syscall.ECONNREFUSED)
+		}
+		proxySide, remoteSide := net.Pipe()
+		go func() {
+			buf := make([]byte, 4)
+			n, err := remoteSide.Read(buf)
+			if err == nil && n > 0 {
+				_, _ = remoteSide.Write(buf[:n])
+			}
+		}()
+		return proxySide, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+
+	addr := "127.0.0.1:" + strconv.Itoa(proxy.Port())
+
+	// First connection: dial fails, error recorded.
+	c1, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c1.Read(buf) // proxy closes the conn on dial failure
+	c1.Close()
+	waitFor(t, "refused dial recorded", func() bool { return isDialRefused(proxy.LastDialError()) })
+
+	// Second connection succeeds: the recorded error must clear.
+	c2, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	if _, err := c2.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c2.Read(buf); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "dial error cleared after success", func() bool { return proxy.LastDialError() == nil })
+}
+
+// waitFor polls cond every 10ms until it holds, failing the test after 2s.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %s", what)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestResolveRegistryForAgent_DialErrAccessorAndCacheHit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	refused := fmt.Errorf("broker tunnel: connect: %w", syscall.ECONNREFUSED)
+	conn := &grpcclient.AgentConnection{
+		Host: "refusing-device",
+		RegistryDialer: func(context.Context, int) (net.Conn, error) {
+			return nil, refused
+		},
+	}
+
+	addr1, cleanup1, dialErr1, err := resolveRegistryForAgent(ctx, conn, 5555)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAgent: %v", err)
+	}
+	defer cleanup1()
+	if dialErr1 == nil {
+		t.Fatal("nil dialErr accessor on first resolve")
+	}
+	if got := dialErr1(); got != nil {
+		t.Fatalf("dialErr before any connection = %v; want nil", got)
+	}
+
+	_, port, err := net.SplitHostPort(addr1)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", addr1, err)
+	}
+	c, err := net.Dial("tcp", net.JoinHostPort("127.0.0.1", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c.Read(buf)
+	c.Close()
+	waitFor(t, "refused dial visible via accessor", func() bool { return isDialRefused(dialErr1()) })
+
+	// Cache hit: same address, and the accessor still reports the failure.
+	addr2, cleanup2, dialErr2, err := resolveRegistryForAgent(ctx, conn, 5555)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAgent (cache hit): %v", err)
+	}
+	defer cleanup2()
+	if addr2 != addr1 {
+		t.Fatalf("cache hit addr = %q; want %q", addr2, addr1)
+	}
+	if dialErr2 == nil || !isDialRefused(dialErr2()) {
+		t.Fatal("cache hit accessor does not report the recorded refusal")
+	}
+}
+
+func TestResolveRegistryForAppleContainer_RecordsDialRefused(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Reserve then release a port so dialing it is refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+
+	conn := &grpcclient.AgentConnection{Host: "127.0.0.1"}
+	addr, cleanup, useMTLS, dialErr, err := resolveRegistryForAppleContainer(ctx, conn, deadPort)
+	if err != nil {
+		t.Fatalf("resolveRegistryForAppleContainer: %v", err)
+	}
+	defer cleanup()
+	if useMTLS {
+		t.Fatal("plain-LAN branch returned useMTLS = true")
+	}
+	if dialErr == nil {
+		t.Fatal("nil dialErr accessor")
+	}
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	_, _ = c.Read(buf)
+	c.Close()
+	waitFor(t, "refused dial recorded", func() bool { return isDialRefused(dialErr()) })
+}
+
 func TestFindIPv4ViaNeighborTable_UnknownAddress(t *testing.T) {
 	// This test would invoke findIPv4ViaNeighborTable, which may spawn real ndp/arp/ip
 	// commands and read the host's neighbor tables, making it environment-dependent.
@@ -2160,7 +2367,7 @@ func TestStartMTLSRegistryHTTPProxy_UntrustedClientCert(t *testing.T) {
 
 func TestResolveDockerfile_NoDockerfiles(t *testing.T) {
 	dir := t.TempDir()
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2176,7 +2383,7 @@ func TestResolveDockerfile_RequestedPassthrough(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "Dockerfile.prod", false)
+	got, err := resolveDockerfile(dir, "Dockerfile.prod", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2190,7 +2397,7 @@ func TestResolveDockerfile_SingleVariant(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.dev"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2204,7 +2411,7 @@ func TestResolveDockerfile_Containerfile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Containerfile"), []byte("FROM scratch"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2220,7 +2427,7 @@ func TestResolveDockerfile_MultipleNonInteractivePrefersBase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2236,7 +2443,7 @@ func TestResolveDockerfile_MultipleNonInteractiveVariantOnlyPrefersFirst(t *test
 			t.Fatal(err)
 		}
 	}
-	got, err := resolveDockerfile(dir, "", false)
+	got, err := resolveDockerfile(dir, "", false, "")
 	if err != nil {
 		t.Fatalf("resolveDockerfile: %v", err)
 	}
@@ -2428,7 +2635,7 @@ func TestResolveDockerfile_AutoSelectionRejectsSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skip("symlinks not supported:", err)
 	}
-	if _, err := resolveDockerfile(dir, "", false); err == nil {
+	if _, err := resolveDockerfile(dir, "", false, ""); err == nil {
 		t.Fatal("expected error for auto-selected symlink escape, got nil")
 	}
 }
@@ -2503,5 +2710,315 @@ func TestTLSClientDialer_RejectsWrongCA(t *testing.T) {
 
 	if _, err := dial(context.Background()); err == nil {
 		t.Fatal("expected handshake failure against a server signed by an untrusted CA")
+	}
+}
+
+func TestDetectProjectType_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := detectProjectType(dir)
+	if err != nil {
+		t.Fatalf("detectProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
+
+func TestDetectBuildOptions_Stagefile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	found := false
+	for _, o := range options {
+		if o.Type == "docker" && o.File == "build.stagefile.yaml" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a docker/build.stagefile.yaml option, got %+v", options)
+	}
+}
+
+func TestDetectBuildOptions_IgnoresOwnGeneratedDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.generated"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := detectBuildOptions(dir)
+	dockerCount := 0
+	for _, o := range options {
+		if o.Type == "docker" {
+			dockerCount++
+		}
+	}
+	if dockerCount != 1 {
+		t.Fatalf("expected exactly 1 docker-type option once Dockerfile.generated exists alongside build.stagefile.yaml, got %d: %+v", dockerCount, options)
+	}
+}
+
+func TestPreferredContainerBuildFileOption_StagefileWinsOverDockerfile(t *testing.T) {
+	options := []BuildOption{
+		{Type: "docker", File: "Dockerfile"},
+		{Type: "docker", File: "build.stagefile.yaml"},
+	}
+	got := preferredContainerBuildFileOption(options)
+	if got == nil || got.File != "build.stagefile.yaml" {
+		t.Fatalf("got %+v, want the build.stagefile.yaml option", got)
+	}
+}
+
+func TestResolveDockerfile_CompilesStagefile(t *testing.T) {
+	dir := t.TempDir()
+	source := "version: 1\nstages:\n  - name: app\n    from: debian:12\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed a lockfile with an already-resolved pin so this test never
+	// touches a real registry (stagefile.CompileFile only calls the live
+	// resolver for refs that are still missing from the lockfile).
+	lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := resolveDockerfile(dir, "", false, "")
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading generated Dockerfile: %v", err)
+	}
+	if !strings.Contains(string(data), "sha256:fakepindigest") {
+		t.Fatalf("generated Dockerfile missing the pinned digest:\n%s", data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, generatedDockerignoreName)); err != nil {
+		t.Fatalf("expected %s to be written: %v", generatedDockerignoreName, err)
+	}
+	// A user-authored .dockerignore must never be touched — the derived
+	// allowlist rides along via BuildKit's per-Dockerfile precedence.
+	if _, err := os.Stat(filepath.Join(dir, ".dockerignore")); !os.IsNotExist(err) {
+		t.Fatalf("expected no bare .dockerignore to be written, stat err = %v", err)
+	}
+}
+
+func TestResolveRunProjectType_StagefileExplicitDockerOverride(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"), []byte("version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolveRunProjectType(dir, "docker")
+	if err != nil {
+		t.Fatalf("resolveRunProjectType: %v", err)
+	}
+	if got != "docker" {
+		t.Fatalf("got %q, want %q", got, "docker")
+	}
+}
+
+func TestApplySafeOptimizeFixes_AppliesAdditiveFixesInMemory(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\n" +
+		"RUN apt-get update && apt-get install -y curl\n" +
+		"RUN pip install -r requirements.txt\n" +
+		"CMD [\"python3\", \"app.py\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+
+	// The real Dockerfile must be byte-for-byte untouched.
+	realData, err := os.ReadFile(filepath.Join(dir, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(realData) != original {
+		t.Fatalf("original Dockerfile was modified:\n%s", realData)
+	}
+
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	// apt-install is no longer silently auto-applied: --no-install-recommends
+	// changes which packages land in the image (explicit --fix only).
+	if strings.Contains(fixed, "--no-install-recommends") {
+		t.Fatalf("expected --no-install-recommends NOT to be auto-applied:\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "--mount=type=cache,target=/root/.cache/pip") {
+		t.Fatalf("expected a pip build-cache mount to be auto-applied:\n%s", fixed)
+	}
+	// The cache mount supersedes pip-flags' --no-cache-dir: the flag would
+	// disable exactly the cache the mount persists.
+	if strings.Contains(fixed, "--no-cache-dir") {
+		t.Fatalf("expected --no-cache-dir NOT to be added alongside a pip cache mount:\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NeverAutoAppliesNpmCiOrReleaseFlag(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original := "FROM node:20\n" +
+		"RUN npm install\n" +
+		"RUN cargo build\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	// build-cache still applies to both RUN lines, so a Dockerfile.generated IS produced —
+	// but npm ci and --release must never appear in it.
+	if got != "Dockerfile.generated" {
+		t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+	}
+	fixedData, err := os.ReadFile(filepath.Join(dir, "Dockerfile.generated"))
+	if err != nil {
+		t.Fatalf("reading Dockerfile.generated: %v", err)
+	}
+	fixed := string(fixedData)
+	if strings.Contains(fixed, "npm ci") {
+		t.Fatalf("npm ci must never be auto-applied (can hard-fail on a drifted lockfile):\n%s", fixed)
+	}
+	if !strings.Contains(fixed, "npm install") || !strings.Contains(fixed, "--mount=type=cache,target=/root/.npm") {
+		t.Fatalf("npm install line should keep npm install and gain a cache mount:\n%s", fixed)
+	}
+	if strings.Contains(fixed, "--release") {
+		t.Fatalf("--release must never be auto-applied (changes runtime behavior):\n%s", fixed)
+	}
+}
+
+func TestApplySafeOptimizeFixes_NoOpWhenNothingToFix(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM scratch\nCMD [\"/bin/true\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile" {
+		t.Fatalf("got %q, want the original filename unchanged", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Dockerfile.generated")); err == nil {
+		t.Fatalf("Dockerfile.generated should not be created when there's nothing to fix")
+	}
+}
+
+func TestApplySafeOptimizeFixes_IgnoresNamedVariant(t *testing.T) {
+	dir := t.TempDir()
+	original := "FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile.prod"), []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := applySafeOptimizeFixes(dir, "Dockerfile.prod")
+	if err != nil {
+		t.Fatalf("applySafeOptimizeFixes: %v", err)
+	}
+	if got != "Dockerfile.prod" {
+		t.Fatalf("got %q, want the original filename unchanged (optimize doesn't scan named variants today)", got)
+	}
+}
+
+func TestPrepareDockerBuildFile_DispatchesToStagefileOrOptimizeFix(t *testing.T) {
+	t.Run("stagefile", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.yaml"),
+			[]byte("version: 1\nstages:\n  - name: app\n    from: debian:12\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		lockContent := "version: 1\nsourceHash: sha256:irrelevant\nimages:\n  debian:12: sha256:fakepindigest\n"
+		if err := os.WriteFile(filepath.Join(dir, "build.stagefile.lock.yaml"), []byte(lockContent), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "build.stagefile.yaml", "")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+
+	t.Run("plain dockerfile with a fixable finding", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Dockerfile"),
+			[]byte("FROM python:3.11-slim\nRUN pip install -r requirements.txt\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		got, err := prepareDockerBuildFile(dir, "Dockerfile", "")
+		if err != nil {
+			t.Fatalf("prepareDockerBuildFile: %v", err)
+		}
+		if got != "Dockerfile.generated" {
+			t.Fatalf("got %q, want %q", got, "Dockerfile.generated")
+		}
+	})
+}
+
+func TestWriteGeneratedFile_SkipsUnchangedWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, generatedDockerfileName)
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same content: the file must not be rewritten (no mtime churn — a
+	// rewrite would re-trigger `wendy watch` mid-deploy).
+	if err := writeGeneratedFile(path, []byte("FROM a\n")); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatal("unchanged content still rewrote the file")
+	}
+	if err := writeGeneratedFile(path, []byte("FROM b\n")); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "FROM b\n" {
+		t.Fatalf("content = %q", data)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 0 {
+		t.Fatalf("temp files left behind: %v", leftovers)
 	}
 }

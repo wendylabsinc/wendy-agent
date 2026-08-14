@@ -2,6 +2,8 @@ package containerd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -1035,7 +1037,7 @@ func TestBuildROS2Env_WithConfig(t *testing.T) {
 			},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	for _, want := range []string{
 		"ROS_DOMAIN_ID=42",
 		"RMW_IMPLEMENTATION=rmw_cyclonedds_cpp",
@@ -1052,7 +1054,7 @@ func TestBuildROS2Env_WithConfig(t *testing.T) {
 
 func TestBuildROS2Env_NoConfig(t *testing.T) {
 	cfg := &appconfig.AppConfig{}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if len(got) != 0 {
 		t.Errorf("expected empty env for no ROS2 config, got %v", got)
 	}
@@ -1068,7 +1070,7 @@ func TestBuildROS2Env_HostDiscovery(t *testing.T) {
 			},
 		},
 	}
-	got := buildROS2Env(cfg, "sh.wendy.foxglovebridge", "")
+	got := mustBuildROS2Env(t, cfg, "sh.wendy.foxglovebridge", "")
 	if !envContains(got, "ROS_LOCALHOST_ONLY=0") {
 		t.Errorf("expected host discovery to disable localhost-only mode, got %v", got)
 	}
@@ -1081,7 +1083,7 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 	cfg := &appconfig.AppConfig{
 		Frameworks: &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{}},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	val, ok := envValue(got, "ROS_DOMAIN_ID")
 	if !ok {
 		t.Fatalf("expected ROS_DOMAIN_ID in env, got %v", got)
@@ -1091,7 +1093,7 @@ func TestBuildROS2Env_AutoDomainID(t *testing.T) {
 		t.Errorf("auto domain ID = %q, want integer in [0,232]", val)
 	}
 	// Stable: a second call for the same appId must produce the same ID.
-	again := buildROS2Env(cfg, "com.example.app", "")
+	again := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if val2, _ := envValue(again, "ROS_DOMAIN_ID"); val2 != val {
 		t.Errorf("auto domain ID not stable: %q vs %q", val, val2)
 	}
@@ -1108,8 +1110,18 @@ func TestBuildROS2Env_InvalidDomainID(t *testing.T) {
 			ROS2: &appconfig.ROS2Config{DomainID: &domainID},
 		},
 	}
-	if got := buildROS2Env(cfg, "com.example.app", ""); len(got) != 0 {
-		t.Errorf("expected empty env for out-of-range domain ID, got %v", got)
+	// Previously this returned an empty env, which meant the container started
+	// with no ROS_DOMAIN_ID at all and fell back to the global default domain 0 —
+	// i.e. a validation gap produced maximum exposure. It must fail instead.
+	got, err := buildROS2Env(cfg, "com.example.app", "")
+	if err == nil {
+		t.Fatalf("expected an error for out-of-range domain ID, got env %v", got)
+	}
+	if got != nil {
+		t.Errorf("expected nil env alongside the error, got %v", got)
+	}
+	if !strings.Contains(err.Error(), "domain 0") {
+		t.Errorf("error should explain the domain-0 fallback it is preventing, got: %v", err)
 	}
 }
 
@@ -1119,7 +1131,7 @@ func TestBuildROS2Env_NonCycloneRMWSkipsCycloneURI(t *testing.T) {
 			ROS2: &appconfig.ROS2Config{RMW: "fastrtps"},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "")
 	if !envContains(got, "RMW_IMPLEMENTATION=rmw_fastrtps_cpp") {
 		t.Errorf("expected short rmw name to normalize to rmw_fastrtps_cpp, got %v", got)
 	}
@@ -1139,11 +1151,11 @@ func TestBuildROS2Env_ServiceOverride(t *testing.T) {
 			"camera": {},
 		},
 	}
-	got := buildROS2Env(cfg, "com.example.app", "detector")
+	got := mustBuildROS2Env(t, cfg, "com.example.app", "detector")
 	if !envContains(got, "ROS_DOMAIN_ID=7") {
 		t.Errorf("expected service-level override ROS_DOMAIN_ID=7, got %v", got)
 	}
-	got = buildROS2Env(cfg, "com.example.app", "camera")
+	got = mustBuildROS2Env(t, cfg, "com.example.app", "camera")
 	if !envContains(got, "ROS_DOMAIN_ID=1") {
 		t.Errorf("expected group-level ROS_DOMAIN_ID=1 for camera, got %v", got)
 	}
@@ -1293,5 +1305,231 @@ func TestCollectExposures(t *testing.T) {
 		if strings.Contains(k, "9000") {
 			t.Errorf("loopback port 9000 must not be an exposure (key %q)", k)
 		}
+	}
+}
+
+// fakeRestartSuppressor is a recording restartSuppressor for the F2
+// replace/stop-suppression tests below: it captures every Suppress call and
+// every subsequent resume so tests can assert both the call and its pairing
+// without depending on the real container.ContainerMonitor.
+type fakeRestartSuppressor struct {
+	suppressed []string
+	resumed    []string
+}
+
+func (f *fakeRestartSuppressor) Suppress(containerName string) func() {
+	f.suppressed = append(f.suppressed, containerName)
+	return func() {
+		f.resumed = append(f.resumed, containerName)
+	}
+}
+
+// TestSuppressRestartsNoopWhenNoMonitor verifies suppressRestarts always
+// returns a callable resume func even when no monitor was wired in (e.g.
+// containerd came up before/without a monitor, or a bare *Client in a unit
+// test) — callers must be able to unconditionally `defer resume()`.
+func TestSuppressRestartsNoopWhenNoMonitor(t *testing.T) {
+	c := &Client{}
+	resume := c.suppressRestarts("com.example.app")
+	if resume == nil {
+		t.Fatal("suppressRestarts returned a nil func with no monitor wired")
+	}
+	resume() // must not panic
+}
+
+// TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards
+// to the wired restartMonitor and returns its resume func unchanged.
+func TestSuppressRestartsDelegatesToMonitor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{restartMonitor: fake}
+
+	resume := c.suppressRestarts("com.example.app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "com.example.app" {
+		t.Fatalf("Suppress calls = %v; want [com.example.app]", fake.suppressed)
+	}
+	if len(fake.resumed) != 0 {
+		t.Fatalf("resume calls before resume() = %v; want none", fake.resumed)
+	}
+
+	resume()
+	if len(fake.resumed) != 1 || fake.resumed[0] != "com.example.app" {
+		t.Fatalf("resume calls = %v; want [com.example.app]", fake.resumed)
+	}
+}
+
+// TestSetRestartSuppressor verifies the setter wires the field suppressRestarts reads.
+func TestSetRestartSuppressor(t *testing.T) {
+	fake := &fakeRestartSuppressor{}
+	c := &Client{}
+	c.SetRestartSuppressor(fake)
+
+	c.suppressRestarts("app")
+	if len(fake.suppressed) != 1 || fake.suppressed[0] != "app" {
+		t.Fatalf("Suppress calls after SetRestartSuppressor = %v; want [app]", fake.suppressed)
+	}
+}
+
+// TestIsMissingRuncStateDir is the regression guard for the missing-runc-
+// state-dir workaround (F2): forceDeleteTask must recognize the exact error
+// runc produces when a task's state directory under
+// /run/containerd/runc/<ns>/<id> is gone, and extract the directory path so
+// the caller can recreate it. The first case uses the literal string observed
+// live on hardware.
+func TestIsMissingRuncStateDir(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		wantDir string
+		wantOK  bool
+	}{
+		{
+			name:    "observed live error",
+			err:     errors.New("cannot open directory `/run/containerd/runc/default/com.wendylabs.examples.mcp-example`: No such file or directory"),
+			wantDir: "/run/containerd/runc/default/com.wendylabs.examples.mcp-example",
+			wantOK:  true,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+		},
+		{
+			name: "unrelated error",
+			err:  errors.New("failed precondition"),
+		},
+		{
+			name: "cannot open directory but not a runc state path",
+			err:  errors.New("cannot open directory `/some/other/path`: No such file or directory"),
+		},
+		{
+			name: "cannot open directory with no closing backtick",
+			err:  errors.New("cannot open directory `/run/containerd/runc/default/app: No such file or directory"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, ok := isMissingRuncStateDir(tt.err)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v; want %v", ok, tt.wantOK)
+			}
+			if ok && dir != tt.wantDir {
+				t.Errorf("dir = %q; want %q", dir, tt.wantDir)
+			}
+		})
+	}
+}
+
+// TestRecoverMissingRuncStateDir_PassesThroughUnrelatedErrors verifies
+// recoverMissingRuncStateDir (the F2 round-1-followup finding-3 shared
+// helper, used by both forceDeleteTask and terminateTask's task.Delete step)
+// never invokes retry for an error isMissingRuncStateDir doesn't recognize —
+// including nil, the success case.
+func TestRecoverMissingRuncStateDir_PassesThroughUnrelatedErrors(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+
+	t.Run("nil error", func(t *testing.T) {
+		called := false
+		got := c.recoverMissingRuncStateDir("ctr", nil, func() error {
+			called = true
+			return nil
+		})
+		if got != nil {
+			t.Errorf("got %v, want nil", got)
+		}
+		if called {
+			t.Error("retry called for nil error")
+		}
+	})
+
+	t.Run("unrelated error", func(t *testing.T) {
+		want := errors.New("boom")
+		called := false
+		got := c.recoverMissingRuncStateDir("ctr", want, func() error {
+			called = true
+			return nil
+		})
+		if got != want {
+			t.Errorf("got %v, want %v", got, want)
+		}
+		if called {
+			t.Error("retry called for an error that isn't the missing-state-dir failure")
+		}
+	})
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirSucceeds is the decision-flow
+// regression guard for finding 3 (the missing-runc-state-dir recovery was
+// unreachable from the stop path, the actual live-observed wedge): given a
+// directory that doesn't exist yet but whose parent is writable, MkdirAll
+// must succeed, retry must be invoked exactly once, and its result (success
+// or failure) must be returned unchanged. Uses t.TempDir() rather than a real
+// /run/containerd/runc/ path (isMissingRuncStateDir's prefix requirement),
+// since recreateRuncStateDirAndRetry is deliberately split out to be testable
+// against an arbitrary directory without needing root on a real Linux host —
+// see its doc comment.
+func TestRecreateRuncStateDirAndRetry_MkdirSucceeds(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	dir := filepath.Join(t.TempDir(), "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+	retryErr := errors.New("still failing after retry")
+
+	retryCalls := 0
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		retryCalls++
+		return retryErr
+	})
+
+	if retryCalls != 1 {
+		t.Fatalf("retry called %d times, want 1", retryCalls)
+	}
+	if got != retryErr {
+		t.Errorf("got %v, want retry's error %v returned unchanged", got, retryErr)
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		t.Errorf("expected %s to be recreated as a directory (stat err: %v)", dir, statErr)
+	}
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirSucceeds_RetrySucceeds covers the
+// success path end to end: mkdir succeeds, retry succeeds, the original
+// error is fully swallowed.
+func TestRecreateRuncStateDirAndRetry_MkdirSucceeds_RetrySucceeds(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	dir := filepath.Join(t.TempDir(), "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		return nil
+	})
+
+	if got != nil {
+		t.Errorf("got %v, want nil after a successful retry", got)
+	}
+}
+
+// TestRecreateRuncStateDirAndRetry_MkdirFails verifies that when MkdirAll
+// itself fails, retry is never called and the original error is preserved
+// (not the mkdir error) — a file occupying a path component that MkdirAll
+// needs to descend through makes it fail portably, without needing real
+// /run/containerd/runc permissions.
+func TestRecreateRuncStateDirAndRetry_MkdirFails(t *testing.T) {
+	c := &Client{logger: zap.NewNop()}
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: writing blocker file: %v", err)
+	}
+	dir := filepath.Join(blocker, "default", "com.example.app")
+	origErr := errors.New("cannot open directory `" + dir + "`: No such file or directory")
+
+	retryCalls := 0
+	got := c.recreateRuncStateDirAndRetry("ctr", dir, origErr, func() error {
+		retryCalls++
+		return nil
+	})
+
+	if retryCalls != 0 {
+		t.Errorf("retry called %d times after mkdir failure, want 0", retryCalls)
+	}
+	if got != origErr {
+		t.Errorf("got %v, want original error %v preserved", got, origErr)
 	}
 }

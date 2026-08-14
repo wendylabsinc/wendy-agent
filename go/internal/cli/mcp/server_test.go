@@ -51,10 +51,13 @@ func TestGuideResource_ReturnsText(t *testing.T) {
 	}
 }
 
-// TestFileSyncSync_NotRegistered locks in the removal of the dead filesync_sync
-// tool: it registers the same tool set Start() does and asserts the tool is
-// absent from the server's tool list.
-func TestFileSyncSync_NotRegistered(t *testing.T) {
+// TestDeadTools_NotRegistered locks in the removal of dead/duplicate tools:
+// it registers the same tool set Start() does and asserts each is absent
+// from the server's tool list. filesync_sync was removed as unused; cloud_run
+// and cloud_device_connect were removed as pure aliases of run and
+// cloud_connect (same handler, same schema) that only added tool-selection
+// noise for callers.
+func TestDeadTools_NotRegistered(t *testing.T) {
 	srv := server.NewMCPServer("t", "0")
 	s := New(&config.Config{}, nil)
 	s.registerStatusTools(srv)
@@ -69,7 +72,10 @@ func TestFileSyncSync_NotRegistered(t *testing.T) {
 	s.registerCloudTools(srv)
 	s.registerContainerMCPTools(context.Background(), srv) // no active connection; no-op
 
-	if _, ok := srv.ListTools()["filesync_sync"]; ok {
-		t.Fatal("filesync_sync should not be registered")
+	tools := srv.ListTools()
+	for _, name := range []string{"filesync_sync", "cloud_run", "cloud_device_connect"} {
+		if _, ok := tools[name]; ok {
+			t.Fatalf("%s should not be registered", name)
+		}
 	}
 }

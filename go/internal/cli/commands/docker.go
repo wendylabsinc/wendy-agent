@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -31,10 +32,69 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/espidftoolchain"
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
+	"github.com/wendylabsinc/wendy/go/internal/cli/optimize"
 	"github.com/wendylabsinc/wendy/go/internal/cli/swifttoolchain"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+// stagefileSourceName is the conventional filename for a Stagefile source,
+// matching the standalone stagefile tool's own CLI default.
+const stagefileSourceName = "build.stagefile.yaml"
+
+// stagefileLockName is the lockfile the Stagefile compiler maintains next to
+// its source (digest pins; see go/internal/stagefile/lock).
+const stagefileLockName = "build.stagefile.lock.yaml"
+
+// generatedDockerfileName is the internal build artifact prepareDockerBuildFile
+// writes (compiled Stagefile or auto-fixed Dockerfile copy). The writer, the
+// build-file-detection exclusion, and the watch ignore list all key off this
+// one name so they can't drift.
+const generatedDockerfileName = "Dockerfile.generated"
+
+// generatedDockerignoreName is the ignore file BuildKit pairs with
+// generatedDockerfileName (per-Dockerfile <name>.dockerignore precedence),
+// letting the Stagefile compiler's derived allowlist apply without touching a
+// user-authored .dockerignore.
+const generatedDockerignoreName = generatedDockerfileName + ".dockerignore"
+
+// writeGeneratedFile writes data to path only when the current content
+// differs, via a same-directory temp file + rename. The rename keeps
+// concurrent readers (parallel service builds sharing a context dir, buildx
+// reading .dockerignore at context-send time) from ever observing a
+// truncated file, and skipping the no-op write matters for `wendy watch`:
+// these files live inside the watched root, and rewriting identical bytes on
+// every build would re-trigger the watcher mid-deploy.
+func writeGeneratedFile(path string, data []byte) error {
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
+}
 
 // neighborExecCommandContext is an overridable wrapper around exec.CommandContext
 // used by neighbor-table helpers. Tests can replace this variable to stub
@@ -197,13 +257,16 @@ func requireRegistryAuth(ctx context.Context, conn *grpcclient.AgentConnection) 
 
 // detectProjectType determines the project type from the directory contents.
 //
-// Precedence: compose > Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
+// Precedence: compose > Stagefile/Dockerfile/Containerfile > Package.swift > *.xcodeproj > Python markers > ESP-IDF markers.
 // Returns an error only when multiple .xcodeproj directories are found.
 func detectProjectType(dir string) (string, error) {
 	for _, name := range []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			return "compose", nil
 		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return "docker", nil
 	}
 	// Check base build files first (fast path), then any variant.
 	for _, name := range []string{"Dockerfile", "Containerfile"} {
@@ -264,11 +327,18 @@ func isContainerBuildFileName(name string) bool {
 	if strings.HasSuffix(name, ".dockerignore") {
 		return false
 	}
+	// Never a user-authored build file — it's the internal artifact
+	// prepareDockerBuildFile writes and deliberately never deletes, so no
+	// detection path (project-type, build options, provider fallback) may
+	// treat it as a rival candidate on later runs.
+	if name == generatedDockerfileName {
+		return false
+	}
 	return validDockerfileNameRe.MatchString(name)
 }
 
 func preferredContainerBuildFileOption(options []BuildOption) *BuildOption {
-	for _, preferred := range []string{"Dockerfile", "Containerfile"} {
+	for _, preferred := range []string{stagefileSourceName, "Dockerfile", "Containerfile"} {
 		for i := range options {
 			if options[i].Type == "docker" && options[i].File == preferred {
 				return &options[i]
@@ -457,7 +527,200 @@ func confinedDockerfilePath(base, dockerfile string) (string, error) {
 	return resolved, nil
 }
 
-func resolveDockerfile(cwd, requested string, interactive bool) (string, error) {
+// prepareDockerBuildFile makes sure dockerfile is ready to hand to the
+// actual image builder, without ever modifying a real, user-authored
+// Dockerfile on disk:
+//
+//   - If dockerfile is stagefileSourceName, it's compiled via the stagefile
+//     package into "Dockerfile.generated" (plus ".dockerignore").
+//   - Otherwise, if any purely-additive `wendy project optimize` fix
+//     applies to it (see optimize.SafeAutoApplyFindings), the fixed text is
+//     written to "Dockerfile.generated" and that name is returned instead.
+//   - If neither applies, dockerfile is returned unchanged.
+//
+// Both branches write to the same generated filename — detectBuildOptions
+// already excludes it from re-entering detection as a rival build file, so
+// this covers both origins with one exclusion.
+func prepareDockerBuildFile(dir, dockerfile, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+	if dockerfile == stagefileSourceName {
+		return compileStagefile(dir, gpuArch, sfOpts...)
+	}
+	return applySafeOptimizeFixes(dir, dockerfile)
+}
+
+// debugStagefileOptions is the Stagefile compile options implied by --debug:
+// build swift and rust stages unoptimized so the deployed binary is debuggable.
+// Without the flag it returns nothing, leaving whatever profile the Stagefile
+// declares (which itself defaults to release) untouched.
+func debugStagefileOptions(debug bool) []stagefile.Option {
+	if !debug {
+		return nil
+	}
+	return []stagefile.Option{stagefile.WithBuildProfile(stagefile.BuildProfileDebug)}
+}
+
+// hasContainerBuildFile reports whether dir holds any docker build source
+// (Stagefile, Dockerfile/Containerfile, or a variant) without the compile /
+// write side effects resolveDockerfile now has — for callers that only need
+// existence, not a build-ready filename.
+func hasContainerBuildFile(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && isContainerBuildFileName(e.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+// agentConn is nil-safe access to a selected device's agent connection, so
+// callers that may not have resolved a device can still ask for one.
+func agentConn(target *SelectedDevice) *grpcclient.AgentConnection {
+	if target == nil {
+		return nil
+	}
+	return target.Agent
+}
+
+// resolveGPUArch answers which GPU architecture a build in dir targets, or ""
+// when the question doesn't arise.
+//
+// The device is the authority. A project deploys to whatever board is in front
+// of it, so the architecture is a property of this build and not something a
+// Stagefile could state without pinning itself to one board. flagArch is the
+// escape hatch for building with no device attached (CI, plain `wendy build`).
+//
+// Nothing is asked of the device unless dir's Stagefile actually declares a
+// cuda: stage — an ordinary build must not pay an RPC for a question it does
+// not have.
+func resolveGPUArch(ctx context.Context, dir, flagArch string, conn *grpcclient.AgentConnection) string {
+	return resolveGPUArchForDirs(ctx, []string{dir}, flagArch, conn)
+}
+
+// resolveGPUArchForDirs is resolveGPUArch across several build contexts — the
+// services of a multi-service or compose project, which share one device and
+// therefore one architecture. The device is asked at most once no matter how
+// many services there are, and not at all unless one of them declares cuda:.
+func resolveGPUArchForDirs(ctx context.Context, dirs []string, flagArch string, conn *grpcclient.AgentConnection) string {
+	if flagArch != "" {
+		return flagArch
+	}
+	if conn == nil {
+		return ""
+	}
+	needed := false
+	for _, d := range dirs {
+		if stagefile.NeedsGPUTarget(d) {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return ""
+	}
+	resp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
+	if err != nil {
+		// Deliberately not fatal. The compiler is where "a GPU stage needs a
+		// target" is enforced, and its error names the fix; failing here would
+		// replace that with a transport error that doesn't.
+		return ""
+	}
+	return resp.GetGpuArch()
+}
+
+// compileStagefile compiles dir's Stagefile into a real Dockerfile, writing
+// "Dockerfile.generated" and ".dockerignore" into dir and returning the
+// generated Dockerfile's filename.
+func compileStagefile(dir, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
+	// A download with no sha256 in the Stagefile is pinned by fetching it
+	// once, here, inline in the build. For model weights that is minutes of
+	// silence on the first build, so say which URL is being pinned rather
+	// than let it look like a hang.
+	//
+	// sfOpts comes last so a caller-supplied override (--debug's build profile)
+	// wins over the defaults assembled here.
+	opts := append([]stagefile.Option{
+		stagefile.WithGPUArch(gpuArch),
+		stagefile.WithProgress(func(url string) {
+			cliNotice("pinning download %s (first build only; writes its sha256 to %s)", url, stagefileLockName)
+		}),
+	}, sfOpts...)
+	dockerfileText, dockerignoreText, err := stagefile.CompileFile(dir, "", opts...)
+	if err != nil {
+		return "", fmt.Errorf("compiling %s: %w", stagefileSourceName, err)
+	}
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(dockerfileText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerfileName, err)
+	}
+	// BuildKit prefers <dockerfile>.dockerignore over .dockerignore for the
+	// file passed via -f, so the derived allowlist rides along without ever
+	// touching (or destroying) a user-authored .dockerignore in the project.
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerignoreName), []byte(dockerignoreText)); err != nil {
+		return "", fmt.Errorf("writing %s: %w", generatedDockerignoreName, err)
+	}
+	return generatedDockerfileName, nil
+}
+
+// applySafeOptimizeFixes runs the `wendy project optimize` analyzers against
+// the Dockerfile at dir/dockerfile and, if any purely-additive fix applies
+// (see optimize.SafeAutoApplyFindings — never npm-ci or a debug->release
+// swap, both of which can change build outcome or behavior), writes the
+// fixed text to "Dockerfile.generated" and returns that name. The real
+// dockerfile on disk is never modified. Returns dockerfile unchanged if
+// there's nothing to fix, or on any analysis error — this never blocks a
+// build over a static-analysis problem.
+func applySafeOptimizeFixes(dir, dockerfile string) (string, error) {
+	cfg, _ := loadOptConfig(dir)
+	targets, err := optimize.DiscoverTargets(dir, cfg, "arm64")
+	if err != nil {
+		return dockerfile, nil
+	}
+	dockerfilePath := filepath.Join(dir, dockerfile)
+	var target *optimize.Target
+	for i := range targets {
+		if targets[i].Dockerfile != nil && targets[i].Dockerfile.Path == dockerfilePath {
+			target = &targets[i]
+			break
+		}
+	}
+	if target == nil {
+		return dockerfile, nil // e.g. a named variant like Dockerfile.prod — optimize doesn't scan those today.
+	}
+
+	findings := optimize.SafeAutoApplyFindings(optimize.Analyze([]optimize.Target{*target}, optimize.DefaultAnalyzers()))
+	if len(findings) == 0 {
+		return dockerfile, nil
+	}
+	fixedLines, applied := optimize.ApplyFixesToLines(target.Dockerfile.Lines, findings)
+	anyApplied := false
+	for _, a := range applied {
+		if a.Applied {
+			anyApplied = true
+			break
+		}
+	}
+	if !anyApplied {
+		return dockerfile, nil
+	}
+	fixedText := strings.Join(fixedLines, "\n") + "\n"
+	if err := writeGeneratedFile(filepath.Join(dir, generatedDockerfileName), []byte(fixedText)); err != nil {
+		return dockerfile, nil
+	}
+	// A leftover Stagefile-derived allowlist (from a since-deleted
+	// build.stagefile.yaml) would silently shrink this build's context via
+	// BuildKit's per-Dockerfile ignore precedence — the auto-fixed copy must
+	// build with the same ignore rules as the original Dockerfile.
+	_ = os.Remove(filepath.Join(dir, generatedDockerignoreName))
+	return generatedDockerfileName, nil
+}
+
+func resolveDockerfile(cwd, requested string, interactive bool, gpuArch string, sfOpts ...stagefile.Option) (string, error) {
 	if requested != "" {
 		if err := validateDockerfileName(requested); err != nil {
 			return "", err
@@ -479,7 +742,7 @@ func resolveDockerfile(cwd, requested string, interactive bool) (string, error) 
 		if _, err := confinedDockerfilePath(cwd, file); err != nil {
 			return "", err
 		}
-		return file, nil
+		return prepareDockerBuildFile(cwd, file, gpuArch, sfOpts...)
 	}
 
 	if len(dockerfiles) <= 1 {
@@ -536,6 +799,17 @@ func detectBuildOptions(dir string) []BuildOption {
 			})
 			break
 		}
+	}
+
+	// Stagefile — the most specific, most intentional signal in a project
+	// (nobody has one by accident), so detected ahead of any plain
+	// Dockerfile/Containerfile that also happens to be present.
+	if _, err := os.Stat(filepath.Join(dir, stagefileSourceName)); err == nil {
+		options = append(options, BuildOption{
+			Label: stagefileSourceName + " (Stagefile)",
+			Type:  "docker",
+			File:  stagefileSourceName,
+		})
 	}
 
 	// Find all container build files.
@@ -605,7 +879,7 @@ func injectDebugpy(ctx context.Context, registryAddr, registryImage, platform st
 		return fmt.Errorf("writing debugpy Dockerfile: %w", err)
 	}
 
-	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS)
+	return buildAndPushImage(ctx, tmpDir, registryAddr, registryImage, platform, "", buildArgs, "", streamOutput, streamOutput, useMTLS, nil)
 }
 
 func generatePythonDockerfile(dir string, debug bool) (string, error) {
@@ -1209,7 +1483,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedPath := filepath.Join(configDir, base+"-mtls.applied")
 
 	certInfo := loadCLICert()
-	if certInfo == nil || certInfo.PemCertificate == "" || certInfo.PemPrivateKey == "" {
+	if certInfo == nil || certInfo.PemCertificate == "" || !certInfo.HasPrivateKey() {
 		return "", fmt.Errorf("mTLS connection but no CLI certificates available")
 	}
 
@@ -1234,7 +1508,11 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	if err := os.WriteFile(certPath, []byte(leafCertPEM), 0o644); err != nil {
 		return "", fmt.Errorf("writing client cert: %w", err)
 	}
-	if err := os.WriteFile(keyPath, []byte(certInfo.PemPrivateKey), 0o600); err != nil {
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return "", fmt.Errorf("loading client key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(keyPEM), 0o600); err != nil {
 		return "", fmt.Errorf("writing client key: %w", err)
 	}
 	if certInfo.PemCertificateChain != "" {
@@ -1395,12 +1673,130 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 func buildxLocalCacheDir(userCache, cacheKey string) string {
 	dir := filepath.Join(userCache, "wendy", "buildx")
 	if cacheKey != "" {
-		dir = filepath.Join(dir, sanitizeAppleContainerTag(cacheKey))
+		dir = filepath.Join(dir, buildxCacheSubdir(cacheKey))
 	}
 	return dir
 }
 
-func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+// buildxCacheSubdirNameLimit caps the readable part of a cache subdir name so
+// long service names cannot push the full cache path past filesystem limits.
+const buildxCacheSubdirNameLimit = 48
+
+// buildxCacheSubdir maps a build's cache key to one filesystem-safe path element
+// that is unique per key. The readable prefix keeps the cache browsable
+// (…/buildx/ros2multi-talker-<sha256>) while the full digest suffix makes
+// collisions computationally infeasible: sanitization alone folds distinct
+// service names together ("a/b" and "a-b", "Talker" and "talker"), and a
+// collision silently restores the concurrent-ingest corruption this isolation
+// exists to prevent (WDY-1711). The suffix also keeps the element from ever
+// being "." or ".." — service names are not schema-constrained, and a bare ".."
+// would place the cache outside its root.
+func buildxCacheSubdir(cacheKey string) string {
+	sum := sha256.Sum256([]byte(cacheKey))
+	name := sanitizeAppleContainerTag(cacheKey)
+	if len(name) > buildxCacheSubdirNameLimit {
+		name = name[:buildxCacheSubdirNameLimit]
+	}
+	return name + "-" + hex.EncodeToString(sum[:])
+}
+
+// cleanDockerConfigContents is the credential-helper-free Docker config the
+// build paths point DOCKER_CONFIG at.
+const cleanDockerConfigContents = `{"auths":{}}`
+
+// ensureCleanDockerConfig materializes a Docker config directory without a
+// credsStore credential helper and returns its path. It returns "" on Windows,
+// where the host's own config is used unchanged.
+//
+// On macOS the default config has "credsStore":"osxkeychain". When docker buildx
+// forwards credentials to buildkitd via the build session, it calls the
+// credential helper on the host. In CI (launchd agent context), the Keychain is
+// inaccessible and the helper is killed → "signal: killed". Public images (e.g.
+// python:3.11-slim) need no credentials; anonymous pull works fine with an empty
+// auths map.
+//
+// On Windows, Docker Desktop's credential helper is always available and
+// symlinks for builder-state lookup are unreliable in elevated processes, so we
+// skip this override entirely and let docker use its normal config.
+//
+// The config file is written atomically (temp file + rename) and only when its
+// contents differ. Concurrent service builds (the multibuild parallel path) all
+// call this while other builds' buildx clients are reading the very same file,
+// and a plain truncate-then-write briefly exposes an empty config to those
+// readers — one more piece of shared build state that must be concurrency-safe
+// (WDY-1711).
+func ensureCleanDockerConfig() (string, error) {
+	if runtime.GOOS == "windows" {
+		return "", nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".cache", "wendy", "docker-config")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("creating clean docker config directory: %w", err)
+	}
+
+	configFile := filepath.Join(dir, "config.json")
+	if existing, err := os.ReadFile(configFile); err != nil || string(existing) != cleanDockerConfigContents {
+		tmp, err := os.CreateTemp(dir, "config.json.*")
+		if err != nil {
+			return "", fmt.Errorf("writing clean docker config: %w", err)
+		}
+		tmpName := tmp.Name()
+		_, writeErr := tmp.WriteString(cleanDockerConfigContents)
+		if closeErr := tmp.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		if writeErr == nil {
+			writeErr = os.Chmod(tmpName, 0o644)
+		}
+		if writeErr == nil {
+			writeErr = os.Rename(tmpName, configFile)
+		}
+		if writeErr != nil {
+			os.Remove(tmpName)
+			return "", fmt.Errorf("writing clean docker config: %w", writeErr)
+		}
+	}
+
+	// Symlink subdirs that docker/buildx need to find plugins and builder state.
+	origDockerConfig := os.Getenv("DOCKER_CONFIG")
+	if origDockerConfig == "" {
+		origDockerConfig = filepath.Join(home, ".docker")
+	}
+	for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
+		dst := filepath.Join(dir, subdir)
+		if _, err := os.Lstat(dst); err != nil {
+			// best-effort: ignore if source doesn't exist or symlink fails
+			_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
+		}
+	}
+
+	return dir, nil
+}
+
+// dockerConfigEnv returns the build command's environment with DOCKER_CONFIG
+// pointed at configDir, or nil when configDir is empty (Windows) and the
+// process environment should be inherited unchanged.
+func dockerConfigEnv(configDir string) []string {
+	if configDir == "" {
+		return nil
+	}
+	baseEnv := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
+			baseEnv = append(baseEnv, e)
+		}
+	}
+	return append(baseEnv, "DOCKER_CONFIG="+configDir)
+}
+
+// dialErr, when non-nil, exposes the registry proxy's most recent failure to
+// reach the device registry; a refused dial short-circuits the retry loop.
+func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool, dialErr func() error) error {
 	// Serialize against other wendy processes: the buildx builder is shared, and
 	// reconfiguring or restarting it mid-build kills a concurrent build (#1017).
 	// Concurrent builds within this process share the lock via reference counting.
@@ -1432,44 +1828,9 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
+	cleanDockerConfigDir, err := ensureCleanDockerConfig()
 	if err != nil {
-		return fmt.Errorf("finding home directory: %w", err)
-	}
-
-	// Use a clean Docker config without a credsStore credential helper.
-	// On macOS, the default config has "credsStore":"osxkeychain". When
-	// docker buildx forwards credentials to buildkitd via the build session,
-	// it calls the credential helper on the host. In CI (launchd agent context),
-	// the Keychain is inaccessible and the helper is killed → "signal: killed".
-	// Public images (e.g. python:3.11-slim) need no credentials; anonymous
-	// pull works fine with an empty auths map.
-	//
-	// On Windows, Docker Desktop's credential helper is always available and
-	// symlinks for builder-state lookup are unreliable in elevated processes,
-	// so we skip this override entirely and let docker use its normal config.
-	var cleanDockerConfigDir string
-	if runtime.GOOS != "windows" {
-		origDockerConfig := os.Getenv("DOCKER_CONFIG")
-		if origDockerConfig == "" {
-			origDockerConfig = filepath.Join(home, ".docker")
-		}
-		cleanDockerConfigDir = filepath.Join(home, ".cache", "wendy", "docker-config")
-		if err := os.MkdirAll(cleanDockerConfigDir, 0o755); err != nil {
-			return fmt.Errorf("creating clean docker config directory: %w", err)
-		}
-		cleanDockerConfigFile := filepath.Join(cleanDockerConfigDir, "config.json")
-		if err := os.WriteFile(cleanDockerConfigFile, []byte(`{"auths":{}}`), 0o644); err != nil {
-			return fmt.Errorf("writing clean docker config: %w", err)
-		}
-		// Symlink subdirs that docker/buildx need to find plugins and builder state.
-		for _, subdir := range []string{"buildx", "cli-plugins", "contexts"} {
-			dst := filepath.Join(cleanDockerConfigDir, subdir)
-			if _, err := os.Lstat(dst); err != nil {
-				// best-effort: ignore if source doesn't exist or symlink fails
-				_ = os.Symlink(filepath.Join(origDockerConfig, subdir), dst)
-			}
-		}
+		return err
 	}
 
 	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
@@ -1479,7 +1840,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 		"buildx", "build",
 		"--builder", builder,
 		"--platform", platform,
-		"--progress", "plain",
+		"--progress", buildxProgressMode(ctx),
 	}
 	if dockerfile != "" {
 		// Callers validate the filename at their own boundary: the CLI flag path
@@ -1516,16 +1877,7 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 	// On macOS/Linux, override DOCKER_CONFIG so the buildx client does not
 	// call the host credential helper when setting up the build session.
 	// On Windows we leave DOCKER_CONFIG untouched (cleanDockerConfigDir == "").
-	var cmdEnv []string
-	if cleanDockerConfigDir != "" {
-		baseEnv := make([]string, 0, len(os.Environ()))
-		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, "DOCKER_CONFIG=") {
-				baseEnv = append(baseEnv, e)
-			}
-		}
-		cmdEnv = append(baseEnv, "DOCKER_CONFIG="+cleanDockerConfigDir)
-	}
+	cmdEnv := dockerConfigEnv(cleanDockerConfigDir)
 
 	fmt.Fprintf(logOutput, "[buildx] starting build: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
 
@@ -1551,10 +1903,14 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 			return nil
 		}
 		lastErr = err
-		// Don't retry on cancellation, on the final attempt, or for errors that
-		// don't look like a transient registry/push hiccup (a real build failure
-		// would just fail again and waste time).
-		if ctx.Err() != nil || attempt >= maxBuildPushAttempts || !isTransientPushError(capture.String()) {
+		var lastDial error
+		if dialErr != nil {
+			lastDial = dialErr()
+		}
+		if !shouldRetryPush(ctx.Err(), attempt, capture.String(), lastDial) {
+			if isDialRefused(lastDial) {
+				fmt.Fprintf(logOutput, "[buildx] device registry refused the connection; not retrying\n")
+			}
 			break
 		}
 		backoff := buildPushRetryBackoff(attempt)
@@ -1571,6 +1927,20 @@ func buildAndPushImage(ctx context.Context, dir, registryAddr, registryImage, pl
 // maxBuildPushAttempts bounds how many times a fused buildx build+push is retried
 // on a transient registry/push failure (WDY-1690).
 const maxBuildPushAttempts = 3
+
+// shouldRetryPush decides whether a failed buildx build+push attempt is worth
+// retrying. Cancellation, the final attempt, and non-transient output never
+// retry; neither does a registry that actively refused the proxy's dial —
+// nothing is listening there, so every retry would fail identically.
+func shouldRetryPush(ctxErr error, attempt int, output string, dialErr error) bool {
+	if ctxErr != nil || attempt >= maxBuildPushAttempts {
+		return false
+	}
+	if isDialRefused(dialErr) {
+		return false
+	}
+	return isTransientPushError(output)
+}
 
 // buildPushRetryBackoff returns the wait before retry N+1 (2s, 4s). The tunnel
 // recovers quickly once concurrent push pressure drops, so a short linear backoff
@@ -1610,14 +1980,14 @@ func (c *capturingWriter) Write(p []byte) (int, error) {
 
 func (c *capturingWriter) String() string { return string(c.buf) }
 
-func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAddr, registryImage, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool, dialErr func() error) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
+		return buildAndPushImage(ctx, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr)
 	case imageBuilderAppleContainer:
 		return buildAndPushImageWithAppleContainer(ctx, dir, registryImage, platform, dockerfile, buildArgs, streamOutput, logOutput, useMTLS)
 	default:
@@ -1625,12 +1995,12 @@ func buildAndPushImageWithBuilder(ctx context.Context, builder, dir, registryAdd
 	}
 }
 
-func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	if _, err := normalizeImageBuilder(builder); err != nil {
 		return err
 	}
 	if imageBuilderWasExplicit(builder) {
-		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+		return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 	}
 	if shouldAutoAttemptAppleContainerBuilder() {
 		// Apple Container builds don't use buildx, so the local-cache key never
@@ -1640,21 +2010,26 @@ func buildAndPushImageForAgent(ctx context.Context, conn *grpcclient.AgentConnec
 		// require Apple Container and get the startup prompt.
 		if err := checkAppleContainerBuilder(ctx); err != nil {
 			logAppleContainerFallback(logOutput, err)
-		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
+		} else if err := buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, imageBuilderAppleContainer, dir, repo, platform, dockerfile, buildArgs, "", streamOutput, logOutput); err == nil {
 			return nil
+		} else if isRegistryUnavailable(err) {
+			// The device registry refuses connections; the Docker fallback pushes
+			// to the same registry and would fail identically — surface the
+			// actionable error instead of burning a full rebuild.
+			return err
 		} else {
 			logAppleContainerFallback(logOutput, err)
 		}
 	}
-	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+	return buildAndPushImageForAgentWithBuilder(ctx, conn, regPort, agentOS, imageBuilderDocker, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
 }
 
-func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
 		return err
 	}
-	registryAddr, cleanup, useMTLS, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
+	registryAddr, cleanup, useMTLS, dialErr, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
 	if err != nil {
 		return err
 	}
@@ -1662,7 +2037,10 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
 	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
-	return buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS)
+	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
+		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+	}
+	return nil
 }
 
 func buildAndPushImageWithAppleContainer(ctx context.Context, dir, registryImage, platform, dockerfile string, buildArgs map[string]string, streamOutput, logOutput io.Writer, useMTLS bool) error {
@@ -1893,19 +2271,19 @@ func appleContainerTmpAlias(path string) (string, bool) {
 	return candidate, true
 }
 
-func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+func resolveRegistryForImageBuilder(ctx context.Context, conn *grpcclient.AgentConnection, port int, builder string) (registryAddr string, cleanup func(), useMTLS bool, dialErr func() error, err error) {
 	normalized, err := normalizeImageBuilder(builder)
 	if err != nil {
-		return "", nil, false, err
+		return "", nil, false, nil, err
 	}
 	switch normalized {
 	case imageBuilderDocker:
-		registryAddr, cleanup, err = resolveRegistryForAgent(ctx, conn, port)
-		return registryAddr, cleanup, conn.IsMTLS, err
+		registryAddr, cleanup, dialErr, err = resolveRegistryForAgent(ctx, conn, port)
+		return registryAddr, cleanup, conn.IsMTLS, dialErr, err
 	case imageBuilderAppleContainer:
 		return resolveRegistryForAppleContainer(ctx, conn, port)
 	default:
-		return "", nil, false, fmt.Errorf("unsupported image builder %q", normalized)
+		return "", nil, false, nil, fmt.Errorf("unsupported image builder %q", normalized)
 	}
 }
 
@@ -1935,8 +2313,10 @@ func registryHost(host string, port int) string {
 // the address is link-local or a routable LAN IP.
 //
 // The returned cleanup function MUST be called when the build is complete to
-// stop the proxy and release the port.
-func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), err error) {
+// stop the proxy and release the port. dialErr reports the proxy's most recent
+// failure to reach the device registry (nil when there is no proxy or the last
+// attempt succeeded); it is non-nil on every nil-error return.
+func resolveRegistry(ctx context.Context, host string, port int) (registryAddr string, cleanup func(), dialErr func() error, err error) {
 	resolved := resolveRegistryIP(host)
 
 	// On Linux, buildkitd uses host networking (--driver-opt network=host) and
@@ -1947,7 +2327,7 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 		if strings.Contains(addr, ":") && !strings.HasPrefix(addr, "[") {
 			addr = "[" + addr + "]"
 		}
-		return fmt.Sprintf("%s:%d", addr, port), func() {}, nil
+		return fmt.Sprintf("%s:%d", addr, port), func() {}, func() error { return nil }, nil
 	}
 
 	// On macOS, buildkitd runs inside the Colima VM and cannot reach LAN devices
@@ -1967,11 +2347,11 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 	// Bind loopback only; the Docker VM forwards host.docker.internal to it.
 	proxy, err := startRegistryProxy(ctx, registryProxyListenAddr, target)
 	if err != nil {
-		return "", nil, fmt.Errorf("starting registry proxy: %w", err)
+		return "", nil, nil, fmt.Errorf("starting registry proxy: %w", err)
 	}
 
 	registryAddr = fmt.Sprintf("host.docker.internal:%d", proxy.Port())
-	return registryAddr, proxy.Close, nil
+	return registryAddr, proxy.Close, proxy.LastDialError, nil
 }
 
 // ensureBuildxBuilderMu serializes builder creation so that concurrent service
@@ -1979,27 +2359,38 @@ func resolveRegistry(ctx context.Context, host string, port int) (registryAddr s
 // caller would fail with "existing instance for … but no append mode".
 var ensureBuildxBuilderMu sync.Mutex
 
-// dockerRegistryProxyAddrs caches one proxy address per AgentConnection. The
+// registryProxyEntry is the cached result of resolving a device registry for
+// one AgentConnection: the stable proxy address plus the proxy's dial-error
+// accessor, so every build sharing the proxy can also inspect why pushes
+// through it are failing (e.g. a Mac agent with no container runtime).
+type registryProxyEntry struct {
+	addr    string
+	dialErr func() error
+}
+
+// dockerRegistryProxyAddrs caches one proxy entry per AgentConnection. The
 // proxy is allocated once (port 0 → OS-assigned) and reused for all pushes on
 // that connection, so the buildx builder config never changes between concurrent
 // builds and no builder teardown races can kill an in-flight push.
 var (
 	dockerRegistryProxyCacheMu sync.Mutex
-	dockerRegistryProxyAddrs   = map[*grpcclient.AgentConnection]string{}
+	dockerRegistryProxyAddrs   = map[*grpcclient.AgentConnection]registryProxyEntry{}
 )
 
 // resolveRegistryForAgent determines how Docker buildx should reach the
 // agent's registry. The proxy is started once per connection and cached so
 // concurrent pushes to the same device share a stable host:port address.
-func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), err error) {
+// dialErr reports the shared proxy's most recent failure to reach the device
+// registry; it is non-nil on every nil-error return.
+func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), dialErr func() error, err error) {
 	// Hold the lock for the entire operation so concurrent callers block rather
 	// than each starting their own proxy. Proxy creation is just a local
 	// net.Listen call, so the lock is held only briefly.
 	dockerRegistryProxyCacheMu.Lock()
 	defer dockerRegistryProxyCacheMu.Unlock()
 
-	if addr, ok := dockerRegistryProxyAddrs[conn]; ok {
-		return addr, func() {}, nil
+	if entry, ok := dockerRegistryProxyAddrs[conn]; ok {
+		return entry.addr, func() {}, entry.dialErr, nil
 	}
 
 	// Start a proxy tied to context.Background so it outlives this push and is
@@ -2008,9 +2399,9 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 	var stopProxy func()
 
 	if conn.RegistryDialer == nil {
-		addr, stopProxy, err = resolveRegistry(context.Background(), conn.Host, port)
+		addr, stopProxy, dialErr, err = resolveRegistry(context.Background(), conn.Host, port)
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 	} else {
 		// Bind loopback only; the Docker VM forwards host.docker.internal to it.
@@ -2018,9 +2409,10 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 			return conn.RegistryDialer(ctx, port)
 		})
 		if proxyErr != nil {
-			return "", nil, fmt.Errorf("starting cloud registry proxy: %w", proxyErr)
+			return "", nil, nil, fmt.Errorf("starting cloud registry proxy: %w", proxyErr)
 		}
 		stopProxy = proxy.Close
+		dialErr = proxy.LastDialError
 		if runtime.GOOS == "linux" {
 			addr = fmt.Sprintf("127.0.0.1:%d", proxy.Port())
 		} else {
@@ -2028,7 +2420,7 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 		}
 	}
 
-	dockerRegistryProxyAddrs[conn] = addr
+	dockerRegistryProxyAddrs[conn] = registryProxyEntry{addr: addr, dialErr: dialErr}
 	conn.ExtraClosers = append(conn.ExtraClosers, closeFunc(func() {
 		dockerRegistryProxyCacheMu.Lock()
 		delete(dockerRegistryProxyAddrs, conn)
@@ -2036,7 +2428,7 @@ func resolveRegistryForAgent(ctx context.Context, conn *grpcclient.AgentConnecti
 		stopProxy()
 	}))
 
-	return addr, func() {}, nil
+	return addr, func() {}, dialErr, nil
 }
 
 // resolveRegistryForSwift is like resolveRegistry but for the Swift container
@@ -2083,7 +2475,11 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 				return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 			}
 			target := net.JoinHostPort(conn.Host, strconv.Itoa(port))
-			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain)
+			keyPEM, keyErr := certInfo.PrivateKeyPEM()
+			if keyErr != nil {
+				return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+			}
+			proxy, proxyErr := startMTLSRegistryHTTPProxy(target, certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain)
 			if proxyErr != nil {
 				return "", false, nil, nil, fmt.Errorf("starting mTLS registry proxy for Swift: %w", proxyErr)
 			}
@@ -2111,7 +2507,11 @@ func resolveRegistryForSwiftAgent(ctx context.Context, conn *grpcclient.AgentCon
 		if certInfo == nil {
 			return "", false, nil, nil, fmt.Errorf("mTLS connection but no CLI certificates available")
 		}
-		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, certInfo.PemPrivateKey, certInfo.PemCertificateChain, dial)
+		keyPEM, keyErr := certInfo.PrivateKeyPEM()
+		if keyErr != nil {
+			return "", false, nil, nil, fmt.Errorf("loading client key: %w", keyErr)
+		}
+		tlsDial, tlsErr := tlsClientDialer(certInfo.PemCertificate, keyPEM, certInfo.PemCertificateChain, dial)
 		if tlsErr != nil {
 			return "", false, nil, nil, fmt.Errorf("preparing TLS dialer for tunneled registry: %w", tlsErr)
 		}
@@ -2201,21 +2601,21 @@ func tlsClientDialer(certPEM, keyPEM, caPEM string, dial func(context.Context) (
 	}, nil
 }
 
-func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, err error) {
+func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.AgentConnection, port int) (registryAddr string, cleanup func(), useMTLS bool, dialErr func() error, err error) {
 	if conn.RegistryDialer != nil || conn.IsMTLS {
-		registryAddr, appleUseMTLS, cleanup, _, err := resolveRegistryForSwiftAgent(ctx, conn, port)
+		registryAddr, appleUseMTLS, cleanup, proxyDialErr, err := resolveRegistryForSwiftAgent(ctx, conn, port)
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, false, nil, err
 		}
 		if appleUseMTLS {
 			cleanup()
-			return "", nil, false, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
+			return "", nil, false, nil, fmt.Errorf("Apple Container builder cannot push directly to an mTLS registry over this connection; use --builder docker")
 		}
 		if !registryAddrUsesLoopback(registryAddr) {
 			cleanup()
-			return "", nil, false, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
+			return "", nil, false, nil, fmt.Errorf("Apple Container builder expected loopback registry proxy, got %q", registryAddr)
 		}
-		return registryAddr, cleanup, false, nil
+		return registryAddr, cleanup, false, proxyDialErr, nil
 	}
 
 	targetHost := resolveRegistryIP(conn.Host)
@@ -2225,9 +2625,49 @@ func resolveRegistryForAppleContainer(ctx context.Context, conn *grpcclient.Agen
 	target := net.JoinHostPort(targetHost, strconv.Itoa(port))
 	proxy, proxyErr := startRegistryProxy(ctx, "127.0.0.1:0", target)
 	if proxyErr != nil {
-		return "", nil, false, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
+		return "", nil, false, nil, fmt.Errorf("starting Apple Container registry proxy: %w", proxyErr)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, nil
+	return fmt.Sprintf("127.0.0.1:%d", proxy.Port()), proxy.Close, false, proxy.LastDialError, nil
+}
+
+// registryUnavailableError is a build/push failure reinterpreted as "the Mac
+// agent has no reachable container registry": the registry proxy recorded a
+// refused dial, meaning nothing was listening on the device's registry port.
+type registryUnavailableError struct {
+	host    string
+	dialErr error
+}
+
+func (e *registryUnavailableError) Error() string {
+	return fmt.Sprintf("the Mac agent at %s isn't running a container registry (%v); "+
+		"install Docker, OrbStack, or Apple's `container` CLI on the Mac — or update the "+
+		"Wendy agent there if a container runtime is already installed — to run Linux/WendyOS "+
+		"apps on it, or set \"platform\": \"darwin\" in wendy.json to run this app natively on "+
+		"the Mac instead", e.host, e.dialErr)
+}
+
+func (e *registryUnavailableError) Unwrap() error { return e.dialErr }
+
+func isRegistryUnavailable(err error) bool {
+	var r *registryUnavailableError
+	return errors.As(err, &r)
+}
+
+// maybeRegistryUnavailable reinterprets a build/push failure as "no registry on
+// the Mac agent" when the registry proxy recorded a refused dial. Darwin-only:
+// a Mac agent only runs a container registry when it found a Linux container
+// backend at startup (or is too old to serve the LAN listener at all), whereas
+// a WendyOS/Linux device always ships its container runtime as part of the OS —
+// a refused connection there is an actual fault, not a missing optional
+// dependency.
+func maybeRegistryUnavailable(agentOS, host string, dialErr func() error, buildErr error) error {
+	if !strings.EqualFold(agentOS, appconfig.PlatformDarwin) || dialErr == nil {
+		return buildErr
+	}
+	if de := dialErr(); isDialRefused(de) {
+		return &registryUnavailableError{host: host, dialErr: de}
+	}
+	return buildErr
 }
 
 // isDialRefused reports whether err looks like a TCP dial that was actively
@@ -2352,7 +2792,11 @@ func startMTLSRegistryProxy(ctx context.Context, target string) (*registryProxy,
 	if err != nil {
 		return nil, fmt.Errorf("extracting leaf certificate: %w", err)
 	}
-	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(certInfo.PemPrivateKey))
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
+	tlsCert, err := tls.X509KeyPair([]byte(leafPEM), []byte(keyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("loading client certificate: %w", err)
 	}
@@ -2453,8 +2897,8 @@ func (p *registryProxy) recordDialErr(err error) {
 	p.mu.Unlock()
 }
 
-// LastDialError returns the most recent error encountered while reaching the
-// proxy's target, or nil if every connection so far has reached it.
+// LastDialError returns the error from the most recent attempt to reach the
+// proxy's target, or nil if that attempt succeeded (or none was made yet).
 func (p *registryProxy) LastDialError() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -2488,6 +2932,10 @@ func (p *registryProxy) forward(ctx context.Context, client net.Conn) {
 		p.recordDialErr(err)
 		return
 	}
+	// Clear any earlier failure so LastDialError reflects the latest attempt:
+	// a transient refusal during builder bootstrap must not misclassify a later
+	// healthy push as "registry unavailable".
+	p.recordDialErr(nil)
 	defer remote.Close()
 
 	done := make(chan struct{}, 2)
@@ -2819,19 +3267,28 @@ func findIPv4NeighborLinux(ctx context.Context, ipv6LinkLocal string) string {
 	return ""
 }
 
+// swiftBuildConfig maps the --debug flag onto a SwiftPM build configuration.
+func swiftBuildConfig(debug bool) string {
+	if debug {
+		return "debug"
+	}
+	return "release"
+}
+
 // buildSwiftDockerImage cross-compiles a Swift package for Linux and builds a
 // Docker image containing the resulting binary. Returns the Docker image name.
 // Used for Swift projects that do not have a Dockerfile (Docker provider,
-// local build path, and provider-build path).
-func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
+// local build path, and provider-build path). buildConfig is the SwiftPM
+// configuration to compile with — use swiftBuildConfig to derive it from --debug.
+func buildSwiftDockerImage(ctx context.Context, dir, product, arch, buildConfig string, toolchainStdout, toolchainStderr io.Writer) (string, error) {
 	sdk, err := swifttoolchain.FindSwiftSDK(ctx, arch, toolchainStdout, toolchainStderr)
 	if err != nil {
 		return "", fmt.Errorf("finding Swift SDK: %w", err)
 	}
 
-	cliLogln("Cross-compiling %s for linux/%s...", product, arch)
+	cliLogln("Cross-compiling %s for linux/%s (%s)...", product, arch, buildConfig)
 	buildCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--product", product)
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--product", product)
 	buildCmd.Dir = dir
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
@@ -2841,7 +3298,7 @@ func buildSwiftDockerImage(ctx context.Context, dir, product, arch string, toolc
 
 	// Determine the binary output path.
 	showBinCmd := swifttoolchain.SwiftCommandContext(ctx,
-		"build", "-c", "release", "--swift-sdk="+sdk, "--show-bin-path")
+		"build", "-c", buildConfig, "--swift-sdk="+sdk, "--show-bin-path")
 	showBinCmd.Dir = dir
 	out, err := showBinCmd.CombinedOutput()
 	if err != nil {

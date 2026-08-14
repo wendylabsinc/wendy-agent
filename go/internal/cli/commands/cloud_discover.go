@@ -136,6 +136,14 @@ func (m cloudDiscoverModel) scanCmd() tea.Cmd {
 	onlineOnly := !m.all
 	return func() tea.Msg {
 		assets, err := fetchCloudAssetsFiltered(ctx, auth, onlineOnly)
+		if err == nil {
+			// This refreshes every cloudDiscoverRefreshInterval (10s) while the
+			// TUI is open, so this reseeds on every tick — wasteful, but
+			// best-effort and cheap enough (one config read + conditional
+			// write) not to special-case out of the picker's one true asset
+			// roster fetch.
+			seedPinsFromAssetsBestEffort(auth, assets)
+		}
 		return cloudScanMsg{assets: assets, err: err}
 	}
 }
@@ -341,6 +349,9 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 	rows := make([]bubbleTable.Row, 0, len(assets))
 	for _, a := range assets {
 		devType := humanReadableDeviceType(a.GetDeviceType())
+		if devType == "" {
+			devType = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+		}
 		ver := "—"
 		if v := versions[a.GetId()]; v != nil {
 			ver = v.GetVersion()
@@ -349,6 +360,9 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 			}
 			if devType == "" {
 				devType = humanReadableDeviceType(v.GetDeviceType())
+			}
+			if devType == "" {
+				devType = humanReadableOSType(v.GetOs(), v.GetCpuArchitecture())
 			}
 		}
 		rows = append(rows, bubbleTable.Row{"", a.GetName(), devType, ver})
@@ -379,9 +393,15 @@ func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResp
 		Type:    humanReadableDeviceType(a.GetDeviceType()),
 		Address: a.GetIpAddress(),
 	}
+	if info.Type == "" {
+		info.Type = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+	}
 	if ver != nil {
 		if info.Type == "" {
 			info.Type = humanReadableDeviceType(ver.GetDeviceType())
+		}
+		if info.Type == "" {
+			info.Type = humanReadableOSType(ver.GetOs(), ver.GetCpuArchitecture())
 		}
 		info.Version = ver.GetVersion()
 	}
@@ -456,11 +476,16 @@ func (m cloudDiscoverModel) startCloudUpdateCmd(asset *cloudpb.Asset) tea.Cmd {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("device did not report CPU architecture")}
 		}
+		osName := resp.GetOs()
 
-		binaryData, _, _, err := resolveAgentBinary(arch, false)
+		binaryData, actualVer, _, err := resolveAgentArtifact(osName, arch, false)
 		if err != nil {
 			conn.Close()
 			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: fmt.Errorf("resolving agent binary: %w", err)}
+		}
+		if err := checkDarwinArtifactVersion(osName, latestVer, actualVer); err != nil {
+			conn.Close()
+			return discoverUpdateDoneMsg{assetID: id, deviceName: name, err: err}
 		}
 
 		h := sha256.Sum256(binaryData)
@@ -486,6 +511,7 @@ func cloudDiscoverJSON(ctx context.Context, auth *config.AuthConfig, all bool) e
 	if err != nil {
 		return err
 	}
+	seedPinsFromAssetsBestEffort(auth, assets)
 	infos := make([]discoverDeviceInfo, 0, len(assets))
 	for _, a := range assets {
 		infos = append(infos, cloudDeviceInfoFromAsset(a, nil))
@@ -529,7 +555,11 @@ func fetchCloudAssetsFiltered(ctx context.Context, auth *config.AuthConfig, onli
 			req.OnlineOnly = boolPtr(true)
 		}
 
-		stream, err := assetClient.ListAssets(cloudContext(ctx, auth), req)
+		cloudCtx, err := cloudContext(ctx, auth)
+		if err != nil {
+			return nil, err
+		}
+		stream, err := assetClient.ListAssets(cloudCtx, req)
 		if err != nil {
 			return nil, fmt.Errorf("listing devices: %w", err)
 		}
