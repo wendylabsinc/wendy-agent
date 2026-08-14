@@ -5,6 +5,9 @@ dependencies.lock
 sdkconfig
 sdkconfig.old
 
+# EIM install artifacts
+eim_config.toml
+
 # Editor/tooling caches
 .cache/
 
