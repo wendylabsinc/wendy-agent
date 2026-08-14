@@ -2598,7 +2598,14 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		sizeClause = fmt.Sprintf(" (%s compressed)", tui.Value(tui.ByteProgress{Current: compressedTotal}.String()))
 	}
 	cliLogln("Diffing %s layer(s)%s against device...", tui.Value(fmt.Sprintf("%d", len(layers))), sizeClause)
-	headers, err := pushLayersWithProgress(ctx, conn.ContainerService, layers)
+	// pushConn may differ from conn: a tunnel drop mid-transfer reconnects to a
+	// fresh connection (WDY-2433), and everything from here on — RunContainer,
+	// its response stream, and the post-start hook — must ride that live
+	// connection rather than the one that just dropped.
+	pushConn, headers, err := pushLayersResumingTunnelDrops(ctx, conn, layers)
+	if pushConn != conn {
+		defer pushConn.Close()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2616,7 +2623,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
-	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
+	stream, err := pushConn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
 		ImageName:      imageName,
 		AppName:        appCfg.AppID,
 		Layers:         headers,
@@ -2630,7 +2637,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	if err != nil {
 		return nil, err
 	}
-	if err := streamRunContainer(ctx, conn, stream, appCfg, opts); err != nil {
+	if err := streamRunContainer(ctx, pushConn, stream, appCfg, opts); err != nil {
 		mark("runcontainer (assemble+create+start[+readiness])")
 		return nil, err
 	}
