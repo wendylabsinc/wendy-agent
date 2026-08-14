@@ -217,6 +217,32 @@ func PipelineArgs(streamURL string) []string {
 	}
 }
 
+// LoopbackPipelineArgs returns GStreamer pipeline tokens that decode an RTSP
+// H.264 stream to raw frames and write them into a v4l2loopback node at
+// devicePath. Unlike PipelineArgs there is no fd sink: the node is the sink,
+// and it is the container-facing device Loopback creates and Task C3's
+// supervisor feeds.
+//
+// This does transcode, unlike PipelineArgs — avdec_h264 and videoconvert are
+// required, not optional, because v4l2sink's CAPTURE side needs a real pixel
+// format: nothing consuming /dev/videoN as a normal camera device (a
+// container's own OpenCV, GStreamer, or FFmpeg pipeline) can be expected to
+// speak compressed H.264 off a v4l2 node the way the command-line interface's
+// own broadcast path does.
+//
+// location=streamURL carries the same credential-bearing form PipelineArgs
+// does, so SecretsIn/RedactText — keyed on any "location=" token — scrub a
+// diagnostic from this pipeline exactly the way they already scrub one from
+// PipelineArgs.
+func LoopbackPipelineArgs(streamURL, devicePath string) []string {
+	return []string{
+		"rtspsrc", "location=" + streamURL, "protocols=tcp", "latency=0", "timeout=5000000",
+		"!", "rtph264depay", "!", "h264parse", "config-interval=-1",
+		"!", "avdec_h264", "!", "videoconvert",
+		"!", "v4l2sink", "device=" + devicePath, "sync=false",
+	}
+}
+
 // FormatUnreachable builds the operator-facing message for a camera we cannot
 // reach, naming the address and when it was last seen.
 func FormatUnreachable(c Camera) string {
