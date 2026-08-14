@@ -8,6 +8,7 @@ service WendyVideoService {
     rpc SetCameraCredentials(SetCameraCredentialsRequest) returns (SetCameraCredentialsResponse);
     rpc ForgetCamera(ForgetCameraRequest) returns (ForgetCameraResponse);
     rpc RefreshCameras(RefreshCamerasRequest) returns (RefreshCamerasResponse);
+    rpc TestCameraCredentials(TestCameraCredentialsRequest) returns (TestCameraCredentialsResponse);
 }
 
 message VideoDevice {
@@ -67,6 +68,25 @@ message RefreshCamerasRequest {}
 
 message RefreshCamerasResponse {
     repeated VideoDevice devices = 1;
+}
+
+// TestCameraCredentials validates a network camera's stored login by probing
+// its RTSP port directly, without starting a capture pipeline. Local (V4L2)
+// device IDs are rejected: there is nothing to validate for them.
+message TestCameraCredentialsRequest {
+    uint32 device_id = 1;
+}
+
+message TestCameraCredentialsResponse {
+    enum Result {
+        RESULT_UNSPECIFIED = 0;
+        RESULT_OK           = 1; // the camera accepted the stored credentials
+        RESULT_AUTH_FAILED  = 2; // the camera rejected the stored credentials
+        RESULT_UNREACHABLE  = 3; // the camera's RTSP port could not be reached
+    }
+    Result result   = 1;
+    string address  = 2; // the address probed, e.g. "10.98.0.50"
+    string detail   = 3; // human-readable outcome; camera credentials are redacted
 }
 
 enum VideoCodec {
