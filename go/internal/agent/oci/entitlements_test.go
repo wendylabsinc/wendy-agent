@@ -2146,15 +2146,20 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 	}
 
 	origGlobs := nvidiaDeviceGlobs
-	origRenderGlobs := jetsonRenderDeviceGlobs
+	origRenderGlobs := renderDeviceGlobs
 	origStat := statCharDevice
 	origBoard := boardDetect
+	origKFD := kfdDevicePath
 	t.Cleanup(func() {
 		nvidiaDeviceGlobs = origGlobs
-		jetsonRenderDeviceGlobs = origRenderGlobs
+		renderDeviceGlobs = origRenderGlobs
 		statCharDevice = origStat
 		boardDetect = origBoard
+		kfdDevicePath = origKFD
 	})
+	// These tests exercise the NVIDIA path; point kfd at a node that cannot
+	// exist so applyGPU never takes the AMD branch even on an AMD test host.
+	kfdDevicePath = filepath.Join(dev, "no-such-kfd")
 
 	nvidiaDeviceGlobs = []string{
 		filepath.Join(dev, "nvidia*"),
@@ -2162,7 +2167,7 @@ func installFakeNvidiaDevTree(t *testing.T, numbers map[string][2]int64) string 
 		filepath.Join(dev, "nvhost-*gpu"),
 		filepath.Join(dev, "nvgpu", "igpu*", "*"),
 	}
-	jetsonRenderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
+	renderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
 	statCharDevice = func(p string) (int64, int64, error) {
 		rel, err := filepath.Rel(dev, p)
 		if err != nil {
@@ -2432,6 +2437,114 @@ func TestApplyGPU_UnexpectedNodeNameRejected(t *testing.T) {
 	for _, d := range spec.Linux.Resources.Devices {
 		if d.Allow && d.Major != nil && *d.Major == 8 {
 			t.Error("GPU entitlement emitted an allow rule for the rejected node's major")
+		}
+	}
+}
+
+// installFakeAMDDevTree builds a fake /dev with an AMD ROCm layout — /dev/kfd
+// (the compute device) and /dev/dri/renderD* (the GPU) — and points the apply
+// path's stat/glob vars at it. Restored on cleanup.
+func installFakeAMDDevTree(t *testing.T, kfd [2]int64, renderNodes map[string][2]int64) string {
+	t.Helper()
+	dev := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dev, "dri"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kfdPath := filepath.Join(dev, "kfd")
+	if err := os.WriteFile(kfdPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	renderNums := map[string][2]int64{}
+	for name, nums := range renderNodes {
+		p := filepath.Join(dev, "dri", name)
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		renderNums[p] = nums
+	}
+
+	origKFD := kfdDevicePath
+	origRenderGlobs := renderDeviceGlobs
+	origStatChar := statCharDevice
+	origStatNode := statDeviceNode
+	origRender := lookupRenderGID
+	t.Cleanup(func() {
+		kfdDevicePath = origKFD
+		renderDeviceGlobs = origRenderGlobs
+		statCharDevice = origStatChar
+		statDeviceNode = origStatNode
+		lookupRenderGID = origRender
+	})
+
+	kfdDevicePath = kfdPath
+	renderDeviceGlobs = []string{filepath.Join(dev, "dri", "renderD*")}
+	statCharDevice = func(p string) (int64, int64, error) {
+		if nums, ok := renderNums[p]; ok {
+			return nums[0], nums[1], nil
+		}
+		return 0, 0, fmt.Errorf("%s is not a character device node", p)
+	}
+	statDeviceNode = func(p string) (int64, int64, error) {
+		if p == kfdPath {
+			return kfd[0], kfd[1], nil
+		}
+		if nums, ok := renderNums[p]; ok {
+			return nums[0], nums[1], nil
+		}
+		return 0, 0, os.ErrNotExist
+	}
+	lookupRenderGID = func() (uint32, bool) { return 107, true }
+	return dev
+}
+
+// TestApplyGPU_AMDExposesKFDAndRenderNode is the load-bearing AMD ROCm test:
+// the gpu entitlement on a host with /dev/kfd must expose BOTH the compute
+// device and the DRM render node (KFD alone initializes but every allocation
+// fails), add the render/video groups, and NOT fall through to the NVIDIA
+// static-node fallback.
+func TestApplyGPU_AMDExposesKFDAndRenderNode(t *testing.T) {
+	dev := installFakeAMDDevTree(t,
+		[2]int64{511, 0},
+		map[string][2]int64{"renderD128": {226, 128}, "card0": {226, 0}},
+	)
+
+	spec := gpuSpec(t)
+
+	// /dev/kfd is bound and its exact major:minor is allowed (rw, no mknod).
+	kfdPath := filepath.Join(dev, "kfd")
+	if !hasMountDest(spec, kfdPath) {
+		t.Error("AMD GPU entitlement did not bind /dev/kfd")
+	}
+	if !hasExactDeviceRule(spec, 511, 0) {
+		t.Error("AMD GPU entitlement did not allow the kfd major:minor")
+	}
+
+	// The render node is granted; card0 (display) is not.
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "renderD128")); !ok {
+		t.Error("AMD GPU entitlement did not add the DRM render node")
+	}
+	if !hasExactDeviceRule(spec, 226, 128) {
+		t.Error("AMD GPU entitlement did not allow the render node major:minor")
+	}
+	if _, ok := deviceForPath(spec, filepath.Join(dev, "dri", "card0")); ok {
+		t.Error("AMD GPU entitlement granted the display card node")
+	}
+
+	// Render + video groups.
+	if !hasGID(spec, 107) {
+		t.Error("AMD GPU entitlement did not add the render GID")
+	}
+	if !hasGID(spec, videoGroupGID) {
+		t.Error("AMD GPU entitlement did not add the video GID")
+	}
+
+	// No NVIDIA fallback: the AMD branch returns before the major-195 path.
+	if hasMajorRule(spec, 195) {
+		t.Error("AMD host must not get the NVIDIA major-195 fallback rule")
+	}
+	for _, e := range spec.Process.Env {
+		if strings.HasPrefix(e, "NVIDIA_") {
+			t.Errorf("AMD host must not get NVIDIA env vars, got %q", e)
 		}
 	}
 }
