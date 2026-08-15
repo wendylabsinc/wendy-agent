@@ -243,6 +243,7 @@ jobs:
             exit 1
           fi
           "./${ARTIFACT}/wendy" --version
+          .github/scripts/stagefile-release-smoke_test.sh "./${ARTIFACT}/wendy"
 
       - name: Create archive
         run: |
@@ -304,6 +305,9 @@ jobs:
           go/scripts/build-wendy.sh "../${ARTIFACT}/wendy"
           # libusb is statically linked (LGPL-2.1): ship its attribution/license.
           cp NOTICE "${ARTIFACT}/NOTICE"
+
+      - name: Smoke test packaged Stagefile compiler
+        run: .github/scripts/stagefile-release-smoke_test.sh "./${{ matrix.artifact-name }}/wendy"
 
       - name: Create archive
         working-directory: .
