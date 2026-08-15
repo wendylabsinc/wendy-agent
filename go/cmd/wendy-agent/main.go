@@ -30,6 +30,7 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/agent/configpartition"
 	"github.com/wendylabsinc/wendy/go/internal/agent/container"
 	agentcontainerd "github.com/wendylabsinc/wendy/go/internal/agent/containerd"
+	agentdata "github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hardware"
 	"github.com/wendylabsinc/wendy/go/internal/agent/hostexec"
@@ -265,11 +266,21 @@ func main() {
 	provisioningSvcV2 := services.NewProvisioningServiceV2(provisioningSvc)
 	audioSvcV2 := services.NewAudioServiceV2(audioSvc)
 	telemetrySvcV2 := services.NewTelemetryServiceV2(logger, broadcaster, telemetryBuf)
+	dataRoot := os.Getenv("WENDY_DATA_DIR")
+	dataManager, err := agentdata.NewManager(dataRoot)
+	if err != nil {
+		logger.Fatal("Failed to initialize episode data manager", zap.Error(err))
+	}
+	dataManager.SetConsensusProvider(func(ctx context.Context) (timesync.Consensus, error) {
+		return timesync.QueryConsensus(ctx, timesync.Servers)
+	})
+	dataSvc := services.NewDataService(dataManager)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
 	// service is only registered when containerd connected (WDY-1332).
 	var ros2Svc *services.ROS2Service
 	if ctrdClient != nil {
 		ros2Svc = services.NewROS2Service(logger, ctrdClient, agentcontainerd.ROS2BagDir)
+		dataSvc.SetROS2Service(ros2Svc)
 	}
 
 	// OTEL receivers.
@@ -282,8 +293,10 @@ func main() {
 
 	notificationSender := services.NewCloudNotificationSender(logger, provisioningSvc)
 	systemAPISocketManager := services.NewAppSystemAPISocketManager(ctx, logger, notificationSender)
+	appDataSocketManager := services.NewAppDataSocketManager(ctx, logger, dataManager)
 	if ctrdClient != nil {
 		ctrdClient.SetAppSystemAPISocketProvider(systemAPISocketManager)
+		ctrdClient.SetAppDataSocketProvider(appDataSocketManager)
 		ctrdClient.RestoreAppSystemAPISockets(ctx)
 	}
 
@@ -293,6 +306,7 @@ func main() {
 	startROS2BatteryMonitor(ctx, logger, configPath)
 
 	videoSvc := services.NewVideoService(ctx, logger)
+	dataSvc.SetVideoService(videoSvc)
 	defer videoSvc.Shutdown()
 	// Network cameras have to be found before they can be listed, so probe
 	// periodically rather than only when a client asks.
@@ -508,6 +522,7 @@ func main() {
 		agentpbv2.RegisterWendyProvisioningServiceServer(srv, provisioningSvcV2)
 		agentpbv2.RegisterWendyAudioServiceServer(srv, audioSvcV2)
 		agentpbv2.RegisterWendyTelemetryServiceServer(srv, telemetrySvcV2)
+		agentpbv2.RegisterDataServiceServer(srv, dataSvc)
 		agentpbv2.RegisterWendyMeshServiceServer(srv, meshSvc)
 		if ros2Svc != nil {
 			agentpbv2.RegisterROS2ServiceServer(srv, ros2Svc)

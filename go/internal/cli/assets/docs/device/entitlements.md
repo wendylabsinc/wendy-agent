@@ -50,6 +50,28 @@ after socket restoration; no redeploy is required. Stopped containers retain
 their mount and can reconnect when started again. The directory remains until
 the last entitled service container is deleted.
 
+## Wendy Data
+
+Use `{ "type": "data" }` when an app needs to submit structured events or
+predictions to Wendy Data. The agent gives each app a private socket and derives
+the trusted app identity from that socket; the administrative agent socket is
+never exposed.
+
+| Boundary | Value |
+|---|---|
+| Read-only mount | `/run/wendy/data` |
+| Injected environment | `WENDY_DATA_SOCKET=/run/wendy/data/data.sock` |
+| Supplementary group | GID `2000` |
+| Maximum record | 64 KiB, versioned length-prefixed JSON |
+| Acknowledgements | `buffered`, `recorded`, or `rejected` |
+| Socket restoration | Recreated from persisted container labels after agent/daemon restart |
+
+When no Episode is active, accepted records enter the bounded application
+pre-roll buffer. They can trigger an armed campaign by event name or model
+uncertainty. Running containers reconnect after socket restoration without a
+redeploy. Apps without `data` receive neither this mount nor the environment
+variable.
+
 ## Network
 
 The network entitlement allows the container to access the device's network. If the device is connected to WiFi, Ethernet or otherwise, the container will have access to make TCP and UDP connections to the internet.

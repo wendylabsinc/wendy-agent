@@ -1,0 +1,21 @@
+name: forklift-failures
+fleet: warehouse-west
+
+sources:
+  - camera: front
+  - ros2: /lidar/points
+  - ros2: /vehicle/odometry
+
+capture:
+  buffer: 10s
+  after_trigger: 20s
+  triggers:
+    - event: emergency_stop
+    - model.uncertainty: "> 0.65"
+
+upload:
+  when: wifi
+  destination: s3://acme-ml/forklift
+
+export:
+  annotation: cvat
