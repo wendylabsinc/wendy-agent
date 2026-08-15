@@ -132,6 +132,7 @@ message BuildImageProgress {
 }
 
 message BuildImageResult {
-  // Digest of the pushed image, e.g. "sha256:...".
+  // Digest of the pushed image, e.g. "sha256:...". This may be empty when the
+  // build host's BuildKit version does not report a structured result digest.
   string image_digest = 1;
 }

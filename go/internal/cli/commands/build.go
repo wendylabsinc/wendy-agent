@@ -247,6 +247,9 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")
 	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark)")
+	if err := cmd.Flags().MarkHidden("build-host"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }

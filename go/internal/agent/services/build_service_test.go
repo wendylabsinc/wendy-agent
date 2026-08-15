@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -695,6 +697,7 @@ func (s staticChunkSource) OpenChunkStream(context.Context, [][32]byte) io.Reade
 type stubBuildStream struct {
 	agentpbv2.WendyBuildService_BuildImageServer
 	spec  *agentpbv2.BuildSpec
+	extra []*agentpbv2.BuildImageRequest
 	sent  []*agentpbv2.BuildImageProgress
 	recvd bool
 }
@@ -703,10 +706,49 @@ func (s *stubBuildStream) Context() context.Context { return context.Background(
 
 func (s *stubBuildStream) Recv() (*agentpbv2.BuildImageRequest, error) {
 	if s.recvd {
-		return nil, io.EOF
+		if len(s.extra) == 0 {
+			return nil, io.EOF
+		}
+		next := s.extra[0]
+		s.extra = s.extra[1:]
+		return next, nil
 	}
 	s.recvd = true
 	return &agentpbv2.BuildImageRequest{Spec: s.spec}, nil
+}
+
+func TestBuildImage_RejectsMessagesAfterTheBuildSpec(t *testing.T) {
+	err := enabledService(t).BuildImage(&stubBuildStream{
+		spec:  &agentpbv2.BuildSpec{},
+		extra: []*agentpbv2.BuildImageRequest{{}},
+	})
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "only the first") {
+		t.Fatalf("got %v, want InvalidArgument rejecting the extra stream message", err)
+	}
+}
+
+func TestRunBuildctl_FailsAndReapsOnOversizedLogLine(t *testing.T) {
+	original := buildctlCommandContext
+	t.Cleanup(func() { buildctlCommandContext = original })
+	t.Setenv("WENDY_BUILDCTL_TEST_HELPER", "oversized-line")
+	buildctlCommandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, os.Args[0], "-test.run=TestBuildctlHelperProcess")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := (&BuildService{}).runBuildctl(ctx, &stubBuildStream{}, nil)
+	if status.Code(err) != codes.Internal || !strings.Contains(err.Error(), "reading buildctl output") {
+		t.Fatalf("got %v, want an Internal scanner error instead of a hang or truncated success", err)
+	}
+}
+
+func TestBuildctlHelperProcess(t *testing.T) {
+	if os.Getenv("WENDY_BUILDCTL_TEST_HELPER") != "oversized-line" {
+		return
+	}
+	_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 2*1024*1024))
+	os.Exit(0)
 }
 
 func (s *stubBuildStream) Send(p *agentpbv2.BuildImageProgress) error {

@@ -197,12 +197,12 @@ func runRemoteBuild(
 	}
 
 	buildTitle := fmt.Sprintf("Building on %s for %s...", tui.Value(host), tui.Value(platform))
-	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(stream, logw io.Writer) error {
-		manifest, err := pushBuildContext(ctx, builder.ContainerService, tarBytes)
+	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(buildCtx context.Context, stream, logw io.Writer) error {
+		manifest, err := pushBuildContext(buildCtx, builder.ContainerService, tarBytes)
 		if err != nil {
 			return err
 		}
-		return streamRemoteBuild(ctx, builder, &agentpbv2.BuildSpec{
+		return streamRemoteBuild(buildCtx, builder, &agentpbv2.BuildSpec{
 			AppId:      appCfg.AppID,
 			Platform:   platform,
 			PushTarget: pushTarget,
@@ -237,21 +237,7 @@ func runRemoteBuild(
 // same connect machinery as --device so LKG cache, mDNS and cloud fallback all
 // apply unchanged.
 func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
-	prev := deviceFlag
-	deviceFlag = host
-	defer func() { deviceFlag = prev }()
-
-	// resolveTarget short-circuits to the cloud when the context carries a cloud
-	// device config, and that path reads the config's DeviceName rather than
-	// deviceFlag. Left alone, a cloud-routed invocation would silently connect
-	// to the TARGET again and "build on the build host" would quietly become
-	// "build on the target" — repoint it at the build host instead.
-	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
-		cloudCfg.DeviceName = host
-		ctx = context.WithValue(ctx, cloudDeviceContextKey{}, cloudCfg)
-	}
-
-	sel, err := resolveTarget(ctx, NonInteractive(), SuppressUpdateCheck())
+	sel, err := resolveTarget(ctx, SelectDevice(host), NonInteractive(), SuppressUpdateCheck())
 	if err != nil {
 		return nil, err
 	}

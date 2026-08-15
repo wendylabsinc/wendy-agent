@@ -663,7 +663,8 @@ func (*BuildImageProgress_Result) isBuildImageProgress_Event() {}
 
 type BuildImageResult struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Digest of the pushed image, e.g. "sha256:...".
+	// Digest of the pushed image, e.g. "sha256:...". This may be empty when the
+	// build host's BuildKit version does not report a structured result digest.
 	ImageDigest   string `protobuf:"bytes,1,opt,name=image_digest,json=imageDigest,proto3" json:"image_digest,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

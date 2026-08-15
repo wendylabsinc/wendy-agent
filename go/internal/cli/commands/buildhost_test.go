@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os/exec"
@@ -27,6 +28,36 @@ func TestBuildCmd_RefusesBuildHostRatherThanIgnoringIt(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wendy run") {
 		t.Fatalf("the refusal must point at the command that does support it, got: %v", err)
+	}
+}
+
+func TestBuildCmd_HidesUnsupportedBuildHostFlagFromHelp(t *testing.T) {
+	cmd := newBuildCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("build --help: %v", err)
+	}
+	if strings.Contains(out.String(), "--build-host") {
+		t.Fatalf("wendy build help must not advertise a flag that it always refuses:\n%s", out.String())
+	}
+}
+
+func TestSelectDevice_DoesNotMutateGlobalDeviceFlag(t *testing.T) {
+	original := deviceFlag
+	deviceFlag = "target-device"
+	t.Cleanup(func() { deviceFlag = original })
+
+	cfg := resolveConfig{}
+	SelectDevice(" spark-office ")(&cfg)
+	if cfg.device != "spark-office" {
+		t.Fatalf("explicit resolver device = %q, want spark-office", cfg.device)
+	}
+	if deviceFlag != "target-device" {
+		t.Fatalf("explicit nested selection mutated global deviceFlag to %q", deviceFlag)
 	}
 }
 

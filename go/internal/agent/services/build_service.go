@@ -289,6 +289,8 @@ func buildctlVersion() string {
 	return ""
 }
 
+var buildctlCommandContext = exec.CommandContext
+
 // buildkitSocketPresent reports whether a unix-socket buildkitd address points
 // at something that exists. A non-unix address is taken at face value: only the
 // device socket form can be checked without dialing.
@@ -315,6 +317,12 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	spec := first.GetSpec()
 	if spec == nil {
 		return status.Error(codes.InvalidArgument, "the first message must carry a build spec")
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		if err != nil {
+			return status.Errorf(codes.InvalidArgument, "reading build request: %v", err)
+		}
+		return status.Error(codes.InvalidArgument, "only the first build request message may carry data")
 	}
 	df := spec.GetDockerfileBuild()
 	if df == nil {
@@ -448,7 +456,7 @@ func (s *BuildService) reassembleContext(ctx context.Context, m *agentpbv2.Chunk
 // runBuildctl streams buildctl's plain-mode output back as log lines and
 // finishes with the result event.
 func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBuildService_BuildImageServer, args []string) error {
-	cmd := exec.CommandContext(ctx, "buildctl", args...)
+	cmd := buildctlCommandContext(ctx, "buildctl", args...)
 	cmd.Env = append(os.Environ(), "BUILDKIT_HOST="+s.buildkitAddress)
 	if s.logger != nil {
 		// Build-arg VALUES can carry secrets, so the command line is never logged raw.
@@ -470,8 +478,18 @@ func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBu
 		if sendErr := stream.Send(&agentpbv2.BuildImageProgress{
 			Event: &agentpbv2.BuildImageProgress_LogLine{LogLine: sc.Text()},
 		}); sendErr != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 			return sendErr
 		}
+	}
+	if scanErr := sc.Err(); scanErr != nil {
+		// Scanner stops draining the pipe after an oversized line or read error.
+		// Kill and reap buildctl before returning; waiting first can deadlock if
+		// the child is blocked writing the rest of that line into the full pipe.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return status.Errorf(codes.Internal, "reading buildctl output: %v", scanErr)
 	}
 	if err := cmd.Wait(); err != nil {
 		return status.Errorf(codes.Internal, "build failed: %v", err)
