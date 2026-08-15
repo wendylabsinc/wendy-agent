@@ -35,6 +35,9 @@ message ListVideoDevicesRequest {}
 
 message ListVideoDevicesResponse {
     repeated VideoDevice devices = 1;
+    // What this device can serve beyond a primary stream. Absent from older
+    // agents, which serve the primary stream only.
+    VideoStreamCapabilities stream_capabilities = 2;
 }
 
 message StreamVideoRequest {
@@ -73,6 +76,56 @@ message StreamVideoRequest {
     // intervals cost bitrate (keyframes are large); 1 makes every frame
     // independent and every rate exactly achievable, at the highest byte cost.
     uint32 keyframe_interval_frames = 6;
+
+    // Ask for a stream at different dimensions or bitrate from the camera's
+    // primary one. Unset means the primary stream, which is what every existing
+    // client gets and what this field must never change for them.
+    //
+    // Like max_framerate this is a property of one connection and takes no part
+    // in the stream-parameter compatibility check, so subscribers may ask for
+    // different variants without any of them being rejected.
+    //
+    // Variants are shared BY VALUE: subscribers asking for the same dimensions
+    // and bitrate are served by one stream between them, so the device's cost
+    // scales with the number of distinct variants, not with the number of
+    // clients. The obvious implementation — one variant per subscriber — is the
+    // expensive one and is deliberately not what this is.
+    //
+    // A device serves a variant only when it can do so without taking capacity
+    // from what else it runs, and reports what it can do in
+    // VideoStreamCapabilities. Ask for one it cannot serve and the request is
+    // refused with a reason; it is never silently downgraded, and never served
+    // by starving another workload on the device.
+    StreamVariant variant = 7;
+}
+
+// A requested stream shape. Zero fields mean "same as the primary stream", so
+// an empty variant is a request for the primary.
+message StreamVariant {
+    uint32 width       = 1; // pixels; 0 = same as primary
+    uint32 height      = 2; // pixels; 0 = same as primary
+    uint32 bitrate_bps = 3; // target bitrate; 0 = encoder default
+}
+
+// What a device can offer beyond its primary stream. Reported so a client can
+// ask for what exists rather than discovering the limits by being refused.
+message VideoStreamCapabilities {
+    // The device has usable video-encode hardware. When false, producing a
+    // second stream costs general CPU that may be committed to other work.
+    bool hardware_encode = 1;
+
+    // How many distinct variants the device will serve at once, beyond the
+    // primary. Zero means variants are unavailable and only the primary stream
+    // (optionally rate-limited per subscriber) can be served.
+    uint32 max_variants = 2;
+
+    // Why max_variants is what it is, in words, for a human reading a log or an
+    // error. Not meant to be parsed.
+    string variant_note = 3;
+
+    // Per-subscriber frame rate limiting (max_framerate) is available. It costs
+    // the device nothing, so it is offered wherever this agent runs.
+    bool per_subscriber_framerate = 4;
 }
 
 // Credentials for a network camera. Stored on the device, never returned by any
