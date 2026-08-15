@@ -59,7 +59,10 @@ func newCameraListCmd() *cobra.Command {
 
 			devices := resp.GetDevices()
 			if jsonOutput {
-				data, err := json.MarshalIndent(devices, "", "  ")
+				data, err := json.MarshalIndent(struct {
+					Devices            []*agentpb.VideoDevice           `json:"devices"`
+					StreamCapabilities *agentpb.VideoStreamCapabilities `json:"streamCapabilities,omitempty"`
+				}{devices, resp.GetStreamCapabilities()}, "", "  ")
 				if err != nil {
 					return err
 				}
@@ -84,6 +87,16 @@ func newCameraListCmd() *cobra.Command {
 				})
 			}
 			fmt.Print(tui.RenderTable(headers, rows))
+
+			// What this device will serve beyond the primary stream, so the
+			// limits are visible before a request is refused rather than after.
+			if caps := resp.GetStreamCapabilities(); caps != nil {
+				if caps.GetMaxVariants() > 0 {
+					cliLogln("Stream variants: up to %d distinct (shared between viewers asking for the same one).", caps.GetMaxVariants())
+				} else if note := caps.GetVariantNote(); note != "" {
+					cliLogln("Stream variants: unavailable — %s.", note)
+				}
+			}
 			return nil
 		},
 	}
@@ -225,7 +238,7 @@ func newCameraWatchCmd() *cobra.Command {
 // "view" is the canonical, listed command; "watch" reuses the same logic as a
 // hidden alias.
 func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
-	var deviceID, width, height, fps, maxFPS, keyframeInterval uint32
+	var deviceID, width, height, fps, maxFPS, keyframeInterval, variantWidth, variantHeight, variantBitrate uint32
 	var toStdout bool
 
 	cmd := &cobra.Command{
@@ -262,6 +275,16 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 				Framerate:              fps,
 				MaxFramerate:           maxFPS,
 				KeyframeIntervalFrames: keyframeInterval,
+			}
+			// Only send a variant when one was actually asked for: an empty
+			// variant and no variant mean the same thing, and older agents
+			// ignore the field entirely.
+			if variantWidth > 0 || variantHeight > 0 || variantBitrate > 0 {
+				req.Variant = &agentpb.StreamVariant{
+					Width:      variantWidth,
+					Height:     variantHeight,
+					BitrateBps: variantBitrate,
+				}
 			}
 			startStream := func() (videoStream, error) {
 				return conn.VideoService.StreamVideo(ctx, req)
@@ -309,6 +332,9 @@ func newCameraStreamCmd(use string, hidden bool) *cobra.Command {
 	cmd.Flags().Uint32Var(&height, "height", 0, "Frame height (0 = device default)")
 	cmd.Flags().Uint32Var(&fps, "fps", 0, "Framerate (0 = device default)")
 	cmd.Flags().Uint32Var(&maxFPS, "max-fps", 0, "Cap the frames this viewer receives, leaving other viewers untouched (0 = every frame). Saves uplink bandwidth, not device CPU")
+	cmd.Flags().Uint32Var(&variantWidth, "variant-width", 0, "Ask for a stream at this width, independently of other viewers (0 = the camera's primary stream)")
+	cmd.Flags().Uint32Var(&variantHeight, "variant-height", 0, "Ask for a stream at this height, independently of other viewers (0 = the camera's primary stream)")
+	cmd.Flags().Uint32Var(&variantBitrate, "variant-bitrate", 0, "Ask for a stream at this bitrate in bits/sec (0 = encoder default). Run 'camera list' to see whether this device serves variants")
 	cmd.Flags().Uint32Var(&keyframeInterval, "keyframe-interval", 0, "Frames between keyframes for the shared encoder (0 = half a second). Lower values make --max-fps more precise and cost bitrate")
 	cmd.Flags().BoolVar(&toStdout, "stdout", false, "Pipe encoded video to stdout instead of opening a window (codec: H.264 or VP8/WebM depending on device capabilities)")
 

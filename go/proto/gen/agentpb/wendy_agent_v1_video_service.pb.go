@@ -280,10 +280,13 @@ func (*ListVideoDevicesRequest) Descriptor() ([]byte, []int) {
 }
 
 type ListVideoDevicesResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Devices       []*VideoDevice         `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Devices []*VideoDevice         `protobuf:"bytes,1,rep,name=devices,proto3" json:"devices,omitempty"`
+	// What this device can serve beyond a primary stream. Absent from older
+	// agents, which serve the primary stream only.
+	StreamCapabilities *VideoStreamCapabilities `protobuf:"bytes,2,opt,name=stream_capabilities,json=streamCapabilities,proto3" json:"stream_capabilities,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ListVideoDevicesResponse) Reset() {
@@ -323,6 +326,13 @@ func (x *ListVideoDevicesResponse) GetDevices() []*VideoDevice {
 	return nil
 }
 
+func (x *ListVideoDevicesResponse) GetStreamCapabilities() *VideoStreamCapabilities {
+	if x != nil {
+		return x.StreamCapabilities
+	}
+	return nil
+}
+
 type StreamVideoRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId uint32                 `protobuf:"varint,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"` // numeric suffix N in /dev/videoN; 0 maps to /dev/video0
@@ -358,8 +368,28 @@ type StreamVideoRequest struct {
 	// intervals cost bitrate (keyframes are large); 1 makes every frame
 	// independent and every rate exactly achievable, at the highest byte cost.
 	KeyframeIntervalFrames uint32 `protobuf:"varint,6,opt,name=keyframe_interval_frames,json=keyframeIntervalFrames,proto3" json:"keyframe_interval_frames,omitempty"`
-	unknownFields          protoimpl.UnknownFields
-	sizeCache              protoimpl.SizeCache
+	// Ask for a stream at different dimensions or bitrate from the camera's
+	// primary one. Unset means the primary stream, which is what every existing
+	// client gets and what this field must never change for them.
+	//
+	// Like max_framerate this is a property of one connection and takes no part
+	// in the stream-parameter compatibility check, so subscribers may ask for
+	// different variants without any of them being rejected.
+	//
+	// Variants are shared BY VALUE: subscribers asking for the same dimensions
+	// and bitrate are served by one stream between them, so the device's cost
+	// scales with the number of distinct variants, not with the number of
+	// clients. The obvious implementation — one variant per subscriber — is the
+	// expensive one and is deliberately not what this is.
+	//
+	// A device serves a variant only when it can do so without taking capacity
+	// from what else it runs, and reports what it can do in
+	// VideoStreamCapabilities. Ask for one it cannot serve and the request is
+	// refused with a reason; it is never silently downgraded, and never served
+	// by starving another workload on the device.
+	Variant       *StreamVariant `protobuf:"bytes,7,opt,name=variant,proto3" json:"variant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StreamVideoRequest) Reset() {
@@ -434,6 +464,154 @@ func (x *StreamVideoRequest) GetKeyframeIntervalFrames() uint32 {
 	return 0
 }
 
+func (x *StreamVideoRequest) GetVariant() *StreamVariant {
+	if x != nil {
+		return x.Variant
+	}
+	return nil
+}
+
+// A requested stream shape. Zero fields mean "same as the primary stream", so
+// an empty variant is a request for the primary.
+type StreamVariant struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Width         uint32                 `protobuf:"varint,1,opt,name=width,proto3" json:"width,omitempty"`                             // pixels; 0 = same as primary
+	Height        uint32                 `protobuf:"varint,2,opt,name=height,proto3" json:"height,omitempty"`                           // pixels; 0 = same as primary
+	BitrateBps    uint32                 `protobuf:"varint,3,opt,name=bitrate_bps,json=bitrateBps,proto3" json:"bitrate_bps,omitempty"` // target bitrate; 0 = encoder default
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StreamVariant) Reset() {
+	*x = StreamVariant{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StreamVariant) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StreamVariant) ProtoMessage() {}
+
+func (x *StreamVariant) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StreamVariant.ProtoReflect.Descriptor instead.
+func (*StreamVariant) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *StreamVariant) GetWidth() uint32 {
+	if x != nil {
+		return x.Width
+	}
+	return 0
+}
+
+func (x *StreamVariant) GetHeight() uint32 {
+	if x != nil {
+		return x.Height
+	}
+	return 0
+}
+
+func (x *StreamVariant) GetBitrateBps() uint32 {
+	if x != nil {
+		return x.BitrateBps
+	}
+	return 0
+}
+
+// What a device can offer beyond its primary stream. Reported so a client can
+// ask for what exists rather than discovering the limits by being refused.
+type VideoStreamCapabilities struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The device has usable video-encode hardware. When false, producing a
+	// second stream costs general CPU that may be committed to other work.
+	HardwareEncode bool `protobuf:"varint,1,opt,name=hardware_encode,json=hardwareEncode,proto3" json:"hardware_encode,omitempty"`
+	// How many distinct variants the device will serve at once, beyond the
+	// primary. Zero means variants are unavailable and only the primary stream
+	// (optionally rate-limited per subscriber) can be served.
+	MaxVariants uint32 `protobuf:"varint,2,opt,name=max_variants,json=maxVariants,proto3" json:"max_variants,omitempty"`
+	// Why max_variants is what it is, in words, for a human reading a log or an
+	// error. Not meant to be parsed.
+	VariantNote string `protobuf:"bytes,3,opt,name=variant_note,json=variantNote,proto3" json:"variant_note,omitempty"`
+	// Per-subscriber frame rate limiting (max_framerate) is available. It costs
+	// the device nothing, so it is offered wherever this agent runs.
+	PerSubscriberFramerate bool `protobuf:"varint,4,opt,name=per_subscriber_framerate,json=perSubscriberFramerate,proto3" json:"per_subscriber_framerate,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *VideoStreamCapabilities) Reset() {
+	*x = VideoStreamCapabilities{}
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VideoStreamCapabilities) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VideoStreamCapabilities) ProtoMessage() {}
+
+func (x *VideoStreamCapabilities) ProtoReflect() protoreflect.Message {
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VideoStreamCapabilities.ProtoReflect.Descriptor instead.
+func (*VideoStreamCapabilities) Descriptor() ([]byte, []int) {
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *VideoStreamCapabilities) GetHardwareEncode() bool {
+	if x != nil {
+		return x.HardwareEncode
+	}
+	return false
+}
+
+func (x *VideoStreamCapabilities) GetMaxVariants() uint32 {
+	if x != nil {
+		return x.MaxVariants
+	}
+	return 0
+}
+
+func (x *VideoStreamCapabilities) GetVariantNote() string {
+	if x != nil {
+		return x.VariantNote
+	}
+	return ""
+}
+
+func (x *VideoStreamCapabilities) GetPerSubscriberFramerate() bool {
+	if x != nil {
+		return x.PerSubscriberFramerate
+	}
+	return false
+}
+
 // Credentials for a network camera. Stored on the device, never returned by any
 // RPC: listings report only has_credentials.
 type SetCameraCredentialsRequest struct {
@@ -447,7 +625,7 @@ type SetCameraCredentialsRequest struct {
 
 func (x *SetCameraCredentialsRequest) Reset() {
 	*x = SetCameraCredentialsRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -459,7 +637,7 @@ func (x *SetCameraCredentialsRequest) String() string {
 func (*SetCameraCredentialsRequest) ProtoMessage() {}
 
 func (x *SetCameraCredentialsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[4]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -472,7 +650,7 @@ func (x *SetCameraCredentialsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCameraCredentialsRequest.ProtoReflect.Descriptor instead.
 func (*SetCameraCredentialsRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{4}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SetCameraCredentialsRequest) GetDeviceId() uint32 {
@@ -504,7 +682,7 @@ type SetCameraCredentialsResponse struct {
 
 func (x *SetCameraCredentialsResponse) Reset() {
 	*x = SetCameraCredentialsResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -516,7 +694,7 @@ func (x *SetCameraCredentialsResponse) String() string {
 func (*SetCameraCredentialsResponse) ProtoMessage() {}
 
 func (x *SetCameraCredentialsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[5]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -529,7 +707,7 @@ func (x *SetCameraCredentialsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetCameraCredentialsResponse.ProtoReflect.Descriptor instead.
 func (*SetCameraCredentialsResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{5}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{7}
 }
 
 type ForgetCameraRequest struct {
@@ -541,7 +719,7 @@ type ForgetCameraRequest struct {
 
 func (x *ForgetCameraRequest) Reset() {
 	*x = ForgetCameraRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -553,7 +731,7 @@ func (x *ForgetCameraRequest) String() string {
 func (*ForgetCameraRequest) ProtoMessage() {}
 
 func (x *ForgetCameraRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[6]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -566,7 +744,7 @@ func (x *ForgetCameraRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetCameraRequest.ProtoReflect.Descriptor instead.
 func (*ForgetCameraRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{6}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ForgetCameraRequest) GetDeviceId() uint32 {
@@ -584,7 +762,7 @@ type ForgetCameraResponse struct {
 
 func (x *ForgetCameraResponse) Reset() {
 	*x = ForgetCameraResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -596,7 +774,7 @@ func (x *ForgetCameraResponse) String() string {
 func (*ForgetCameraResponse) ProtoMessage() {}
 
 func (x *ForgetCameraResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[7]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -609,7 +787,7 @@ func (x *ForgetCameraResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgetCameraResponse.ProtoReflect.Descriptor instead.
 func (*ForgetCameraResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{7}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{9}
 }
 
 type RefreshCamerasRequest struct {
@@ -620,7 +798,7 @@ type RefreshCamerasRequest struct {
 
 func (x *RefreshCamerasRequest) Reset() {
 	*x = RefreshCamerasRequest{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +810,7 @@ func (x *RefreshCamerasRequest) String() string {
 func (*RefreshCamerasRequest) ProtoMessage() {}
 
 func (x *RefreshCamerasRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[8]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +823,7 @@ func (x *RefreshCamerasRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshCamerasRequest.ProtoReflect.Descriptor instead.
 func (*RefreshCamerasRequest) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{8}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{10}
 }
 
 type RefreshCamerasResponse struct {
@@ -657,7 +835,7 @@ type RefreshCamerasResponse struct {
 
 func (x *RefreshCamerasResponse) Reset() {
 	*x = RefreshCamerasResponse{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -669,7 +847,7 @@ func (x *RefreshCamerasResponse) String() string {
 func (*RefreshCamerasResponse) ProtoMessage() {}
 
 func (x *RefreshCamerasResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[9]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -682,7 +860,7 @@ func (x *RefreshCamerasResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RefreshCamerasResponse.ProtoReflect.Descriptor instead.
 func (*RefreshCamerasResponse) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{9}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RefreshCamerasResponse) GetDevices() []*VideoDevice {
@@ -703,7 +881,7 @@ type VideoFrame struct {
 
 func (x *VideoFrame) Reset() {
 	*x = VideoFrame{}
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -715,7 +893,7 @@ func (x *VideoFrame) String() string {
 func (*VideoFrame) ProtoMessage() {}
 
 func (x *VideoFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[10]
+	mi := &file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -728,7 +906,7 @@ func (x *VideoFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VideoFrame.ProtoReflect.Descriptor instead.
 func (*VideoFrame) Descriptor() ([]byte, []int) {
-	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{10}
+	return file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *VideoFrame) GetData() []byte {
@@ -770,16 +948,28 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\x0fhas_credentials\x18\n" +
 	" \x01(\bR\x0ehasCredentials\x12\x16\n" +
 	"\x06online\x18\v \x01(\bR\x06online\"\x19\n" +
-	"\x17ListVideoDevicesRequest\"Z\n" +
+	"\x17ListVideoDevicesRequest\"\xbd\x01\n" +
 	"\x18ListVideoDevicesResponse\x12>\n" +
-	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\xdc\x01\n" +
+	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\x12a\n" +
+	"\x13stream_capabilities\x18\x02 \x01(\v20.wendy.agent.services.v1.VideoStreamCapabilitiesR\x12streamCapabilities\"\x9e\x02\n" +
 	"\x12StreamVideoRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x14\n" +
 	"\x05width\x18\x02 \x01(\rR\x05width\x12\x16\n" +
 	"\x06height\x18\x03 \x01(\rR\x06height\x12\x1c\n" +
 	"\tframerate\x18\x04 \x01(\rR\tframerate\x12#\n" +
 	"\rmax_framerate\x18\x05 \x01(\rR\fmaxFramerate\x128\n" +
-	"\x18keyframe_interval_frames\x18\x06 \x01(\rR\x16keyframeIntervalFrames\"r\n" +
+	"\x18keyframe_interval_frames\x18\x06 \x01(\rR\x16keyframeIntervalFrames\x12@\n" +
+	"\avariant\x18\a \x01(\v2&.wendy.agent.services.v1.StreamVariantR\avariant\"^\n" +
+	"\rStreamVariant\x12\x14\n" +
+	"\x05width\x18\x01 \x01(\rR\x05width\x12\x16\n" +
+	"\x06height\x18\x02 \x01(\rR\x06height\x12\x1f\n" +
+	"\vbitrate_bps\x18\x03 \x01(\rR\n" +
+	"bitrateBps\"\xc2\x01\n" +
+	"\x17VideoStreamCapabilities\x12'\n" +
+	"\x0fhardware_encode\x18\x01 \x01(\bR\x0ehardwareEncode\x12!\n" +
+	"\fmax_variants\x18\x02 \x01(\rR\vmaxVariants\x12!\n" +
+	"\fvariant_note\x18\x03 \x01(\tR\vvariantNote\x128\n" +
+	"\x18per_subscriber_framerate\x18\x04 \x01(\bR\x16perSubscriberFramerate\"r\n" +
 	"\x1bSetCameraCredentialsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +
@@ -825,7 +1015,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDescGZIP
 }
 
 var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_goTypes = []any{
 	(VideoTransport)(0),                  // 0: wendy.agent.services.v1.VideoTransport
 	(VideoCodec)(0),                      // 1: wendy.agent.services.v1.VideoCodec
@@ -833,34 +1023,38 @@ var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_goTypes = []
 	(*ListVideoDevicesRequest)(nil),      // 3: wendy.agent.services.v1.ListVideoDevicesRequest
 	(*ListVideoDevicesResponse)(nil),     // 4: wendy.agent.services.v1.ListVideoDevicesResponse
 	(*StreamVideoRequest)(nil),           // 5: wendy.agent.services.v1.StreamVideoRequest
-	(*SetCameraCredentialsRequest)(nil),  // 6: wendy.agent.services.v1.SetCameraCredentialsRequest
-	(*SetCameraCredentialsResponse)(nil), // 7: wendy.agent.services.v1.SetCameraCredentialsResponse
-	(*ForgetCameraRequest)(nil),          // 8: wendy.agent.services.v1.ForgetCameraRequest
-	(*ForgetCameraResponse)(nil),         // 9: wendy.agent.services.v1.ForgetCameraResponse
-	(*RefreshCamerasRequest)(nil),        // 10: wendy.agent.services.v1.RefreshCamerasRequest
-	(*RefreshCamerasResponse)(nil),       // 11: wendy.agent.services.v1.RefreshCamerasResponse
-	(*VideoFrame)(nil),                   // 12: wendy.agent.services.v1.VideoFrame
+	(*StreamVariant)(nil),                // 6: wendy.agent.services.v1.StreamVariant
+	(*VideoStreamCapabilities)(nil),      // 7: wendy.agent.services.v1.VideoStreamCapabilities
+	(*SetCameraCredentialsRequest)(nil),  // 8: wendy.agent.services.v1.SetCameraCredentialsRequest
+	(*SetCameraCredentialsResponse)(nil), // 9: wendy.agent.services.v1.SetCameraCredentialsResponse
+	(*ForgetCameraRequest)(nil),          // 10: wendy.agent.services.v1.ForgetCameraRequest
+	(*ForgetCameraResponse)(nil),         // 11: wendy.agent.services.v1.ForgetCameraResponse
+	(*RefreshCamerasRequest)(nil),        // 12: wendy.agent.services.v1.RefreshCamerasRequest
+	(*RefreshCamerasResponse)(nil),       // 13: wendy.agent.services.v1.RefreshCamerasResponse
+	(*VideoFrame)(nil),                   // 14: wendy.agent.services.v1.VideoFrame
 }
 var file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_depIdxs = []int32{
 	0,  // 0: wendy.agent.services.v1.VideoDevice.transport:type_name -> wendy.agent.services.v1.VideoTransport
 	2,  // 1: wendy.agent.services.v1.ListVideoDevicesResponse.devices:type_name -> wendy.agent.services.v1.VideoDevice
-	2,  // 2: wendy.agent.services.v1.RefreshCamerasResponse.devices:type_name -> wendy.agent.services.v1.VideoDevice
-	1,  // 3: wendy.agent.services.v1.VideoFrame.codec:type_name -> wendy.agent.services.v1.VideoCodec
-	3,  // 4: wendy.agent.services.v1.WendyVideoService.ListVideoDevices:input_type -> wendy.agent.services.v1.ListVideoDevicesRequest
-	5,  // 5: wendy.agent.services.v1.WendyVideoService.StreamVideo:input_type -> wendy.agent.services.v1.StreamVideoRequest
-	6,  // 6: wendy.agent.services.v1.WendyVideoService.SetCameraCredentials:input_type -> wendy.agent.services.v1.SetCameraCredentialsRequest
-	8,  // 7: wendy.agent.services.v1.WendyVideoService.ForgetCamera:input_type -> wendy.agent.services.v1.ForgetCameraRequest
-	10, // 8: wendy.agent.services.v1.WendyVideoService.RefreshCameras:input_type -> wendy.agent.services.v1.RefreshCamerasRequest
-	4,  // 9: wendy.agent.services.v1.WendyVideoService.ListVideoDevices:output_type -> wendy.agent.services.v1.ListVideoDevicesResponse
-	12, // 10: wendy.agent.services.v1.WendyVideoService.StreamVideo:output_type -> wendy.agent.services.v1.VideoFrame
-	7,  // 11: wendy.agent.services.v1.WendyVideoService.SetCameraCredentials:output_type -> wendy.agent.services.v1.SetCameraCredentialsResponse
-	9,  // 12: wendy.agent.services.v1.WendyVideoService.ForgetCamera:output_type -> wendy.agent.services.v1.ForgetCameraResponse
-	11, // 13: wendy.agent.services.v1.WendyVideoService.RefreshCameras:output_type -> wendy.agent.services.v1.RefreshCamerasResponse
-	9,  // [9:14] is the sub-list for method output_type
-	4,  // [4:9] is the sub-list for method input_type
-	4,  // [4:4] is the sub-list for extension type_name
-	4,  // [4:4] is the sub-list for extension extendee
-	0,  // [0:4] is the sub-list for field type_name
+	7,  // 2: wendy.agent.services.v1.ListVideoDevicesResponse.stream_capabilities:type_name -> wendy.agent.services.v1.VideoStreamCapabilities
+	6,  // 3: wendy.agent.services.v1.StreamVideoRequest.variant:type_name -> wendy.agent.services.v1.StreamVariant
+	2,  // 4: wendy.agent.services.v1.RefreshCamerasResponse.devices:type_name -> wendy.agent.services.v1.VideoDevice
+	1,  // 5: wendy.agent.services.v1.VideoFrame.codec:type_name -> wendy.agent.services.v1.VideoCodec
+	3,  // 6: wendy.agent.services.v1.WendyVideoService.ListVideoDevices:input_type -> wendy.agent.services.v1.ListVideoDevicesRequest
+	5,  // 7: wendy.agent.services.v1.WendyVideoService.StreamVideo:input_type -> wendy.agent.services.v1.StreamVideoRequest
+	8,  // 8: wendy.agent.services.v1.WendyVideoService.SetCameraCredentials:input_type -> wendy.agent.services.v1.SetCameraCredentialsRequest
+	10, // 9: wendy.agent.services.v1.WendyVideoService.ForgetCamera:input_type -> wendy.agent.services.v1.ForgetCameraRequest
+	12, // 10: wendy.agent.services.v1.WendyVideoService.RefreshCameras:input_type -> wendy.agent.services.v1.RefreshCamerasRequest
+	4,  // 11: wendy.agent.services.v1.WendyVideoService.ListVideoDevices:output_type -> wendy.agent.services.v1.ListVideoDevicesResponse
+	14, // 12: wendy.agent.services.v1.WendyVideoService.StreamVideo:output_type -> wendy.agent.services.v1.VideoFrame
+	9,  // 13: wendy.agent.services.v1.WendyVideoService.SetCameraCredentials:output_type -> wendy.agent.services.v1.SetCameraCredentialsResponse
+	11, // 14: wendy.agent.services.v1.WendyVideoService.ForgetCamera:output_type -> wendy.agent.services.v1.ForgetCameraResponse
+	13, // 15: wendy.agent.services.v1.WendyVideoService.RefreshCameras:output_type -> wendy.agent.services.v1.RefreshCamerasResponse
+	11, // [11:16] is the sub-list for method output_type
+	6,  // [6:11] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_init() }
@@ -874,7 +1068,7 @@ func file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc), len(file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -96,11 +96,11 @@ func TestPacedAndUnpacedSubscribersCoexist(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	idFull, chFull, err := h.subscribe(0)
+	idFull, chFull, err := h.subscribe(0, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe(0): %v", err)
 	}
-	idSlow, chSlow, err := h.subscribe(2) // 2 fps
+	idSlow, chSlow, err := h.subscribe(2, variantKey{}, primaryOnlyCaps()) // 2 fps
 	if err != nil {
 		t.Fatalf("subscribe(2): %v", err)
 	}
@@ -147,7 +147,7 @@ func TestPacingDropsWholeGroups(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(4) // 4 fps: one 5-frame group buys 1.25s
+	id, ch, err := h.subscribe(4, variantKey{}, primaryOnlyCaps()) // 4 fps: one 5-frame group buys 1.25s
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestAllIntraStreamHonoursRateExactly(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(2) // 2 fps out of a 30 fps camera
+	id, ch, err := h.subscribe(2, variantKey{}, primaryOnlyCaps()) // 2 fps out of a 30 fps camera
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestPacingDoesNotBurstAfterIdle(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(1)
+	id, ch, err := h.subscribe(1, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestPacedSubscriberWaitsForFirstKeyframe(t *testing.T) {
 	h, _, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(30)
+	id, ch, err := h.subscribe(30, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestUnpacedSubscriberUnaffectedByKeyframes(t *testing.T) {
 	h, _, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(0)
+	id, ch, err := h.subscribe(0, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestPacingIgnoredForNonH264(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(1)
+	id, ch, err := h.subscribe(1, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -310,11 +310,11 @@ func TestKeyframeScanSkippedWithoutPacedSubscribers(t *testing.T) {
 	h, _, cancel := newPacingHub(t)
 	defer cancel()
 
-	idFull, _, _ := h.subscribe(0)
+	idFull, _, _ := h.subscribe(0, variantKey{}, primaryOnlyCaps())
 	if h.paced != 0 {
 		t.Fatalf("paced = %d after an unlimited subscribe, want 0", h.paced)
 	}
-	idSlow, _, _ := h.subscribe(5)
+	idSlow, _, _ := h.subscribe(5, variantKey{}, primaryOnlyCaps())
 	if h.paced != 1 {
 		t.Fatalf("paced = %d after a limited subscribe, want 1", h.paced)
 	}
@@ -436,7 +436,7 @@ func TestPacedCountSurvivesAbsurdRate(t *testing.T) {
 	h, _, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(4_000_000_000)
+	id, ch, err := h.subscribe(4_000_000_000, variantKey{}, primaryOnlyCaps())
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestPacingChargesEveryPictureInABuffer(t *testing.T) {
 	h, clock, cancel := newPacingHub(t)
 	defer cancel()
 
-	id, ch, err := h.subscribe(2) // 2 fps
+	id, ch, err := h.subscribe(2, variantKey{}, primaryOnlyCaps()) // 2 fps
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}

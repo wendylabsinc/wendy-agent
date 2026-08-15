@@ -336,6 +336,9 @@ type subscriber struct {
 	// without the frames it references, so a group is delivered whole or not at
 	// all.
 	admitting bool
+	// variant is what this subscriber asked for, kept so leaving releases the
+	// right entry.
+	variant variantKey
 	// nextDue is when this subscriber has earned its next frame. Every frame
 	// delivered pushes it one interval further out, so a group of fifteen frames
 	// costs fifteen intervals and the *average* delivered rate is what the
@@ -367,6 +370,14 @@ type deviceHub struct {
 	// max_framerate is deliberately absent: it configures nothing on the device,
 	// so two subscribers may disagree about it freely.
 	width, height, framerate, keyframeInterval uint32
+	// negotiatedWidth/Height are what the camera actually settled on, which is
+	// only known once the producer has configured it. A request for exactly
+	// these dimensions is the primary stream, not a variant.
+	negotiatedWidth, negotiatedHeight uint32
+	// variants counts subscribers per distinct variant. Keyed by value, so
+	// subscribers wanting the same shape share one entry — the device's cost
+	// follows the number of keys here, not the number of subscribers.
+	variants map[variantKey]int
 	// paced counts subscribers with a rate limit. While it is zero the hub skips
 	// keyframe detection entirely, so a device serving only unlimited
 	// subscribers does exactly the work it did before.
@@ -417,7 +428,7 @@ const maxSubscribersPerHub = 16
 // Returns codes.Unavailable if the hub's context has already been cancelled
 // (checked atomically under h.mu so no subscriber can be added to a dying hub),
 // or codes.ResourceExhausted if the hub already has maxSubscribersPerHub active subscribers.
-func (h *deviceHub) subscribe(maxFramerate uint32) (int, chan *videoFrame, error) {
+func (h *deviceHub) subscribe(maxFramerate uint32, variant variantKey, caps *agentpb.VideoStreamCapabilities) (int, chan *videoFrame, error) {
 	ch := make(chan *videoFrame, 4)
 	h.mu.Lock()
 	if h.ctx.Err() != nil {
@@ -428,9 +439,15 @@ func (h *deviceHub) subscribe(maxFramerate uint32) (int, chan *videoFrame, error
 		h.mu.Unlock()
 		return 0, nil, status.Errorf(codes.ResourceExhausted, "too many concurrent streams for this device (max %d)", maxSubscribersPerHub)
 	}
+	// Admission before any state is created, so a refused variant leaves the
+	// hub exactly as it was.
+	if err := h.admitVariant(variant, caps); err != nil {
+		h.mu.Unlock()
+		return 0, nil, err
+	}
 	id := h.nextID
 	h.nextID++
-	sub := &subscriber{ch: ch}
+	sub := &subscriber{ch: ch, variant: variant}
 	if maxFramerate > 0 {
 		// Clamped to a non-zero interval: a rate so high that a second divides
 		// to nothing would otherwise leave minInterval at 0, which reads as
@@ -455,8 +472,11 @@ func (h *deviceHub) subscribe(maxFramerate uint32) (int, chan *videoFrame, error
 // getOrCreateHub could observe h.ctx.Err()==nil between the delete and the cancel call.
 func (h *deviceHub) unsubscribe(id int) {
 	h.mu.Lock()
-	if sub, ok := h.subs[id]; ok && sub.minInterval > 0 {
-		h.paced--
+	if sub, ok := h.subs[id]; ok {
+		if sub.minInterval > 0 {
+			h.paced--
+		}
+		h.releaseVariant(sub.variant)
 	}
 	delete(h.subs, id)
 	if len(h.subs) == 0 {
@@ -912,7 +932,13 @@ func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVide
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to enumerate video devices: %v", err)
 	}
-	return &agentpb.ListVideoDevicesResponse{Devices: devices}, nil
+	return &agentpb.ListVideoDevicesResponse{
+		Devices: devices,
+		// Reported alongside the devices so a client learns what it may ask for
+		// in the same call it uses to find a camera, rather than by having a
+		// request refused.
+		StreamCapabilities: s.videoStreamCapabilities(),
+	}, nil
 }
 
 // resolveSource maps a device ID onto the thing it names. IDs in the network
@@ -1059,7 +1085,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 					describeStreamParams(h.width, h.height, h.framerate, h.keyframeInterval),
 					describeStreamParams(req.GetWidth(), req.GetHeight(), req.GetFramerate(), req.GetKeyframeIntervalFrames()))
 			}
-			id, ch, err = h.subscribe(req.GetMaxFramerate())
+			id, ch, err = h.subscribe(req.GetMaxFramerate(), variantFromRequest(req), s.videoStreamCapabilities())
 			s.mu.Unlock()
 			if err != nil {
 				if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
@@ -1117,6 +1143,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	hctx, cancel := context.WithCancel(s.ctx)
 	h = &deviceHub{
 		subs:             make(map[int]*subscriber),
+		variants:         make(map[variantKey]int),
 		ctx:              hctx,
 		cancel:           cancel,
 		done:             make(chan struct{}),
@@ -1125,15 +1152,40 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 		framerate:        req.GetFramerate(),
 		keyframeInterval: req.GetKeyframeIntervalFrames(),
 		logger:           s.logger,
+		// Seeded from the request and corrected by the producer once the camera
+		// has actually negotiated. A caller that names a size explicitly can
+		// therefore ask for a variant of that same size and be recognised as
+		// wanting the primary, without waiting for the camera to come up.
+		negotiatedWidth:  req.GetWidth(),
+		negotiatedHeight: req.GetHeight(),
 	}
-	// New hub: the first subscriber is always within the cap.
-	id, ch, _ = h.subscribe(req.GetMaxFramerate())
+	// New hub: the first subscriber is always within the subscriber cap, but its
+	// variant still has to be admissible — on a hub this new the camera has not
+	// negotiated a size yet, so only the primary stream is certain to be free.
+	id, ch, err = h.subscribe(req.GetMaxFramerate(), variantFromRequest(req), s.videoStreamCapabilities())
+	if err != nil {
+		// The hub was never published, so nothing can be waiting on it; just
+		// release its context.
+		cancel()
+		s.mu.Unlock()
+		return nil, 0, nil, err
+	}
 	s.hubs[path] = h
 	s.mu.Unlock()
 
 	s.wg.Add(1)
 	go s.runProducer(hctx, h, path, req)
 	return h, id, ch, nil
+}
+
+// hubForPath returns the hub currently serving a device path, or nil. Producers
+// use it to publish what the camera negotiated. There is exactly one producer
+// per path at a time — getOrCreateHub waits for a hub's teardown before opening
+// a new one — so the hub found here is always the caller's own.
+func (s *VideoService) hubForPath(path string) *deviceHub {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hubs[path]
 }
 
 // runProducer drives the capture loop for a single device hub.
@@ -1525,6 +1577,13 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		return nativeH264NotSupported{msg: "device switched pixel format away from H264"}
 	}
 
+	// The camera has now settled on a size, which may differ from what was
+	// requested. Publishing it lets a later subscriber ask for exactly these
+	// dimensions and be served the primary stream rather than refused a variant.
+	if h := s.hubForPath(path); h != nil {
+		h.setNegotiatedSize(vfmt.Width, vfmt.Height)
+	}
+
 	// Best-effort: cap the camera encoder's keyframe interval. Non-fatal — many
 	// UVC cameras reject this and keep their firmware default.
 	s.setV4L2KeyframeInterval(fd, effectiveKeyframeInterval(req))
@@ -1784,6 +1843,16 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		return status.Errorf(codes.Internal, "unexpected device path format")
 	}
 	s.logger.Info("GStreamer encoder selected", zap.String("encoder", enc.element), zap.String("codec", enc.codec.String()))
+
+	// Publish the size the pipeline will pin, for the same reason the native
+	// path does: a later subscriber asking for exactly this size wants the
+	// primary stream, not a variant.
+	if hub := s.hubForPath(path); hub != nil {
+		isLibcamera := transport == camera.TransportCSI && available != nil && available["libcamerasrc"]
+		if w, h := resolveCaptureSize(path, req, isLibcamera); w > 0 && h > 0 {
+			hub.setNegotiatedSize(w, h)
+		}
+	}
 
 	var args []string
 	if useArgusSource(transport, s.hostIsJetson(), available) {
@@ -2108,17 +2177,7 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// Same "default must not mean smallest" rule as the native path: with no
 	// width/height in the caps the source negotiates its first mode, which on UVC
 	// is the smallest. Ask the device what it has and pin the best.
-	capW, capH := req.GetWidth(), req.GetHeight()
-	if (capW == 0 || capH == 0) && !strings.HasPrefix(src, "libcamerasrc") {
-		if bw, bh := bestDefaultFrameSizeForDevice(devicePath); bw > 0 && bh > 0 {
-			if capW == 0 {
-				capW = bw
-			}
-			if capH == 0 {
-				capH = bh
-			}
-		}
-	}
+	capW, capH := resolveCaptureSize(devicePath, req, strings.HasPrefix(src, "libcamerasrc"))
 	if capW > 0 {
 		capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
 	}
@@ -2155,6 +2214,25 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
 	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...), nil
+}
+
+// resolveCaptureSize is the size the GStreamer pipeline will pin its caps to:
+// what the caller asked for, with anything left unset filled in from the
+// device's best mode. Shared with the producer so the size reported to clients
+// is the size the pipeline actually requests, rather than a second guess at it.
+func resolveCaptureSize(devicePath string, req *agentpb.StreamVideoRequest, isLibcamera bool) (uint32, uint32) {
+	capW, capH := req.GetWidth(), req.GetHeight()
+	if (capW == 0 || capH == 0) && !isLibcamera {
+		if bw, bh := bestDefaultFrameSizeForDevice(devicePath); bw > 0 && bh > 0 {
+			if capW == 0 {
+				capW = bw
+			}
+			if capH == 0 {
+				capH = bh
+			}
+		}
+	}
+	return capW, capH
 }
 
 // transportToProto maps the internal camera.Transport to the proto enum.
