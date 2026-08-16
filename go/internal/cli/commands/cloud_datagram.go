@@ -34,7 +34,11 @@ type datagramSender interface {
 
 func openDatagramSession(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32) (*datagramSession, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
-	stream, err := client.ClientTunnel(cloudContext(ctx, auth))
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := client.ClientTunnel(cloudCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening datagram session: %w", err)
 	}

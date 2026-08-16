@@ -54,7 +54,11 @@ type mcpDatagramSender interface {
 
 func mcpOpenDatagramSession(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32) (*mcpDatagramSession, error) {
 	client := cloudpb.NewTunnelBrokerServiceClient(brokerConn)
-	stream, err := client.ClientTunnel(mcpCloudContext(ctx, auth))
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := client.ClientTunnel(cloudCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening datagram session: %w", err)
 	}
