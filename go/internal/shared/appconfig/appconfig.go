@@ -66,10 +66,11 @@ const (
 	EntitlementHTTP = "http"
 	// EntitlementProfiling grants the capabilities GPU profilers (NVIDIA CUPTI,
 	// nsys) need to read hardware performance counters inside the container
-	// (CAP_SYS_ADMIN, CAP_SYS_PTRACE). It is privileged-equivalent, so it is
-	// honored ONLY under `wendy run --debug` and is auto-injected by that flag
-	// (apps do not need to declare it). Outside debug it is a no-op. See
-	// entitlements.md for the blast radius.
+	// (CAP_SYS_ADMIN, CAP_SYS_PTRACE). It is privileged-equivalent, so the caps
+	// are honored ONLY under `wendy run --profile` (or `--debug`, which also
+	// enables them); either flag injects them, so apps do not need to declare
+	// it, and outside those flags it is a no-op. See entitlements.md for the
+	// blast radius.
 	EntitlementProfiling = "profiling"
 )
 
