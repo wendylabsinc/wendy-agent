@@ -99,16 +99,6 @@ func pumpBackoffDelay(level int) time.Duration {
 	return d
 }
 
-// errPumpNodeNotReady is an internal sentinel (never returned to a caller)
-// for when a supervised camera's loopback node does not exist yet. It is
-// treated exactly like a failed pump attempt — backed off and retried —
-// since EnsureNodes creating the node is a race this loop should absorb
-// rather than give up over. superviseCam logs it once per supervisor
-// lifetime (not on every retry — a camera stuck permanently node-less would
-// otherwise retry, and so log, forever on the 1s..30s backoff ladder) so a
-// permanently node-less camera is not invisibly spinning in the background.
-var errPumpNodeNotReady = errors.New("v4l2loopback node for this camera does not exist yet")
-
 // camPump is the supervision state for one camera's demanded pump.
 //
 // It exists in Loopback.pumps only while a supervisor goroutine is running or
@@ -604,6 +594,7 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 
 	level := 0
 	loggedNodeNotReady := false
+	loggedNoStreamURL := false
 	for {
 		if ctx.Err() != nil {
 			l.finishSupervisor(camID, cp)
@@ -621,12 +612,10 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 			return
 		}
 
-		var runErr error
 		var ran time.Duration
 		devicePath, pathOK := l.NodePath(camID)
 		switch {
 		case !pathOK:
-			runErr = errPumpNodeNotReady
 			// Once per supervisor lifetime, not every retry: a camera stuck
 			// permanently node-less would otherwise log on every attempt of
 			// an otherwise-infinite 1s..30s backoff ladder forever.
@@ -638,12 +627,19 @@ func (l *Loopback) superviseCam(ctx context.Context, camID uint32, cp *camPump) 
 		default:
 			streamURL, err := StreamURL(cam, cred, StreamAuto)
 			if err != nil {
-				runErr = err
+				// Same once-per-lifetime discipline as the node log above: this
+				// only fails for a camera with no stored address, which changes
+				// through re-registration, not by retrying.
+				if !loggedNoStreamURL {
+					loggedNoStreamURL = true
+					l.logger.Warn("cannot build a stream URL for demanded camera; pump waiting and retrying",
+						zap.Uint32("cameraId", camID), zap.Error(err))
+				}
 				break
 			}
 			args := LoopbackPipelineArgs(streamURL, devicePath)
 			start := l.clock.Now()
-			runErr = l.pump(ctx, args)
+			runErr := l.pump(ctx, args)
 			ran = l.clock.Now().Sub(start)
 			if runErr != nil {
 				l.logger.Warn("ip camera loopback pump exited",
