@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -50,7 +52,7 @@ func newCacheDedupCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("finding user cache directory: %w", err)
 			}
-			deduped, pruned := runBuildCacheMaintenance(userCache, maxBytes, nil)
+			deduped, pruned := maintainBuildCaches(cmd.Context(), userCache, maxBytes, nil)
 			fmt.Printf("Deduplicated %s, evicted %s.\n", formatSize(deduped), formatSize(pruned))
 			return nil
 		},
@@ -66,6 +68,7 @@ func newCacheListCmd() *cobra.Command {
 		Path      string `json:"path"`
 		SizeBytes int64  `json:"sizeBytes"`
 		Size      string `json:"size"`
+		LastBuilt string `json:"lastBuilt,omitempty"`
 	}
 
 	printJSON := func(items []cacheEntry) error {
@@ -114,15 +117,19 @@ func newCacheListCmd() *cobra.Command {
 				return nil
 			}
 
-			// Compute sizes up front (needed for both modes).
-			// The os-images directory is expanded so each image is listed individually.
+			// Compute sizes up front (needed for both modes). os-images, buildx and
+			// ocilayout are expanded so each image / per-app cache is listed
+			// individually; the build caches also carry a last-built age.
+			now := time.Now()
 			var items []cacheEntry
+			var buildCacheBytes, sharedBytes int64
 			for _, entry := range entries {
 				if isCacheDBFile(entry.Name()) {
 					continue
 				}
 				path := filepath.Join(cacheDir, entry.Name())
-				if entry.IsDir() && entry.Name() == "os-images" {
+				switch {
+				case entry.IsDir() && entry.Name() == "os-images":
 					imgs, err := os.ReadDir(path)
 					if err != nil {
 						return fmt.Errorf("reading os-images cache directory: %w", err)
@@ -153,18 +160,51 @@ func newCacheListCmd() *cobra.Command {
 							Size:      formatSize(sz),
 						})
 					}
-					continue
+				case entry.IsDir() && (entry.Name() == "buildx" || entry.Name() == "ocilayout"):
+					children, err := os.ReadDir(path)
+					if err != nil {
+						return fmt.Errorf("reading %s cache directory: %w", entry.Name(), err)
+					}
+					for _, c := range children {
+						cp := filepath.Join(path, c.Name())
+						sz, mt := dirSizeAndMtime(cp)
+						buildCacheBytes += sz
+						// blobs/, ingest/ and the top-level index files are the shared
+						// store, not a per-app cache: fold them into the summary rather
+						// than list a row that can't be deleted without taking the app
+						// caches down with it.
+						if !c.IsDir() || c.Name() == "blobs" || c.Name() == "ingest" {
+							sharedBytes += sz
+							continue
+						}
+						items = append(items, cacheEntry{
+							Name:      entry.Name() + "/" + c.Name(),
+							Path:      cp,
+							SizeBytes: sz,
+							Size:      formatSize(sz),
+							LastBuilt: formatAge(now, mt),
+						})
+					}
+				default:
+					size, err := entrySize(path)
+					if err != nil {
+						return fmt.Errorf("determining cache entry size for %s: %w", entry.Name(), err)
+					}
+					items = append(items, cacheEntry{
+						Name:      entry.Name(),
+						Path:      path,
+						SizeBytes: size,
+						Size:      formatSize(size),
+					})
 				}
-				size, err := entrySize(path)
-				if err != nil {
-					return fmt.Errorf("determining cache entry size for %s: %w", entry.Name(), err)
-				}
-				items = append(items, cacheEntry{
-					Name:      entry.Name(),
-					Path:      path,
-					SizeBytes: size,
-					Size:      formatSize(size),
-				})
+			}
+			// Largest first — the whole point of listing is to find what to reclaim.
+			sort.Slice(items, func(i, j int) bool { return items[i].SizeBytes > items[j].SizeBytes })
+
+			buildCacheSummary := ""
+			if buildCacheBytes > 0 {
+				buildCacheSummary = fmt.Sprintf("Build cache: %s (%s shared) · cap %s",
+					formatSize(buildCacheBytes), formatSize(sharedBytes), formatSize(buildCacheMaxBytes()))
 			}
 
 			if explicitJSON {
@@ -175,14 +215,22 @@ func newCacheListCmd() *cobra.Command {
 			if isInteractiveTerminal() {
 				checkItems := make([]tui.ChecklistItem, len(items))
 				for i, item := range items {
+					desc := item.Size
+					if item.LastBuilt != "" {
+						desc += "  ·  built " + item.LastBuilt
+					}
 					checkItems[i] = tui.ChecklistItem{
 						Label:       item.Name,
-						Description: item.Size,
+						Description: desc,
 						Value:       item.Path,
 					}
 				}
 
-				cl := tui.NewChecklist("Select cache entries to delete:", checkItems)
+				title := "Select cache entries to delete:"
+				if buildCacheSummary != "" {
+					title = buildCacheSummary + "\nSelect cache entries to delete:"
+				}
+				cl := tui.NewChecklist(title, checkItems)
 				cl.SelectAllLabel = "Delete all"
 				selected, err := tui.RunChecklistModel(cl, tea.WithOutput(os.Stderr))
 				if err != nil {
@@ -218,10 +266,33 @@ func newCacheListCmd() *cobra.Command {
 
 			// Non-interactive (plain listing).
 			for _, item := range items {
-				fmt.Printf("  %s  (%s)\n", item.Name, item.Size)
+				if item.LastBuilt != "" {
+					fmt.Printf("  %s  (%s, built %s)\n", item.Name, item.Size, item.LastBuilt)
+				} else {
+					fmt.Printf("  %s  (%s)\n", item.Name, item.Size)
+				}
+			}
+			if buildCacheSummary != "" {
+				fmt.Printf("\n%s\n", buildCacheSummary)
 			}
 			return nil
 		},
+	}
+}
+
+// formatAge renders how long ago t was, coarsely (m/h/d). Empty for a zero time.
+func formatAge(now, t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := now.Sub(t)
+	switch {
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
 

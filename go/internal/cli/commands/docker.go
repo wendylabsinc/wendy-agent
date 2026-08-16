@@ -1427,15 +1427,20 @@ func ensureBuildxBuilder(ctx context.Context, registryAddr string, useMTLS bool,
 // config-inject/restart cycle the registry builder pays because its buildkitd
 // config embeds the per-run dynamic registry-proxy port (which changes every
 // invocation, forcing a reconfigure each time).
-func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
-	ensureBuildxBuilderMu.Lock()
-	defer ensureBuildxBuilderMu.Unlock()
-
+// ociBuilderName is the buildx builder used for OCI-layout export builds.
+func ociBuilderName() string {
 	base := os.Getenv("WENDY_BUILDX_BUILDER")
 	if base == "" {
 		base = "wendy"
 	}
-	builderName := base + "-oci"
+	return base + "-oci"
+}
+
+func ensureOCIExportBuilder(ctx context.Context, w io.Writer) (string, error) {
+	ensureBuildxBuilderMu.Lock()
+	defer ensureBuildxBuilderMu.Unlock()
+
+	builderName := ociBuilderName()
 
 	// Fast path: if the builder's buildkit container is already running, then the
 	// daemon is up, the builder exists, and it is bootstrapped — so we can skip

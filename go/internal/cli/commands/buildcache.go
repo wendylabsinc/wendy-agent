@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"context"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -222,12 +224,64 @@ func scanCacheUnit(dir string, blobSize map[string]int64, refCount map[string]in
 	return u
 }
 
-// runBuildCacheMaintenance dedups then enforces the size cap over the build
-// caches under userCacheDir. keep protects the active build's dirs. All work is
-// best-effort. Returns bytes reclaimed by each pass for optional reporting.
+// dirSizeAndMtime returns a tree's byte size (per-path — hardlinked blobs count
+// once per link) and the newest blob mtime, used by `wendy cache list` to show a
+// per-app cache's size and last-built time.
+func dirSizeAndMtime(dir string) (int64, time.Time) {
+	var size int64
+	var newest time.Time
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil //nolint:nilerr // best-effort
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		size += info.Size()
+		// LRU/last-built signal is a blob write, not directory-entry churn.
+		if isBlobPath(p) && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return size, newest
+}
+
+// runBuildCacheMaintenance dedups then enforces the size cap over the on-disk
+// build caches under userCacheDir. keep protects the active build's dirs. Pure
+// filesystem work (no daemon), best-effort. Returns bytes reclaimed by each pass.
 func runBuildCacheMaintenance(userCacheDir string, maxBytes int64, keep map[string]bool) (deduped, pruned int64) {
 	roots := buildCacheRoots(userCacheDir)
 	deduped = dedupBuildCache(roots...)
 	pruned = enforceBuildCacheSizeCap(maxBytes, keep, 10*time.Minute, roots...)
 	return deduped, pruned
+}
+
+// maintainBuildCaches runs the on-disk maintenance and also bounds the separate
+// builder-side (buildkitd) cache. keep protects the active build's on-disk dirs.
+func maintainBuildCaches(ctx context.Context, userCacheDir string, maxBytes int64, keep map[string]bool) (deduped, pruned int64) {
+	deduped, pruned = runBuildCacheMaintenance(userCacheDir, maxBytes, keep)
+	pruneBuildkitDaemonCache(ctx, maxBytes)
+	return deduped, pruned
+}
+
+// pruneBuildkitDaemonCache caps the OCI builder's daemon-side cache — a store
+// distinct from the on-disk local cache export, which our file-level dedup/prune
+// never touches (it lives inside the buildkitd container). `buildx prune
+// --max-used-space` GCs it down to maxBytes and, unlike a create-time flag,
+// applies to the already-running builder. Best-effort with its own deadline so a
+// stuck daemon never hangs the CLI; older buildx without the flag just errors and
+// is ignored.
+func pruneBuildkitDaemonCache(ctx context.Context, maxBytes int64) {
+	if maxBytes <= 0 {
+		return
+	}
+	pctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(pctx, "docker", "buildx", "prune",
+		"--builder", ociBuilderName(),
+		"--max-used-space", strconv.FormatInt(maxBytes, 10),
+		"--force",
+	).Run()
 }

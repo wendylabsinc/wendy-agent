@@ -2616,7 +2616,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 				layoutDir: true,
 				buildxLocalCacheDir(userCache, ociDeploymentCacheKey(appCfg.AppID, platform)): true,
 			}
-			defer func() { _, _ = runBuildCacheMaintenance(userCache, buildCacheMaxBytes(), keep) }()
+			defer func() { _, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep) }()
 		}
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
