@@ -41,6 +41,8 @@ func (f mcpCloseFunc) Close() error {
 type mcpCloudTunnel struct {
 	cancel     context.CancelFunc
 	listener   net.Listener
+	udpConn    *net.UDPConn
+	session    *mcpDatagramSession
 	brokerConn *grpc.ClientConn
 }
 
@@ -54,6 +56,12 @@ func (t *mcpCloudTunnel) Close() error {
 	var errs []error
 	if t.listener != nil {
 		errs = append(errs, t.listener.Close())
+	}
+	if t.udpConn != nil {
+		errs = append(errs, t.udpConn.Close())
+	}
+	if t.session != nil {
+		t.session.close()
 	}
 	if t.brokerConn != nil {
 		errs = append(errs, t.brokerConn.Close())
@@ -112,13 +120,17 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	srv.AddTool(mcpgo.NewTool("cloud_enroll_device", enrollOpts...), s.handleCloudEnrollDevice)
 
 	tunnelOpts := []mcpgo.ToolOption{
-		mcpgo.WithDescription("Forward a local TCP port to a port on a cloud-enrolled device"),
+		mcpgo.WithDescription("Forward a local TCP or UDP port to a port on a cloud-enrolled device"),
 		mcpgo.WithNumber("local_port",
 			mcpgo.Required(),
-			mcpgo.Description("Local TCP port to listen on (1-65535)"),
+			mcpgo.Description("Local port to listen on (1-65535)"),
 		),
 		mcpgo.WithNumber("remote_port",
 			mcpgo.Description("Remote device port (1-65535); defaults to local_port"),
+		),
+		mcpgo.WithString("protocol",
+			mcpgo.Enum("tcp", "udp"),
+			mcpgo.Description("Transport protocol to forward: tcp or udp (default tcp)"),
 		),
 		mcpgo.WithString("device_name",
 			mcpgo.Description("Device name; optional only when exactly one cloud device is available"),
@@ -134,6 +146,26 @@ func (s *mcpServer) registerCloudTools(srv *server.MCPServer) {
 	tunnelOpts = append(tunnelOpts, idempotent()...)
 	tunnelOpts = append(tunnelOpts, openWorld()...)
 	srv.AddTool(mcpgo.NewTool("cloud_tunnel", tunnelOpts...), s.handleCloudTunnel)
+
+	pingOpts := []mcpgo.ToolOption{
+		mcpgo.WithDescription("Ping a cloud-enrolled device through the Wendy Cloud tunnel broker using an echo request/reply over the datagram session (no ICMP sockets or privileges required)"),
+		mcpgo.WithString("device_name",
+			mcpgo.Required(),
+			mcpgo.Description("Device name"),
+		),
+		mcpgo.WithNumber("count",
+			mcpgo.Description("Number of echoes to send (default 4, max 20)"),
+		),
+		mcpgo.WithString("cloud_grpc",
+			mcpgo.Description("Cloud gRPC endpoint to use, e.g. cloud.wendy.dev:443 (optional when a default session is set via 'wendy auth use')"),
+		),
+		mcpgo.WithString("broker_url",
+			mcpgo.Description("Tunnel broker host:port (default: cloud :443 endpoint, otherwise <cloud-host>:50052)"),
+		),
+	}
+	pingOpts = append(pingOpts, readOnly()...)
+	pingOpts = append(pingOpts, openWorld()...)
+	srv.AddTool(mcpgo.NewTool("cloud_ping", pingOpts...), s.handleCloudPing)
 
 	runOpts := []mcpgo.ToolOption{
 		mcpgo.WithDescription("Build and deploy a local project to a cloud-enrolled device. Runs 'wendy cloud run' with your configured cloud credentials. The project's wendy.json entitlements (e.g. gpu, network, persistence) apply on the device; if a required entitlement is denied, the run fails with error_code ENTITLEMENT_DENIED."),
@@ -246,6 +278,13 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 	if err := validatePort(remotePort); err != nil {
 		return errResult(errCodeInvalidArgument, "remote_port "+err.Error()), nil
 	}
+	protocol := stringParam(req, "protocol")
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" && protocol != "udp" {
+		return errResult(errCodeInvalidArgument, `protocol must be "tcp" or "udp"`), nil
+	}
 
 	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
 	if err != nil {
@@ -260,15 +299,57 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 		return errResult(errCodeDeviceUnreachable, err.Error()), nil
 	}
 
+	key := fmt.Sprintf("%s:%s:%d:%d", protocol, asset.GetName(), localPort, remotePort)
+	tunnelCtx, cancel := context.WithCancel(context.Background())
+
+	if protocol == "udp" {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: localPort})
+		if err != nil {
+			cancel()
+			_ = brokerConn.Close()
+			return errResultf(errCodeInternal, "listening on udp 127.0.0.1:%d: %s", localPort, err.Error()), nil
+		}
+		session, err := mcpOpenDatagramSession(tunnelCtx, brokerConn, auth, asset.GetId())
+		if err != nil {
+			cancel()
+			_ = pc.Close()
+			_ = brokerConn.Close()
+			return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+		}
+
+		tunnel := &mcpCloudTunnel{cancel: cancel, udpConn: pc, session: session, brokerConn: brokerConn}
+		s.mu.Lock()
+		if existing := s.cloudTunnels[key]; existing != nil {
+			_ = existing.Close()
+		}
+		s.cloudTunnels[key] = tunnel
+		s.mu.Unlock()
+
+		go func() {
+			defer pc.Close()
+			defer session.close()
+			_ = mcpServeUDPForward(tunnelCtx, pc, session, uint32(remotePort), mcpUDPFlowIdleTimeout)
+		}()
+
+		out := map[string]any{
+			"id":          key,
+			"protocol":    protocol,
+			"local_addr":  pc.LocalAddr().String(),
+			"device_name": asset.GetName(),
+			"asset_id":    asset.GetId(),
+			"remote_port": remotePort,
+		}
+		return okResult(out), nil
+	}
+
 	listenAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(localPort))
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
+		cancel()
 		_ = brokerConn.Close()
 		return errResultf(errCodeInternal, "listening on %s: %s", listenAddr, err.Error()), nil
 	}
-	tunnelCtx, cancel := context.WithCancel(context.Background())
 	tunnel := &mcpCloudTunnel{cancel: cancel, listener: ln, brokerConn: brokerConn}
-	key := fmt.Sprintf("%s:%d:%d", asset.GetName(), localPort, remotePort)
 	s.mu.Lock()
 	if existing := s.cloudTunnels[key]; existing != nil {
 		_ = existing.Close()
@@ -288,10 +369,63 @@ func (s *mcpServer) handleCloudTunnel(ctx context.Context, req mcpgo.CallToolReq
 
 	out := map[string]any{
 		"id":          key,
+		"protocol":    protocol,
 		"local_addr":  ln.Addr().String(),
 		"device_name": asset.GetName(),
 		"asset_id":    asset.GetId(),
 		"remote_port": remotePort,
+	}
+	return okResult(out), nil
+}
+
+func (s *mcpServer) handleCloudPing(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	deviceName := stringParam(req, "device_name")
+	if deviceName == "" {
+		return errResult(errCodeInvalidArgument, "device_name is required"), nil
+	}
+	count := intParam(req, "count", 4)
+	if count < 1 || count > 20 {
+		return errResult(errCodeInvalidArgument, "count must be between 1 and 20"), nil
+	}
+
+	auth, err := s.cloudAuthEntry(stringParam(req, "cloud_grpc"))
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	asset, err := s.pickCloudAsset(ctx, auth, deviceName)
+	if err != nil {
+		return cloudErrResult(err), nil
+	}
+	brokerConn, err := mcpDialCloudBroker(auth, stringParam(req, "broker_url"))
+	if err != nil {
+		return errResult(errCodeDeviceUnreachable, err.Error()), nil
+	}
+	defer brokerConn.Close()
+
+	session, err := mcpOpenDatagramSession(ctx, brokerConn, auth, asset.GetId())
+	if err != nil {
+		return errResult(errCodeDeviceUnreachable, mcpDatagramOpenError(err, asset.GetName()).Error()), nil
+	}
+	defer session.close()
+
+	stats := mcpRunPingLoop(ctx, session, asset.GetName(), count, time.Second, io.Discard)
+	if stats.Received == 0 {
+		if stats.Err != nil {
+			// A genuine transport error (PermissionDenied, Unauthenticated,
+			// mesh-disabled, ...) ended the recv loop — surface it instead of
+			// the generic hint. mcpDatagramOpenError still folds
+			// DeadlineExceeded/Unavailable into that same hint.
+			return errResult(codeFromGRPC(stats.Err), mcpDatagramOpenError(stats.Err, asset.GetName()).Error()), nil
+		}
+		return errResultf(errCodeDeviceUnreachable, "no replies from %s: the device may be offline or need a WendyOS update for ping support", asset.GetName()), nil
+	}
+
+	out := map[string]any{
+		"sent":       stats.Sent,
+		"received":   stats.Received,
+		"min_rtt_ms": stats.Min.Seconds() * 1000,
+		"avg_rtt_ms": stats.Avg.Seconds() * 1000,
+		"max_rtt_ms": stats.Max.Seconds() * 1000,
 	}
 	return okResult(out), nil
 }

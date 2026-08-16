@@ -217,6 +217,132 @@ func TestRun_MissingProjectPath(t *testing.T) {
 	}
 }
 
+func TestCloudTunnel_RejectsUnknownProtocol(t *testing.T) {
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_tunnel", map[string]any{
+		"local_port": 8080,
+		"protocol":   "quic",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for unknown protocol")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeInvalidArgument) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeInvalidArgument)
+	}
+}
+
+func TestCloudTunnel_DefaultsProtocolToTCP(t *testing.T) {
+	// Without a "protocol" argument at all, the invalid-argument short-circuit
+	// must not fire — the request should proceed past port/protocol
+	// validation and fail later for lack of auth, not for protocol.
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_tunnel", map[string]any{
+		"local_port": 8080,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result (no auth configured)")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] == string(errCodeInvalidArgument) {
+		t.Errorf("expected the failure to come from auth resolution, not protocol validation; got %v", sc)
+	}
+}
+
+func TestCloudTunnel_RejectsOutOfRangeLocalPort(t *testing.T) {
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_tunnel", map[string]any{
+		"local_port": 70000,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for out-of-range local_port")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeInvalidArgument) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeInvalidArgument)
+	}
+}
+
+func TestCloudPing_RequiresDeviceName(t *testing.T) {
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_ping", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result when device_name is missing")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeInvalidArgument) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeInvalidArgument)
+	}
+}
+
+func TestCloudPing_RejectsCountAboveMax(t *testing.T) {
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_ping", map[string]any{
+		"device_name": "edge-one",
+		"count":       21,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for count above max (20)")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeInvalidArgument) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeInvalidArgument)
+	}
+}
+
+func TestCloudPing_RejectsCountBelowMin(t *testing.T) {
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_ping", map[string]any{
+		"device_name": "edge-one",
+		"count":       0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result for count below min (1)")
+	}
+	sc := structuredMap(t, result)
+	if sc["error_code"] != string(errCodeInvalidArgument) {
+		t.Errorf("error_code = %v, want %s", sc["error_code"], errCodeInvalidArgument)
+	}
+}
+
+func TestCloudPing_DefaultCountWithinBounds(t *testing.T) {
+	// No count argument at all should use the default (4), which is within
+	// bounds — the failure here must come from auth resolution, not count
+	// validation.
+	srv := New(&config.Config{}, nil)
+	result, err := srv.callTool(context.Background(), "cloud_ping", map[string]any{
+		"device_name": "edge-one",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.IsError {
+		t.Fatal("expected error result (no auth configured)")
+	}
+	sc := structuredMap(t, result)
+	if sc["message"] == "count must be between 1 and 20" {
+		t.Errorf("default count should not trigger count validation; got %v", sc)
+	}
+}
+
 func TestCloudAuthEntry_UsesDefaultWhenMultiple(t *testing.T) {
 	srv := New(&config.Config{
 		DefaultCloudGRPC: "two:123",
