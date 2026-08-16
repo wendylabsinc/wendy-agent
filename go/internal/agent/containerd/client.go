@@ -2795,7 +2795,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	if err != nil {
 		return nil, fmt.Errorf("RestartGroup: resolving service order for %q: %w", appID, err)
 	}
-	if err := c.ensureGroupRestartAllowed(ctx, appID, order); err != nil {
+	if err := c.ensureGroupRestartAllowed(ctx, appID, order...); err != nil {
 		return nil, err
 	}
 
@@ -2819,7 +2819,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	// 3. Start the primary first so setPrimaryPID records the new live PID
 	//    before any secondary resolves its join against it.
 	primaryName := ContainerName(appID, order[0])
-	if err := c.ensureGroupRestartAllowed(ctx, appID, order); err != nil {
+	if err := c.ensureGroupRestartAllowed(ctx, appID, order[0]); err != nil {
 		return nil, err
 	}
 	primaryCh, err := c.StartContainer(ctx, primaryName, "", nil)
@@ -2839,7 +2839,7 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	//    then start it.
 	for _, svc := range order[1:] {
 		name := ContainerName(appID, svc)
-		if err := c.ensureGroupRestartAllowed(ctx, appID, order); err != nil {
+		if err := c.ensureGroupRestartAllowed(ctx, appID, svc); err != nil {
 			return results, err
 		}
 		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
@@ -2862,16 +2862,19 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 }
 
 // ensureGroupRestartAllowed prevents a stale monitor action from reviving an
-// app after a user stop. It is called before teardown and again before each
-// member start because a stop can begin at any point in the group operation.
-func (c *Client) ensureGroupRestartAllowed(ctx context.Context, appID string, order []string) error {
+// app after a user stop. Before teardown callers pass every member so an
+// already-stopped group is left untouched. Before a start they pass only that
+// member: a user stop persists the marker on every member, while appStopping
+// covers teardown in progress, so checking the full group again would only add
+// quadratic containerd metadata reads.
+func (c *Client) ensureGroupRestartAllowed(ctx context.Context, appID string, serviceNames ...string) error {
 	c.mu.Lock()
 	stopping := c.appStopping[appID]
 	c.mu.Unlock()
 	if stopping {
 		return fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
-	for _, svc := range order {
+	for _, svc := range serviceNames {
 		name := ContainerName(appID, svc)
 		ctr, err := c.client.LoadContainer(ctx, name)
 		if err != nil {
