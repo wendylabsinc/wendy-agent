@@ -270,8 +270,8 @@ type AppConfig struct {
 	// Profiling enables the GPU-profiling entitlement's capabilities
 	// (CAP_SYS_ADMIN/SYS_PTRACE for CUPTI/nsys) WITHOUT the debug build /
 	// network-host side effects of Debug. Set by `wendy run --profile`.
-	Profiling    bool             `json:"profiling,omitempty"`
-	Files        []FileSyncEntry  `json:"files,omitempty"`
+	Profiling bool            `json:"profiling,omitempty"`
+	Files     []FileSyncEntry `json:"files,omitempty"`
 	// Brewfile is an optional Homebrew Bundle manifest path for native Darwin
 	// deployments. It is relative to wendy.json and synced to the target Mac
 	// before the agent runs `brew bundle --file`.
