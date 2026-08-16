@@ -29,7 +29,7 @@ func TestDedupBuildCache_LinksIdenticalBlobsAcrossApps(t *testing.T) {
 	root := t.TempDir()
 	shared := []byte("the same multi-GB base layer, pretend")
 	p1 := writeCacheBlob(t, root, "app1", digestA, shared)
-	p2 := writeCacheBlob(t, root, "app2", digestA, shared)      // dup of p1
+	p2 := writeCacheBlob(t, root, "app2", digestA, shared)         // dup of p1
 	pUniq := writeCacheBlob(t, root, "app2", digestB, []byte("x")) // unrelated
 
 	// Distinct inodes before dedup.
