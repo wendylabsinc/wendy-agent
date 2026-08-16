@@ -172,6 +172,7 @@ func runPingLoop(ctx context.Context, session pingSession, target string, count 
 			OriginateUnixNs: uint64(now.UnixNano()),
 		}
 		if err := session.sendEcho(req); err != nil {
+			setLifeErr(err)
 			return false
 		}
 		pending[seq] = sentEcho{originate: now}
