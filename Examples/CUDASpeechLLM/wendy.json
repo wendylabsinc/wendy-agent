@@ -1,0 +1,27 @@
+{
+  "appId": "sh.wendy.examples.dgx-spark-speechllm",
+  "platform": "linux",
+  "version": "1.0.0",
+  "language": "cpp",
+  "entitlements": [
+    {
+      "type": "network",
+      "mode": "host"
+    },
+    {
+      "type": "gpu"
+    },
+    {
+      "type": "audio"
+    },
+    {
+      "type": "http",
+      "port": 8080
+    },
+    {
+      "type": "persist",
+      "name": "dgx-spark-speechllm-models",
+      "path": "/models"
+    }
+  ]
+}

@@ -23,7 +23,7 @@ func newAudioCmd() *cobra.Command {
 		Short: "Manage audio devices on the target device",
 		Long: "Interactively manage audio devices on the target device. " +
 			"Use up/down to select a device, Enter to set it as the default, " +
-			"and left/right to adjust playback volume.",
+			"left/right to adjust playback volume, and r to rescan.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if jsonOutput || !isInteractiveTerminal() {
@@ -95,6 +95,9 @@ func runAudioList(cmd *cobra.Command) error {
 		})
 	}
 	fmt.Fprint(cmd.OutOrStdout(), tui.RenderTable(headers, rows))
+	if hint := audioDeviceHint(devices); hint != "" {
+		fmt.Fprintln(cmd.OutOrStdout(), hint)
+	}
 	return nil
 }
 

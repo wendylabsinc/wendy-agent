@@ -1,0 +1,5 @@
+version: 1
+sourceHash: sha256:1de03a74a51eaf05e16f4b5875853647f12f1eef8598370202ecaf1d0cd7f29f
+images:
+    ghcr.io/ggml-org/llama.cpp:server-cuda13: sha256:bb81f3e4ef93697f025156849e55b8d6a92ef10b7cae3460bf0cf8a4d6ea6283
+    ghcr.io/ggml-org/llama.cpp:server-rocm: sha256:96320a5e86a420d353d7c2db3254620a1514a9cd43cbdd306649925fdeb63a31

@@ -21,6 +21,7 @@ const (
 	audioActionNone audioAction = iota
 	audioActionSetDefault
 	audioActionSetVolume
+	audioActionRefresh
 )
 
 type audioOpResultMsg struct {
@@ -28,12 +29,14 @@ type audioOpResultMsg struct {
 	deviceID   uint32
 	deviceType agentpbv2.AudioDeviceType
 	volume     uint32
+	devices    []*agentpbv2.AudioDevice
 	err        error
 }
 
 type audioTUIHandler interface {
 	SetDefault(*agentpbv2.AudioDevice) tea.Cmd
 	SetVolume(*agentpbv2.AudioDevice, uint32) tea.Cmd
+	Refresh() tea.Cmd
 }
 
 type audioTUIModel struct {
@@ -124,6 +127,10 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.flash = msg.err.Error()
 			m.isError = true
+			if msg.action != audioActionRefresh && m.handler != nil {
+				m.busy = true
+				return m, m.handler.Refresh()
+			}
 			return m, nil
 		}
 		switch msg.action {
@@ -142,8 +149,17 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.flash = fmt.Sprintf("Volume set to %d%%.", msg.volume)
+		case audioActionRefresh:
+			m.devices = msg.devices
+			if m.isError {
+				m.flash += " Device list refreshed."
+			} else {
+				m.flash = "Audio devices refreshed."
+			}
 		}
-		m.isError = false
+		if msg.action != audioActionRefresh || !m.isError {
+			m.isError = false
+		}
 		m.refreshRows()
 		return m, nil
 	case tea.KeyMsg:
@@ -195,6 +211,14 @@ func (m audioTUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = fmt.Sprintf("Setting volume to %d%%…", volume)
 			m.isError = false
 			return m, m.handler.SetVolume(device, volume)
+		case "r":
+			if m.busy || m.handler == nil {
+				return m, nil
+			}
+			m.busy = true
+			m.flash = "Refreshing audio devices…"
+			m.isError = false
+			return m, m.handler.Refresh()
 		}
 	}
 
@@ -227,7 +251,11 @@ func (m audioTUIModel) View() string {
 		view.WriteString(style.Render(m.flash))
 		view.WriteString("\n")
 	}
-	view.WriteString(audioHintStyle.Render("↑/↓ select · enter set default · ←/→ volume · q quit"))
+	if hint := audioDeviceHintV2(m.devices); hint != "" {
+		view.WriteString(audioHintStyle.Render(hint))
+		view.WriteString("\n")
+	}
+	view.WriteString(audioHintStyle.Render("↑/↓ select · enter set default · ←/→ volume · r rescan · q quit"))
 	view.WriteString("\n")
 	return view.String()
 }
@@ -262,5 +290,16 @@ func (h *audioRPCHandler) SetVolume(device *agentpbv2.AudioDevice, volume uint32
 			actual = resp.GetVolumePercent()
 		}
 		return audioOpResultMsg{action: audioActionSetVolume, deviceID: device.GetDeviceId(), volume: actual, err: err}
+	}
+}
+
+func (h *audioRPCHandler) Refresh() tea.Cmd {
+	return func() tea.Msg {
+		resp, err := h.client.ListAudioDevices(h.ctx, &agentpbv2.ListAudioDevicesRequest{})
+		var devices []*agentpbv2.AudioDevice
+		if resp != nil {
+			devices = resp.GetDevices()
+		}
+		return audioOpResultMsg{action: audioActionRefresh, devices: devices, err: err}
 	}
 }

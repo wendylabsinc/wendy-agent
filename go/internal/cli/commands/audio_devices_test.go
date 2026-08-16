@@ -75,6 +75,26 @@ func TestRealCaptureDevices_Thor(t *testing.T) {
 	}
 }
 
+func TestAudioDeviceHint(t *testing.T) {
+	usb := mkDev(513, "plughw:2,0", "C920 USB Audio", inT)
+	hdmi := mkDev(4, "plughw:0,3", "NVIDIA HDMI 0", outT)
+	admaif := mkDev(257, "plughw:1,0", "APE ADMAIF1", inT)
+	dummy := mkDev(36, "auto_null", "Dummy Output", outT)
+
+	if hint := audioDeviceHint([]*agentpb.AudioDevice{hdmi}); !strings.Contains(hint, "only HDMI") || !strings.Contains(hint, "data-capable cable") {
+		t.Errorf("HDMI-only hint = %q, want USB enumeration and cable advice", hint)
+	}
+	if hint := audioDeviceHint([]*agentpb.AudioDevice{hdmi, admaif}); !strings.Contains(hint, "--all") {
+		t.Errorf("virtual-only hint = %q, want --all advice", hint)
+	}
+	if hint := audioDeviceHint([]*agentpb.AudioDevice{dummy}); !strings.Contains(hint, "only Dummy Output") {
+		t.Errorf("dummy-only hint = %q, want missing playback advice", hint)
+	}
+	if hint := audioDeviceHint([]*agentpb.AudioDevice{hdmi, usb}); hint != "" {
+		t.Errorf("real-microphone hint = %q, want none", hint)
+	}
+}
+
 func TestResolveListenDeviceID(t *testing.T) {
 	usb := mkDev(513, "hw:2,0", "C920 USB Audio", inT)
 	usb2 := mkDev(514, "hw:4,0", "Blue Yeti USB Audio", inT)

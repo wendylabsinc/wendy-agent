@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
 // minBufferMs is the floor for the --buffer-ms latency knob. Below this the
@@ -66,6 +67,58 @@ func realCaptureDevices(devs []*agentpb.AudioDevice) []*agentpb.AudioDevice {
 		}
 	}
 	return out
+}
+
+// audioDeviceHint explains the most common incomplete audio inventories. It is
+// deliberately based only on the RPC result so old agents also benefit when a
+// newer CLI connects to them.
+func audioDeviceHint(devs []*agentpb.AudioDevice) string {
+	inputs := inputDevices(devs)
+	if len(inputs) == 0 {
+		hasUsableOutput := false
+		allHDMI := len(devs) > 0
+		for _, d := range devs {
+			if d.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
+				allHDMI = false
+				continue
+			}
+			haystack := strings.ToLower(d.GetName() + " " + d.GetDescription())
+			if !strings.Contains(haystack, "dummy") && !strings.Contains(haystack, "auto_null") {
+				hasUsableOutput = true
+			}
+			if !strings.Contains(haystack, "hdmi") {
+				allHDMI = false
+			}
+		}
+		if !hasUsableOutput {
+			return "Hint: PipeWire has only Dummy Output and no capture endpoint. For USB audio, confirm the device appears in `lsusb`; the kernel must enumerate it before PipeWire or ALSA can use it."
+		}
+		if allHDMI {
+			return "Hint: only HDMI playback endpoints were detected; there is no capture or USB audio endpoint. If you expected USB audio, confirm the device appears in `lsusb` and uses a data-capable cable."
+		}
+		return "Hint: no capture device was detected. For USB audio, confirm the device appears in `lsusb`; PipeWire and ALSA cannot expose hardware the kernel has not enumerated."
+	}
+	if len(realCaptureDevices(devs)) == 0 {
+		return "Hint: only virtual capture endpoints were detected. Connect a microphone, or use `wendy device audio listen --all` to inspect virtual devices."
+	}
+	return ""
+}
+
+// audioDeviceHintV2 keeps the interactive audio view consistent with
+// `audio list`. The v2 endpoint adds volume but carries the same device
+// identity and direction fields used by the diagnostic.
+func audioDeviceHintV2(devs []*agentpbv2.AudioDevice) string {
+	v1 := make([]*agentpb.AudioDevice, 0, len(devs))
+	for _, d := range devs {
+		v1 = append(v1, &agentpb.AudioDevice{
+			Id:          d.GetDeviceId(),
+			Name:        d.GetName(),
+			Description: d.GetDescription(),
+			Type:        agentpb.AudioDeviceType(d.GetType()),
+			IsDefault:   d.GetIsDefault(),
+		})
+	}
+	return audioDeviceHint(v1)
 }
 
 func findAudioDeviceByID(devs []*agentpb.AudioDevice, id uint32) *agentpb.AudioDevice {

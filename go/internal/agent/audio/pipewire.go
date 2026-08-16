@@ -29,11 +29,9 @@ import (
 // redirect it into a tempdir.
 var SocketGlob = "/run/user/*/pipewire-0"
 
-// expectedUID resolves the "wendy" user's UID, the only session whose socket
-// root will trust. Without this, RuntimeDir would hand a root-run process to
-// whichever local UID's session socket happened to glob first on a
-// multi-user host. Behind a var so tests can stub it without requiring a real
-// "wendy" account on the test host.
+// expectedUID resolves the conventional "wendy" user's UID. It is a preference,
+// not a requirement: hosts installed on top of an existing OS often use a
+// device-specific primary username. Behind a var so tests can stub it.
 var expectedUID = func() (uint32, bool) {
 	u, err := user.Lookup("wendy")
 	if err != nil {
@@ -45,6 +43,12 @@ var expectedUID = func() (uint32, bool) {
 	}
 	return uint32(uid), true
 }
+
+// isRegularUID excludes display-manager and system-service sessions. If no
+// preferred UID has a socket, session trusts a candidate only when exactly one
+// regular-user PipeWire session exists; it never picks the first arbitrary
+// entry returned by a glob on a multi-user host.
+var isRegularUID = func(uid uint32) bool { return uid >= 1000 && uid != 65534 }
 
 // queryTimeout bounds a single audio-query subprocess — pw-dump or wpctl here,
 // aplay/arecord/amixer on the ALSA fallback — so a wedged PipeWire or sound
@@ -89,14 +93,19 @@ func (d Defaults) IsDefault(n Node) bool {
 // that sees only "" reports the same thing for all three. Each is a distinct
 // misconfiguration, and an operator can only act on the one that applies.
 //
-// Only the socket owned by the "wendy" user is trusted: on a multi-user host,
-// any local UID can create a session under /run/user/<uid>, and root blindly
-// following the first glob match would let that UID influence the agent's
-// audio graph operations.
+// A configured or conventional "wendy" UID is preferred. Otherwise exactly
+// one regular-user socket is accepted, which supports headless installations
+// whose primary account has a device-specific name without blindly selecting
+// one user on a multi-user host.
 func session() (dir, reason string) {
-	uid, ok := expectedUID()
-	if !ok {
-		return "", `no local user "wendy" (PipeWire runs in that user's session)`
+	preferredUID, hasPreferredUID := expectedUID()
+	strictPreferredUID := false
+	if value := os.Getenv("WENDY_AUDIO_UID"); value != "" {
+		uid, err := strconv.ParseUint(value, 10, 32)
+		if err != nil {
+			return "", fmt.Sprintf("invalid WENDY_AUDIO_UID %q: %v", value, err)
+		}
+		preferredUID, hasPreferredUID, strictPreferredUID = uint32(uid), true, true
 	}
 	matches, _ := filepath.Glob(SocketGlob)
 	// Tracked so a candidate that exists but is unusable can be reported for
@@ -104,6 +113,7 @@ func session() (dir, reason string) {
 	// from no socket at all, and conflating them sends an operator looking in
 	// the wrong place.
 	var rejected string
+	var regularSessions []string
 	for _, m := range matches {
 		// Lstat, not Stat: a symlink swapped in after the glob must not be
 		// followed to a socket outside the expected session.
@@ -124,18 +134,37 @@ func session() (dir, reason string) {
 		if !ok {
 			continue
 		}
-		if st.Uid != uid {
-			if rejected == "" {
-				rejected = fmt.Sprintf("%s is owned by uid %d, expected the \"wendy\" user (uid %d)", m, st.Uid, uid)
-			}
+		ownerUID := uint32(st.Uid)
+		if hasPreferredUID && ownerUID == preferredUID {
+			return filepath.Dir(m), ""
+		}
+		if isRegularUID(ownerUID) {
+			regularSessions = append(regularSessions, filepath.Dir(m))
 			continue
 		}
-		return filepath.Dir(m), ""
+		if rejected == "" {
+			rejected = fmt.Sprintf("%s is owned by system uid %d", m, ownerUID)
+		}
+	}
+	if strictPreferredUID {
+		return "", fmt.Sprintf(
+			"no PipeWire socket owned by configured WENDY_AUDIO_UID %d; start PipeWire and WirePlumber for that user",
+			preferredUID)
+	}
+	if len(regularSessions) == 1 {
+		return regularSessions[0], ""
+	}
+	if len(regularSessions) > 1 {
+		return "", fmt.Sprintf(
+			"multiple regular-user PipeWire sessions found (%s); set WENDY_AUDIO_UID to select one",
+			strings.Join(regularSessions, ", "))
 	}
 	if rejected != "" {
-		return "", rejected
+		return "", rejected + "; start PipeWire and WirePlumber for a regular login user (enable linger on headless hosts)"
 	}
-	return "", fmt.Sprintf("no socket matching %s (is pipewire-user-setup.service running?)", SocketGlob)
+	return "", fmt.Sprintf(
+		"no socket matching %s; start PipeWire and WirePlumber for a regular login user (enable linger on headless hosts)",
+		SocketGlob)
 }
 
 // RuntimeDir returns the directory holding the user session's PipeWire socket,

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#11130f" />
+    <title>Ultravox Live</title>
+    <meta name="description" content="Private, device-local 70B voice chat powered by Ultravox and NVIDIA DGX Spark." />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="Ultravox Live home">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <span>Ultravox <strong>Live</strong></span>
+        </a>
+        <div class="top-actions">
+          <span class="source-pill" id="sourcePill">
+            <span class="status-dot"></span>
+            <span id="sourceText">Preparing model</span>
+          </span>
+          <button class="icon-button" id="resetButton" type="button" aria-label="Clear conversation" title="Clear conversation">↺</button>
+        </div>
+      </header>
+
+      <section class="conversation" id="conversation" aria-live="polite">
+        <div class="welcome" id="welcome">
+          <p class="eyebrow">DGX Spark · 70B device-local voice</p>
+          <h1>Talk naturally.<br /><em>Your audio stays here.</em></h1>
+          <p class="lede">
+            The microphone on this DGX Spark detects each voice turn and sends it directly to a 70B Ultravox model—no cloud ASR in between.
+          </p>
+        </div>
+        <div class="messages" id="messages"></div>
+      </section>
+
+      <section class="voice-dock" aria-label="Voice controls">
+        <div class="voice-state">
+          <span id="phaseLabel">Loading model</span>
+          <span class="voice-detail" id="phaseDetail">This only takes a moment</span>
+        </div>
+
+        <div class="orb-wrap">
+          <div class="orb-ripple ripple-one"></div>
+          <div class="orb-ripple ripple-two"></div>
+          <button class="voice-orb" id="listenButton" type="button" aria-pressed="false" disabled>
+            <span class="mic-icon" aria-hidden="true"></span>
+            <span class="orb-label">Start listening</span>
+          </button>
+        </div>
+
+        <div class="composer">
+          <form id="textForm">
+            <label class="sr-only" for="textInput">Type a message</label>
+            <input id="textInput" type="text" autocomplete="off" placeholder="Or type a message…" />
+            <button type="submit" aria-label="Send message">↑</button>
+          </form>
+          <div class="voice-options">
+            <button class="voice-test" id="voiceTest" type="button">Test voice</button>
+            <label class="speak-toggle">
+              <input id="speakToggle" type="checkbox" checked />
+              <span class="toggle-track"><span></span></span>
+              Neural replies
+            </label>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

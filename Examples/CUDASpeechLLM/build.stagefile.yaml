@@ -1,0 +1,52 @@
+version: 1
+stages:
+  - name: app
+    # CUDA 13 is required for DGX Spark's GB10 Blackwell GPU (sm_121). The
+    # official image is multi-arch and publishes a native linux/arm64 build.
+    # Do not add `cuda: true`: this image already carries its CUDA userspace;
+    # Wendy's gpu entitlement supplies the host driver and device nodes.
+    from: ghcr.io/ggml-org/llama.cpp:server-cuda13
+    env:
+      # The 70B Q6_K model and F16 audio projector total about 59.3 GB. Exact
+      # revisions keep a future upstream update from silently changing a demo.
+      MODEL_URL_1: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/b6c5c9f176f3279204034e1d16d393105e95cb88/Llama-3.3-70B-Instruct-Q6_K/Llama-3.3-70B-Instruct-Q6_K-00001-of-00002.gguf
+      MODEL_URL_2: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/b6c5c9f176f3279204034e1d16d393105e95cb88/Llama-3.3-70B-Instruct-Q6_K/Llama-3.3-70B-Instruct-Q6_K-00002-of-00002.gguf
+      MMPROJ_URL: https://huggingface.co/steampunque/ultravox-v0_5-llama-3_3-70b-MP-GGUF/resolve/8b7e699d53719d33cf84e96871273e7a54876fed/ultravox-v0_5-llama-3_3-70b.mmproj.gguf
+      MODEL_ALIAS: ultravox-v0.5-llama-3.3-70b-q6-k
+      CONTEXT_SIZE: "16384"
+      MEMORY_BUDGET_GIB: "80"
+      MIN_SYSTEM_MEMORY_GIB: "100"
+      MIN_AVAILABLE_MEMORY_GIB: "80"
+      GPU_LAYERS: all
+      FLASH_ATTENTION: "on"
+      VOICE_PORT: "8080"
+      VOICE_WEB_ROOT: /app
+      LLAMA_PORT: "8081"
+      TTS_MODEL_URL: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2
+      TTS_MODEL_SHA256: c133d26353d776da730870dac7da07dbfc9a5e3bc80cc5e8e83ab6e823be7046
+      TTS_MODEL_DIR: /models/kokoro-multi-lang-v1_0
+      TTS_SPEAKER_ID: "3"
+      TTS_SPEED: "1.04"
+      TTS_THREADS: "8"
+      # Capture directly from the Spark through ALSA. Override the device name
+      # at deploy time when the microphone is not the system default.
+      AUDIO_SOURCE: default
+      ALSA_CAPTURE_DEVICE: default
+    install:
+      apt:
+        packages: [alsa-utils, aria2, bzip2, ca-certificates, python3, python3-pip]
+      pip:
+        - packages: ["sherpa-onnx==1.13.4"]
+    copy:
+      - from: local
+        paths: [entrypoint.sh, voice_server.py]
+        dest: /usr/local/bin/dgx-spark-speechllm
+        mode: "0755"
+      - from: local
+        paths: [web]
+        dest: /app
+    entrypoint:
+      exec: [/usr/local/bin/dgx-spark-speechllm/entrypoint.sh]
+    # The persistent model volume is root-owned, and the NVIDIA CDI device
+    # mounts used by the gpu entitlement are accessible to root.
+    user: root

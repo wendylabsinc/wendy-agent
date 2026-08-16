@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -220,6 +221,7 @@ func TestParseVolume(t *testing.T) {
 }
 
 func TestRuntimeDir(t *testing.T) {
+	t.Setenv("WENDY_AUDIO_UID", "")
 	// Short base path: Unix socket paths are limited to ~104 bytes, and
 	// t.TempDir() can exceed that once "user-1000/pipewire-0" is appended.
 	dir, err := os.MkdirTemp("/tmp", "pw")
@@ -227,13 +229,14 @@ func TestRuntimeDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	origGlob, origUID := SocketGlob, expectedUID
-	t.Cleanup(func() { SocketGlob, expectedUID = origGlob, origUID })
+	origGlob, origUID, origRegular := SocketGlob, expectedUID, isRegularUID
+	t.Cleanup(func() { SocketGlob, expectedUID, isRegularUID = origGlob, origUID, origRegular })
 
 	// The test process's own UID stands in for "wendy": creating a socket
 	// actually owned by an arbitrary UID would require root.
 	ownUID := uint32(os.Getuid())
 	expectedUID = func() (uint32, bool) { return ownUID, true }
+	isRegularUID = func(uid uint32) bool { return uid == ownUID }
 
 	// No session: callers must be able to tell, so they can report audio as
 	// unavailable rather than silently listing nothing.
@@ -257,12 +260,12 @@ func TestRuntimeDir(t *testing.T) {
 		t.Errorf("a regular file should not count as a session, got %q", got)
 	}
 
-	// A socket owned by a UID other than the expected one must not be trusted,
-	// even though it passes the socket-type check.
+	// The conventional "wendy" UID is preferred, but a different sole regular
+	// user is trusted on hosts with a device-specific primary username.
 	listenUnix(t, filepath.Join(sessionDir, "pipewire-0"))
 	expectedUID = func() (uint32, bool) { return ownUID + 1, true }
-	if got := RuntimeDir(); got != "" {
-		t.Errorf("a socket owned by an unexpected UID must not be trusted, got %q", got)
+	if got := RuntimeDir(); got != sessionDir {
+		t.Errorf("RuntimeDir() = %q, want sole regular-user session %q", got, sessionDir)
 	}
 
 	// The expected UID's own socket is trusted.
@@ -274,11 +277,39 @@ func TestRuntimeDir(t *testing.T) {
 		t.Error("Available() = false with a valid session socket")
 	}
 
-	// expectedUID failing (no "wendy" account on this host) must not fall back
-	// to trusting the first match regardless of owner.
+	// A host without a conventional "wendy" account can still use its sole
+	// regular-user session (common on headless Ubuntu installations).
 	expectedUID = func() (uint32, bool) { return 0, false }
+	if got := RuntimeDir(); got != sessionDir {
+		t.Errorf("RuntimeDir() without a preferred UID = %q, want sole regular session %q", got, sessionDir)
+	}
+}
+
+func TestRuntimeDirConfiguredUIDIsStrict(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	origGlob, origUID, origRegular := SocketGlob, expectedUID, isRegularUID
+	t.Cleanup(func() { SocketGlob, expectedUID, isRegularUID = origGlob, origUID, origRegular })
+
+	ownUID := uint32(os.Getuid())
+	SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
+	expectedUID = func() (uint32, bool) { return 0, false }
+	isRegularUID = func(uid uint32) bool { return uid == ownUID }
+	sessionDir := filepath.Join(dir, "user-1000")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listenUnix(t, filepath.Join(sessionDir, "pipewire-0"))
+	t.Setenv("WENDY_AUDIO_UID", strconv.FormatUint(uint64(ownUID+1), 10))
+
 	if got := RuntimeDir(); got != "" {
-		t.Errorf("unresolvable expected UID should yield \"\", got %q", got)
+		t.Fatalf("RuntimeDir() = %q for a differently owned configured UID, want empty", got)
+	}
+	if reason := UnavailableReason(); !strings.Contains(reason, "configured WENDY_AUDIO_UID") {
+		t.Errorf("UnavailableReason() = %q, want configured-UID guidance", reason)
 	}
 }
 
@@ -287,22 +318,25 @@ func TestRuntimeDir(t *testing.T) {
 // a missing "wendy" account from a session that simply is not up. Each reason
 // must name the specific precondition that failed.
 func TestUnavailableReason(t *testing.T) {
+	t.Setenv("WENDY_AUDIO_UID", "")
 	dir, err := os.MkdirTemp("/tmp", "pw")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	origGlob, origUID := SocketGlob, expectedUID
-	t.Cleanup(func() { SocketGlob, expectedUID = origGlob, origUID })
+	origGlob, origUID, origRegular := SocketGlob, expectedUID, isRegularUID
+	t.Cleanup(func() { SocketGlob, expectedUID, isRegularUID = origGlob, origUID, origRegular })
 
 	ownUID := uint32(os.Getuid())
+	isRegularUID = func(uid uint32) bool { return uid == ownUID }
 	SocketGlob = filepath.Join(dir, "user-*", "pipewire-0")
 
-	// No "wendy" account: the reason must say so, not blame a missing socket.
+	// No preferred account and no socket: explain how to start a headless
+	// regular-user session rather than referring to a hard-coded username.
 	expectedUID = func() (uint32, bool) { return 0, false }
 	reason := UnavailableReason()
-	if !strings.Contains(reason, "wendy") {
-		t.Errorf("unresolvable user reason = %q, want it to name the \"wendy\" user", reason)
+	if !strings.Contains(reason, "enable linger") {
+		t.Errorf("missing-session reason = %q, want a headless linger hint", reason)
 	}
 
 	// No socket: the reason must name where the agent looked, so an operator
@@ -321,9 +355,10 @@ func TestUnavailableReason(t *testing.T) {
 	}
 	listenUnix(t, filepath.Join(sessionDir, "pipewire-0"))
 	expectedUID = func() (uint32, bool) { return ownUID + 1, true }
+	isRegularUID = func(uint32) bool { return false }
 	reason = UnavailableReason()
-	if !strings.Contains(reason, "owned by") {
-		t.Errorf("owner-mismatch reason = %q, want it to report the owning uid", reason)
+	if !strings.Contains(reason, "system uid") {
+		t.Errorf("owner-mismatch reason = %q, want it to report the rejected uid", reason)
 	}
 	if strings.Contains(reason, "no PipeWire session") {
 		t.Errorf("owner-mismatch reason = %q, must not claim no session is running", reason)
@@ -331,6 +366,7 @@ func TestUnavailableReason(t *testing.T) {
 
 	// A usable session has no reason to report.
 	expectedUID = func() (uint32, bool) { return ownUID, true }
+	isRegularUID = func(uid uint32) bool { return uid == ownUID }
 	if reason = UnavailableReason(); reason != "" {
 		t.Errorf("UnavailableReason() = %q with a valid session, want \"\"", reason)
 	}
