@@ -2538,7 +2538,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		}
 		defer releaseLayout()
 		build := func(buildCtx context.Context, stream, logw io.Writer) error {
-			return buildImageToOCILayoutDirWithDocker(buildCtx, cwd, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+			return buildImageToOCILayoutDirWithDocker(buildCtx, cwd, dockerfile, platform, buildArgs, layoutDir, stream, logw)
 		}
 
 		// Native fast path: for a Stagefile project whose deps inputs are
@@ -2608,14 +2608,11 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		// Best-effort: reachable blobs are never touched, so a failed GC only
 		// leaves garbage for the next run to collect.
 		defer func() { _ = gcOCILayoutDir(layoutDir) }()
-		// Then hardlink-dedup identical blobs across the buildx/ocilayout stores
-		// and evict least-recently-used app caches over the size cap. Best-effort;
-		// this build's own dirs are protected so maintenance never yanks them.
+		// Then dedup identical blobs across app layout dirs, evict least-recently-
+		// used caches over the size cap, and bound the daemon store. Best-effort;
+		// this build's own layout is protected so maintenance never yanks it.
 		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
-			keep := map[string]bool{
-				layoutDir: true,
-				buildxLocalCacheDir(userCache, ociDeploymentCacheKey(appCfg.AppID, platform)): true,
-			}
+			keep := map[string]bool{layoutDir: true}
 			defer func() { _, _ = maintainBuildCaches(ctx, userCache, buildCacheMaxBytes(), keep) }()
 		}
 	} else {
@@ -2626,7 +2623,7 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		defer os.RemoveAll(tmp)
 		ociTar := filepath.Join(tmp, "image.tar")
 		if err := runBuild(func(buildCtx context.Context, stream, logw io.Writer) error {
-			return buildImageToOCILayout(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, ociDeploymentCacheKey(appCfg.AppID, platform), stream, logw)
+			return buildImageToOCILayout(buildCtx, cwd, dockerfile, platform, buildArgs, opts.builder, ociTar, stream, logw)
 		}); err != nil {
 			return nil, hint, err
 		}

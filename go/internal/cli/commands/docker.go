@@ -1763,7 +1763,8 @@ func updateBuilderConfig(ctx context.Context, builderName, config string, w io.W
 // share one cache dir — BuildKit's local cache-export ingest store is not safe
 // for concurrent writers and parallel builds clobber each other's temp files
 // (WDY-1689). An empty cacheKey uses the shared base dir so single and
-// sequential builds keep their cross-run cache.
+// sequential builds keep their cross-run cache. Used by the registry-push build
+// path; the OCI-export path embeds its cache inline in the layout instead.
 func buildxLocalCacheDir(userCache, cacheKey string) string {
 	dir := filepath.Join(userCache, "wendy", "buildx")
 	if cacheKey != "" {
@@ -2175,11 +2176,8 @@ func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo,
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	if cacheKey == "" {
-		cacheKey = repo
-	}
 	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
-		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
 		return err
@@ -2235,11 +2233,8 @@ func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConn
 	defer releaseLayout()
 	defer func() { _ = gcOCILayoutDir(layoutDir) }()
 
-	if cacheKey == "" {
-		cacheKey = repo
-	}
 	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
-		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, streamOutput, logOutput)
 	})
 	if err != nil {
 		return err
