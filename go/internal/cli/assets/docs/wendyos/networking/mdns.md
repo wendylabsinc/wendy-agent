@@ -112,7 +112,7 @@ dns-sd -L "wendyos-my-device" _wendyos._udp local.
 
 ### wendy-agent Discovery Code
 
-The wendy-agent Go code (`internal/shared/discovery/`) uses `_wendyos._udp` as the service type constant. On Linux it prefers `avahi-browse -rptl _wendyos._udp` when Avahi is installed; otherwise it falls back to the `hashicorp/mdns` library which queries each multicast-capable interface individually. On macOS it uses `dns-sd -B` to browse and `dns-sd -L` to resolve.
+The wendy-agent Go code (`internal/shared/discovery/`) uses `_wendyos._udp` as the service type constant. On Linux it prefers `avahi-browse -rptl _wendyos._udp` when Avahi is installed; otherwise it falls back to the `hashicorp/mdns` library which queries each multicast-capable interface individually. On macOS it browses and resolves in-process through `<dns_sd.h>`, the same mDNSResponder daemon that the `dns-sd` tool wraps, so no helper processes are spawned.
 
 **CLI-side note:** The shipped CLI binary is built with `CGO_ENABLED=0`, so it cannot use nss-mdns to resolve `.local` names. Instead, it performs its own mDNS browse for `.local` hostnames when connecting. Set `WENDY_MDNS_DEBUG=1` to log browse failures, or `WENDY_MDNS_TIMEOUT` (1s–30s) to adjust the timeout.
 

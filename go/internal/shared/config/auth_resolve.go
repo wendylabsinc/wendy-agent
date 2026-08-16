@@ -33,7 +33,8 @@ func (c *Config) DefaultAuth() (*AuthConfig, bool) {
 }
 
 // ResolveAuth chooses the auth session to use. Precedence:
-//  1. cloudGRPC flag set      -> exact endpoint match (error if none)
+//  1. cloudGRPC flag set      -> endpoint match; when several orgs share that
+//     endpoint, prefer the DefaultOrgID session, then the first (error if none)
 //  2. exactly one session     -> use it
 //  3. DefaultOrgID set        -> session whose cert org matches (if unique)
 //  4. valid persisted default -> use it (DefaultCloudGRPC)
@@ -46,12 +47,27 @@ func ResolveAuth(cfg *Config, cloudGRPC string, pick SessionPicker) (*AuthConfig
 		return nil, ErrNotLoggedIn
 	}
 	if cloudGRPC != "" {
+		// Several orgs can share one endpoint (multiple orgs on the production
+		// cloud). The flag alone cannot name an org, so among the endpoint's
+		// sessions honor the persisted default org before falling back to the
+		// first — otherwise the flag silently pins the oldest login's org.
+		var matches []*AuthConfig
 		for i := range cfg.Auth {
 			if cfg.Auth[i].CloudGRPC == cloudGRPC {
-				return authWithCerts(&cfg.Auth[i])
+				matches = append(matches, &cfg.Auth[i])
 			}
 		}
-		return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
+		if len(matches) == 0 {
+			return nil, fmt.Errorf("no auth session for %s; run 'wendy auth login --cloud-grpc %s' first", cloudGRPC, cloudGRPC)
+		}
+		if cfg.DefaultOrgID != 0 {
+			for _, m := range matches {
+				if len(m.Certificates) > 0 && int32(m.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
+					return authWithCerts(m)
+				}
+			}
+		}
+		return authWithCerts(matches[0])
 	}
 	if len(cfg.Auth) == 1 {
 		return authWithCerts(&cfg.Auth[0])

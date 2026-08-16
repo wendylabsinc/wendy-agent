@@ -1,0 +1,11 @@
+{
+    "appId": "sh.wendy.ci.python-env",
+    "version": "1.0.0",
+    "language": "python",
+    "env": {
+        "CI_ENV_COLOR": "blue",
+        "CI_ENV_GREETING": "hello world",
+        "CI_ENV_FROM_HOST": "${HOME}",
+        "CI_ENV_DROPPED": "${WENDY_CI_DEFINITELY_NOT_SET_ON_ANY_HOST}"
+    }
+}

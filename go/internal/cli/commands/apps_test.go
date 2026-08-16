@@ -28,6 +28,27 @@ func TestDeviceAppsListCommand_HelpDescribesDeployedApps(t *testing.T) {
 	}
 }
 
+func TestSortRunningFirstStable(t *testing.T) {
+	apps := []appInfo{
+		{Name: "stopped-1", State: "STOPPED"},
+		{Name: "running-1", State: "RUNNING"},
+		{Name: "crash-looping", State: "CRASH_LOOPING"},
+		{Name: "running-2", State: "running"},
+		{Name: "stopped-2", State: "STOPPED"},
+	}
+
+	sortRunningFirst(apps, func(a appInfo) string { return a.State })
+
+	got := make([]string, len(apps))
+	for i, app := range apps {
+		got[i] = app.Name
+	}
+	want := []string{"running-1", "running-2", "stopped-1", "crash-looping", "stopped-2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("app order = %v, want %v", got, want)
+	}
+}
+
 func TestAppsList_GroupDisplayShowsServiceSubRows(t *testing.T) {
 	containers := []*agentpb.AppContainer{
 		{

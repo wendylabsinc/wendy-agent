@@ -100,8 +100,31 @@ func maybeShowOptimizeTip(cmd *cobra.Command) {
 	if optimizeTipShownToday(cwd) {
 		return
 	}
-	cliNotice("Tip: run `wendy project optimize` to check your Dockerfile and dependencies for build-speed and runtime wins.")
+	if fixable := fixableOptimizeFindingCount(cwd); fixable > 0 {
+		fmt.Fprintln(os.Stderr, tui.WarningMessage(fmt.Sprintf(
+			"%d fixable Dockerfile issue(s) found — run `wendy project optimize --fix` to apply them.", fixable)))
+	} else {
+		cliNotice("Tip: run `wendy project optimize` to check your Dockerfile and dependencies for build-speed and runtime wins.")
+	}
 	recordOptimizeTipShown(cwd)
+}
+
+// fixableOptimizeFindingCount runs a best-effort static scan and returns how
+// many findings have an automatic fix available. It returns 0 on any error
+// (missing targets, discovery failure, etc.) so callers fall back to the
+// generic tip instead of surfacing a scan failure.
+func fixableOptimizeFindingCount(cwd string) int {
+	cfg, _ := loadOptConfig(cwd)
+	targets, err := optimize.DiscoverTargets(cwd, cfg, "arm64")
+	if err != nil || len(targets) == 0 {
+		return 0
+	}
+	findings := optimize.Analyze(targets, optimize.DefaultAnalyzers())
+	if len(findings) == 0 {
+		return 0
+	}
+	_, _, _, fixable := optimize.BuildReport(targets, findings).Counts()
+	return fixable
 }
 
 func optimizeTipToday() string {

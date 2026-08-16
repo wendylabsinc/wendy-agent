@@ -13,6 +13,11 @@ func DefaultAnalyzers() []Analyzer {
 		releaseDebugAnalyzer{},
 		cudaMLAnalyzer{},
 		archImageAnalyzer{},
+		aptInstallAnalyzer{},
+		pipFlagsAnalyzer{},
+		nodeCIAnalyzer{},
+		addCopyAnalyzer{},
+		imageHygieneAnalyzer{},
 	}
 }
 

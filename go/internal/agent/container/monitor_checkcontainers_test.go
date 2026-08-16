@@ -124,6 +124,9 @@ func (f *fakeContainerd) DeleteContainer(ctx context.Context, appName string, de
 func (f *fakeContainerd) ContainerIDsForApp(ctx context.Context, appID string) ([]string, error) {
 	return nil, nil
 }
+func (f *fakeContainerd) ResolveAppContainerIDs(ctx context.Context, name string) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeContainerd) GetContainerStats(ctx context.Context) ([]*agentpb.ContainerStats, error) {
 	return nil, nil
 }

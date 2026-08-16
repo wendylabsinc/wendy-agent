@@ -144,6 +144,7 @@ func TestPlaybackPipelineArgs_VP8LeakyQueueBeforeDecoder(t *testing.T) {
 func TestPlayVideoWithGStreamer_MissingGStreamer(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
 	stubGSTFallback(t, nil)       // no install-location fallbacks either
+	stubNonInteractive(t)         // no install prompt for the missing binary
 
 	stream := &mockVideoStream{frames: []*agentpb.VideoFrame{{Data: []byte{0x00}, Codec: agentpb.VideoCodec_VIDEO_CODEC_H264}}}
 	err := playVideoWithGStreamer(context.Background(), stream)
@@ -158,6 +159,7 @@ func TestPlayVideoWithGStreamer_MissingGStreamer(t *testing.T) {
 func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty dir — no executables on PATH
 	stubGSTFallback(t, nil)       // no install-location fallbacks either
+	stubNonInteractive(t)         // no install prompt for the missing binary
 
 	remoteErr := status.Error(codes.Unimplemented, "Camera streaming is currently not supported by Wendy Agent for Mac.")
 	stream := &mockVideoStream{err: remoteErr}
@@ -209,6 +211,162 @@ func stubGSTFallback(t *testing.T, paths []string) {
 	prev := gstLaunchFallbackPathsFn
 	gstLaunchFallbackPathsFn = func() []string { return paths }
 	t.Cleanup(func() { gstLaunchFallbackPathsFn = prev })
+}
+
+// stubNonInteractive forces isInteractiveTerminalFn to report a non-TTY
+// session for the duration of the test, so tests exercising a missing
+// gst-launch-1.0 never trigger the macOS install prompt.
+func stubNonInteractive(t *testing.T) {
+	t.Helper()
+	prev := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return false }
+	t.Cleanup(func() { isInteractiveTerminalFn = prev })
+}
+
+func TestEnsureGSTLaunch_FoundSkipsPrompt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	bin := filepath.Join(dir, gstLaunchName)
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing fake binary: %v", err)
+	}
+	stubGSTFallback(t, []string{bin})
+	stubConfirmFn(t, func(string) bool {
+		t.Fatal("must not prompt when gst-launch-1.0 is already resolvable")
+		return false
+	})
+
+	got, err := ensureGSTLaunchForHostOS(context.Background(), "darwin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != bin {
+		t.Errorf("got %q, want %q", got, bin)
+	}
+}
+
+func TestEnsureGSTLaunch_NonDarwinSkipsPrompt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	stubGSTFallback(t, nil)
+	stubConfirmFn(t, func(string) bool {
+		t.Fatal("must not prompt on a non-macOS host")
+		return false
+	})
+
+	if _, err := ensureGSTLaunchForHostOS(context.Background(), "linux"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestEnsureGSTLaunch_NonInteractiveSkipsPrompt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	stubGSTFallback(t, nil)
+	stubNonInteractive(t)
+	stubConfirmFn(t, func(string) bool {
+		t.Fatal("must not prompt in a non-interactive session")
+		return false
+	})
+
+	if _, err := ensureGSTLaunchForHostOS(context.Background(), "darwin"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestEnsureGSTLaunch_NoBrewSkipsPrompt(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	stubGSTFallback(t, nil)
+	stubInteractive(t)
+	stubBrewLookPath(t, func(string) (string, error) { return "", errors.New("brew not found") })
+	stubConfirmFn(t, func(string) bool {
+		t.Fatal("must not prompt when Homebrew is not installed")
+		return false
+	})
+
+	if _, err := ensureGSTLaunchForHostOS(context.Background(), "darwin"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestEnsureGSTLaunch_DeclinedInstallReturnsNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	stubGSTFallback(t, nil)
+	stubInteractive(t)
+	stubBrewLookPath(t, func(string) (string, error) { return "/opt/homebrew/bin/brew", nil })
+	stubConfirmFn(t, func(string) bool { return false })
+	stubInstallGStreamer(t, func(context.Context) error {
+		t.Fatal("must not install when the user declines")
+		return nil
+	})
+
+	if _, err := ensureGSTLaunchForHostOS(context.Background(), "darwin"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestEnsureGSTLaunch_AcceptedInstallResolvesAfterwards(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	dir := t.TempDir()
+	bin := filepath.Join(dir, gstLaunchName)
+	stubGSTFallback(t, []string{bin})
+	stubInteractive(t)
+	stubBrewLookPath(t, func(string) (string, error) { return "/opt/homebrew/bin/brew", nil })
+	stubConfirmFn(t, func(string) bool { return true })
+	stubInstallGStreamer(t, func(context.Context) error {
+		// Simulate a successful `brew install gstreamer` placing the binary.
+		return os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755)
+	})
+
+	got, err := ensureGSTLaunchForHostOS(context.Background(), "darwin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != bin {
+		t.Errorf("got %q, want %q", got, bin)
+	}
+}
+
+func TestEnsureGSTLaunch_InstallFailureIsWrapped(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	stubGSTFallback(t, nil)
+	stubInteractive(t)
+	stubBrewLookPath(t, func(string) (string, error) { return "/opt/homebrew/bin/brew", nil })
+	stubConfirmFn(t, func(string) bool { return true })
+	stubInstallGStreamer(t, func(context.Context) error { return errors.New("brew install failed") })
+
+	_, err := ensureGSTLaunchForHostOS(context.Background(), "darwin")
+	if err == nil || !strings.Contains(err.Error(), "installing GStreamer via Homebrew") {
+		t.Fatalf("expected wrapped install error, got: %v", err)
+	}
+}
+
+// stubInteractive forces isInteractiveTerminalFn to report an interactive TTY
+// session for the duration of the test.
+func stubInteractive(t *testing.T) {
+	t.Helper()
+	prev := isInteractiveTerminalFn
+	isInteractiveTerminalFn = func() bool { return true }
+	t.Cleanup(func() { isInteractiveTerminalFn = prev })
+}
+
+func stubConfirmFn(t *testing.T, fn func(string) bool) {
+	t.Helper()
+	prev := confirmFn
+	confirmFn = fn
+	t.Cleanup(func() { confirmFn = prev })
+}
+
+func stubBrewLookPath(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+	prev := brewLookPathFn
+	brewLookPathFn = fn
+	t.Cleanup(func() { brewLookPathFn = prev })
+}
+
+func stubInstallGStreamer(t *testing.T, fn func(context.Context) error) {
+	t.Helper()
+	prev := installGStreamerFn
+	installGStreamerFn = fn
+	t.Cleanup(func() { installGStreamerFn = prev })
 }
 
 func TestResolveGSTLaunch_FoundViaFallback(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -134,6 +135,9 @@ func appsListAgent(ctx context.Context, conn *grpcclient.AgentConnection) error 
 			containers = append(containers, c)
 		}
 	}
+	sortRunningFirst(containers, func(c *agentpb.AppContainer) string {
+		return c.GetRunningState().String()
+	})
 
 	if jsonOutput {
 		type jsonService struct {
@@ -312,6 +316,9 @@ func appsListProvider(ctx context.Context, cm providers.ContainerManager) error 
 	if err != nil {
 		return err
 	}
+	sortRunningFirst(containers, func(c providers.ContainerInfo) string {
+		return c.State
+	})
 
 	if jsonOutput {
 		data, err := json.MarshalIndent(containers, "", "  ")
@@ -751,6 +758,16 @@ type appInfo struct {
 	IsGroup bool // true when this app has multiple service containers
 }
 
+// sortRunningFirst performs a stable partition so running apps appear before
+// every other state while preserving the device's order within each group.
+func sortRunningFirst[T any](items []T, state func(T) string) {
+	sort.SliceStable(items, func(i, j int) bool {
+		iRunning := strings.EqualFold(state(items[i]), "running")
+		jRunning := strings.EqualFold(state(items[j]), "running")
+		return iRunning && !jRunning
+	})
+}
+
 func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 	if target.Bluetooth != nil && target.Bluetooth.IsWendyAgent() {
 		bleClient, err := connectBLEAgent(target.Bluetooth)
@@ -770,6 +787,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 				State:   a.GetState(),
 			}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 
@@ -796,6 +814,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 				})
 			}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 
@@ -812,6 +831,7 @@ func listApps(ctx context.Context, target *SelectedDevice) ([]appInfo, error) {
 		for i, c := range containers {
 			apps[i] = appInfo{Name: c.Name, State: c.State}
 		}
+		sortRunningFirst(apps, func(a appInfo) string { return a.State })
 		return apps, nil
 	}
 

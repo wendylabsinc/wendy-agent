@@ -341,6 +341,9 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 	rows := make([]bubbleTable.Row, 0, len(assets))
 	for _, a := range assets {
 		devType := humanReadableDeviceType(a.GetDeviceType())
+		if devType == "" {
+			devType = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+		}
 		ver := "—"
 		if v := versions[a.GetId()]; v != nil {
 			ver = v.GetVersion()
@@ -349,6 +352,9 @@ func cloudDiscoverTableRows(assets []*cloudpb.Asset, versions map[int32]*agentpb
 			}
 			if devType == "" {
 				devType = humanReadableDeviceType(v.GetDeviceType())
+			}
+			if devType == "" {
+				devType = humanReadableOSType(v.GetOs(), v.GetCpuArchitecture())
 			}
 		}
 		rows = append(rows, bubbleTable.Row{"", a.GetName(), devType, ver})
@@ -379,9 +385,15 @@ func cloudDeviceInfoFromAsset(a *cloudpb.Asset, ver *agentpb.GetAgentVersionResp
 		Type:    humanReadableDeviceType(a.GetDeviceType()),
 		Address: a.GetIpAddress(),
 	}
+	if info.Type == "" {
+		info.Type = humanReadableOSType(a.GetOsType(), a.GetArchitecture())
+	}
 	if ver != nil {
 		if info.Type == "" {
 			info.Type = humanReadableDeviceType(ver.GetDeviceType())
+		}
+		if info.Type == "" {
+			info.Type = humanReadableOSType(ver.GetOs(), ver.GetCpuArchitecture())
 		}
 		info.Version = ver.GetVersion()
 	}

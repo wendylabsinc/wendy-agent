@@ -16,6 +16,11 @@ wendy device enroll [--name <name>] [--cloud-grpc <endpoint>] [flags]
 
 `wendy device enroll` creates an enrollment token using your stored auth session, then calls `StartProvisioning` on the connected agent so it fetches its certificate. Run [`wendy cloud login`](../cloud/login.md) first.
 
+› **Certificate identity:** The CSR submitted during provisioning includes the
+› device's authoritative Wendy identity as a URI Subject Alternative Name
+› (`urn:wendy:org:‹org›:asset:‹assetID›`). The cloud certificate service
+› validates this SAN against the enrollment token at issuance time.
+
 The enrolled device is registered in Wendy Cloud under a human-readable **name**. The name can be changed later with `wendy device rename`, so the command resolves it as follows:
 
 1. **`--name <name>`** — always wins when provided.
@@ -58,6 +63,7 @@ wendy device enroll --device 192.168.1.11 --name lab-pi-01
 
 ## Related
 
+- [`wendy install` → Linux Desktop](../install.md) — mint a short-lived enrollment token and embed it in the `agent.sh` one-liner so the device self-enrolls on first startup, without needing a USB connection or a running agent.
 - [`wendy device setup`](./setup.md) — interactive wizard that provisions, configures WiFi, and enrolls in one flow.
 - `wendy cloud enroll-device` — alias for this command, reachable through the cloud tunnel.
 - [`wendy device provision`](./provision.md) — enroll against a self-hosted pki-core instead of Wendy Cloud.

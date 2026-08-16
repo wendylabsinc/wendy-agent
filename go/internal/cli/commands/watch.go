@@ -31,6 +31,9 @@ func newWatchCmd() *cobra.Command {
 			"Runs detached (does not stream logs); use 'wendy device logs' to tail output. " +
 			"Build output is hidden unless a build fails; pass --verbose to always show it.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateEnvFlag(opts.env); err != nil {
+				return err
+			}
 			// Keep the loop quiet: hide build output unless a build fails.
 			// Detached + non-interactive are enforced by watchCommand itself.
 			opts.quietBuild = !verbose
@@ -46,6 +49,7 @@ func newWatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.product, "product", "", "Swift Package Manager product to build and run")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and run only the named service and its dependencies")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
+	cmd.Flags().StringArrayVar(&opts.env, "env", nil, "Set an environment variable in the container as KEY=VALUE; repeatable, and overrides wendy.json env of the same key")
 	cmd.Flags().BoolVar(&opts.restartUnlessStopped, "restart-unless-stopped", false, "Restart the container unless manually stopped")
 	cmd.Flags().BoolVar(&opts.restartOnFailure, "restart-on-failure", false, "Restart the container on failure")
 	cmd.Flags().IntVar(&debounceMS, "debounce", 400, "Quiet period in milliseconds after the last change before redeploying")

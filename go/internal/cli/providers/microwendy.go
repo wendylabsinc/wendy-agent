@@ -64,41 +64,130 @@ func (p *MicroWendyProvider) DiscoverDevices(ctx context.Context) ([]models.Exte
 
 	var devices []models.ExternalDevice
 	for _, svc := range services {
-		displayName := svc.InstanceName
-		if displayName == "" {
-			displayName = svc.Hostname
-		}
-		devices = append(devices, models.ExternalDevice{
-			ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
-			DisplayName: displayName,
-			ProviderKey: p.Key(),
-			ConnectionInfo: map[string]string{
-				"type":     "LAN",
-				"name":     svc.TXTRecords["name"],
-				"hostname": svc.Hostname,
-				"ip":       svc.IPAddress,
-				"port":     fmt.Sprintf("%d", svc.Port),
-				"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
-			},
-			IsWendyDevice: true,
-		})
+		devices = append(devices, p.mdnsExternalDevice(svc))
 	}
-
 	for _, dev := range sd.Devices() {
-		devices = append(devices, models.ExternalDevice{
-			ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
-			DisplayName: dev.DisplayName,
-			ProviderKey: p.Key(),
-			ConnectionInfo: map[string]string{
-				"type":       "USB",
-				"name":       dev.Name,
-				"serialPort": dev.Port,
-			},
-			IsWendyDevice: true,
-		})
+		devices = append(devices, p.serialExternalDevice(dev))
 	}
 
 	return devices, nil
+}
+
+// mdnsExternalDevice maps a resolved _wendy-lite._tcp mDNS service to an
+// ExternalDevice.
+func (p *MicroWendyProvider) mdnsExternalDevice(svc discovery.MDNSService) models.ExternalDevice {
+	displayName := svc.InstanceName
+	if displayName == "" {
+		displayName = svc.Hostname
+	}
+	return models.ExternalDevice{
+		ID:          fmt.Sprintf("wendy-lite:%s", svc.Hostname),
+		DisplayName: displayName,
+		ProviderKey: p.Key(),
+		ConnectionInfo: map[string]string{
+			"type":     "LAN",
+			"name":     svc.TXTRecords["name"],
+			"hostname": svc.Hostname,
+			"ip":       svc.IPAddress,
+			"port":     fmt.Sprintf("%d", svc.Port),
+			"mtls":     fmt.Sprintf("%t", svc.TXTRecords["mtls"] == "true"),
+		},
+		IsWendyDevice: true,
+	}
+}
+
+// serialExternalDevice maps a serial-port Wendy Lite device to an ExternalDevice.
+func (p *MicroWendyProvider) serialExternalDevice(dev discovery.SerialDevice) models.ExternalDevice {
+	return models.ExternalDevice{
+		ID:          fmt.Sprintf("wendy-lite:%s", dev.Port),
+		DisplayName: dev.DisplayName,
+		ProviderKey: p.Key(),
+		ConnectionInfo: map[string]string{
+			"type":       "USB",
+			"name":       dev.Name,
+			"serialPort": dev.Port,
+		},
+		IsWendyDevice: true,
+	}
+}
+
+// DiscoverDevicesContinuous streams wendy-lite devices as they are found:
+// mDNS services via continuous browsing and serial devices via the background
+// serial scanner. Continuous mDNS browsing is only available on macOS; on
+// other platforms this returns an error and callers fall back to polling
+// DiscoverDevices.
+func (p *MicroWendyProvider) DiscoverDevicesContinuous(ctx context.Context) (<-chan models.ExternalDevice, error) {
+	svcCh, err := discovery.BrowseMDNSServicesContinuous(ctx, microWendyServiceType)
+	if err != nil {
+		return nil, err
+	}
+
+	sd := discovery.GetSerialDiscovery()
+	sd.StartScan(3 * time.Second)
+
+	// Coalesce serial snapshots into a capacity-1 channel: the listener must
+	// never block (it runs under SerialDiscovery's notify lock), and only the
+	// latest snapshot matters. notify() serializes listener calls, so the
+	// drain-then-send below never races with itself.
+	serialUpdates := make(chan []discovery.SerialDevice, 1)
+	listenerID := sd.AddListener(func(devices []discovery.SerialDevice) {
+		select {
+		case serialUpdates <- devices:
+		default:
+			select {
+			case <-serialUpdates:
+			default:
+			}
+			serialUpdates <- devices
+		}
+	})
+
+	ch := make(chan models.ExternalDevice, 16)
+	go func() {
+		defer close(ch)
+		defer sd.RemoveListener(listenerID)
+		defer sd.StopScan()
+
+		send := func(dev models.ExternalDevice) bool {
+			select {
+			case ch <- dev:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+
+		// Emit serial devices already known before the listener registered.
+		for _, dev := range sd.Devices() {
+			if !send(p.serialExternalDevice(dev)) {
+				return
+			}
+		}
+
+		for {
+			select {
+			case svc, ok := <-svcCh:
+				if !ok {
+					// Browse stream died; closing ch lets the consumer fall
+					// back to polling.
+					return
+				}
+				if !send(p.mdnsExternalDevice(svc)) {
+					return
+				}
+			case snap := <-serialUpdates:
+				for _, dev := range snap {
+					if !send(p.serialExternalDevice(dev)) {
+						return
+					}
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, nil
 }
 
 func (p *MicroWendyProvider) SupportedBuildTypes() []string {

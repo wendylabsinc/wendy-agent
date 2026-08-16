@@ -1,4 +1,4 @@
 {
   "title": "Security",
-  "pages": ["index", "threat-model"]
+  "pages": ["index", "verification", "threat-model"]
 }

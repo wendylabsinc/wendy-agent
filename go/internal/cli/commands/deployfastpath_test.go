@@ -19,7 +19,7 @@ func writeFile(t *testing.T, dir, rel, content string) {
 
 func hashOrFatal(t *testing.T, dir string, args map[string]string) string {
 	t.Helper()
-	h, err := computeBuildInputHash(dir, "", "linux/arm64", args)
+	h, err := computeBuildInputHash(dir, "", "linux/arm64", args, nil)
 	if err != nil {
 		t.Fatalf("computeBuildInputHash: %v", err)
 	}
@@ -128,5 +128,35 @@ func TestDockerIgnoreNegationIsIgnored(t *testing.T) {
 	}
 	if !di.matches("other.log") {
 		t.Fatal("*.log should still exclude other.log")
+	}
+}
+
+// TestComputeBuildInputHash_EnvChangesHash covers WDY-2040: env is applied at
+// container create, so an env-only change produces an identical image and must
+// still invalidate the fingerprint that lets a redeploy skip the build.
+func TestComputeBuildInputHash_EnvChangesHash(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	base, err := computeBuildInputHash(dir, "", "linux/arm64", nil, nil)
+	if err != nil {
+		t.Fatalf("computeBuildInputHash: %v", err)
+	}
+	withEnv, err := computeBuildInputHash(dir, "", "linux/arm64", nil, []string{"LOG_LEVEL=debug"})
+	if err != nil {
+		t.Fatalf("computeBuildInputHash: %v", err)
+	}
+	changed, err := computeBuildInputHash(dir, "", "linux/arm64", nil, []string{"LOG_LEVEL=info"})
+	if err != nil {
+		t.Fatalf("computeBuildInputHash: %v", err)
+	}
+
+	if base == withEnv {
+		t.Error("adding env did not change the hash")
+	}
+	if withEnv == changed {
+		t.Error("changing an env value did not change the hash")
 	}
 }

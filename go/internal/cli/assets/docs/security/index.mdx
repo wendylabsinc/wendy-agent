@@ -55,6 +55,32 @@ communication moves to mTLS on port 50052, and the plaintext port is shut down.
 baseline seccomp profile, explicit capability grants, and entitlement-gated access to hardware,
 Bluetooth (D-Bus proxied), and host networking. No entitlement, no access.
 
+## Software Bill of Materials & build provenance
+
+Every WendyOS release includes SPDX SBOMs for each shipped binary, Swift packages, and the whole-repo source tree. Release archives for the `wendy` CLI and `wendy-agent` also carry Sigstore-backed SLSA build provenance and SBOM attestations, verifiable without managing signing keys.
+
+See [Verifying release artifacts](/docs/security/verification) for verification steps.
+
+› **Status:** SBOM and provenance are shipped. Reproducible builds and dedicated signing keys are in progress.
+
+## Artifact signature verification
+
+The agent enforces **ML-DSA65 detached-signature verification** on two artifact classes:
+
+| Artifact | Signed over | Verified against |
+|---|---|---|
+| Agent update binary | SHA256 digest of the binary | Wendy build-embedded public key (`DefaultVerifier`) |
+| Container image | SHA256 digest of the OCI image config | Per-org publisher key from provisioning/PKI |
+
+Verification behaviour:
+- **Disabled** (no key embedded): verification is a fail-safe no-op; the install or run proceeds as if the check does not exist.
+- **Enabled** (key present): an unsigned artifact returns `FailedPrecondition`; a tampered or invalid signature returns `DataLoss`. The install or container run is refused in both cases.
+- **Corrupt key at init**: the agent panics at startup — it never silently degrades to an accept-all state.
+
+As of this release the embedded keys are placeholder stubs (verification is dormant). The checks become active automatically once the cross-repo signing pipeline and pinned keys are deployed.
+
+› **Note:** `CreateContainer` and `CreateContainerWithProgress` do not yet pass through the image-signature gate. `wendy run` carries the image signature via the `WENDY_IMAGE_SIGNATURE_PATH` environment variable.
+
 ## Control Status
 
 | Control | Status | Target |
@@ -69,9 +95,11 @@ Bluetooth (D-Bus proxied), and host networking. No entitlement, no access.
 | containerd socket bind-mount denied | ✅ Shipped | — |
 | Default PID limits per container (fork-bomb guard) | ✅ Shipped | — |
 | Hook command injection fix; debug port bound to loopback | ✅ Shipped | — |
-| Container image signature verification (cosign) | 🛠 In progress | Q3 2026 |
-| Signed agent & OS updates | 🛠 In progress | Q3 2026 |
-| Reproducible builds / SBOM / SLSA provenance | 🛠 In progress | Q3 2026 |
+| SBOM / SLSA provenance | ✅ Shipped | — |
+| Container image signature verification (ML-DSA65, key not yet embedded) | 🛠 In progress | Q3 2026 |
+| Signed agent updates (ML-DSA65, key not yet embedded) | 🛠 In progress | Q3 2026 |
+| Signed OS updates | 🛠 In progress | Q3 2026 |
+| Reproducible builds / dedicated signing keys | 🛠 In progress | Q3 2026 |
 | Cloud CA pinning in firmware | 🛠 In progress | Q3 2026 |
 | Certificate revocation (OCSP/CRL) | 🛠 In progress | Q3 2026 |
 | Operator-scoped permissions in developer certificates | 🛠 In progress | Q3 2026 |
@@ -104,12 +132,9 @@ or due-diligence requirements, reach out to **security@wendy.dev**.
 
 ### Supply Chain
 
-The signing infrastructure for reproducible builds, SBOM generation, and SLSA provenance is
-under active development (🛠 In progress). Container image signing and agent binary signing
-depend on this foundation. We will update this page and the changelog below when those controls
-ship.
+SBOM generation and SLSA build provenance ship today — see [Verifying release artifacts](/docs/security/verification). Reproducible builds and dedicated artifact-signing keys are under active development (🛠 In progress); ML-DSA65 signature verification for container images and agent binaries is wired in the agent but dormant until those keys are deployed.
 
-Until then: container images are verified by SHA256 digest; agent updates require a valid mTLS
+Until the signing keys are deployed: container images are verified by SHA256 digest; agent updates require a valid mTLS
 connection to submit.
 
 ### Security Changelog

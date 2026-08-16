@@ -214,11 +214,11 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	commonName, err := enrollmentTokenCommonName(result.EnrollmentToken)
+	commonName, identityURN, err := enrollmentTokenIdentity(result.EnrollmentToken)
 	if err != nil {
 		return fmt.Errorf("reading enrollment token identity: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), commonName)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), commonName, identityURN)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -295,24 +295,40 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	return nil
 }
 
-func enrollmentTokenCommonName(token string) (string, error) {
+// enrollmentTokenIdentity derives the CSR Subject CommonName and the
+// authoritative identity URI SAN from an enrollment token's claims. The URN
+// ("urn:wendy:org:<org>:user:<userID>" for users, "urn:wendy:org:<org>:asset:<assetID>"
+// for assets) is what IdentityFromCert prefers over the legacy CommonName.
+func enrollmentTokenIdentity(token string) (commonName, identityURN string, err error) {
 	claims, err := enrolltoken.Parse(token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	switch claims.Type {
 	case "user_enrollment":
 		if claims.UserID == "" {
-			return "", fmt.Errorf("user enrollment token missing user_id")
+			return "", "", fmt.Errorf("user enrollment token missing user_id")
 		}
-		return fmt.Sprintf("wendy/user/%s", claims.UserID), nil
+		if strings.Contains(claims.UserID, ":") {
+			// A ':' in the user ID would make the URN unreadable for every
+			// identity parser (they expect exactly 6 colon-separated parts),
+			// yielding a cert that cannot authenticate anywhere.
+			return "", "", fmt.Errorf("user_id %q contains ':', cannot build identity URN", claims.UserID)
+		}
+		cn := fmt.Sprintf("wendy/user/%s", claims.UserID)
+		if claims.OrganizationID == 0 {
+			// Legacy token without an org claim: keep login working, CN only.
+			return cn, "", nil
+		}
+		return cn, certs.UserURN(claims.OrganizationID, claims.UserID), nil
 	case "asset_enrollment":
 		if claims.OrganizationID == 0 || claims.AssetID == 0 {
-			return "", fmt.Errorf("asset enrollment token missing org_id or asset_id")
+			return "", "", fmt.Errorf("asset enrollment token missing org_id or asset_id")
 		}
-		return fmt.Sprintf("wendy/%d/%d", claims.OrganizationID, claims.AssetID), nil
+		return fmt.Sprintf("wendy/%d/%d", claims.OrganizationID, claims.AssetID),
+			certs.AssetURN(claims.OrganizationID, claims.AssetID), nil
 	default:
-		return "", fmt.Errorf("unsupported enrollment token type %q", claims.Type)
+		return "", "", fmt.Errorf("unsupported enrollment token type %q", claims.Type)
 	}
 }
 
@@ -338,12 +354,13 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 	}
 	// Reconstruct the device_id that pki-core stored in the token.
 	deviceID := fmt.Sprintf("sh/wendy/%d/%d", tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
+	identityURN := certs.AssetURN(tokenResp.GetOrganizationId(), tokenResp.GetAssetId())
 
 	privateKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
-	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), deviceID)
+	csrPEM, err := certs.GenerateCSR([]byte(privateKeyPEM), deviceID, identityURN)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -523,6 +540,27 @@ func certCommonName(pemCertificate string) (string, error) {
 	return parsed.Subject.CommonName, nil
 }
 
+// storedCertIdentityURN builds the authoritative Wendy identity URN from a
+// stored certificate's org/user/asset fields, or "" when there is no positive
+// org id to anchor it (a legacy entry that predates org-scoped identity).
+func storedCertIdentityURN(cert config.CertificateInfo) string {
+	if cert.OrganizationID <= 0 {
+		return ""
+	}
+	if cert.UserID != "" {
+		if strings.Contains(cert.UserID, ":") {
+			// A ':' would make the URN unreadable for every identity parser;
+			// refresh CN-only rather than minting a cert nothing can parse.
+			return ""
+		}
+		return certs.UserURN(int32(cert.OrganizationID), cert.UserID)
+	}
+	if cert.AssetID > 0 {
+		return certs.AssetURN(int32(cert.OrganizationID), int32(cert.AssetID))
+	}
+	return ""
+}
+
 // refreshCertsForAuth generates a new CSR and refreshes certificates for a single auth entry.
 func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	if len(auth.Certificates) == 0 {
@@ -536,13 +574,19 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 		return fmt.Errorf("reading existing cert CN: %w", err)
 	}
 
+	// Carry the authoritative identity URN forward so the refreshed cert keeps
+	// its "urn:wendy:org:..." SAN. The org/user/asset are taken from the stored
+	// config (the cert's own CN may be a legacy "wendy/user/<uid>" that carries
+	// no parseable org).
+	identityURN := storedCertIdentityURN(existingCert)
+
 	// Generate new key pair.
 	newKeyPEM, err := certs.GenerateKeyPair()
 	if err != nil {
 		return fmt.Errorf("generating key pair: %w", err)
 	}
 
-	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn)
+	csrPEM, err := certs.GenerateCSR([]byte(newKeyPEM), cn, identityURN)
 	if err != nil {
 		return fmt.Errorf("generating CSR: %w", err)
 	}
@@ -755,7 +799,12 @@ func newAuthUseCmd() *cobra.Command {
 			if len(chosen.Certificates) == 0 {
 				return fmt.Errorf("auth session %s has no certificates; re-run 'wendy auth login'", chosen.CloudGRPC)
 			}
+			// Persist the org alongside the endpoint: several orgs can share
+			// one endpoint (multiple orgs on the production cloud), and the
+			// endpoint alone resolved to whichever of them was logged into
+			// first — silently overriding the org the user just selected.
 			cfg.DefaultCloudGRPC = chosen.CloudGRPC
+			cfg.DefaultOrgID = int32(chosen.Certificates[0].OrganizationID)
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
@@ -777,20 +826,42 @@ func newAuthDefaultCmd() *cobra.Command {
 			}
 			if clear {
 				cfg.DefaultCloudGRPC = ""
+				cfg.DefaultOrgID = 0
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}
 				fmt.Println(tui.SuccessMessage("Default session cleared."))
 				return nil
 			}
-			if cfg.DefaultCloudGRPC == "" {
+			if cfg.DefaultCloudGRPC == "" && cfg.DefaultOrgID == 0 {
 				fmt.Println("No default session set.")
+				return nil
+			}
+			// The default org is what actually disambiguates sessions when
+			// several orgs share one endpoint, so show its session first.
+			if cfg.DefaultOrgID != 0 {
+				for i := range cfg.Auth {
+					a := &cfg.Auth[i]
+					if len(a.Certificates) > 0 && int32(a.Certificates[0].OrganizationID) == cfg.DefaultOrgID {
+						fmt.Printf("Default session: %s\n", authSessionLabel(a))
+						return nil
+					}
+				}
+			}
+			if cfg.DefaultCloudGRPC == "" {
+				// Only a stale org default remains (its session is gone).
+				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session for org %d no longer exists; clearing it.", cfg.DefaultOrgID)))
+				cfg.DefaultOrgID = 0
+				if err := config.Save(cfg); err != nil {
+					return fmt.Errorf("saving config: %w", err)
+				}
 				return nil
 			}
 			def, ok := cfg.DefaultAuth()
 			if !ok {
 				fmt.Println(tui.WarningMessage(fmt.Sprintf("Default session %s no longer exists; clearing it.", cfg.DefaultCloudGRPC)))
 				cfg.DefaultCloudGRPC = ""
+				cfg.DefaultOrgID = 0
 				if err := config.Save(cfg); err != nil {
 					return fmt.Errorf("saving config: %w", err)
 				}

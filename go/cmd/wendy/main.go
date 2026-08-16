@@ -22,7 +22,14 @@ import (
 func main() {
 	start := time.Now()
 	cmd := commands.NewRootCmd()
-	executed, err := cmd.ExecuteC()
+
+	// Reject an unknown subcommand before cobra can quietly answer it with the
+	// parent group's help page and a zero exit code. See UnknownSubcommandError.
+	var executed *cobra.Command
+	err := commands.UnknownSubcommandError(os.Args[1:])
+	if err == nil {
+		executed, err = cmd.ExecuteC()
+	}
 	trackCommand(executed, err, time.Since(start))
 	analytics.Close()
 
