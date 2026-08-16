@@ -24,8 +24,39 @@ func newCacheCmd() *cobra.Command {
 	cmd.AddCommand(
 		newCacheListCmd(),
 		newCacheClearCmd(),
+		newCacheDedupCmd(),
 	)
 
+	return cmd
+}
+
+func newCacheDedupCmd() *cobra.Command {
+	var maxBytes int64
+	cmd := &cobra.Command{
+		Use:   "dedup",
+		Short: "Reclaim build-cache space (hardlink-dedup identical layers, evict old app caches)",
+		Long: "Hardlinks content-identical layers shared across the buildx and " +
+			"ocilayout stores so each layer costs one copy, then evicts the " +
+			"least-recently-used per-app caches until the total is under --max. " +
+			"Only ever dedups or deletes cache content; safe to run anytime.\n\n" +
+			"This runs automatically after every build, so the caches stay bounded " +
+			"without ever invoking it by hand — it exists for manual reclaim and debugging.",
+		// Hidden: the automatic post-build maintenance is the intended path; this
+		// stays available for on-demand reclaim without cluttering `wendy cache`.
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			userCache, err := os.UserCacheDir()
+			if err != nil {
+				return fmt.Errorf("finding user cache directory: %w", err)
+			}
+			deduped, pruned := runBuildCacheMaintenance(userCache, maxBytes, nil)
+			fmt.Printf("Deduplicated %s, evicted %s.\n", formatSize(deduped), formatSize(pruned))
+			return nil
+		},
+	}
+	cmd.Flags().Int64Var(&maxBytes, "max", buildCacheMaxBytes(),
+		"evict oldest app caches above this many bytes (0 to dedup only)")
 	return cmd
 }
 

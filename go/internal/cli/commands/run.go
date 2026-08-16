@@ -2608,6 +2608,16 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 		// Best-effort: reachable blobs are never touched, so a failed GC only
 		// leaves garbage for the next run to collect.
 		defer func() { _ = gcOCILayoutDir(layoutDir) }()
+		// Then hardlink-dedup identical blobs across the buildx/ocilayout stores
+		// and evict least-recently-used app caches over the size cap. Best-effort;
+		// this build's own dirs are protected so maintenance never yanks them.
+		if userCache, cacheErr := os.UserCacheDir(); cacheErr == nil {
+			keep := map[string]bool{
+				layoutDir: true,
+				buildxLocalCacheDir(userCache, ociDeploymentCacheKey(appCfg.AppID, platform)): true,
+			}
+			defer func() { _, _ = runBuildCacheMaintenance(userCache, buildCacheMaxBytes(), keep) }()
+		}
 	} else {
 		tmp, err := os.MkdirTemp("", "wendy-oci-*")
 		if err != nil {
