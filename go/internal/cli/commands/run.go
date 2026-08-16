@@ -475,9 +475,13 @@ func createContainerWithProgress(ctx context.Context, svc agentpb.WendyContainer
 }
 
 type runOptions struct {
-	buildType            string
-	dockerfile           string
-	builder              string
+	buildType  string
+	dockerfile string
+	builder    string
+	// buildHost names a WendyOS device that builds the image instead of this
+	// machine. Empty means build locally, and every existing local path must be
+	// unaffected when it is empty.
+	buildHost            string
 	debug                bool
 	deploy               bool
 	detach               bool
@@ -579,6 +583,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark); the built image is pushed straight to the target device")
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging")
 	cmd.Flags().BoolVar(&opts.deploy, "deploy", false, "Create container but do not start it")
 	cmd.Flags().BoolVar(&opts.detach, "detach", false, "Start container and return without streaming logs, waiting for readiness, or opening the app URL")
@@ -770,6 +775,11 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
 	}
+	buildHost, err := resolveAndValidateRunBuildHost(opts.buildHost, opts.builder)
+	if err != nil {
+		return err
+	}
+	opts.buildHost = buildHost
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
 	// --build-type is compatible.
@@ -797,6 +807,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	if projectType == "compose" {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
+			return err
+		}
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
@@ -925,6 +938,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "provider targets"); err != nil {
+			return err
+		}
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, appCfg.AppID, appCfg.Entitlements, opts)
 	}
 
@@ -1566,6 +1582,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "multi-service projects"); err != nil {
+			return err
+		}
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 
@@ -1598,6 +1617,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).
 	if projectType == "xcode" {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Xcode projects"); err != nil {
+			return err
+		}
 		if platformOS(platform) == "darwin" {
 			return runMacOSXcodeWithAgent(ctx, conn, cwd, appCfg, opts)
 		}
@@ -1626,6 +1648,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		needsHostSwift := explicitSwift || !hasContainerBuildFile(cwd)
 
 		if needsHostSwift {
+			if err := rejectUnsupportedBuildHostProject(opts.buildHost, "native Swift projects"); err != nil {
+				return err
+			}
 			if targetIsDarwin && runtime.GOOS != "darwin" {
 				return fmt.Errorf("`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile or Containerfile to build a Linux image instead", runtime.GOOS)
 			}
@@ -1643,6 +1668,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	case "docker":
 		// Dockerfile/Containerfile already exists.
 	case "compose":
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
+			return err
+		}
 		return runComposeWithAgent(ctx, conn, cwd, opts)
 	case "python":
 		if _, err := os.Stat(filepath.Join(cwd, "Dockerfile")); os.IsNotExist(err) {
@@ -1673,6 +1701,19 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// values that fail build-arg validation are skipped rather than fatal.
 	applyDeviceBuildArgHints(buildArgs, versionResp)
 
+	// wendy.json env plus --env and fleet-injected env, appended last so they win
+	// on key clash. Feeds the remote-build path below, the fingerprint, and
+	// whichever local deploy path runs.
+	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
+
+	// Remote build: hand the build to another WendyOS device, which pushes the
+	// finished image straight into this device's registry over the mesh. Placed
+	// ahead of every local path because those exist to optimise a local build
+	// that is not going to happen.
+	if opts.buildHost != "" {
+		return runRemoteBuild(ctx, conn, opts.buildHost, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
+	}
+
 	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
 	// (CDC) support, so every fast-deploy attempt just probes, fails, and falls
 	// back to a registry push — wasted round trips. Skip both fast-deploy paths
@@ -1685,9 +1726,6 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// mismatched fingerprint, a missing app, or any RPC error falls through to
 	// the normal deploy below, so it can never deploy stale code.
 	deviceKey := deviceFingerprintKey(versionResp)
-	// wendy.json env plus --env and fleet-injected env, appended last so they
-	// win on key clash. Feeds both the fingerprint and whichever deploy path runs.
-	deployEnv := append(resolveServiceEnv(appCfg), opts.env...)
 	inputHash, hashErr := computeBuildInputHash(cwd, opts.dockerfile, platform, buildArgs, deployEnv)
 	if !isDarwinAgent && opts.detach && !opts.deploy && hashErr == nil {
 		if done, _ := tryDeployFastPath(ctx, conn, appCfg, deviceKey, inputHash, opts); done {
