@@ -6,16 +6,11 @@ const elements = {
   listen: $("#listenButton"), orbLabel: $(".orb-label"), phase: $("#phaseLabel"),
   detail: $("#phaseDetail"), sourcePill: $("#sourcePill"), source: $("#sourceText"),
   reset: $("#resetButton"), textForm: $("#textForm"), textInput: $("#textInput"),
-  speak: $("#speakToggle"), voiceTest: $("#voiceTest"),
 };
 
 let state = { phase: "loading", listening: false, capture_backend: "detecting" };
 let assistantBubble = null;
 let assistantText = "";
-const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-let audioContext = null;
-let currentSource = null;
-let ttsController = null;
 
 function post(path, payload = {}) {
   return fetch(path, {
@@ -74,68 +69,6 @@ function addMessage(role, text, meta = "") {
   return bubble;
 }
 
-function unlockAudio() {
-  if (!AudioContextClass) return Promise.reject(new Error("This browser cannot play neural audio"));
-  if (!audioContext) audioContext = new AudioContextClass();
-  if (audioContext.state === "suspended") return audioContext.resume();
-  return Promise.resolve();
-}
-
-async function stopSpeaking() {
-  ttsController?.abort();
-  ttsController = null;
-  if (currentSource) {
-    currentSource.onended = null;
-    try { currentSource.stop(); } catch (_) {}
-    currentSource.disconnect();
-    currentSource = null;
-  }
-  await post("/api/speaking", { speaking: false }).catch(() => {});
-}
-
-async function speak(text) {
-  if (!elements.speak.checked || !text) return;
-  await stopSpeaking();
-  const controller = new AbortController();
-  ttsController = controller;
-  await post("/api/speaking", { speaking: true }).catch(() => {});
-  try {
-    const response = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const error = await response.json().catch(() => ({}));
-      throw new Error(error.error || `Neural voice failed (${response.status})`);
-    }
-    const wav = await response.arrayBuffer();
-    if (controller.signal.aborted || ttsController !== controller) return;
-    await unlockAudio();
-    const buffer = await audioContext.decodeAudioData(wav);
-    if (controller.signal.aborted || ttsController !== controller) return;
-    const source = audioContext.createBufferSource();
-    source.buffer = buffer;
-    source.connect(audioContext.destination);
-    currentSource = source;
-    source.onended = () => {
-      if (currentSource !== source) return;
-      source.disconnect();
-      currentSource = null;
-      post("/api/speaking", { speaking: false }).catch(() => {});
-    };
-    source.start();
-  } catch (error) {
-    if (error.name !== "AbortError") elements.detail.textContent = error.message;
-    if (ttsController === controller) {
-      post("/api/speaking", { speaking: false }).catch(() => {});
-    }
-  } finally {
-    if (ttsController === controller) ttsController = null;
-  }
-}
-
 function handleEvent(message) {
   if (message.state) renderState(message.state);
   const { event, data = {} } = message;
@@ -143,7 +76,6 @@ function handleEvent(message) {
     const visual = Math.min(1, Math.max(0, (data.level || 0) * 12));
     document.documentElement.style.setProperty("--level", visual.toFixed(3));
   } else if (event === "user_turn") {
-    stopSpeaking();
     const text = data.kind === "audio" ? `Voice message · ${Number(data.duration).toFixed(1)}s` : data.text;
     addMessage("user", text, data.kind === "audio" ? "You · Spark mic" : "You");
   } else if (event === "assistant_start") {
@@ -158,7 +90,6 @@ function handleEvent(message) {
     elements.conversation.scrollTop = elements.conversation.scrollHeight;
   } else if (event === "assistant_done") {
     assistantBubble?.classList.remove("thinking");
-    if (!data.cancelled) speak(data.text || assistantText);
     assistantBubble = null;
   } else if (event === "error") {
     if (assistantBubble) {
@@ -186,16 +117,13 @@ function connectEvents() {
 }
 
 elements.listen.addEventListener("click", async () => {
-  unlockAudio().catch((error) => { elements.detail.textContent = error.message; });
   if (state.generating) await post("/api/interrupt").catch(() => {});
-  await stopSpeaking();
   try { renderState(await post("/api/listening", { enabled: !state.listening })); }
   catch (error) { elements.detail.textContent = error.message; }
 });
 
 elements.textForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  unlockAudio().catch((error) => { elements.detail.textContent = error.message; });
   const text = elements.textInput.value.trim();
   if (!text) return;
   elements.textInput.value = "";
@@ -204,19 +132,7 @@ elements.textForm.addEventListener("submit", async (event) => {
 });
 
 elements.reset.addEventListener("click", async () => {
-  await stopSpeaking();
   await post("/api/reset").catch(() => {});
-});
-
-elements.speak.addEventListener("change", () => {
-  if (elements.speak.checked) unlockAudio().catch((error) => { elements.detail.textContent = error.message; });
-  else stopSpeaking();
-});
-
-elements.voiceTest.addEventListener("click", () => {
-  unlockAudio()
-    .then(() => speak("Hi. This is Kokoro, the new local neural voice."))
-    .catch((error) => { elements.detail.textContent = error.message; });
 });
 
 fetch("/api/status").then((response) => response.json()).then(renderState).catch(() => {});

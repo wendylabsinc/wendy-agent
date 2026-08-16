@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DGX Spark ALSA microphone voice loop and static UI for Ultravox."""
+"""Headless ALSA microphone -> Ultravox -> Kokoro -> ALSA voice loop."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ PUBLIC_DIR = Path(os.environ.get("VOICE_WEB_ROOT", "/app/web")).resolve()
 VOICE_PORT = int(os.environ.get("VOICE_PORT", "8080"))
 LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8081"))
 LLAMA_URL = f"http://127.0.0.1:{LLAMA_PORT}"
-MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "ultravox-v0.5-llama-3.3-70b-q6-k")
+MODEL_ALIAS = os.environ.get("MODEL_ALIAS", "ultravox-v0.5-llama-3.1-8b-q4-k-m")
 SAMPLE_RATE = 16_000
 FRAME_MS = 20
 FRAME_BYTES = SAMPLE_RATE * 2 * FRAME_MS // 1000
@@ -38,6 +38,13 @@ TTS_MODEL_DIR = Path(os.environ.get("TTS_MODEL_DIR", "/models/kokoro-multi-lang-
 TTS_SPEAKER_ID = int(os.environ.get("TTS_SPEAKER_ID", "3"))
 TTS_SPEED = float(os.environ.get("TTS_SPEED", "1.04"))
 TTS_THREADS = int(os.environ.get("TTS_THREADS", "8"))
+ALSA_PLAYBACK_DEVICE = os.environ.get("ALSA_PLAYBACK_DEVICE", "default")
+AUTO_LISTEN = os.environ.get("AUTO_LISTEN", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 
 SYSTEM_PROMPT = (
     "You are a warm, quick voice assistant in a live conversation. Listen "
@@ -50,9 +57,10 @@ SYSTEM_PROMPT = (
 class VoiceState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.listening = False
-        self.browser_speaking = False
+        self.listening = AUTO_LISTEN
+        self.speaking = False
         self.generating = False
+        self.model_ready = False
         self.phase = "loading"
         self.capture_backend = "detecting"
         self.capture_source = os.environ.get("AUDIO_SOURCE", "default")
@@ -68,8 +76,9 @@ class VoiceState:
         with self.lock:
             return {
                 "listening": self.listening,
-                "speaking": self.browser_speaking,
+                "speaking": self.speaking,
                 "generating": self.generating,
+                "model_ready": self.model_ready,
                 "phase": self.phase,
                 "capture_backend": self.capture_backend,
                 "capture_source": self.capture_source,
@@ -104,6 +113,8 @@ TTS_ENGINE = None
 TTS_MODULE = None
 TTS_INIT_LOCK = threading.Lock()
 TTS_GENERATE_LOCK = threading.Lock()
+PLAYBACK_LOCK = threading.Lock()
+PLAYBACK_PROCESS: subprocess.Popen | None = None
 
 
 def api_ready(timeout: float = 0.7) -> bool:
@@ -199,6 +210,59 @@ def synthesize_speech(text: str) -> bytes:
     return samples_to_wav(audio.samples, audio.sample_rate)
 
 
+def play_wav_alsa(wav: bytes) -> None:
+    """Play a complete WAV through ALSA, without a browser audio stack."""
+    global PLAYBACK_PROCESS
+    if not shutil.which("aplay"):
+        raise RuntimeError("aplay is not installed")
+
+    process = subprocess.Popen(
+        ["aplay", "-q", "-D", ALSA_PLAYBACK_DEVICE, "-t", "wav"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    with PLAYBACK_LOCK:
+        PLAYBACK_PROCESS = process
+    try:
+        _, stderr = process.communicate(input=wav)
+    finally:
+        with PLAYBACK_LOCK:
+            if PLAYBACK_PROCESS is process:
+                PLAYBACK_PROCESS = None
+    if process.returncode:
+        detail = stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(
+            f"ALSA playback failed on {ALSA_PLAYBACK_DEVICE}"
+            + (f": {detail}" if detail else "")
+        )
+
+
+def speak_alsa(text: str) -> None:
+    wav = synthesize_speech(text)
+    if STATE.cancel_generation.is_set():
+        return
+    started = time.monotonic()
+    try:
+        play_wav_alsa(wav)
+    except RuntimeError:
+        if STATE.cancel_generation.is_set():
+            return
+        raise
+    print(
+        f"ALSA playback completed on {ALSA_PLAYBACK_DEVICE} "
+        f"in {time.monotonic() - started:.2f}s",
+        flush=True,
+    )
+
+
+def stop_playback() -> None:
+    with PLAYBACK_LOCK:
+        process = PLAYBACK_PROCESS
+    if process is not None and process.poll() is None:
+        process.terminate()
+
+
 def normalized_rms(frame: bytes) -> float:
     samples = array.array("h")
     samples.frombytes(frame[: len(frame) - (len(frame) % 2)])
@@ -279,7 +343,12 @@ def start_capture() -> subprocess.Popen | None:
 
 def should_capture() -> bool:
     with STATE.lock:
-        return STATE.listening and not STATE.browser_speaking and not STATE.generating
+        return (
+            STATE.model_ready
+            and STATE.listening
+            and not STATE.speaking
+            and not STATE.generating
+        )
 
 
 def capture_loop() -> None:
@@ -421,7 +490,7 @@ def generate_text_reply(text: str) -> None:
 
 def generate_reply(user_message: dict) -> None:
     with STATE.lock:
-        if STATE.generating:
+        if STATE.generating or STATE.speaking:
             return
         STATE.generating = True
         STATE.phase = "thinking"
@@ -472,17 +541,36 @@ def generate_reply(user_message: dict) -> None:
 
     cancelled = STATE.cancel_generation.is_set()
     with STATE.lock:
-        if reply and not cancelled:
+        if reply and not error and not cancelled:
             STATE.history.extend([user_message, {"role": "assistant", "content": reply}])
         STATE.generating = False
-        STATE.phase = "listening" if STATE.listening else "ready"
+        STATE.speaking = bool(reply and not error and not cancelled)
+        STATE.phase = (
+            "speaking"
+            if STATE.speaking
+            else ("listening" if STATE.listening else "ready")
+        )
         STATE.last_error = error
     trim_history()
+    STATE.wake.set()
+    if not error:
+        STATE.publish("assistant_done", {"text": reply, "cancelled": cancelled})
+        if reply and not cancelled:
+            try:
+                speak_alsa(reply)
+            except Exception as exc:
+                error = f"Kokoro/ALSA output failed: {exc}"
+                print(error, flush=True)
+
+    with STATE.lock:
+        STATE.speaking = False
+        STATE.phase = "listening" if STATE.listening else "ready"
+        STATE.last_error = error
     STATE.wake.set()
     if error:
         STATE.publish("error", {"message": error})
     else:
-        STATE.publish("assistant_done", {"text": reply, "cancelled": cancelled})
+        STATE.publish("state")
 
 
 class VoiceHandler(BaseHTTPRequestHandler):
@@ -518,8 +606,12 @@ class VoiceHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/health":
             ready = api_ready()
-            if ready and STATE.phase == "loading":
-                STATE.set_phase("ready")
+            if ready:
+                with STATE.lock:
+                    STATE.model_ready = True
+                    if STATE.phase == "loading":
+                        STATE.phase = "ready"
+                STATE.wake.set()
             self.json_response(
                 {"status": "ok" if ready else "loading", **STATE.snapshot()},
                 200 if ready else 503,
@@ -551,16 +643,9 @@ class VoiceHandler(BaseHTTPRequestHandler):
             self.json_response(STATE.snapshot())
             return
         if path == "/api/speaking":
-            speaking = bool(payload.get("speaking"))
-            with STATE.lock:
-                STATE.browser_speaking = speaking
-                if speaking:
-                    STATE.phase = "speaking"
-                elif not STATE.generating:
-                    STATE.phase = "listening" if STATE.listening else "ready"
-            STATE.wake.set()
-            STATE.publish("state")
-            self.json_response(STATE.snapshot())
+            self.json_response(
+                {"error": "Speech output is managed directly through ALSA"}, 409
+            )
             return
         if path == "/api/message":
             text = str(payload.get("text", "")).strip()
@@ -586,10 +671,12 @@ class VoiceHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/interrupt":
             STATE.cancel_generation.set()
+            stop_playback()
             self.json_response({"interrupted": True})
             return
         if path == "/api/reset":
             STATE.cancel_generation.set()
+            stop_playback()
             with STATE.lock:
                 STATE.history.clear()
             STATE.publish("reset")
@@ -651,14 +738,25 @@ def wait_for_model() -> None:
     while not STATE.stop.is_set() and not api_ready(1.0):
         time.sleep(1)
     if not STATE.stop.is_set():
-        STATE.set_phase("ready")
+        with STATE.lock:
+            STATE.model_ready = True
+            if STATE.phase == "loading":
+                STATE.phase = "ready"
+        STATE.wake.set()
+        STATE.publish("state")
+        print(
+            "SpeechLLM -> Kokoro -> ALSA ready; "
+            f"input={STATE.capture_source}, output={ALSA_PLAYBACK_DEVICE}, "
+            f"auto-listen={'on' if AUTO_LISTEN else 'off'}",
+            flush=True,
+        )
 
 
 def main() -> None:
     threading.Thread(target=wait_for_model, daemon=True).start()
     threading.Thread(target=capture_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", VOICE_PORT), VoiceHandler)
-    print(f"Ultravox Live listening on http://0.0.0.0:{VOICE_PORT}", flush=True)
+    print(f"Optional status/control API on 0.0.0.0:{VOICE_PORT}", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

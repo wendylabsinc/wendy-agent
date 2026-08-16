@@ -1,9 +1,10 @@
-# DGX Spark SpeechLLM — Ultravox 70B
+# CUDA SpeechLLM — Ultravox 8B
 
-Runs the 70B-parameter Ultravox SpeechLLM locally on an NVIDIA DGX Spark
+Runs the 8B-parameter Ultravox SpeechLLM locally on an NVIDIA CUDA device
 managed by WendyOS. The demo uses llama.cpp's CUDA 13 backend, fully offloads a
-high-quality Llama 3.3 70B Q6_K model to the GB10 Blackwell GPU, listens through
-the Spark's ALSA microphone, and speaks replies with a local Kokoro neural voice.
+Llama 3.1 8B Q4_K_M model to the GPU, listens through the device's ALSA
+microphone, synthesizes replies with Kokoro, and writes them directly to ALSA.
+It is a headless voice loop and does not require a browser.
 
 Ultravox accepts speech plus a text instruction and returns text. Unlike a
 Whisper-then-LLM pipeline, its audio encoder projects speech directly into the
@@ -11,34 +12,34 @@ LLM, so it can reason about wording, tone, pauses, and other audible cues in
 addition to transcribing. Audio, prompts, generation, and speech synthesis all
 stay on the DGX Spark after the initial model download.
 
-## 70B memory profile
+## 8B memory profile
 
-This is deliberately much larger than the compact 8B demo and is sized for the
-DGX Spark's 128 GB unified memory:
+This compact profile leaves ample headroom on a DGX Spark and can run on
+smaller CUDA systems:
 
 | Allocation | Approximate size |
 | --- | ---: |
-| Llama 3.3 70B, Q6_K | 57.9 GB |
+| Llama 3.1 8B, Q4_K_M | 4.92 GB |
 | Ultravox v0.5 F16 speech projector | 1.38 GB |
-| 16K KV cache, CUDA work buffers, voice service, and OS | within the remaining headroom |
+| 16K KV cache, CUDA work buffers, voice service, and OS | within a 12 GiB runtime budget |
 
-The model and projector downloads total about 59.3 GB. The entrypoint requires
-a Spark-class system with at least 100 GiB total memory and 80 GiB currently
-available before it starts. Keep at least 80 GB of free persistent storage.
+The model and projector downloads total about 6.3 GB. The entrypoint requires
+at least 16 GiB total system memory and 12 GiB currently available before it
+starts. Keep at least 8 GB of free persistent storage.
 
 ## Requirements
 
-- NVIDIA DGX Spark / GB10 with 128 GB unified memory (`arm64`, CUDA 13,
-  compute capability 12.1 / `sm_121`).
+- An NVIDIA CUDA 13-capable device with at least 16 GiB system memory and
+  12 GiB available GPU or unified memory. DGX Spark / GB10 is the tested target.
 - WendyOS with the `gpu`, `audio`, host networking, HTTP, and persistence
   entitlements enabled as provided in `wendy.json`.
 - An ALSA-compatible microphone connected to the Spark.
 - Internet access for the first model and TTS download.
 
-The official `ghcr.io/ggml-org/llama.cpp:server-cuda13` image publishes a native
-Linux ARM64 build. Wendy's GPU entitlement supplies the NVIDIA driver and CDI
-device mounts at runtime; the stagefile does not use `cuda: true` because the
-base image already contains the matching CUDA userspace.
+The official `ghcr.io/ggml-org/llama.cpp:server-cuda13` image supplies the CUDA
+userspace. Wendy's GPU entitlement supplies the NVIDIA driver and CDI device
+mounts at runtime; the stagefile does not use `cuda: true` because the base
+image already contains the matching CUDA userspace.
 
 ## Run
 
@@ -47,21 +48,26 @@ cd Examples/CUDASpeechLLM
 wendy run --device <your-dgx-spark>.local
 ```
 
-The first start downloads two Q6_K model shards, the speech projector, and the
-Kokoro voice directly on the Spark. Downloads are resumable, use multiple
-connections, and are pinned to exact upstream revisions. They live in the
+The first start downloads the Q4_K_M model, speech projector, and Kokoro voice
+directly on the device. Downloads are resumable, use multiple connections, and
+are pinned to exact upstream revisions. They live in the
 `dgx-spark-speechllm-models` persistent volume, so redeploys reuse them instead
-of moving roughly 60 GB through the development machine.
+of moving roughly 6.3 GB through the development machine.
 
-When the log says `Ultravox Live listening`, open:
+When the log says `SpeechLLM -> Kokoro -> ALSA ready`, start speaking. The
+service listens automatically, detects the end of each voice turn, sends it to
+Ultravox, synthesizes the reply with Kokoro, and plays it on ALSA's `default`
+output device.
+
+An optional status/control UI remains available at:
 
 ```text
 http://<your-dgx-spark>.local:8080
 ```
 
-Press the orb to capture the Spark's default ALSA microphone. The UI shows each
-detected voice turn, streams the 70B model's reply, and plays the reply using
-local Kokoro TTS. You can also type messages without enabling the microphone.
+The UI can show detected turns and stream the 8B model's text, but it is not in
+the audio path. Kokoro and ALSA playback run in the device service even when no
+browser is connected.
 
 Try a request that uses the SpeechLLM rather than plain transcription:
 
@@ -73,7 +79,7 @@ your interpretation.
 Short, clear turns work best. Capture is normalized to 16 kHz mono PCM before
 it is sent to Ultravox.
 
-## ALSA input
+## ALSA input and output
 
 The default profile records from ALSA's `default` capture device. To pin a USB
 microphone, override its ALSA capture name at deploy time:
@@ -88,20 +94,32 @@ Use `arecord -L` on the Spark to find an ALSA capture name.
 If the selected source disappears or capture fails, the service rescans ALSA
 hardware and tries newly attached capture devices automatically.
 
+Replies play on ALSA's `default` PCM. To select a specific speaker, set
+`ALSA_PLAYBACK_DEVICE` to a name shown by `aplay -L`:
+
+```sh
+wendy run --device <your-dgx-spark>.local \
+  --env ALSA_CAPTURE_DEVICE="plughw:CARD=Microphone,DEV=0" \
+  --env ALSA_PLAYBACK_DEVICE="plughw:CARD=Speaker,DEV=0"
+```
+
+Set `AUTO_LISTEN=false` only when you want the optional API/UI to control
+capture instead of starting the headless loop automatically.
+
 ## Tuning
 
 The defaults favor a single high-quality interactive session:
 
 - `CONTEXT_SIZE=16384` provides a 16K shared context and KV cache.
 - `FLASH_ATTENTION=on` enables llama.cpp's CUDA Flash Attention path.
-- `GPU_LAYERS=all` fully offloads the 70B model and speech projector.
+- `GPU_LAYERS=all` fully offloads the 8B model and speech projector.
 - `--cache-ram 0` disables the optional 8 GB host prompt cache.
-- `--no-mmap` avoids retaining a large file-backed mapping while loading the
-  weights into Spark's unified memory.
+- `--no-mmap` avoids retaining a file-backed mapping while loading the weights
+  into GPU or unified memory.
 - `TTS_THREADS=8` keeps Kokoro synthesis on CPU and leaves the GPU to Ultravox.
 
 Reduce `CONTEXT_SIZE` if another workload needs more unified memory. Changing
-context size affects the KV cache, not the roughly 59.3 GB of model weights.
+context size affects the KV cache, not the roughly 6.3 GB model/projector pair.
 
 ## Troubleshooting
 
@@ -111,7 +129,7 @@ context size affects the KV cache, not the roughly 59.3 GB of model weights.
   into the container; restart the NVIDIA container runtime/CDI service.
 - **Not enough free unified memory** — stop other GPU and memory-heavy
   workloads. The preflight intentionally stops before downloading when less
-  than 80 GiB is available.
+  than 12 GiB is available.
 - **`nvidia-smi` reports 0 MiB of GPU memory** — this is expected on GB10:
   CUDA allocates from unified system memory rather than a dedicated
   framebuffer. The entrypoint validates `/proc/meminfo` instead.
@@ -123,7 +141,7 @@ context size affects the KV cache, not the roughly 59.3 GB of model weights.
 - **A USB speaker is missing** — if it does not appear in `wendy device audio
   list`, it has not enumerated as a USB Audio device. Check that its USB cable
   carries data (some speakers use USB only for power), reconnect it directly,
-  and then select it as the Spark desktop's output device.
+  and set `ALSA_PLAYBACK_DEVICE` to the corresponding PCM from `aplay -L`.
 - **Audio is treated as text-only** — confirm the startup log says the
   multimodal projector loaded, then speak again or reset the conversation.
 - **The service never becomes ready** — inspect startup output for a CUDA
@@ -132,11 +150,9 @@ context size affects the KV cache, not the roughly 59.3 GB of model weights.
 
 ## Model sources
 
-- Text backbone: `bartowski/Llama-3.3-70B-Instruct-GGUF`, Q6_K (Llama 3.3
-  Community License), revision `b6c5c9f176f3279204034e1d16d393105e95cb88`.
-- Speech projector:
-  `steampunque/ultravox-v0_5-llama-3_3-70b-MP-GGUF`, derived from
-  `fixie-ai/ultravox-v0_5-llama-3_3-70b` (MIT adapter; Llama backbone), revision
-  `8b7e699d53719d33cf84e96871273e7a54876fed`.
+- Text backbone and speech projector:
+  `ggml-org/ultravox-v0_5-llama-3_1-8b-GGUF`, Q4_K_M plus F16 projector,
+  revision `7a0280d66c0700c366c2c26586e0f0967f97bad0` (MIT Ultravox adapter;
+  Llama 3.1 backbone).
 - TTS: `k2-fsa/sherpa-onnx` 1.13.4 with `kokoro-multi-lang-v1_0`.
 - Runtime: `ghcr.io/ggml-org/llama.cpp:server-cuda13`.

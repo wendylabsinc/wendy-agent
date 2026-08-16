@@ -1,5 +1,5 @@
 #!/bin/sh
-# Download the 70B Ultravox model and projector on the device, cache them
+# Download the 8B Ultravox model and projector on the device, cache them
 # in the persist volume, then launch a local llama-server plus the live voice
 # service. aria2 leaves a control file for safe interrupted-download resumes.
 set -eu
@@ -22,13 +22,13 @@ available_kib=$(awk '/^MemAvailable:/ { print $2 }' /proc/meminfo)
 total_gib=$((total_kib / 1024 / 1024))
 available_gib=$((available_kib / 1024 / 1024))
 echo "Unified system memory: ${total_gib} GiB total, ${available_gib} GiB currently available"
-echo "Configured CUDA model/runtime budget: ${MEMORY_BUDGET_GIB:-80} GiB"
-if [ "$total_gib" -lt "${MIN_SYSTEM_MEMORY_GIB:-100}" ]; then
-    echo "error: this profile requires a 128 GB DGX Spark-class system" >&2
+echo "Configured CUDA model/runtime budget: ${MEMORY_BUDGET_GIB:-12} GiB"
+if [ "$total_gib" -lt "${MIN_SYSTEM_MEMORY_GIB:-16}" ]; then
+    echo "error: this profile requires at least ${MIN_SYSTEM_MEMORY_GIB:-16} GiB of system memory" >&2
     exit 1
 fi
-if [ "$available_gib" -lt "${MIN_AVAILABLE_MEMORY_GIB:-80}" ]; then
-    echo "error: at least ${MIN_AVAILABLE_MEMORY_GIB:-80} GiB must be free before loading the 70B profile" >&2
+if [ "$available_gib" -lt "${MIN_AVAILABLE_MEMORY_GIB:-12}" ]; then
+    echo "error: at least ${MIN_AVAILABLE_MEMORY_GIB:-12} GiB must be free before loading the 8B profile" >&2
     exit 1
 fi
 
@@ -44,7 +44,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         else
             cuda_memory_gib=$((cuda_memory_mib / 1024))
             echo "NVIDIA dedicated framebuffer: ${cuda_memory_gib} GiB"
-            if [ "$cuda_memory_gib" -lt "${MIN_CUDA_MEMORY_GIB:-100}" ]; then
+            if [ "$cuda_memory_gib" -lt "${MIN_CUDA_MEMORY_GIB:-12}" ]; then
                 echo "error: NVIDIA GPU exposes only ${cuda_memory_gib} GiB of dedicated memory" >&2
                 exit 1
             fi
@@ -108,15 +108,15 @@ else
     echo "Using cached Kokoro neural voice"
 fi
 
-echo "Starting ${MODEL_ALIAS:-ultravox-70b} with ${GPU_LAYERS:-all} CUDA GPU layers"
-echo "Open http://<device-hostname>.local:${VOICE_PORT:-8080} and start listening"
+echo "Starting ${MODEL_ALIAS:-ultravox-8b} with ${GPU_LAYERS:-all} CUDA GPU layers"
+echo "Starting headless voice loop: SpeechLLM -> Kokoro -> ALSA"
 
-# Keep llama-server private; voice_server owns the public UI/API port and
-# captures the Spark microphone directly through ALSA.
+# Keep llama-server private. voice_server captures and plays audio directly
+# through ALSA; its HTTP port is only an optional status/control interface.
 /app/llama-server \
     --model "$MODEL_PATH" \
     --mmproj "$MMPROJ_PATH" \
-    --alias "${MODEL_ALIAS:-ultravox-70b}" \
+    --alias "${MODEL_ALIAS:-ultravox-8b}" \
     --host 127.0.0.1 \
     --port "${LLAMA_PORT:-8081}" \
     --n-gpu-layers "${GPU_LAYERS:-all}" \

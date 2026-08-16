@@ -7,16 +7,16 @@ stages:
     # Wendy's gpu entitlement supplies the host driver and device nodes.
     from: ghcr.io/ggml-org/llama.cpp:server-cuda13
     env:
-      # The 70B Q6_K model and F16 audio projector total about 59.3 GB. Exact
+      # The 8B Q4_K_M model and F16 audio projector total about 6.3 GB. Exact
       # revisions keep a future upstream update from silently changing a demo.
-      MODEL_URL_1: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/b6c5c9f176f3279204034e1d16d393105e95cb88/Llama-3.3-70B-Instruct-Q6_K/Llama-3.3-70B-Instruct-Q6_K-00001-of-00002.gguf
-      MODEL_URL_2: https://huggingface.co/bartowski/Llama-3.3-70B-Instruct-GGUF/resolve/b6c5c9f176f3279204034e1d16d393105e95cb88/Llama-3.3-70B-Instruct-Q6_K/Llama-3.3-70B-Instruct-Q6_K-00002-of-00002.gguf
-      MMPROJ_URL: https://huggingface.co/steampunque/ultravox-v0_5-llama-3_3-70b-MP-GGUF/resolve/8b7e699d53719d33cf84e96871273e7a54876fed/ultravox-v0_5-llama-3_3-70b.mmproj.gguf
-      MODEL_ALIAS: ultravox-v0.5-llama-3.3-70b-q6-k
+      MODEL_URL_1: https://huggingface.co/ggml-org/ultravox-v0_5-llama-3_1-8b-GGUF/resolve/7a0280d66c0700c366c2c26586e0f0967f97bad0/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+      MMPROJ_URL: https://huggingface.co/ggml-org/ultravox-v0_5-llama-3_1-8b-GGUF/resolve/7a0280d66c0700c366c2c26586e0f0967f97bad0/mmproj-ultravox-v0_5-llama-3_1-8b-f16.gguf
+      MODEL_ALIAS: ultravox-v0.5-llama-3.1-8b-q4-k-m
       CONTEXT_SIZE: "16384"
-      MEMORY_BUDGET_GIB: "80"
-      MIN_SYSTEM_MEMORY_GIB: "100"
-      MIN_AVAILABLE_MEMORY_GIB: "80"
+      MEMORY_BUDGET_GIB: "12"
+      MIN_SYSTEM_MEMORY_GIB: "16"
+      MIN_AVAILABLE_MEMORY_GIB: "12"
+      MIN_CUDA_MEMORY_GIB: "12"
       GPU_LAYERS: all
       FLASH_ATTENTION: "on"
       VOICE_PORT: "8080"
@@ -32,6 +32,10 @@ stages:
       # at deploy time when the microphone is not the system default.
       AUDIO_SOURCE: default
       ALSA_CAPTURE_DEVICE: default
+      # Replies are synthesized by Kokoro and sent straight to this ALSA PCM.
+      # No browser or desktop audio session participates in playback.
+      ALSA_PLAYBACK_DEVICE: default
+      AUTO_LISTEN: "true"
     install:
       apt:
         packages: [alsa-utils, aria2, bzip2, ca-certificates, python3, python3-pip]
