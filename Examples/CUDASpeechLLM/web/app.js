@@ -27,6 +27,7 @@ function phaseCopy(phase) {
     loading: ["Loading model", "The voice service will unlock automatically"],
     ready: ["Ready when you are", "Press the orb to use the Spark microphone"],
     calibrating: ["Calibrating the room", "A quiet second helps detect natural turns"],
+    cooldown: ["Listening will resume automatically", "Waiting briefly for quieter room audio"],
     listening: ["Listening", "Speak naturally—silence ends your turn"],
     hearing: ["I hear you", "Keep talking"],
     thinking: ["Thinking", "Understanding your voice turn"],
@@ -44,7 +45,9 @@ function renderState(next) {
   elements.listen.setAttribute("aria-pressed", String(Boolean(state.listening)));
   elements.listen.classList.toggle("active", Boolean(state.listening));
   elements.body.classList.toggle("listening", Boolean(state.listening));
-  elements.orbLabel.textContent = state.listening ? "Stop listening" : "Start listening";
+  elements.orbLabel.textContent = state.auto_resume_pending
+    ? "Resuming automatically"
+    : state.listening ? "Stop listening" : "Start listening";
   const sourceReady = state.capture_backend && !["detecting", "unavailable"].includes(state.capture_backend);
   elements.source.textContent = sourceReady
     ? `${state.capture_backend} · ${state.capture_source || "default mic"}`
@@ -89,6 +92,7 @@ function handleEvent(message) {
     assistantBubble.classList.add("thinking");
     elements.conversation.scrollTop = elements.conversation.scrollHeight;
   } else if (event === "assistant_done") {
+    if (data.suppressed || !assistantText.trim()) assistantBubble?.closest(".message")?.remove();
     assistantBubble?.classList.remove("thinking");
     assistantBubble = null;
   } else if (event === "error") {

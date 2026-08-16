@@ -7,6 +7,10 @@ stages:
     # Wendy's gpu entitlement supplies the host driver and device nodes.
     from: ghcr.io/ggml-org/llama.cpp:server-cuda13
     env:
+      # This image is an isolated application container. Ubuntu 24.04 marks
+      # its system Python as externally managed, so allow the pinned runtime
+      # wheel to be installed into the image rather than a throwaway venv.
+      PIP_BREAK_SYSTEM_PACKAGES: "1"
       # The 8B Q4_K_M model and F16 audio projector total about 6.3 GB. Exact
       # revisions keep a future upstream update from silently changing a demo.
       MODEL_URL_1: https://huggingface.co/ggml-org/ultravox-v0_5-llama-3_1-8b-GGUF/resolve/7a0280d66c0700c366c2c26586e0f0967f97bad0/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
@@ -28,13 +32,38 @@ stages:
       TTS_SPEAKER_ID: "3"
       TTS_SPEED: "1.04"
       TTS_THREADS: "8"
-      # Capture directly from the Spark through ALSA. Override the device name
-      # at deploy time when the microphone is not the system default.
-      AUDIO_SOURCE: default
-      ALSA_CAPTURE_DEVICE: default
+      # Capture and play back on the same exact USB conference device. The ALSA
+      # card name stays stable even when numeric card indexes change.
+      AUDIO_SOURCE: plughw:CARD=PowerConf,DEV=0
+      ALSA_CAPTURE_DEVICE: plughw:CARD=PowerConf,DEV=0
       # Replies are synthesized by Kokoro and sent straight to this ALSA PCM.
       # No browser or desktop audio session participates in playback.
-      ALSA_PLAYBACK_DEVICE: default
+      ALSA_PLAYBACK_DEVICE: plughw:CARD=PowerConf,DEV=0
+      SYSTEM_PROMPT_PATH: /app/SOUL.md
+      KNOWLEDGE_DIR: /app/knowledge
+      KNOWLEDGE_MAX_CHARS: "30000"
+      # Start speaking after the first complete sentence while the model keeps
+      # generating later chunks in parallel.
+      TTS_CHUNK_MIN_CHARS: "24"
+      TTS_CHUNK_QUEUE_SIZE: "8"
+      TRACE_LOG_PATH: /models/traces/speechllm-trace.jsonl
+      TRACE_GPU_INTERVAL_MS: "250"
+      TRACE_DEVICE_NAME: spark-3011
+      # Empty/echo turns trigger a brief inference cooldown, not a permanent
+      # listening latch. Prefer one quiet second, but always retry by 12s.
+      AUTO_RESUME_COOLDOWN_SECONDS: "3"
+      AUTO_RESUME_QUIET_SECONDS: "1"
+      AUTO_RESUME_MAX_SECONDS: "12"
+      # The G1 is currently offline. Keep its tool schemas out of inference so
+      # one unavailable robot request cannot become repeated tool work.
+      G1_ACTION_TOOLS_ENABLED: "false"
+      G1_SYNC_URL: http://192.168.0.108:8094
+      G1_SYNC_TOKEN: walter-harness-sync-v1
+      SPARK_ORCHESTRATOR_URL: http://127.0.0.1:8093
+      SPARK_ORCHESTRATOR_TOKEN: spark-harness-orchestrator-v1
+      G1_TOOL_TIMEOUT_SECONDS: "3"
+      # The conference voice loop must resume listening after a container restart.
+      # G1 motion remains independently fail-closed through G1_TOOLS_ENABLED.
       AUTO_LISTEN: "true"
     install:
       apt:
@@ -43,12 +72,18 @@ stages:
         - packages: ["sherpa-onnx==1.13.4"]
     copy:
       - from: local
-        paths: [entrypoint.sh, voice_server.py]
+        paths: [entrypoint.sh, voice_server.py, g1_tools.py, trace_recorder.py]
         dest: /usr/local/bin/dgx-spark-speechllm
         mode: "0755"
       - from: local
         paths: [web]
         dest: /app
+      - from: local
+        paths: [SOUL.md]
+        dest: /app
+      - from: local
+        paths: [knowledge]
+        dest: /app/knowledge
     entrypoint:
       exec: [/usr/local/bin/dgx-spark-speechllm/entrypoint.sh]
     # The persistent model volume is root-owned, and the NVIDIA CDI device

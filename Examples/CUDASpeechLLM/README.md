@@ -59,6 +59,34 @@ service listens automatically, detects the end of each voice turn, sends it to
 Ultravox, synthesizes the reply with Kokoro, and plays it on ALSA's `default`
 output device.
 
+The PowerConf capture stream remains open while Walter is generating and
+speaking. Three consecutive hot 20 ms frames confirm a barge-in onset. At that
+onset—not at the later end-of-turn—the service cancels generation, terminates
+active ALSA playback, and discards queued TTS chunks. It keeps recording the
+same utterance through the normal endpoint and submits that audio as the next
+Ultravox turn once the interrupted turn has fully released its resources.
+
+This direct duplex behavior relies on the PowerConf's acoustic echo handling to
+keep Walter's playback below the VAD threshold. Qualify assistant-only,
+human-only, and double-talk audio on the installed device before treating
+barge-in as production-ready; RMS VAD alone cannot identify who produced a
+sound.
+
+As a deterministic backstop, a microphone turn is dropped before inference if
+it is silent, too short, or byte-identical to recently submitted PCM. A newly
+generated microphone reply is also held until its first complete sentence can
+be compared with recent spoken output. An exact first-sentence replay is
+suppressed before it reaches either the UI or Kokoro, which stops a failed echo
+cancellation cycle instead of speaking the same sentence again.
+
+Three unusable microphone turns inside ten seconds enter a temporary inference
+cooldown. Capture remains open for level-only observation, but no audio is sent
+to Ultravox during the cooldown. Listening re-arms automatically after the
+three-second minimum plus one second of sustained quiet, or after a bounded
+twelve-second maximum even if the room never becomes quiet. This keeps the
+runaway guard without leaving a conference demo permanently silent. The UI
+shows the automatic recovery state, and manually toggling listening clears it.
+
 An optional status/control UI remains available at:
 
 ```text
@@ -68,6 +96,37 @@ http://<your-dgx-spark>.local:8080
 The UI can show detected turns and stream the 8B model's text, but it is not in
 the audio path. Kokoro and ALSA playback run in the device service even when no
 browser is connected.
+
+## Correlated performance traces
+
+Every turn writes an append-only JSONL trace to
+`/models/traces/speechllm-trace.jsonl`. A shared turn ID follows microphone VAD,
+audio encoding, request queueing, both possible llama.cpp passes, first token,
+first speakable sentence, every Kokoro synthesis and ALSA playback chunk, Spark
+action scheduling, G1 preparation/dispatch, measured low-state onset, and
+release. Each event includes UTC wall time, Unix nanoseconds, Spark monotonic
+nanoseconds, and a duration for completed spans. `nvidia-smi` samples GPU
+utilization, power, memory telemetry, and SM clock every 250 ms only while a turn
+is active.
+
+The message endpoint returns its correlation key:
+
+```sh
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"text":"Explain WendyOS in three sentences."}' \
+  http://<spark>:8080/api/message
+```
+
+Retrieve raw evidence or a phase/GPU summary with:
+
+```text
+GET /api/traces?turn_id=<turn-id>&limit=10000
+GET /api/trace-summary?turn_id=<turn-id>
+```
+
+The summary explains only conclusions supported by the recorded phase and GPU
+data. It does not label a low-state joint change as visible physical motion;
+camera/operator-visible onset remains a separate observation.
 
 Try a request that uses the SpeechLLM rather than plain transcription:
 
