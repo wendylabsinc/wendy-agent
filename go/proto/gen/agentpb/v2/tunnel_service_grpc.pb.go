@@ -19,18 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WendyTunnelService_Tunnel_FullMethodName = "/wendy.agent.services.v2.WendyTunnelService/Tunnel"
+	WendyTunnelService_Tunnel_FullMethodName         = "/wendy.agent.services.v2.WendyTunnelService/Tunnel"
+	WendyTunnelService_DatagramTunnel_FullMethodName = "/wendy.agent.services.v2.WendyTunnelService/DatagramTunnel"
 )
 
 // WendyTunnelServiceClient is the client API for WendyTunnelService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// WendyTunnelService forwards one authenticated client stream to a TCP port on
-// the agent's loopback interface. It is the LAN counterpart to the Cloud tunnel
-// broker and never accepts an arbitrary target host.
+// WendyTunnelService forwards authenticated client streams to the agent's
+// loopback interface. It is the LAN counterpart to the Cloud tunnel broker
+// and never accepts an arbitrary target host.
 type WendyTunnelServiceClient interface {
 	Tunnel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DeviceTunnelRequest, DeviceTunnelData], error)
+	// DatagramTunnel multiplexes many UDP flows and ICMP-echo pings over one
+	// stream, keyed by client-assigned flow_id. Unlike Tunnel, there is no
+	// open/session handshake: this is already a direct stream to one
+	// already-selected, already-authenticated agent (no broker rendezvous),
+	// so the first frame is just a normal datagram or icmp_request frame.
+	DatagramTunnel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DeviceDatagramFrame, DeviceDatagramFrame], error)
 }
 
 type wendyTunnelServiceClient struct {
@@ -54,15 +61,34 @@ func (c *wendyTunnelServiceClient) Tunnel(ctx context.Context, opts ...grpc.Call
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyTunnelService_TunnelClient = grpc.BidiStreamingClient[DeviceTunnelRequest, DeviceTunnelData]
 
+func (c *wendyTunnelServiceClient) DatagramTunnel(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[DeviceDatagramFrame, DeviceDatagramFrame], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &WendyTunnelService_ServiceDesc.Streams[1], WendyTunnelService_DatagramTunnel_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[DeviceDatagramFrame, DeviceDatagramFrame]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyTunnelService_DatagramTunnelClient = grpc.BidiStreamingClient[DeviceDatagramFrame, DeviceDatagramFrame]
+
 // WendyTunnelServiceServer is the server API for WendyTunnelService service.
 // All implementations must embed UnimplementedWendyTunnelServiceServer
 // for forward compatibility.
 //
-// WendyTunnelService forwards one authenticated client stream to a TCP port on
-// the agent's loopback interface. It is the LAN counterpart to the Cloud tunnel
-// broker and never accepts an arbitrary target host.
+// WendyTunnelService forwards authenticated client streams to the agent's
+// loopback interface. It is the LAN counterpart to the Cloud tunnel broker
+// and never accepts an arbitrary target host.
 type WendyTunnelServiceServer interface {
 	Tunnel(grpc.BidiStreamingServer[DeviceTunnelRequest, DeviceTunnelData]) error
+	// DatagramTunnel multiplexes many UDP flows and ICMP-echo pings over one
+	// stream, keyed by client-assigned flow_id. Unlike Tunnel, there is no
+	// open/session handshake: this is already a direct stream to one
+	// already-selected, already-authenticated agent (no broker rendezvous),
+	// so the first frame is just a normal datagram or icmp_request frame.
+	DatagramTunnel(grpc.BidiStreamingServer[DeviceDatagramFrame, DeviceDatagramFrame]) error
 	mustEmbedUnimplementedWendyTunnelServiceServer()
 }
 
@@ -75,6 +101,9 @@ type UnimplementedWendyTunnelServiceServer struct{}
 
 func (UnimplementedWendyTunnelServiceServer) Tunnel(grpc.BidiStreamingServer[DeviceTunnelRequest, DeviceTunnelData]) error {
 	return status.Error(codes.Unimplemented, "method Tunnel not implemented")
+}
+func (UnimplementedWendyTunnelServiceServer) DatagramTunnel(grpc.BidiStreamingServer[DeviceDatagramFrame, DeviceDatagramFrame]) error {
+	return status.Error(codes.Unimplemented, "method DatagramTunnel not implemented")
 }
 func (UnimplementedWendyTunnelServiceServer) mustEmbedUnimplementedWendyTunnelServiceServer() {}
 func (UnimplementedWendyTunnelServiceServer) testEmbeddedByValue()                            {}
@@ -104,6 +133,13 @@ func _WendyTunnelService_Tunnel_Handler(srv interface{}, stream grpc.ServerStrea
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type WendyTunnelService_TunnelServer = grpc.BidiStreamingServer[DeviceTunnelRequest, DeviceTunnelData]
 
+func _WendyTunnelService_DatagramTunnel_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(WendyTunnelServiceServer).DatagramTunnel(&grpc.GenericServerStream[DeviceDatagramFrame, DeviceDatagramFrame]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type WendyTunnelService_DatagramTunnelServer = grpc.BidiStreamingServer[DeviceDatagramFrame, DeviceDatagramFrame]
+
 // WendyTunnelService_ServiceDesc is the grpc.ServiceDesc for WendyTunnelService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -115,6 +151,12 @@ var WendyTunnelService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Tunnel",
 			Handler:       _WendyTunnelService_Tunnel_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "DatagramTunnel",
+			Handler:       _WendyTunnelService_DatagramTunnel_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},
