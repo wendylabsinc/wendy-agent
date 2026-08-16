@@ -46,8 +46,9 @@ struct `'wendy project entitlements add'` {
 
             try await cli.sh("wendy project entitlements add network") { result in
                 #expect(result.status.isSuccess)
-                #expect(result.stdout.contains("Added \"network\" entitlement"))
-                #expect(result.stderr == "")
+                // Status lines print to stderr (WDY-2435): stdout is reserved
+                // for machine-readable payloads.
+                #expect(result.stderr.contains("Added \"network\" entitlement"))
             }
 
             try await cli.sh(
