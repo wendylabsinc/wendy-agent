@@ -1036,8 +1036,9 @@ func (s *ContainerService) StopContainer(ctx context.Context, req *agentpb.StopC
 				s.monitor.ClearExplicitStop(id)
 			}
 		}
+		cleanupCtx := context.WithoutCancel(ctx)
 		for _, id := range persisted {
-			if clearErr := s.containerd.SetStoppedByUser(ctx, id, false); clearErr != nil {
+			if clearErr := s.containerd.SetStoppedByUser(cleanupCtx, id, false); clearErr != nil {
 				s.logger.Warn("failed to roll back stopped-by-user mark",
 					zap.String("container_id", id), zap.Error(clearErr))
 			}
