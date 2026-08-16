@@ -55,9 +55,9 @@ type ApplyOptions struct {
 	// AppSystemAPISocketManager. It contains only the narrow System API socket.
 	SystemAPISocketDir string
 	// Debug is set when the container is launched via `wendy run --debug`. It
-	// auto-enables the profiling entitlement (GPU perf-counter capabilities for
+	// auto-enables the profiling capabilities (GPU perf-counter capabilities for
 	// CUPTI/nsys) even when the app did not declare it in wendy.json. Outside
-	// debug, profiling is never granted.
+	// --debug/--profile, profiling is never granted.
 	Debug bool
 	// Profiling is set by `wendy run --profile`. Like Debug it enables the GPU
 	// profiling capabilities, but WITHOUT forcing a debug build — so profiles

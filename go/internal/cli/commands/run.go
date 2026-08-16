@@ -873,9 +873,7 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	// --profile grants GPU profiling caps (CUPTI/nsys) via appCfg.Profiling,
 	// independent of --debug: no host-networking, no debugpy, and (crucially) no
 	// debug build — the profile runs against the optimized release binary.
-	if opts.profile {
-		appCfg.Profiling = true
-	}
+	appCfg.Profiling = opts.profile
 
 	// Debug mode requires host networking for remote debugger access.
 	if opts.debug {
