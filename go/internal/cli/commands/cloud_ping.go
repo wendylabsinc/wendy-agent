@@ -55,6 +55,12 @@ func newCloudPingCmd() *cobra.Command {
 }
 
 func cloudPingCommand(ctx context.Context, cloudGRPC, deviceName, brokerURL string, count int, interval time.Duration) error {
+	if count < 0 {
+		return fmt.Errorf("count must be >= 0")
+	}
+	if interval <= 0 {
+		return fmt.Errorf("interval must be > 0")
+	}
 	auth, err := pickAuthEntry(cloudGRPC)
 	if err != nil {
 		return err
