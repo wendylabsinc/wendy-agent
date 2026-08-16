@@ -1752,10 +1752,11 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 	// refuses connections. Fail-closed — a provider that cannot get a clean
 	// directory must not start and pretend to serve.
 	if c.ipcSocketProvider != nil {
-		var startEntitlements []appconfig.Entitlement
-		if labels, lerr := container.Labels(ctx); lerr == nil {
-			startEntitlements = parseEntitlementsFromAnnotations(labels)
+		labels, lerr := container.Labels(ctx)
+		if lerr != nil {
+			return nil, fmt.Errorf("loading container labels for ipc socket preparation for %q: %w", appName, lerr)
 		}
+		startEntitlements := parseEntitlementsFromAnnotations(labels)
 		for _, e := range ipcEntitlements(startEntitlements) {
 			if e.Role != appconfig.IPCRoleProvide {
 				continue
