@@ -225,12 +225,24 @@ func TestClassifyRemoteBuildError_SeparatesDeliveryFromBuild(t *testing.T) {
 		t.Errorf("build error must name the build host, got: %v", buildErr)
 	}
 
-	deliveryErr := classifyRemoteBuildError("spark-office", status.Error(codes.Unavailable, "dial tcp: no route to host"))
+	deliveryErr := classifyRemoteBuildError("spark-office", status.Error(codes.Unavailable, "pushing the built image to the target device failed: dial tcp: no route to host"))
 	if isImageBuildFailure(deliveryErr) {
 		t.Error("a delivery failure must NOT classify as a build failure")
 	}
 	if !strings.Contains(deliveryErr.Error(), "spark-office") {
 		t.Errorf("delivery error must name the build host, got: %v", deliveryErr)
+	}
+}
+
+func TestClassifyRemoteBuildError_DoesNotAssumeGenericTransportErrorIsDelivery(t *testing.T) {
+	for _, code := range []codes.Code{codes.Unavailable, codes.DeadlineExceeded} {
+		err := classifyRemoteBuildError("spark-office", status.Error(code, "connection closed"))
+		if !isImageBuildFailure(err) {
+			t.Errorf("%s must not claim the image was built without the server's delivery marker: %v", code, err)
+		}
+		if strings.Contains(err.Error(), "image built") {
+			t.Errorf("%s error makes an unsupported delivery claim: %v", code, err)
+		}
 	}
 }
 
@@ -295,5 +307,29 @@ func TestValidateBuildHostFlags_AllowsEitherAlone(t *testing.T) {
 	}
 	if err := validateBuildHostFlags("", ""); err != nil {
 		t.Fatalf("neither flag set must be allowed: %v", err)
+	}
+}
+
+func TestResolveAndValidateRunBuildHost_RejectsBuilderWithConfiguredDefault(t *testing.T) {
+	orig := loadBuildHostDefault
+	t.Cleanup(func() { loadBuildHostDefault = orig })
+	loadBuildHostDefault = func() (string, error) { return "spark-office", nil }
+
+	host, err := resolveAndValidateRunBuildHost("", "docker")
+	if host != "" {
+		t.Fatalf("host = %q, want no usable host on conflict", host)
+	}
+	if !errors.Is(err, errBuilderWithBuildHost) {
+		t.Fatalf("got %v, want errBuilderWithBuildHost", err)
+	}
+}
+
+func TestRejectUnsupportedBuildHostProject(t *testing.T) {
+	if err := rejectUnsupportedBuildHostProject("", "Compose projects"); err != nil {
+		t.Fatalf("local builds remain supported: %v", err)
+	}
+	err := rejectUnsupportedBuildHostProject("spark-office", "Compose projects")
+	if err == nil || !strings.Contains(err.Error(), "single-service container image projects") {
+		t.Fatalf("got %v, want a clear remote-build support boundary", err)
 	}
 }

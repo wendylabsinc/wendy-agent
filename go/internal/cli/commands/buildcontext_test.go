@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +76,67 @@ func TestPackBuildContext_PrefersPerDockerfileIgnore(t *testing.T) {
 	}
 }
 
+func TestPackBuildContext_HonoursOrderedNegations(t *testing.T) {
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	writeFile(t, dir, "secret.env", "do not transfer")
+	// Dockerignore is last-match-wins. The conservative fingerprint matcher
+	// intentionally treats every negation as a force-include, but a transfer
+	// matcher doing that would leak this file.
+	writeFile(t, dir, ".dockerignore", "!secret.env\nsecret.env\n")
+
+	tarBytes, err := packBuildContext(dir, df)
+	if err != nil {
+		t.Fatalf("packBuildContext: %v", err)
+	}
+	if contextNames(t, tarBytes)["secret.env"] {
+		t.Fatal("a later exclusion must override an earlier negation")
+	}
+}
+
+func TestPackBuildContext_NestedAllowlistDoesNotIncludeSiblings(t *testing.T) {
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	writeFile(t, dir, "allowed/keep.txt", "keep")
+	writeFile(t, dir, "allowed/secret.env", "do not transfer")
+	writeFile(t, dir, ".dockerignore", "*\n!allowed\nallowed/*\n!allowed/keep.txt\n")
+
+	tarBytes, err := packBuildContext(dir, df)
+	if err != nil {
+		t.Fatalf("packBuildContext: %v", err)
+	}
+	names := contextNames(t, tarBytes)
+	if !names["allowed/keep.txt"] {
+		t.Fatal("the nested allowlisted file must be transferred")
+	}
+	if names["allowed/secret.env"] {
+		t.Fatal("re-including a directory for traversal must not re-include an excluded sibling")
+	}
+}
+
+func TestPackBuildContext_HonoursDoubleStarNegation(t *testing.T) {
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	writeFile(t, dir, "src/deep/keep.txt", "keep")
+	writeFile(t, dir, "src/deep/drop.txt", "drop")
+	writeFile(t, dir, ".dockerignore", "**\n!src/**/keep.txt\n")
+
+	tarBytes, err := packBuildContext(dir, df)
+	if err != nil {
+		t.Fatalf("packBuildContext: %v", err)
+	}
+	names := contextNames(t, tarBytes)
+	if !names["src/deep/keep.txt"] {
+		t.Fatal("a ** negation must be able to re-include a nested file")
+	}
+	if names["src/deep/drop.txt"] {
+		t.Fatal("a sibling not matched by the ** negation must stay excluded")
+	}
+}
+
 func TestPackBuildContext_AlwaysIncludesTheDockerfile(t *testing.T) {
 	dir := t.TempDir()
 	df := filepath.Join(dir, "Dockerfile.generated")
@@ -87,6 +150,9 @@ func TestPackBuildContext_AlwaysIncludesTheDockerfile(t *testing.T) {
 	}
 	if !contextNames(t, tarBytes)["Dockerfile.generated"] {
 		t.Fatal("the build file must be sent explicitly, not left to survive the ignore rules")
+	}
+	if !contextNames(t, tarBytes)["Dockerfile.generated.dockerignore"] {
+		t.Fatal("the selected ignore file must be sent so BuildKit applies the same rules")
 	}
 }
 
@@ -106,6 +172,62 @@ func TestPackBuildContext_PrunesIgnoredDirectories(t *testing.T) {
 	}
 	if contextNames(t, tarBytes)["node_modules/pkg/index.js"] {
 		t.Fatal("an ignored directory must be pruned, not walked into")
+	}
+}
+
+func TestPackBuildContext_PreservesEmptyDirectories(t *testing.T) {
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	if err := os.MkdirAll(filepath.Join(dir, "runtime", "empty"), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	tarBytes, err := packBuildContext(dir, df)
+	if err != nil {
+		t.Fatalf("packBuildContext: %v", err)
+	}
+	if !contextNames(t, tarBytes)["runtime/empty/"] {
+		t.Fatal("empty directories are build inputs and must survive transfer")
+	}
+}
+
+func TestPackBuildContext_RejectsIncludedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks may require additional privileges on Windows")
+	}
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	writeFile(t, dir, "target.txt", "target")
+	if err := os.Symlink("target.txt", filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := packBuildContext(dir, df)
+	if err == nil || !strings.Contains(err.Error(), "do not support non-regular entry \"link.txt\"") {
+		t.Fatalf("got %v, want an actionable unsupported-symlink error", err)
+	}
+}
+
+func TestPackBuildContext_SkipsIgnoredSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks may require additional privileges on Windows")
+	}
+	dir := t.TempDir()
+	df := filepath.Join(dir, "Dockerfile")
+	writeFile(t, dir, filepath.Base(df), "FROM scratch\n")
+	if err := os.Symlink("missing", filepath.Join(dir, "ignored-link")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	writeFile(t, dir, ".dockerignore", "ignored-link\n")
+
+	tarBytes, err := packBuildContext(dir, df)
+	if err != nil {
+		t.Fatalf("an ignored symlink should not block packing: %v", err)
+	}
+	if contextNames(t, tarBytes)["ignored-link"] {
+		t.Fatal("an ignored symlink must not be transferred")
 	}
 }
 

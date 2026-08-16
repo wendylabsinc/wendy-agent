@@ -562,6 +562,40 @@ func TestLockContextDir_SerialisesSameDirectory(t *testing.T) {
 	}
 }
 
+func TestLockContextDir_SerialisesSameDirectoryAcrossServices(t *testing.T) {
+	locks := NewBuildContextLockSet()
+	first := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath:   enabledConfigDir(t),
+		StateDir:     t.TempDir(),
+		ContextLocks: locks,
+	})
+	second := NewBuildService(zap.NewNop(), BuildServiceOptions{
+		ConfigPath:   enabledConfigDir(t),
+		StateDir:     t.TempDir(),
+		ContextLocks: locks,
+	})
+
+	unlock := first.lockContextDir("/ctx/app")
+	acquired := make(chan struct{})
+	go func() {
+		defer close(acquired)
+		second.lockContextDir("/ctx/app")()
+	}()
+
+	select {
+	case <-acquired:
+		t.Fatal("a second listener acquired the same context directory while the first still held it")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unlock()
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the shared lock was never released to the second listener")
+	}
+}
+
 // Different apps must still build concurrently; the lock is per context
 // directory, not a global build queue.
 func TestLockContextDir_DoesNotSerialiseDifferentDirectories(t *testing.T) {

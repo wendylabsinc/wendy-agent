@@ -13,7 +13,7 @@ type Config struct {
 	Auth          []AuthConfig     `json:"auth,omitempty"`
 	Analytics     *AnalyticsConfig `json:"analytics,omitempty"`
 	DefaultDevice string           `json:"defaultDevice,omitempty"`
-	// DefaultBuildHost is the device `wendy run`/`wendy build` delegate the image
+	// DefaultBuildHost is the device `wendy run` delegates the image
 	// build to when --build-host is not passed. Per-developer rather than
 	// per-project: the right build host depends on which network the developer is
 	// sitting on, not on the repository.

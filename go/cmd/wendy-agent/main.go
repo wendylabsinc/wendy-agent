@@ -489,6 +489,10 @@ func main() {
 	// registerAllServices runs after the assignment; if that ever stops being
 	// true, BuildImage reports "no mesh dialer" rather than panicking.
 	var meshDialer *services.MeshDialer
+	// All listeners extract into the same per-app context directories. Share
+	// their locks so a local-socket build cannot race an mTLS build for the same
+	// app and replace its source tree while buildctl is reading it.
+	buildContextLocks := services.NewBuildContextLockSet()
 
 	registerAllServices := func(srv *grpc.Server) {
 		// MeshService's own-org check (assetIdentityFromContext / MeshDial)
@@ -507,9 +511,10 @@ func main() {
 		_, orgID, _, _ := provisioningSvc.ProvisioningInfo()
 		meshSvc := services.NewMeshService(logger, configPath, orgID)
 		buildSvc := services.NewBuildService(logger, services.BuildServiceOptions{
-			ConfigPath: configPath,
-			Chunks:     buildChunkSource,
-			Peers:      meshDialer,
+			ConfigPath:   configPath,
+			Chunks:       buildChunkSource,
+			Peers:        meshDialer,
+			ContextLocks: buildContextLocks,
 			// Read fresh per build rather than captured: a certificate rotated
 			// while the agent runs must be picked up without a restart.
 			//

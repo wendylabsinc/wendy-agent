@@ -69,6 +69,33 @@ type ChunkSource interface {
 	OpenChunkStream(ctx context.Context, hashes [][32]byte) io.Reader
 }
 
+// BuildContextLockSet serialises builds that use the same stable context
+// directory. One set must be shared by every BuildService registered by an
+// agent process, because its mTLS, plaintext, and local-socket listeners can
+// all accept builds for the same app.
+type BuildContextLockSet struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// NewBuildContextLockSet creates an empty process-wide build context lock set.
+func NewBuildContextLockSet() *BuildContextLockSet {
+	return &BuildContextLockSet{locks: map[string]*sync.Mutex{}}
+}
+
+func (s *BuildContextLockSet) lock(dir string) func() {
+	s.mu.Lock()
+	mu, ok := s.locks[dir]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.locks[dir] = mu
+	}
+	s.mu.Unlock()
+
+	mu.Lock()
+	return mu.Unlock
+}
+
 // BuildServiceOptions configures the build service.
 type BuildServiceOptions struct {
 	// ConfigPath is the agent config dir searched for the opt-in marker.
@@ -86,6 +113,9 @@ type BuildServiceOptions struct {
 	MaxContextBytes int64
 	// Chunks resolves the build context the CLI staged through WriteChunks.
 	Chunks ChunkSource
+	// ContextLocks is shared across every listener in this agent process. Nil
+	// gives this service a private set, which is convenient for isolated uses.
+	ContextLocks *BuildContextLockSet
 	// Peers dials another device in this org to deliver the finished image.
 	Peers PeerDialer
 	// PushTLS supplies the TLS config for the registry hop, PINNED to the asset
@@ -117,9 +147,8 @@ type BuildService struct {
 	maxContextBytes      int64
 
 	// contextLocks serialises builds that share a context directory. See
-	// lockContextDir; the mutex guards the map, not the builds.
-	contextLocksMu sync.Mutex
-	contextLocks   map[string]*sync.Mutex
+	// lockContextDir.
+	contextLocks *BuildContextLockSet
 }
 
 func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService {
@@ -132,6 +161,9 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 	if opts.MaxContextBytes <= 0 {
 		opts.MaxContextBytes = maxContextBytes
 	}
+	if opts.ContextLocks == nil {
+		opts.ContextLocks = NewBuildContextLockSet()
+	}
 	return &BuildService{
 		logger:               logger,
 		buildHostEnabledPath: filepath.Join(opts.ConfigPath, buildHostEnabledFile),
@@ -141,7 +173,7 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 		peers:                opts.Peers,
 		pushTLS:              opts.PushTLS,
 		maxContextBytes:      opts.MaxContextBytes,
-		contextLocks:         map[string]*sync.Mutex{},
+		contextLocks:         opts.ContextLocks,
 	}
 }
 
@@ -163,16 +195,7 @@ func NewBuildService(logger *zap.Logger, opts BuildServiceOptions) *BuildService
 // an entry would need a use count to avoid handing out two mutexes for one
 // directory.
 func (s *BuildService) lockContextDir(dir string) func() {
-	s.contextLocksMu.Lock()
-	mu, ok := s.contextLocks[dir]
-	if !ok {
-		mu = &sync.Mutex{}
-		s.contextLocks[dir] = mu
-	}
-	s.contextLocksMu.Unlock()
-
-	mu.Lock()
-	return mu.Unlock
+	return s.contextLocks.lock(dir)
 }
 
 // builderEnabled reports whether this device has opted in to serving builds.

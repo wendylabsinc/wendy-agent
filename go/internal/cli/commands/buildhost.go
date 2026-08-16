@@ -68,6 +68,27 @@ func validateBuildHostFlags(buildHost, builder string) error {
 	return nil
 }
 
+// resolveAndValidateRunBuildHost resolves the persisted default before checking
+// --builder. Validating only the raw flag lets `defaultBuildHost` silently win
+// over an explicitly requested local builder later in the run path.
+func resolveAndValidateRunBuildHost(flagValue, builder string) (string, error) {
+	host, err := resolveBuildHostName(flagValue)
+	if err != nil {
+		return "", err
+	}
+	if err := validateBuildHostFlags(host, builder); err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+func rejectUnsupportedBuildHostProject(host, project string) error {
+	if strings.TrimSpace(host) == "" {
+		return nil
+	}
+	return fmt.Errorf("build host %s cannot build %s; remote builds currently support single-service container image projects only (remove --build-host or clear defaultBuildHost to build locally)", host, project)
+}
+
 // checkBuildHostCapabilities refuses a build host before any context is
 // transferred. Every failure names the host, and none falls back to a local
 // build: a long build the developer believed was running on the Spark is worse
@@ -124,17 +145,16 @@ func classifyRemoteBuildError(host string, err error) error {
 	if err == nil {
 		return nil
 	}
-	switch status.Code(err) {
-	case codes.Unavailable, codes.DeadlineExceeded:
+	const deliveryFailurePrefix = "pushing the built image to the target device failed:"
+	if status.Code(err) == codes.Unavailable && strings.HasPrefix(status.Convert(err).Message(), deliveryFailurePrefix) {
 		return fmt.Errorf("image built on %s but could not be delivered to the device: %w", host, err)
-	default:
-		if strings.Contains(err.Error(), "push:") {
-			return fmt.Errorf("image built on %s but could not be delivered to the device: %w", host, err)
-		}
-		// Marked as an image-build failure so the caller surfaces it directly
-		// rather than masking it behind a fallback that would fail identically.
-		return &imageBuildFailedError{err: fmt.Errorf("build on %s failed: %w", host, err)}
 	}
+	// Generic Unavailable and DeadlineExceeded errors can happen before or
+	// during the build. Claiming the image was built sends the developer to
+	// debug delivery when the build host may simply have disconnected.
+	// Marked as an image-build failure so the caller surfaces it directly rather
+	// than masking it behind a local fallback.
+	return &imageBuildFailedError{err: fmt.Errorf("build on %s failed or did not complete: %w", host, err)}
 }
 
 // runRemoteBuild builds the image on another WendyOS device, has that device

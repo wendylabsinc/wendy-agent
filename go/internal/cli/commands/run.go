@@ -775,9 +775,11 @@ func runCommand(ctx context.Context, opts runOptions) error {
 	if err := validateChunkingMode(opts.chunking); err != nil {
 		return err
 	}
-	if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
+	buildHost, err := resolveAndValidateRunBuildHost(opts.buildHost, opts.builder)
+	if err != nil {
 		return err
 	}
+	opts.buildHost = buildHost
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
 	// --build-type is compatible.
@@ -805,6 +807,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	if projectType == "compose" {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
+			return err
+		}
 		return runComposeCommand(ctx, cwd, opts)
 	}
 
@@ -933,6 +938,9 @@ func runCommand(ctx context.Context, opts runOptions) error {
 
 	// Provider-based run path.
 	if target.External != nil && target.Provider != nil {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "provider targets"); err != nil {
+			return err
+		}
 		return runWithProvider(ctx, target.Provider, *target.External, cwd, appCfg.AppID, appCfg.Entitlements, opts)
 	}
 
@@ -1574,6 +1582,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// Multi-service path: when wendy.json has a services map, build all images
 	// in parallel and manage the app group lifecycle.
 	if len(appCfg.Services) > 0 {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "multi-service projects"); err != nil {
+			return err
+		}
 		return runMultiServiceWithAgent(ctx, conn, cwd, appCfg, opts)
 	}
 
@@ -1606,6 +1617,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 
 	// Xcode projects: always use the local-build + file-sync path (darwin only).
 	if projectType == "xcode" {
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Xcode projects"); err != nil {
+			return err
+		}
 		if platformOS(platform) == "darwin" {
 			return runMacOSXcodeWithAgent(ctx, conn, cwd, appCfg, opts)
 		}
@@ -1634,6 +1648,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		needsHostSwift := explicitSwift || !hasContainerBuildFile(cwd)
 
 		if needsHostSwift {
+			if err := rejectUnsupportedBuildHostProject(opts.buildHost, "native Swift projects"); err != nil {
+				return err
+			}
 			if targetIsDarwin && runtime.GOOS != "darwin" {
 				return fmt.Errorf("`wendy run` for Swift packages targeting darwin requires a darwin host (got %s); provide a Dockerfile or Containerfile to build a Linux image instead", runtime.GOOS)
 			}
@@ -1651,6 +1668,9 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	case "docker":
 		// Dockerfile/Containerfile already exists.
 	case "compose":
+		if err := rejectUnsupportedBuildHostProject(opts.buildHost, "Compose projects"); err != nil {
+			return err
+		}
 		return runComposeWithAgent(ctx, conn, cwd, opts)
 	case "python":
 		if _, err := os.Stat(filepath.Join(cwd, "Dockerfile")); os.IsNotExist(err) {
@@ -1690,12 +1710,8 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// finished image straight into this device's registry over the mesh. Placed
 	// ahead of every local path because those exist to optimise a local build
 	// that is not going to happen.
-	buildHost, err := resolveBuildHostName(opts.buildHost)
-	if err != nil {
-		return err
-	}
-	if buildHost != "" {
-		return runRemoteBuild(ctx, conn, buildHost, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
+	if opts.buildHost != "" {
+		return runRemoteBuild(ctx, conn, opts.buildHost, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
 	}
 
 	// The Mac agent runs Linux containers via a CLI runtime with no chunk-diff
