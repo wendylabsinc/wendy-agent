@@ -991,8 +991,10 @@ type CreateContainerProgress struct {
 	TotalLayers    int32                         `protobuf:"varint,3,opt,name=total_layers,json=totalLayers,proto3" json:"total_layers,omitempty"`
 	LayerSize      int64                         `protobuf:"varint,4,opt,name=layer_size,json=layerSize,proto3" json:"layer_size,omitempty"`
 	ReusedSnapshot bool                          `protobuf:"varint,5,opt,name=reused_snapshot,json=reusedSnapshot,proto3" json:"reused_snapshot,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// A non-fatal deploy warning that the CLI should show directly to the user.
+	Warning       string `protobuf:"bytes,6,opt,name=warning,proto3" json:"warning,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateContainerProgress) Reset() {
@@ -1058,6 +1060,13 @@ func (x *CreateContainerProgress) GetReusedSnapshot() bool {
 		return x.ReusedSnapshot
 	}
 	return false
+}
+
+func (x *CreateContainerProgress) GetWarning() string {
+	if x != nil {
+		return x.Warning
+	}
+	return ""
 }
 
 type CreateContainerProgressResponse struct {
@@ -3077,7 +3086,7 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\tuser_args\x18\a \x03(\tR\buserArgs\x12\x10\n" +
 	"\x03env\x18\b \x03(\tR\x03envB\x11\n" +
 	"\x0f_restart_policy\"\x19\n" +
-	"\x17CreateContainerResponse\"\xdc\x02\n" +
+	"\x17CreateContainerResponse\"\xf6\x02\n" +
 	"\x17CreateContainerProgress\x12L\n" +
 	"\x05phase\x18\x01 \x01(\x0e26.wendy.agent.services.v1.CreateContainerProgress.PhaseR\x05phase\x12\x1f\n" +
 	"\vlayer_index\x18\x02 \x01(\x05R\n" +
@@ -3085,7 +3094,8 @@ const file_wendy_agent_services_v1_wendy_agent_v1_container_service_proto_rawDes
 	"\ftotal_layers\x18\x03 \x01(\x05R\vtotalLayers\x12\x1d\n" +
 	"\n" +
 	"layer_size\x18\x04 \x01(\x03R\tlayerSize\x12'\n" +
-	"\x0freused_snapshot\x18\x05 \x01(\bR\x0ereusedSnapshot\"g\n" +
+	"\x0freused_snapshot\x18\x05 \x01(\bR\x0ereusedSnapshot\x12\x18\n" +
+	"\awarning\x18\x06 \x01(\tR\awarning\"g\n" +
 	"\x05Phase\x12\x15\n" +
 	"\x11PHASE_UNSPECIFIED\x10\x00\x12\r\n" +
 	"\tUNPACKING\x10\x01\x12\x12\n" +

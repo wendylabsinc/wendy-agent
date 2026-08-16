@@ -320,6 +320,9 @@ public nonisolated struct Wendy_Agent_Services_V1_CreateContainerProgress: Senda
 
   public var reusedSnapshot: Bool = false
 
+  /// A non-fatal deploy warning that the CLI should show directly to the user.
+  public var warning: String = String()
+
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
   public nonisolated enum Phase: SwiftProtobuf.Enum, Swift.CaseIterable {
@@ -1632,7 +1635,7 @@ nonisolated extension Wendy_Agent_Services_V1_CreateContainerResponse: SwiftProt
 
 nonisolated extension Wendy_Agent_Services_V1_CreateContainerProgress: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
   public static let protoMessageName: String = _protobuf_package + ".CreateContainerProgress"
-  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}phase\0\u{3}layer_index\0\u{3}total_layers\0\u{3}layer_size\0\u{3}reused_snapshot\0")
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}phase\0\u{3}layer_index\0\u{3}total_layers\0\u{3}layer_size\0\u{3}reused_snapshot\0\u{1}warning\0")
 
   public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
@@ -1645,6 +1648,7 @@ nonisolated extension Wendy_Agent_Services_V1_CreateContainerProgress: SwiftProt
       case 3: try { try decoder.decodeSingularInt32Field(value: &self.totalLayers) }()
       case 4: try { try decoder.decodeSingularInt64Field(value: &self.layerSize) }()
       case 5: try { try decoder.decodeSingularBoolField(value: &self.reusedSnapshot) }()
+      case 6: try { try decoder.decodeSingularStringField(value: &self.warning) }()
       default: break
       }
     }
@@ -1666,6 +1670,9 @@ nonisolated extension Wendy_Agent_Services_V1_CreateContainerProgress: SwiftProt
     if self.reusedSnapshot != false {
       try visitor.visitSingularBoolField(value: self.reusedSnapshot, fieldNumber: 5)
     }
+    if !self.warning.isEmpty {
+      try visitor.visitSingularStringField(value: self.warning, fieldNumber: 6)
+    }
     try unknownFields.traverse(visitor: &visitor)
   }
 
@@ -1675,6 +1682,7 @@ nonisolated extension Wendy_Agent_Services_V1_CreateContainerProgress: SwiftProt
     if lhs.totalLayers != rhs.totalLayers {return false}
     if lhs.layerSize != rhs.layerSize {return false}
     if lhs.reusedSnapshot != rhs.reusedSnapshot {return false}
+    if lhs.warning != rhs.warning {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

@@ -163,6 +163,8 @@ message CreateContainerProgress {
     int32 total_layers = 3;
     int64 layer_size = 4;
     bool reused_snapshot = 5;
+    // A non-fatal deploy warning that the CLI should show directly to the user.
+    string warning = 6;
 }
 
 message CreateContainerProgressResponse {

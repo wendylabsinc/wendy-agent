@@ -142,6 +142,29 @@ func (m *IPCSocketManager) Ensure(name, role, appID, serviceName string) (string
 	return directory, nil
 }
 
+// MissingProviderWarning returns a user-facing warning when name currently has
+// no provider. The containerd client sends this over the create-progress stream
+// so the CLI can surface the condition directly instead of leaving it only in
+// agent logs. An empty result means a provider exists.
+func (m *IPCSocketManager) MissingProviderWarning(name string) string {
+	if appconfig.ValidateIPCName(name) != nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	entry := m.entries[name]
+	if entry != nil && entry.provider != "" {
+		return ""
+	}
+	provided := m.providedNamesLocked()
+	if len(provided) == 0 {
+		return fmt.Sprintf("ipc consumer %q has no provider on this device; no ipc providers are currently deployed", name)
+	}
+	return fmt.Sprintf("ipc consumer %q has no provider on this device; currently provided ipc names: %s",
+		name, strings.Join(provided, ", "))
+}
+
 // PrepareProvider removes a stale socket left behind by a previous run of the
 // provider, and must be called before the provider's task starts. A provider
 // that dies without cleanup otherwise leaves a socket file that consumers can

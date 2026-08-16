@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -293,6 +294,9 @@ func createContainerWithProgressPlain(stream agentpb.WendyContainerService_Creat
 
 		switch r := resp.GetResponseType().(type) {
 		case *agentpb.CreateContainerProgressResponse_Progress:
+			if warning := r.Progress.GetWarning(); warning != "" {
+				cliNotice("Warning: %s", warning)
+			}
 			switch r.Progress.GetPhase() {
 			case agentpb.CreateContainerProgress_UNPACKING, agentpb.CreateContainerProgress_APPLYING_LAYER:
 				if detail := unpackProgressDetail(r.Progress); detail != "" {
@@ -348,11 +352,20 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 	prog := tui.NewProgressProgram(tui.NewProgress("Pulling image on device...").WithoutErrorView())
 
 	var (
-		createErr error
-		done      = make(chan struct{})
-		creating  = make(chan struct{}, 1)
-		completed bool
+		createErr  error
+		done       = make(chan struct{})
+		creating   = make(chan struct{}, 1)
+		completed  bool
+		warningsMu sync.Mutex
+		warnings   []string
 	)
+	defer func() {
+		warningsMu.Lock()
+		defer warningsMu.Unlock()
+		for _, warning := range warnings {
+			cliNotice("Warning: %s", warning)
+		}
+	}()
 
 	go func() {
 		defer close(done)
@@ -378,6 +391,11 @@ func createContainerWithProgressTUI(cancel context.CancelFunc, stream agentpb.We
 
 			switch r := resp.GetResponseType().(type) {
 			case *agentpb.CreateContainerProgressResponse_Progress:
+				if warning := r.Progress.GetWarning(); warning != "" {
+					warningsMu.Lock()
+					warnings = append(warnings, warning)
+					warningsMu.Unlock()
+				}
 				switch r.Progress.GetPhase() {
 				case agentpb.CreateContainerProgress_UNPACKING, agentpb.CreateContainerProgress_APPLYING_LAYER:
 					prog.Send(tui.ProgressUpdateMsg{

@@ -45,6 +45,32 @@ func TestIPCEntitlements_NoneWhenAbsent(t *testing.T) {
 	}
 }
 
+func TestValidateUniqueIPCEntitlementsRejectsDuplicateName(t *testing.T) {
+	ents := []appconfig.Entitlement{
+		{Type: appconfig.EntitlementIPC, Name: "world", Role: appconfig.IPCRoleProvide},
+		{Type: appconfig.EntitlementIPC, Name: "world", Role: appconfig.IPCRoleConsume},
+	}
+	if err := validateUniqueIPCEntitlements(ents); err == nil {
+		t.Fatal("duplicate ipc names passed the container-boundary validation")
+	}
+}
+
+func TestContainerIdentityFromLabelsUsesServiceLabel(t *testing.T) {
+	// "myapp_someservice" is itself a valid app ID, so ParseContainerName's
+	// single-container fast path cannot recover this service identity. The
+	// persisted labels are unambiguous and must remain authoritative.
+	appID, serviceName, err := containerIdentityFromLabels("myapp_someservice", map[string]string{
+		labelKeyAppID:       "myapp",
+		labelKeyServiceName: "someservice",
+	})
+	if err != nil {
+		t.Fatalf("containerIdentityFromLabels: %v", err)
+	}
+	if appID != "myapp" || serviceName != "someservice" {
+		t.Fatalf("identity = (%q, %q), want (%q, %q)", appID, serviceName, "myapp", "someservice")
+	}
+}
+
 // IPC entitlements must survive the round trip through container labels:
 // the start-time stale-socket cleanup and the delete-time claim release both
 // read them back from labels rather than from the original request.

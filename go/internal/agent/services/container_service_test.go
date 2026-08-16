@@ -37,6 +37,7 @@ type mockContainerdClient struct {
 	writtenData           []byte
 	createErr             error
 	progressPhases        []agentpb.CreateContainerProgress_Phase
+	progressUpdates       []*agentpb.CreateContainerProgress
 	startOutputCh         chan ContainerOutput
 	startErr              error
 	statsResult           []*agentpb.ContainerStats
@@ -112,6 +113,9 @@ func (m *mockContainerdClient) CreateContainer(_ context.Context, req *agentpb.C
 }
 func (m *mockContainerdClient) CreateContainerWithProgress(ctx context.Context, req *agentpb.CreateContainerRequest, appCfg *appconfig.AppConfig, onProgress ProgressFunc) error {
 	if onProgress != nil {
+		for _, progress := range m.progressUpdates {
+			onProgress(progress)
+		}
 		for _, phase := range m.progressPhases {
 			onProgress(&agentpb.CreateContainerProgress{Phase: phase})
 		}
@@ -560,6 +564,28 @@ func TestCreateContainerWithProgress(t *testing.T) {
 	}
 	if !gotCompleted {
 		t.Error("did not receive Completed response")
+	}
+}
+
+func TestCreateContainerWithProgressForwardsWarning(t *testing.T) {
+	want := `ipc consumer "world" has no provider on this device`
+	mock := &mockContainerdClient{progressUpdates: []*agentpb.CreateContainerProgress{{Warning: want}}}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	stream, err := client.CreateContainerWithProgress(context.Background(), &agentpb.CreateContainerRequest{
+		ImageName: "test-image:latest",
+		AppName:   "test-app",
+	})
+	if err != nil {
+		t.Fatalf("CreateContainerWithProgress: %v", err)
+	}
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv warning: %v", err)
+	}
+	if got := resp.GetProgress().GetWarning(); got != want {
+		t.Fatalf("warning = %q, want %q", got, want)
 	}
 }
 

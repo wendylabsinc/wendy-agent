@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"go.uber.org/zap"
@@ -84,6 +85,31 @@ func TestIPCSocketManager_EnsureIsIdempotentForSameOwner(t *testing.T) {
 	}
 	if first != second {
 		t.Errorf("Ensure returned %q then %q; want a stable directory", first, second)
+	}
+}
+
+func TestIPCSocketManager_MissingProviderWarning(t *testing.T) {
+	m := newTestIPCSocketManager(t)
+	if _, err := m.Ensure("planner", appconfig.IPCRoleProvide, "com.example.planner", ""); err != nil {
+		t.Fatalf("Ensure planner provider: %v", err)
+	}
+	if _, err := m.Ensure("world", appconfig.IPCRoleConsume, "com.example.consumer", ""); err != nil {
+		t.Fatalf("Ensure world consumer: %v", err)
+	}
+
+	warning := m.MissingProviderWarning("world")
+	if !strings.Contains(warning, `ipc consumer "world" has no provider`) {
+		t.Fatalf("warning = %q, want missing-provider context", warning)
+	}
+	if !strings.Contains(warning, "planner") {
+		t.Fatalf("warning = %q, want available provider name", warning)
+	}
+
+	if _, err := m.Ensure("world", appconfig.IPCRoleProvide, "com.example.provider", ""); err != nil {
+		t.Fatalf("Ensure world provider: %v", err)
+	}
+	if warning := m.MissingProviderWarning("world"); warning != "" {
+		t.Fatalf("warning with provider present = %q, want empty", warning)
 	}
 }
 

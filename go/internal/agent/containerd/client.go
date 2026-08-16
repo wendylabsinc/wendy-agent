@@ -71,6 +71,7 @@ type AppSystemAPISocketProvider interface {
 // reason as restartSuppressor above, and so tests can inject a recorder.
 type IPCSocketProvider interface {
 	Ensure(name, role, appID, serviceName string) (string, error)
+	MissingProviderWarning(name string) string
 	PrepareProvider(name, appID, serviceName string) error
 	Release(name, appID, serviceName string)
 	ReleaseApp(appID string)
@@ -235,6 +236,31 @@ func ipcEntitlements(ents []appconfig.Entitlement) []appconfig.Entitlement {
 		out = append(out, e)
 	}
 	return out
+}
+
+func validateUniqueIPCEntitlements(ents []appconfig.Entitlement) error {
+	seen := make(map[string]struct{}, len(ents))
+	for _, e := range ents {
+		if _, ok := seen[e.Name]; ok {
+			return fmt.Errorf("duplicate ipc entitlement for name %q; declare each ipc name at most once per container", e.Name)
+		}
+		seen[e.Name] = struct{}{}
+	}
+	return nil
+}
+
+func containerIdentityFromLabels(containerID string, labels map[string]string) (appID, serviceName string, err error) {
+	appID = labels[labelKeyAppID]
+	if err := appconfig.ValidateAppID(appID); err != nil {
+		return "", "", fmt.Errorf("invalid app ID label on container %q: %w", containerID, err)
+	}
+	serviceName = labels[labelKeyServiceName]
+	if serviceName != "" {
+		if err := appconfig.ValidateServiceName(serviceName); err != nil {
+			return "", "", fmt.Errorf("invalid service name label on container %q: %w", containerID, err)
+		}
+	}
+	return appID, serviceName, nil
 }
 
 // releaseIPCSockets drops every IPC claim a container holds. Safe to
@@ -1125,12 +1151,12 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		resumeRestarts := c.suppressRestarts(containerName)
 		defer resumeRestarts()
 
-		oldHadSystemAPI := false
-		var oldEntitlements []appconfig.Entitlement
-		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
-			oldEntitlements = parseEntitlementsFromAnnotations(labels)
-			oldHadSystemAPI = entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
+		labels, labelErr := existing.Labels(ctx)
+		if labelErr != nil {
+			return fmt.Errorf("loading existing container labels for socket cleanup for %q: %w", containerName, labelErr)
 		}
+		oldEntitlements := parseEntitlementsFromAnnotations(labels)
+		oldHadSystemAPI := entitlementsContain(oldEntitlements, appconfig.EntitlementNotifications)
 		c.logger.Info("Removing existing container", zap.String("container_name", containerName))
 		// Kill the old task's whole process group — not just init — and wait
 		// for it to exit. A surviving process keeps devices/ports the new
@@ -1366,6 +1392,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	var ipcSocketDirs map[string]string
 	ipcRefsOwned := ipcEntitlements(appCfg.Entitlements)
 	if len(ipcRefsOwned) > 0 {
+		if err := validateUniqueIPCEntitlements(ipcRefsOwned); err != nil {
+			return err
+		}
 		if c.ipcSocketProvider == nil {
 			return fmt.Errorf("ipc entitlement unavailable: ipc socket manager is not configured")
 		}
@@ -1381,6 +1410,11 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 				return fmt.Errorf("preparing ipc socket %q: %w", e.Name, ensureErr)
 			}
 			ipcSocketDirs[e.Name] = dir
+			if e.Role == appconfig.IPCRoleConsume {
+				if warning := c.ipcSocketProvider.MissingProviderWarning(e.Name); warning != "" {
+					report(&agentpb.CreateContainerProgress{Warning: warning})
+				}
+			}
 		}
 	}
 
@@ -3631,19 +3665,20 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// the same reason as stopOne above: the cache is only best-effort warmed
 	// at boot, and a miss there must not silently skip CNI DEL / DNS release
 	// / mesh teardown for a container that is actually isolated.
-	appID, svcName, parseErr := ParseContainerName(ctr.ID())
-	var entitlements []appconfig.Entitlement
-	isolation := c.getIsolation(appID)
-	needsBridge := false
-	if parseErr == nil {
-		if labels, lerr := ctr.Labels(ctx); lerr == nil {
-			entitlements = parseEntitlementsFromAnnotations(labels)
-			if iso, ok := labels[labelKeyIsolation]; ok {
-				isolation = iso
-			}
-		}
-		needsBridge = needsCNIBridgeWiring(isolation, svcName, entitlements)
+	labels, labelsErr := ctr.Labels(ctx)
+	if labelsErr != nil {
+		return "", fmt.Errorf("loading labels for container %q before delete: %w", ctr.ID(), labelsErr)
 	}
+	appID, svcName, identityErr := containerIdentityFromLabels(ctr.ID(), labels)
+	if identityErr != nil {
+		return "", identityErr
+	}
+	entitlements := parseEntitlementsFromAnnotations(labels)
+	isolation := c.getIsolation(appID)
+	if iso, ok := labels[labelKeyIsolation]; ok {
+		isolation = iso
+	}
+	needsBridge := needsCNIBridgeWiring(isolation, svcName, entitlements)
 	if needsBridge {
 		if needsGatewayDNS(isolation, entitlements) {
 			c.releaseMeshDNS(ctr.ID(), appID)
@@ -3698,9 +3733,7 @@ func (c *Client) deleteOne(ctx context.Context, ctr containerd.Container, wantIm
 	// Released here rather than in stopOne for the same reason — a stopped
 	// container keeps its bind mount and is expected to reclaim its socket on
 	// the next start.
-	if parseErr == nil {
-		c.releaseIPCSockets(entitlements, appID, svcName)
-	}
+	c.releaseIPCSockets(entitlements, appID, svcName)
 	c.logger.Info("Container deleted", zap.String("container_id", ctr.ID()))
 	return imgName, nil
 }
