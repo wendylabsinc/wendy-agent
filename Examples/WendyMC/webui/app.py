@@ -168,3 +168,14 @@ async def console(ws: WebSocket):
     finally:
         if fh:
             fh.close()
+
+
+if __name__ == "__main__":
+    # The container command is `python app.py`, not `uvicorn ...`: WEBUI_PORT
+    # is a build arg, and a Stagefile's cmd is an argv list with no shell to
+    # expand ${WEBUI_PORT} in. Reading it here keeps the port configurable
+    # from docker-compose.yml's build args, which is what the shell-form CMD
+    # this replaced was doing.
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("WEBUI_PORT", "8080")))

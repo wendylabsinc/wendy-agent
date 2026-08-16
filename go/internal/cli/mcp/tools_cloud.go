@@ -555,7 +555,12 @@ func (s *mcpServer) connectToCloudAgent(ctx context.Context, cloudGRPC, deviceNa
 	dialOpt, closeTunnel := mcpTunnelDialer(tunnelConn)
 
 	certInfo := auth.Certificates[0]
-	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(certInfo.PemPrivateKey))
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		closeTunnel()
+		return nil, nil, fmt.Errorf("loading client key: %w", err)
+	}
+	x509Cert, err := tls.X509KeyPair([]byte(certInfo.PemCertificate), []byte(keyPEM))
 	if err != nil {
 		closeTunnel()
 		return nil, nil, fmt.Errorf("loading agent mTLS cert: %w", err)
@@ -630,7 +635,11 @@ func mcpCreateAssetEnrollmentToken(ctx context.Context, auth *config.AuthConfig,
 		return nil, err
 	}
 	defer conn.Close()
-	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(mcpCloudContext(ctx, auth), &cloudpb.CreateAssetEnrollmentTokenRequest{
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := cloudpb.NewCertificateServiceClient(conn).CreateAssetEnrollmentToken(cloudCtx, &cloudpb.CreateAssetEnrollmentTokenRequest{
 		OrganizationId: int32(auth.Certificates[0].OrganizationID),
 		Name:           name,
 		TtlSeconds:     600,
@@ -658,7 +667,11 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 		req.OnlineOnly = boolPtr(true)
 	}
 	client := cloudpb.NewAssetServiceClient(conn)
-	stream, err := client.ListAssets(mcpCloudContext(ctx, auth), req)
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := client.ListAssets(cloudCtx, req)
 	if err != nil {
 		return nil, fmt.Errorf("listing devices: %w", err)
 	}
@@ -680,14 +693,18 @@ func mcpListCloudAssets(ctx context.Context, auth *config.AuthConfig, filter str
 	return assets, nil
 }
 
-func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) context.Context {
+func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) (context.Context, error) {
 	if len(auth.Certificates) == 0 {
-		return ctx
+		return ctx, nil
 	}
 	certInfo := auth.Certificates[0]
 	md := metadata.MD{}
-	if auth.APIKey != "" {
-		md.Set("authorization", "Bearer "+auth.APIKey)
+	if auth.HasAPIKey() {
+		bearerToken, err := auth.BearerToken()
+		if err != nil {
+			return nil, fmt.Errorf("loading API token: %w", err)
+		}
+		md.Set("authorization", "Bearer "+bearerToken)
 	}
 	certHeader := fmt.Sprintf("URI=urn:wendy:org:%d:user:unknown", certInfo.OrganizationID)
 	if certInfo.UserID != "" {
@@ -695,7 +712,7 @@ func mcpCloudContext(ctx context.Context, auth *config.AuthConfig) context.Conte
 	}
 	md.Set("x-wendy-client-cert", certHeader)
 	md.Set("x-forwarded-client-cert", certHeader)
-	return metadata.NewOutgoingContext(ctx, md)
+	return metadata.NewOutgoingContext(ctx, md), nil
 }
 
 func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
@@ -705,10 +722,14 @@ func mcpDialCloudGRPC(auth *config.AuthConfig) (*grpc.ClientConn, error) {
 	var transport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
 		certInfo := auth.Certificates[0]
+		keyPEM, err := certInfo.PrivateKeyPEM()
+		if err != nil {
+			return nil, fmt.Errorf("loading client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			certInfo.PemCertificate,
 			certInfo.PemCertificateChain,
-			certInfo.PemPrivateKey,
+			keyPEM,
 			"",
 		)
 		if err != nil {
@@ -731,10 +752,14 @@ func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.Client
 		return nil, fmt.Errorf("auth entry has no certificates; re-run 'wendy auth login'")
 	}
 	certInfo := auth.Certificates[0]
+	keyPEM, err := certInfo.PrivateKeyPEM()
+	if err != nil {
+		return nil, fmt.Errorf("loading client key: %w", err)
+	}
 	tlsCfg, err := certs.LoadTLSConfig(
 		certInfo.PemCertificate,
 		certInfo.PemCertificateChain,
-		certInfo.PemPrivateKey,
+		keyPEM,
 		"",
 	)
 	if err != nil {
@@ -770,7 +795,11 @@ func mcpDialCloudBroker(auth *config.AuthConfig, brokerURL string) (*grpc.Client
 }
 
 func mcpOpenBrokerTunnel(ctx context.Context, brokerConn *grpc.ClientConn, auth *config.AuthConfig, assetID int32, remotePort uint32) (net.Conn, error) {
-	stream, err := cloudpb.NewTunnelBrokerServiceClient(brokerConn).ClientTunnel(mcpCloudContext(ctx, auth))
+	cloudCtx, err := mcpCloudContext(ctx, auth)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := cloudpb.NewTunnelBrokerServiceClient(brokerConn).ClientTunnel(cloudCtx)
 	if err != nil {
 		return nil, fmt.Errorf("opening tunnel stream: %w", err)
 	}

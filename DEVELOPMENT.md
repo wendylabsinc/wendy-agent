@@ -229,9 +229,13 @@ Run this **any time you change a file under `Proto/`**. Generated packages:
 
 - `agentpb` — Wendy Agent v1 services
 - `agentpb/v2` — Wendy Agent v2 services
-- `otelpb` — OpenTelemetry protos
 - `cloudpb` — Wendy Cloud services
 - `litepb` — `wendy/lite` messages
+
+The OpenTelemetry protos under `Proto/opentelemetry/` are **not** generated into
+this module. They are mapped to the upstream `go.opentelemetry.io/proto/otlp/...`
+packages instead, because the Go protobuf runtime panics if the same proto file
+path is registered twice and many dependencies already link upstream OTLP.
 
 Requires `protoc` and the two `protoc-gen-go*` plugins on your `PATH` (see
 [Optional developer tools](#optional-developer-tools)). The Swift agent has its

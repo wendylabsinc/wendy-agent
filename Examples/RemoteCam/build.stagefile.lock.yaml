@@ -1,0 +1,5 @@
+version: 1
+sourceHash: sha256:e72e98b06a577b2a05d213d743459c5dfd01e766267977c31f07384fea350cf1
+images:
+    swift:6.1-noble: sha256:fddaf02db3d41844916167ef4d199d5ca14c6003d052a0b9ab579646a9c720ec
+    swift:6.1-noble-slim: sha256:bde230c405c3c816a309baccd0c6614e1c17bd7fcb2beaffbea0139e42e4f6fe

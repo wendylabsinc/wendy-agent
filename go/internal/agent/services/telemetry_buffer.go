@@ -20,7 +20,9 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 // SignalType identifies a telemetry signal kind.
@@ -67,11 +69,11 @@ func listSegments(dir string, signal SignalType) ([]string, error) {
 func newProtoForSignal(signal SignalType) proto.Message {
 	switch signal {
 	case SignalLogs:
-		return &otelpb.ExportLogsServiceRequest{}
+		return &collogspb.ExportLogsServiceRequest{}
 	case SignalMetrics:
-		return &otelpb.ExportMetricsServiceRequest{}
+		return &colmetricspb.ExportMetricsServiceRequest{}
 	case SignalTraces:
-		return &otelpb.ExportTraceServiceRequest{}
+		return &coltracepb.ExportTraceServiceRequest{}
 	default:
 		return nil
 	}
@@ -417,7 +419,7 @@ func (b *TelemetryBuffer) writeFrame(sig SignalType, msg proto.Message) {
 }
 
 // PublishLogs writes req to disk then fans out to the broadcaster.
-func (b *TelemetryBuffer) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
+func (b *TelemetryBuffer) PublishLogs(req *collogspb.ExportLogsServiceRequest) {
 	if b == nil {
 		return
 	}
@@ -426,7 +428,7 @@ func (b *TelemetryBuffer) PublishLogs(req *otelpb.ExportLogsServiceRequest) {
 }
 
 // PublishMetrics writes req to disk then fans out to the broadcaster.
-func (b *TelemetryBuffer) PublishMetrics(req *otelpb.ExportMetricsServiceRequest) {
+func (b *TelemetryBuffer) PublishMetrics(req *colmetricspb.ExportMetricsServiceRequest) {
 	if b == nil {
 		return
 	}
@@ -435,7 +437,7 @@ func (b *TelemetryBuffer) PublishMetrics(req *otelpb.ExportMetricsServiceRequest
 }
 
 // PublishTraces writes req to disk then fans out to the broadcaster.
-func (b *TelemetryBuffer) PublishTraces(req *otelpb.ExportTraceServiceRequest) {
+func (b *TelemetryBuffer) PublishTraces(req *coltracepb.ExportTraceServiceRequest) {
 	if b == nil {
 		return
 	}
@@ -647,9 +649,9 @@ func (b *TelemetryBuffer) ReadLastNMatching(sig SignalType, n int, match func(pr
 // TelemetryPublisher is the minimal interface for publishing OTel telemetry.
 // Both *TelemetryBroadcaster and *TelemetryBuffer implement it.
 type TelemetryPublisher interface {
-	PublishLogs(req *otelpb.ExportLogsServiceRequest)
-	PublishMetrics(req *otelpb.ExportMetricsServiceRequest)
-	PublishTraces(req *otelpb.ExportTraceServiceRequest)
+	PublishLogs(req *collogspb.ExportLogsServiceRequest)
+	PublishMetrics(req *colmetricspb.ExportMetricsServiceRequest)
+	PublishTraces(req *coltracepb.ExportTraceServiceRequest)
 }
 
 var _ TelemetryPublisher = (*TelemetryBroadcaster)(nil)

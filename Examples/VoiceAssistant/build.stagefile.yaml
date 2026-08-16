@@ -1,0 +1,26 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    workdir: /app
+    env:
+      PYTHONUNBUFFERED: "1"
+    install:
+      apt:
+        # pipewire-bin (pw-record/pw-play) reaches the host's session graph —
+        # the only route to Bluetooth audio; pulseaudio-utils (pactl) drives its
+        # volume. alsa-utils stays as the fallback for hosts that only expose
+        # /dev/snd. app.py picks the backend at runtime and logs an error if the
+        # PipeWire socket is mounted but these binaries are missing.
+        packages: [alsa-utils, ca-certificates, pipewire-bin, pulseaudio-utils]
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [app.py]
+    # The Dockerfile this replaced declared no USER, so the container ran as
+    # root and ALSA reached the audio devices that way. Declaring root keeps
+    # that: the compiler's default is a distroless-style non-root UID, which
+    # would silently change audio device access.
+    user: root
+    cmd: [python, app.py]

@@ -215,6 +215,36 @@ func TestListAudioDevicesFallsBackToALSAWithNoSession(t *testing.T) {
 	}
 }
 
+// Without a session the agent cannot set a default, but the refusal has to say
+// which precondition failed. The old message asserted "no PipeWire session is
+// running", which is more than the agent established — it only knows it found
+// no session it would trust where it looked — and it left an operator with
+// nothing to check.
+func TestSetDefaultAudioDeviceReportsWhyPipeWireIsUnavailable(t *testing.T) {
+	origAvailable, origReason := audio.Available, audio.UnavailableReason
+	t.Cleanup(func() { audio.Available, audio.UnavailableReason = origAvailable, origReason })
+	audio.Available = func() bool { return false }
+	audio.UnavailableReason = func() string {
+		return `/run/user/1000/pipewire-0 is owned by uid 0, expected the "wendy" user (uid 1000)`
+	}
+
+	resp, err := testAudioService().SetDefaultAudioDevice(context.Background(),
+		&agentpb.SetDefaultAudioDeviceRequest{DeviceId: 1})
+	if err != nil {
+		t.Fatalf("SetDefaultAudioDevice() error = %v", err)
+	}
+	if resp.GetSuccess() {
+		t.Fatal("success = true with no PipeWire session")
+	}
+	msg := resp.GetErrorMessage()
+	if !strings.Contains(msg, "owned by uid 0") {
+		t.Errorf("error = %q, want it to carry the specific reason", msg)
+	}
+	if strings.Contains(msg, "no PipeWire session is running") {
+		t.Errorf("error = %q, must not assert that no session is running", msg)
+	}
+}
+
 func TestSetDefaultAudioDevice(t *testing.T) {
 	calls := stubGraph(t, graphFixture, nil)
 

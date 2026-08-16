@@ -1,0 +1,12 @@
+version: 1
+stages:
+  - name: app
+    from: python:3.11-slim
+    install:
+      pip:
+        - requirements: requirements.txt
+    copy:
+      - from: local
+        paths: [main.py]
+    entrypoint:
+      exec: [python, main.py]

@@ -1,0 +1,29 @@
+version: 1
+stages:
+  # See HelloWorld's Stagefile for why this is two stages.
+  - name: build
+    from: swift:6.3.2-noble
+    workdir: /build
+    copy:
+      - from: local
+        paths: [Package.swift]
+      - from: local
+        paths: [Sources]
+    build:
+      lang: swift
+      product: Persistence
+  - name: app
+    from: swift:6.3.2-noble-slim
+    # The binary must NOT live in /app: wendy.json mounts the `counter`
+    # persist volume there, and a volume mounted over the binary's directory
+    # would hide it. /Persistence is also what swift-container-plugin
+    # produced, so this keeps the layout the app was written against.
+    copy:
+      - from: build
+        paths: [/build/.build/release/Persistence]
+        dest: /Persistence
+    cmd: [/Persistence]
+    # Persistence.swift writes /app/run_count.txt into that volume, which the
+    # agent creates root-owned. The compiler's non-root default (uid 65532)
+    # would fail the write and print "Failed to write count to file".
+    user: root

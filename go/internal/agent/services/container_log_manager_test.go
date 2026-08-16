@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	otelpb "github.com/wendylabsinc/wendy/go/proto/gen/otelpb"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 )
 
 func TestContainerLogManager_SubscribeUnsubscribe(t *testing.T) {
@@ -118,7 +118,7 @@ func TestContainerLogManager_PublishBridgesToTelemetry(t *testing.T) {
 		if records[0].Body.GetStringValue() != "hello from container" {
 			t.Errorf("log body = %q; want %q", records[0].Body.GetStringValue(), "hello from container")
 		}
-		if records[0].SeverityNumber != otelpb.SeverityNumber_SEVERITY_NUMBER_INFO {
+		if records[0].SeverityNumber != logspb.SeverityNumber_SEVERITY_NUMBER_INFO {
 			t.Errorf("severity = %v; want INFO", records[0].SeverityNumber)
 		}
 	case <-time.After(time.Second):
@@ -141,7 +141,7 @@ func TestContainerLogManager_StderrDefaultsToInfo(t *testing.T) {
 		if len(records) != 1 {
 			t.Fatalf("expected 1 log record, got %d", len(records))
 		}
-		if records[0].SeverityNumber != otelpb.SeverityNumber_SEVERITY_NUMBER_INFO {
+		if records[0].SeverityNumber != logspb.SeverityNumber_SEVERITY_NUMBER_INFO {
 			t.Errorf("severity = %v; want INFO", records[0].SeverityNumber)
 		}
 		if records[0].Body.GetStringValue() != "routine diagnostic output" {
@@ -167,7 +167,7 @@ func TestContainerLogManager_StderrSniffsWarning(t *testing.T) {
 		if len(records) != 1 {
 			t.Fatalf("expected 1 log record, got %d", len(records))
 		}
-		if records[0].SeverityNumber != otelpb.SeverityNumber_SEVERITY_NUMBER_WARN {
+		if records[0].SeverityNumber != logspb.SeverityNumber_SEVERITY_NUMBER_WARN {
 			t.Errorf("severity = %v; want WARN", records[0].SeverityNumber)
 		}
 		if records[0].Body.GetStringValue() != "WARNING: disk almost full" {
@@ -182,79 +182,79 @@ func TestInferContainerLogSeverity(t *testing.T) {
 	tests := []struct {
 		name     string
 		line     string
-		wantNum  otelpb.SeverityNumber
+		wantNum  logspb.SeverityNumber
 		wantText string
 	}{
 		{
 			name:     "uvicorn info",
 			line:     "INFO:     Started server process [1]",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 		{
 			name:     "uvicorn warning",
 			line:     "WARNING:  Retrying request",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_WARN,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_WARN,
 			wantText: "WARN",
 		},
 		{
 			name:     "uvicorn error",
 			line:     "ERROR:    Exception in ASGI application",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_ERROR,
 			wantText: "ERROR",
 		},
 		{
 			name:     "llama info prefix",
 			line:     "I slot print_timing: id 0 | prompt eval time = 10.00 ms",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 		{
 			name:     "llama warning prefix",
 			line:     "W slot update_slots: slot unavailable",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_WARN,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_WARN,
 			wantText: "WARN",
 		},
 		{
 			name:     "llama error prefix",
 			line:     "E server failed to load model",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_ERROR,
 			wantText: "ERROR",
 		},
 		{
 			name:     "llama timestamped info prefix",
 			line:     "35.12.761.535 I slot print_timing: id 0 | generation eval time = 84.18 ms",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 		{
 			name:     "swift log info",
 			line:     "2026-07-02T14:09:34+0000 info swift-otel: component=bootstrap ready=true",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 		{
 			name:     "zap timestamped warn",
 			line:     "2026-07-02T14:09:34Z warn app/component.go:42 retrying after transient failure",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_WARN,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_WARN,
 			wantText: "WARN",
 		},
 		{
 			name:     "json level info",
 			line:     `{"level":"info","msg":"server started"}`,
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 		{
 			name:     "json severity error",
 			line:     `{"severity":"ERROR","message":"request failed"}`,
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_ERROR,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_ERROR,
 			wantText: "ERROR",
 		},
 		{
 			name:     "plain stderr line defaults neutral",
 			line:     "routine diagnostic output with no level token",
-			wantNum:  otelpb.SeverityNumber_SEVERITY_NUMBER_INFO,
+			wantNum:  logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
 			wantText: "INFO",
 		},
 	}

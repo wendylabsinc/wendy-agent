@@ -42,7 +42,8 @@ wendy os install
 # 3. Plug the device in over USB-C, then find it
 wendy discover
 
-# 4. Build, deploy, and stream logs from any app with a Dockerfile
+# 4. Build, deploy, and stream logs from any app with a build descriptor
+#    (build.stagefile.yaml, Dockerfile/Containerfile, or a compose file)
 wendy run
 ```
 

@@ -54,7 +54,7 @@ func newAppsListCmd() *cobra.Command {
 		Short: "List deployed applications",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -550,7 +550,7 @@ func newAppsStopCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}
@@ -619,7 +619,7 @@ func newAppsRemoveCmd() *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			target, err := resolveTarget(ctx)
+			target, err := resolveTarget(ctx, IncludeBluetooth())
 			if err != nil {
 				return err
 			}

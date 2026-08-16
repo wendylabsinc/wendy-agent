@@ -976,7 +976,7 @@ public nonisolated struct Wendy_Agent_Services_V1_GpuStats: Sendable {
 
   public var name: String = String()
 
-  /// instantaneous utilization as reported by the sampler
+  /// utilization over the sampler's observation window
   public var utilPercent: Double = 0
 
   public var memUsedBytes: Int64 = 0

@@ -36,6 +36,21 @@ func AssetURN(orgID, assetID int32) string {
 	return WendyIdentity{OrgID: orgID, EntityType: "asset", EntityID: strconv.Itoa(int(assetID))}.IdentityKey()
 }
 
+// ParseIdentityURN parses a canonical Wendy identity URN —
+// "urn:wendy:org:<org>:(user|asset):<id>", the exact string IdentityKey
+// produces — back into a WendyIdentity.
+//
+// It exists because that URN is user-facing: it is the key the device pin store
+// is filed under and the key an SPKI refusal prints, so `wendy device unpin`
+// has to accept it as an argument. Parsing goes through the same
+// parseWendyOrgURN the certificate path uses, so what the CLI accepts from a
+// user and what it reads out of a certificate can never drift apart — a second
+// hand-rolled parser here would be a second definition of what a Wendy identity
+// is.
+func ParseIdentityURN(urn string) (WendyIdentity, error) {
+	return parseWendyOrgURN(strings.TrimSpace(urn))
+}
+
 // IdentityFromCert extracts the Wendy org+entity identity from a certificate.
 //
 // Resolution order:

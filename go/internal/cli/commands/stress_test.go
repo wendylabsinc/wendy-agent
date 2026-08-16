@@ -52,7 +52,7 @@ func TestBuildServicesParallelIsolatesCacheDirs(t *testing.T) {
 	}
 
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, "", root, appID, services, "linux/arm64", nil, "docker", nil, len(names))
+		context.Background(), nil, 5000, "", root, appID, services, "linux/arm64", nil, "docker", nil, nil, len(names), false)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}
@@ -199,7 +199,7 @@ func TestBuildServicesParallelStress(t *testing.T) {
 
 	maxConc := 1 + r.Intn(8)
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", skip, maxConc)
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", skip, nil, maxConc, false)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}

@@ -25,10 +25,13 @@ import (
 // Device IDs are PipeWire node IDs, which wpctl accepts directly and which name
 // Bluetooth endpoints as well as sound cards.
 //
-// When no PipeWire user session is running (audio.Available() is false),
+// When no PipeWire user session is reachable (audio.Available() is false),
 // every method here falls back to raw ALSA (aplay/arecord/amixer) instead of
 // failing outright, so a board with a sound card but no desktop session still
-// has basic playback and capture. The two paths never mix within one call:
+// has basic playback and capture. Every such fallback logs the specific reason
+// from audio.UnavailableReason: the backend swap is invisible in the responses,
+// so without that line a misconfigured session is indistinguishable from a
+// board that never had one. The two paths never mix within one call:
 // falling back means enumerating ALSA cards *instead of* the PipeWire graph,
 // not alongside it, which is what caused a Bluetooth device to appear on some
 // surfaces and not others before this service moved to PipeWire exclusively.
@@ -40,6 +43,29 @@ type AudioService struct {
 // NewAudioService creates a new AudioService.
 func NewAudioService(logger *zap.Logger) *AudioService {
 	return &AudioService{logger: logger}
+}
+
+// pipewireUnavailable reports whether this call must use the ALSA fallback, and
+// logs the specific reason when it must.
+//
+// Falling back silently is what made this hard to diagnose in the field: every
+// audio RPC quietly changed backend, the device listing came back full of
+// plausible plughw entries, and nothing said the graph had been swapped out or
+// which precondition failed. Warn, not Debug: on a device whose image ships
+// PipeWire this is a misconfiguration, not a supported steady state.
+func (s *AudioService) pipewireUnavailable(op string) (bool, string) {
+	if audio.Available() {
+		return false, ""
+	}
+	reason := audio.UnavailableReason()
+	if reason == "" {
+		// Session became available between checks; avoid falling back with no reason.
+		return false, ""
+	}
+	s.logger.Warn("PipeWire session unavailable; falling back to ALSA",
+		zap.String("operation", op),
+		zap.String("reason", reason))
+	return true, reason
 }
 
 // audioDeviceType maps a node's direction onto the proto enum.
@@ -56,15 +82,15 @@ func audioDeviceType(n audio.Node) agentpb.AudioDeviceType {
 func (s *AudioService) ListAudioDevices(ctx context.Context, req *agentpb.ListAudioDevicesRequest) (*agentpb.ListAudioDevicesResponse, error) {
 	var nodes []audio.Node
 	var defaults audio.Defaults
-	if audio.Available() {
+	if unavailable, _ := s.pipewireUnavailable("ListAudioDevices"); unavailable {
 		var err error
-		nodes, defaults, err = audio.ListNodes(ctx)
+		nodes, err = audio.ListAlsaNodes(ctx)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
 		}
 	} else {
 		var err error
-		nodes, err = audio.ListAlsaNodes(ctx)
+		nodes, defaults, err = audio.ListNodes(ctx)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to enumerate audio devices: %v", err)
 		}
@@ -142,7 +168,7 @@ func (s *AudioService) alsaVolumes(ctx context.Context, devices []*agentpb.Audio
 		if device.GetType() != agentpb.AudioDeviceType_AUDIO_DEVICE_TYPE_OUTPUT {
 			continue
 		}
-		card, _ := audio.DecodeAlsaID(device.GetId())
+		card, _, _ := audio.DecodeAlsaID(device.GetId())
 		result, cached := cache[card]
 		if !cached {
 			volume, ok := audio.AlsaVolume(ctx, card)
@@ -168,7 +194,7 @@ func (s *AudioService) setAudioVolume(ctx context.Context, deviceID, volumePerce
 		return 0, status.Errorf(codes.InvalidArgument, "volume must be between 0 and 100, got %d", volumePercent)
 	}
 
-	if !audio.Available() {
+	if unavailable, _ := s.pipewireUnavailable("SetAudioVolume"); unavailable {
 		return s.setAlsaVolume(ctx, deviceID, volumePercent)
 	}
 
@@ -214,7 +240,7 @@ func (s *AudioService) setAlsaVolume(ctx context.Context, deviceID, volumePercen
 		return 0, status.Errorf(codes.InvalidArgument, "device %d (%s) is an input; it has no playback volume", deviceID, node.Name)
 	}
 
-	card, _ := audio.DecodeAlsaID(deviceID)
+	card, _, _ := audio.DecodeAlsaID(deviceID)
 	actual, err := audio.SetAlsaVolume(ctx, card, volumePercent)
 	if err != nil {
 		return 0, err
@@ -234,11 +260,15 @@ func (s *AudioService) SetDefaultAudioDevice(ctx context.Context, req *agentpb.S
 		return nil, status.Errorf(codes.InvalidArgument, "device ID 0 is not a valid audio device")
 	}
 
-	if !audio.Available() {
+	if unavailable, reason := s.pipewireUnavailable("SetDefaultAudioDevice"); unavailable {
 		// "Default sink/source" is PipeWire/WirePlumber metadata; raw ALSA has
-		// no equivalent to set. Saying so beats reporting success for a
-		// setting that does not exist.
-		errMsg := fmt.Sprintf("cannot set a default audio device: no PipeWire session is running (device %d)", req.GetDeviceId())
+		// no equivalent to set. Saying so beats reporting success for a setting
+		// that does not exist.
+		//
+		// The reason is included rather than a flat "no PipeWire session is
+		// running", which claims more than the agent knows: all it established
+		// is that it found no session it would trust at the path it checked.
+		errMsg := fmt.Sprintf("cannot set a default audio device: %s (device %d)", reason, req.GetDeviceId())
 		return &agentpb.SetDefaultAudioDeviceResponse{Success: false, ErrorMessage: &errMsg}, nil
 	}
 
@@ -444,6 +474,8 @@ func (s *AudioService) StreamAudioLevels(req *agentpb.StreamAudioLevelsRequest, 
 		rateHz = 60
 	}
 
+	s.pipewireUnavailable("StreamAudioLevels")
+
 	target, err := captureTarget(ctx, req.GetDeviceId())
 	if err != nil {
 		return err
@@ -509,6 +541,8 @@ func (s *AudioService) StreamAudio(req *agentpb.StreamAudioRequest, stream grpc.
 	}
 	// Bounds on sampleRate/channels are enforced by startCapture, not here, so
 	// every caller of startCapture is protected uniformly.
+
+	s.pipewireUnavailable("StreamAudio")
 
 	target, err := captureTarget(ctx, req.GetDeviceId())
 	if err != nil {

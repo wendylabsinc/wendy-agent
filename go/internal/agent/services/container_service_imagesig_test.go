@@ -21,6 +21,16 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+type imagePrepareMock struct {
+	mockContainerdClient
+	prepareCalls int
+}
+
+func (m *imagePrepareMock) PrepareImage(_ context.Context, _ string, _ []*agentpb.RunContainerLayerHeader, _ []byte) error {
+	m.prepareCalls++
+	return nil
+}
+
 // containerImageMldsaKeypairForTest generates an ephemeral ML-DSA65 keypair
 // and returns an enabled sigverify.Verifier pinned to the public key, plus a
 // sign function for the private key. Mirrors mldsaKeypairForTest in
@@ -134,7 +144,8 @@ func TestNewContainerService_ImageVerifierIsSeparateFromAgentBinaryKey(t *testin
 func TestRunContainer_ImageSignatureVerification(t *testing.T) {
 	verifier, sign := containerImageMldsaKeypairForTest(t)
 
-	imageConfig := []byte(`{"config":{"Cmd":["/entrypoint"]}}`)
+	const layerDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	imageConfig := []byte(`{"config":{"Cmd":["/entrypoint"]},"rootfs":{"type":"layers","diff_ids":["` + layerDigest + `"]}}`)
 	sum := sha256.Sum256(imageConfig)
 	digest := sum[:]
 
@@ -143,7 +154,7 @@ func TestRunContainer_ImageSignatureVerification(t *testing.T) {
 			ImageName: "test-image:latest",
 			AppName:   "sig-test-app",
 			Layers: []*agentpb.RunContainerLayerHeader{
-				{Digest: "sha256:layerdigest", Size: 10, DiffId: "sha256:layerdiffid"},
+				{Digest: layerDigest, Size: 10, DiffId: layerDigest},
 			},
 			ImageConfig:    imageConfig,
 			ImageSignature: sig,
@@ -215,6 +226,51 @@ func TestRunContainer_ImageSignatureVerification(t *testing.T) {
 		}
 		if mock.assembleImageCalls != 0 {
 			t.Errorf("assembleImageCalls = %d, want 0 (tampered signature must not be assembled)", mock.assembleImageCalls)
+		}
+	})
+}
+
+func TestPrepareImage_VerifiesBeforePreparation(t *testing.T) {
+	verifier, sign := containerImageMldsaKeypairForTest(t)
+	imageConfig := []byte(`{"rootfs":{"type":"layers","diff_ids":["sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}}`)
+	sum := sha256.Sum256(imageConfig)
+	request := func(signature []byte) *agentpb.RunContainerLayersRequest {
+		return &agentpb.RunContainerLayersRequest{
+			ImageName:      "test-image:latest",
+			ImageConfig:    imageConfig,
+			ImageSignature: signature,
+			Layers: []*agentpb.RunContainerLayerHeader{{
+				Digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				DiffId: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				Size:   1,
+			}},
+		}
+	}
+
+	t.Run("valid signature permits persistent preparation", func(t *testing.T) {
+		mock := &imagePrepareMock{}
+		client, cleanup := startContainerServerWithVerifier(t, mock, verifier)
+		defer cleanup()
+
+		if _, err := client.PrepareImage(context.Background(), request(sign(sum[:]))); err != nil {
+			t.Fatalf("PrepareImage: %v", err)
+		}
+		if mock.prepareCalls != 1 {
+			t.Fatalf("prepareCalls = %d, want 1", mock.prepareCalls)
+		}
+	})
+
+	t.Run("invalid signature is rejected before preparation", func(t *testing.T) {
+		mock := &imagePrepareMock{}
+		client, cleanup := startContainerServerWithVerifier(t, mock, verifier)
+		defer cleanup()
+
+		_, err := client.PrepareImage(context.Background(), request(nil))
+		if status.Code(err) != codes.FailedPrecondition {
+			t.Fatalf("code = %v, want FailedPrecondition; err = %v", status.Code(err), err)
+		}
+		if mock.prepareCalls != 0 {
+			t.Fatalf("prepareCalls = %d, want 0", mock.prepareCalls)
 		}
 	})
 }

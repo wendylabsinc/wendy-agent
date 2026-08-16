@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile/gpu"
 )
 
 func newFleetRunCmd() *cobra.Command {
@@ -52,8 +54,9 @@ func newFleetRunCmd() *cobra.Command {
 	// A focused subset of `wendy run` build flags (logs/streaming/picker flags
 	// don't apply to a fan-out deploy).
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type when ambiguous: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile/Containerfile to build from")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force: docker or apple-container")
+	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); read from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Enable debug logging + host networking")
 	cmd.Flags().StringVar(&opts.service, "service", "", "Build and deploy only the named service and its dependencies")
 	cmd.Flags().StringSliceVar(&opts.userArgs, "user-args", nil, "Extra arguments to pass to the container")
@@ -132,7 +135,11 @@ func runFleetRun(ctx context.Context, opts runOptions, group, cloudGRPC, brokerU
 		return fmt.Errorf("compose projects are not supported by 'wendy fleet run' yet")
 	}
 	if projectType == "docker" && opts.dockerfile == "" {
-		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal())
+		// A fleet deploys one image to many devices, which may not share a GPU
+		// architecture, so there is no device here to read it from — a cuda:
+		// stage has to be told which board the image is for.
+		resolved, err := resolveDockerfile(cwd, opts.dockerfile, !opts.yes && isInteractiveTerminal(), opts.gpuArch,
+			debugStagefileOptions(opts.debug)...)
 		if err != nil {
 			return err
 		}

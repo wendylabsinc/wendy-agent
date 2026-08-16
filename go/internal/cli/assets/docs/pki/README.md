@@ -42,7 +42,70 @@ The CLI verifies device server certificates on all mTLS connections (BLE, LAN gR
 
 2. **Organization matching** — The server certificate's Wendy org ID is extracted and compared against the CLI's expected org ID. If the device belongs to a different organization than the CLI session, the connection is rejected with an `OrgMismatchError`. For BLE connections, the CLI automatically retries with a matching certificate from another org if one is available.
 
-3. **SPKI pinning (BLE)** — On first BLE connection to a device, its SPKI fingerprint is pinned in `~/.config/wendy/known_devices.json`. Subsequent connections verify the device presents the same fingerprint. If the fingerprint differs, a warning is printed to stderr (potential MITM or legitimate rotation).
+3. **Exact device identity (`ServerVerifyOpts.ExpectedIdentity`)** — When the caller has pinned a specific asset (see "Device identity pinning" below), the verifier additionally requires the peer's leaf certificate to carry an `asset` Wendy identity whose org and entity id match exactly. Unlike organization matching there is no grace mode here: a certificate with no Wendy identity at all is a mismatch, not a legacy device to tolerate, because the caller asked for a *specific* device and got something that cannot prove it is that device. This check runs inside `tls.Config.VerifyConnection`, not `VerifyPeerCertificate` — a resumed TLS 1.3 handshake skips `VerifyPeerCertificate` but not `VerifyConnection`, so pinning implemented in the wrong hook would silently stop firing on session resumption.
+
+4. **SPKI pinning** — On first mTLS connection to a device — over BLE, LAN gRPC, or the cloud tunnel — its SPKI (Subject Public Key Info) fingerprint is pinned in `~/.config/wendy/known_devices.json`, keyed by the certificate's Wendy asset identity. A later connection presenting a different key while the *previously pinned* certificate is still within its validity window is hard-refused (a `PinMismatchError` aborts the handshake): a renewal replaces an expiring certificate, it does not race one that is still live, so an unexplained key change during that window is treated as a MITM signal, not a warning. Once the pinned certificate has expired, a new key is ordinary rotation — accepted silently, and the pin is updated to the new fingerprint.
+
+## Device identity pinning (default device)
+
+On the first successful connection to a hostname, the CLI records that hostname's identity in `~/.wendy/config.json` under `devicePins`: the **organisation**, the **cloud host** that issued its certificate, and the **asset id** from the device certificate's `urn:wendy:org:<org>:asset:<assetID>` URI SAN. Every later connection to that hostname is checked against the pin — this is what feeds `ServerVerifyOpts.ExpectedIdentity` above, so a wrong device is rejected during the TLS handshake itself, not after.
+
+The pin is deliberately not a certificate fingerprint — a device legitimately rotates and re-enrolls certificates, and that must not look like an attack. What trips it is a change of *who* is answering:
+
+| Observed | Result |
+| --- | --- |
+| Same org + cloud + asset (renewed or re-enrolled cert) | Connects normally |
+| Different org or cloud host | Refused, no prompt |
+| Same org + cloud, **different asset id** | Refused, no prompt — the hostname now resolves to a different machine, or the device was wiped and re-enrolled as a new asset |
+| **No mTLS identity at all**, on a hostname that was pinned | Refused, no prompt — an enrolled device does not drop its certificate on its own; it has been reflashed or factory reset, or another machine has taken its name |
+| No mTLS identity, hostname never pinned | Connects normally (ordinary out-of-the-box device) |
+
+The asset id is read only from a certificate that passed chain and org verification, so an impostor cannot assert its way past the pin. On the dial ladder, a wrong-device rejection aborts the whole ladder immediately — no further certificate or port is tried — and a hostname that carries any pin at all is never offered the unauthenticated plaintext rung, regardless of what its (attacker-controlled) mDNS TXT records claim about it.
+
+**Every refusal above reads identically** whether the CLI is running interactively, under `--json`, or non-interactively — there is deliberately no "trust this identity anyway?" prompt. A MITM warning that can be dismissed gets dismissed, and the person who could actually distinguish a legitimate replacement from an attack is rarely the one staring at a prompt mid-command. The one way past a refusal is a separate, deliberate act:
+
+```sh
+wendy device unpin <hostname>
+wendy device unpin urn:wendy:org:<org>:asset:<id>
+```
+
+This clears the local pin only — it never dials the device, so it works even when the device is offline, wiped, or gone. The next successful connection to that hostname records a fresh pin from scratch. Naming a device explicitly with `wendy device set-default <hostname>` has the same clearing effect, since typing the hostname is itself the user asserting "I mean that device."
+
+Both forms are accepted because the two stores are keyed differently. The identity-change refusals above name a hostname, and the hostname form clears it. The **SPKI** refusal (point 4 above) can only name the certificate identity URN, because that is what `known_devices.json` is keyed by and there is often no hostname to offer: `wendy device list` and the device picker dial the device's IP, and an agent that never advertises `orgid` in its mDNS records leaves nothing locally that maps a name to an asset. Copy the URN out of the refusal and pass it back — it clears the SPKI entry and any `devicePins` entry naming the same asset.
+
+Unpinning by hostname also clears pins filed under the device's *other* names (the cloud roster's asset name, its mesh name), because one device is legitimately pinned under several — but only when those pins name the same organisation and asset. Those alternate names come from mDNS, which is unauthenticated, so a pin naming a *different* asset is a different device's pin and is left alone. Whatever is cleared is printed, one line per entry, so an unpin never removes trust state silently.
+
+## Pin sources and precedence
+
+A pin's `source` field records how the CLI learned it:
+
+| Source | Written by | Trust basis |
+| --- | --- | --- |
+| `lan` | An ordinary connection to the device (the default) | Only a certificate presented on the local network |
+| `cloud` | The org's asset roster, fetched over an authenticated cloud session (e.g. `wendy cloud discover` seeds a pin for every named asset the roster returns) | The org's cloud vouching for the (name, org, asset) binding |
+
+Pins written before sources were tracked carry an empty `source` and are treated as `lan`.
+
+A `cloud` write is authoritative and overwrites whatever was pinned for that name, `lan`-sourced or not — that is how cloud-known devices get their trust-on-first-use window closed before the CLI ever meets them on the network (see below). The reverse never holds: a LAN sighting cannot upgrade or override a `cloud` pin, and specifically:
+
+- A `lan`-sourced pin that predates asset ids (no asset recorded) is backfilled with the observed asset id on the first connection whose org and cloud still match — org and cloud already vouch for the connection, so this is a one-time upgrade, not a challenge. A `cloud`-sourced pin with no asset id is **not** backfilled this way: the cloud already spoke for this name, and a LAN sighting is not evidence to the contrary, so it is treated as a plain match instead.
+- An asset-less `cloud` pin is never displaced by a `lan` pin in a way that would erase an existing exact-identity constraint on that name — cloud authority decides *which* binding to believe, and applying it is worthless if the result is a name constrained to no asset at all.
+
+Agents whose certificates carry no asset identity at all are never treated as swapped devices: an empty *observed* asset id can never produce a mismatch on its own, regardless of source.
+
+## Multi-key pin lookup
+
+One device can answer to more than one name, and different surfaces record its pin under different ones: an ordinary connection records under the mDNS hostname actually dialed, cloud seeding records under the asset's roster name, and a mesh dial names the device by its mesh name. Resolving "does this dial have a pin" therefore checks, in order:
+
+1. The name the caller dialed (`--device` value, saved default, or the device picker's name).
+2. The mesh name from the discovery-cache entry whose hostname matches (1), if the cache has one.
+3. That entry's display name.
+
+Consulting an alias can only ever *find* a pin, never discard one: an attacker-chosen alias can at most impose a stricter constraint that the real device still satisfies, never a way to bypass one. The trust decision itself always rests on the certificate, never on which name resolved the lookup.
+
+## Cloud pin seeding
+
+A hostname the CLI has never connected to has no pin, so its first connection is trust-on-first-use — the one moment this scheme cannot, by construction, distinguish the real device from an impostor answering first. Seeding pins from the cloud closes that window for every device the org's cloud already knows about: whenever the CLI fetches the org's asset roster over an authenticated session, each named asset is recorded as a `cloud`-sourced pin (org, asset id) before the CLI has ever reached it on the network. An impostor answering an mDNS query for that name is then rejected on the very first LAN connection attempt, not just the second.
 
 ## CA key rollover
 

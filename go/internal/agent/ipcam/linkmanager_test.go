@@ -58,6 +58,9 @@ func newManagerHarness(t *testing.T, ifaces []Interface) *managerHarness {
 		defer h.mu.Unlock()
 		return h.nowValue
 	}
+	// Configuring an address mutates the fake interface list, so a claimed link
+	// reports the address it was given. Without that the manager cannot tell an
+	// address it configured from one that has been stripped out from under it.
 	m.addAddress = func(link, cidr string) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
@@ -65,12 +68,14 @@ func newManagerHarness(t *testing.T, ifaces []Interface) *managerHarness {
 			return h.addErr
 		}
 		h.added = append(h.added, link+" "+cidr)
+		h.setAddressLocked(link, cidr, true)
 		return nil
 	}
 	m.delAddress = func(link, cidr string) error {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		h.removed = append(h.removed, link+" "+cidr)
+		h.setAddressLocked(link, cidr, false)
 		return nil
 	}
 	m.watch = func(ctx context.Context, link string, onPacket func(*Packet)) error {
@@ -93,6 +98,39 @@ func newManagerHarness(t *testing.T, ifaces []Interface) *managerHarness {
 	}
 	h.mgr = m
 	return h
+}
+
+// setAddressLocked adds or removes an address on the fake interface, mirroring
+// what `ip addr add/del` would do. Callers hold h.mu.
+func (h *managerHarness) setAddressLocked(link, cidr string, present bool) {
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return
+	}
+	for i := range h.ifaces {
+		if h.ifaces[i].Name != link {
+			continue
+		}
+		var kept []net.IP
+		for _, have := range h.ifaces[i].IPv4s {
+			if !have.Equal(ip) {
+				kept = append(kept, have)
+			}
+		}
+		if present {
+			kept = append(kept, ip.To4())
+		}
+		h.ifaces[i].IPv4s = kept
+		h.ifaces[i].HasIPv4 = len(kept) > 0
+	}
+}
+
+// stripAddress removes an address behind the manager's back, which is what a
+// host network manager reconciling the interface does.
+func (h *managerHarness) stripAddress(link, cidr string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.setAddressLocked(link, cidr, false)
 }
 
 // waitFor polls until cond holds, so tests do not depend on goroutine timing.
@@ -144,12 +182,16 @@ func claimEth0(t *testing.T, h *managerHarness, ctx context.Context) {
 	waitFor(t, "eth0 to be served", func() bool { return len(h.servedLinks()) >= 1 })
 }
 
-// carrierDown replaces the interface list with a link that has lost carrier but
-// still carries the address we configured, which is the real post-blip state.
+// carrierDown drops carrier on a link while leaving the address we configured in
+// place, which is the real post-blip state.
 func (h *managerHarness) carrierDown(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.ifaces = []Interface{{Name: name, Carrier: false, Up: true, HasIPv4: true}}
+	for i := range h.ifaces {
+		if h.ifaces[i].Name == name {
+			h.ifaces[i].Carrier = false
+		}
+	}
 }
 
 func (h *managerHarness) feed(link string, p *Packet) {
@@ -467,12 +509,14 @@ func TestManagerKeepsClaimedLinkAfterItGetsAnAddress(t *testing.T) {
 	h.mgr.scanOnce(ctx)
 	waitFor(t, "eth0 to be served", func() bool { return len(h.servedLinks()) == 1 })
 
-	// The link now reports an address, exactly as it does once we configure it.
+	// Claiming configured the address, so the link now reports one and therefore
+	// fails the eligibility test that got it claimed. It must stay claimed anyway.
 	h.mu.Lock()
-	withAddress := cabledEth("eth0")
-	withAddress.HasIPv4 = true
-	h.ifaces = []Interface{withAddress}
+	reportsAddress := h.ifaces[0].HasIPv4 && h.ifaces[0].HasAddress(SegmentFor(0).ServerIP)
 	h.mu.Unlock()
+	if !reportsAddress {
+		t.Fatal("claimed link does not report the address that was configured on it")
+	}
 
 	h.advance(scanInterval)
 	h.mgr.scanOnce(ctx)
@@ -704,5 +748,196 @@ func TestManagerReclaimsAfterRelease(t *testing.T) {
 	waitFor(t, "eth0 to be served again", func() bool { return len(h.servedLinks()) == 2 })
 	if got := h.mgr.State("eth0"); got != LinkServing {
 		t.Fatalf("state = %v, want serving after re-claim", got)
+	}
+}
+
+// The bug this guards: whatever else manages the interface can strip the address
+// we added, and a claimed link is otherwise judged on carrier alone. DHCP keeps
+// working on an addressless link — the watcher is a packet socket and the server
+// binds INADDR_ANY — so leases go on being handed out while every route to the
+// camera is gone, and nothing ever notices.
+func TestManagerRestoresStrippedAddressOnClaimedLink(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	claimEth0(t, h, ctx)
+
+	segment := SegmentFor(0).CIDR()
+	if got := h.addedAddresses(); len(got) != 1 {
+		t.Fatalf("configured %v, want one address for the claim", got)
+	}
+
+	// Scanning a healthy claimed link must not touch the address.
+	h.mgr.scanOnce(ctx)
+	if got := h.addedAddresses(); len(got) != 1 {
+		t.Fatalf("configured %v, want no re-add while the address is present", got)
+	}
+
+	h.stripAddress("eth0", segment)
+	h.mgr.scanOnce(ctx)
+
+	if got := h.addedAddresses(); len(got) != 2 || got[1] != "eth0 "+segment {
+		t.Fatalf("configured %v, want the stripped address restored", got)
+	}
+	if got := h.removedAddresses(); len(got) != 0 {
+		t.Fatalf("removed %v, want the claim left intact", got)
+	}
+	if !h.mgr.isClaimed("eth0") {
+		t.Fatal("eth0 was released, want the claim kept across an address loss")
+	}
+	// Restored means restored: the next scan sees it present and leaves it alone.
+	h.mgr.scanOnce(ctx)
+	if got := h.addedAddresses(); len(got) != 2 {
+		t.Fatalf("configured %v, want no further re-add", got)
+	}
+}
+
+// A failed restore is retried rather than disqualifying the link, because the
+// usual cause is transient and disqualifying would strand the segment until
+// carrier is lost.
+func TestManagerRetriesFailedAddressRestore(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	claimEth0(t, h, ctx)
+
+	segment := SegmentFor(0).CIDR()
+	h.stripAddress("eth0", segment)
+	h.mu.Lock()
+	h.addErr = errors.New("device busy")
+	h.mu.Unlock()
+	h.mgr.scanOnce(ctx)
+
+	if got := h.mgr.State("eth0"); got != LinkServing {
+		t.Fatalf("state = %v, want serving after a failed restore", got)
+	}
+
+	h.mu.Lock()
+	h.addErr = nil
+	h.mu.Unlock()
+	h.mgr.scanOnce(ctx)
+	if got := h.addedAddresses(); len(got) != 2 {
+		t.Fatalf("configured %v, want the restore retried on the next scan", got)
+	}
+}
+
+// LinkManager state is in-process, so a restart forgets every claim while the
+// registry remembers the camera. A camera holding a lease says nothing for up to
+// LeaseWindow, so waiting for DHCP traffic leaves it unreachable for twelve
+// hours. The claim is restored from the registry instead.
+func TestManagerRestoresClaimFromRegistryAfterRestart(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := h.reg.Upsert(Camera{
+		MAC:     "ec:71:db:2a:ae:7e",
+		Address: "10.98.0.50",
+		Link:    "eth0",
+		Model:   "RLC-520A",
+	}); err != nil {
+		t.Fatalf("seeding registry: %v", err)
+	}
+
+	// First scan only starts listening: restoring immediately would skip the
+	// window in which a competing DHCP server gets to disqualify the link.
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "eth0 to be watched", func() bool { return len(h.watchedLinks()) == 1 })
+	if got := h.servedLinks(); len(got) != 0 {
+		t.Fatalf("served %v before listening for a competing server", got)
+	}
+
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+
+	waitFor(t, "eth0 to be served", func() bool { return len(h.servedLinks()) == 1 })
+	if got := h.addedAddresses(); len(got) != 1 || got[0] != "eth0 "+SegmentFor(0).CIDR() {
+		t.Fatalf("configured %v, want the segment the camera already holds a lease on", got)
+	}
+}
+
+// A restored claim must keep the camera's existing subnet, not whichever segment
+// happens to be free, or the lease the camera holds would be off-subnet.
+func TestManagerRestoredClaimKeepsCameraSegment(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := h.reg.Upsert(Camera{
+		MAC:     "ec:71:db:2a:ae:7e",
+		Address: "10.98.3.50",
+		Link:    "eth0",
+	}); err != nil {
+		t.Fatalf("seeding registry: %v", err)
+	}
+
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "eth0 to be watched", func() bool { return len(h.watchedLinks()) == 1 })
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+
+	waitFor(t, "eth0 to be served", func() bool { return len(h.servedLinks()) == 1 })
+	if got := h.addedAddresses(); len(got) != 1 || got[0] != "eth0 "+SegmentFor(3).CIDR() {
+		t.Fatalf("configured %v, want 10.98.3.1/24 to match the camera's lease", got)
+	}
+}
+
+// The competing-server guard outranks a restore: a foreign OFFER seen while we
+// are listening means this link is not ours, whatever the registry remembers.
+func TestManagerDoesNotRestoreClaimOnDisqualifiedLink(t *testing.T) {
+	h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := h.reg.Upsert(Camera{
+		MAC:     "ec:71:db:2a:ae:7e",
+		Address: "10.98.0.50",
+		Link:    "eth0",
+	}); err != nil {
+		t.Fatalf("seeding registry: %v", err)
+	}
+
+	h.mgr.scanOnce(ctx)
+	waitFor(t, "eth0 to be watched", func() bool { return len(h.watchedLinks()) == 1 })
+	h.feed("eth0", &Packet{Type: Offer, XID: 1, ServerID: net.IPv4(192, 168, 1, 1)})
+	h.advance(unansweredWindow)
+	h.mgr.scanOnce(ctx)
+
+	if got := h.servedLinks(); len(got) != 0 {
+		t.Fatalf("served %v on a link another DHCP server owns", got)
+	}
+	if got := h.addedAddresses(); len(got) != 0 {
+		t.Fatalf("configured %v on a disqualified link", got)
+	}
+}
+
+// A registry entry for a different link, or an address outside the camera
+// subnets, is not evidence that this link was ever ours.
+func TestManagerDoesNotRestoreClaimWithoutMatchingCamera(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cam  Camera
+	}{
+		{"another link", Camera{MAC: "ec:71:db:2a:ae:01", Address: "10.98.0.50", Link: "eth1"}},
+		{"foreign subnet", Camera{MAC: "ec:71:db:2a:ae:02", Address: "192.168.2.69", Link: "eth0"}},
+		{"no address", Camera{MAC: "ec:71:db:2a:ae:03", Link: "eth0"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newManagerHarness(t, []Interface{cabledEth("eth0")})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			if _, err := h.reg.Upsert(tc.cam); err != nil {
+				t.Fatalf("seeding registry: %v", err)
+			}
+			h.mgr.scanOnce(ctx)
+			waitFor(t, "eth0 to be watched", func() bool { return len(h.watchedLinks()) == 1 })
+			h.advance(unansweredWindow)
+			h.mgr.scanOnce(ctx)
+
+			if got := h.servedLinks(); len(got) != 0 {
+				t.Fatalf("served %v without evidence the link was ours", got)
+			}
+		})
 	}
 }

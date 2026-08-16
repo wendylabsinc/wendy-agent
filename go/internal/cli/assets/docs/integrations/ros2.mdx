@@ -33,6 +33,32 @@ runs apps across multiple RMW implementations (for example CycloneDDS and Fast
 DDS), results are tagged with the RMW they came from, such as `[cyclonedds]`.
 </Callout>
 
+## Scaffold a ROS 2 app
+
+`wendy init` writes the `frameworks.ros2` block for you. Pass `--framework ros2`,
+plus any of the `--ros2-*` flags to override the defaults:
+
+```bash
+wendy init \
+  --app-id my-ros2-app \
+  --target wendyos \
+  --language swift \
+  --framework ros2 \
+  --ros2-rmw cyclonedds \
+  --ros2-discovery-scope host \
+  --assistant skip
+```
+
+Any `--ros2-*` flag on its own implies `--framework ros2`, and values are
+validated up front, so a mistyped RMW or distro fails at `init` rather than at
+deploy time. Run `wendy init` interactively on a WendyOS target and it asks
+whether the app uses ROS 2, then walks through middleware, discovery scope, and
+domain ID.
+
+Existing projects need no scaffolding — add the `frameworks.ros2` key to
+`wendy.json` by hand and `wendy run` picks it up on the next deploy. See
+[`wendy.json`](/docs/apps/wendy.json#frameworks) for every field.
+
 ## Prerequisites
 
 - A ROS 2 app running on the device. See

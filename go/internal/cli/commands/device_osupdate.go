@@ -58,7 +58,7 @@ func formatOSUpdateInfo(resp *agentpb.GetOSUpdateStatusResponse) string {
 		}
 		b.WriteString(line + "\n")
 		if resp.GetOutcome() != agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED {
-			b.WriteString("  " + tui.Dim("Details:") + " " + tui.Command("wendy device os update-status") + "\n")
+			b.WriteString("  " + tui.Dim("Details:") + " " + tui.Command("wendy os update-status") + "\n")
 		}
 	}
 
@@ -111,7 +111,7 @@ func styledOSUpdateOutcome(o agentpb.GetOSUpdateStatusResponse_Outcome) string {
 }
 
 // osUpdateOutcomeLabel is the compact outcome wording used in `device info`;
-// the full record stays with `wendy device os update-status`.
+// the full record stays with `wendy os update-status`.
 func osUpdateOutcomeLabel(o agentpb.GetOSUpdateStatusResponse_Outcome) string {
 	switch o {
 	case agentpb.GetOSUpdateStatusResponse_OUTCOME_COMMITTED:

@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Default RTSP paths. Reolink uses these and they are the de facto convention for
@@ -15,8 +17,34 @@ import (
 const (
 	defaultMainPath = "/h264Preview_01_main"
 	defaultSubPath  = "/h264Preview_01_sub"
-	defaultRTSPPort = 554
+	// RTSPPort is the port a camera serves streams on, and the one to test when
+	// deciding whether a camera is reachable at all.
+	RTSPPort        = 554
+	defaultRTSPPort = RTSPPort
 )
+
+// ReachTimeout bounds a reachability test against a camera. A camera on its own
+// cabled segment answers in milliseconds; two seconds is generous and is far
+// better than the twenty a stalled RTSP connect takes to give up.
+const ReachTimeout = 2 * time.Second
+
+// Reachable reports whether a camera accepts a TCP connection on its RTSP port.
+//
+// This tests the port the stream actually needs, rather than the registry's
+// Online flag: that flag comes from a probe of port 80, which some cameras do
+// not serve at all, so gating a stream on it would refuse cameras that work.
+func Reachable(address string) bool {
+	if address == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp",
+		net.JoinHostPort(address, strconv.Itoa(RTSPPort)), ReachTimeout)
+	if err != nil {
+		return false
+	}
+	conn.Close() //nolint:errcheck
+	return true
+}
 
 // StreamChoice selects which of a camera's streams to open.
 type StreamChoice int
@@ -101,6 +129,54 @@ func RedactURL(rawurl string) string {
 	return u.String()
 }
 
+// credentialInURL matches the userinfo of any URL, which is the only shape a
+// camera password takes in a GStreamer diagnostic: it is carried in the pipeline
+// as the userinfo of an rtsp:// location and is echoed back inside that URL.
+var credentialInURL = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://)[^\s/@]*@`)
+
+// RedactText removes credentials from free-form text so a GStreamer diagnostic
+// can be shown instead of discarded.
+//
+// Two passes, because either alone is insufficient. The URL pass catches the
+// password wherever a library echoes the location back, including forms this
+// code never built. The literal pass catches a secret that appears outside a URL,
+// such as a property dump. Anything unparseable stays redacted rather than being
+// let through.
+func RedactText(text string, secrets ...string) string {
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		text = strings.ReplaceAll(text, secret, "<redacted>")
+	}
+	return credentialInURL.ReplaceAllString(text, "${1}<redacted>@")
+}
+
+// SecretsIn returns the credential material carried by pipeline tokens, so a
+// diagnostic produced from those tokens can be scrubbed of it.
+func SecretsIn(args []string) []string {
+	var out []string
+	for _, arg := range args {
+		raw, ok := strings.CutPrefix(arg, "location=")
+		if !ok {
+			continue
+		}
+		u, err := url.Parse(raw)
+		if err != nil || u.User == nil {
+			continue
+		}
+		out = append(out, u.User.Username())
+		if password, set := u.User.Password(); set {
+			out = append(out, password)
+		}
+		// The percent-encoded spelling is what actually appears in the pipeline
+		// string, and it differs from the decoded one whenever the password
+		// contains a reserved character.
+		out = append(out, u.User.String())
+	}
+	return out
+}
+
 // PipelineArgs returns GStreamer pipeline tokens that pull an RTSP stream and
 // write Annex-B H.264 to a file descriptor. The agent feeds these tokens to the
 // GStreamer library in-process, rather than putting the credential-bearing URL
@@ -113,17 +189,31 @@ func RedactURL(rawurl string) string {
 // start decoding, and what the command-line interface's keyframe buffer relies
 // on. TCP interleaving is forced so UDP loss does not surface as decode
 // corruption.
+//
+// Two settings exist purely to keep the relay from adding latency of its own:
+//
+// latency=0 — a jitter buffer absorbs reordering and variable delay, both of
+// which are properties of RTP over UDP. This pipeline forces TCP, where the
+// transport already guarantees ordered delivery, so any jitter buffer depth is
+// delay added to every frame in exchange for nothing. drop-on-latency stays at
+// its default of false, so a depth of zero delays rather than discards.
+//
+// sync=false — fdsink inherits GstBaseSink, which by default holds each buffer
+// until its presentation time. That is right for a sink that renders and wrong
+// for one that relays: it paces the byte stream to the pipeline clock, adding
+// the pipeline's latency a second time on top of the jitter buffer's. Whatever
+// eventually displays these frames does its own timing.
 func PipelineArgs(streamURL string) []string {
 	return []string{
 		"rtspsrc",
 		"location=" + streamURL,
 		"protocols=tcp",
-		"latency=200",
+		"latency=0",
 		"timeout=5000000",
 		"!", "rtph264depay",
 		"!", "h264parse", "config-interval=-1",
 		"!", "video/x-h264,stream-format=byte-stream,alignment=au",
-		"!", "fdsink", "fd=1",
+		"!", "fdsink", "fd=1", "sync=false",
 	}
 }
 

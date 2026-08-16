@@ -40,6 +40,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"go.uber.org/zap"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/cdi"
 	"github.com/wendylabsinc/wendy/go/internal/agent/dbusproxy"
 	"github.com/wendylabsinc/wendy/go/internal/agent/logfields"
@@ -61,6 +62,20 @@ type AppSystemAPISocketProvider interface {
 	Ensure(appID, serviceName string, capabilities []string) (string, error)
 	Release(appID, serviceName string)
 	ReleaseApp(appID string)
+}
+
+// restartSuppressor is the narrow capability the client needs from the
+// container-restart monitor: pause automatic restarts for a container name
+// while a replace or stop operation holds the handle, so the monitor's
+// periodic tick cannot resurrect the task the client is mid-way through
+// killing and deleting (see suppressRestarts). Declared here — rather than
+// importing internal/agent/container, which would cycle back through
+// internal/agent/services — so *container.ContainerMonitor satisfies it
+// structurally; wired in from main.go via SetRestartSuppressor.
+type restartSuppressor interface {
+	// Suppress pauses restarts for containerName until the returned resume
+	// func runs.
+	Suppress(containerName string) func()
 }
 
 type Client struct {
@@ -131,6 +146,35 @@ type Client struct {
 	// c.mu would deadlock there, while stopOne runs without c.mu held.
 	meshMu      sync.Mutex
 	meshDNSHeld map[string]bool
+
+	// restartMonitor lets replace/stop pause the restart monitor's tick for
+	// the container they are tearing down (see suppressRestarts). nil when
+	// containerd came up without a monitor being wired in (e.g. many unit
+	// tests construct a bare *Client) — suppressRestarts no-ops in that case,
+	// same nil-tolerant treatment as meshDNS above.
+	restartMonitor restartSuppressor
+}
+
+// SetRestartSuppressor injects the container-restart monitor's suppression
+// handle. Called once from main.go at agent startup, after the monitor is
+// constructed (the monitor itself is constructed from the client, so this
+// necessarily wires in after SetMeshDNS/SetAppSystemAPISocketProvider). Not
+// protected by c.mu: set once during single-threaded startup before the
+// Client is exposed to concurrent callers, mirroring SetMeshDNS.
+func (c *Client) SetRestartSuppressor(s restartSuppressor) {
+	c.restartMonitor = s
+}
+
+// suppressRestarts pauses the restart monitor for containerName for the
+// duration of the caller's replace/stop operation. Returns a no-op resume
+// func when no monitor is wired (containerd came up without one, or a unit
+// test constructed a bare *Client), so callers can unconditionally
+// `defer resume()` without a nil check.
+func (c *Client) suppressRestarts(containerName string) func() {
+	if c.restartMonitor == nil {
+		return func() {}
+	}
+	return c.restartMonitor.Suppress(containerName)
 }
 
 // SetMeshDNS injects the shared mesh DNS server used by applyMeshEgress and
@@ -970,6 +1014,16 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Delete any pre-existing container with the same name.
 	if existing, err := c.client.LoadContainer(ctx, containerName); err == nil {
+		// Pause the restart monitor for this name for the rest of this
+		// function: without it, a crash-looping app's next tick can call
+		// StartContainer on this same container between our kill and delete
+		// below, resurrecting the task and racing us (observed live:
+		// "cannot delete running task: failed precondition"). Held through
+		// the new container's creation further down too, so the monitor
+		// cannot also race the fresh task being started.
+		resumeRestarts := c.suppressRestarts(containerName)
+		defer resumeRestarts()
+
 		oldHadSystemAPI := false
 		if labels, labelErr := existing.Labels(ctx); labelErr == nil {
 			oldHadSystemAPI = entitlementsContain(parseEntitlementsFromAnnotations(labels), appconfig.EntitlementNotifications)
@@ -990,7 +1044,30 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 			// service directly so the runtime clears the old task ID.
 			c.forceDeleteTask(ctx, containerName)
 		}
-		if delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup); delErr != nil && !errdefs.IsNotFound(delErr) {
+		delErr := existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		if delErr != nil && errdefs.IsFailedPrecondition(delErr) {
+			// A task exists again despite the kill above — most likely the
+			// restart monitor's tick winning a race against suppressRestarts
+			// (a tick already past its check when Suppress was called), or an
+			// unrelated in-flight start. Kill it again and retry the delete
+			// once rather than failing the whole replace outright.
+			c.logger.Warn("Existing container still has a running task after kill; retrying",
+				zap.String("container_name", containerName), zap.Error(delErr))
+			if task, taskErr := existing.Task(ctx, nil); taskErr == nil {
+				if termErr := c.terminateTask(ctx, task, containerName, syscall.SIGKILL, killWaitTimeout, killWaitTimeout); termErr != nil {
+					// Mirror the first attempt's fallback above: if the
+					// re-kill itself fails, fall back to force-deleting the
+					// task via the runtime directly before retrying, rather
+					// than retrying the container delete against a task we
+					// know we failed to kill.
+					c.logger.Error("Failed to kill racing task during replace retry; forcing runtime delete",
+						zap.String("container_name", containerName), zap.Error(termErr))
+					c.forceDeleteTask(ctx, containerName)
+				}
+			}
+			delErr = existing.Delete(ctx, containerd.WithSnapshotCleanup)
+		}
+		if delErr != nil && !errdefs.IsNotFound(delErr) {
 			return fmt.Errorf("deleting existing container %q during replace: %w", containerName, delErr)
 		}
 		if oldHadSystemAPI && c.systemAPISocketProvider != nil {
@@ -1081,21 +1158,9 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 		return fmt.Errorf("reading image config for %q (image is incomplete or corrupt): %w", imageName, err)
 	}
 
-	// Build the container command: explicit request > image config > /bin/sh.
-	var args []string
-	cmd := req.GetCmd()
-	if cmd != "" {
-		args = strings.Fields(cmd)
-	}
-	if len(req.GetUserArgs()) > 0 {
-		args = append(args, req.GetUserArgs()...)
-	}
-	if len(args) == 0 {
-		args = append(imageSpec.Config.Entrypoint, imageSpec.Config.Cmd...)
-	}
-	if len(args) == 0 {
-		args = []string{"/bin/sh"}
-	}
+	// Build the container command: explicit request Cmd > image config >
+	// /bin/sh, with UserArgs appended to whichever base won.
+	args := containerArgs(req.GetCmd(), req.GetUserArgs(), imageSpec.Config)
 
 	// Wrap Python commands with debugpy for remote debugging (only in debug mode).
 	if appCfg.Debug && appCfg.Language == "python" {
@@ -1148,8 +1213,8 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 
 	// Apply the NVIDIA CDI spec before entitlements so that entitlements can
 	// override CDI-injected env vars (e.g. NVIDIA_VISIBLE_DEVICES=void → =all).
-	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
-		c.applyCDIGPU(spec)
+	if needsNvidiaCDI(appCfg) {
+		c.applyNvidiaCDI(spec)
 	}
 
 	var systemAPISocketDir string
@@ -1424,10 +1489,17 @@ func (c *Client) CreateContainerWithProgress(ctx context.Context, req *agentpb.C
 	return nil
 }
 
-// applyCDIGPU loads the NVIDIA CDI spec (generated by nvidia-ctk at boot)
-// and applies GPU devices, library mounts, and environment variables to the
-// OCI spec. This handles platform-specific paths (Orin Nano vs Thor, etc.).
-func (c *Client) applyCDIGPU(spec *localoci.Spec) {
+// applyNvidiaCDI loads the NVIDIA CDI spec (generated by nvidia-ctk at boot)
+// and applies the driver's device nodes, library mounts, and environment
+// variables to the OCI spec. This handles platform-specific paths (Orin Nano vs
+// Thor, etc.).
+//
+// The messages below say "NVIDIA driver" rather than "GPU" because
+// needsNvidiaCDI reaches here for a display entitlement as well as a gpu one:
+// on a Jetson the EGL/GLES userspace a display app needs arrives through this
+// same injection. A warning naming a GPU would send someone debugging a
+// display-only app looking for an entitlement it never declared.
+func (c *Client) applyNvidiaCDI(spec *localoci.Spec) {
 	mgr := cdi.NewManager()
 	cdiSpec, err := mgr.LoadNVIDIACDISpec()
 	if err != nil {
@@ -1437,13 +1509,13 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 		// Runtime CSV-mode file lists, which still ship on those images and list
 		// the real libcuda.so.1 plus the Tegra iGPU device nodes (WDY-1716).
 		if applied, csvErr := cdi.ApplyL4TCSV(spec); csvErr != nil {
-			c.logger.Warn("L4T CSV GPU fallback failed; GPU mounts may be incomplete", zap.Error(csvErr))
+			c.logger.Warn("L4T CSV fallback failed; NVIDIA driver mounts may be incomplete", zap.Error(csvErr))
 		} else if applied > 0 {
-			c.logger.Info("Applied L4T CSV GPU provisioning (no CDI spec; nvidia-ctk predates CDI)",
+			c.logger.Info("Applied L4T CSV NVIDIA driver provisioning (no CDI spec; nvidia-ctk predates CDI)",
 				zap.Int("count", applied))
 			return
 		}
-		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; GPU library mounts may be incomplete",
+		c.logger.Warn("No NVIDIA CDI spec and no usable L4T CSV files; NVIDIA driver library mounts may be incomplete",
 			zap.Error(err))
 		return
 	}
@@ -1451,7 +1523,7 @@ func (c *Client) applyCDIGPU(spec *localoci.Spec) {
 	// nvidia-ctk in CSV mode generates a device named "all".
 	// Try that first, then fall back to the first device in the spec.
 	if err := cdi.ApplyCDIDevice(spec, cdiSpec, "all"); err == nil {
-		c.logger.Info("Applied NVIDIA CDI spec for GPU access")
+		c.logger.Info("Applied NVIDIA CDI spec")
 		return
 	}
 	if len(cdiSpec.Devices) > 0 {
@@ -2319,6 +2391,40 @@ func hasHostNetworkEntitlement(appCfg *appconfig.AppConfig) bool {
 	return entitlementsUseHostNetwork(appCfg.Entitlements)
 }
 
+// boardDetect identifies the host SBC. Behind a var so tests can simulate a
+// Jetson or a non-Jetson host without touching the filesystem, mirroring the
+// oci package's hook of the same name.
+var boardDetect = board.Detect
+
+// needsNvidiaCDI reports whether CreateContainer should apply the host's
+// NVIDIA CDI spec (library mounts, extra device nodes, driver env vars) to
+// this app's OCI spec. Both the explicit gpu entitlement AND — on a Jetson —
+// the display entitlement trigger it: applyDisplay's own doc comment promises
+// that "the NVIDIA EGL/GLES userspace is injected from the host via CDI" for a
+// Jetson app, but before this fix that injection only happened for apps that
+// also declared gpu — an app requesting display alone (no gpu) got /dev/dri and
+// the NVIDIA_DRIVER_CAPABILITIES=all env var from applyDisplay but none of
+// the actual library/device mounts CDI provides, so its EGL/GLES calls had
+// nothing real to bind to. Merging CDI's container edits is not a new grant
+// of trust for a display app: applyDisplay already sets
+// NVIDIA_VISIBLE_DEVICES=all and NVIDIA_DRIVER_CAPABILITIES=all on Jetson
+// once display is requested, so this only fulfills what that entitlement
+// already declares.
+func needsNvidiaCDI(appCfg *appconfig.AppConfig) bool {
+	// An explicit GPU entitlement attempts NVIDIA CDI/CSV provisioning on every
+	// board, as it did before this change — including the warnings applyNvidiaCDI
+	// logs when the host has no NVIDIA provisioning at all, which are the point
+	// of asking for a GPU that isn't there.
+	if appCfg.HasEntitlement(appconfig.EntitlementGPU) {
+		return true
+	}
+	// A display entitlement only implies NVIDIA userspace on a Jetson. Gating on
+	// the same board check applyDisplay uses for NVIDIA_DRIVER_CAPABILITIES keeps
+	// the two in step, and keeps a Raspberry Pi display app — which has no NVIDIA
+	// anything — out of applyNvidiaCDI's "no CDI spec found" warning path.
+	return appCfg.HasEntitlement(appconfig.EntitlementDisplay) && boardDetect().IsJetson()
+}
+
 // entitlementsUseHostNetwork reports whether the entitlements put the container
 // on the HOST network namespace — a network entitlement with mode host,
 // host-admin, or omitted (empty), matching applyNetwork's host-netns selection.
@@ -2430,12 +2536,111 @@ func (c *Client) deleteStaleTask(ctx context.Context, container containerd.Conta
 	}
 }
 
+// isMissingRuncStateDir reports whether err is runc's own "cannot open
+// directory" failure for a task's state directory under
+// /run/containerd/runc/<namespace>/<containerID>. Observed live: a half-dead
+// task whose state dir had been removed out from under it wedged both
+// StopContainer and `ctr tasks rm -f` indefinitely — runc's delete path
+// stats the directory before it will proceed, so an absent (even empty) dir
+// is a permanent failure until the directory exists again. Returns the
+// missing directory path so the caller can recreate it and retry.
+//
+// The literal string this matches was captured from the error observed on
+// hardware:
+//
+//	cannot open directory `/run/containerd/runc/default/com.wendylabs.examples.mcp-example`: No such file or directory
+func isMissingRuncStateDir(err error) (dir string, ok bool) {
+	if err == nil {
+		return "", false
+	}
+	msg := err.Error()
+	const marker = "cannot open directory `"
+	idx := strings.Index(msg, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := msg[idx+len(marker):]
+	end := strings.IndexByte(rest, '`')
+	if end < 0 {
+		return "", false
+	}
+	dir = rest[:end]
+	if !strings.HasPrefix(dir, "/run/containerd/runc/") {
+		return "", false
+	}
+	return dir, true
+}
+
+// recoverMissingRuncStateDir classifies err via isMissingRuncStateDir and, if
+// it matches, delegates the actual recovery (mkdir + retry) to
+// recreateRuncStateDirAndRetry. Any other error — including nil — passes
+// through unchanged and retry is never called.
+//
+// Shared by forceDeleteTask (replace path) and terminateTask (stop path,
+// task_teardown.go): both ultimately delete a containerd task and both can
+// hit the exact same live-observed wedge, so both need the same recovery
+// rather than only the replace path having it (the stop path was the one
+// actually observed wedged on hardware).
+func (c *Client) recoverMissingRuncStateDir(containerID string, err error, retry func() error) error {
+	dir, ok := isMissingRuncStateDir(err)
+	if !ok {
+		return err
+	}
+	return c.recreateRuncStateDirAndRetry(containerID, dir, err, retry)
+}
+
+// runcStateDirMkdirAll is a seam over os.MkdirAll: recreateRuncStateDirAndRetry
+// calls through it rather than os.MkdirAll directly so tests can verify the
+// full forceDeleteTask/terminateTask recovery wiring — including
+// isMissingRuncStateDir's hardcoded /run/containerd/runc/ prefix check —
+// without needing real root-owned /run filesystem access on the test host.
+// Production code never reassigns it.
+var runcStateDirMkdirAll = os.MkdirAll
+
+// recreateRuncStateDirAndRetry recreates dir (the runc task state directory
+// isMissingRuncStateDir extracted from origErr) and, if that succeeds, calls
+// retry and returns its result. If MkdirAll fails, origErr is returned
+// unchanged and retry is never called. Split out from
+// recoverMissingRuncStateDir so it can be unit-tested directly against an
+// arbitrary writable directory, independent of isMissingRuncStateDir's
+// /run/containerd/runc/ prefix requirement (which a test can't satisfy
+// without root on a real Linux host).
+func (c *Client) recreateRuncStateDirAndRetry(containerID, dir string, origErr error, retry func() error) error {
+	// Mode 0o711 matches runc's own permissions for per-container state
+	// dirs: traversable by root, opaque to other users.
+	if mkErr := runcStateDirMkdirAll(dir, 0o711); mkErr != nil {
+		c.logger.Warn("Failed to recreate missing runc state dir",
+			zap.String("container_id", containerID),
+			zap.String("dir", dir),
+			zap.Error(mkErr),
+		)
+		return origErr
+	}
+	c.logger.Info("Recreated missing runc state dir, retrying delete",
+		zap.String("container_id", containerID),
+		zap.String("dir", dir),
+	)
+	return retry()
+}
+
 // forceDeleteTask uses the low-level containerd task service to delete a task
 // by container ID. This handles orphaned tasks where container.Task() fails
 // because the shim process is gone but task metadata remains in the runtime.
+//
+// If the delete fails because runc's state directory for the task is missing
+// (recoverMissingRuncStateDir), it recreates the empty directory runc expects
+// and retries once — otherwise the caller (and any subsequent
+// `ctr tasks rm -f`) would fail this exact way forever, since nothing else
+// ever recreates it.
 func (c *Client) forceDeleteTask(ctx context.Context, containerID string) {
 	_, err := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
 		ContainerID: containerID,
+	})
+	err = c.recoverMissingRuncStateDir(containerID, err, func() error {
+		_, retryErr := c.client.TaskService().Delete(ctx, &tasks.DeleteTaskRequest{
+			ContainerID: containerID,
+		})
+		return retryErr
 	})
 	if err != nil {
 		c.logger.Debug("Force task delete attempt",
@@ -2767,6 +2972,13 @@ func (c *Client) streamOutput(
 	// Wait for the task to exit.
 	exitStatus := <-exitStatusCh
 	code, exitedAt, err := exitStatus.Result()
+	// taskExited is true only once we know the process has actually
+	// terminated (see the context.Canceled branch below, where it hasn't).
+	// Gates the IO drain below: task.IO().Wait() blocks until the task's
+	// stdio FIFOs reach EOF, which only happens once the process's fds
+	// close — calling it while the container is genuinely still running
+	// would hang this goroutine forever.
+	taskExited := err == nil
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			// The wait was canceled because the RPC that started this monitor
@@ -2797,14 +3009,50 @@ func (c *Client) streamOutput(
 		cancel()
 	}
 
-	// Close the write ends to unblock readers.
-	stdoutW.Close()
-	stderrW.Close()
+	if taskExited {
+		// The exit status arriving does NOT mean containerd has finished
+		// copying the task's stdout/stderr FIFOs into stdoutW/stderrW: that
+		// copy runs on containerd's own goroutines (cio.copyIO), a path
+		// independent of the process-exit signal task.Wait() delivers here.
+		// For a container that prints one line and exits immediately — the
+		// crash-loop case — that copy can still be in flight when the exit
+		// status arrives, so closing stdoutW/stderrW right away can slam the
+		// pipe shut before the in-flight Write() lands, silently dropping
+		// the very output a crash-looping container needs most (live
+		// symptom: `wendy device logs --tail` returned zero lines for an
+		// actively crash-looping app). drainTaskIOThenClose waits for that
+		// copy to finish before closing, mirroring the same fix already
+		// applied to ExecContainer/ROS2 exec (proc.IO().Wait()) in this
+		// package.
+		drainTaskIOThenClose(task.IO(), stdoutW, stderrW)
+	} else {
+		// Task not confirmed exited (context.Canceled path, effectively
+		// unreachable since taskCtx derives from context.Background() and is
+		// never canceled): preserve prior behavior and close unconditionally
+		// rather than risk blocking forever in task.IO().Wait().
+		stdoutW.Close()
+		stderrW.Close()
+	}
 
 	// Wait for readers to finish.
 	wg.Wait()
 
 	outputCh <- services.ContainerOutput{Done: true}
+}
+
+// drainTaskIOThenClose blocks until taskIO's stdio copy goroutines (if any)
+// have finished flushing container output into stdoutW/stderrW, then closes
+// both writers. Must only be called once the task is confirmed to have
+// exited — see the taskExited gate in streamOutput's caller — since
+// taskIO.Wait() blocks until the underlying FIFOs reach EOF, which a still-
+// running task never delivers. taskIO may be nil (some cio.IO
+// implementations, e.g. NullIO, are legitimately IO-less).
+func drainTaskIOThenClose(taskIO cio.IO, stdoutW, stderrW io.Closer) {
+	if taskIO != nil {
+		taskIO.Wait()
+	}
+	stdoutW.Close()
+	stderrW.Close()
 }
 
 // resolveTargets resolves name to the containers it addresses:
@@ -3063,6 +3311,21 @@ func (c *Client) StopContainer(ctx context.Context, name string) error {
 	}
 	c.appStopping[appID] = true
 	c.mu.Unlock()
+
+	// Pause the restart monitor for every container about to be stopped, for
+	// the whole rest of this function: without it, a crash-looping member's
+	// automatic restart can race stopOne's kill+delete below and wedge the
+	// stop (same "cannot delete running task: failed precondition" race as
+	// the replace path in CreateContainerWithProgress).
+	resumeFns := make([]func(), 0, len(stopOrder))
+	for _, ctrID := range stopOrder {
+		resumeFns = append(resumeFns, c.suppressRestarts(ctrID))
+	}
+	defer func() {
+		for _, resume := range resumeFns {
+			resume()
+		}
+	}()
 
 	var errs []error
 	for _, ctrID := range stopOrder {

@@ -1,13 +1,32 @@
-Expected findings (wendy project optimize):
-  warning  image-hygiene   FROM node:latest not pinned to a version          (Dockerfile:9)
-  warning  apt-install     apt-get install split from apt-get update         (Dockerfile:12)
-  warning  apt-install     apt-get install without --no-install-recommends   (Dockerfile:12) [fixable]
-  warning  build-cache     pip install without --mount=type=cache            (Dockerfile:13) [fixable]
-  warning  pip-flags       pip install without --no-cache-dir                (Dockerfile:13) [fixable]
-  warning  build-cache     npm install without --mount=type=cache            (Dockerfile:16) [fixable]
-  warning  node-ci         npm install ignores package-lock.json             (Dockerfile:16) [fixable]
-  info     add-copy        ADD used where COPY would do                      (Dockerfile:18) [fixable]
-  warning  image-hygiene   FROM node:latest not pinned to a version          (Dockerfile:20)
-  warning  image-hygiene   COPY --from copies the entire build stage         (Dockerfile:21)
-  warning  image-hygiene   CMD uses shell form                               (Dockerfile:22)
-  warning  arch-image      No .dockerignore                                  [fixable]
+Expected findings (wendy project optimize): NONE.
+
+This sample was converted from a Dockerfile to build.stagefile.yaml, and
+`wendy project optimize` analyses Dockerfiles, Containerfiles and compose
+services — not Stagefiles (see the note in the CLI's optimize docs). Running
+it here now reports nothing and exits 0.
+
+What the eleven findings this file used to list became:
+
+  Structurally impossible in a Stagefile — the compiler emits the correct
+  form and there is no field that asks for the wrong one:
+    image-hygiene   FROM node:latest not pinned      -> pinned by build.stagefile.lock.yaml
+    apt-install     update/install split             -> one RUN, always
+    apt-install     no --no-install-recommends       -> default; `recommends: true` opts back in
+    build-cache     pip install without cache mount  -> every install gets a scoped mount
+    pip-flags       pip install without --no-cache-dir -> superseded by the cache mount
+    build-cache     npm install without cache mount  -> every install gets a mount
+    node-ci         npm install ignores the lockfile -> install.npm always compiles to `npm ci`
+    add-copy        ADD used where COPY would do     -> ADD exists only for pinned downloads
+    image-hygiene   CMD uses shell form              -> cmd is an argv list, no shell form
+    image-hygiene   COPY --from copies the whole stage -> copying "/" is refused
+    arch-image      No .dockerignore                 -> derived from the copy paths
+
+  Still true of the converted file, just no longer reported by anything:
+    (none — every finding above was mechanical)
+
+This directory is now a Stagefile demo, not an analyzer fixture. It is also
+still not buildable, exactly as it was not before: pip installs into a
+PEP 668 externally-managed system Python on node:latest and fails. That was
+true of the Dockerfile too (which additionally never copied requirements.txt
+before installing from it), and this sample has always been read by the
+analyzer rather than built.

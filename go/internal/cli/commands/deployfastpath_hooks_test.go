@@ -127,9 +127,23 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("host-side postStart hook did not run: %s was never created", path)
 }
 
-// TestTryDeployFastPath_StoppedRunsPostStartHooks verifies the fast path fires
-// BOTH postStart hooks when it starts a stopped-but-unchanged app: the agent-side
-// (in-container) hook via StartContainer metadata, and the host-side hook.
+// requireFileAbsent asserts path is still missing after grace. The host-side
+// hook was historically fire-and-forget, so a bare Stat right after the call
+// could pass simply by racing it; waiting out a grace period keeps the
+// assertion meaningful.
+func requireFileAbsent(t *testing.T, path string, grace time.Duration) {
+	t.Helper()
+	time.Sleep(grace)
+	if _, err := os.Stat(path); err == nil {
+		t.Fatalf("host-side postStart hook ran but should not have: %s exists", path)
+	}
+}
+
+// TestTryDeployFastPath_StoppedRunsPostStartHooks verifies which postStart
+// hook the fast path fires when it starts a stopped-but-unchanged app: the
+// agent-side (in-container) hook via StartContainer metadata runs, and the
+// host-side hook does NOT. The fast path only ever runs detached, and detached
+// deploys skip the readiness probe the host hook is gated on.
 func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 	isolateFingerprintCache(t)
 
@@ -176,9 +190,12 @@ func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 		t.Fatalf("agent postStart hook metadata = %#v, want [%q]", got, agentHook)
 	}
 
-	// Host-side CLI postStart hook must fire (fire-and-forget → poll briefly).
+	// Host-side CLI postStart hook must NOT fire: the fast path only runs
+	// detached, and detached deploys no longer block on the readiness probe
+	// that gates the host hook (see runPostStartIfReady's doc comment). The
+	// agent-side hook asserted above is what still runs.
 	if runtime.GOOS != "windows" {
-		waitForFile(t, sentinel, 3*time.Second)
+		requireFileAbsent(t, sentinel, 300*time.Millisecond)
 	}
 }
 
@@ -215,10 +232,11 @@ func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
 	}
 }
 
-// TestTryDeployFastPath_RunningFiresHostPostStartHook verifies that when the app
-// is already running and unchanged, the fast path still fires the host-side
-// postStart hook (so `wendy run` behaves the same regardless of the fast path)
-// without restarting the container.
+// TestTryDeployFastPath_RunningFiresHostPostStartHook verifies that when the
+// app is already running and unchanged, the fast path neither restarts the
+// container nor fires the host-side postStart hook. The hook is gated on a
+// readiness probe that costs the app's full boot time, which detached runs —
+// the only kind the fast path serves — must not pay.
 func TestTryDeployFastPath_RunningFiresHostPostStartHook(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("host-side hook uses `touch`, unavailable on Windows")
@@ -254,5 +272,8 @@ func TestTryDeployFastPath_RunningFiresHostPostStartHook(t *testing.T) {
 	if fake.startCalls != 0 {
 		t.Fatalf("StartContainer should not be called for an already-running app, got %d calls", fake.startCalls)
 	}
-	waitForFile(t, sentinel, 3*time.Second)
+	// Detached deploys no longer run the host-side postStart hook — it is
+	// gated on a readiness probe that costs the app's whole boot time, which
+	// --detach and --watch must not pay (see runPostStartIfReady).
+	requireFileAbsent(t, sentinel, 300*time.Millisecond)
 }

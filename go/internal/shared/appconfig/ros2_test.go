@@ -1,6 +1,9 @@
 package appconfig
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestROS2AutoDomainID_StableAndInRange(t *testing.T) {
 	first := ROS2AutoDomainID("com.example.robot")
@@ -157,5 +160,100 @@ func TestIsValidRMWImplementation(t *testing.T) {
 		if IsValidRMWImplementation(s) {
 			t.Errorf("IsValidRMWImplementation(%q) = true, want false", s)
 		}
+	}
+}
+
+// TestValidateJSON_UnknownFrameworkKey covers the gap this change closes: a
+// typo'd top-level key under "frameworks" (e.g. "ross2" instead of "ros2")
+// used to be silently dropped by encoding/json with no warning at all, unlike
+// entitlements' "unknown type" error. See validateFrameworksJSON.
+func TestValidateJSON_UnknownFrameworkKey(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.robot",
+		"frameworks": { "ross2": { "distro": "humble" } }
+	}`)
+
+	warnings := ValidateJSON(data)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "Unknown key(s) in frameworks") && strings.Contains(w, "ross2") && strings.Contains(w, "ros2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ValidateJSON() warnings = %v; want one flagging unknown top-level framework key %q", warnings, "ross2")
+	}
+}
+
+// TestValidateJSON_KnownFrameworkKeyNoWarning ensures the new top-level check
+// doesn't false-positive on the one framework that is actually supported.
+func TestValidateJSON_KnownFrameworkKeyNoWarning(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.robot",
+		"frameworks": { "ros2": { "distro": "humble" } }
+	}`)
+
+	warnings := ValidateJSON(data)
+	for _, w := range warnings {
+		if strings.Contains(w, "Unknown key(s) in frameworks:") {
+			t.Errorf("unexpected unknown-framework warning for a valid config: %v", warnings)
+		}
+	}
+}
+
+// TestValidateJSON_FrameworksBothWarnings covers a wendy.json with both an
+// unrecognized top-level framework key and an unrecognized key nested under
+// frameworks.ros2, confirming validateFrameworksJSON reports both instead of
+// stopping at the first.
+func TestValidateJSON_FrameworksBothWarnings(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.robot",
+		"frameworks": {
+			"ross2": {},
+			"ros2": { "domian_id": 5 }
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	var sawTopLevel, sawNested bool
+	for _, w := range warnings {
+		if strings.Contains(w, "Unknown key(s) in frameworks:") && strings.Contains(w, "ross2") {
+			sawTopLevel = true
+		}
+		if strings.Contains(w, "Unknown key(s) in frameworks.ros2:") && strings.Contains(w, "domian_id") {
+			sawNested = true
+		}
+	}
+	if !sawTopLevel {
+		t.Errorf("missing top-level unknown-framework warning: %v", warnings)
+	}
+	if !sawNested {
+		t.Errorf("missing nested frameworks.ros2 unknown-key warning: %v", warnings)
+	}
+}
+
+// TestValidateJSON_ServiceFrameworksUnknownKey confirms the top-level check
+// also applies to service-level "frameworks" objects (services["x"].frameworks),
+// not just the app-level one.
+func TestValidateJSON_ServiceFrameworksUnknownKey(t *testing.T) {
+	data := []byte(`{
+		"appId": "com.example.robot",
+		"services": {
+			"camera": {
+				"context": ".",
+				"frameworks": { "ross2": {} }
+			}
+		}
+	}`)
+
+	warnings := ValidateJSON(data)
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, `services["camera"].frameworks`) && strings.Contains(w, "ross2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ValidateJSON() warnings = %v; want one flagging services[\"camera\"].frameworks unknown key", warnings)
 	}
 }

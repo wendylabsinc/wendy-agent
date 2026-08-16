@@ -5,8 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"io"
+	"path/filepath"
 	"testing"
 
+	containerdclient "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/content"
+	"github.com/containerd/errdefs"
+	digest "github.com/opencontainers/go-digest"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -128,4 +133,90 @@ func TestStagingWriteIsDiskBackedAndIdempotent(t *testing.T) {
 	}
 	// Removing an absent chunk is safe.
 	s.remove(h)
+}
+
+type chunkAvailabilityContentStore struct {
+	content.Store
+	blobs map[digest.Digest]content.Info
+}
+
+func (s *chunkAvailabilityContentStore) Info(_ context.Context, dgst digest.Digest) (content.Info, error) {
+	if info, ok := s.blobs[dgst]; ok {
+		return info, nil
+	}
+	return content.Info{}, errdefs.ErrNotFound
+}
+
+func newChunkAvailabilityClient(t *testing.T, cs content.Store, index *ChunkIndex, stagingDir string) *Client {
+	t.Helper()
+	client, err := containerdclient.New("",
+		containerdclient.WithDefaultNamespace("default"),
+		containerdclient.WithServices(containerdclient.WithContentStore(cs)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { client.Close() })
+	return &Client{client: client, chunkIndex: index, staging: newStaging(stagingDir)}
+}
+
+func TestMissingChunksPrunesIndexEntriesWhoseBlobWasGarbageCollected(t *testing.T) {
+	dir := t.TempDir()
+	indexPath := filepath.Join(dir, "index.json")
+	index, err := NewChunkIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("chunk whose indexed layer was garbage collected")
+	hash := sha256.Sum256(data)
+	staleBlob := digest.FromString("stale uncompressed layer")
+	index.AddLayer(staleBlob.String(), []chunk.Ref{{Hash: hash, Len: uint64(len(data))}})
+	if err := index.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{}}
+	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(dir, "staging"))
+	missing, err := c.MissingChunks(context.Background(), [][32]byte{hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 1 || missing[0] != hash {
+		t.Fatalf("missing = %x, want %x", missing, hash)
+	}
+	if _, ok := index.Has(hash); ok {
+		t.Fatal("stale chunk entry was not pruned")
+	}
+
+	reloaded, err := NewChunkIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Has(hash); ok {
+		t.Fatal("pruned chunk entry remained in the persisted index")
+	}
+}
+
+func TestMissingChunksKeepsIndexEntryBackedByContentBlob(t *testing.T) {
+	dir := t.TempDir()
+	index, err := NewChunkIndex(filepath.Join(dir, "index.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("available indexed chunk")
+	hash := sha256.Sum256(data)
+	blob := digest.FromString("available uncompressed layer")
+	index.AddLayer(blob.String(), []chunk.Ref{{Hash: hash, Offset: 4, Len: uint64(len(data))}})
+
+	cs := &chunkAvailabilityContentStore{blobs: map[digest.Digest]content.Info{
+		blob: {Digest: blob, Size: int64(len(data)) + 4},
+	}}
+	c := newChunkAvailabilityClient(t, cs, index, filepath.Join(dir, "staging"))
+	missing, err := c.MissingChunks(context.Background(), [][32]byte{hash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing = %x, want none", missing)
+	}
 }

@@ -3,6 +3,7 @@ package audio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func TestListAlsaNodes(t *testing.T) {
 		t.Fatalf("got %d nodes, want 3 (two HDMI outputs, one USB input); got %+v", len(nodes), nodes)
 	}
 
-	hdmi0, ok := FindNode(nodes, EncodeAlsaID(0, 0))
+	hdmi0, ok := FindNode(nodes, EncodeAlsaID(0, 0, true))
 	if !ok {
 		t.Fatal("card 0 device 0 missing")
 	}
@@ -47,7 +48,7 @@ func TestListAlsaNodes(t *testing.T) {
 		t.Errorf("hdmi0 = %+v, want a sink named plughw:0,0", hdmi0)
 	}
 
-	mic, ok := FindNode(nodes, EncodeAlsaID(2, 0))
+	mic, ok := FindNode(nodes, EncodeAlsaID(2, 0, false))
 	if !ok {
 		t.Fatal("card 2 device 0 missing")
 	}
@@ -76,28 +77,122 @@ func TestListAlsaNodesNoCards(t *testing.T) {
 }
 
 func TestEncodeDecodeAlsaID(t *testing.T) {
-	for _, tc := range []struct{ card, device uint64 }{
-		{0, 0}, {0, 1}, {2, 0}, {255, 255},
+	for _, tc := range []struct {
+		card, device uint64
+		isSink       bool
+	}{
+		{0, 0, true}, {0, 0, false}, {0, 1, true}, {2, 0, false},
+		{255, 255, true}, {255, 255, false}, {65535, 255, false},
 	} {
-		id := EncodeAlsaID(tc.card, tc.device)
+		id := EncodeAlsaID(tc.card, tc.device, tc.isSink)
 		if id == 0 {
-			t.Fatalf("EncodeAlsaID(%d, %d) = 0, which collides with the unspecified sentinel", tc.card, tc.device)
+			t.Fatalf("EncodeAlsaID(%d, %d, %v) = 0, which collides with the unspecified sentinel", tc.card, tc.device, tc.isSink)
 		}
-		gotCard, gotDevice := DecodeAlsaID(id)
-		if gotCard != tc.card || gotDevice != tc.device {
-			t.Errorf("DecodeAlsaID(EncodeAlsaID(%d, %d)) = (%d, %d)", tc.card, tc.device, gotCard, gotDevice)
+		gotCard, gotDevice, gotIsSink := DecodeAlsaID(id)
+		if gotCard != tc.card || gotDevice != tc.device || gotIsSink != tc.isSink {
+			t.Errorf("DecodeAlsaID(EncodeAlsaID(%d, %d, %v)) = (%d, %d, %v)",
+				tc.card, tc.device, tc.isSink, gotCard, gotDevice, gotIsSink)
 		}
 	}
-	if card, device := DecodeAlsaID(0); card != 0 || device != 0 {
+	if card, device, _ := DecodeAlsaID(0); card != 0 || device != 0 {
 		t.Errorf("DecodeAlsaID(0) = (%d, %d), want (0, 0)", card, device)
 	}
 }
 
-func TestParseSimpleMixerControls(t *testing.T) {
-	input := "Simple mixer control 'PCM',0\nSimple mixer control 'Mic',0\nignored line"
-	want := []string{"PCM", "Mic"}
-	if got := parseSimpleMixerControls(input); !reflect.DeepEqual(got, want) {
-		t.Fatalf("parseSimpleMixerControls() = %v, want %v", got, want)
+// A duplex device — one card exposing the same card/device number for both
+// playback and capture — must get two distinct IDs. A USB speakerphone is the
+// common case: aplay -l and arecord -l both report it as card 0, device 0, so
+// an ID derived from card and device alone addresses two nodes at once and
+// FindNode returns whichever the sort happened to place first.
+func TestAlsaIDDistinguishesDirection(t *testing.T) {
+	const duplex = "card 0: PowerConf [PowerConf], device 0: USB Audio [USB Audio]\n"
+
+	origAplay, origArecord := AplayListRun, ArecordListRun
+	t.Cleanup(func() { AplayListRun, ArecordListRun = origAplay, origArecord })
+	AplayListRun = func(context.Context) ([]byte, error) { return []byte(duplex), nil }
+	ArecordListRun = func(context.Context) ([]byte, error) { return []byte(duplex), nil }
+
+	nodes, err := ListAlsaNodes(context.Background())
+	if err != nil {
+		t.Fatalf("ListAlsaNodes() error = %v", err)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2 (one playback, one capture); got %+v", len(nodes), nodes)
+	}
+	if nodes[0].ID == nodes[1].ID {
+		t.Fatalf("playback and capture share ID %d; FindNode(%d) is ambiguous", nodes[0].ID, nodes[0].ID)
+	}
+
+	sink, ok := FindNode(nodes, EncodeAlsaID(0, 0, true))
+	if !ok || !sink.IsSink {
+		t.Errorf("playback node not addressable by its own ID: %+v, ok=%v", sink, ok)
+	}
+	source, ok := FindNode(nodes, EncodeAlsaID(0, 0, false))
+	if !ok || source.IsSink {
+		t.Errorf("capture node not addressable by its own ID: %+v, ok=%v", source, ok)
+	}
+
+	// Both resolve back to the same underlying ALSA card and device.
+	for _, n := range nodes {
+		card, device, _ := DecodeAlsaID(n.ID)
+		if card != 0 || device != 0 {
+			t.Errorf("node %+v decodes to card %d device %d, want 0/0", n, card, device)
+		}
+	}
+}
+
+func TestParseMixerContents(t *testing.T) {
+	input := "Simple mixer control 'PCM',0\n" +
+		"  Capabilities: pvolume\n" +
+		"  Mono: Playback 51 [22%] [on]\n" +
+		"Simple mixer control 'Mic',0\n" +
+		"  Capabilities: cvolume\n"
+	got := parseMixerContents(input)
+	want := []mixerContents{
+		{name: "PCM", body: "  Capabilities: pvolume\n  Mono: Playback 51 [22%] [on]\n"},
+		{name: "Mic", body: "  Capabilities: cvolume\n"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseMixerContents() = %#v, want %#v", got, want)
+	}
+}
+
+// A Tegra APE card lists ~2200 simple mixer controls and does not reveal a
+// playback volume until roughly control 1900. Resolving that with one `amixer
+// sget` process per control took ~150s on a Jetson Thor — long enough that
+// `wendy device audio` looked hung — so the whole mixer must come back in a
+// single call regardless of how deep the first playback control sits.
+func TestMixerControlReadsWholeMixerInOneCall(t *testing.T) {
+	orig := AmixerRun
+	t.Cleanup(func() { AmixerRun = orig })
+
+	var mixer strings.Builder
+	for i := 1; i <= 2000; i++ {
+		fmt.Fprintf(&mixer, "Simple mixer control 'ADMAIF%d Mux',0\n", i)
+		mixer.WriteString("  Capabilities: enum\n  Items: 'None' 'ADMAIF1' 'I2S1'\n  Item0: 'None'\n")
+	}
+	mixer.WriteString("Simple mixer control 'CVB-RT DAC1',0\n")
+	mixer.WriteString("  Capabilities: pvolume pswitch\n")
+	mixer.WriteString("  Front Left: Playback 51 [22%] [-20.04dB] [on]\n")
+
+	var calls [][]string
+	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if strings.Join(args, " ") != "-c 2 scontents" {
+			return nil, errors.New("unexpected amixer call: " + strings.Join(args, " "))
+		}
+		return []byte(mixer.String()), nil
+	}
+
+	control, volume, err := mixerControl(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if control != "CVB-RT DAC1" || volume != 22 {
+		t.Fatalf("mixerControl() = %q, %d; want CVB-RT DAC1, 22", control, volume)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("amixer ran %d times, want exactly 1 (the scontents dump); calls = %v", len(calls), calls)
 	}
 }
 
@@ -132,10 +227,11 @@ func TestMixerControlPrefersPCMAndSkipsCaptureOnly(t *testing.T) {
 	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
 		switch strings.Join(args, " ") {
-		case "-c 2 scontrols":
-			return []byte("Simple mixer control 'Mic',0\nSimple mixer control 'PCM',0\n"), nil
-		case "-c 2 sget PCM":
-			return []byte("Mono: Playback 51 [22%] [-20.04dB] [on]\n"), nil
+		case "-c 2 scontents":
+			return []byte("Simple mixer control 'Mic',0\n" +
+				"  Mono: Capture 12 [22%]\n" +
+				"Simple mixer control 'PCM',0\n" +
+				"  Mono: Playback 51 [22%] [-20.04dB] [on]\n"), nil
 		default:
 			return nil, errors.New("unexpected amixer call")
 		}
@@ -148,7 +244,7 @@ func TestMixerControlPrefersPCMAndSkipsCaptureOnly(t *testing.T) {
 	if control != "PCM" || volume != 22 {
 		t.Fatalf("mixerControl() = %q, %d; want PCM, 22", control, volume)
 	}
-	wantCalls := [][]string{{"-c", "2", "scontrols"}, {"-c", "2", "sget", "PCM"}}
+	wantCalls := [][]string{{"-c", "2", "scontents"}}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Fatalf("calls = %v, want %v", calls, wantCalls)
 	}
@@ -162,10 +258,8 @@ func TestSetAlsaVolume(t *testing.T) {
 	AmixerRun = func(_ context.Context, args ...string) ([]byte, error) {
 		calls = append(calls, append([]string(nil), args...))
 		switch strings.Join(args, " ") {
-		case "-c 2 scontrols":
-			return []byte("Simple mixer control 'PCM',0\n"), nil
-		case "-c 2 sget PCM":
-			return []byte("Mono: Playback 51 [22%] [on]\n"), nil
+		case "-c 2 scontents":
+			return []byte("Simple mixer control 'PCM',0\n  Mono: Playback 51 [22%] [on]\n"), nil
 		case "-c 2 sset PCM 100% unmute":
 			return []byte("Mono: Playback 231 [100%] [on]\n"), nil
 		default:

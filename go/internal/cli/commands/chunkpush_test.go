@@ -3,15 +3,117 @@ package commands
 import (
 	"bytes"
 	"context"
+	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+type chunkProgressRecorder struct {
+	io.Writer
+	events []tui.BuildStepEvent
+}
+
+type imagePreparationRecorder struct {
+	io.Writer
+	once   sync.Once
+	called chan struct{}
+}
+
+func (r *imagePreparationRecorder) ReportImagePreparation() {
+	r.once.Do(func() { close(r.called) })
+}
+
+func (r *chunkProgressRecorder) ReportChunkIndex(current, total int64, rate float64, done bool) {
+	status := tui.BuildStepRunning
+	if done {
+		status = tui.BuildStepDone
+	}
+	r.events = append(r.events, tui.BuildStepEvent{
+		Status: status,
+		Bytes:  tui.ByteProgress{Current: current, Total: total, Rate: rate},
+	})
+}
+
+func TestChunkIndexProgressDoesNotReportPartialTotal(t *testing.T) {
+	recorder := &chunkProgressRecorder{Writer: io.Discard}
+	progress := newChunkIndexProgress(recorder)
+
+	progress.startLayer(100)
+	progress.addProcessed(100)
+	progress.startLayer(0)
+	progress.last = time.Time{} // bypass the live-update throttle for this assertion
+	progress.addProcessed(50)
+
+	last := recorder.events[len(recorder.events)-1]
+	if last.Bytes.Current != 150 || last.Bytes.Total != 0 {
+		t.Fatalf("progress with unknown layer = %d/%d, want 150/unknown", last.Bytes.Current, last.Bytes.Total)
+	}
+
+	progress.finishLayer(0, 50)
+	last = recorder.events[len(recorder.events)-1]
+	if last.Bytes.Current != 150 || last.Bytes.Total != 150 {
+		t.Fatalf("progress after sizes resolve = %d/%d, want 150/150", last.Bytes.Current, last.Bytes.Total)
+	}
+}
+
+func TestComposeChunkProgressKeepsUploadVisible(t *testing.T) {
+	var events []tui.BuildStepEvent
+	w := &composeBuildProgressWriter{
+		Writer: io.Discard,
+		emit:   func(e tui.BuildStepEvent) { events = append(events, e) },
+	}
+
+	w.ReportChunkIndex(50, 100, 10, false)
+	w.ReportChunkTransfer(10, 100, 5)
+	w.ReportChunkIndex(75, 100, 10, false)
+	w.ReportChunkIndex(100, 100, 10, true)
+
+	if len(events) != 3 {
+		t.Fatalf("emitted %d events, want initial index, upload, and index completion", len(events))
+	}
+	if events[0].Display != "indexing changed layer content" || events[0].Kind != tui.BuildVertexSetup {
+		t.Fatalf("first event = %#v, want indexing setup event", events[0])
+	}
+	if events[1].Display != "uploading missing chunks" || events[1].Status != tui.BuildStepRunning {
+		t.Fatalf("second event = %#v, want running upload", events[1])
+	}
+	if events[2].Status != tui.BuildStepDone {
+		t.Fatalf("third event = %#v, want index completion", events[2])
+	}
+}
+
+func TestPushLayersByChunksRoutesStatusToOutput(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{
+				Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 4096}},
+			}
+		},
+	}
+	var output bytes.Buffer
+	_, err := pushLayersByChunksWithPrepareOutput(context.Background(), fake, []localLayer{{
+		DiffID: diffID,
+	}}, nil, &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Reusing 1 layer(s) already on device; chunking 0.") {
+		t.Fatalf("routed status = %q", got)
+	}
+}
 
 // fakeContainerClient satisfies agentpb.WendyContainerServiceClient via the
 // embedded-interface trick. Only QueryChunks, QueryLayers, and WriteChunks are
@@ -21,7 +123,179 @@ type fakeContainerClient struct {
 	agentpb.WendyContainerServiceClient // embedded nil — satisfies interface
 	queryFn                             func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse
 	queryLayersFn                       func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse
+	writeFn                             func(*agentpb.WriteChunksRequest) error
 	chunksWritten                       int
+	writeStarted                        chan struct{}
+	blockWrites                         bool
+	writeOnce                           sync.Once
+}
+
+// TestPushLayersByChunksPreparesDuringUpload proves the preparation RPC is
+// started after manifests are known but before WriteChunks finishes. This is
+// the wall-clock overlap the optimization exists to create.
+func TestPushLayersByChunksPreparesDuringUpload(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := bytes.Repeat([]byte("prewarm-layer-"), 100_000)
+	prepareStarted := make(chan struct{})
+	allowPrepare := make(chan struct{})
+	var once sync.Once
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			if len(req.GetChunkHashes()) == 0 {
+				return &agentpb.QueryChunksResponse{}
+			}
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()[:1]}
+		},
+		writeFn: func(*agentpb.WriteChunksRequest) error {
+			<-prepareStarted
+			once.Do(func() { close(allowPrepare) })
+			return nil
+		},
+	}
+	prepare := func(_ context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+		if len(headers) != 1 || len(headers[0].GetChunkHashes()) == 0 {
+			t.Fatalf("prepare received incomplete layer manifests: %#v", headers)
+		}
+		close(prepareStarted)
+		<-allowPrepare
+		return nil
+	}
+
+	headers, err := pushLayersByChunksWithPrepare(context.Background(), fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		DiffID:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, prepare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(headers) != 1 {
+		t.Fatalf("headers = %d, want 1", len(headers))
+	}
+}
+
+func TestPushLayersByChunksPrepareUnimplementedFallsBack(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := []byte("already available layer")
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+	}
+	_, err := pushLayersByChunksWithPrepare(context.Background(), fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+		return status.Error(codes.Unimplemented, "old agent")
+	})
+	if err != nil {
+		t.Fatalf("Unimplemented preparation must fall back to RunContainer, got %v", err)
+	}
+}
+
+func TestPushLayersByChunksStrictPrepareReturnsUnimplemented(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := []byte("already available layer")
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+	}
+	_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+		return status.Error(codes.Unimplemented, "old agent")
+	}, nil)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
+	}
+}
+
+func TestPushLayersByChunksReportsPostUploadPreparation(t *testing.T) {
+	diffID := "sha256:" + strings.Repeat("ab", 32)
+	fake := &fakeContainerClient{
+		queryFn: func(*agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			return &agentpb.QueryChunksResponse{}
+		},
+		queryLayersFn: func(*agentpb.QueryLayersRequest) *agentpb.QueryLayersResponse {
+			return &agentpb.QueryLayersResponse{Present: []*agentpb.PresentLayer{{DiffId: diffID, Size: 1}}}
+		},
+	}
+	release := make(chan struct{})
+	recorder := &imagePreparationRecorder{Writer: io.Discard, called: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := pushLayersByChunksWithStrictPrepareOutput(context.Background(), fake, []localLayer{{DiffID: diffID}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+			<-release
+			return nil
+		}, recorder)
+		done <- err
+	}()
+
+	select {
+	case <-recorder.called:
+		close(release)
+	case <-time.After(time.Second):
+		t.Fatal("device preparation progress was not reported after upload completed")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPushLayersByChunksStrictPrepareCancelsUploadOnPrepareFailure(t *testing.T) {
+	manifestCacheTestDir = t.TempDir()
+	t.Cleanup(func() { manifestCacheTestDir = "" })
+
+	layerTar := bytes.Repeat([]byte("cancel-on-prepare-failure-"), 100_000)
+	refs, err := chunk.Chunk(bytes.NewReader(layerTar))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(refs))
+	}
+
+	fake := &fakeContainerClient{
+		queryFn: func(req *agentpb.QueryChunksRequest) *agentpb.QueryChunksResponse {
+			if len(req.GetChunkHashes()) == 0 {
+				return &agentpb.QueryChunksResponse{}
+			}
+			return &agentpb.QueryChunksResponse{MissingHashes: req.GetChunkHashes()}
+		},
+		writeStarted: make(chan struct{}),
+		blockWrites:  true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = pushLayersByChunksWithStrictPrepareOutput(ctx, fake, []localLayer{{
+		Digest:    "sha256:" + sha256Hex(layerTar),
+		MediaType: "application/vnd.oci.image.layer.v1.tar",
+		Blob:      layerTar,
+	}}, func(context.Context, []*agentpb.RunContainerLayerHeader) error {
+		<-fake.writeStarted
+		return status.Error(codes.Unimplemented, "old agent")
+	}, nil)
+	if status.Code(err) != codes.Unimplemented {
+		t.Fatalf("strict preparation error = %v, want Unimplemented", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 500*time.Millisecond {
+		t.Fatalf("prepare failure took %s to cancel chunk upload", elapsed)
+	}
+	if fake.chunksWritten != 1 {
+		t.Fatalf("wrote %d chunks after preparation failed, want 1 in-flight chunk", fake.chunksWritten)
+	}
 }
 
 func (f *fakeContainerClient) QueryChunks(_ context.Context, in *agentpb.QueryChunksRequest, _ ...grpc.CallOption) (*agentpb.QueryChunksResponse, error) {
@@ -38,18 +312,29 @@ func (f *fakeContainerClient) QueryLayers(_ context.Context, in *agentpb.QueryLa
 	return f.queryLayersFn(in), nil
 }
 
-func (f *fakeContainerClient) WriteChunks(_ context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
-	return &fakeWriteChunksStream{parent: f}, nil
+func (f *fakeContainerClient) WriteChunks(ctx context.Context, _ ...grpc.CallOption) (grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse], error) {
+	return &fakeWriteChunksStream{parent: f, ctx: ctx}, nil
 }
 
 // fakeWriteChunksStream satisfies grpc.ClientStreamingClient via embedding.
 type fakeWriteChunksStream struct {
 	grpc.ClientStreamingClient[agentpb.WriteChunksRequest, agentpb.WriteChunksResponse] // embedded nil
 	parent                                                                              *fakeContainerClient
+	ctx                                                                                 context.Context
 }
 
-func (s *fakeWriteChunksStream) Send(_ *agentpb.WriteChunksRequest) error {
+func (s *fakeWriteChunksStream) Send(req *agentpb.WriteChunksRequest) error {
 	s.parent.chunksWritten++
+	if s.parent.writeStarted != nil {
+		s.parent.writeOnce.Do(func() { close(s.parent.writeStarted) })
+	}
+	if s.parent.blockWrites {
+		<-s.ctx.Done()
+		return s.ctx.Err()
+	}
+	if s.parent.writeFn != nil {
+		return s.parent.writeFn(req)
+	}
 	return nil
 }
 

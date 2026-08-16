@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -284,6 +286,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 
 	fmt.Println(tui.SuccessMessage("Authentication successful. Certificates saved."))
+	clitimesync.CacheProof(ctx)
 
 	if len(issueResp.GetWarnings()) > 0 {
 		fmt.Println(tui.WarningMessage("Warnings:"))
@@ -406,6 +409,8 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (org=%d, device=%s). Certificates saved.",
 		issueResp.GetOrganizationId(), deviceID)))
+	clitimesync.CacheProof(ctx)
+
 	return nil
 }
 
@@ -419,10 +424,19 @@ func newAuthLogoutCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
+			// Drop the references and save FIRST, then delete the Keychain
+			// items they pointed at. A failed Save here leaves config.json
+			// and the Keychain items both untouched, so a retry (or a
+			// manual fix) can still recover; deleting the items first would
+			// instead risk leaving config.json referencing Keychain items
+			// that no longer exist, breaking every command until the user
+			// re-logs in.
+			entries := cfg.Auth
 			cfg.Auth = nil
 			if err := config.Save(cfg); err != nil {
 				return fmt.Errorf("saving config: %w", err)
 			}
+			config.DeleteStoredSecrets(&config.Config{Auth: entries})
 
 			fmt.Println(tui.SuccessMessage("Logged out. All authentication credentials removed."))
 			return nil
@@ -594,10 +608,14 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 	// Connect to cloud using existing mTLS credentials.
 	var refreshTransport grpc.DialOption
 	if strings.HasSuffix(auth.CloudGRPC, ":443") {
+		existingKeyPEM, err := existingCert.PrivateKeyPEM()
+		if err != nil {
+			return fmt.Errorf("loading existing client key: %w", err)
+		}
 		tlsCfg, err := certs.LoadTLSConfig(
 			existingCert.PemCertificate,
 			existingCert.PemCertificateChain,
-			existingCert.PemPrivateKey,
+			existingKeyPEM,
 			"",
 		)
 		if err != nil {
@@ -615,8 +633,13 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 
 	certClient := cloudpb.NewCertificateServiceClient(certConn)
 
+	cloudCtx, err := cloudContext(ctx, auth)
+	if err != nil {
+		return err
+	}
+
 	// Use RefreshCertificate RPC.
-	refreshResp, err := certClient.RefreshCertificate(cloudContext(ctx, auth), &cloudpb.RefreshCertificateRequest{
+	refreshResp, err := certClient.RefreshCertificate(cloudCtx, &cloudpb.RefreshCertificateRequest{
 		PemCsr: csrPEM,
 	})
 	if err != nil {
@@ -647,7 +670,69 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 		},
 	}
 
+	// This cert has a later NotBefore than the one it replaces, so the proof kept
+	// for offline use has to move with it.
+	clitimesync.CacheProof(ctx)
+
 	return nil
+}
+
+// certExpiryWindow is how far ahead of NotAfter `auth status` starts warning
+// that a certificate is about to expire.
+const certExpiryWindow = 7 * 24 * time.Hour
+
+// authStatusCert is the certificate half of one `auth status` session in JSON.
+type authStatusCert struct {
+	ExpiresAt    time.Time `json:"expiresAt"`
+	Expired      bool      `json:"expired"`
+	ExpiringSoon bool      `json:"expiringSoon"`
+}
+
+// authStatusSession is one stored cloud session in `auth status --json`. It
+// carries the same facts as the human rendering below; keep the two in step.
+type authStatusSession struct {
+	Cloud          string          `json:"cloud"`
+	CloudGRPC      string          `json:"cloudGrpc,omitempty"`
+	UserID         string          `json:"userId,omitempty"`
+	OrganizationID int             `json:"organizationId,omitempty"`
+	Certificate    *authStatusCert `json:"certificate,omitempty"`
+}
+
+type authStatusJSON struct {
+	LoggedIn bool                `json:"loggedIn"`
+	Sessions []authStatusSession `json:"sessions"`
+}
+
+// authStatusCertInfo summarizes a stored PEM certificate's expiry. It returns
+// nil when the certificate is absent or unparseable, matching the human
+// rendering, which simply omits the line in that case.
+func authStatusCertInfo(pemCert string, now time.Time) *authStatusCert {
+	if pemCert == "" {
+		return nil
+	}
+	block, _ := pem.Decode([]byte(pemCert))
+	if block == nil {
+		return nil
+	}
+	x509Cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+	expiry := x509Cert.NotAfter
+	return &authStatusCert{
+		ExpiresAt:    expiry,
+		Expired:      now.After(expiry),
+		ExpiringSoon: !now.After(expiry) && expiry.Sub(now) < certExpiryWindow,
+	}
+}
+
+// authStatusEndpoint is the address `auth status` labels "Cloud:" — the
+// dashboard URL when stored, else the gRPC endpoint.
+func authStatusEndpoint(auth config.AuthConfig) string {
+	if auth.CloudDashboard != "" {
+		return auth.CloudDashboard
+	}
+	return auth.CloudGRPC
 }
 
 func newAuthStatusCmd() *cobra.Command {
@@ -660,50 +745,50 @@ func newAuthStatusCmd() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
+			// --json is a root persistent flag, and the root PersistentPreRunE
+			// also turns it on for non-interactive stdout, so every scripted
+			// invocation lands here. Emit JSON only — no banner, no warning
+			// lines — so the output stays pipeable into jq.
+			out := cmd.OutOrStdout()
+			if jsonOutput {
+				return writeAuthStatusJSON(out, cfg, time.Now())
+			}
+
 			if len(cfg.Auth) == 0 {
-				fmt.Println(tui.WarningMessage("Not logged in. Run 'wendy auth login' to authenticate."))
+				fmt.Fprintln(out, tui.WarningMessage("Not logged in. Run 'wendy auth login' to authenticate."))
 				return nil
 			}
 
 			for _, auth := range cfg.Auth {
-				endpoint := auth.CloudDashboard
-				if endpoint == "" {
-					endpoint = auth.CloudGRPC
-				}
-				fmt.Printf("Cloud:  %s\n", endpoint)
+				endpoint := authStatusEndpoint(auth)
+				fmt.Fprintf(out, "Cloud:  %s\n", endpoint)
 				if auth.CloudGRPC != "" && auth.CloudGRPC != endpoint {
-					fmt.Printf("  gRPC: %s\n", auth.CloudGRPC)
+					fmt.Fprintf(out, "  gRPC: %s\n", auth.CloudGRPC)
 				}
 
 				if len(auth.Certificates) == 0 {
-					fmt.Println(tui.WarningMessage("  No certificates stored."))
+					fmt.Fprintln(out, tui.WarningMessage("  No certificates stored."))
 					continue
 				}
 
 				cert := auth.Certificates[0]
 				if cert.UserID != "" {
-					fmt.Printf("  User: %s\n", cert.UserID)
+					fmt.Fprintf(out, "  User: %s\n", cert.UserID)
 				}
 				if cert.OrganizationID != 0 {
-					fmt.Printf("  Org:  %d\n", cert.OrganizationID)
+					fmt.Fprintf(out, "  Org:  %d\n", cert.OrganizationID)
 				}
 
-				if cert.PemCertificate != "" {
-					block, _ := pem.Decode([]byte(cert.PemCertificate))
-					if block != nil {
-						if x509Cert, parseErr := x509.ParseCertificate(block.Bytes); parseErr == nil {
-							expiry := x509Cert.NotAfter
-							remaining := time.Until(expiry).Round(time.Hour)
-							expiryStr := expiry.Format("2006-01-02 15:04 UTC")
-							switch {
-							case time.Now().After(expiry):
-								fmt.Println(tui.ErrorMessage(fmt.Sprintf("  Certificate expired on %s", expiryStr)))
-							case remaining < 7*24*time.Hour:
-								fmt.Println(tui.WarningMessage(fmt.Sprintf("  Certificate expires %s (in %s)", expiryStr, remaining)))
-							default:
-								fmt.Println(tui.SuccessMessage(fmt.Sprintf("  Certificate valid until %s", expiryStr)))
-							}
-						}
+				if info := authStatusCertInfo(cert.PemCertificate, time.Now()); info != nil {
+					expiryStr := info.ExpiresAt.Format("2006-01-02 15:04 UTC")
+					switch {
+					case info.Expired:
+						fmt.Fprintln(out, tui.ErrorMessage(fmt.Sprintf("  Certificate expired on %s", expiryStr)))
+					case info.ExpiringSoon:
+						remaining := time.Until(info.ExpiresAt).Round(time.Hour)
+						fmt.Fprintln(out, tui.WarningMessage(fmt.Sprintf("  Certificate expires %s (in %s)", expiryStr, remaining)))
+					default:
+						fmt.Fprintln(out, tui.SuccessMessage(fmt.Sprintf("  Certificate valid until %s", expiryStr)))
 					}
 				}
 			}
@@ -711,6 +796,35 @@ func newAuthStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// writeAuthStatusJSON renders auth status as JSON. Sessions is always a list
+// (never null) so `.sessions | length` works on a logged-out config too.
+func writeAuthStatusJSON(w io.Writer, cfg *config.Config, now time.Time) error {
+	status := authStatusJSON{
+		LoggedIn: len(cfg.Auth) > 0,
+		Sessions: make([]authStatusSession, 0, len(cfg.Auth)),
+	}
+	for _, auth := range cfg.Auth {
+		session := authStatusSession{
+			Cloud:     authStatusEndpoint(auth),
+			CloudGRPC: auth.CloudGRPC,
+		}
+		if len(auth.Certificates) > 0 {
+			cert := auth.Certificates[0]
+			session.UserID = cert.UserID
+			session.OrganizationID = cert.OrganizationID
+			session.Certificate = authStatusCertInfo(cert.PemCertificate, now)
+		}
+		status.Sessions = append(status.Sessions, session)
+	}
+
+	data, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding auth status: %w", err)
+	}
+	fmt.Fprintln(w, string(data))
+	return nil
 }
 
 // openBrowser opens the given URL in the default browser.

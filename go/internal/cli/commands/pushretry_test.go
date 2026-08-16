@@ -46,9 +46,9 @@ func TestMultiBuildConcurrency(t *testing.T) {
 		{1, 1},  // capped to numServices
 		{3, 3},  // small group, below default cap
 		{4, 4},  // at default cap
-		{7, 4},  // still default cap just under large threshold
-		{8, 2},  // large group -> throttled
-		{14, 2}, // the go2 template -> throttled
+		{7, 4},  // above default cap
+		{8, 4},  // large groups retain the default cap
+		{14, 4}, // the go2 template retains the default cap
 	}
 	for _, tt := range tests {
 		if got := multiBuildConcurrency(tt.numServices); got != tt.want {
@@ -63,15 +63,15 @@ func TestResolveBuildConcurrency(t *testing.T) {
 		override   int
 		want       int
 	}{
-		// override = 0 -> auto heuristic (multiBuildConcurrency)
+		// override = 0 -> default (multiBuildConcurrency)
 		{0, 0, 1},  // nothing to build -> floor 1
 		{4, 0, 4},  // small group, default cap
-		{14, 0, 2}, // large group -> auto-throttled
+		{14, 0, 4}, // large group, default cap
 		// override > 0 -> use it, clamped to [1, buildCount]
 		{14, 1, 1}, // explicit serialization
-		{14, 6, 6}, // explicit higher than auto
+		{14, 6, 6}, // explicit higher than default
 		{3, 10, 3}, // override capped to buildCount
-		{5, 0, 4},  // 5 services, below large threshold -> default cap 4
+		{5, 0, 4},  // above default cap
 	}
 	for _, tt := range tests {
 		if got := resolveBuildConcurrency(tt.buildCount, tt.override); got != tt.want {

@@ -116,7 +116,9 @@ The wendy-agent Go code (`internal/shared/discovery/`) uses `_wendyos._udp` as t
 
 **CLI-side note:** The shipped CLI binary is built with `CGO_ENABLED=0`, so it cannot use nss-mdns to resolve `.local` names. Instead, it performs its own mDNS browse for `.local` hostnames when connecting. Set `WENDY_MDNS_DEBUG=1` to log browse failures, or `WENDY_MDNS_TIMEOUT` (1s–30s) to adjust the timeout.
 
-Both the primary `avahi-browse` path and the `hashicorp/mdns` fallback path parse all TXT records into a key→value map, including the `tls` record. A device that advertises `tls=true` has `IsMTLS` set to `true` and is contacted on the mTLS port (50052). The fallback path also resolves `wendyosdevice` and `displayname` TXT records, matching the behaviour of the primary path.
+Both the primary `avahi-browse` path and the `hashicorp/mdns` fallback path parse all TXT records into a key→value map, including the `tls` record.
+
+TXT records are **unauthenticated**: they are advertised by whatever host answers on the network, and anyone who can reach the multicast segment can advertise `_wendyos._udp` with any TXT values it likes. They are used for **routing and display only**, never for trust. A device that advertises `tls=true` has `IsMTLS` set to `true`, which tells the CLI to dial the mTLS port (50052) instead of the plaintext one — that arithmetic is real and still applies — but it is not what decides whether the CLI trusts the host it ends up talking to. Trust is established afterward, from the certificate that host presents during the TLS handshake, checked against the identity pin recorded for the name being dialed (see the "Device identity pinning" section of `pki/README.md`). A spoofed TXT record can get a connection attempt redirected to the wrong port on the wrong host; it cannot get that host trusted — the certificate check and pin still have to pass. The fallback path also resolves `wendyosdevice` and `displayname` TXT records, matching the behaviour of the primary path.
 
 IPv6 link-local addresses returned by mDNS are annotated with the zone ID (`%<ifname>`) so that the caller can use them directly in `net.Dial()` calls.
 

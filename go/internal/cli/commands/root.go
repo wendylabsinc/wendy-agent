@@ -7,7 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/wendylabsinc/wendy/go/internal/cli/analytics"
-	"github.com/wendylabsinc/wendy/go/internal/cli/providers"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
 	"github.com/wendylabsinc/wendy/go/internal/shared/env"
@@ -44,9 +43,11 @@ func NewRootCmd() *cobra.Command {
 				jsonOutput = true
 			}
 
+			// Provider availability is probed lazily on first use (see
+			// providers.ensureAvailable) rather than here: the probes shell out
+			// to `docker`/`container` and most commands never consult a
+			// provider at all.
 			premark := phaseTimer()
-			providers.Initialize(cmd.Context())
-			premark("  prerun: providers.Initialize")
 
 			cfg, err := config.Load()
 			if err != nil {
@@ -78,6 +79,13 @@ func NewRootCmd() *cobra.Command {
 			// the update-check goroutine below also mutates and saves cfg.
 			maybeRefreshMCPSetup(cfg)
 			premark("  prerun: maybeRefreshMCPSetup")
+
+			// Reconcile credentials with the configured storage policy. Runs in
+			// the synchronous zone: the update-check goroutine below saves cfg
+			// too, and its Save must observe an already-migrated on-disk state.
+			if config.MigrateSecretsIfNeeded(cfg) {
+				cmd.PrintErrln("Moved wendy credentials into ~/.wendy/config.json.")
+			}
 
 			if dueCLIUpdateCheck(cfg) {
 				scheduleCLIUpdateCheck(cfg)
@@ -128,6 +136,8 @@ func NewRootCmd() *cobra.Command {
 	// command can only be attached to one parent.
 	installCmd := newOSInstallCmd()
 	installCmd.GroupID = "develop"
+	docsCmd := newDocsCmd()
+	docsCmd.GroupID = "develop"
 
 	// Manage
 	projectCmd := newProjectCmd()
@@ -212,6 +222,7 @@ func NewRootCmd() *cobra.Command {
 		initCmd,
 		runCmd,
 		installCmd,
+		docsCmd,
 		// Manage
 		projectCmd,
 		deviceCmd,
