@@ -19,14 +19,14 @@ struct `'wendy device tunnel'` {
                 #expect(result.status.isSuccess)
                 #expect(
                     stdout.contains(
-                        "forwards each connection through the selected LAN agent"
+                        "forwards each connection or datagram through the selected LAN agent"
                     )
                 )
                 #expect(stdout.contains("device's loopback interface"))
                 #expect(stdout.contains("Usage:"))
                 #expect(
                     stdout.contains(
-                        "wendy device tunnel <local-port>:<remote-port> [flags]"
+                        "wendy device tunnel <local-port>:<remote-port>[/udp] [flags]"
                     )
                 )
                 #expect(stdout.contains("--device"))
