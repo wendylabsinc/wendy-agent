@@ -142,9 +142,9 @@ allocated number through the module's control device, and supervises a pump
 feeding it from RTSP. The pump uses GStreamer
 (`rtspsrc ! rtph264depay ! avdec_h264 ! videoconvert ! v4l2sink`) because
 GStreamer is already in the image and the agent already shells out to
-`gst-launch-1.0`. Pumps are reference-counted: started when an entitled
-container starts or `camera view` attaches, stopped after the last consumer goes
-idle.
+`gst-launch-1.0`. Pumps are started when an entitled container starts,
+stopped after the last container consumer goes idle; `camera view` streams
+RTSP directly and neither starts nor needs a pump (WDY-2474).
 
 ## Changes to existing code
 
