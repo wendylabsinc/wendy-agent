@@ -38,6 +38,17 @@ type fakeLoopback struct {
 	credChanged        []uint32
 	removed            []uint32
 	shutdownCalled     bool
+
+	// calls is a catch-all invocation log every method below appends its own
+	// name to, independent of (and in addition to) the more specific
+	// recorders above. Its purpose is narrow: TestStreamVideoIP_ViewOpensExactlyOneNetworkPipeline
+	// asserts it is empty after a plain view completes, so that test fails
+	// against ANY loopback interaction a view triggers — including a
+	// symmetric reintroduction of a removed AcquireView-equivalent (interface
+	// method + fakeLoopback method + call site) that the specific recorders
+	// wouldn't otherwise be wired to check. Per WDY-2474, `camera view` must
+	// never touch the loopback layer at all.
+	calls []string
 }
 
 func newFakeLoopback() *fakeLoopback {
@@ -49,12 +60,14 @@ func newFakeLoopback() *fakeLoopback {
 func (f *fakeLoopback) Available() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Available")
 	return f.availableErr
 }
 
 func (f *fakeLoopback) EnsureNodes(context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "EnsureNodes")
 	f.ensureNodesCalls++
 	return f.ensureNodesErr
 }
@@ -62,6 +75,7 @@ func (f *fakeLoopback) EnsureNodes(context.Context) error {
 func (f *fakeLoopback) NodePath(camID uint32) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "NodePath")
 	path, ok := f.nodePaths[camID]
 	return path, ok
 }
@@ -69,24 +83,28 @@ func (f *fakeLoopback) NodePath(camID uint32) (string, bool) {
 func (f *fakeLoopback) SetContainerConsumers(containerIDs []string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "SetContainerConsumers")
 	f.containerConsumers = append(f.containerConsumers, append([]string(nil), containerIDs...))
 }
 
 func (f *fakeLoopback) CredentialsChanged(camID uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "CredentialsChanged")
 	f.credChanged = append(f.credChanged, camID)
 }
 
 func (f *fakeLoopback) RemoveCamera(camID uint32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "RemoveCamera")
 	f.removed = append(f.removed, camID)
 }
 
 func (f *fakeLoopback) Shutdown() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, "Shutdown")
 	f.shutdownCalled = true
 }
 
@@ -660,8 +678,11 @@ func TestListIPCameras_PathEmptyWithoutNode(t *testing.T) {
 // lone viewer must open exactly the network hub's own RTSP session — never a
 // second one via a loopback pump the viewer used to demand. The pipeline
 // GStreamer builds for that lone session must be the network fdsink pipeline,
-// never the loopback's v4l2sink one, and the fakeLoopback must show no
-// pump-demand signal (a SetContainerConsumers call) from streaming at all.
+// never the loopback's v4l2sink one, and the fakeLoopback's catch-all call
+// log must stay empty end to end: a plain view must not touch the loopback
+// layer at all, so this also fails against a reintroduced AcquireView-style
+// call (interface method + fake method + call site) that a narrower,
+// method-specific assertion would miss.
 func TestStreamVideoIP_ViewOpensExactlyOneNetworkPipeline(t *testing.T) {
 	s := newIPTestService(t)
 	cam := registerTestCamera(t, s)
@@ -710,6 +731,13 @@ func TestStreamVideoIP_ViewOpensExactlyOneNetworkPipeline(t *testing.T) {
 	defer fake.mu.Unlock()
 	if len(fake.containerConsumers) != 0 {
 		t.Fatalf("fakeLoopback recorded SetContainerConsumers calls %v from a viewer, want none: viewing must never signal pump demand", fake.containerConsumers)
+	}
+	// The catch-all recorder must be empty end to end: a plain view must never
+	// touch the loopback layer at all, not through any method — this is what
+	// catches a reintroduced AcquireView-equivalent that the specific
+	// recorders above wouldn't be wired to check.
+	if len(fake.calls) != 0 {
+		t.Fatalf("fakeLoopback recorded calls %v from a plain view, want none: `camera view` must never touch the loopback layer (WDY-2474)", fake.calls)
 	}
 }
 
