@@ -44,6 +44,9 @@ TTS_SPEAKER_ID = int(os.environ.get("TTS_SPEAKER_ID", "3"))
 TTS_SPEED = float(os.environ.get("TTS_SPEED", "1.04"))
 TTS_THREADS = int(os.environ.get("TTS_THREADS", "8"))
 ALSA_PLAYBACK_DEVICE = os.environ.get("ALSA_PLAYBACK_DEVICE", "default")
+ALSA_PLAYBACK_PREROLL_MS = max(
+    0, int(os.environ.get("ALSA_PLAYBACK_PREROLL_MS", "300"))
+)
 SYSTEM_PROMPT_PATH = Path(os.environ.get("SYSTEM_PROMPT_PATH", "/app/SOUL.md"))
 KNOWLEDGE_DIR = Path(os.environ.get("KNOWLEDGE_DIR", "/app/knowledge"))
 KNOWLEDGE_MAX_CHARS = int(os.environ.get("KNOWLEDGE_MAX_CHARS", "30000"))
@@ -432,6 +435,34 @@ def samples_to_wav(samples, sample_rate: int) -> bytes:
     return output.getvalue()
 
 
+def add_wav_preroll(wav_data: bytes, preroll_ms: int) -> bytes:
+    """Prepend silence so a newly opened USB playback path cannot eat speech."""
+    if preroll_ms <= 0:
+        return wav_data
+
+    source = io.BytesIO(wav_data)
+    with wave.open(source, "rb") as wav:
+        channels = wav.getnchannels()
+        sample_width = wav.getsampwidth()
+        sample_rate = wav.getframerate()
+        compression = wav.getcomptype()
+        compression_name = wav.getcompname()
+        frames = wav.readframes(wav.getnframes())
+
+    silent_frame_count = round(sample_rate * preroll_ms / 1000)
+    silent_sample = b"\x80" if sample_width == 1 else b"\x00" * sample_width
+    silence = silent_sample * channels * silent_frame_count
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(sample_width)
+        wav.setframerate(sample_rate)
+        wav.setcomptype(compression, compression_name)
+        wav.writeframes(silence + frames)
+    return output.getvalue()
+
+
 def kokoro_engine():
     global TTS_ENGINE, TTS_MODULE
     if TTS_ENGINE is not None:
@@ -533,6 +564,7 @@ def play_wav_alsa(wav: bytes) -> None:
     if not shutil.which("aplay"):
         raise RuntimeError("aplay is not installed")
 
+    playback_wav = add_wav_preroll(wav, ALSA_PLAYBACK_PREROLL_MS)
     started_ns = time.monotonic_ns()
     process = subprocess.Popen(
         ["aplay", "-q", "-D", ALSA_PLAYBACK_DEVICE, "-t", "wav"],
@@ -550,14 +582,16 @@ def play_wav_alsa(wav: bytes) -> None:
         monotonic_ns=started_ns,
         details={
             "device": ALSA_PLAYBACK_DEVICE,
-            "wav_bytes": len(wav),
+            "wav_bytes": len(playback_wav),
+            "source_wav_bytes": len(wav),
+            "preroll_ms": ALSA_PLAYBACK_PREROLL_MS,
             "chunk_index": getattr(TRACE_THREAD, "chunk_index", None),
         },
     )
     with PLAYBACK_LOCK:
         PLAYBACK_PROCESS = process
     try:
-        _, stderr = process.communicate(input=wav)
+        _, stderr = process.communicate(input=playback_wav)
     finally:
         with PLAYBACK_LOCK:
             if PLAYBACK_PROCESS is process:
@@ -1790,14 +1824,47 @@ def generate_reply(
     error = ""
     replay_suppressed = False
     try:
-        reply, speech_buffer, tool_call = _stream_completion(
-            messages,
-            speech_queue,
-            allow_tools=True,
-            turn_id=turn_id,
-            pass_index=1,
-            blocked_first_sentences=blocked_first_sentences,
-        )
+        response_pass_index = 1
+        while True:
+            try:
+                reply, speech_buffer, tool_call = _stream_completion(
+                    messages,
+                    speech_queue,
+                    allow_tools=True,
+                    turn_id=turn_id,
+                    pass_index=response_pass_index,
+                    blocked_first_sentences=blocked_first_sentences,
+                )
+                break
+            except RepeatedFirstSentenceError as exc:
+                if response_pass_index >= 2 or not is_audio_turn:
+                    raise
+                _trace_event(
+                    "response.replay_retry",
+                    component="speechllm",
+                    turn_id=turn_id,
+                    details={"sentence": exc.sentence},
+                )
+                # Reuse the same current-turn audio, but make the retry answer
+                # its content instead of falling back to a generic phrase. The
+                # normal tool gate and G1 preflight still apply unchanged.
+                messages = [
+                    *messages,
+                    {
+                        "role": "system",
+                        "content": (
+                            "Your previous attempt began with a recently spoken "
+                            "sentence and was not delivered. Listen to the current "
+                            "visitor audio again and answer its actual request. Do "
+                            "not begin with a generic acknowledgment such as Okay "
+                            "or Hello. If the audio is unclear, ask the visitor to "
+                            "repeat it in one short sentence. If and only if this "
+                            "audio contains an explicit addressed G1 gesture "
+                            "command, call the matching tool before speaking."
+                        ),
+                    },
+                ]
+                response_pass_index += 1
         if tool_call is not None and not STATE.cancel_generation.is_set():
             result, action = _resolve_tool_call(tool_call, user_message)
             action_context["action"] = action
@@ -1819,7 +1886,7 @@ def generate_reply(
                 speech_queue,
                 allow_tools=False,
                 turn_id=turn_id,
-                pass_index=2,
+                pass_index=response_pass_index + 1,
                 # Repeated short acknowledgements such as "Okay" are valid for
                 # independently authorized action turns.
                 blocked_first_sentences=set(),

@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import queue
@@ -6,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from pathlib import Path
 from unittest import mock
 
@@ -178,6 +180,20 @@ class CaptureRescanTests(unittest.TestCase):
 
 
 class AlsaPlaybackTests(unittest.TestCase):
+    def test_preroll_adds_silence_without_dropping_original_audio(self):
+        original_pcm = b"\x11\x22" * 160
+        source = voice_server.wav_bytes(original_pcm)
+
+        padded = voice_server.add_wav_preroll(source, 100)
+
+        with wave.open(io.BytesIO(padded), "rb") as wav:
+            self.assertEqual(wav.getframerate(), voice_server.SAMPLE_RATE)
+            self.assertEqual(wav.getnchannels(), 1)
+            self.assertEqual(wav.getsampwidth(), 2)
+            frames = wav.readframes(wav.getnframes())
+        expected_silence = b"\x00\x00" * 1600
+        self.assertEqual(frames, expected_silence + original_pcm)
+
     @mock.patch.object(voice_server.shutil, "which", return_value="/usr/bin/aplay")
     @mock.patch.object(voice_server.subprocess, "Popen")
     def test_wav_is_piped_directly_to_configured_alsa_device(self, popen, _which):
@@ -189,7 +205,15 @@ class AlsaPlaybackTests(unittest.TestCase):
         self.addCleanup(
             setattr, voice_server, "ALSA_PLAYBACK_DEVICE", original_device
         )
+        original_preroll = voice_server.ALSA_PLAYBACK_PREROLL_MS
+        self.addCleanup(
+            setattr,
+            voice_server,
+            "ALSA_PLAYBACK_PREROLL_MS",
+            original_preroll,
+        )
         voice_server.ALSA_PLAYBACK_DEVICE = "plughw:4,0"
+        voice_server.ALSA_PLAYBACK_PREROLL_MS = 0
 
         voice_server.play_wav_alsa(b"RIFF wav data")
 
@@ -584,18 +608,25 @@ class ReplyPipelineTests(unittest.TestCase):
 
     @mock.patch.object(voice_server, "speak_alsa")
     @mock.patch.object(voice_server.urllib.request, "urlopen")
-    def test_generic_voice_clarification_is_blocked_on_first_turn(
+    def test_generic_voice_clarification_is_repaired_on_first_turn(
         self, urlopen, speak
     ):
-        event = {
+        blocked_event = {
             "choices": [{"delta": {"content": "What do you need it for?"}}]
         }
-        response = mock.MagicMock()
-        response.__enter__.return_value = [
-            f"data: {json.dumps(event)}\n".encode(),
-            b"data: [DONE]\n",
-        ]
-        urlopen.return_value = response
+        repaired_event = {
+            "choices": [{"delta": {"content": "Could you repeat that clearly?"}}]
+        }
+
+        def response(event):
+            value = mock.MagicMock()
+            value.__enter__.return_value = [
+                f"data: {json.dumps(event)}\n".encode(),
+                b"data: [DONE]\n",
+            ]
+            return value
+
+        urlopen.side_effect = [response(blocked_event), response(repaired_event)]
         state = voice_server.VoiceState()
         state.model_ready = True
         client = mock.Mock()
@@ -611,26 +642,33 @@ class ReplyPipelineTests(unittest.TestCase):
         ):
             voice_server.generate_reply(message, turn_id="voice-generic-question")
 
-        speak.assert_not_called()
+        speak.assert_called_once_with("Could you repeat that clearly?")
         self.assertEqual(state.history, [])
-        self.assertEqual(len(state.unusable_voice_turns), 1)
+        self.assertEqual(len(state.unusable_voice_turns), 0)
 
     @mock.patch.object(voice_server, "speak_alsa")
     @mock.patch.object(voice_server.urllib.request, "urlopen")
-    def test_distinct_mic_turn_cannot_replay_previous_first_sentence(
+    def test_distinct_mic_turn_repairs_repeated_first_sentence(
         self, urlopen, speak
     ):
         repeated = {"choices": [{"delta": {"content": "I can help with that."}}]}
+        repaired = {
+            "choices": [{"delta": {"content": "Please tell me your current question."}}]
+        }
 
-        def response():
+        def response(event):
             value = mock.MagicMock()
             value.__enter__.return_value = [
-                f"data: {json.dumps(repeated)}\n".encode(),
+                f"data: {json.dumps(event)}\n".encode(),
                 b"data: [DONE]\n",
             ]
             return value
 
-        urlopen.side_effect = [response(), response()]
+        urlopen.side_effect = [
+            response(repeated),
+            response(repeated),
+            response(repaired),
+        ]
         state = voice_server.VoiceState()
         state.model_ready = True
         subscriber = queue.Queue()
@@ -656,15 +694,24 @@ class ReplyPipelineTests(unittest.TestCase):
             voice_server.generate_reply(audio_message("first"), turn_id="voice-first")
             voice_server.generate_reply(audio_message("second"), turn_id="voice-second")
 
-        speak.assert_called_once_with("I can help with that.")
+        self.assertEqual(
+            speak.call_args_list,
+            [
+                mock.call("I can help with that."),
+                mock.call("Please tell me your current question."),
+            ],
+        )
         events = []
         while not subscriber.empty():
             events.append(subscriber.get_nowait())
         deltas = [event for event in events if event["event"] == "assistant_delta"]
         completions = [event for event in events if event["event"] == "assistant_done"]
-        self.assertEqual(len(deltas), 1)
+        self.assertEqual(len(deltas), 2)
         self.assertEqual(deltas[0]["data"]["text"], "I can help with that.")
-        self.assertTrue(completions[-1]["data"]["suppressed"])
+        self.assertEqual(
+            deltas[1]["data"]["text"], "Please tell me your current question."
+        )
+        self.assertFalse(completions[-1]["data"]["suppressed"])
         self.assertEqual(state.history, [])
 
 
