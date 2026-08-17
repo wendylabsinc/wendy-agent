@@ -138,8 +138,9 @@ func updateAvahiHostname(logger *zap.Logger, hostname string) {
 	// Unconditional restart, unlike the re-assert path: here the hostname itself
 	// just changed, so avahi must re-read gethostname() even when the TXT records
 	// happen to be unchanged.
-	restartAvahiDaemon(logger)
-	logger.Info("Restarted avahi-daemon with new hostname", zap.String("hostname", hostname))
+	if restartAvahiDaemon(logger) {
+		logger.Info("Restarted avahi-daemon with new hostname", zap.String("hostname", hostname))
+	}
 }
 
 // ReassertHostnameAdvertisement re-publishes the mDNS TXT records for a hostname
@@ -158,14 +159,14 @@ func updateAvahiHostname(logger *zap.Logger, hostname string) {
 // already agree, it touches nothing and leaves avahi-daemon alone — this runs on
 // every agent start, and a needless restart would drop the advertisement.
 func ReassertHostnameAdvertisement(logger *zap.Logger) {
-	reassertHostnameAdvertisement(logger, explicitHostnamePath, avahiServiceFile, func() {
-		restartAvahiDaemon(logger)
+	reassertHostnameAdvertisement(logger, explicitHostnamePath, avahiServiceFile, func() bool {
+		return restartAvahiDaemon(logger)
 	})
 }
 
 // reassertHostnameAdvertisement is the testable core of
 // ReassertHostnameAdvertisement, with the paths and the avahi restart injected.
-func reassertHostnameAdvertisement(logger *zap.Logger, hostnamePath, serviceFile string, restartAvahi func()) {
+func reassertHostnameAdvertisement(logger *zap.Logger, hostnamePath, serviceFile string, restartAvahi func() bool) {
 	data, err := os.ReadFile(hostnamePath)
 	if err != nil {
 		// A missing file is the normal "never renamed" case, not a problem.
@@ -201,9 +202,10 @@ func reassertHostnameAdvertisement(logger *zap.Logger, hostnamePath, serviceFile
 		logger.Warn("Could not write avahi service file", zap.String("path", serviceFile), zap.Error(err))
 		return
 	}
-	restartAvahi()
-	logger.Info("Re-applied renamed hostname to the mDNS advertisement",
-		zap.String("hostname", hostname))
+	if restartAvahi() {
+		logger.Info("Re-applied renamed hostname to the mDNS advertisement",
+			zap.String("hostname", hostname))
+	}
 }
 
 // avahiContentForHostname returns the avahi service file content with the
@@ -219,12 +221,14 @@ func avahiContentForHostname(content, hostname string) string {
 // restartAvahiDaemon restarts avahi-daemon so it re-reads both the service file
 // and gethostname(). A full restart is required: --reload (SIGHUP) only
 // refreshes service files, leaving the %h-based records stale.
-func restartAvahiDaemon(logger *zap.Logger) {
+func restartAvahiDaemon(logger *zap.Logger) bool {
 	restart := exec.Command("/usr/bin/systemctl", "restart", "avahi-daemon")
 	restart.Env = systemPathEnv()
 	if out, err := restart.CombinedOutput(); err != nil {
 		logger.Warn("systemctl restart avahi-daemon failed", zap.Error(err), zap.String("output", string(out)))
+		return false
 	}
+	return true
 }
 
 // replaceAvahiTXTRecord replaces the value in a <txt-record>key=...</txt-record> line.

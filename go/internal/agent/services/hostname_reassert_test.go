@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // avahiFixture is the shipped wendyos-mdns.service template after the boot-time
@@ -67,7 +69,10 @@ func TestReassertHostnameAdvertisementRestoresRevertedRecords(t *testing.T) {
 	hostnamePath, servicePath := reassertFixture(t, "kitchen-pi", avahiFixture)
 
 	restarts := 0
-	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() { restarts++ })
+	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() bool {
+		restarts++
+		return true
+	})
 
 	got := readFile(t, servicePath)
 	if !strings.Contains(got, "<txt-record>name=kitchen-pi</txt-record>") {
@@ -96,7 +101,10 @@ func TestReassertHostnameAdvertisementNoExplicitHostname(t *testing.T) {
 	hostnamePath := filepath.Join(t.TempDir(), "absent")
 
 	restarts := 0
-	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() { restarts++ })
+	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() bool {
+		restarts++
+		return true
+	})
 
 	if got := readFile(t, servicePath); got != avahiFixture {
 		t.Errorf("service file modified with no rename in effect:\n%s", got)
@@ -116,7 +124,10 @@ func TestReassertHostnameAdvertisementAlreadyCurrent(t *testing.T) {
 	hostnamePath, servicePath := reassertFixture(t, "kitchen-pi", current)
 
 	restarts := 0
-	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() { restarts++ })
+	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() bool {
+		restarts++
+		return true
+	})
 
 	if got := readFile(t, servicePath); got != current {
 		t.Errorf("service file rewritten when already current:\n%s", got)
@@ -142,7 +153,10 @@ func TestReassertHostnameAdvertisementInvalidHostname(t *testing.T) {
 			}
 
 			restarts := 0
-			reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() { restarts++ })
+			reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, servicePath, func() bool {
+				restarts++
+				return true
+			})
 
 			if got := readFile(t, servicePath); got != avahiFixture {
 				t.Errorf("service file modified for invalid hostname %q:\n%s", invalid, got)
@@ -164,9 +178,23 @@ func TestReassertHostnameAdvertisementMissingServiceFile(t *testing.T) {
 	}
 
 	restarts := 0
-	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, filepath.Join(dir, "absent.service"), func() { restarts++ })
+	reassertHostnameAdvertisement(zap.NewNop(), hostnamePath, filepath.Join(dir, "absent.service"), func() bool {
+		restarts++
+		return true
+	})
 
 	if restarts != 0 {
 		t.Errorf("avahi restarts = %d, want 0", restarts)
+	}
+}
+
+func TestReassertHostnameAdvertisementDoesNotLogSuccessWhenRestartFails(t *testing.T) {
+	hostnamePath, servicePath := reassertFixture(t, "kitchen-pi", avahiFixture)
+	core, logs := observer.New(zapcore.InfoLevel)
+
+	reassertHostnameAdvertisement(zap.New(core), hostnamePath, servicePath, func() bool { return false })
+
+	if got := logs.FilterMessage("Re-applied renamed hostname to the mDNS advertisement").Len(); got != 0 {
+		t.Errorf("success logs = %d, want 0", got)
 	}
 }
