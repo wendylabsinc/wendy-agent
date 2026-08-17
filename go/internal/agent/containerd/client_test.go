@@ -1,6 +1,7 @@
 package containerd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1418,6 +1419,17 @@ func TestSuppressRestartsNoopWhenNoMonitor(t *testing.T) {
 		t.Fatal("suppressRestarts returned a nil func with no monitor wired")
 	}
 	resume() // must not panic
+}
+
+func TestStartContainerRejectsStartWhileAppStopping(t *testing.T) {
+	c := &Client{
+		namespace:   "default",
+		appStopping: map[string]bool{"com.example.app": true},
+	}
+	_, err := c.StartContainer(context.Background(), "com.example.app", "", nil)
+	if !errors.Is(err, errAppStopping) {
+		t.Fatalf("StartContainer error = %v; want errAppStopping", err)
+	}
 }
 
 // TestSuppressRestartsDelegatesToMonitor verifies suppressRestarts forwards
