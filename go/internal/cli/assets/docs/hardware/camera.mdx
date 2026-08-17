@@ -69,6 +69,8 @@ wendy device camera login <id>
 
 This prompts for the password without echoing it, or reads it from the `WENDY_CAMERA_PASSWORD` environment variable when there is no terminal to prompt on (for example, in CI). The username defaults to `admin`; pass `--user` to override it. Credentials are stored on the device and are never returned by any command.
 
+If the project you're deploying has a `camera` entitlement with `user`/`password` set (see [`camera` entitlement fields](/docs/apps/wendy.json#camera)), you often don't need `camera login` at all: `wendy run`, `wendy fleet run`, and `wendy watch` push those credentials automatically at the start of every deploy, to every registered IP camera that has no stored login yet. The push never overwrites a camera that already has credentials, so it's safe to redeploy after fixing one by hand — but it also means rotating the password in `wendy.json` alone won't reach a camera that's already credentialed; run `camera login` again (or `camera forget` and redeploy) to apply the change.
+
 Remove a camera and its stored credentials with:
 
 ```bash
@@ -88,6 +90,8 @@ wendy device camera test <id>
 ### Container Access
 
 Apps with the `camera` entitlement (see [Camera Entitlement](/docs/device/entitlements#camera-entitlement)) see network cameras exactly like local ones: each registered camera is mirrored into a `/dev/video2xx` loopback node numbered to match its own device ID — camera `212` is always `/dev/video212` — and mounted into the container the same way USB and CSI devices are. A node is created before an entitled container starts; which containers currently count as consumers is kept in sync on every container start, stop, and delete, plus a periodic reconciliation roughly once a minute that catches anything those lifecycle hooks miss, such as a container's task crashing on its own.
+
+The deploy-time credential push (see [Credentials](#credentials) above) matters here specifically because it runs before container create: a camera that needs a login and would otherwise block its loopback mirror from starting gets credentialed first, so the mirror can come up in time for the container's first start instead of waiting on a later manual `camera login`.
 
 <Callout type="info">
   The loopback node always carries the camera's **sub-stream** — the same lower-resolution feed `camera view` chooses automatically for anything ≤1024px wide. There is currently no way for a container to request the camera's main/high-resolution stream instead.
