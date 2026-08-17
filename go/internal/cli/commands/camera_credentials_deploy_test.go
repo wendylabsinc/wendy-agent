@@ -58,6 +58,7 @@ func TestCameraCredentialsFromAppConfig(t *testing.T) {
 	tests := []struct {
 		name         string
 		entitlements []appconfig.Entitlement
+		services     map[string]*appconfig.ServiceConfig
 		wantUser     string
 		wantPassword string
 		wantFound    bool
@@ -94,11 +95,48 @@ func TestCameraCredentialsFromAppConfig(t *testing.T) {
 			name:      "no entitlements",
 			wantFound: false,
 		},
+		{
+			// Multi-service apps can carry the camera entitlement only under a
+			// service (appconfig.go ServiceConfig.Entitlements), never at the
+			// top level. multiServiceCreateConfig (multibuild.go:842) merges
+			// it into that service's effective container config, so the
+			// deploy-time push must see it too.
+			name: "camera entitlement only under a service",
+			services: map[string]*appconfig.ServiceConfig{
+				"camera-worker": {
+					Entitlements: []appconfig.Entitlement{
+						{Type: appconfig.EntitlementCamera, User: "svcuser", Password: "svcpass"},
+					},
+				},
+			},
+			wantUser:     "svcuser",
+			wantPassword: "svcpass",
+			wantFound:    true,
+		},
+		{
+			// multiServiceCreateConfig merges top-level entitlements BEFORE a
+			// service's own (appCfg.Entitlements then svc.Entitlements), so a
+			// top-level camera credential must win a conflict the same way.
+			name: "top-level credential takes precedence over a service's",
+			entitlements: []appconfig.Entitlement{
+				{Type: appconfig.EntitlementCamera, User: "topuser", Password: "toppass"},
+			},
+			services: map[string]*appconfig.ServiceConfig{
+				"camera-worker": {
+					Entitlements: []appconfig.Entitlement{
+						{Type: appconfig.EntitlementCamera, User: "svcuser", Password: "svcpass"},
+					},
+				},
+			},
+			wantUser:     "topuser",
+			wantPassword: "toppass",
+			wantFound:    true,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &appconfig.AppConfig{Entitlements: tc.entitlements}
+			cfg := &appconfig.AppConfig{Entitlements: tc.entitlements, Services: tc.services}
 			user, password, found := cameraCredentialsFromAppConfig(cfg)
 			if found != tc.wantFound {
 				t.Fatalf("found = %v, want %v", found, tc.wantFound)

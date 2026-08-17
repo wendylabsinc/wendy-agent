@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -47,8 +48,43 @@ func cameraCredentialsFromConfig(dir string) (user, password string, found bool)
 // push: the entitlement must be camera/video type with a non-empty User. A
 // password with no username does not count — the interactive prompt path is
 // the only place a vendor-default user is assumed.
+//
+// A multi-service app can carry the camera entitlement under
+// services.<name>.entitlements (appconfig.go ServiceConfig.Entitlements)
+// instead of, or in addition to, the top level: multiServiceCreateConfig
+// (multibuild.go:842) builds each service's effective container config by
+// appending that service's own entitlements onto the shared top-level set —
+// appCfg.Entitlements first, svc.Entitlements after — so a top-level
+// candidate always wins a same-type conflict there. Mirror that precedence
+// here: check the top level first, then fall back to each service's own
+// entitlements in sorted-name order (a fixed order so the result can't
+// depend on Go's randomized map iteration), and return on the first match.
 func cameraCredentialsFromAppConfig(cfg *appconfig.AppConfig) (user, password string, found bool) {
-	for _, ent := range cfg.Entitlements {
+	if user, password, found = cameraCredentialFromEntitlements(cfg.Entitlements); found {
+		return user, password, found
+	}
+
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		svc := cfg.Services[name]
+		if svc == nil {
+			continue
+		}
+		if user, password, found = cameraCredentialFromEntitlements(svc.Entitlements); found {
+			return user, password, found
+		}
+	}
+	return "", "", false
+}
+
+// cameraCredentialFromEntitlements returns the first camera/video
+// entitlement in ents that carries a non-empty User.
+func cameraCredentialFromEntitlements(ents []appconfig.Entitlement) (user, password string, found bool) {
+	for _, ent := range ents {
 		if ent.Type != appconfig.EntitlementCamera && ent.Type != appconfig.EntitlementVideo {
 			continue
 		}
