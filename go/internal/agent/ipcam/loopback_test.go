@@ -687,9 +687,9 @@ func TestLoopback_ReacquireWithinGraceKeepsPump(t *testing.T) {
 // Locks the policy change in WDY-2474: with viewer demand removed entirely,
 // registering a camera that satisfies every other pump precondition (module
 // available, node exists, credentials stored) must never start a pump on its
-// own — only a container consumer can. There is no AcquireView call here (it
-// no longer exists); this proves nothing else in the reconcile path has
-// quietly reintroduced viewer-driven demand.
+// own — only a container consumer can. Nothing here simulates a viewer
+// attaching (that path no longer exists); this proves nothing else in the
+// reconcile path has quietly reintroduced viewer-driven demand.
 func TestLoopback_NoPumpWithoutContainerConsumers(t *testing.T) {
 	h := newLoopbackHarness()
 	h.controlExists = true

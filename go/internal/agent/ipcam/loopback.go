@@ -43,12 +43,13 @@ func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 const (
-	// pumpIdleGrace is how long a pump keeps running after its last consumer
-	// releases it (view ref drops to zero, or an entitled container stops)
-	// before it is actually stopped. This absorbs a container restart or a
-	// viewer window closing and reopening without paying the RTSP connect
-	// cost again. A new consumer arriving within the grace period cancels the
-	// pending stop rather than the pump ever going down.
+	// pumpIdleGrace is how long a pump keeps running after its last container
+	// consumer stops before it is actually stopped. Viewers never factor into
+	// this: `camera view` streams RTSP directly and is not pump demand (see
+	// reconcile's demand comment, WDY-2474). This absorbs a container restart
+	// without paying the RTSP connect cost again. A new container consumer
+	// arriving within the grace period cancels the pending stop rather than
+	// the pump ever going down.
 	pumpIdleGrace = 10 * time.Second
 
 	// pumpBackoffBase and pumpBackoffCap bound the delay between pump restart
@@ -181,8 +182,6 @@ type Loopback struct {
 	// demand — the camera entitlement is all-cameras (spec :282-284) — but the
 	// names are kept so a caller diffing its own state has something to log.
 	containerOwners map[string]struct{}
-	// viewRefs counts active camera-view consumers (AcquireView) per camera.
-	viewRefs map[uint32]int
 	// pumps holds supervision state for every camera with a running
 	// supervisor goroutine or a pending idle-grace timer. reconcile is the
 	// only code that adds or removes entries.
@@ -218,7 +217,6 @@ func NewLoopback(ctx context.Context, logger *zap.Logger, reg *Registry, creds *
 		deps:            defaultLoopbackDeps(),
 		clock:           realClock{},
 		containerOwners: make(map[string]struct{}),
-		viewRefs:        make(map[uint32]int),
 		pumps:           make(map[uint32]*camPump),
 	}
 }
@@ -385,36 +383,6 @@ func (l *Loopback) RemoveCamera(camID uint32) {
 	}
 }
 
-// AcquireView records a camera-view consumer for camID (`camera view`
-// attaching, per the spec's "started when ... `camera view` attaches") and
-// returns a release func the caller must call exactly once when it is done
-// viewing. It is safe to call for a camera the loopback module cannot serve
-// (module absent, camera unregistered, no credentials yet): the ref count is
-// still tracked so bookkeeping stays consistent, but reconcile's own
-// precondition checks mean no pump is ever started, and the returned release
-// func is always safe to call.
-func (l *Loopback) AcquireView(camID uint32) func() {
-	l.mu.Lock()
-	l.viewRefs[camID]++
-	l.mu.Unlock()
-	l.reconcile(camID)
-
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			l.mu.Lock()
-			if l.viewRefs[camID] > 0 {
-				l.viewRefs[camID]--
-				if l.viewRefs[camID] == 0 {
-					delete(l.viewRefs, camID)
-				}
-			}
-			l.mu.Unlock()
-			l.reconcile(camID)
-		})
-	}
-}
-
 // SetContainerConsumers replaces the set of running entitled container names
 // wholesale and re-evaluates demand for every registered camera. There is no
 // acquire/release pairing to leak here — the camera entitlement is
@@ -483,22 +451,26 @@ func (l *Loopback) Shutdown() {
 	l.wg.Wait()
 }
 
-// reconcile recomputes demand for camID — len(containerOwners) > 0 ||
-// viewRefs[camID] > 0 — and starts, stops, or leaves alone its supervisor
+// reconcile recomputes demand for camID — container consumers only, see the
+// demand comment below — and starts, stops, or leaves alone its supervisor
 // accordingly. It is the sole place that starts or stops a pump: every other
-// entry point (AcquireView/its release func, SetContainerConsumers,
-// CredentialsChanged) and the supervisor's own self-heal after it exits all
-// funnel through it, so there is exactly one place the start/stop decision is
-// made — and the one place that must never call wg.Add once Shutdown has
-// started, which is why both branches below check shuttingDown inside the
-// same locked section that calls it.
+// entry point (SetContainerConsumers, CredentialsChanged) and the
+// supervisor's own self-heal after it exits all funnel through it, so there
+// is exactly one place the start/stop decision is made — and the one place
+// that must never call wg.Add once Shutdown has started, which is why both
+// branches below check shuttingDown inside the same locked section that
+// calls it.
 func (l *Loopback) reconcile(camID uint32) {
 	l.mu.Lock()
 	if l.shuttingDown {
 		l.mu.Unlock()
 		return
 	}
-	demand := len(l.containerOwners) > 0 || l.viewRefs[camID] > 0
+	// Pump demand is container consumers only (WDY-2474): viewers stream RTSP
+	// directly through the hub and never read the node, so counting them as
+	// pump demand opened a second concurrent RTSP session per view, which
+	// breaks cameras that cap sessions at 1.
+	demand := len(l.containerOwners) > 0
 	cp, running := l.pumps[camID]
 	if running {
 		if demand {
@@ -565,7 +537,7 @@ func (l *Loopback) reconcile(camID uint32) {
 	if _, alreadyRunning := l.pumps[camID]; alreadyRunning {
 		return
 	}
-	if len(l.containerOwners) == 0 && l.viewRefs[camID] == 0 {
+	if len(l.containerOwners) == 0 {
 		return
 	}
 	ctx, cancel := context.WithCancel(l.ctx)
