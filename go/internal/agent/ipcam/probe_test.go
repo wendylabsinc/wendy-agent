@@ -788,6 +788,56 @@ func TestProbeCredentials_MD5SessChallenge(t *testing.T) {
 	}
 }
 
+// A challenge combining algorithm=MD5-sess with qop="auth" must compose both:
+// HA1 is folded through the nonce and cnonce (MD5-sess), and the response is
+// then computed with the full qop=auth formula over that sess HA1 — the one
+// authorization branch neither TestProbeCredentials_MD5SessChallenge (sess,
+// no qop) nor TestProbeCredentials_QopOpaqueAlgorithmChallenge (qop, plain
+// MD5) exercises on its own.
+func TestProbeCredentials_MD5SessQopChallenge(t *testing.T) {
+	pinDigestCnonce(t, "0a4f113b")
+	const wantResponse = "52a00aea551b6b87ebb257ff253006e7"
+
+	var secondRequest string
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r) // unauthenticated DESCRIBE
+
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			`WWW-Authenticate: Digest realm="IP Camera", nonce="6629fae49393a05397450978507c4ef1", algorithm=MD5-sess, qop="auth"` + "\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+
+		secondRequest = readRequest(t, r) // authenticated DESCRIBE
+
+		_, err = conn.Write([]byte("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 0\r\n\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 200: %v", err)
+		}
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeOK {
+		t.Fatalf("result = %v, want ProbeOK; detail=%q", result, detail)
+	}
+	for _, want := range []string{
+		`response="` + wantResponse + `"`,
+		"algorithm=MD5-sess",
+		"qop=auth",
+		"nc=00000001",
+		`cnonce="0a4f113b"`,
+	} {
+		if !strings.Contains(secondRequest, want) {
+			t.Fatalf("resend missing %q: %q", want, secondRequest)
+		}
+	}
+}
+
 // A realm containing a literal double quote and a comma — legal in a digest
 // realm string, escaped on the wire as IP\"Camera, Ltd — must survive
 // splitAuthParams without the embedded comma being mistaken for a parameter
