@@ -177,10 +177,9 @@ func BrowseMDNSServicesContinuous(ctx context.Context, serviceType string) (<-ch
 // BrowseMDNSServices collects services of serviceType from the platform mdns
 // backend, returning once the network has settled: browseSettle after the
 // most recently discovered service, or timeout, whichever comes first.
-// Results are deduplicated by InstanceName+Hostname+Port — a re-announcement
-// of the same instance (mdnsStreamBackend does not dedup itself) collapses
-// into a single entry, matching every per-platform batch browse this
-// replaces.
+// Results are deduplicated by instance, host, port, address, and interface. A
+// repeat announcement collapses, while a multi-homed service retains one
+// answer per path so connection selection can choose Ethernet over Wi-Fi.
 func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Duration) ([]MDNSService, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
@@ -226,7 +225,7 @@ func BrowseMDNSServices(ctx context.Context, serviceType string, timeout time.Du
 	for {
 		select {
 		case svc := <-found:
-			key := fmt.Sprintf("%s-%s-%d", svc.InstanceName, svc.Hostname, svc.Port)
+			key := fmt.Sprintf("%s-%s-%d-%s-%s", svc.InstanceName, svc.Hostname, svc.Port, svc.IPAddress, svc.InterfaceName)
 			if !seen[key] {
 				seen[key] = true
 				services = append(services, svc)

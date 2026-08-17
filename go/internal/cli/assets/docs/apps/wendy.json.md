@@ -304,6 +304,7 @@ Hardware-dependent GPU or board-telemetry access.
 | Host hardware | Grant |
 |---------------|-------|
 | NVIDIA Jetson | NVIDIA CDI specs, CUDA env vars, `/dev/nvidia*` |
+| AMD (ROCm) | `/dev/kfd` (compute) and `/dev/dri/renderD*` (GPU), plus the `render`/`video` groups |
 | Raspberry Pi | `/dev/vcio` (VideoCore mailbox) for board telemetry — power, voltage/current, temperature, throttling, Pi 5 PMIC ADC |
 | Other | No hardware-specific grant |
 

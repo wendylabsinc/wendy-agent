@@ -8,6 +8,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
+	"github.com/wendylabsinc/wendy/go/internal/shared/timefmt"
 	agentpbv2 "github.com/wendylabsinc/wendy/go/proto/gen/agentpb/v2"
 )
 
@@ -65,7 +66,7 @@ func maybeFixClock(ctx context.Context, conn *grpcclient.AgentConnection) {
 		return
 	}
 	if syncResp.GetApplied() && !jsonOutput {
-		fmt.Fprintf(os.Stderr, "⏱  Device clock was %s behind — synchronized via Roughtime.\n", formatClockSkew(skew))
+		fmt.Fprintf(os.Stderr, "⏱  Device clock was %s behind — synchronized via Roughtime.\n", timefmt.Skew(skew))
 	}
 }
 
@@ -73,21 +74,5 @@ func maybeFixClock(ctx context.Context, conn *grpcclient.AgentConnection) {
 func debugClock(format string, args ...any) {
 	if os.Getenv("WENDY_TLS_DEBUG") != "" {
 		fmt.Fprintf(os.Stderr, "[clock] "+format+"\n", args...)
-	}
-}
-
-// formatClockSkew renders a coarse, human-friendly magnitude (e.g. "56y", "3h", "5m").
-func formatClockSkew(d time.Duration) string {
-	switch {
-	case d >= 365*24*time.Hour:
-		return fmt.Sprintf("%dy", int(d/(365*24*time.Hour)))
-	case d >= 24*time.Hour:
-		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
-	case d >= time.Hour:
-		return fmt.Sprintf("%dh", int(d/time.Hour))
-	case d >= time.Minute:
-		return fmt.Sprintf("%dm", int(d/time.Minute))
-	default:
-		return d.Round(time.Minute).String()
 	}
 }

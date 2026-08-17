@@ -1,6 +1,6 @@
 # `wendy device top`
 
-Live CPU, memory, and GPU usage for the device and its containers — an `htop`-style monitor for a WendyOS device.
+Live CPU, memory, GPU, and temperature telemetry for the device and its containers — an `htop`-style monitor for a WendyOS device.
 
 ## Usage
 
@@ -10,7 +10,9 @@ wendy device top [flags]
 
 ## Description
 
-`wendy device top` opens a full-screen, auto-refreshing dashboard showing whole-machine CPU and memory utilization, per-GPU utilization/memory (and temperature/power where reported), and a per-app/per-container table of CPU% and memory. CPU percentages are computed from deltas between refreshes, so the first frame may read low until a second sample is taken.
+`wendy device top` opens a full-screen, auto-refreshing dashboard showing whole-machine CPU and memory utilization, the hottest current device temperature, per-GPU utilization/memory (and temperature/power where reported), and a per-app/per-container table of CPU% and memory. CPU percentages are computed from deltas between refreshes, so the first frame may read low until a second sample is taken.
+
+The temperature header normally shows the maximum reading and its source. A yellow `●` appears when any classified sensor is within 5°C of its operational warning threshold; the circle turns red at or above that threshold. On a Unitree Go2 discovered through LowState telemetry, the agent adds the IMU and 12 physical motor temperatures to the Linux thermal zones and expires them after 15 seconds without a fresh sample. The current operational thresholds are 70°C for Go2 motors and 85°C for the Go2 IMU and host thermal zones. These values were observed and chosen for Woof operations; they are not Unitree or NVIDIA vendor ratings.
 
 When the device stops answering polls — because it lost power, dropped off the network, or ran its battery flat — the dashboard raises a banner in place of the usual status flash:
 
@@ -64,6 +66,12 @@ Plain snapshots include a `STATE` column. JSON snapshots have this shape:
     "cpuCount": 8,
     "memUsedBytes": 2147483648,
     "memTotalBytes": 8589934592,
+    "thermalZones": [
+      { "name": "go2/imu", "tempC": 79.0 },
+      { "name": "go2/motor/fr-thigh", "tempC": 66.0 },
+      { "name": "tj-thermal", "tempC": 55.0 }
+    ],
+    "maximumTemperature": { "name": "go2/imu", "tempC": 79.0 },
     "gpus": [
       {
         "index": 0,
@@ -83,6 +91,9 @@ Plain snapshots include a `STATE` column. JSON snapshots have this shape:
 ```
 
 - `host.gpus` is omitted on devices that report no GPU.
+- `host.thermalZones` is omitted when the agent has no readable temperature source.
+- `host.maximumTemperature` is the hottest valid thermal-zone or GPU reading and is omitted when no temperature is available.
+- Go2 IMU and motor temperatures require a device agent with the LowState thermal extension; older agents continue to report host thermal zones only.
 - Each GPU's `tempC` and `powerW` are omitted when the agent doesn't report them.
 - `containers[].state` is `running`, `stopped`, or `crash-loop`.
 - `containers[].cpuPercent` is each container's share of the whole machine (0–100 across all cores).

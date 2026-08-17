@@ -56,6 +56,17 @@ type options struct {
 	progress     func(url string)
 	gpuArch      string
 	buildProfile string
+	source       string
+	ros2Distro   string
+	ros2RMW      string
+}
+
+// WithSource names which Stagefile in dir to compile, for a project that
+// carries several (see SourceNames). Defaults to the canonical SourceName.
+// An unrecognised name is not silently ignored — CompileFile rejects it, so a
+// typo'd variant fails here rather than compiling the wrong file.
+func WithSource(name string) Option {
+	return func(o *options) { o.source = name }
 }
 
 // BuildProfileDebug and BuildProfileRelease are the two compile profiles a
@@ -98,19 +109,39 @@ func WithBuildProfile(profile string) Option {
 	}
 }
 
-// CompileFile reads build.stagefile.yaml from dir, resolves any missing
-// lockfile image refs against a live registry (existing pins are never
-// touched — only an explicit re-lock changes them), writes/updates
-// build.stagefile.lock.yaml in dir, and returns the compiled Dockerfile
-// text and the derived .dockerignore text.
+// WithROS2Runtime teaches the compiler about the runtime framework selected in
+// wendy.json. Stagefiles describe application dependencies; they should not
+// have to repeat the middleware package implied by frameworks.ros2. The CLI
+// passes resolved, validated values here and the compiler idempotently adds the
+// matching package to the final stage's APT install.
+func WithROS2Runtime(distro, rmw string) Option {
+	return func(o *options) {
+		o.ros2Distro = strings.ToLower(strings.TrimSpace(distro))
+		o.ros2RMW = strings.ToLower(strings.TrimSpace(rmw))
+	}
+}
+
+// CompileFile reads a Stagefile from dir — the canonical build.stagefile.yaml
+// unless WithSource names a variant — resolves any missing lockfile image refs
+// against a live registry (existing pins are never touched — only an explicit
+// re-lock changes them), writes/updates that source's lockfile in dir, and
+// returns the compiled Dockerfile text and the derived .dockerignore text.
 //
 // Safe to call concurrently for different directories: the lockfile and both
 // generated files are written via temp-file + rename, and the registry lookups
-// behind sharedResolver are deduplicated across callers.
+// behind sharedResolver are deduplicated across callers. Two variants in the
+// SAME directory are equally safe, because each owns a distinct lockfile.
 func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore string, err error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
+	}
+	source := o.source
+	if source == "" {
+		source = SourceName
+	}
+	if !IsSourceName(source) {
+		return "", "", fmt.Errorf("%q is not a Stagefile name: expected %s or a variant of it such as prod%s", source, SourceName, sourceSuffix)
 	}
 	hasher := sharedHasher
 	if o.progress != nil {
@@ -119,20 +150,44 @@ func CompileFile(dir, platform string, opts ...Option) (dockerfile, dockerignore
 			return sharedHasher(url)
 		}
 	}
-	return compileFile(dir, platform, o.gpuArch, o.buildProfile, sharedResolver, hasher)
+	return compileFileWithFramework(dir, source, platform, o.gpuArch, o.buildProfile, o.ros2Distro, o.ros2RMW, sharedResolver, hasher)
 }
 
-// NeedsGPUTarget reports whether dir's Stagefile declares a cuda: stage, and
-// therefore cannot be compiled without knowing the GPU architecture it is
+// NeedsGPUTarget reports whether ANY Stagefile in dir declares a cuda: stage,
+// and therefore cannot be compiled without knowing the GPU architecture it is
 // being built for.
 //
 // The CLI asks before it compiles: a GPU project has to resolve its target
 // device first, while every other project keeps the cheaper ordering that
-// compiles without connecting to anything. A missing or unparseable Stagefile
-// is not this function's error to report — it answers false and lets the
-// compile produce the real diagnostic.
+// compiles without connecting to anything. Because the answer is needed before
+// the build file has been chosen, it deliberately spans the whole family rather
+// than one variant — the cost of being wrong is one extra GetAgentVersion RPC,
+// against a variant build that would otherwise fail with "a stage declares
+// cuda: but this build has no GPU target".
+//
+// A missing or unparseable Stagefile is not this function's error to report —
+// it answers false and lets the compile produce the real diagnostic.
 func NeedsGPUTarget(dir string) bool {
-	raw, err := os.ReadFile(filepath.Join(dir, "build.stagefile.yaml"))
+	for _, name := range SourceNames(dir) {
+		if NeedsGPUTargetFile(dir, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsGPUTargetFile is NeedsGPUTarget for one named Stagefile in dir.
+//
+// source is validated the same way CompileFile validates it, so the exported
+// pair cannot disagree about what counts as a Stagefile. It also keeps
+// filepath.Join from resolving a caller's "../" segments into a read outside
+// dir: the grammar admits no dots or separators, so a name that reaches the
+// Join is always a bare filename.
+func NeedsGPUTargetFile(dir, source string) bool {
+	if !IsSourceName(source) {
+		return false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, source))
 	if err != nil {
 		return false
 	}
@@ -178,8 +233,12 @@ func resolveCUDAProfile(f *spec.File, arch string, l *lock.File) (*gpu.Profile, 
 // compileFile is the resolver-injectable implementation behind
 // CompileFile, allowing tests to exercise it with a fake resolver and hasher
 // instead of a live registry and live URLs.
-func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
-	sourcePath := filepath.Join(dir, "build.stagefile.yaml")
+func compileFile(dir, source, platform, gpuArch, buildProfile string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+	return compileFileWithFramework(dir, source, platform, gpuArch, buildProfile, "", "", resolver, hasher)
+}
+
+func compileFileWithFramework(dir, source, platform, gpuArch, buildProfile, ros2Distro, ros2RMW string, resolver lock.Resolver, hasher lock.Hasher) (dockerfile, dockerignore string, err error) {
+	sourcePath := filepath.Join(dir, source)
 	raw, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return "", "", fmt.Errorf("reading %s: %w", sourcePath, err)
@@ -189,8 +248,9 @@ func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Reso
 		return "", "", err
 	}
 	applyBuildProfile(f, buildProfile)
+	applyROS2Runtime(f, ros2Distro, ros2RMW)
 
-	lockPath := filepath.Join(dir, "build.stagefile.lock.yaml")
+	lockPath := filepath.Join(dir, LockName(source))
 	existing, err := lock.Load(lockPath)
 	if err != nil {
 		return "", "", err
@@ -213,12 +273,68 @@ func compileFile(dir, platform, gpuArch, buildProfile string, resolver lock.Reso
 		return "", "", err
 	}
 
-	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile)
+	// The project directory is the cache scope: it is what makes two different
+	// projects' compiler caches distinct, and it is stable across the rebuilds
+	// of one project that the caches exist to speed up. An absolute path means
+	// moving a checkout starts from a cold cache, which is the right trade —
+	// the alternative keys are either not unique per project or not stable
+	// across an edit.
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		absDir = dir
+	}
+	dockerfile, err = codegen.Generate(f, updated.Images, updated.Downloads, platform, cudaProfile,
+		codegen.WithCacheScope(absDir))
 	if err != nil {
 		return "", "", err
 	}
 	dockerignore = dockerignorepkg.Derive(dockerignorepkg.LocalPaths(f))
 	return dockerfile, dockerignore, nil
+}
+
+// applyROS2Runtime appends the RMW implementation package implied by the
+// framework config. The final stage is the runnable image; build-only stages do
+// not need the middleware. Package names are constructed only from values the
+// appconfig validator has already reduced to its fixed RMW allowlist.
+func applyROS2Runtime(f *spec.File, distro, rmw string) {
+	if f == nil || len(f.Stages) == 0 || distro == "" || rmw == "" {
+		return
+	}
+	// Keep the compiler-side boundary closed even though normal CLI callers
+	// already pass values validated by appconfig. WithROS2Runtime is a public
+	// library option and must not turn arbitrary strings into APT packages.
+	packageSuffix := map[string]string{
+		"rmw_cyclonedds_cpp": "rmw-cyclonedds-cpp",
+		"rmw_fastrtps_cpp":   "rmw-fastrtps-cpp",
+		"rmw_connextdds":     "rmw-connextdds",
+		"rmw_gurumdds_cpp":   "rmw-gurumdds-cpp",
+	}[rmw]
+	if packageSuffix == "" || !validROS2Distro(distro) {
+		return
+	}
+	pkg := "ros-" + distro + "-" + packageSuffix
+	final := &f.Stages[len(f.Stages)-1]
+	if final.Install == nil {
+		final.Install = &spec.Install{}
+	}
+	if final.Install.Apt == nil {
+		final.Install.Apt = &spec.AptInstall{}
+	}
+	for _, existing := range final.Install.Apt.Packages {
+		if existing == pkg {
+			return
+		}
+	}
+	final.Install.Apt.Packages = append(final.Install.Apt.Packages, pkg)
+}
+
+func validROS2Distro(distro string) bool {
+	for i, r := range distro {
+		if (r < 'a' || r > 'z') && (i == 0 || r < '0' || r > '9') {
+			return false
+		}
+	}
+	return distro != ""
 }
 
 // applyBuildProfile overrides the compile profile of every build stage that has
@@ -267,15 +383,18 @@ func downloadURLs(f *spec.File) []string {
 
 func imageRefs(f *spec.File) []string {
 	seen := map[string]bool{}
+	priorStages := map[string]bool{}
 	var refs []string
 	for _, s := range f.Stages {
-		if s.Pin != nil && !*s.Pin {
+		if priorStages[s.From] || s.Pin != nil && !*s.Pin {
+			priorStages[s.Name] = true
 			continue
 		}
 		if !seen[s.From] {
 			seen[s.From] = true
 			refs = append(refs, s.From)
 		}
+		priorStages[s.Name] = true
 	}
 	return refs
 }

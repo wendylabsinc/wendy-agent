@@ -2,6 +2,7 @@ package spec
 
 import (
 	"fmt"
+	"path"
 	"strings"
 	"time"
 	"unicode"
@@ -60,6 +61,9 @@ func (f *File) Validate() error {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
 		if err := validateBuild(s.Build); err != nil {
+			return fmt.Errorf("stage %q: %w", s.Name, err)
+		}
+		if err := validateBuildWorkdir(&s); err != nil {
 			return fmt.Errorf("stage %q: %w", s.Name, err)
 		}
 		if err := validateHealthcheck(s.Healthcheck); err != nil {
@@ -372,6 +376,9 @@ func validateInstall(inst *Install) error {
 				return err
 			}
 		}
+		if len(p.BuildPackages) > 0 && inst.Apt != nil && inst.Apk != nil {
+			return fmt.Errorf("%s.buildPackages cannot choose a package manager because both install.apt and install.apk are set", field)
+		}
 	}
 	if inst.Npm != nil && inst.Npm.Manager != "" {
 		switch inst.Npm.Manager {
@@ -510,6 +517,54 @@ func validateCopy(entries []CopyEntry, priorNames map[string]bool) error {
 		}
 	}
 	return nil
+}
+
+// validateBuildWorkdir rejects a build stage that copies its source somewhere
+// the build will not run.
+//
+// The compiler emits no cd of its own: a build stage's RUN executes in the
+// stage's workdir, and a stage without one has no WORKDIR at all, so the build
+// runs in /. `copy: {dest: /app/}` with no `workdir:` therefore compiles to a
+// build launched in an empty directory, which fails inside the container with
+// the build tool's own "no manifest here" message — several minutes into a
+// build, naming a path nothing in the Stagefile mentions.
+//
+// The rule is deliberately narrow: only a stage where *every* local copy lands
+// at an absolute path other than / is rejected. Building at / is legal, and a
+// stage that means it puts something there (a copy with no dest lands in the
+// workdir, whatever it is), so a stage doing that on purpose has at least one
+// copy this accepts.
+func validateBuildWorkdir(s *Stage) error {
+	if s.Build == nil || s.Workdir != "" || len(s.Copy) == 0 {
+		return nil
+	}
+	var dests []string
+	for _, e := range s.Copy {
+		if e.From != "local" {
+			continue
+		}
+		dest := e.Dest
+		if dest == "" {
+			// No dest means the path keeps its own name, relative to the
+			// workdir — so the source does land where the build will run.
+			return nil
+		}
+		if !strings.HasPrefix(dest, "/") {
+			// Likewise relative to the workdir.
+			return nil
+		}
+		if path.Clean(dest) == "/" {
+			return nil
+		}
+		dests = append(dests, dest)
+	}
+	if len(dests) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"build runs in the stage's workdir, but this stage declares no workdir (so the build runs in /) "+
+			"while its source is copied to %s — add `workdir: %s`",
+		strings.Join(dests, ", "), path.Clean(dests[0]))
 }
 
 func validateBuild(b *Build) error {
@@ -668,6 +723,14 @@ func validateNoInjection(s *Stage) error {
 					return err
 				}
 				if err := rejectLeadingDash(p, "install.pip.packages entry"); err != nil {
+					return err
+				}
+			}
+			for _, p := range pip.BuildPackages {
+				if err := rejectNewline(p, "install.pip.buildPackages entry"); err != nil {
+					return err
+				}
+				if err := rejectLeadingDash(p, "install.pip.buildPackages entry"); err != nil {
 					return err
 				}
 			}

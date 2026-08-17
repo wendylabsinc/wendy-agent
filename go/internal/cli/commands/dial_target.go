@@ -34,11 +34,37 @@ type dialTarget struct {
 	// to a command that clears nothing, and the next dial refuses identically —
 	// a permanent dead end dressed up as an escape hatch.
 	PinnedKey string
-	// Addr is the host:port actually dialed.
+	// Addr is the host:port actually dialed, and the first of Candidates when
+	// there are several. It stays the single "primary" address so every caller
+	// and diagnostic that only ever wanted one address keeps working.
 	Addr string
+	// Candidates are every address this dial may try, in the order to try them
+	// (see orderDialCandidates: IPv4, then routable IPv6, then link-local/ULA).
+	// Empty means "just Addr" — read it through dialCandidates, never directly.
+	//
+	// One name legitimately resolves to several addresses, and on a network that
+	// hands out fresh DHCP leases the first one is regularly the wrong one. The
+	// ladder used to be handed a single pre-resolved address, so a device that
+	// was perfectly reachable at its second address was reported as unreachable
+	// — and, when pinned, reported as an identity problem.
+	Candidates []string
 	// Expected constrains the peer certificate. Non-nil only when a pin (or a
 	// cloud-seeded value) names a specific asset.
 	Expected *certs.WendyIdentity
+}
+
+// dialCandidates returns the addresses the ladder must walk, always at least
+// Addr. Candidates is consulted through here so that a hand-built dialTarget
+// (and every existing caller that sets only Addr) behaves exactly as it did
+// before multi-address dialing existed.
+func (t dialTarget) dialCandidates() []string {
+	if len(t.Candidates) > 0 {
+		return t.Candidates
+	}
+	if t.Addr == "" {
+		return nil
+	}
+	return []string{t.Addr}
 }
 
 // refusalKey is the name a refusal for this dial must print: the key the pin is
@@ -102,7 +128,21 @@ var pinMismatchFn = (*grpcclient.AgentConnection).PinMismatch
 // the wrong key can only ever produce a mismatch — a stricter outcome — never
 // a bypass, because the trust decision itself stays on the certificate.
 func newDialTarget(pinKey, addr string) dialTarget {
-	target := dialTarget{PinKey: pinKey, Addr: addr}
+	return newDialTargetCandidates(pinKey, []string{addr})
+}
+
+// newDialTargetCandidates is newDialTarget for a name that resolved to several
+// addresses. The pin resolution is identical and deliberately so: which device
+// is acceptable is decided once, from the name the user asked for, and cannot
+// vary between candidates. Only the routing differs.
+func newDialTargetCandidates(pinKey string, addrs []string) dialTarget {
+	target := dialTarget{PinKey: pinKey}
+	if len(addrs) > 0 {
+		target.Addr = addrs[0]
+		if len(addrs) > 1 {
+			target.Candidates = addrs
+		}
+	}
 	pin, key, ok := governingPin(pinKey)
 	if !ok {
 		return target
@@ -294,10 +334,237 @@ func identityRefusal(pinKey string, im *certs.IdentityMismatchError) error {
 		pinKey, im.WantAsset, im.WantOrg, got, pinKey)
 }
 
-func pinnedHostWentUnauthenticatedError(pinKey string) error {
-	return refuseIdentity(
-		"device %q is pinned to an enrolled identity but no authenticated endpoint answered; refusing to fall back to an unauthenticated connection — if it was reflashed or factory reset, run 'wendy device unpin %s'",
-		pinKey, pinKey)
+// errNoAuthenticatedEndpoint is what a "nothing answered" refusal answers
+// errors.Is to.
+//
+// It is deliberately NOT errDeviceIdentityRefused. That sentinel means "the
+// device you asked for is not what answered", and the picker's Bluetooth
+// fallback turns on exactly that distinction: a fallback that reaches a
+// *rejected* device over a second transport is the refusal undone. A device
+// that could not be reached over IP at all is the opposite case — it is
+// precisely when trying another transport is the right thing to do — so
+// filing it under the same sentinel would suppress the fallback for the one
+// population that needs it.
+var errNoAuthenticatedEndpoint = errors.New("no authenticated endpoint answered")
+
+// noAuthenticatedEndpointError carries the full user-facing text while staying
+// recognisable to errors.Is, mirroring deviceIdentityRefusalError.
+type noAuthenticatedEndpointError struct{ msg string }
+
+func (e *noAuthenticatedEndpointError) Error() string { return e.msg }
+
+func (e *noAuthenticatedEndpointError) Is(target error) bool {
+	return target == errNoAuthenticatedEndpoint
+}
+
+// blocksUnauthenticatedFallback reports whether err forbids reaching this device
+// over a transport that enforces nothing — today the picker's Bluetooth
+// fallback, where attemptBLEConnect sets no ExpectedIdentity and
+// enforceSelectedDevicePin is a no-op.
+//
+// BOTH refusals block it, for two different reasons, and keeping them distinct
+// error types is exactly why this predicate has to exist rather than the gate
+// matching one sentinel:
+//
+//   - errDeviceIdentityRefused: the wrong device answered. Reaching it over a
+//     second transport is the refusal undone.
+//   - errNoAuthenticatedEndpoint: nothing authenticated answered a host we hold
+//     a PIN for — meaning we have reached this device over mTLS before and know
+//     it authenticates. An unauthenticated BLE peer advertising its name is not
+//     evidence of being that device, and BLE checks nothing, so accepting one
+//     here would be the downgrade the pin exists to prevent. The error is
+//     raised only under target.pinned(), so an unpinned device that simply did
+//     not answer still gets its fallback — which is what that fallback is for.
+//
+// Splitting the sentinels is about what the user is TOLD (an unreachable device
+// must not be told its identity is suspect, nor handed an `unpin` command) and
+// about letting a caller tell the two facts apart. It is not licence to route a
+// pinned device onto an unauthenticated transport.
+func blocksUnauthenticatedFallback(err error) bool {
+	return errors.Is(err, errDeviceIdentityRefused) || errors.Is(err, errNoAuthenticatedEndpoint)
+}
+
+// pinnedHostNoAuthenticatedEndpointError renders the honest version of what
+// used to be a single message shared with genuine identity mismatches: every
+// candidate address was dialed and none produced an authenticated endpoint, so
+// no certificate ever arrived and no identity was ever compared against the
+// pin.
+//
+// The pin is therefore not evidence of anything here, and this message
+// deliberately contains no `wendy device unpin` command. Unpinning is the only
+// irreversible action available at this prompt — it discards a trust binding
+// that took a successful mTLS connection to establish — and the message that
+// used to appear here recommended it for what is usually stale routing. On a
+// network that rotates DHCP leases that is a standing invitation to throw the
+// binding away on every lease change.
+//
+// It names every address tried and how many of each family, because "the CLI
+// only ever tried one of the several addresses this name resolves to" is the
+// fact that made the original report take hours to diagnose.
+// certSeen must be true when ANY address rejected our certificate, so the
+// message never claims nothing was compared when something was.
+func pinnedHostNoAuthenticatedEndpointError(pinKey string, candidates []string, attempts []mtlsAttemptError, certSeen bool) error {
+	var where string
+	if tried := describeDialAttempts(attempts); len(tried) > 0 {
+		where = fmt.Sprintf("at any address it resolves to: %s (each tried on both its plaintext and mTLS port)",
+			strings.Join(tried, ", "))
+	} else {
+		// No mTLS rung ran at all — the CLI holds no usable client certificate
+		// for this device. Still not an identity problem, so still no unpin.
+		where = fmt.Sprintf("at %s, and no authenticated connection could be attempted (no usable client certificate for this device)",
+			strings.Join(candidates, ", "))
+	}
+	// The diagnosis clause has to stay honest. If some address DID present a
+	// certificate we refused, "no identity was compared" would be false, and
+	// this message is the one the user acts on.
+	diagnosis := "The pin is intact and no device identity was compared, so this is a reachability problem rather than an identity one"
+	if certSeen {
+		diagnosis = "The pin is intact; one address did present a certificate that was refused, so check the certificate diagnostics above as well as reachability"
+	}
+	v4, v6 := addrFamilyCounts(candidates)
+	return &noAuthenticatedEndpointError{msg: fmt.Sprintf(
+		"device %q is pinned to an enrolled identity and no authenticated endpoint answered %s. "+
+			"%s — unpinning the device is not the fix. "+
+			"Tried %s; if the device is only reachable over one address family, check that its agent is listening and that stale DNS/mDNS records are not holding the CLI to an address the device no longer has.",
+		pinKey, where, diagnosis, describeAddrFamilies(v4, v6))}
+}
+
+// describeDialAttempts renders one entry per ADDRESS tried, in the order tried,
+// carrying that address's last failure. Attempts arrive per address *and port*
+// (the ladder tries the plaintext port and the mTLS port), so they are folded by
+// host: six entries for three addresses would read as though the CLI had tried
+// twice as many places as it did, and the count would then disagree with the
+// family summary the user is being asked to act on.
+func describeDialAttempts(attempts []mtlsAttemptError) []string {
+	var order []string
+	lastReason := map[string]string{}
+	for _, a := range attempts {
+		host := hostOnly(a.addr)
+		if host == "" {
+			continue
+		}
+		if _, seen := lastReason[host]; !seen {
+			order = append(order, host)
+		}
+		if a.err != nil {
+			lastReason[host] = condenseDialReason(a.err.Error())
+		}
+	}
+	out := make([]string, 0, len(order))
+	for _, host := range order {
+		if reason := lastReason[host]; reason != "" {
+			out = append(out, fmt.Sprintf("%s (%s)", host, reason))
+		} else {
+			out = append(out, host)
+		}
+	}
+	return out
+}
+
+// condenseDialReason reduces a gRPC dial error to the one clause that tells the
+// user what happened.
+//
+// The raw text arrives as
+// `rpc error: code = Unavailable desc = connection error: desc = "transport:
+// Error while dialing: dial tcp 10.0.0.5:50051: connect: connection refused"` —
+// the two useful words are at the very END, so truncating the front (which is
+// what a plain length cap does) throws away exactly the part being quoted. With
+// several addresses to show, that produced a list of identical ellipses.
+func condenseDialReason(reason string) string {
+	flat := strings.Join(strings.Fields(reason), " ")
+	// Timeouts are rewritten rather than quoted. connectToAgent classifies the
+	// error it gets back by SUBSTRING (isReachabilityTimeoutError matches
+	// "i/o timeout" / "deadline exceeded" / "connection timed out") to decide
+	// whether to print "connection timed out; retrying" and re-run the whole
+	// connect. Quoting the transport's own wording inside this message made a
+	// black-holed address — the exact case this error exists for — trigger two
+	// spurious full re-walks under a misleading banner. The wording below says
+	// the same thing to a human and matches none of those classifiers.
+	for _, timeout := range []string{"context deadline exceeded", "i/o timeout", "connection timed out"} {
+		if strings.Contains(flat, timeout) {
+			return "no response before the handshake budget elapsed"
+		}
+	}
+	// Ordered so a more specific phrase wins over one it contains.
+	for _, phrase := range []string{
+		"connection refused",
+		"no route to host",
+		"host is unreachable",
+		"network is unreachable",
+		"connection reset by peer",
+		"no such host",
+		"tls: ",
+	} {
+		if idx := strings.Index(flat, phrase); idx >= 0 {
+			return strings.TrimSuffix(strings.TrimSpace(flat[idx:]), `"`)
+		}
+	}
+	const maxReason = 90
+	if runes := []rune(flat); len(runes) > maxReason {
+		return string(runes[:maxReason]) + "…"
+	}
+	return flat
+}
+
+// hostOnly strips the port from a host:port. Input without a port is returned
+// trimmed rather than discarded — a bare host is legitimate here — so the ""
+// result this can produce means only "nothing usable was given".
+func hostOnly(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return strings.TrimSpace(addr)
+	}
+	return host
+}
+
+// addrFamilyCounts counts how many of addrs are IPv4 and how many IPv6, folding
+// duplicates by host so the same address on two ports counts once.
+//
+// The fold keeps the zone: fe80::1%en0 and fe80::1%en1 are two candidates, dialed
+// over two different interfaces, and either can fail while the other works — so
+// the tally has to agree with describeDialAttempts, which lists them separately.
+// Only the parse strips the zone, since net.ParseIP rejects a zoned literal.
+func addrFamilyCounts(addrs []string) (v4, v6 int) {
+	seen := map[string]bool{}
+	for _, addr := range addrs {
+		host := hostOnly(addr)
+		if host == "" || seen[host] {
+			continue
+		}
+		ip := net.ParseIP(stripZone(host))
+		if ip == nil {
+			continue
+		}
+		seen[host] = true
+		if ip.To4() != nil {
+			v4++
+		} else {
+			v6++
+		}
+	}
+	return v4, v6
+}
+
+// describeAddrFamilies renders the family tally as a clause naming both
+// families only when both were actually tried — "0 IPv6" invites the reader to
+// debug an IPv6 problem that never happened.
+func describeAddrFamilies(v4, v6 int) string {
+	noun := func(n int) string {
+		if n == 1 {
+			return "address"
+		}
+		return "addresses"
+	}
+	switch {
+	case v4 > 0 && v6 > 0:
+		return fmt.Sprintf("%d IPv4 and %d IPv6 %s", v4, v6, noun(v4+v6))
+	case v4 > 0:
+		return fmt.Sprintf("%d IPv4 %s", v4, noun(v4))
+	case v6 > 0:
+		return fmt.Sprintf("%d IPv6 %s", v6, noun(v6))
+	default:
+		return "no resolved addresses"
+	}
 }
 
 // spkiRefusal renders the OTHER pin's rejection: the SPKI store's, which is

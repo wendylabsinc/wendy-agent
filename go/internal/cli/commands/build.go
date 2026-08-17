@@ -38,6 +38,9 @@ type buildOptions struct {
 	// debug builds compiled languages unoptimized (swift -c debug, cargo
 	// without --release), matching `wendy run --debug`.
 	debug bool
+	// buildHost names a WendyOS device that builds the image instead of this
+	// machine. Empty means build locally.
+	buildHost string
 }
 
 var appleContainerLocalProviderHintSupported = func() bool {
@@ -57,6 +60,15 @@ func newBuildCmd() *cobra.Command {
 			}
 			if _, err := normalizeImageBuilder(opts.builder); err != nil {
 				return err
+			}
+			if err := validateBuildHostFlags(opts.buildHost, opts.builder); err != nil {
+				return err
+			}
+			// Refused rather than ignored: `wendy build` never reaches
+			// runRemoteBuild, so accepting the flag would build locally while the
+			// developer believed the Spark was doing it.
+			if strings.TrimSpace(opts.buildHost) != "" {
+				return errBuildHostOnBuildCmd
 			}
 			// --dockerfile implies a Docker build; prevent the provider from
 			// auto-selecting a Compose file when both markers are present.
@@ -218,18 +230,26 @@ func newBuildCmd() *cobra.Command {
 				appID = appCfg.AppID
 			}
 
+			sfOpts := debugStagefileOptions(opts.debug)
+			if cfgErr == nil && selected.Type != "compose" {
+				sfOpts = append(sfOpts, frameworkStagefileOptions(appCfg.Frameworks)...)
+			}
 			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder,
 				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)),
 				opts.debug,
-				debugStagefileOptions(opts.debug)...)
+				sfOpts...)
 		},
 	}
 
 	cmd.Flags().StringVar(&opts.buildType, "build-type", "", "Build type to use when multiple project markers are present: docker, swift, or python")
-	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Dockerfile or Containerfile to build from (e.g. Dockerfile.prod or Containerfile); shows a selection menu when multiple build files exist")
+	cmd.Flags().StringVar(&opts.dockerfile, "dockerfile", "", "Build file to build from: a Dockerfile, Containerfile, or Stagefile (e.g. Dockerfile.prod, Containerfile, prod.stagefile.yaml); shows a selection menu when multiple build files exist")
 	cmd.Flags().StringVar(&opts.builder, "builder", "", "Image builder to force for Dockerfile/Containerfile builds: docker, apple-container, or buildkit")
 	cmd.Flags().StringVar(&opts.gpuArch, "gpu-arch", "", fmt.Sprintf("GPU architecture a Stagefile cuda: stage targets (%s); taken from the device when one is selected", strings.Join(gpu.KnownArches(), ", ")))
 	cmd.Flags().BoolVar(&opts.debug, "debug", false, "Build compiled languages unoptimized (swift build -c debug, cargo without --release) instead of the release default")
+	cmd.Flags().StringVar(&opts.buildHost, "build-host", "", "WendyOS device to build the image on instead of this machine (e.g. a DGX Spark)")
+	if err := cmd.Flags().MarkHidden("build-host"); err != nil {
+		panic(err)
+	}
 
 	return cmd
 }

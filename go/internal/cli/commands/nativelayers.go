@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/gzip"
+	"github.com/wendylabsinc/wendy/go/internal/stagefile"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile/spec"
 )
 
@@ -59,10 +60,14 @@ func nativeDepsHash(cwd, dockerfile, platform string, buildArgs map[string]strin
 	h.Write(dfData)
 
 	// The lockfile pins base-image digests; absent is a valid state (hashed as
-	// absent — creating it later changes the hash, correctly).
-	if lockData, err := os.ReadFile(filepath.Join(cwd, stagefileLockName)); err == nil {
-		fmt.Fprintf(h, "lock %d\n", len(lockData))
-		h.Write(lockData)
+	// absent — creating it later changes the hash, correctly). Each Stagefile
+	// variant owns its own lockfile, so hash the one belonging to the source
+	// this dockerfile was compiled from, not whichever happens to be canonical.
+	if source, ok := stagefileSourceForGenerated(dockerfile); ok {
+		if lockData, err := os.ReadFile(filepath.Join(cwd, stagefile.LockName(source))); err == nil {
+			fmt.Fprintf(h, "lock %d\n", len(lockData))
+			h.Write(lockData)
+		}
 	}
 
 	for _, p := range nativeDepsPaths(sf) {
@@ -233,10 +238,11 @@ func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 	if os.Getenv(nativeLayersEnv) == "off" {
 		return nil, false
 	}
-	if filepath.Base(dockerfile) != generatedDockerfileName {
+	source, ok := stagefileSourceForGenerated(dockerfile)
+	if !ok {
 		return nil, false
 	}
-	data, err := os.ReadFile(filepath.Join(cwd, stagefileSourceName))
+	data, err := os.ReadFile(filepath.Join(cwd, source))
 	if err != nil {
 		return nil, false
 	}
@@ -264,6 +270,48 @@ func nativeBuildEligibility(cwd, dockerfile string) (*spec.File, bool) {
 		return nil, false
 	}
 	return sf, true
+}
+
+// buildOrUpdateOCILayout gives every persistent OCI-layout caller the same
+// Stagefile-aware fast path. If only final-stage local copies changed, their
+// deterministic layers are rebuilt and content-addressed in-process; Docker,
+// the multi-gigabyte local cache exporter, and unchanged dependency layers are
+// skipped entirely. A dependency change or any failed safety guard falls back
+// to buildx, after which the resulting app layers are adopted for the next
+// iteration.
+//
+// The caller must hold the layout directory lock for the whole call. buildx is
+// responsible only for updating the layout; pushing or chunking it remains the
+// caller's concern.
+func buildOrUpdateOCILayout(cwd, dockerfile, platform string, buildArgs map[string]string, layoutDir string, buildx func() error) (native bool, err error) {
+	sf, eligible := nativeBuildEligibility(cwd, dockerfile)
+	depsHash := ""
+	if eligible {
+		if h, hashErr := nativeDepsHash(cwd, dockerfile, platform, buildArgs, sf); hashErr == nil {
+			depsHash = h
+		} else {
+			eligible = false
+		}
+	}
+
+	if eligible {
+		if st, ok := loadNativeState(layoutDir); ok && st.DepsHash == depsHash {
+			if done, rebuildErr := tryNativeRebuild(layoutDir, platform, cwd, sf, st); rebuildErr == nil && done {
+				return true, nil
+			}
+		}
+	}
+
+	if err := buildx(); err != nil {
+		return false, err
+	}
+	if eligible {
+		// Adoption is an optimization. Refusing a layout whose final layers do
+		// not exactly match Stagefile's declared local copies leaves the valid
+		// buildx image untouched and simply retries buildx next time.
+		_, _ = adoptNativeLayers(layoutDir, platform, cwd, sf, depsHash)
+	}
+	return false, nil
 }
 
 // ociManifest captures the standard OCI image-manifest fields the splice
@@ -648,6 +696,19 @@ func tryNativeRebuild(dir, platform, cwd string, sf *spec.File, st *nativeState)
 	native, err := buildNativeAppLayers(cwd, sf, configWorkingDir(cfgData))
 	if err != nil {
 		return false, nil
+	}
+	unchanged := len(native) == len(st.AppLayerDigests)
+	for i, nl := range native {
+		if !unchanged || nl.Digest != st.AppLayerDigests[i] {
+			unchanged = false
+			break
+		}
+	}
+	if unchanged {
+		// The layout already names these deterministic layers. Rewriting the
+		// config, manifest, index, and native state would produce identical bytes
+		// while invalidating mtimes and making an unchanged run look like work.
+		return true, nil
 	}
 	newDigest, err := spliceNativeLayers(dir, platform, st.AppLayerDigests, native)
 	if err != nil {

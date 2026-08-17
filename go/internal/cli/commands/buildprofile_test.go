@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 )
 
 const swiftStagefileSource = `version: 1
@@ -28,6 +30,30 @@ func writeSwiftStagefileProject(t *testing.T) string {
 	return dir
 }
 
+func TestFrameworkStagefileOptionsInjectROS2Middleware(t *testing.T) {
+	dir := t.TempDir()
+	source := `version: 1
+stages:
+  - name: app
+    from: ros:humble-ros-base
+    pin: false
+`
+	if err := os.WriteFile(filepath.Join(dir, stagefileSourceName), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	frameworks := &appconfig.FrameworksConfig{ROS2: &appconfig.ROS2Config{
+		Distro: "humble",
+		RMW:    "cyclonedds",
+	}}
+	if _, err := compileStagefile(dir, stagefileSourceName, "", frameworkStagefileOptions(frameworks)...); err != nil {
+		t.Fatal(err)
+	}
+	got := generatedDockerfileText(t, dir)
+	if !strings.Contains(got, "'ros-humble-rmw-cyclonedds-cpp'") {
+		t.Fatalf("generated Dockerfile missing framework middleware:\n%s", got)
+	}
+}
+
 func generatedDockerfileText(t *testing.T, dir string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(dir, generatedDockerfileName))
@@ -41,20 +67,20 @@ func generatedDockerfileText(t *testing.T, dir string) string {
 // swift-container-plugin paths that already honored it.
 func TestCompileStagefileDebugBuildsSwiftUnoptimized(t *testing.T) {
 	dir := writeSwiftStagefileProject(t)
-	if _, err := compileStagefile(dir, "", debugStagefileOptions(true)...); err != nil {
+	if _, err := compileStagefile(dir, stagefileSourceName, "", debugStagefileOptions(true)...); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c debug") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c debug") {
 		t.Fatalf("want a debug build:\n%s", got)
 	}
 }
 
 func TestCompileStagefileDefaultsToReleaseWithoutDebug(t *testing.T) {
 	dir := writeSwiftStagefileProject(t)
-	if _, err := compileStagefile(dir, "", debugStagefileOptions(false)...); err != nil {
+	if _, err := compileStagefile(dir, stagefileSourceName, "", debugStagefileOptions(false)...); err != nil {
 		t.Fatalf("compileStagefile: %v", err)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c release") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c release") {
 		t.Fatalf("want a release build:\n%s", got)
 	}
 }
@@ -78,7 +104,37 @@ func TestResolveDockerfileForwardsDebugProfileToStagefile(t *testing.T) {
 	if name != generatedDockerfileName {
 		t.Fatalf("resolved %q, want %q", name, generatedDockerfileName)
 	}
-	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "swift build -c debug") {
+	if got := generatedDockerfileText(t, dir); !strings.Contains(got, "-c debug") {
+		t.Fatalf("want a debug build:\n%s", got)
+	}
+}
+
+// An explicitly named Stagefile takes a different branch of resolveDockerfile
+// than the detected one above — it skips prepareDockerBuildFile and calls the
+// compiler directly. That branch has to forward the build profile too, or
+// `--dockerfile prod.stagefile.yaml --debug` silently builds release.
+func TestResolveDockerfileForwardsDebugProfileToNamedStagefileVariant(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prod.stagefile.yaml"), []byte(swiftStagefileSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	name, err := resolveDockerfile(dir, "prod.stagefile.yaml", false, "", debugStagefileOptions(true)...)
+	if err != nil {
+		t.Fatalf("resolveDockerfile: %v", err)
+	}
+	if want := generatedDockerfileName + ".prod"; name != want {
+		t.Fatalf("resolved %q, want %q", name, want)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatalf("reading generated Dockerfile: %v", err)
+	}
+	// Matched on the profile flag alone, not on "swift build -c debug": the
+	// Swift stage interleaves --scratch-path/--cache-path between the two, so
+	// pinning the whole phrase would fail on a cache-flag change rather than on
+	// the profile this test is about. Asserting release is absent keeps it tight.
+	got := string(b)
+	if !strings.Contains(got, "-c debug") || strings.Contains(got, "-c release") {
 		t.Fatalf("want a debug build:\n%s", got)
 	}
 }

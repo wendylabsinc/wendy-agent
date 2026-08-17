@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +14,40 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/grpcclient"
 	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
 	"github.com/wendylabsinc/wendy/go/internal/stagefile"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
+
+func TestMultiServiceWatchHashTracksBuildAndRuntimeState(t *testing.T) {
+	cfg := &appconfig.AppConfig{AppID: "demo", ServiceName: "api"}
+	policy := &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_UNLESS_STOPPED}
+	base, err := multiServiceWatchHash("build-a", cfg, []string{"MODE=prod"}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		build  string
+		cfg    *appconfig.AppConfig
+		env    []string
+		policy *agentpb.RestartPolicy
+	}{
+		{"build", "build-b", cfg, []string{"MODE=prod"}, policy},
+		{"config", "build-a", &appconfig.AppConfig{AppID: "demo", ServiceName: "worker"}, []string{"MODE=prod"}, policy},
+		{"env", "build-a", cfg, []string{"MODE=dev"}, policy},
+		{"restart", "build-a", cfg, []string{"MODE=prod"}, &agentpb.RestartPolicy{Mode: agentpb.RestartPolicyMode_NO}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := multiServiceWatchHash(tc.build, tc.cfg, tc.env, tc.policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got == base {
+				t.Fatalf("%s change did not invalidate watch hash", tc.name)
+			}
+		})
+	}
+}
 
 // newServiceTree writes n service directories under a fresh temp root, each
 // with a minimal Dockerfile, and returns the root plus the services map.
@@ -137,7 +171,7 @@ func TestBuildServicesParallelReusesPlannedDockerfile(t *testing.T) {
 	}
 
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, planned, len(services))
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, planned, len(services), false)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}
@@ -150,6 +184,112 @@ func TestBuildServicesParallelReusesPlannedDockerfile(t *testing.T) {
 		if got[repo] != planned[name] {
 			t.Errorf("service %s built with dockerfile %q, want the planned %q", name, got[repo], planned[name])
 		}
+	}
+}
+
+func TestBuildServicesParallelCancellationStopsActiveAndQueuedBuilds(t *testing.T) {
+	root, services := newServiceTree(t, 4)
+	planned := make(map[string]string, len(services))
+	for name := range services {
+		planned[name] = "Dockerfile"
+	}
+
+	originalBuild := buildServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	isInteractiveTerminalFn = func() bool { return false }
+
+	started := make(chan struct{}, len(services))
+	var mu sync.Mutex
+	startCount := 0
+	buildServiceImage = func(ctx context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, _, _ io.Writer) error {
+		mu.Lock()
+		startCount++
+		mu.Unlock()
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type outcome struct {
+		failed map[string]error
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		failed, err := buildServicesParallel(ctx, nil, 5000, "linux", root, "app", services,
+			"linux/arm64", nil, "docker", nil, planned, 1, false)
+		done <- outcome{failed: failed, err: err}
+	}()
+
+	select {
+	case <-started:
+		cancel()
+	case <-time.After(5 * time.Second):
+		t.Fatal("first service build did not start")
+	}
+
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", got.err)
+		}
+		if got.failed != nil {
+			t.Fatalf("failed = %v, want nil for operation cancellation", got.failed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("parallel builder did not return after cancellation")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if startCount != 1 {
+		t.Fatalf("started %d service builders after cancellation, want exactly the active one", startCount)
+	}
+}
+
+func TestBuildServicesParallelQuietBuildDoesNotOpenTUI(t *testing.T) {
+	root, services := newServiceTree(t, 1)
+	originalBuild := buildServiceImage
+	originalInteractive := isInteractiveTerminalFn
+	t.Cleanup(func() {
+		buildServiceImage = originalBuild
+		isInteractiveTerminalFn = originalInteractive
+	})
+	isInteractiveTerminalFn = func() bool {
+		t.Fatal("quiet multi-service build queried interactive terminal state")
+		return true
+	}
+
+	called := false
+	buildServiceImage = func(_ context.Context, _ *grpcclient.AgentConnection, _ int, _, _, _, _, _, _ string, _ map[string]string, _ string, stream, logw io.Writer) error {
+		called = true
+		if stream == os.Stdout || stream == os.Stderr || logw == os.Stdout || logw == os.Stderr {
+			t.Fatal("quiet multi-service build streamed builder output to the terminal")
+		}
+		_, _ = io.WriteString(stream, "builder progress\n")
+		_, _ = io.WriteString(logw, "builder setup\n")
+		return nil
+	}
+
+	planned := map[string]string{}
+	for name := range services {
+		planned[name] = "Dockerfile"
+	}
+	failed, err := buildServicesParallel(context.Background(), nil, 5000, "linux", root, "app", services,
+		"linux/arm64", nil, "docker", nil, planned, 1, true)
+	if err != nil {
+		t.Fatalf("quiet multi-service build: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("quiet multi-service failures = %v", failed)
+	}
+	if !called {
+		t.Fatal("quiet multi-service builder was not called")
 	}
 }
 
@@ -173,7 +313,7 @@ func TestBuildServicesParallelResolvesWhenPlanningSkippedIt(t *testing.T) {
 	}
 
 	failed, infraErr := buildServicesParallel(
-		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, nil, len(services))
+		context.Background(), nil, 5000, "linux", root, appID, services, "linux/arm64", nil, "docker", nil, nil, len(services), false)
 	if infraErr != nil {
 		t.Fatalf("unexpected infra error: %v", infraErr)
 	}

@@ -16,6 +16,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 	"github.com/spf13/cobra"
+	clitimesync "github.com/wendylabsinc/wendy/go/internal/cli/timesync"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/browseropen"
 	"github.com/wendylabsinc/wendy/go/internal/shared/certs"
@@ -285,6 +286,7 @@ func performLogin(ctx context.Context, cloudDashboard, cloudGRPC string) error {
 	}
 
 	fmt.Println(tui.SuccessMessage("Authentication successful. Certificates saved."))
+	clitimesync.CacheProof(ctx)
 
 	if len(issueResp.GetWarnings()) > 0 {
 		fmt.Println(tui.WarningMessage("Warnings:"))
@@ -407,6 +409,8 @@ func performLocalLogin(ctx context.Context, cloudGRPC, apiKey string, orgID int3
 
 	fmt.Println(tui.SuccessMessage(fmt.Sprintf("Local authentication successful (org=%d, device=%s). Certificates saved.",
 		issueResp.GetOrganizationId(), deviceID)))
+	clitimesync.CacheProof(ctx)
+
 	return nil
 }
 
@@ -665,6 +669,10 @@ func refreshCertsForAuth(ctx context.Context, auth *config.AuthConfig) error {
 			UserID:              existingCert.UserID,
 		},
 	}
+
+	// This cert has a later NotBefore than the one it replaces, so the proof kept
+	// for offline use has to move with it.
+	clitimesync.CacheProof(ctx)
 
 	return nil
 }

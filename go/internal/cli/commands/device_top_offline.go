@@ -24,14 +24,15 @@ const (
 // intervals leaves room for a slow-but-alive device to answer, while the cap
 // keeps a long --interval from also delaying the offline verdict.
 func topPollTimeout(interval time.Duration) time.Duration {
-	t := interval * 2
-	if t < topPollTimeoutFloor {
+	// Compare before multiplying so an extremely large duration cannot wrap
+	// negative and accidentally select the floor.
+	if interval <= topPollTimeoutFloor/2 {
 		return topPollTimeoutFloor
 	}
-	if t > topPollTimeoutCap {
+	if interval >= topPollTimeoutCap/2 {
 		return topPollTimeoutCap
 	}
-	return t
+	return interval * 2
 }
 
 // isDeviceUnreachable reports whether err means the device stopped answering,
@@ -93,23 +94,50 @@ func topOfflineHeadline(age time.Duration, b *agentpb.BatteryStats) string {
 	return msg
 }
 
-// isOffline reports whether the device has stopped answering polls.
-func (m topModel) isOffline() bool { return !m.offlineSince.IsZero() }
+// topPollTimes supplies timestamps for messages constructed directly in tests
+// and guards against malformed ranges. Production pollers always provide both.
+func topPollTimes(startedAt, finishedAt time.Time) (time.Time, time.Time) {
+	if finishedAt.IsZero() {
+		finishedAt = time.Now()
+	}
+	if startedAt.IsZero() || startedAt.After(finishedAt) {
+		startedAt = finishedAt
+	}
+	return startedAt, finishedAt
+}
+
+// isOffline reports whether the newest unreachable poll began after the most
+// recent reply from either polling RPC. Comparing timestamps makes the result
+// independent of the order in which the two poll goroutines deliver messages.
+func (m topModel) isOffline() bool {
+	return !m.lastUnreachableAt.IsZero() &&
+		(m.lastReplyAt.IsZero() || m.lastUnreachableAt.After(m.lastReplyAt))
+}
 
 // markOffline records the start of an outage, keeping the original timestamp
 // across repeated failures so the banner's age counts up rather than resetting
 // on every tick.
-func (m *topModel) markOffline() {
-	if m.offlineSince.IsZero() {
-		m.offlineSince = time.Now()
+func (m *topModel) markOffline(startedAt time.Time) {
+	wasOffline := m.isOffline()
+	if m.lastUnreachableAt.IsZero() || startedAt.After(m.lastUnreachableAt) {
+		m.lastUnreachableAt = startedAt
+	}
+	if !wasOffline && m.isOffline() {
+		m.offlineSince = startedAt
+	}
+	// Before the first reply, failures can still arrive out of order. Preserve
+	// the earliest failed poll start so the displayed silence does not reset.
+	if m.lastReplyAt.IsZero() && m.isOffline() &&
+		(m.offlineSince.IsZero() || startedAt.Before(m.offlineSince)) {
+		m.offlineSince = startedAt
 	}
 }
 
 // silentFor returns how long the device has been unresponsive, measured from
-// the last successful poll — or from the start of the outage when no poll ever
-// succeeded, since "silent since the dawn of time" is not a useful number.
+// the last reply from either poll — or from the start of the outage when no
+// poll ever succeeded, since "silent since the dawn of time" is not useful.
 func (m topModel) silentFor(now time.Time) time.Duration {
-	base := m.lastOKAt
+	base := m.lastReplyAt
 	if base.IsZero() {
 		base = m.offlineSince
 	}
@@ -119,11 +147,17 @@ func (m topModel) silentFor(now time.Time) time.Duration {
 	return now.Sub(base)
 }
 
-// noteReachable ends an outage without touching lastOKAt. The two timestamps
-// answer different questions: offlineSince is about the connection, lastOKAt
-// dates the readings on screen. Any reply from the agent — including an error
-// reply — settles the first; only a fresh sample settles the second.
-func (m *topModel) noteReachable() { m.offlineSince = time.Time{} }
+// noteReachable records proof that the agent answered. A stale reply cannot
+// clear a newer failed poll, while a reply newer than every failed poll ends the
+// outage. The stats sample carries its own timestamp separately.
+func (m *topModel) noteReachable(at time.Time) {
+	if m.lastReplyAt.IsZero() || at.After(m.lastReplyAt) {
+		m.lastReplyAt = at
+	}
+	if !m.isOffline() {
+		m.offlineSince = time.Time{}
+	}
+}
 
 // noteOfflineErr folds a failed poll into the model: a transport failure raises
 // the offline banner (which supersedes the flash line — the banner already says
@@ -133,19 +167,18 @@ func (m *topModel) noteReachable() { m.offlineSince = time.Time{} }
 // even to say the sampler blew up — is proof the device came back, and leaving
 // "no response for 41s" on screen beside a fresh reply would be a lie. The
 // meters stay frozen either way, since there is still no new sample.
-func (m *topModel) noteOfflineErr(err error) {
+func (m *topModel) noteOfflineErr(err error, startedAt, finishedAt time.Time) {
 	if isDeviceUnreachable(err) {
-		m.markOffline()
+		m.markOffline(startedAt)
 		m.flash = ""
 		return
 	}
-	m.noteReachable()
+	m.noteReachable(finishedAt)
 	m.flash = userFacingGRPCError(err)
 }
 
 // noteOnline records a successful stats poll: the device is reachable and the
 // readings are as of now.
 func (m *topModel) noteOnline(at time.Time) {
-	m.noteReachable()
-	m.lastOKAt = at
+	m.noteReachable(at)
 }

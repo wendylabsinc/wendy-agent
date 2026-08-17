@@ -46,8 +46,9 @@ var expectedUID = func() (uint32, bool) {
 	return uint32(uid), true
 }
 
-// queryTimeout bounds a single pw-dump or wpctl invocation, so a wedged
-// PipeWire cannot hold an RPC open indefinitely.
+// queryTimeout bounds a single audio-query subprocess — pw-dump or wpctl here,
+// aplay/arecord/amixer on the ALSA fallback — so a wedged PipeWire or sound
+// card cannot hold an RPC open indefinitely.
 const queryTimeout = 5 * time.Second
 
 // Node is a PipeWire sink or source.

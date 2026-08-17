@@ -173,16 +173,19 @@ func TestIsDeviceUnreachable(t *testing.T) {
 // black-holes. Without a per-poll deadline the goroutine blocks until gRPC
 // keepalive notices — 15 minutes by default — and the ticker stalls with it.
 func TestTopPollTimeoutIsBounded(t *testing.T) {
-	if got := topPollTimeout(2 * time.Second); got > 10*time.Second || got < 2*time.Second {
-		t.Fatalf("topPollTimeout(2s) = %v, want a few seconds", got)
+	if got := topPollTimeout(2 * time.Second); got != 4*time.Second {
+		t.Fatalf("topPollTimeout(2s) = %v, want 4s", got)
 	}
-	if got := topPollTimeout(0); got <= 0 {
-		t.Fatalf("topPollTimeout(0) = %v, want a positive floor", got)
+	if got := topPollTimeout(0); got != topPollTimeoutFloor {
+		t.Fatalf("topPollTimeout(0) = %v, want floor %v", got, topPollTimeoutFloor)
 	}
 	// A long refresh interval must not push the deadline past the point where
 	// the user would notice the device is gone.
-	if got := topPollTimeout(10 * time.Minute); got > 30*time.Second {
-		t.Fatalf("topPollTimeout(10m) = %v, want a capped deadline", got)
+	if got := topPollTimeout(10 * time.Minute); got != topPollTimeoutCap {
+		t.Fatalf("topPollTimeout(10m) = %v, want cap %v", got, topPollTimeoutCap)
+	}
+	if got := topPollTimeout(time.Duration(1<<63 - 1)); got != topPollTimeoutCap {
+		t.Fatalf("topPollTimeout(max duration) = %v, want cap %v", got, topPollTimeoutCap)
 	}
 }
 
@@ -211,6 +214,57 @@ func TestTopContainersSuccessClearsOffline(t *testing.T) {
 	m = updated.(topModel)
 	if m.isOffline() {
 		t.Fatal("a successful containers poll must clear the offline state")
+	}
+}
+
+// A slow stats timeout can arrive after a newer containers reply. That older
+// poll must not put the device back offline merely because Bubble Tea happened
+// to process its result last.
+func TestTopLateFailureDoesNotOverrideNewerReply(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	m := newTopModel(context.Background(), nil, 2*time.Second)
+
+	updated, _ := m.Update(topContainersMsg{startedAt: t0, finishedAt: t0.Add(time.Second)})
+	m = updated.(topModel)
+	updated, _ = m.Update(topStatsMsg{
+		err:        status.Error(codes.DeadlineExceeded, "context deadline exceeded"),
+		startedAt:  t0,
+		finishedAt: t0.Add(4 * time.Second),
+	})
+	m = updated.(topModel)
+	if m.isOffline() {
+		t.Fatal("a failed poll that began before the latest reply must not override that proof of reachability")
+	}
+}
+
+// Conversely, a reply completed before a newer failed poll began is stale and
+// must not clear the outage when its message is delivered late.
+func TestTopLateReplyDoesNotOverrideNewerFailure(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	m := newTopModel(context.Background(), nil, 2*time.Second)
+
+	updated, _ := m.Update(topStatsMsg{
+		err:        status.Error(codes.Unavailable, "connection refused"),
+		startedAt:  t0.Add(2 * time.Second),
+		finishedAt: t0.Add(3 * time.Second),
+	})
+	m = updated.(topModel)
+	updated, _ = m.Update(topContainersMsg{startedAt: t0, finishedAt: t0.Add(time.Second)})
+	m = updated.(topModel)
+	if !m.isOffline() {
+		t.Fatal("a reply older than the newest failed poll must not clear the outage")
+	}
+}
+
+func TestTopSilentAgeUsesLatestReplyFromEitherPoll(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0)
+	m := newTopModel(context.Background(), nil, 2*time.Second)
+	m.noteOnline(t0)
+	m.noteReachable(t0.Add(30 * time.Second))
+	m.markOffline(t0.Add(32 * time.Second))
+
+	if got := m.silentFor(t0.Add(40 * time.Second)); got != 10*time.Second {
+		t.Fatalf("silentFor = %v, want 10s since the latest containers reply", got)
 	}
 }
 

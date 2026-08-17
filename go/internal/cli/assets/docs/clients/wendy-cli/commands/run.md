@@ -150,19 +150,123 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--no-restart` | Do not restart the container on exit. |
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects (both native macOS and cross-compiled Linux container targets), builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
-| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
+| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. Cannot be combined with `--build-host`. |
+| `--build-host <device>` | Build the image on another WendyOS device instead of this machine. See [Remote build host](#remote-build-host). |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
 | `--service <name>` | Build and run only the named service and its transitive dependencies (multi-service `wendy.json` projects only). Returns an error if the name does not match any key in the `services` map. |
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure (multi-service projects only). |
-| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = auto-throttle large groups (default). |
+| `--max-concurrency <n>` | Max service images to build+push at once in multi-service projects. 0 = default limit of 4. |
 | `--user-args <args>` | Extra arguments to pass to the container at runtime. |
 | `--env <KEY=VALUE>` | Set an environment variable in the container. Repeatable. Overrides a `wendy.json` `env` entry of the same key. See [Environment variables](#environment-variables). |
 | `--chunking <mode>` | Controls the content-based chunking (CBC) chunk-diff deploy path: `auto` (default), `force`, or `off`. See [Deploy path: `--chunking`](#deploy-path---chunking). |
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
+
+## Remote build host
+
+`--build-host` delegates the image build to another WendyOS device:
+
+```bash
+wendy run --build-host spark-office
+```
+
+The build runs on that device, and it pushes the finished image straight into
+the target device's registry over the mesh — LAN-direct when possible, via the
+cloud broker otherwise. The image never travels through your machine.
+
+This is worth reaching for when your laptop is the wrong machine for the job:
+CUDA-heavy builds that want a real GPU, or an arm64 target that would otherwise
+be built under QEMU emulation on an x86 host.
+
+**Your machine needs no container builder at all.** On the `--build-host` path
+the CLI never starts Docker, Apple Container, or a local BuildKit daemon — a Mac
+with no Docker Desktop installed can still `wendy run`. Because of that,
+`--builder` (which selects a *local* builder) cannot be combined with
+`--build-host`.
+
+To set a default so you do not pass the flag every time, set `defaultBuildHost`
+in the CLI config. The flag always wins over the default. This is a
+per-developer setting rather than a project one, because the right build host
+depends on which network you are on.
+
+### Requirements
+
+- **The build host must opt in:**
+
+  ```bash
+  wendy device build-host enable --device spark-office
+  wendy device build-host status --device spark-office
+  ```
+
+  A device does not become a build farm merely by being reachable. Enabling takes
+  effect immediately, with no agent restart. The RPC requires a *user*
+  certificate, so one device cannot opt another in on your behalf. See
+  [`wendy device build-host`](device/build-host.md).
+
+- **The build host must run BuildKit**, listening on
+  `/run/buildkit/buildkitd.sock`. WendyOS devices have it. An adopted Linux host —
+  a DGX Spark running Ubuntu, say — does not, and Ubuntu ships no `buildkit`
+  package, so install the release tarball and symlink `buildctl` into `/usr/bin`
+  (the agent runs it by name, and systemd units get a minimal PATH).
+  `build-host status` reports the version it finds.
+
+  A Mac cannot be a build host: the Mac agent runs Linux containers through Apple
+  Container, which has no BuildKit underneath. A Mac remains a perfectly good
+  *target*, and a perfectly good machine to run `wendy run` from.
+
+- **The target device must be provisioned**, so the build host can address it by
+  asset id. Delivery goes through the mesh dialer — LAN first, cloud broker
+  otherwise — and never resolves a hostname, so a build host that cannot resolve
+  `device-<id>.cloud.wendy.dev` still delivers.
+
+If any of these does not hold, `wendy run` fails immediately and names the host.
+It never quietly falls back to building locally — a twenty-minute local build
+you believed was running on the Spark is worse than an error.
+
+### What enabling a build host means
+
+Worth being deliberate about, because a build host is a shared machine running
+other people's instructions:
+
+- **Anyone in your organisation can build on it.** A remote build executes the
+  Dockerfile it was handed, which is the feature — but it means the builder role
+  grants code execution on that device to every *person* in your organisation.
+  Enable it on machines you would already trust that way, not on a robot in the
+  field.
+
+  Three things sit outside that grant. Cross-organisation callers are rejected by
+  the agent's mTLS organisation check. **Devices** are rejected too — submitting a
+  build requires a user certificate, so one compromised device cannot conscript
+  its peers into building for it. And the unauthenticated port the agent serves
+  before provisioning does not accept builds at all.
+- **Build contexts land on its disk.** Sources are reassembled under
+  `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
+  builds so BuildKit's local-source cache stays warm. They are cleared and
+  rewritten at the start of each build of that app, but they are not deleted
+  afterwards.
+- **Builds of the same app are serialised** on a given host; different apps build
+  concurrently. Two people building one app id would otherwise share a context
+  directory, and the second build's extraction would replace sources the first
+  was still compiling.
+- **Delivery is scoped to one build.** While a build runs, the agent exposes a
+  loopback endpoint that BuildKit pushes through, and that endpoint holds the
+  credentials for reaching the target device. It requires a password minted for
+  that build alone, so other processes on the build host cannot use it to push
+  something of their own to your device. The password is passed to BuildKit in a
+  `0600` file rather than on a command line, where any local user could read it
+  out of `/proc`.
+
+### Errors
+
+A failed remote build reports which half failed, because the fixes differ:
+
+- *build on `<host>` failed* — the problem is your Dockerfile or Stagefile.
+- *image built on `<host>` but could not be delivered* — the build was fine; look
+  at mesh reachability between the two devices, or registry credentials on the
+  build host.
 
 ## Watch mode
 
@@ -180,6 +284,17 @@ rapid sequence of saves is coalesced by the debounce window (default 400 ms) so 
 single redeploy runs after edits settle. Build output is hidden unless a build
 fails; pass `--verbose` to always show it, or `--debounce <ms>` to tune the quiet
 period.
+
+For multi-service `wendy.json` and Compose projects deployed to WendyOS, watch
+mode fingerprints each service's build inputs and effective runtime configuration
+independently. After the initial deploy, services that are unchanged and still
+running are left untouched: they are not rebuilt, recreated, or restarted.
+Changed services are redeployed in dependency order. A missing, stopped, or
+otherwise non-running service is not preserved and goes through the normal
+deploy path.
+When the primary of a `shared-network` or `shared-ipc` group changes, the group
+is restarted together because its other containers share that primary's Linux
+namespaces.
 
 > **Note:** `wendy watch` is kept as a hidden alias for `wendy run --watch` for
 > backward compatibility, but `wendy run --watch` is the supported entry point.
