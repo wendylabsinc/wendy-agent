@@ -232,6 +232,35 @@ func TestRunCameraTest_OKOutput(t *testing.T) {
 	}
 }
 
+func TestRunCameraTest_OKShowsDetail(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_OK,
+		Address: "10.98.0.50",
+		Detail:  "camera 200 at 10.98.0.50 did not request authentication; the stream path returned RTSP 404 and may be wrong",
+	}}
+	var buf bytes.Buffer
+	if err := runCameraTest(context.Background(), client, 200, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "did not request authentication") {
+		t.Fatalf("output = %q, want the probe's detail surfaced on success", buf.String())
+	}
+}
+
+func TestRunCameraTest_OKNoDetailOmitsColon(t *testing.T) {
+	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
+		Result:  agentpb.TestCameraCredentialsResponse_RESULT_OK,
+		Address: "10.98.0.50",
+	}}
+	var buf bytes.Buffer
+	if err := runCameraTest(context.Background(), client, 200, &buf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, want := buf.String(), "Camera 200: credentials accepted (10.98.0.50).\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+}
+
 func TestRunCameraTest_AuthFailedNamesLoginFix(t *testing.T) {
 	client := &fakeCameraTester{resp: &agentpb.TestCameraCredentialsResponse{
 		Result:  agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED,

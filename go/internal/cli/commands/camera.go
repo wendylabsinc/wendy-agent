@@ -280,7 +280,11 @@ func runCameraTest(ctx context.Context, client cameraTester, id uint32, out io.W
 	}
 	switch resp.GetResult() {
 	case agentpb.TestCameraCredentialsResponse_RESULT_OK:
-		fmt.Fprintf(out, "Camera %d: credentials accepted (%s).\n", id, resp.GetAddress())
+		if detail := resp.GetDetail(); detail != "" {
+			fmt.Fprintf(out, "Camera %d: credentials accepted (%s): %s.\n", id, resp.GetAddress(), detail)
+		} else {
+			fmt.Fprintf(out, "Camera %d: credentials accepted (%s).\n", id, resp.GetAddress())
+		}
 		return nil
 	case agentpb.TestCameraCredentialsResponse_RESULT_AUTH_FAILED:
 		return fmt.Errorf("camera %d rejected the stored credentials; run `wendy device camera login %d`: %s",
