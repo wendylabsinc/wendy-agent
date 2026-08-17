@@ -31,9 +31,6 @@ type fakeLoopback struct {
 	availableErr error
 	nodePaths    map[uint32]string
 
-	acquireCount map[uint32]int
-	releaseCount map[uint32]int
-
 	ensureNodesCalls int
 	ensureNodesErr   error
 
@@ -45,9 +42,7 @@ type fakeLoopback struct {
 
 func newFakeLoopback() *fakeLoopback {
 	return &fakeLoopback{
-		nodePaths:    make(map[uint32]string),
-		acquireCount: make(map[uint32]int),
-		releaseCount: make(map[uint32]int),
+		nodePaths: make(map[uint32]string),
 	}
 }
 
@@ -69,20 +64,6 @@ func (f *fakeLoopback) NodePath(camID uint32) (string, bool) {
 	defer f.mu.Unlock()
 	path, ok := f.nodePaths[camID]
 	return path, ok
-}
-
-func (f *fakeLoopback) AcquireView(camID uint32) func() {
-	f.mu.Lock()
-	f.acquireCount[camID]++
-	f.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			f.mu.Lock()
-			f.releaseCount[camID]++
-			f.mu.Unlock()
-		})
-	}
 }
 
 func (f *fakeLoopback) SetContainerConsumers(containerIDs []string) {
@@ -675,33 +656,60 @@ func TestListIPCameras_PathEmptyWithoutNode(t *testing.T) {
 	}
 }
 
-// Attaching to a network camera's stream counts as a `camera view` consumer
-// per the spec ("started when ... `camera view` attaches"), and must release
-// that ref once streaming ends rather than pinning the pump up forever.
-func TestStreamIPCamera_AcquiresAndReleasesViewRef(t *testing.T) {
+// Viewers no longer create pump demand (WDY-2474): streaming one camera to a
+// lone viewer must open exactly the network hub's own RTSP session — never a
+// second one via a loopback pump the viewer used to demand. The pipeline
+// GStreamer builds for that lone session must be the network fdsink pipeline,
+// never the loopback's v4l2sink one, and the fakeLoopback must show no
+// pump-demand signal (a SetContainerConsumers call) from streaming at all.
+func TestStreamVideoIP_ViewOpensExactlyOneNetworkPipeline(t *testing.T) {
 	s := newIPTestService(t)
 	cam := registerTestCamera(t, s)
 	if err := s.credentials.Set(cam.MAC, ipcam.Credential{Username: "admin", Password: "p"}); err != nil {
 		t.Fatalf("set credential: %v", err)
 	}
 	fake := s.loopback.(*fakeLoopback)
+
+	var mu sync.Mutex
+	var calls int
+	var lastArgs []string
+	// Reuses the runGStreamer stub-swap seam (see NewVideoService's comment on
+	// why swapping the field after construction still reaches this closure)
+	// that captureIPPipelineArgs also relies on, but counts invocations
+	// instead of returning just the last one.
 	s.runGStreamer = func(ctx context.Context, args []string, onFrame func([]byte)) error {
+		mu.Lock()
+		calls++
+		lastArgs = append([]string(nil), args...)
+		mu.Unlock()
 		onFrame([]byte{0x00, 0x00, 0x00, 0x01, 0x67})
 		return nil
 	}
 
 	// The fake capture returns immediately, so the producer stops and
-	// StreamVideo returns with it; by then the view ref must have been both
-	// acquired and released.
+	// StreamVideo returns with it; by then the single session it opened has
+	// already completed.
 	_ = s.StreamVideo(&agentpb.StreamVideoRequest{DeviceId: cam.ID}, newFakeVideoStream(context.Background()))
+
+	mu.Lock()
+	gotCalls := calls
+	joined := strings.Join(lastArgs, " ")
+	mu.Unlock()
+
+	if gotCalls != 1 {
+		t.Fatalf("runGStreamer invoked %d times for a lone viewer, want exactly 1 (one RTSP session per view)", gotCalls)
+	}
+	if !strings.Contains(joined, "fdsink") {
+		t.Fatalf("pipeline args = %q, want the network hub's fdsink pipeline", joined)
+	}
+	if strings.Contains(joined, "v4l2sink") {
+		t.Fatalf("pipeline args = %q, must not contain v4l2sink: a viewer must never start a loopback pump", joined)
+	}
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if fake.acquireCount[cam.ID] != 1 {
-		t.Fatalf("acquire count = %d, want 1", fake.acquireCount[cam.ID])
-	}
-	if fake.releaseCount[cam.ID] != 1 {
-		t.Fatalf("release count = %d, want 1 (the view ref must be released once streaming ends)", fake.releaseCount[cam.ID])
+	if len(fake.containerConsumers) != 0 {
+		t.Fatalf("fakeLoopback recorded SetContainerConsumers calls %v from a viewer, want none: viewing must never signal pump demand", fake.containerConsumers)
 	}
 }
 
