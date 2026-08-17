@@ -118,17 +118,17 @@ Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
 { "type": "display" }
 ```
 
-When enabled:
-- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`
-- Membership in the `video` and `render` groups
-- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`
+The container receives:
+- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
+- Membership in the `video` group, plus the `render` group when the host has one.
+- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
 
-On NVIDIA Jetson the GL/EGL userspace is injected from the host through CDI; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
+On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
 
 | Constraint | |
 |------------|--|
 | At most one `display` per app | enforced at validation |
-| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images |
+| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
 
 > **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
@@ -179,28 +179,6 @@ Allows communication with Bluetooth devices.
 **bluez mode** provides:
 - BlueZ D-Bus interface access
 - Interaction with paired devices and Bluetooth profiles
-
-### Display Entitlement
-
-Present to a locally-attached monitor as a Wayland client (GPU-accelerated).
-
-```json
-{ "type": "display" }
-```
-
-The container receives:
-- `/dev/dri` (GPU render nodes); cgroup access is `rw`, no `mknod`.
-- Membership in the `video` group, plus the `render` group when the host has one.
-- The WendyOS compositor's Wayland socket, exposed via `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
-
-On NVIDIA Jetson the GL/EGL userspace is injected from the host through the same CDI path as `gpu`; on Raspberry Pi the app's own mesa works against the vc4 kernel driver.
-
-| Constraint | |
-|------------|--|
-| At most one `display` per app | enforced at validation |
-| Display-enabled image | the Wayland socket is present only on display-enabled WendyOS images; on a headless image the entitlement is accepted but nothing renders |
-
-> **Security:** apps **without** `display` never receive `/dev/dri` — the default GPU/display sandbox is unchanged.
 
 ### Notifications Entitlement
 
@@ -261,7 +239,7 @@ Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` sysc
   "version": "1.0.0",
   "entitlements": [
     { "type": "network", "mode": "host" },
-    { "type": "video" }
+    { "type": "camera" }
   ]
 }
 ```
@@ -287,7 +265,7 @@ Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` sysc
   "version": "1.0.0",
   "entitlements": [
     { "type": "gpu" },
-    { "type": "video" }
+    { "type": "camera" }
   ]
 }
 ```
@@ -323,7 +301,7 @@ Grants `CAP_SYS_ADMIN` and un-denies the `unshare` / `clone(CLONE_NEWUSER)` sysc
 wendy project entitlements add network --mode host
 wendy project entitlements add network --mode none
 wendy project entitlements add gpu
-wendy project entitlements add video
+wendy project entitlements add camera
 wendy project entitlements add audio
 wendy project entitlements add notifications
 wendy project entitlements add bluetooth --mode kernel
