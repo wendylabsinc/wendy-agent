@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/md5" //nolint:gosec // RFC 2617 digest auth mandates MD5; this is not a security boundary.
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -250,16 +251,11 @@ func buildAuthorization(challenges []string, cred Credential, uri string) (strin
 	}
 	switch scheme {
 	case "digest":
-		params := parseAuthParams(challenge)
-		nonce := params["nonce"]
-		if nonce == "" {
+		c, ok := parseDigestChallenge(parseAuthParams(challenge))
+		if !ok {
 			return "", false
 		}
-		realm := params["realm"]
-		response := digestResponse(cred.Username, cred.Password, realm, nonce, "DESCRIBE", uri)
-		return fmt.Sprintf(
-			`Digest username="%s", realm="%s", nonce="%s", uri="%s", response="%s"`,
-			cred.Username, realm, nonce, uri, response), true
+		return c.authorization(cred, uri, digestCnonce()), true
 	case "basic":
 		token := base64.StdEncoding.EncodeToString([]byte(cred.Username + ":" + cred.Password))
 		return "Basic " + token, true
@@ -423,4 +419,171 @@ func digestResponse(username, password, realm, nonce, method, uri string) string
 func md5Hex(s string) string {
 	sum := md5.Sum([]byte(s)) //nolint:gosec // RFC 2617 digest auth mandates MD5.
 	return hex.EncodeToString(sum[:])
+}
+
+// digestHA1 returns the RFC 7616 §3.4.2 A1 hash for the plain MD5 algorithm:
+// HA1 = MD5(username:realm:password).
+func digestHA1(username, password, realm string) string {
+	return md5Hex(username + ":" + realm + ":" + password)
+}
+
+// digestHA1Sess folds the challenge's nonce and the client's cnonce into an
+// already-computed HA1 for the MD5-sess algorithm (RFC 7616 §3.4.2):
+//
+//	HA1 = MD5( HA1 ":" nonce ":" cnonce )
+func digestHA1Sess(ha1, nonce, cnonce string) string {
+	return md5Hex(ha1 + ":" + nonce + ":" + cnonce)
+}
+
+// digestHA2 returns the RFC 7616 §3.4.3 A2 hash for a request with no
+// entity-body protection (qop absent or "auth", never "auth-int"):
+// HA2 = MD5(method:uri).
+func digestHA2(method, uri string) string {
+	return md5Hex(method + ":" + uri)
+}
+
+// digestResponseQop computes the RFC 7616 §3.4.1 request-digest for
+// qop="auth" with nc fixed at "00000001" — this probe sends exactly one
+// authorized request per connection, so there is never a second nonce-count
+// to advance:
+//
+//	response = MD5( HA1 ":" nonce ":" "00000001" ":" cnonce ":" "auth" ":" HA2 )
+func digestResponseQop(ha1, nonce, cnonce, ha2 string) string {
+	return md5Hex(ha1 + ":" + nonce + ":00000001:" + cnonce + ":auth:" + ha2)
+}
+
+// digestChallenge is the parsed, unescaped view of one Digest challenge.
+type digestChallenge struct {
+	realm     string
+	nonce     string
+	opaque    string // "" when the challenge carried none
+	algorithm string // verbatim token from the challenge; "" means MD5
+	sess      bool   // algorithm was MD5-sess (case-insensitive)
+	qopAuth   bool   // challenge's qop list offered "auth"
+}
+
+// parseDigestChallenge builds a digestChallenge from a Digest challenge's
+// already-split, already-unescaped parameters (parseAuthParams' output). It
+// returns ok=false when the challenge cannot be answered: no nonce, an
+// algorithm other than MD5 or MD5-sess (the SHA-256 family and anything else
+// is out of scope, though this is the seam a later table entry would extend
+// through), or a qop list that never offers "auth" — including a challenge
+// that offers only "auth-int", which this probe does not implement and would
+// rather honestly refuse than silently misanswer. A challenge with no qop
+// parameter at all is not a refusal: it is the legacy pre-RFC 2617-qop form,
+// still answered via the classic response formula.
+func parseDigestChallenge(params map[string]string) (digestChallenge, bool) {
+	nonce := params["nonce"]
+	if nonce == "" {
+		return digestChallenge{}, false
+	}
+
+	algorithm := params["algorithm"]
+	sess := false
+	switch strings.ToLower(algorithm) {
+	case "", "md5":
+		// sess stays false; algorithm is either unset (MD5 is the default
+		// per RFC 7616 §3.3) or explicitly MD5.
+	case "md5-sess":
+		sess = true
+	default:
+		return digestChallenge{}, false
+	}
+
+	qopAuth := false
+	if qopOffered, present := params["qop"]; present {
+		offersAuth := false
+		for _, tok := range strings.Split(qopOffered, ",") {
+			if strings.TrimSpace(tok) == "auth" {
+				offersAuth = true
+				break
+			}
+		}
+		if !offersAuth {
+			return digestChallenge{}, false
+		}
+		qopAuth = true
+	}
+
+	return digestChallenge{
+		realm:     params["realm"],
+		nonce:     nonce,
+		opaque:    params["opaque"],
+		algorithm: algorithm,
+		sess:      sess,
+		qopAuth:   qopAuth,
+	}, true
+}
+
+// authorization renders the Authorization header value for a DESCRIBE
+// request answering this challenge. cnonce is threaded in (not generated
+// here) so the header and the hash it carries are testable against fixed
+// vectors; digestCnonce is what callers use to supply a real one.
+//
+// Response math (RFC 7616 §3.4): HA1 = MD5(user:realm:pass), folded through
+// digestHA1Sess when the algorithm is MD5-sess; HA2 = MD5(method:uri); a qop
+// offer of "auth" uses response = MD5(HA1:nonce:00000001:cnonce:auth:HA2),
+// otherwise the legacy response = MD5(HA1:nonce:HA2) — computed via
+// digestResponse itself for the plain-MD5, no-qop case, so that shape stays
+// byte-identical to the pre-existing behavior no camera's expectations have
+// changed under.
+func (c digestChallenge) authorization(cred Credential, uri, cnonce string) string {
+	const method = "DESCRIBE"
+
+	var response string
+	switch {
+	case !c.sess && !c.qopAuth:
+		response = digestResponse(cred.Username, cred.Password, c.realm, c.nonce, method, uri)
+	default:
+		ha1 := digestHA1(cred.Username, cred.Password, c.realm)
+		if c.sess {
+			ha1 = digestHA1Sess(ha1, c.nonce, cnonce)
+		}
+		ha2 := digestHA2(method, uri)
+		if c.qopAuth {
+			response = digestResponseQop(ha1, c.nonce, cnonce, ha2)
+		} else {
+			response = md5Hex(ha1 + ":" + c.nonce + ":" + ha2)
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Digest username=%s, realm=%s, nonce=%s, uri=%s, response=%s",
+		quoteAuthValue(cred.Username), quoteAuthValue(c.realm), quoteAuthValue(c.nonce),
+		quoteAuthValue(uri), quoteAuthValue(response))
+	if c.algorithm != "" {
+		// Echoed unquoted, in the challenge's exact spelling: algorithm is a
+		// token per the digest ABNF, and a camera that sent "MD5-sess" may
+		// reject a resend that echoes back "md5-sess" or a quoted variant.
+		fmt.Fprintf(&b, ", algorithm=%s", c.algorithm)
+	}
+	if c.opaque != "" {
+		// Echoed verbatim and quoted: opaque is server-chosen data this probe
+		// must return unmodified, not reinterpreted.
+		fmt.Fprintf(&b, ", opaque=%s", quoteAuthValue(c.opaque))
+	}
+	if c.qopAuth {
+		// qop and nc are tokens (unquoted per the ABNF); cnonce is a
+		// quoted-string. nc is always "00000001": this probe sends exactly
+		// one authorized request per connection, so there is only ever a
+		// first nonce-count.
+		fmt.Fprintf(&b, ", qop=auth, nc=00000001, cnonce=%s", quoteAuthValue(cnonce))
+	}
+	return b.String()
+}
+
+// digestCnonce is the cnonce source for a live Authorization header: hex of
+// 8 bytes from crypto/rand. If the CSPRNG read fails — a broken or exhausted
+// entropy source — a timestamp-derived value keeps the probe able to answer
+// rather than aborting: a cnonce only needs to be distinct per request to do
+// its job (letting the server detect a replayed response), not
+// cryptographically unpredictable, since it is the client's contribution to
+// the hash, not a secret. Tests replace this var to pin the cnonce so the
+// response hash matches a precomputed vector.
+var digestCnonce = func() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(buf[:])
 }

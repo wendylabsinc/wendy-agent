@@ -680,3 +680,198 @@ func TestProbeCredentials_404OnFirstRequestIsOKWithPathNote(t *testing.T) {
 		t.Fatalf("detail = %q, overclaims credentials were evaluated when no challenge occurred", detail)
 	}
 }
+
+// pinDigestCnonce points digestCnonce at a fixed value for the duration of a
+// test, so the qop=auth response hash — which folds the cnonce into HA1
+// (MD5-sess) and into the response itself — is reproducible against a
+// precomputed vector instead of a randomly generated one.
+func pinDigestCnonce(t *testing.T, cnonce string) {
+	t.Helper()
+	original := digestCnonce
+	digestCnonce = func() string { return cnonce }
+	t.Cleanup(func() { digestCnonce = original })
+}
+
+// A challenge carrying opaque, algorithm=MD5 and qop="auth" must be answered
+// with the full RFC 7616 qop response — computed with nc fixed at
+// "00000001" — and must echo the opaque verbatim and the algorithm's exact
+// spelling, alongside the qop/nc/cnonce trio the challenge's qop offer
+// requires.
+func TestProbeCredentials_QopOpaqueAlgorithmChallenge(t *testing.T) {
+	pinDigestCnonce(t, "0a4f113b")
+	const wantResponse = "5859f533b31f0ed417fd2d03d6bd1d74"
+
+	var secondRequest string
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r) // unauthenticated DESCRIBE
+
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			`WWW-Authenticate: Digest realm="IP Camera", nonce="6629fae49393a05397450978507c4ef1", opaque="5ccc069c403ebaf9f0171e9517f40e41", algorithm=MD5, qop="auth"` + "\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+
+		secondRequest = readRequest(t, r) // authenticated DESCRIBE
+
+		_, err = conn.Write([]byte("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 0\r\n\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 200: %v", err)
+		}
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeOK {
+		t.Fatalf("result = %v, want ProbeOK; detail=%q", result, detail)
+	}
+	for _, want := range []string{
+		`response="` + wantResponse + `"`,
+		`opaque="5ccc069c403ebaf9f0171e9517f40e41"`,
+		"algorithm=MD5",
+		"qop=auth",
+		"nc=00000001",
+		`cnonce="0a4f113b"`,
+	} {
+		if !strings.Contains(secondRequest, want) {
+			t.Fatalf("resend missing %q: %q", want, secondRequest)
+		}
+	}
+}
+
+// A challenge with algorithm=MD5-sess but no qop must still fold the pinned
+// cnonce into HA1 (per RFC 7616 §3.4.3) and use the legacy no-qop response
+// formula, echoing algorithm=MD5-sess but omitting the qop/nc/cnonce trio
+// that only applies when the challenge itself offered qop.
+func TestProbeCredentials_MD5SessChallenge(t *testing.T) {
+	pinDigestCnonce(t, "0a4f113b")
+	const wantResponse = "48f2fc4e0f254afbeaf323ce9a205f99"
+
+	var secondRequest string
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r)
+
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			`WWW-Authenticate: Digest realm="IP Camera", nonce="6629fae49393a05397450978507c4ef1", algorithm=MD5-sess` + "\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+
+		secondRequest = readRequest(t, r)
+
+		_, err = conn.Write([]byte("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 0\r\n\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 200: %v", err)
+		}
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeOK {
+		t.Fatalf("result = %v, want ProbeOK; detail=%q", result, detail)
+	}
+	if !strings.Contains(secondRequest, `response="`+wantResponse+`"`) {
+		t.Fatalf("resend did not carry the MD5-sess response: %q", secondRequest)
+	}
+	if !strings.Contains(secondRequest, "algorithm=MD5-sess") {
+		t.Fatalf("resend did not echo algorithm=MD5-sess: %q", secondRequest)
+	}
+	if strings.Contains(secondRequest, "qop=") {
+		t.Fatalf("resend included a qop group for a challenge that offered no qop: %q", secondRequest)
+	}
+}
+
+// A realm containing a literal double quote and a comma — legal in a digest
+// realm string, escaped on the wire as IP\"Camera, Ltd — must survive
+// splitAuthParams without the embedded comma being mistaken for a parameter
+// boundary (the nonce that follows must still parse), the response hash must
+// be computed over the *unescaped* realm, and the resend must re-escape the
+// realm rather than sending the broken realm="IP"Camera, Ltd" header the old
+// unconditional %s formatting produced.
+func TestProbeCredentials_EscapedRealmDigest(t *testing.T) {
+	pinDigestCnonce(t, "0a4f113b")
+	const wantResponse = "e6b49fe9324362a4e26a832ecbf7a873"
+
+	var secondRequest string
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r)
+
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			`WWW-Authenticate: Digest realm="IP\"Camera, Ltd", nonce="6629fae49393a05397450978507c4ef1"` + "\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+
+		secondRequest = readRequest(t, r)
+
+		_, err = conn.Write([]byte("RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Length: 0\r\n\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 200: %v", err)
+		}
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeOK {
+		t.Fatalf("result = %v, want ProbeOK; detail=%q", result, detail)
+	}
+	if !strings.Contains(secondRequest, `response="`+wantResponse+`"`) {
+		t.Fatalf("resend did not carry the response computed over the unescaped realm: %q", secondRequest)
+	}
+	if !strings.Contains(secondRequest, `realm="IP\"Camera, Ltd"`) {
+		t.Fatalf("resend did not re-escape the realm: %q", secondRequest)
+	}
+	if !strings.Contains(secondRequest, `nonce="6629fae49393a05397450978507c4ef1"`) {
+		t.Fatalf("resend lost the nonce despite the embedded comma in realm: %q", secondRequest)
+	}
+}
+
+// A Digest challenge advertising an algorithm this probe does not implement
+// (SHA-512, out of scope alongside the rest of the SHA-256 family) must be
+// refused rather than answered with a silently-wrong MD5 response: no
+// resend, ProbeAuthFailed, and a detail that honestly says the scheme cannot
+// be answered rather than implying the credentials themselves were rejected.
+func TestProbeCredentials_UnsupportedAlgorithmRefused(t *testing.T) {
+	var requests int
+	withScriptedServer(t, func(t *testing.T, conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readRequest(t, r)
+		requests++
+
+		_, err := conn.Write([]byte("RTSP/1.0 401 Unauthorized\r\n" +
+			"CSeq: 1\r\n" +
+			`WWW-Authenticate: Digest realm="IP Camera", nonce="6629fae49393a05397450978507c4ef1", algorithm=SHA-512` + "\r\n" +
+			"\r\n"))
+		if err != nil {
+			t.Fatalf("server: writing 401: %v", err)
+		}
+		// No second request: an unanswerable challenge must not be resent.
+	})
+
+	result, detail := ProbeCredentials(context.Background(), probeTestCamera(),
+		Credential{Username: "admin", Password: "hunter2"})
+
+	if result != ProbeAuthFailed {
+		t.Fatalf("result = %v, want ProbeAuthFailed; detail=%q", result, detail)
+	}
+	if !strings.Contains(detail, "cannot answer") {
+		t.Fatalf("detail = %q, want it to say the scheme cannot be answered", detail)
+	}
+	if strings.Contains(detail, "hunter2") {
+		t.Fatalf("detail leaked the password: %q", detail)
+	}
+	if requests != 1 {
+		t.Fatalf("server saw %d requests, want exactly 1 (no resend for an unanswerable challenge)", requests)
+	}
+}
