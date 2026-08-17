@@ -16,15 +16,19 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
-// Credentials for a network camera are resolved in two steps, and only ever for a
-// camera that actually asked for them:
+// Credentials for a network camera are resolved through two triggers, not
+// one:
 //
-//  1. wendy.json, so an unattended deploy needs no prompt.
-//  2. an interactive prompt, so a developer with no wendy.json is not stuck.
+//  1. A proactive push at deploy time (pushCameraCredentialsForDeploy in
+//     camera_credentials_deploy.go): every registered IP camera with no
+//     stored login gets wendy.json's camera entitlement before the app that
+//     wants it ever asks.
+//  2. The reactive path below, scoped to one camera at a time and driven by
+//     the agent reporting IP_CAMERA_NO_CREDENTIALS for it:
+//     a. wendy.json, so an unattended deploy needs no prompt.
+//     b. an interactive prompt, so a developer with no wendy.json is not stuck.
 //
-// Local cameras never reach here: nothing asks a USB webcam to log in. The
-// trigger is the agent reporting IP_CAMERA_NO_CREDENTIALS, so the flow is driven
-// by the camera's own requirement rather than by guessing from the transport.
+// Local cameras never reach either path: nothing asks a USB webcam to log in.
 
 // cameraCredentialsFromConfig reads camera credentials out of wendy.json in dir.
 // Missing file, missing entitlement and missing fields are all "not configured"
@@ -34,6 +38,16 @@ func cameraCredentialsFromConfig(dir string) (user, password string, found bool)
 	if err != nil {
 		return "", "", false
 	}
+	return cameraCredentialsFromAppConfig(cfg)
+}
+
+// cameraCredentialsFromAppConfig extracts credentials from an already-loaded
+// config; cameraCredentialsFromConfig (path-based, above) delegates here. This
+// is the shared rule for both the reactive prompt path and the deploy-time
+// push: the entitlement must be camera/video type with a non-empty User. A
+// password with no username does not count — the interactive prompt path is
+// the only place a vendor-default user is assumed.
+func cameraCredentialsFromAppConfig(cfg *appconfig.AppConfig) (user, password string, found bool) {
 	for _, ent := range cfg.Entitlements {
 		if ent.Type != appconfig.EntitlementCamera && ent.Type != appconfig.EntitlementVideo {
 			continue
