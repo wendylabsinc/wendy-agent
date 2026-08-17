@@ -294,6 +294,8 @@ func selectChallenge(challenges []string) (scheme, raw string, ok bool) {
 // follow a challenge's scheme token, accepting both quoted ("realm=\"x\"")
 // and unquoted (realm=x) values. Splitting respects quotes, so a comma inside
 // a quoted value (legal in a realm string) does not end the parameter early.
+// A quoted value's escapes are resolved by unquoteAuthValue, so a param like
+// realm="IP\"Camera, Ltd" comes out as the unescaped IP"Camera, Ltd.
 func parseAuthParams(challenge string) map[string]string {
 	params := make(map[string]string)
 	_, rest, ok := strings.Cut(challenge, " ")
@@ -307,33 +309,102 @@ func parseAuthParams(challenge string) map[string]string {
 		}
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"`)
+		value = unquoteAuthValue(value)
 		params[key] = value
 	}
 	return params
 }
 
 // splitAuthParams splits a challenge's parameter list on commas, treating
-// text inside double quotes as opaque so a quoted value containing a comma is
-// not mistaken for a parameter boundary.
+// text inside double quotes as opaque so a quoted value containing a comma —
+// or a backslash-escaped quote, per RFC 7230's quoted-pair — is not mistaken
+// for a parameter boundary. It is a three-state machine: outside a quoted
+// value, inside one, and inside one having just seen a backslash. Runes are
+// copied verbatim; unescaping is unquoteAuthValue's job, not this function's.
+// An unterminated quote is tolerated leniently: everything from the opening
+// quote to the end of the string becomes a single trailing part, matching
+// this parser's existing posture of degrading gracefully on malformed input
+// rather than dropping the challenge.
 func splitAuthParams(s string) []string {
+	const (
+		outside = iota
+		inQuotes
+		inQuotesEscape
+	)
+	state := outside
 	var parts []string
 	var cur strings.Builder
-	inQuotes := false
 	for _, r := range s {
-		switch {
-		case r == '"':
-			inQuotes = !inQuotes
+		switch state {
+		case outside:
+			switch r {
+			case '"':
+				state = inQuotes
+				cur.WriteRune(r)
+			case ',':
+				parts = append(parts, cur.String())
+				cur.Reset()
+			default:
+				cur.WriteRune(r)
+			}
+		case inQuotes:
 			cur.WriteRune(r)
-		case r == ',' && !inQuotes:
-			parts = append(parts, cur.String())
-			cur.Reset()
-		default:
+			switch r {
+			case '\\':
+				state = inQuotesEscape
+			case '"':
+				state = outside
+			}
+		case inQuotesEscape:
 			cur.WriteRune(r)
+			state = inQuotes
 		}
 	}
 	parts = append(parts, cur.String())
 	return parts
+}
+
+// unquoteAuthValue strips one layer of surrounding double quotes from an
+// auth-param value and resolves \X escapes (RFC 7230's quoted-pair) within
+// them, so a param that arrived as "IP\"Camera, Ltd" yields the actual
+// realm text IP"Camera, Ltd. A value with no surrounding quotes — legal for
+// tokens like qop or algorithm — is returned unchanged.
+func unquoteAuthValue(v string) string {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return v
+	}
+	inner := v[1 : len(v)-1]
+	var b strings.Builder
+	escape := false
+	for _, r := range inner {
+		if escape {
+			b.WriteRune(r)
+			escape = false
+			continue
+		}
+		if r == '\\' {
+			escape = true
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// quoteAuthValue renders s as an RFC 7230 quoted-string: wrapped in double
+// quotes, with any backslash or double quote inside it escaped so the result
+// round-trips through unquoteAuthValue back to s.
+func quoteAuthValue(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		if r == '\\' || r == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // digestResponse computes the RFC 2617 request-digest for a request with no
