@@ -12,12 +12,18 @@ import (
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 )
 
+const testRecoveryECIDDigest = "sha256:52c5b9de12b1f1943a441df0ecdea9f3eb94c7f64b98968855390f14c6e6e05c"
+
 func TestRecoveryFlagCombinationsFailBeforeManifestLookup(t *testing.T) {
 	tests := [][]string{
 		{"--device-type", orinDeviceType, "--drive", "/dev/disk9"},
 		{"--device-type", orinNanoDeviceType, "--no-bmap"},
 		{"--device-type", orinDeviceType, "--yes-overwrite-internal"},
 		{"--device-type", orinDeviceType, "--rootfs-only", "--storage", "emmc"},
+		{"--device-type", orinNanoDeviceType, "--recovery-usb-path", "1-2"},
+		{"--device-type", orinNanoDeviceType, "--expected-recovery-ecid-sha256", testRecoveryECIDDigest},
+		{"--device-type", orinNanoDeviceType, "--rootfs-only", "--recovery-usb-path", "1-2", "--expected-recovery-ecid-sha256", testRecoveryECIDDigest},
+		{"--device-type", "raspberry-pi-5", "--recovery-usb-path", "1-2", "--expected-recovery-ecid-sha256", testRecoveryECIDDigest},
 	}
 	for _, args := range tests {
 		cmd := newOSInstallCmd()
@@ -25,6 +31,20 @@ func TestRecoveryFlagCombinationsFailBeforeManifestLookup(t *testing.T) {
 		if err := cmd.Execute(); err == nil {
 			t.Fatalf("args %v unexpectedly accepted", args)
 		}
+	}
+}
+
+func TestRecoverySelectorCLIExposesDigestNotRawECID(t *testing.T) {
+	cmd := newOSInstallCmd()
+	if cmd.Flags().Lookup("expected-recovery-ecid-sha256") == nil || cmd.Flags().Lookup("recovery-usb-path") == nil {
+		t.Fatal("exact recovery selector flags are missing")
+	}
+	if cmd.Flags().Lookup("expected-recovery-ecid") != nil {
+		t.Fatal("raw ECID flag must never be exposed")
+	}
+	cmd.SetArgs([]string{"--expected-recovery-ecid", "80012641783de2442400000016ff80c0"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("raw ECID flag unexpectedly accepted")
 	}
 }
 

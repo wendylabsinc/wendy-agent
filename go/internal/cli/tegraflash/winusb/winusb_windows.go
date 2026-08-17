@@ -152,6 +152,9 @@ func OpenExpected(locationPath string, expectedProduct uint16) (*USBDevice, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(paths) > 32 {
+		return nil, fmt.Errorf("refusing WinUSB discovery with %d interfaces (maximum 32)", len(paths))
+	}
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("no Jetson WinUSB device found (is the driver installed and the device connected?)")
 	}
@@ -164,15 +167,25 @@ func OpenExpected(locationPath string, expectedProduct uint16) (*USBDevice, erro
 	if err != nil {
 		return nil, err
 	}
+	if len(devs) > 32 {
+		return nil, fmt.Errorf("refusing Jetson USB discovery with %d devices (maximum 32)", len(devs))
+	}
+	var selectedPath string
 	for _, d := range devs {
 		if d.LocationPath != locationPath || (expectedProduct != 0 && d.PID != expectedProduct) {
 			continue
 		}
 		if p := devInterfacePath(d.InstanceID); p != "" {
-			return openPath(p)
+			if selectedPath != "" {
+				return nil, fmt.Errorf("multiple Jetson WinUSB devices matched the required controller path and product")
+			}
+			selectedPath = p
 		}
 	}
-	return nil, fmt.Errorf("no Jetson WinUSB product 0x%04x at location %q among %d present (is our driver bound to it?)", expectedProduct, locationPath, len(paths))
+	if selectedPath != "" {
+		return openPath(selectedPath)
+	}
+	return nil, fmt.Errorf("no matching Jetson WinUSB product 0x%04x among %d present devices (is our driver bound to it?)", expectedProduct, len(paths))
 }
 
 // OpenInstance opens the exact devnode named by its PnP instance ID — stronger
@@ -182,12 +195,12 @@ func OpenExpected(locationPath string, expectedProduct uint16) (*USBDevice, erro
 func OpenInstance(instanceID string, expectedProduct uint16) (*USBDevice, error) {
 	if expectedProduct != 0 {
 		if _, pid, ok := ParseVIDPID(instanceID); !ok || pid != expectedProduct {
-			return nil, fmt.Errorf("device %s is not USB product 0x%04x", instanceID, expectedProduct)
+			return nil, wrongRecoveryProductError(expectedProduct)
 		}
 	}
 	p := devInterfacePath(instanceID)
 	if p == "" {
-		return nil, fmt.Errorf("device %s does not expose the Jetson WinUSB interface (is our driver bound to it?)", instanceID)
+		return nil, noRecoveryInterfaceError()
 	}
 	return openPath(p)
 }
@@ -243,7 +256,7 @@ func openPath(devPath string) (*USBDevice, error) {
 		0,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("CreateFile(%s): %w", devPath, err)
+		return nil, wrapRecoveryInterfaceOpenError(err)
 	}
 	d := &USBDevice{handle: h}
 	if r, _, e := procWinUsbInitialize.Call(uintptr(h), uintptr(unsafe.Pointer(&d.winusb))); r == 0 {
@@ -255,6 +268,18 @@ func openPath(devPath string) (*USBDevice, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+func wrongRecoveryProductError(expectedProduct uint16) error {
+	return fmt.Errorf("selected Jetson is not USB product 0x%04x", expectedProduct)
+}
+
+func noRecoveryInterfaceError() error {
+	return fmt.Errorf("selected Jetson does not expose the Wendy WinUSB interface (is our driver bound to it?)")
+}
+
+func wrapRecoveryInterfaceOpenError(err error) error {
+	return fmt.Errorf("opening selected Jetson WinUSB interface: %w", err)
 }
 
 // discoverPipes queries the interface's endpoints and records the bulk IN/OUT

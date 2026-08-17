@@ -2,7 +2,11 @@
 
 package winusb
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
+)
 
 // These helpers are shared with package t234's gadget-disk discovery and USB
 // release; both sides must extract identity from PnP instance IDs identically.
@@ -31,5 +35,28 @@ func TestInstanceSerial(t *testing.T) {
 	}
 	if got := InstanceSerial("no-backslash"); got != "" {
 		t.Fatalf("malformed id = %q", got)
+	}
+}
+
+func TestRecoveryDeviceCanonicalizesUSBSerialLikeGousb(t *testing.T) {
+	d := Device{
+		InstanceID:   `USB\VID_0955&PID_7026\0C08FF6100000042442ED38714621008`,
+		PID:          ProductThor,
+		Serial:       "0C08FF6100000042442ED38714621008",
+		LocationPath: "PCIROOT(0)#USBROOT(0)#USB(2)",
+	}
+	rd := d.RecoveryDevice()
+	if rd.ECID != "80012641783de2442400000016ff80c0" {
+		t.Fatalf("canonical ECID = %q", rd.ECID)
+	}
+	// Cross-OS fixture: Linux/macOS parse the reversed descriptor into this
+	// canonical BR_CID, so both paths must derive the exact same digest.
+	if got, want := rd.ECIDDigest(), rcm.RecoveryECIDDigest("80012641783DE2442400000016FF80C0"); got == "" || got != want {
+		t.Fatalf("Windows digest = %q, gousb digest = %q", got, want)
+	}
+
+	d.Serial = `7&2C54F607&0&0000`
+	if got := d.RecoveryDevice().ECID; got != "" {
+		t.Fatalf("composite/generated instance id accepted as ECID: %q", got)
 	}
 }

@@ -38,6 +38,7 @@ const (
 // Per-OS seams: pickOrinRecoveryDevice, orinStageOne, and runT234Helper
 // (os_install_orin_unix.go / os_install_orin_windows.go).
 func installOrin(ctx context.Context, opts t234InstallOptions) error {
+	requireExactRecoveryPort := !opts.RecoveryTarget.IsZero()
 	cacheDir, err := osCacheDir()
 	if err != nil {
 		return fmt.Errorf("resolving cache dir: %w", err)
@@ -86,6 +87,10 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 	dev, err := pickOrinRecoveryDevice(opts)
 	if err != nil {
 		return err
+	}
+	pinnedTarget, err := dev.PinnedSelector()
+	if err != nil {
+		return fmt.Errorf("cannot pin the selected Orin: %w", err)
 	}
 	fmt.Printf("\n%s %s\n", tui.Dim("Target:"), tui.Device(dev.Describe()))
 
@@ -164,7 +169,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 			target := fp.Manifest.Target
 			massStorage = &t234.Stage2{
 				FlashPackagePath: fp.FlashPackageImage(), LayoutPath: layoutPath, ImagesDir: workspace,
-				Plan: flashPlan, PortPath: dev.PathKey,
+				Plan: flashPlan, PortPath: pinnedTarget.PathKey, RequireExactPort: requireExactRecoveryPort,
 				StatusPath: fp.Manifest.Layout.FlashPackageStatus, LogsPath: fp.Manifest.Layout.FlashPackageLogs,
 				ExpectedIdentity: t234.IdentityExpectation{ModuleID: target.ModuleID, ModuleSKU: target.ModuleSKU, CarrierID: target.CarrierID, CarrierSKU: target.CarrierSKU},
 				Out:              out, Detail: detail, RunHelper: runT234Helper, TempDir: handoffDir,
@@ -172,7 +177,7 @@ func installOrin(ctx context.Context, opts t234InstallOptions) error {
 			return false, nil
 		}},
 		{id: orinStepRCMBoot, label: "Stage 1  RCM boot", run: func(out io.Writer, _ func(string)) (bool, error) {
-			return false, orinStageOne(fp, dev, out)
+			return false, orinStageOne(fp, pinnedTarget, dev, out)
 		}},
 		{id: orinStepCommands, label: "Stage 2  verify target + hand off recovery", abortWarning: boundaryWarning, run: func(out io.Writer, detail func(string)) (bool, error) {
 			massStorage.Out, massStorage.Detail = out, detail

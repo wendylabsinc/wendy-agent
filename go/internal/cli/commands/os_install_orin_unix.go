@@ -27,18 +27,18 @@ import (
 // pickOrinRecoveryDevice lists T234 modules in recovery mode and selects one,
 // filtered to the install's module family.
 func pickOrinRecoveryDevice(opts t234InstallOptions) (rcm.RecoveryDevice, error) {
-	return pickUnixRecoveryDevice(orinRecoveryHints(opts), orinRecoveryMatch(opts.DeviceType))
+	return pickUnixRecoveryDevice(orinRecoveryHints(opts), orinRecoveryMatch(opts.DeviceType), opts.RecoveryTarget)
 }
 
 // orinStageOne performs the stage-1 RCM boot over gousb with the file chain
 // declared by the flashpack manifest.
-func orinStageOne(fp *flashpack.Flashpack, dev rcm.RecoveryDevice, out io.Writer) error {
+func orinStageOne(fp *flashpack.Flashpack, target rcm.RecoverySelector, dev rcm.RecoveryDevice, out io.Writer) error {
 	order, memBCT, blob, err := t234RCMFiles(fp)
 	if err != nil {
 		return err
 	}
-	return bringup.Run(bringup.Options{Dir: fp.Root, MemBCT: memBCT, Blob: blob, DevicePath: dev.PathKey,
-		ExpectedProduct: dev.Product, SendOrder: order, Out: out})
+	return bringup.Run(bringup.Options{Dir: fp.Root, MemBCT: memBCT, Blob: blob, DevicePath: target.PathKey,
+		ExpectedProduct: dev.Product, ExpectedECIDDigest: target.ExpectedECIDDigest, SendOrder: order, Out: out})
 }
 
 // isWinRawDiskAccessError is Windows-only (errno-matched there); never true

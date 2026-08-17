@@ -188,15 +188,3 @@ func parseChipIDDescriptor(buf []byte, n int) (string, error) {
 	}
 	return reverseASCII(sb.String()), nil
 }
-
-func isHexDigit(c byte) bool {
-	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')
-}
-
-func reverseASCII(s string) string {
-	b := []byte(s)
-	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
-		b[i], b[j] = b[j], b[i]
-	}
-	return string(b)
-}

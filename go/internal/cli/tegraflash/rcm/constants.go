@@ -17,7 +17,9 @@ const (
 	ProductThor = 0x7026 // T264 (AGX Thor); confirmed on live hardware
 )
 
-// t234Modules maps each T234 recovery PID to its module name.
+// t234Modules maps documented T234 recovery products to display/driver-package
+// names. These names are routing hints only, never module/carrier attestation;
+// destructive recovery verifies the board identity from the recovery initrd.
 var t234Modules = map[uint16]string{
 	ProductOrinAGX32: "AGX Orin 32GB",
 	ProductOrinAGX64: "AGX Orin 64GB",
@@ -33,7 +35,8 @@ func IsT234RecoveryPID(pid uint16) bool {
 	return ok
 }
 
-// T234ModuleName names the Orin-family module behind a recovery PID.
+// T234ModuleName returns the documented product label for a recovery PID. It
+// must not be used as physical module/carrier attestation.
 func T234ModuleName(pid uint16) (string, bool) {
 	name, ok := t234Modules[pid]
 	return name, ok

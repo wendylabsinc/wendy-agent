@@ -27,6 +27,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/discovery"
@@ -37,15 +38,16 @@ import (
 type preEnrollMode int
 
 type t234InstallOptions struct {
-	DeviceType    string
-	DeviceName    string
-	Version       string
-	Storage       string
-	Artifact      *recoveryFlashpackInfo
-	Force         bool
-	WiFi          wifiCLIOptions
-	RequestedName string
-	PreEnroll     preEnrollOptions
+	DeviceType     string
+	DeviceName     string
+	Version        string
+	Storage        string
+	Artifact       *recoveryFlashpackInfo
+	Force          bool
+	WiFi           wifiCLIOptions
+	RequestedName  string
+	PreEnroll      preEnrollOptions
+	RecoveryTarget rcm.RecoverySelector
 }
 
 const (
@@ -72,6 +74,8 @@ func newOSInstallCmd() *cobra.Command {
 	var deviceName string
 	var enrollCloudGRPC string
 	var prNumber int
+	var expectedRecoveryECIDDigest string
+	var recoveryUSBPath string
 
 	cmd := &cobra.Command{
 		Use:   "install [image] [drive]",
@@ -102,6 +106,10 @@ Flags can be provided progressively — omitted values trigger interactive picke
 			}
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			recoveryTarget, err := rcm.NewRecoverySelector(recoveryUSBPath, expectedRecoveryECIDDigest)
+			if err != nil {
+				return err
+			}
 			if rootfsOnly && len(args) > 0 {
 				return fmt.Errorf("--rootfs-only cannot be combined with positional [image] [drive] arguments")
 			}
@@ -112,8 +120,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 				fmt.Fprintln(cmd.ErrOrStderr(), tui.WarningMessage("PR images are unhardened debug builds (passwordless root, SSH on). Do not use in production."))
 			}
 			// Positional direct-install mode is incompatible with manifest-backed flags.
-			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "") {
-				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc")
+			if len(args) > 0 && (deviceType != "" || versionFlag != "" || driveFlag != "" || wifiSSID != "" || wifiPassword != "" || len(wifiEntries) > 0 || noWifi || deviceName != "" || enrollCloudGRPC != "" || !recoveryTarget.IsZero()) {
+				return fmt.Errorf("positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, --cloud-grpc, --expected-recovery-ecid-sha256, or --recovery-usb-path")
 			}
 			if nightly && versionFlag != "" {
 				return fmt.Errorf("--nightly and --version are mutually exclusive")
@@ -138,7 +146,7 @@ Flags can be provided progressively — omitted values trigger interactive picke
 				}
 			}
 			rootfsOnlyExplicit := cmd.Flags().Changed("rootfs-only")
-			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, rootfsOnly, rootfsOnlyExplicit, storageOverride, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
+			return runOSInstall(cmd.Context(), nightly, deviceType, versionFlag, driveFlag, force, yesOverwriteInternal, noBmap, rootfsOnly, rootfsOnlyExplicit, storageOverride, recoveryTarget, opts, deviceName, preEnrollOptions{mode: mode, cloudGRPC: enrollCloudGRPC}, prNumber)
 		},
 	}
 
@@ -159,6 +167,8 @@ Flags can be provided progressively — omitted values trigger interactive picke
 	cmd.Flags().BoolVar(&preEnroll, "pre-enroll", false, "Pre-enroll this device with Wendy Cloud during imaging (requires 'wendy auth login')")
 	cmd.Flags().StringVar(&enrollCloudGRPC, "cloud-grpc", "", "Cloud gRPC endpoint of the auth session to use for pre-enrollment (optional when a default is set via 'wendy auth use')")
 	cmd.Flags().IntVar(&prNumber, "pr", 0, "Install the image built by wendyos-builder PR #N (debug build; mutually exclusive with --nightly, --version, and positional [image] [drive])")
+	cmd.Flags().StringVar(&expectedRecoveryECIDDigest, "expected-recovery-ecid-sha256", "", "Require the exact Jetson recovery ECID digest (sha256:<64 hex>, domain wendyos-recovery-ecid-v1); must be paired with --recovery-usb-path")
+	cmd.Flags().StringVar(&recoveryUSBPath, "recovery-usb-path", "", "Require the exact controller USB topology path; must be paired with --expected-recovery-ecid-sha256")
 
 	return cmd
 }
@@ -271,7 +281,15 @@ func pickLinuxDevice() (string, deviceInfo, error) {
 	return key, deviceMap[key], nil
 }
 
-func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion, flagDrive string, force bool, yesOverwriteInternal bool, noBmap, rootfsOnly, rootfsOnlyExplicit bool, storageOverride string, recoveryTarget rcm.RecoverySelector, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+	if !recoveryTarget.IsZero() {
+		if rootfsOnly {
+			return fmt.Errorf("recovery identity selectors require full Jetson USB recovery and cannot be combined with --rootfs-only")
+		}
+		if flagDeviceType != "" && flagDeviceType != thorDeviceType && !isT234RecoveryDevice(flagDeviceType) {
+			return fmt.Errorf("recovery identity selectors apply only to Jetson Thor/Orin full USB recovery")
+		}
+	}
 	if storageOverride != "" && storageOverride != "nvme" && storageOverride != "sd" && storageOverride != "emmc" {
 		return fmt.Errorf("invalid --storage %q: must be \"nvme\", \"sd\", or \"emmc\" (jetson-agx-orin only)", storageOverride)
 	}
@@ -299,7 +317,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if storageOverride != "" {
 			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
 		}
-		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber, recoveryTarget)
 	}
 	fmt.Println("Fetching available devices...")
 
@@ -439,7 +457,10 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		if storageOverride != "" {
 			return fmt.Errorf("--storage does not apply to Jetson AGX Thor recovery")
 		}
-		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber)
+		return installThor(ctx, flagVersion, nightly, force, wifi, deviceName, preOpts, prNumber, recoveryTarget)
+	}
+	if !recoveryTarget.IsZero() && !isT234RecoveryDevice(selected) {
+		return fmt.Errorf("recovery identity selectors apply only to Jetson Thor/Orin full USB recovery")
 	}
 
 	if selected == linuxDesktopValue {
@@ -474,6 +495,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return fmt.Errorf("version %s does not publish an eMMC recovery flashpack", selectedVersion)
 	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode != "recovery" && !rootfsOnly {
+		if !recoveryTarget.IsZero() {
+			return fmt.Errorf("recovery identity selectors require a version with a full recovery flashpack")
+		}
 		// The version has no recovery flashpack, so its legacy SD/NVMe image is
 		// the only way to install it. Fall back to rootfs-only imaging instead
 		// of making the user rediscover the flag — unless they explicitly
@@ -512,6 +536,9 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 			}
 		}
 	}
+	if !recoveryTarget.IsZero() && rootfsOnly {
+		return fmt.Errorf("recovery identity selectors require full Jetson USB recovery and cannot be combined with rootfs-only imaging")
+	}
 	if isT234RecoveryDevice(selected) && ver.InstallMode == "recovery" && !rootfsOnly {
 		if err := rejectRecoveryDriveFlags(flagDrive, noBmap, yesOverwriteInternal); err != nil {
 			return err
@@ -537,7 +564,7 @@ func runOSInstall(ctx context.Context, nightly bool, flagDeviceType, flagVersion
 		return installOrin(ctx, t234InstallOptions{
 			DeviceType: selected, DeviceName: device.Name, Version: selectedVersion,
 			Storage: storage, Artifact: artifact, Force: force, WiFi: wifi,
-			RequestedName: deviceName, PreEnroll: preOpts,
+			RequestedName: deviceName, PreEnroll: preOpts, RecoveryTarget: recoveryTarget,
 		})
 	}
 	if isT234RecoveryDevice(selected) && rootfsOnly {

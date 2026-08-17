@@ -34,21 +34,35 @@ func thorPrepareHost(out io.Writer) error {
 
 // pickThorRecoveryDevice lists Jetsons in recovery mode and selects one, with a
 // rescan loop and USB-access guidance.
-func pickThorRecoveryDevice() (thorDevice, error) {
-	dev, err := pickUnixRecoveryDevice(thorRecoveryHints(), func(d rcm.RecoveryDevice) bool { return d.IsThor() })
+func pickThorRecoveryDevice(target rcm.RecoverySelector) (thorDevice, error) {
+	dev, err := pickUnixRecoveryDevice(thorRecoveryHints(), func(d rcm.RecoveryDevice) bool { return d.IsThor() }, target)
 	if err != nil {
 		return thorDevice{}, err
 	}
-	return thorDevice{PathKey: dev.PathKey, Label: dev.Describe()}, nil
+	pinned, err := dev.PinnedSelector()
+	if err != nil {
+		return thorDevice{}, fmt.Errorf("cannot pin the selected Thor: %w", err)
+	}
+	return thorDevice{RecoveryTarget: pinned, Label: dev.Describe(), RequireExactPath: !target.IsZero()}, nil
 }
 
 // pickUnixRecoveryDevice selects only devices matching the requested family.
 // Filtering happens before the single-device fast path and on every rescan, so
 // an attached Orin can never be selected by a Thor installation (or vice versa).
-func pickUnixRecoveryDevice(hints recoveryWaitHints, match func(rcm.RecoveryDevice) bool) (rcm.RecoveryDevice, error) {
+func pickUnixRecoveryDevice(hints recoveryWaitHints, match func(rcm.RecoveryDevice) bool, target rcm.RecoverySelector) (rcm.RecoveryDevice, error) {
 	scan := func() ([]rcm.RecoveryDevice, error) {
 		devs, err := rcm.ListRecoveryDevices()
+		if countErr := rcm.ValidateRecoveryDeviceCount(devs); countErr != nil {
+			return nil, countErr
+		}
 		return filterRecoveryDevices(devs, match), err
+	}
+	if !target.IsZero() {
+		devs, err := scan()
+		if err != nil {
+			return rcm.RecoveryDevice{}, err
+		}
+		return rcm.SelectRecoveryDevice(devs, target)
 	}
 	for {
 		devs, err := scan()
@@ -138,12 +152,13 @@ func diskAvailBytes(path string) (avail int64, ok bool) {
 // thorStageOne performs the stage-1 RCM boot over gousb.
 func thorStageOne(fp *flashpack.Flashpack, dev thorDevice, out io.Writer) error {
 	return bringup.Run(bringup.Options{
-		Dir:             fp.Stage1Dir(),
-		MemBCT:          fp.MemBCT(),
-		DevicePath:      dev.PathKey,
-		ExpectedProduct: uint16(rcm.ProductThor),
-		SendOrder:       fp.Manifest.Stage1SendOrder,
-		Out:             out,
+		Dir:                fp.Stage1Dir(),
+		MemBCT:             fp.MemBCT(),
+		DevicePath:         dev.RecoveryTarget.PathKey,
+		ExpectedProduct:    uint16(rcm.ProductThor),
+		ExpectedECIDDigest: dev.RecoveryTarget.ExpectedECIDDigest,
+		SendOrder:          fp.Manifest.Stage1SendOrder,
+		Out:                out,
 	})
 }
 
@@ -151,8 +166,15 @@ func thorStageOne(fp *flashpack.Flashpack, dev thorDevice, out io.Writer) error 
 // pinning the selected device via WENDY_ADB_PATH and retrying while it
 // re-enumerates after stage-1.
 func thorOpenGadget(dev thorDevice, out io.Writer) (flashengine.Transport, func(), error) {
-	if dev.PathKey != "" {
-		os.Setenv("WENDY_ADB_PATH", dev.PathKey)
+	if dev.RecoveryTarget.PathKey != "" {
+		os.Setenv("WENDY_ADB_PATH", dev.RecoveryTarget.PathKey)
+	} else {
+		os.Unsetenv("WENDY_ADB_PATH")
+	}
+	if dev.RequireExactPath {
+		os.Setenv("WENDY_ADB_REQUIRE_PATH", "1")
+	} else {
+		os.Unsetenv("WENDY_ADB_REQUIRE_PATH")
 	}
 	deadline := time.Now().Add(60 * time.Second)
 	var lastErr error

@@ -38,13 +38,44 @@ func pickOrinRecoveryDevice(opts t234InstallOptions) (rcm.RecoveryDevice, error)
 		if err != nil {
 			return nil, err
 		}
+		var allRecovery []rcm.RecoveryDevice
 		var recovery []winusb.Device
 		for _, d := range devs {
+			if d.IsRecovery() {
+				allRecovery = append(allRecovery, d.RecoveryDevice())
+			}
 			if d.IsT234() && match(d.RecoveryDevice()) {
 				recovery = append(recovery, d)
 			}
 		}
+		if err := rcm.ValidateRecoveryDeviceCount(allRecovery); err != nil {
+			return nil, err
+		}
 		return recovery, nil
+	}
+	if !opts.RecoveryTarget.IsZero() {
+		recovery, err := scan()
+		if err != nil {
+			return rcm.RecoveryDevice{}, err
+		}
+		candidates := make([]rcm.RecoveryDevice, 0, len(recovery))
+		for _, dev := range recovery {
+			candidates = append(candidates, dev.RecoveryDevice())
+		}
+		selected, err := rcm.SelectRecoveryDevice(candidates, opts.RecoveryTarget)
+		if err != nil {
+			return rcm.RecoveryDevice{}, err
+		}
+		for _, dev := range recovery {
+			if dev.InstanceID != selected.Instance {
+				continue
+			}
+			if err := ensureOrinDriver(dev); err != nil {
+				return rcm.RecoveryDevice{}, err
+			}
+			return selected, nil
+		}
+		return rcm.RecoveryDevice{}, fmt.Errorf("the selected recovery device disappeared before the RCM handoff")
 	}
 	for {
 		recovery, err := scan()
@@ -64,19 +95,19 @@ func pickOrinRecoveryDevice(opts t234InstallOptions) (rcm.RecoveryDevice, error)
 		case 1:
 			chosen = recovery[0]
 		default:
-			// Keyed by InstanceID — always present and unique. LocationPath is
-			// best-effort (empty under USB redirection) and empty/duplicate keys
-			// would collapse picker rows, resolving a destructive selection to
-			// the wrong board.
+			// Keep raw PnP instance IDs out of picker values and sort keys: those
+			// identifiers contain the bootROM's reversed ECID on Windows. Opaque
+			// per-scan keys preserve duplicate location rows without exposing it.
 			var items []tui.PickerItem
 			byKey := map[string]winusb.Device{}
-			for _, d := range recovery {
-				byKey[d.InstanceID] = d
+			for i, d := range recovery {
+				key := fmt.Sprintf("recovery-%d", i)
+				byKey[key] = d
 				items = append(items, tui.PickerItem{
 					Name:    d.Describe(),
 					Section: "Recovery devices",
-					SortKey: d.InstanceID,
-					Value:   d.InstanceID,
+					SortKey: fmt.Sprintf("%s-%06d", d.Describe(), i),
+					Value:   key,
 				})
 			}
 			sel, err := pickFromItems("Select the "+opts.DeviceName+" to flash", items)
@@ -117,20 +148,21 @@ func ensureOrinDriver(d winusb.Device) error {
 
 // orinStageOne performs the stage-1 RCM boot over WinUSB with the file chain
 // declared by the flashpack manifest.
-func orinStageOne(fp *flashpack.Flashpack, dev rcm.RecoveryDevice, out io.Writer) error {
+func orinStageOne(fp *flashpack.Flashpack, target rcm.RecoverySelector, dev rcm.RecoveryDevice, out io.Writer) error {
 	order, memBCT, blob, err := t234RCMFiles(fp)
 	if err != nil {
 		return err
 	}
 	return winusb.StageOneBoot(winusb.StageOneOptions{
-		Stage1Dir:       fp.Root,
-		MemBCT:          memBCT,
-		Blob:            blob,
-		SendOrder:       order,
-		Location:        dev.PathKey,
-		Instance:        dev.Instance,
-		ExpectedProduct: dev.Product,
-		Out:             out,
+		Stage1Dir:          fp.Root,
+		MemBCT:             memBCT,
+		Blob:               blob,
+		SendOrder:          order,
+		Location:           target.PathKey,
+		Instance:           dev.Instance,
+		ExpectedProduct:    dev.Product,
+		ExpectedECIDDigest: target.ExpectedECIDDigest,
+		Out:                out,
 	})
 }
 

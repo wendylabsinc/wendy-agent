@@ -41,6 +41,10 @@ type Stage2 struct {
 	ImagesDir        string
 	Plan             *Plan
 	PortPath         string
+	// RequireExactPort disables the legacy single-device off-port fallback.
+	// Automation that supplies an external ECID digest + controller path sets
+	// this so a topology change fails before the first raw write.
+	RequireExactPort bool
 	Session          string
 	StatusPath       string
 	LogsPath         string
@@ -94,7 +98,7 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 	// than the bootROM's recovery device, which moves it to the connector's
 	// other root-hub port (e.g. recovery high-speed at usb 1-1, SuperSpeed
 	// gadget at usb 1-2 — seen live on an Orin Nano on macOS).
-	disk, err := WaitForUMSDiskAt(ctx, LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath, PortHint: true}, flashpkgWait)
+	disk, err := WaitForUMSDiskAt(ctx, s.flashPackageSelector(), flashpkgWait)
 	if err != nil {
 		return err
 	}
@@ -117,6 +121,10 @@ func (s *Stage2) SendFlashPackage(ctx context.Context) error {
 		return err
 	}
 	return s.release(ctx, disk)
+}
+
+func (s *Stage2) flashPackageSelector() LUNSelector {
+	return LUNSelector{Vendor: FlashpkgVendor, PortPath: s.PortPath, PortHint: !s.RequireExactPort}
 }
 
 // adoptGadget re-pins stage-2 correlation to the identity-verified gadget LUN:

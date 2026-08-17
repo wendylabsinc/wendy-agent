@@ -27,6 +27,11 @@ wendy install --device-type jetson-agx-thor
 # Orin Nano: full QSPI + NVMe recovery (macOS or Linux)
 wendy install --device-type jetson-orin-nano
 
+# Automation: require both the expected chip digest and controller USB path
+wendy install --device-type jetson-orin-nano \
+  --expected-recovery-ecid-sha256 "$RECOVERY_ECID_SHA256" \
+  --recovery-usb-path 1-2
+
 # AGX Orin: storage is mandatory non-interactively
 wendy install --device-type jetson-agx-orin --storage nvme
 wendy install --device-type jetson-agx-orin --storage emmc
@@ -39,6 +44,15 @@ wendy install path/to/image.img /dev/disk4 --force
 ```
 
 > **Note:** `--device-type` is not supported for ESP32 targets. Use the interactive picker to flash an ESP32.
+
+For unattended Jetson recovery, `--expected-recovery-ecid-sha256` and
+`--recovery-usb-path` must be supplied together. The digest is SHA-256 over the
+ASCII domain `wendyos-recovery-ecid-v1\n` followed by NVIDIA's canonical
+32-character lowercase BR_CID (without `0x`). Pass only the digest to Wendy;
+raw ECIDs are intentionally not accepted in argv or emitted in errors/logs.
+The CLI rechecks identity, product, and controller path on the recovery-device
+reopen. Exact-selector mode does not use the legacy unique off-port gadget
+fallback, so a USB topology change stops before the first raw write.
 
 ---
 

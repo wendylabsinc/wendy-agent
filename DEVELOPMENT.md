@@ -297,12 +297,19 @@ CLI prints a warning; don't use them in production.
 | `--storage <nvme\|sd\|emmc>` | Target storage medium |
 | `--no-bmap` | Disable bmap-accelerated flashing (useful when debugging a flaky flash) |
 | `--rootfs-only` | Jetson Orin: write only the SD/NVMe rootfs, skip QSPI boot firmware |
+| `--expected-recovery-ecid-sha256 sha256:<64-hex>` + `--recovery-usb-path <path>` | Pin a full Jetson recovery to one chip and controller USB path; both flags are required together |
 | `--force`, `--yes-overwrite-internal` | Skip confirmations / allow internal-drive writes |
 
 Notes:
 
 - `os install` needs local elevation to write the disk (and, for Thor recovery,
   to claim the USB device) — it will prompt for `sudo`.
+- Recovery ECIDs are never accepted raw on the command line or written to logs.
+  The selector digest is SHA-256 of ASCII
+  `wendyos-recovery-ecid-v1\n` followed by the canonical 32-character,
+  lowercase NVIDIA BR_CID (no `0x`). Exact-selector mode also disables the
+  single off-port USB-gadget fallback and fails before a raw write if topology
+  changes.
 - `os update --pr N` re-applies even when the device already reports that
   version, because a PR's version tag is constant across rebuilds — so pushing a
   new commit and re-running picks up the new build instead of silently no-op'ing.

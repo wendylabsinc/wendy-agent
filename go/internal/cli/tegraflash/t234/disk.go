@@ -23,7 +23,10 @@ const (
 // splits it back into the export name and session serial via splitInquiry.
 const FlashpkgVendor = "flashpkg"
 
-const sessionSerialLen = 8
+const (
+	sessionSerialLen = 8
+	maxUMSDisks      = 32
+)
 
 // splitInquiry recovers the export name and session id after SCSI splits the
 // gadget inquiry string across its fixed-width vendor and product fields.
@@ -84,8 +87,8 @@ func observedUMSHint() string {
 func tegraUSBLabel(vendor, product uint16) string {
 	switch {
 	case vendor == 0x0955:
-		if name, ok := rcm.T234ModuleName(product); ok {
-			return fmt.Sprintf("0955:%04x (%s APX recovery)", product, name)
+		if rcm.IsT234RecoveryPID(product) {
+			return fmt.Sprintf("0955:%04x (NVIDIA T234 recovery; product only, not module/carrier attestation)", product)
 		}
 		return fmt.Sprintf("0955:%04x (NVIDIA recovery)", product)
 	case vendor == GadgetVendorID && product == GadgetProductID:
@@ -110,6 +113,9 @@ func WaitForUMSDiskAt(ctx context.Context, selector LUNSelector, timeout time.Du
 	for {
 		disks, err := scanUMSDisks()
 		if err == nil {
+			if len(disks) > maxUMSDisks {
+				return UMSDisk{}, fmt.Errorf("refusing USB storage discovery with %d disks (maximum %d)", len(disks), maxUMSDisks)
+			}
 			var matches []UMSDisk
 			for _, d := range disks {
 				if d.Vendor != selector.Vendor {

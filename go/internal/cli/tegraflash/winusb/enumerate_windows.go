@@ -89,7 +89,15 @@ func (d Device) IsGadget() bool { return d.PID == ProductGadget }
 // (the bootROM reports the chip ECID there) becomes the ECID, and the PnP
 // instance ID rides along as the exact devnode handle for the stage-1 open.
 func (d Device) RecoveryDevice() rcm.RecoveryDevice {
-	return rcm.RecoveryDevice{PathKey: d.LocationPath, Product: d.PID, ECID: d.Serial, Instance: d.InstanceID}
+	return rcm.RecoveryDevice{
+		PathKey: d.LocationPath,
+		Product: d.PID,
+		// NVIDIA exposes the USB serial in reverse-nibble order. Canonicalize it
+		// to the same BR_CID display order used by tegrarcm and the gousb path.
+		// Windows-generated composite IDs contain '&' and fail strict parsing.
+		ECID:     rcm.RecoveryECIDFromUSBSerial(d.Serial),
+		Instance: d.InstanceID,
+	}
 }
 
 // Describe returns a one-line human label for pickers and logs.
@@ -99,10 +107,7 @@ func (d Device) Describe() string {
 	case d.PID == ProductThor:
 		kind = "AGX Thor (T264) recovery"
 	case d.IsT234():
-		kind = "Orin (T234) recovery"
-		if name, ok := rcm.T234ModuleName(d.PID); ok {
-			kind = name + " (T234) recovery"
-		}
+		kind = fmt.Sprintf("Jetson T234 recovery (USB product 0x%04x)", d.PID)
 	case d.PID == ProductGadget:
 		kind = "initrd-flash gadget"
 	default:

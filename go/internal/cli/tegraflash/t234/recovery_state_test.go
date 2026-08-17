@@ -61,6 +61,16 @@ func TestWaitForUMSDiskAtRejectsAmbiguity(t *testing.T) {
 	}
 }
 
+func TestWaitForUMSDiskAtRejectsOversizedDiscoveryBeforeFiltering(t *testing.T) {
+	withUMSScan(t, func() ([]UMSDisk, error) {
+		return make([]UMSDisk, maxUMSDisks+1), nil
+	})
+	_, err := WaitForUMSDiskAt(context.Background(), LUNSelector{Vendor: FlashpkgVendor, PortPath: "1-3"}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "refusing USB storage discovery") {
+		t.Fatalf("oversized-discovery error = %v", err)
+	}
+}
+
 func TestValidateDeviceIdentity(t *testing.T) {
 	want := IdentityExpectation{ModuleID: "3701", ModuleSKU: "0005", CarrierID: "3737", CarrierSKU: "0000"}
 	got := DeviceIdentity{Protocol: DeviceIdentityProtocol, SessionID: "ABCDEF12", ModuleID: "3701", ModuleSKU: "0005", CarrierID: "3737", CarrierSKU: "0000"}
@@ -243,5 +253,16 @@ func TestAdoptGadgetRepinsPortAndSession(t *testing.T) {
 	s.adoptGadget(UMSDisk{DevPath: "/dev/disk6", Vendor: FlashpkgVendor, PortPath: "1-2", Serial: "f3885343"})
 	if s.PortPath != "1-2" || s.Session != "f3885343" {
 		t.Fatalf("adopted state: port=%q session=%q", s.PortPath, s.Session)
+	}
+}
+
+func TestFlashPackageSelectorCanRequireExactControllerPort(t *testing.T) {
+	legacy := (&Stage2{PortPath: "1-2"}).flashPackageSelector()
+	if !legacy.PortHint {
+		t.Fatal("interactive compatibility path lost its unique off-port fallback")
+	}
+	exact := (&Stage2{PortPath: "1-2", RequireExactPort: true}).flashPackageSelector()
+	if exact.PortHint || exact.PortPath != "1-2" || exact.Vendor != FlashpkgVendor {
+		t.Fatalf("exact flash-package selector = %+v", exact)
 	}
 }

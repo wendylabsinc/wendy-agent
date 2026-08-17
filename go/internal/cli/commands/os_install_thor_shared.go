@@ -28,6 +28,7 @@ import (
 	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 	"github.com/wendylabsinc/wendy/go/internal/shared/config"
 	"github.com/wendylabsinc/wendy/go/internal/shared/wendyconf"
@@ -51,8 +52,10 @@ var errGadgetUnreachable = errors.New("thor flashing gadget did not appear over 
 // PathKey is the stable physical-location key used to re-find the device across
 // the RCM→gadget re-enumeration; Label is a human description.
 type thorDevice struct {
-	PathKey string
-	Label   string
+	RecoveryTarget   rcm.RecoverySelector
+	Instance         string
+	Label            string
+	RequireExactPath bool
 }
 
 // installThor flashes a Jetson AGX Thor over USB recovery: plan the flashpack,
@@ -60,7 +63,7 @@ type thorDevice struct {
 // the device, then run download → stage-1 RCM boot → stage-2 partition flash as a
 // BuildKit-style step list. Stage-2 is the shared Go engine (flashengine) on all
 // platforms.
-func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int) error {
+func installThor(ctx context.Context, version string, nightly, force bool, wifi wifiCLIOptions, deviceName string, preOpts preEnrollOptions, prNumber int, recoveryTarget rcm.RecoverySelector) error {
 	// Thor's USB recovery access is an in-process libusb handle, so the whole
 	// process must be root on macOS/Linux — caching the sudo timestamp is not
 	// enough. Elevate up front, before the briefing, so a missing-permission
@@ -121,7 +124,7 @@ func installThor(ctx context.Context, version string, nightly, force bool, wifi 
 		return err
 	}
 
-	dev, err := pickThorRecoveryDevice()
+	dev, err := pickThorRecoveryDevice(recoveryTarget)
 	if err != nil {
 		return err
 	}

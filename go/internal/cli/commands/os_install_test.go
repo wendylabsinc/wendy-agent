@@ -91,7 +91,7 @@ func TestNewOSInstallCmd_PositionalArgsIncompatibleWithFlags(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error when positional args are combined with manifest flags")
 			}
-			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, or --cloud-grpc"
+			expected := "positional [image] [drive] arguments cannot be combined with --device-type, --version, --drive, --wifi-ssid, --wifi-password, --wifi, --no-wifi, --device-name, --cloud-grpc, --expected-recovery-ecid-sha256, or --recovery-usb-path"
 			if got := err.Error(); got != expected {
 				t.Errorf("unexpected error: %q; want %q", got, expected)
 			}

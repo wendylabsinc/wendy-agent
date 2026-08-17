@@ -44,19 +44,30 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 	if errors.Is(err, gousb.ErrorAccess) {
 		accessErr = fmt.Errorf("%w: a Jetson in recovery mode is connected but could not be opened: %v", ErrUSBAccess, err)
 	}
+	if len(devs) > MaxRecoveryDevices {
+		for _, dev := range devs {
+			dev.Close()
+		}
+		return nil, fmt.Errorf("refusing recovery discovery with %d devices (maximum %d)", len(devs), MaxRecoveryDevices)
+	}
 	var out []RecoveryDevice
 	for _, dev := range devs {
-		rd := RecoveryDevice{PathKey: portKey(dev.Desc), Product: uint16(dev.Desc.Product)}
-		buf := make([]byte, 96)
-		if n, err := dev.Control(0x80, 0x06, 0x0303, 0x0000, buf); err == nil {
-			if id, err := parseChipIDDescriptor(buf, n); err == nil {
-				rd.ECID = id
-			}
-		}
+		rd := describeRecoveryDevice(dev)
 		out = append(out, rd)
 		dev.Close()
 	}
 	return out, accessErr
+}
+
+func describeRecoveryDevice(dev *gousb.Device) RecoveryDevice {
+	rd := RecoveryDevice{PathKey: portKey(dev.Desc), Product: uint16(dev.Desc.Product)}
+	buf := make([]byte, 96)
+	if n, err := dev.Control(0x80, 0x06, 0x0303, 0x0000, buf); err == nil {
+		if id, err := parseChipIDDescriptor(buf, n); err == nil {
+			rd.ECID = id
+		}
+	}
+	return rd
 }
 
 // WaitForDeviceAt blocks until the Jetson at pathKey (from ListRecoveryDevices)
@@ -64,31 +75,107 @@ func ListRecoveryDevices() ([]RecoveryDevice, error) {
 // physical port; an expectedProduct of zero retains the legacy any-Jetson
 // behavior. Recovery installers must always pass the product they selected.
 func WaitForDeviceAt(pathKey string, expectedProduct uint16) (*Device, error) {
+	return waitForDevice(RecoverySelector{PathKey: pathKey}, expectedProduct, false)
+}
+
+// WaitForDevice re-opens and identity-checks the selected recovery device on
+// the same handle that will receive the RCM payload. This is the final check
+// before the non-persistent recovery handoff; a missing/mismatched ECID never
+// falls back to another device at the same port or of the same product family.
+func WaitForDevice(selector RecoverySelector, expectedProduct uint16) (*Device, error) {
+	normalized, err := NewRecoverySelector(selector.PathKey, selector.ExpectedECIDDigest)
+	if err != nil {
+		return nil, err
+	}
+	if normalized.IsZero() {
+		return nil, fmt.Errorf("an exact recovery selector is required before the RCM handoff")
+	}
+	return waitForDevice(normalized, expectedProduct, true)
+}
+
+func waitForDevice(selector RecoverySelector, expectedProduct uint16, exact bool) (*Device, error) {
 	ctx := gousb.NewContext()
 	ctx.Debug(0)
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		devs, err := ctx.OpenDevices(func(d *gousb.DeviceDesc) bool {
-			return d.Vendor == gousb.ID(VendorNVIDIA) && isRecoveryPID(d.Product) &&
-				(expectedProduct == 0 || uint16(d.Product) == expectedProduct) &&
-				(pathKey == "" || portKey(d) == pathKey)
+			// Enumerate and bound the entire recovery set before applying path,
+			// product, or ECID filters. A hostile oversized view must not collapse
+			// into one apparently safe target after filtering.
+			return d.Vendor == gousb.ID(VendorNVIDIA) && isRecoveryPID(d.Product)
 		})
 		// Access denied won't heal within the wait window; fail now with the
 		// classified error instead of spinning to a misleading timeout.
-		if len(devs) == 0 && errors.Is(err, gousb.ErrorAccess) {
+		if errors.Is(err, gousb.ErrorAccess) {
+			for _, dev := range devs {
+				dev.Close()
+			}
 			ctx.Close()
 			return nil, fmt.Errorf("%w: %v", ErrUSBAccess, err)
 		}
-		var chosen *gousb.Device
-		for i, dev := range devs {
-			if i == 0 {
-				chosen = dev
-			} else {
+		if len(devs) > MaxRecoveryDevices {
+			for _, dev := range devs {
 				dev.Close()
 			}
+			ctx.Close()
+			return nil, fmt.Errorf("refusing recovery discovery with %d devices (maximum %d)", len(devs), MaxRecoveryDevices)
 		}
+
+		candidates := make([]RecoveryDevice, 0, len(devs))
+		candidateHandles := make([]*gousb.Device, 0, len(devs))
+		productChangedAtPinnedPath := false
+		for _, dev := range devs {
+			rd := describeRecoveryDevice(dev)
+			if expectedProduct != 0 && rd.Product != expectedProduct {
+				if selector.PathKey != "" && rd.PathKey == selector.PathKey {
+					productChangedAtPinnedPath = true
+				}
+				continue
+			}
+			if !exact && selector.PathKey != "" && rd.PathKey != selector.PathKey {
+				continue
+			}
+			candidates = append(candidates, rd)
+			candidateHandles = append(candidateHandles, dev)
+		}
+		if productChangedAtPinnedPath {
+			for _, dev := range devs {
+				dev.Close()
+			}
+			ctx.Close()
+			return nil, fmt.Errorf("the recovery device at the selected USB path changed product; refusing the RCM handoff")
+		}
+
+		var chosen *gousb.Device
+		if exact {
+			selected, selectErr := SelectRecoveryDevice(candidates, selector)
+			if selectErr == nil {
+				for i, candidate := range candidates {
+					if candidate.PathKey == selected.PathKey && candidate.Product == selected.Product && candidate.ECID == selected.ECID {
+						chosen = candidateHandles[i]
+						break
+					}
+				}
+			} else if len(candidates) > 0 {
+				for _, dev := range devs {
+					dev.Close()
+				}
+				ctx.Close()
+				return nil, selectErr
+			}
+		} else if len(candidates) > 0 {
+			// Backward-compatible internal API behavior. Recovery install flows
+			// use WaitForDevice with identity + path instead.
+			chosen = candidateHandles[0]
+		}
+
 		if chosen != nil {
+			for _, dev := range devs {
+				if dev != chosen {
+					dev.Close()
+				}
+			}
 			d, err := openDevice(ctx, chosen)
 			if err != nil {
 				chosen.Close()
@@ -97,8 +184,11 @@ func WaitForDeviceAt(pathKey string, expectedProduct uint16) (*Device, error) {
 			}
 			return d, nil
 		}
+		for _, dev := range devs {
+			dev.Close()
+		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	ctx.Close()
-	return nil, fmt.Errorf("timed out waiting for Jetson product 0x%04x at usb %s in recovery mode", expectedProduct, pathKey)
+	return nil, fmt.Errorf("timed out waiting for the selected Jetson product 0x%04x in recovery mode", expectedProduct)
 }

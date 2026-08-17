@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 )
 
 // StageOneOptions controls a Windows stage-1 RCM boot.
@@ -24,7 +26,10 @@ type StageOneOptions struct {
 	Location        string   // optional location path to pin the device
 	Instance        string   // optional PnP instance ID pinning the exact devnode (wins over Location)
 	ExpectedProduct uint16
-	Out             io.Writer
+	// ExpectedECIDDigest is the domain-separated canonical BR_CID digest. It
+	// must be paired with Location; raw ECIDs are never accepted or logged.
+	ExpectedECIDDigest string
+	Out                io.Writer
 }
 
 // bootROM image filenames (mirror of package bringup).
@@ -41,6 +46,16 @@ var defaultSendOrder = []string{fileBctBR, fileMB1, filePSCBL1, fileBctMB1}
 // StageOneBoot performs the stage-1 RCM boot. On success the device has booted
 // the blob and is re-enumerating as the initrd-flash ADB gadget (0955:7100).
 func StageOneBoot(opts StageOneOptions) error {
+	if opts.ExpectedProduct == 0 {
+		return fmt.Errorf("an expected Jetson recovery product is required before RCM handoff")
+	}
+	selector, err := rcm.NewRecoverySelector(opts.Location, opts.ExpectedECIDDigest)
+	if err != nil {
+		return fmt.Errorf("validating recovery target selector: %w", err)
+	}
+	if selector.IsZero() {
+		return fmt.Errorf("recovery target identity and USB path are required before RCM handoff")
+	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
@@ -73,12 +88,17 @@ func StageOneBoot(opts StageOneOptions) error {
 	}
 
 	fmt.Fprintln(out, "Opening Jetson in recovery mode over WinUSB…")
-	var dev *USBDevice
-	if opts.Instance != "" {
-		dev, err = OpenInstance(opts.Instance, opts.ExpectedProduct)
-	} else {
-		dev, err = OpenExpected(opts.Location, opts.ExpectedProduct)
+	present, err := ListDevices()
+	if err != nil {
+		return fmt.Errorf("re-enumerating recovery devices: %w", err)
 	}
+	selected, err := selectStageOneRecoveryDevice(present, opts)
+	if err != nil {
+		return err
+	}
+	// Open the exact devnode just verified. A replacement at the same port has
+	// a different instance ID/ECID and cannot satisfy this call.
+	dev, err := OpenInstance(selected.InstanceID, opts.ExpectedProduct)
 	if err != nil {
 		return err
 	}
@@ -118,6 +138,52 @@ func StageOneBoot(opts StageOneOptions) error {
 	fmt.Fprintf(out, "  blob sent in %v; mb1 is booting the payload.\n", time.Since(t0).Round(time.Millisecond))
 	readResponse(out, dev)
 	return nil
+}
+
+// selectStageOneRecoveryDevice is the pure, testable half of the final Windows
+// identity check. SetupAPI supplies both the controller path and reversed USB
+// serial; Device.RecoveryDevice canonicalizes the latter before hashing.
+func selectStageOneRecoveryDevice(devices []Device, opts StageOneOptions) (Device, error) {
+	if opts.ExpectedProduct == 0 {
+		return Device{}, fmt.Errorf("an expected Jetson recovery product is required before RCM handoff")
+	}
+	selector, err := rcm.NewRecoverySelector(opts.Location, opts.ExpectedECIDDigest)
+	if err != nil {
+		return Device{}, fmt.Errorf("validating recovery target selector: %w", err)
+	}
+	if selector.IsZero() {
+		return Device{}, fmt.Errorf("recovery target identity and USB path are required before RCM handoff")
+	}
+
+	allRecovery := make([]rcm.RecoveryDevice, 0, len(devices))
+	for _, dev := range devices {
+		if dev.IsRecovery() {
+			allRecovery = append(allRecovery, dev.RecoveryDevice())
+		}
+	}
+	if err := rcm.ValidateRecoveryDeviceCount(allRecovery); err != nil {
+		return Device{}, err
+	}
+
+	productCandidates := make([]rcm.RecoveryDevice, 0, len(allRecovery))
+	for _, dev := range allRecovery {
+		if opts.ExpectedProduct == 0 || dev.Product == opts.ExpectedProduct {
+			productCandidates = append(productCandidates, dev)
+		}
+	}
+	selected, err := rcm.SelectRecoveryDevice(productCandidates, selector)
+	if err != nil {
+		return Device{}, err
+	}
+	if opts.Instance != "" && selected.Instance != opts.Instance {
+		return Device{}, fmt.Errorf("the recovery device changed since selection; refusing the RCM handoff")
+	}
+	for _, dev := range devices {
+		if dev.InstanceID == selected.Instance {
+			return dev, nil
+		}
+	}
+	return Device{}, fmt.Errorf("the selected recovery device disappeared before the RCM handoff")
 }
 
 // readResponse does a tolerant bulk-IN read of any status the device returns.

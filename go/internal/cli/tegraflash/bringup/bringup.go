@@ -54,6 +54,10 @@ type Options struct {
 	// ExpectedProduct pins the selected Jetson family across the re-open. This
 	// prevents a different Jetson on the same host from satisfying the wait.
 	ExpectedProduct uint16
+	// ExpectedECIDDigest pins the exact chip without exposing its raw ECID. It
+	// must be paired with DevicePath; recovery installers populate both from the
+	// selected device immediately before this non-persistent RCM handoff.
+	ExpectedECIDDigest string
 	// SendOrder is the bootROM image filenames to send, in order. Empty uses the
 	// built-in default (bct_br → mb1 → psc_bl1 → bct_mb1). Driving this from the
 	// flashpack manifest lets a future BSP reorder the chain without a code change.
@@ -67,6 +71,16 @@ var DefaultSendOrder = []string{FileBctBR, FileMB1, FilePSCBL1, FileBctMB1}
 // Run executes the stage-1 RCM boot. On success the device has booted the blob and
 // is re-enumerating as the initrd-flash ADB gadget.
 func Run(opts Options) error {
+	if opts.ExpectedProduct == 0 {
+		return fmt.Errorf("an expected Jetson recovery product is required before RCM handoff")
+	}
+	selector, err := rcm.NewRecoverySelector(opts.DevicePath, opts.ExpectedECIDDigest)
+	if err != nil {
+		return fmt.Errorf("validating recovery target selector: %w", err)
+	}
+	if selector.IsZero() {
+		return fmt.Errorf("recovery target identity and USB path are required before RCM handoff")
+	}
 	out := opts.Out
 	if out == nil {
 		out = os.Stdout
@@ -102,7 +116,7 @@ func Run(opts Options) error {
 	}
 
 	fmt.Fprintln(out, "Waiting for Jetson in USB recovery mode...")
-	dev, err := rcm.WaitForDeviceAt(opts.DevicePath, opts.ExpectedProduct)
+	dev, err := rcm.WaitForDevice(selector, opts.ExpectedProduct)
 	if err != nil {
 		return fmt.Errorf("waiting for device: %w", err)
 	}

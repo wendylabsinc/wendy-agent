@@ -17,6 +17,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashengine"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/flashpack"
+	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/rcm"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tegraflash/winusb"
 	"github.com/wendylabsinc/wendy/go/internal/cli/tui"
 )
@@ -51,19 +52,46 @@ func thorPrepareHost(out io.Writer) error {
 
 // pickThorRecoveryDevice lists NVIDIA recovery devices via SetupAPI and selects
 // one, rescanning until a Thor/Orin in recovery appears.
-func pickThorRecoveryDevice() (thorDevice, error) {
+func pickThorRecoveryDevice(target rcm.RecoverySelector) (thorDevice, error) {
 	scanRecovery := func() ([]winusb.Device, error) {
 		devs, err := winusb.ListDevices()
 		if err != nil {
 			return nil, err
 		}
+		var allRecovery []rcm.RecoveryDevice
 		var recovery []winusb.Device
 		for _, d := range devs {
+			if d.IsRecovery() {
+				allRecovery = append(allRecovery, d.RecoveryDevice())
+			}
 			if d.IsThor() {
 				recovery = append(recovery, d)
 			}
 		}
+		if err := rcm.ValidateRecoveryDeviceCount(allRecovery); err != nil {
+			return nil, err
+		}
 		return recovery, nil
+	}
+	if !target.IsZero() {
+		recovery, err := scanRecovery()
+		if err != nil {
+			return thorDevice{}, err
+		}
+		candidates := make([]rcm.RecoveryDevice, 0, len(recovery))
+		for _, dev := range recovery {
+			candidates = append(candidates, dev.RecoveryDevice())
+		}
+		selected, err := rcm.SelectRecoveryDevice(candidates, target)
+		if err != nil {
+			return thorDevice{}, err
+		}
+		for _, dev := range recovery {
+			if dev.InstanceID == selected.Instance {
+				return windowsThorDevice(dev, true)
+			}
+		}
+		return thorDevice{}, fmt.Errorf("the selected recovery device disappeared before the RCM handoff")
 	}
 	for {
 		recovery, err := scanRecovery()
@@ -80,26 +108,35 @@ func pickThorRecoveryDevice() (thorDevice, error) {
 		}
 		switch len(recovery) {
 		case 1:
-			return thorDevice{PathKey: recovery[0].LocationPath, Label: recovery[0].Describe()}, nil
+			return windowsThorDevice(recovery[0], false)
 		default:
 			var items []tui.PickerItem
 			byKey := map[string]winusb.Device{}
-			for _, d := range recovery {
-				byKey[d.LocationPath] = d
+			for i, d := range recovery {
+				key := fmt.Sprintf("recovery-%d", i)
+				byKey[key] = d
 				items = append(items, tui.PickerItem{
 					Name:    d.Describe(),
 					Section: "Recovery devices",
-					SortKey: d.LocationPath,
-					Value:   d.LocationPath,
+					SortKey: fmt.Sprintf("%s-%06d", d.Describe(), i),
+					Value:   key,
 				})
 			}
 			sel, err := pickFromItems("Select the Thor to flash", items)
 			if err != nil {
 				return thorDevice{}, err
 			}
-			return thorDevice{PathKey: byKey[sel].LocationPath, Label: byKey[sel].Describe()}, nil
+			return windowsThorDevice(byKey[sel], false)
 		}
 	}
+}
+
+func windowsThorDevice(dev winusb.Device, requireExactPath bool) (thorDevice, error) {
+	pinned, err := dev.RecoveryDevice().PinnedSelector()
+	if err != nil {
+		return thorDevice{}, fmt.Errorf("cannot pin the selected Thor: %w", err)
+	}
+	return thorDevice{RecoveryTarget: pinned, Instance: dev.InstanceID, Label: dev.Describe(), RequireExactPath: requireExactPath}, nil
 }
 
 // thorIsUSBAccessErr reports whether err is the OS denying wendy access to the
@@ -131,12 +168,14 @@ func diskAvailBytes(path string) (int64, bool) {
 // thorStageOne performs the stage-1 RCM boot over WinUSB.
 func thorStageOne(fp *flashpack.Flashpack, dev thorDevice, out io.Writer) error {
 	return winusb.StageOneBoot(winusb.StageOneOptions{
-		Stage1Dir:       fp.Stage1Dir(),
-		MemBCT:          fp.MemBCT(),
-		SendOrder:       fp.Manifest.Stage1SendOrder,
-		Location:        dev.PathKey,
-		ExpectedProduct: winusb.ProductThor,
-		Out:             out,
+		Stage1Dir:          fp.Stage1Dir(),
+		MemBCT:             fp.MemBCT(),
+		SendOrder:          fp.Manifest.Stage1SendOrder,
+		Location:           dev.RecoveryTarget.PathKey,
+		Instance:           dev.Instance,
+		ExpectedProduct:    winusb.ProductThor,
+		ExpectedECIDDigest: dev.RecoveryTarget.ExpectedECIDDigest,
+		Out:                out,
 	})
 }
 
@@ -146,8 +185,9 @@ func thorOpenGadget(dev thorDevice, out io.Writer) (flashengine.Transport, func(
 	deadline := time.Now().Add(60 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		// Pin the chosen board by physical location across the re-enumeration.
-		d, err := winusb.Open(dev.PathKey)
+		// Pin the chosen board by physical location and require the stage-2
+		// gadget product across the re-enumeration.
+		d, err := winusb.OpenExpected(dev.RecoveryTarget.PathKey, winusb.ProductGadget)
 		if err == nil {
 			a, aerr := winusb.NewADB(d)
 			if aerr == nil {

@@ -109,6 +109,7 @@ func openOnce() (*Device, error) {
 	// NOT pre-filter by WENDY_ADB_PATH here because the flashing gadget can
 	// re-enumerate at a different USB location than the RCM device was selected at.
 	wantPath := os.Getenv("WENDY_ADB_PATH")
+	requirePath := os.Getenv("WENDY_ADB_REQUIRE_PATH") == "1"
 	devs, err := ctx.OpenDevices(func(desc *gousb.DeviceDesc) bool {
 		_, _, _, ok := findADBInterface(desc)
 		return ok
@@ -131,28 +132,23 @@ func openOnce() (*Device, error) {
 	// flashing gadget often re-enumerates at a *different* port than the RCM device:
 	// on macOS the RCM device is USB-2 Hi-Speed while the ADB gadget is USB-3
 	// SuperSpeed, which lands on the companion port (e.g. 1-1 -> 1-2). So when the pin
-	// matches nothing but exactly one ADB device is present, fall back to it.
-	sel := 0
-	if wantPath != "" {
-		sel = -1
-		for i, d := range devs {
-			if adbPortKey(d.Desc) == wantPath {
-				sel = i
-				break
-			}
+	// matches nothing but exactly one ADB device is present, the interactive
+	// compatibility path falls back to it. Exact controller selection sets
+	// WENDY_ADB_REQUIRE_PATH and refuses that off-port fallback before writes.
+	paths := make([]string, len(devs))
+	for i, dev := range devs {
+		paths[i] = adbPortKey(dev.Desc)
+	}
+	sel, fellBack, selectErr := selectADBPath(paths, wantPath, requirePath)
+	if selectErr != nil {
+		for _, d := range devs {
+			d.Close()
 		}
-		if sel == -1 {
-			if len(devs) == 1 {
-				sel = 0
-				fmt.Fprintf(os.Stderr, "wendy adb: no ADB device at usb %s; using the only ADB device present (usb %s)\n", wantPath, adbPortKey(devs[0].Desc))
-			} else {
-				for _, d := range devs {
-					d.Close()
-				}
-				ctx.Close()
-				return nil, fmt.Errorf("no ADB device at usb %s among %d ADB devices present", wantPath, len(devs))
-			}
-		}
+		ctx.Close()
+		return nil, selectErr
+	}
+	if fellBack {
+		fmt.Fprintf(os.Stderr, "wendy adb: selected recovery path did not re-enumerate; using the only ADB device present\n")
 	}
 	dev := devs[sel]
 	for i, d := range devs {

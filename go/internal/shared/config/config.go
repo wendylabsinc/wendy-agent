@@ -145,8 +145,8 @@ func LogDir() (string, error) {
 		return "", fmt.Errorf("determining log directory: %w", err)
 	}
 	logDir := filepath.Join(dir, "wendy", "logs")
-	// 0o700: flash logs can contain hardware identifiers (e.g. the device ECID),
-	// so keep them readable only by the owner.
+	// 0o700: flash logs can contain sensitive host/device diagnostics. Raw ECIDs
+	// are deliberately excluded, but the remaining support data stays private.
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return "", fmt.Errorf("creating log directory: %w", err)
 	}
