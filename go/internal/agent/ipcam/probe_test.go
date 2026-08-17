@@ -112,6 +112,35 @@ func TestDigestResponseVector(t *testing.T) {
 	}
 }
 
+// TestDigestResponseVector_RFC2617QopAuth checks the qop="auth" request-digest
+// formula (RFC 7616 §3.4) against RFC 2617's own worked example (§3.5, the
+// "Mufasa" vector) rather than a hand-derived one: the expected value comes
+// from the RFC text itself, so a bug that broke the formula could not also
+// happen to fake the published answer.
+//
+// Inputs, verbatim from RFC 2617 §3.5: username="Mufasa",
+// realm="testrealm@host.com", password="Circle Of Life",
+// nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", cnonce="0a4f113b", nc="00000001",
+// qop="auth", method="GET", uri="/dir/index.html". The RFC gives response =
+// "6629fae49393a05397450978507c4ef1".
+func TestDigestResponseVector_RFC2617QopAuth(t *testing.T) {
+	const (
+		username = "Mufasa"
+		realm    = "testrealm@host.com"
+		password = "Circle Of Life"
+		nonce    = "dcd98b7102dd2f0e8b11d0f600bfb0c093"
+		cnonce   = "0a4f113b"
+		method   = "GET"
+		uri      = "/dir/index.html"
+		want     = "6629fae49393a05397450978507c4ef1"
+	)
+	ha1 := digestHA1(username, password, realm)
+	ha2 := digestHA2(method, uri)
+	if got := digestResponseQop(ha1, nonce, cnonce, ha2); got != want {
+		t.Fatalf("digestResponseQop = %q, want %q (RFC 2617 section 3.5 Mufasa example)", got, want)
+	}
+}
+
 // A camera that challenges with Digest must be answered with the RFC 2617
 // response, on the same connection, and the second DESCRIBE must carry it —
 // checked against the exact hex string TestDigestResponseVector hand-derived.
@@ -420,6 +449,142 @@ func TestParseAuthParams(t *testing.T) {
 			}
 		})
 	}
+}
+
+// splitAuthParams must treat a quoted value as opaque to comma-splitting —
+// including a quoted value that itself contains a backslash-escaped quote —
+// while still splitting on commas outside quotes, and must degrade gracefully
+// (rest-as-one-part) when a challenge sends an unterminated quote.
+func TestSplitAuthParams_EscapesAndQuotedCommas(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  int // number of parts
+	}{
+		{
+			name:  "escaped quote and comma inside realm, unescaped nonce follows",
+			input: `realm="IP\"Camera, Ltd", nonce="n"`,
+			want:  2,
+		},
+		{
+			name:  "escaped backslash inside a quoted value does not end the quote early",
+			input: `a="x\\", b=c`,
+			want:  2,
+		},
+		{
+			name:  "unterminated quote swallows the rest as one part",
+			input: `realm="abc, nonce=n`,
+			want:  1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitAuthParams(tc.input)
+			if len(got) != tc.want {
+				t.Fatalf("splitAuthParams(%q) = %d parts %v, want %d parts", tc.input, len(got), got, tc.want)
+			}
+		})
+	}
+}
+
+// unquoteAuthValue and quoteAuthValue must be inverses on values that need
+// escaping (an embedded quote or backslash), and unquoteAuthValue must pass
+// an unquoted token through unchanged since qop, algorithm and nc are legal
+// unquoted per the digest ABNF.
+func TestUnquoteAndQuoteAuthValue(t *testing.T) {
+	cases := []struct {
+		name   string
+		quoted string
+		raw    string
+	}{
+		{"plain", `"abc123"`, "abc123"},
+		{"internal space", `"IP Camera"`, "IP Camera"},
+		{"escaped quote and comma", `"IP\"Camera, Ltd"`, `IP"Camera, Ltd`},
+		{"escaped backslash", `"x\\"`, `x\`},
+		{"empty", `""`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unquoteAuthValue(tc.quoted); got != tc.raw {
+				t.Errorf("unquoteAuthValue(%q) = %q, want %q", tc.quoted, got, tc.raw)
+			}
+			if got := quoteAuthValue(tc.raw); got != tc.quoted {
+				t.Errorf("quoteAuthValue(%q) = %q, want %q", tc.raw, got, tc.quoted)
+			}
+		})
+	}
+
+	if got := unquoteAuthValue("MD5"); got != "MD5" {
+		t.Errorf("unquoteAuthValue(%q) = %q, want unchanged (no surrounding quotes)", "MD5", got)
+	}
+}
+
+// parseDigestChallenge must refuse to answer challenges this probe cannot
+// safely respond to (no nonce, an unrecognized algorithm, or a qop list that
+// never offers "auth"), and must otherwise carry the challenge's fields
+// through faithfully — including the algorithm token's exact spelling and a
+// verbatim opaque.
+func TestParseDigestChallenge(t *testing.T) {
+	t.Run("missing nonce fails", func(t *testing.T) {
+		if _, ok := parseDigestChallenge(map[string]string{"realm": "IP Camera"}); ok {
+			t.Fatal("parseDigestChallenge succeeded with no nonce")
+		}
+	})
+
+	t.Run("algorithm=md5-sess is recognized case-insensitively", func(t *testing.T) {
+		c, ok := parseDigestChallenge(map[string]string{"nonce": "n", "algorithm": "md5-sess"})
+		if !ok {
+			t.Fatal("parseDigestChallenge failed on algorithm=md5-sess")
+		}
+		if !c.sess {
+			t.Error("sess = false, want true")
+		}
+		if c.algorithm != "md5-sess" {
+			t.Errorf("algorithm = %q, want the verbatim token %q", c.algorithm, "md5-sess")
+		}
+	})
+
+	t.Run("algorithm=SHA-256 refuses (out of scope, structure admits it later)", func(t *testing.T) {
+		if _, ok := parseDigestChallenge(map[string]string{"nonce": "n", "algorithm": "SHA-256"}); ok {
+			t.Fatal("parseDigestChallenge succeeded with algorithm=SHA-256")
+		}
+	})
+
+	t.Run(`qop="auth,auth-int" offers auth`, func(t *testing.T) {
+		c, ok := parseDigestChallenge(map[string]string{"nonce": "n", "qop": "auth,auth-int"})
+		if !ok {
+			t.Fatal("parseDigestChallenge failed on qop=auth,auth-int")
+		}
+		if !c.qopAuth {
+			t.Error("qopAuth = false, want true")
+		}
+	})
+
+	t.Run(`qop="auth-int" alone refuses`, func(t *testing.T) {
+		if _, ok := parseDigestChallenge(map[string]string{"nonce": "n", "qop": "auth-int"}); ok {
+			t.Fatal("parseDigestChallenge succeeded with qop=auth-int only")
+		}
+	})
+
+	t.Run("opaque is echoed verbatim", func(t *testing.T) {
+		c, ok := parseDigestChallenge(map[string]string{"nonce": "n", "opaque": "5ccc069c403ebaf9f0171e9517f40e41"})
+		if !ok {
+			t.Fatal("parseDigestChallenge failed")
+		}
+		if c.opaque != "5ccc069c403ebaf9f0171e9517f40e41" {
+			t.Errorf("opaque = %q, want verbatim echo", c.opaque)
+		}
+	})
+
+	t.Run("no qop at all is legacy, not a refusal", func(t *testing.T) {
+		c, ok := parseDigestChallenge(map[string]string{"nonce": "n"})
+		if !ok {
+			t.Fatal("parseDigestChallenge failed with no qop parameter at all")
+		}
+		if c.qopAuth {
+			t.Error("qopAuth = true, want false when the challenge sent no qop")
+		}
+	})
 }
 
 // selectChallenge must recognize Digest and Basic regardless of case, and
