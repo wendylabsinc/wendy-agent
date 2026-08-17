@@ -66,12 +66,12 @@ The complete sample is available in the [samples repository](https://github.com/
 
 ### Understanding the Architecture
 
-This sample uses a **slim Debian base image** (`debian:bookworm-slim`) with GStreamer and its Python bindings installed. Most USB webcams output **MJPEG natively**, so the app streams those JPEG frames straight through to the browser without re-encoding.
+This sample uses a **slim Debian base image** (`debian:bookworm-slim`) with GStreamer and its Python bindings installed. Most USB webcams output **MJPEG natively**; the app still decodes and re-encodes those frames to a standard JPEG bitstream by default (`jpegdec ! jpegenc quality=85`) — Safari is stricter than Chrome about webcam-native MJPEG — and only passes frames through untouched as a last resort.
 
 The streaming pipeline works as follows:
 
 1. **GStreamer** captures frames from the webcam via V4L2 (`v4l2src`)
-2. The app tries several pipelines in order, preferring native MJPEG passthrough and falling back to `jpegenc` software encoding when needed
+2. The app tries several pipelines in order: re-encoded MJPEG first (a standard JPEG bitstream every browser accepts), then `jpegenc` software encoding for raw-output cameras, with native MJPEG passthrough as the final fallback
 3. **FastAPI** serves a WebSocket endpoint that broadcasts JPEG frames to all connected browsers
 4. The **HTML5 frontend** renders each frame by setting the `src` of an `<img>` element to a base64 data URL
 
@@ -111,7 +111,7 @@ The camera pipeline starts lazily when the first client connects and stops when 
 
     **GStreamer Pipeline**
 
-    The `MJPEGCamera` class builds a capture pipeline. It prefers passing the camera's native MJPEG straight through and falls back to software JPEG encoding, trying each candidate until one reaches the `PAUSED` state:
+    The `MJPEGCamera` class builds a capture pipeline. It prefers decoding and re-encoding the camera's native MJPEG (for cross-browser compatibility) and keeps untouched passthrough as the last resort, trying each candidate until one reaches the `PAUSED` state:
 
     ```python
     class MJPEGCamera:
@@ -145,8 +145,8 @@ The camera pipeline starts lazily when the first client connects and stops when 
 
     **How it works:**
     - `v4l2src` captures frames from the USB webcam (the device defaults to `/dev/video0`)
-    - The last two pipelines pass the camera's native `image/jpeg` straight through with no re-encoding
-    - The earlier pipelines decode and re-encode (`jpegdec ! jpegenc`) or convert raw frames (`videoconvert ! jpegenc`) as fallbacks
+    - The first two pipelines decode and re-encode the camera's native `image/jpeg` (`jpegdec ! jpegenc quality=85`) — Safari rejects some webcam MJPEG bitstreams that Chrome tolerates, so a clean re-encode is tried first
+    - The third pipeline encodes raw (non-MJPEG) camera output (`videoconvert ! jpegenc quality=70`); the last two pass native `image/jpeg` straight through with no re-encoding — the last resort
     - `appsink` with `max-buffers=2 drop=true` prevents frame buildup if clients are slow
 
     **WebSocket Frame Broadcasting**
