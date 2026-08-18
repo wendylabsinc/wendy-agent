@@ -989,3 +989,64 @@ func TestBuildImage_RejectedWhenNotEnabled(t *testing.T) {
 		t.Fatalf("got %v, want FailedPrecondition when the device is not a builder", err)
 	}
 }
+
+// TestDeliveryTargets_PrefersFleetField: push_targets supersedes push_target so
+// an older CLI keeps working, and a newer one is not silently downgraded to a
+// single device.
+func TestDeliveryTargets_PrefersFleetField(t *testing.T) {
+	got, err := deliveryTargets(&agentpbv2.BuildSpec{
+		PushTargets: []*agentpbv2.PushTarget{{AssetId: 11}, {AssetId: 22}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].GetAssetId() != 11 || got[1].GetAssetId() != 22 {
+		t.Fatalf("got %v, want both targets in order", got)
+	}
+}
+
+// A client built before fleet delivery sends only push_target.
+func TestDeliveryTargets_FallsBackToSingleTarget(t *testing.T) {
+	got, err := deliveryTargets(&agentpbv2.BuildSpec{
+		PushTarget: &agentpbv2.PushTarget{AssetId: 7},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].GetAssetId() != 7 {
+		t.Fatalf("got %v, want the single target", got)
+	}
+}
+
+// Both fields set means the client disagrees with itself about where the image
+// is going. Refuse rather than pick, or an image reaches a device nobody asked
+// for.
+func TestDeliveryTargets_RefusesBothFields(t *testing.T) {
+	_, err := deliveryTargets(&agentpbv2.BuildSpec{
+		PushTarget:  &agentpbv2.PushTarget{AssetId: 7},
+		PushTargets: []*agentpbv2.PushTarget{{AssetId: 11}},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument when both fields are set", err)
+	}
+}
+
+func TestDeliveryTargets_RefusesNoTarget(t *testing.T) {
+	if _, err := deliveryTargets(&agentpbv2.BuildSpec{}); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("got %v, want InvalidArgument when no target is named", err)
+	}
+}
+
+// TestGetBuildCapabilities_AdvertisesMultiTarget: the flag a client checks
+// before sending push_targets. Without it a newer CLI cannot tell that an older
+// agent discarded its fleet, and would report a deploy that went nowhere.
+func TestGetBuildCapabilities_AdvertisesMultiTarget(t *testing.T) {
+	svc := NewBuildService(zap.NewNop(), BuildServiceOptions{BuildkitAddress: "unix:///definitely/not/here.sock"})
+	resp, err := svc.GetBuildCapabilities(context.Background(), &agentpbv2.GetBuildCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.GetMultiTargetDelivery() {
+		t.Fatal("an agent that reads push_targets must advertise it, even with no buildkit")
+	}
+}
