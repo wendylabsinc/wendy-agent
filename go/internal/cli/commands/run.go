@@ -1741,6 +1741,20 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 		return err
 	}
 
+	chunkDiffWillRun := !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff
+
+	// The daemon check prompts on macOS. Run it here: once the build progress UI
+	// owns the terminal it repaints over any prompt, so the CLI waits on input the
+	// user cannot see.
+	// An unknown builder is left for the build below to report.
+	if chunkDiffWillRun {
+		if b, err := resolveOCIExportBuilder(opts.builder); err == nil && b == imageBuilderDocker {
+			if err := ensureDockerDaemon(ctx); err != nil {
+				return err
+			}
+		}
+	}
+
 	// The fast chunk-diff (CDC) deploy path handles attached (default) and
 	// detached (--detach) runs. Deploy-only (--deploy) is excluded because it
 	// must create the container WITHOUT starting it, whereas RunContainer always
@@ -1749,7 +1763,7 @@ func runWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, cwd str
 	// --chunking gates this path: "off" skips it entirely (registry push only),
 	// while "force" uses it with no registry-push fallback on failure.
 	var ociHint *ociReuseHint
-	if !isDarwinAgent && !opts.deploy && opts.chunking != chunkingOff {
+	if chunkDiffWillRun {
 		diffIDs, hint, err := deployByChunkDiff(ctx, conn, cwd, appCfg, platform, opts.dockerfile, buildArgs, deployEnv, opts)
 		ociHint = hint
 		if err == nil {
