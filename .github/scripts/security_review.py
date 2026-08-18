@@ -746,8 +746,7 @@ def previous_review_has_blocking(previous_review: str) -> bool:
 def _credit_warning(previous_review: str, manifest: dict[str, Any]) -> str:
     warning_lines = [
         "> [!WARNING]",
-        "> Security review skipped because Claude API credits are unavailable. "
-        "Prior findings and any prior blocking result remain unchanged.",
+        "> Security review skipped because Claude API credits are unavailable. Prior findings and any prior blocking result remain unchanged.",
         CREDIT_WARNING_MARKER,
         "",
         coverage_text(manifest, reviewed=False),
