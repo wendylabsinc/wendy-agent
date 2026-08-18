@@ -93,6 +93,21 @@ func rejectUnsupportedBuildHostProject(host, project string) error {
 // transferred. Every failure names the host, and none falls back to a local
 // build: a long build the developer believed was running on the Spark is worse
 // than an error.
+// checkFleetDeliverySupported refuses a fleet build against a build host that
+// would silently drop the extra devices.
+//
+// proto3 discards unknown fields, so an agent predating push_targets receives a
+// spec whose fleet it cannot see and whose single target is empty. It would
+// build and deliver nowhere while this CLI reported a fleet deploy. Refusing is
+// the only safe answer: degrading to the first device would deploy to one
+// machine and claim several, which is worse than an error and invisible.
+func checkFleetDeliverySupported(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, deviceCount int) error {
+	if deviceCount <= 1 || resp.GetMultiTargetDelivery() {
+		return nil
+	}
+	return fmt.Errorf("build host %s cannot deliver one build to several devices; update its agent, or deploy to one device at a time", host)
+}
+
 func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, platform string) error {
 	if !resp.GetBuilderEnabled() {
 		return fmt.Errorf("%s is not configured as a build host; enable the builder role on that device, or omit --build-host to build locally", host)
@@ -215,6 +230,14 @@ func runRemoteBuild(
 	if err != nil {
 		return err
 	}
+	// One entry today; the fleet flag lengthens it. Kept as a slice from here on
+	// so the delivery path, the capability guard and the reporting are the same
+	// code for one device as for ten -- a fleet path that only runs when someone
+	// passes several devices is a fleet path nobody has tested.
+	pushTargets := []*agentpbv2.PushTarget{pushTarget}
+	if err := checkFleetDeliverySupported(host, caps, len(pushTargets)); err != nil {
+		return err
+	}
 
 	buildTitle := fmt.Sprintf("Building on %s for %s...", tui.Value(host), tui.Value(platform))
 	if err := runBuildWithProgress(ctx, buildTitle, dumpRawAlways, func(buildCtx context.Context, stream, logw io.Writer) error {
@@ -222,18 +245,29 @@ func runRemoteBuild(
 		if err != nil {
 			return err
 		}
-		return streamRemoteBuild(buildCtx, builder, &agentpbv2.BuildSpec{
-			AppId:      appCfg.AppID,
-			Platform:   platform,
-			PushTarget: pushTarget,
-			Context:    manifest,
+		// A single device keeps using the original field. The fleet field is
+		// invisible to an agent that predates it -- proto3 drops unknown fields
+		// -- so sending it for a one-device build would break exactly the case
+		// that works today, against exactly the agents most likely to be in the
+		// field. checkFleetDeliverySupported above is what allows the other
+		// branch.
+		spec := &agentpbv2.BuildSpec{
+			AppId:    appCfg.AppID,
+			Platform: platform,
+			Context:  manifest,
 			Definition: &agentpbv2.BuildSpec_DockerfileBuild{
 				DockerfileBuild: &agentpbv2.DockerfileBuild{
 					Dockerfile: resolved,
 					BuildArgs:  buildArgs,
 				},
 			},
-		}, stream)
+		}
+		if len(pushTargets) == 1 {
+			spec.PushTarget = pushTargets[0]
+		} else {
+			spec.PushTargets = pushTargets
+		}
+		return streamRemoteBuild(buildCtx, builder, spec, stream)
 	}); err != nil {
 		return classifyRemoteBuildError(host, err)
 	}
@@ -251,6 +285,48 @@ func runRemoteBuild(
 		Env:           deployEnv,
 	}
 	return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+}
+
+// fleetDeliveryReport turns the agent's per-device outcomes into what the
+// developer reads, and into the exit status.
+//
+// It exists as a pure function because the rule it encodes is the one worth
+// testing: a run where some devices missed the image is NOT a success. Every
+// other failure mode in this feature has been a wrong outcome reported as a
+// right one, and a fleet deploy is the easiest place yet to hide one — the
+// build succeeds, most devices update, and nobody looks at the tail of the
+// output.
+func fleetDeliveryReport(deliveries []*agentpbv2.DeliveryResult, nameOf map[int32]string) (lines []string, failed int) {
+	for _, d := range deliveries {
+		name := nameOf[d.GetAssetId()]
+		if name == "" {
+			name = fmt.Sprintf("asset %d", d.GetAssetId())
+		}
+		if d.GetDelivered() {
+			lines = append(lines, fmt.Sprintf("  %-24s delivered", name))
+			continue
+		}
+		failed++
+		reason := d.GetError()
+		if reason == "" {
+			// An agent that reports a failure without saying why still must not
+			// be summarised as "fine".
+			reason = "delivery failed (no reason reported)"
+		}
+		lines = append(lines, fmt.Sprintf("  %-24s FAILED: %s", name, reason))
+	}
+	return lines, failed
+}
+
+// errPartialFleetDeploy is returned when the image reached some devices and not
+// others. Named so the exit path cannot accidentally treat it as success.
+type errPartialFleetDeploy struct {
+	failed, total int
+}
+
+func (e *errPartialFleetDeploy) Error() string {
+	return fmt.Sprintf("deployed to %d of %d devices; %d failed — see the report above",
+		e.total-e.failed, e.total, e.failed)
 }
 
 // connectBuildHost resolves and connects to the build host by name, reusing the

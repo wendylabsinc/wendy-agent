@@ -360,3 +360,64 @@ func TestCloudFallbackDeviceName_FallsBackToFlagThenDefault(t *testing.T) {
 		t.Fatalf("got %q, want empty so the caller reports the original error", got)
 	}
 }
+
+// TestCheckFleetDeliverySupported_RefusesOldAgent: proto3 drops unknown fields,
+// so an agent predating push_targets would receive a spec whose fleet it cannot
+// see and deliver nowhere, while the CLI reported a fleet deploy. Degrading to
+// the first device would be worse: deploying to one machine and claiming
+// several.
+func TestCheckFleetDeliverySupported_RefusesOldAgent(t *testing.T) {
+	old := &agentpbv2.GetBuildCapabilitiesResponse{MultiTargetDelivery: false}
+	if err := checkFleetDeliverySupported("spark-office", old, 3); err == nil {
+		t.Fatal("want a refusal when several devices are requested of an agent that cannot deliver to them")
+	}
+	// One device needs nothing new, so an older agent stays usable.
+	if err := checkFleetDeliverySupported("spark-office", old, 1); err != nil {
+		t.Fatalf("single-device builds must still work against an older agent: %v", err)
+	}
+	newer := &agentpbv2.GetBuildCapabilitiesResponse{MultiTargetDelivery: true}
+	if err := checkFleetDeliverySupported("spark-office", newer, 3); err != nil {
+		t.Fatalf("a capable agent must be accepted: %v", err)
+	}
+}
+
+// TestFleetDeliveryReport_CountsFailures is the rule that keeps a partial fleet
+// deploy from reading as a success.
+func TestFleetDeliveryReport_CountsFailures(t *testing.T) {
+	names := map[int32]string{1: "ccr1", 2: "ccr2", 3: "theta"}
+	lines, failed := fleetDeliveryReport([]*agentpbv2.DeliveryResult{
+		{AssetId: 1, Delivered: true},
+		{AssetId: 2, Delivered: false, Error: "mesh dial failed"},
+		{AssetId: 3, Delivered: true},
+	}, names)
+	if failed != 1 {
+		t.Fatalf("failed = %d, want 1", failed)
+	}
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{"ccr1", "ccr2", "theta", "mesh dial failed", "FAILED"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("report missing %q; got:\n%s", want, joined)
+		}
+	}
+}
+
+// An agent that reports a failure without a reason must still not be summarised
+// as fine.
+func TestFleetDeliveryReport_FailureWithoutReasonStillFails(t *testing.T) {
+	lines, failed := fleetDeliveryReport([]*agentpbv2.DeliveryResult{
+		{AssetId: 9, Delivered: false},
+	}, nil)
+	if failed != 1 {
+		t.Fatalf("failed = %d, want 1", failed)
+	}
+	if !strings.Contains(strings.Join(lines, "\n"), "asset 9") {
+		t.Errorf("an unnamed device must still be identifiable; got %v", lines)
+	}
+}
+
+func TestPartialFleetDeployError_StatesTheSplit(t *testing.T) {
+	err := &errPartialFleetDeploy{failed: 1, total: 3}
+	if !strings.Contains(err.Error(), "2 of 3") {
+		t.Errorf("the message must say how many succeeded; got %q", err.Error())
+	}
+}
