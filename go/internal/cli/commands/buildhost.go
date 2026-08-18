@@ -89,10 +89,56 @@ func rejectUnsupportedBuildHostProject(host, project string) error {
 	return fmt.Errorf("build host %s cannot build %s; remote builds currently support single-service container image projects only (remove --build-host or clear defaultBuildHost to build locally)", host, project)
 }
 
-// checkBuildHostCapabilities refuses a build host before any context is
-// transferred. Every failure names the host, and none falls back to a local
-// build: a long build the developer believed was running on the Spark is worse
-// than an error.
+// splitFleetDevices reads a comma-separated --device value into the primary
+// device and the rest.
+//
+// The primary is not just the first name: it is the device every existing
+// decision in the run path is already made against — GPU architecture for a
+// cuda: stage, agent OS, build-arg hints. Those must come from one device, and
+// silently averaging them across a fleet would produce an image correct for
+// none of them.
+//
+// Order is preserved and duplicates are refused. A fleet listed as larger than
+// it is would report a device twice and hide that another was never named.
+func splitFleetDevices(value string) (primary string, extras []string, err error) {
+	parts := strings.Split(value, ",")
+	seen := make(map[string]struct{}, len(parts))
+	names := make([]string, 0, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name == "" {
+			return "", nil, fmt.Errorf("--device %q has an empty entry; list devices as a,b,c", value)
+		}
+		if _, dup := seen[name]; dup {
+			return "", nil, fmt.Errorf("--device lists %q more than once", name)
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names[0], names[1:], nil
+}
+
+// validateFleetRun rejects the combinations that cannot be honoured, before any
+// device is contacted.
+func validateFleetRun(extras []string, buildHost string, detach bool) error {
+	if len(extras) == 0 {
+		return nil
+	}
+	// Without a build host each device would build the image locally, in turn.
+	// The point of naming several devices is that the expensive stage happens
+	// once, so this combination asks for the opposite of the feature.
+	if strings.TrimSpace(buildHost) == "" {
+		return errors.New("deploying to several devices needs --build-host: without it each device would trigger its own local build, which is what naming them together avoids")
+	}
+	// Log streaming follows one container. Interleaving several devices' logs
+	// into one terminal produces output no one can attribute, and the run would
+	// appear to hang on whichever device is quietest.
+	if !detach {
+		return errors.New("deploying to several devices needs --detach: logs are streamed from a single container, so there is no sensible thing to follow across a fleet")
+	}
+	return nil
+}
+
 // checkFleetDeliverySupported refuses a fleet build against a build host that
 // would silently drop the extra devices.
 //
@@ -108,6 +154,10 @@ func checkFleetDeliverySupported(host string, resp *agentpbv2.GetBuildCapabiliti
 	return fmt.Errorf("build host %s cannot deliver one build to several devices; update its agent, or deploy to one device at a time", host)
 }
 
+// checkBuildHostCapabilities refuses a build host before any context is
+// transferred. Every failure names the host, and none falls back to a local
+// build: a long build the developer believed was running on the Spark is worse
+// than an error.
 func checkBuildHostCapabilities(host string, resp *agentpbv2.GetBuildCapabilitiesResponse, platform string) error {
 	if !resp.GetBuilderEnabled() {
 		return fmt.Errorf("%s is not configured as a build host; enable the builder role on that device, or omit --build-host to build locally", host)
@@ -230,11 +280,44 @@ func runRemoteBuild(
 	if err != nil {
 		return err
 	}
-	// One entry today; the fleet flag lengthens it. Kept as a slice from here on
-	// so the delivery path, the capability guard and the reporting are the same
-	// code for one device as for ten -- a fleet path that only runs when someone
-	// passes several devices is a fleet path nobody has tested.
+	// Kept as a slice so the delivery path, the capability guard and the
+	// reporting are the same code for one device as for ten -- a fleet path that
+	// only runs when someone passes several devices is a fleet path nobody has
+	// tested.
 	pushTargets := []*agentpbv2.PushTarget{pushTarget}
+	// Names for the report. The primary is whatever --device resolved to.
+	nameOf := map[int32]string{pushTarget.GetAssetId(): deviceFlag}
+
+	// Resolve every extra device BEFORE building. A fleet member that cannot be
+	// reached is worth an error now, not after the build host has spent minutes
+	// on an image most of the fleet will never see.
+	fleetConns := make([]*grpcclient.AgentConnection, 0, len(opts.fleetDevices))
+	defer func() {
+		for _, c := range fleetConns {
+			c.Close()
+		}
+	}()
+	for _, name := range opts.fleetDevices {
+		conn, err := connectFleetDevice(ctx, name)
+		if err != nil {
+			return fmt.Errorf("connecting to %s: %w", name, err)
+		}
+		fleetConns = append(fleetConns, conn)
+
+		// One build produces one image for one platform. A device of a different
+		// architecture cannot run it, and finding that out after delivery would
+		// leave a camera holding an image it can never start.
+		if err := assertSamePlatform(ctx, name, conn, platform); err != nil {
+			return err
+		}
+		t, err := targetPushTarget(ctx, conn, appCfg)
+		if err != nil {
+			return fmt.Errorf("resolving %s as a delivery target: %w", name, err)
+		}
+		pushTargets = append(pushTargets, t)
+		nameOf[t.GetAssetId()] = name
+	}
+
 	if err := checkFleetDeliverySupported(host, caps, len(pushTargets)); err != nil {
 		return err
 	}
@@ -284,7 +367,50 @@ func runRemoteBuild(
 		UserArgs:      opts.userArgs,
 		Env:           deployEnv,
 	}
-	return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+	if len(fleetConns) == 0 {
+		return startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+	}
+
+	// Fleet run. Every device gets the image; each still needs its own container
+	// created, and one device failing that must not strand the others -- the
+	// image is already on them.
+	report := make([]*agentpbv2.DeliveryResult, 0, len(pushTargets))
+	primaryErr := startAndStreamContainer(ctx, target, appCfg, createReq, opts)
+	report = append(report, deliveryOutcome(pushTargets[0].GetAssetId(), primaryErr))
+
+	for i, conn := range fleetConns {
+		req := &agentpb.CreateContainerRequest{
+			// Resolved per device: the reference names that device's own registry.
+			ImageName:     localRegistryReference(ctx, conn, appCfg),
+			AppName:       appCfg.AppID,
+			AppConfig:     appConfigData,
+			RestartPolicy: resolveRestartPolicy(opts),
+			UserArgs:      opts.userArgs,
+			Env:           deployEnv,
+		}
+		report = append(report, deliveryOutcome(pushTargets[i+1].GetAssetId(),
+			startAndStreamContainer(ctx, conn, appCfg, req, opts)))
+	}
+
+	lines, failed := fleetDeliveryReport(report, nameOf)
+	cliLogln("Deployed from one build on %s:", tui.Value(host))
+	for _, l := range lines {
+		cliLogln("%s", l)
+	}
+	if failed > 0 {
+		return &errPartialFleetDeploy{failed: failed, total: len(report)}
+	}
+	return nil
+}
+
+// deliveryOutcome records what happened to one device without collapsing a
+// failure into the run's overall status. See fleetDeliveryReport for why a
+// partial fleet deploy must not read as success.
+func deliveryOutcome(assetID int32, err error) *agentpbv2.DeliveryResult {
+	if err != nil {
+		return &agentpbv2.DeliveryResult{AssetId: assetID, Error: err.Error()}
+	}
+	return &agentpbv2.DeliveryResult{AssetId: assetID, Delivered: true}
 }
 
 // fleetDeliveryReport turns the agent's per-device outcomes into what the
@@ -440,4 +566,52 @@ func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), ou
 			return nil
 		}
 	}
+}
+
+// connectFleetDevice connects to one extra delivery target by name.
+//
+// KNOWN LIMITATION, measured rather than assumed: resolveTarget is direct/LAN
+// only, so a fleet member that is not on this network fails here with "name
+// resolver error: produced zero addresses". Deploying to ccr2,ccr1 from a
+// laptop on neither network gets as far as this call and stops.
+//
+// The fix is the one connectBuildHost needs and for the same reason -- a cloud
+// fallback that takes the device name EXPLICITLY, because --device names the
+// primary and reusing it here would connect every fleet member to the same
+// machine. That is a separate change; when it lands, this becomes a one-line
+// swap rather than a second copy of the same logic.
+//
+// Until then a fleet must be LAN-reachable from the developer's machine. That
+// is a real restriction and is stated in the flag's help rather than left to be
+// discovered.
+func connectFleetDevice(ctx context.Context, name string) (*grpcclient.AgentConnection, error) {
+	sel, err := resolveTarget(ctx, SelectDevice(name), NonInteractive(), SuppressUpdateCheck())
+	if err != nil {
+		return nil, err
+	}
+	if sel.Agent == nil {
+		sel.Close()
+		return nil, fmt.Errorf("%s is not a WendyOS device with an agent", name)
+	}
+	return sel.Agent, nil
+}
+
+// assertSamePlatform refuses a fleet whose members do not all run the image
+// that is about to be built.
+//
+// One build produces one image for one platform. Delivering it to a device of
+// another architecture leaves that camera holding an image it can never start
+// -- a failure that surfaces long after the deploy reported success, on the
+// device least likely to be watched.
+func assertSamePlatform(ctx context.Context, name string, conn *grpcclient.AgentConnection, platform string) error {
+	got, err := targetAgentOS(ctx, conn)
+	if err != nil {
+		return fmt.Errorf("determining what %s runs: %w", name, err)
+	}
+	want, _, _ := strings.Cut(platform, "/")
+	if !strings.EqualFold(got, want) {
+		return fmt.Errorf("%s runs %s but this build targets %s; a fleet must be one platform, so deploy %s separately",
+			name, got, platform, name)
+	}
+	return nil
 }

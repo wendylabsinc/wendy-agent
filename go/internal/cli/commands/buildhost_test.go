@@ -421,3 +421,72 @@ func TestPartialFleetDeployError_StatesTheSplit(t *testing.T) {
 		t.Errorf("the message must say how many succeeded; got %q", err.Error())
 	}
 }
+
+// TestSplitFleetDevices_KeepsOrderAndNamesPrimary: the primary is not merely
+// first — it is the device the GPU architecture, agent OS and build-arg hints
+// are read from, so which name lands there decides what image gets built.
+func TestSplitFleetDevices_KeepsOrderAndNamesPrimary(t *testing.T) {
+	primary, extras, err := splitFleetDevices("ccr1, ccr2 ,theta")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if primary != "ccr1" {
+		t.Errorf("primary = %q, want ccr1", primary)
+	}
+	if len(extras) != 2 || extras[0] != "ccr2" || extras[1] != "theta" {
+		t.Errorf("extras = %v, want [ccr2 theta] with whitespace trimmed", extras)
+	}
+}
+
+// A duplicate would report one device twice and hide that another was never
+// named — a fleet that looks larger than it is.
+func TestSplitFleetDevices_RefusesDuplicatesAndBlanks(t *testing.T) {
+	if _, _, err := splitFleetDevices("ccr1,ccr2,ccr1"); err == nil {
+		t.Error("want an error for a repeated device")
+	}
+	if _, _, err := splitFleetDevices("ccr1,,ccr2"); err == nil {
+		t.Error("want an error for an empty entry")
+	}
+}
+
+// A single device must be untouched by any of this.
+func TestSplitFleetDevices_SingleDeviceHasNoExtras(t *testing.T) {
+	primary, extras, err := splitFleetDevices("ccr1")
+	if err != nil || primary != "ccr1" || len(extras) != 0 {
+		t.Fatalf("got (%q, %v, %v), want ccr1 with no extras", primary, extras, err)
+	}
+}
+
+// TestValidateFleetRun_RequiresBuildHostAndDetach: both refusals exist because
+// the alternative is silently doing something other than what was asked —
+// N local builds, or logs from a fleet interleaved into one terminal.
+func TestValidateFleetRun_RequiresBuildHostAndDetach(t *testing.T) {
+	extras := []string{"ccr2"}
+	if err := validateFleetRun(extras, "", true); err == nil {
+		t.Error("a fleet without --build-host must be refused")
+	}
+	if err := validateFleetRun(extras, "spark-office", false); err == nil {
+		t.Error("a fleet without --detach must be refused")
+	}
+	if err := validateFleetRun(extras, "spark-office", true); err != nil {
+		t.Errorf("a valid fleet run must be allowed: %v", err)
+	}
+	// A single device keeps working with no build host and no --detach.
+	if err := validateFleetRun(nil, "", false); err != nil {
+		t.Errorf("ordinary single-device runs must be unaffected: %v", err)
+	}
+}
+
+func TestDeliveryOutcome_RecordsFailureReason(t *testing.T) {
+	ok := deliveryOutcome(7, nil)
+	if !ok.GetDelivered() || ok.GetError() != "" {
+		t.Errorf("got %v, want a clean success", ok)
+	}
+	bad := deliveryOutcome(8, errors.New("container create refused"))
+	if bad.GetDelivered() {
+		t.Error("a failed create must not be recorded as delivered")
+	}
+	if !strings.Contains(bad.GetError(), "container create refused") {
+		t.Errorf("the reason must survive; got %q", bad.GetError())
+	}
+}
