@@ -604,13 +604,23 @@ func connectFleetDevice(ctx context.Context, name string) (*grpcclient.AgentConn
 // -- a failure that surfaces long after the deploy reported success, on the
 // device least likely to be watched.
 func assertSamePlatform(ctx context.Context, name string, conn *grpcclient.AgentConnection, platform string) error {
-	got, err := targetAgentOS(ctx, conn)
+	// Resolved the SAME way the primary device's platform was, via
+	// resolveAgentPlatform. Comparing the raw agent OS instead looks equivalent
+	// and is not: a WendyOS device reports "wendyos", never "linux", so a check
+	// against the platform string's OS half rejects every device it is asked
+	// about. Measured -- it refused ccr1 for a linux/arm64 build that ccr1 runs
+	// perfectly well.
+	versionResp, err := conn.AgentService.GetAgentVersion(ctx, &agentpb.GetAgentVersionRequest{})
 	if err != nil {
 		return fmt.Errorf("determining what %s runs: %w", name, err)
 	}
-	want, _, _ := strings.Cut(platform, "/")
-	if !strings.EqualFold(got, want) {
-		return fmt.Errorf("%s runs %s but this build targets %s; a fleet must be one platform, so deploy %s separately",
+	arch := versionResp.GetCpuArchitecture()
+	if arch == "" {
+		arch = "arm64"
+	}
+	got := resolveAgentPlatform("", versionResp.GetOs(), arch)
+	if !strings.EqualFold(got, platform) {
+		return fmt.Errorf("%s is %s but this build targets %s; one build makes one image for one platform, so deploy %s separately",
 			name, got, platform, name)
 	}
 	return nil
