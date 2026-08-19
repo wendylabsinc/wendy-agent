@@ -30,10 +30,27 @@ actor TelemetryService: Wendy_Agent_Services_V1_WendyTelemetryService.SimpleServ
             ]
         )
 
-        let (subscriptionId, stream) = await broadcaster.subscribeLogs()
+        let (subscriptionId, recent, stream) = await broadcaster.subscribeLogs()
         defer {
             Task {
                 await broadcaster.unsubscribeLogs(id: subscriptionId)
+            }
+        }
+
+        for logsRequest in recent {
+            let filteredRequest = filterLogs(
+                logsRequest,
+                serviceName: request.hasServiceName ? request.serviceName : nil,
+                minSeverity: request.hasMinSeverity ? request.minSeverity : nil,
+                appName: request.hasAppName ? request.appName : nil
+            )
+            if !filteredRequest.resourceLogs.isEmpty {
+                try await response.write(
+                    Wendy_Agent_Services_V1_StreamLogsResponse.with {
+                        $0.logs = filteredRequest
+                        $0.isHistory = true
+                    }
+                )
             }
         }
 

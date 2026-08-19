@@ -926,3 +926,81 @@ func TestStreamLogsV2_LastN_FilterBeforeWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamLogs_RecentPrefillIsMarkedAsHistory(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "stale-before-watch"))
+	svc := NewTelemetryService(zap.NewNop(), broadcaster, nil)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpb.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpb.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	appName := "watch-app"
+	stream, err := client.StreamLogs(ctx, &agentpb.StreamLogsRequest{AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "stale-before-watch" {
+		t.Fatalf("first body = %q, want cached pre-subscription record", got)
+	}
+	if !resp.GetIsHistory() {
+		t.Error("cached pre-subscription record was not marked as history")
+	}
+
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "live-after-watch"))
+	resp, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv live: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "live-after-watch" || resp.GetIsHistory() {
+		t.Errorf("live response = history:%v body:%q, want history:false body:%q",
+			resp.GetIsHistory(), got, "live-after-watch")
+	}
+}
+
+func TestStreamLogsV2_RecentPrefillIsMarkedAsHistory(t *testing.T) {
+	broadcaster := NewTelemetryBroadcaster()
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "stale-before-watch"))
+	svc := NewTelemetryServiceV2(zap.NewNop(), broadcaster, nil)
+	conn := newTelemetryTestConn(t, func(srv *grpc.Server) {
+		agentpbv2.RegisterWendyTelemetryServiceServer(srv, svc)
+	})
+	client := agentpbv2.NewWendyTelemetryServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	appName := "watch-app"
+	stream, err := client.StreamLogs(ctx, &agentpbv2.StreamLogsRequest{AppName: &appName})
+	if err != nil {
+		t.Fatalf("StreamLogs: %v", err)
+	}
+
+	resp, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "stale-before-watch" {
+		t.Fatalf("first body = %q, want cached pre-subscription record", got)
+	}
+	if !resp.GetIsHistory() {
+		t.Error("cached pre-subscription record was not marked as history")
+	}
+
+	broadcaster.PublishLogs(makeLogReqForService("watch-app", "live-after-watch"))
+	resp, err = stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv live: %v", err)
+	}
+	if got := firstLogBody(resp.GetLogs()); got != "live-after-watch" || resp.GetIsHistory() {
+		t.Errorf("live response = history:%v body:%q, want history:false body:%q",
+			resp.GetIsHistory(), got, "live-after-watch")
+	}
+}

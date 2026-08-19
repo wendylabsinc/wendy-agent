@@ -26,9 +26,9 @@ actor TelemetryBroadcaster {
 
     init() {}
 
-    /// Subscribe to log broadcasts. Returns a stream that yields log requests.
-    /// Immediately sends cached recent logs if available.
-    func subscribeLogs() -> (id: UUID, stream: AsyncStream<LogsRequest>) {
+    /// Subscribe to log broadcasts, returning cached batches separately from
+    /// batches published after the subscription was registered.
+    func subscribeLogs() -> (id: UUID, recent: [LogsRequest], stream: AsyncStream<LogsRequest>) {
         let id = UUID()
         let (stream, continuation) = AsyncStream<LogsRequest>.makeStream(
             bufferingPolicy: .bufferingNewest(100)
@@ -36,13 +36,9 @@ actor TelemetryBroadcaster {
         logSubscribers[id] = continuation
         logger.debug("Log subscriber added", metadata: ["id": "\(id)"])
 
-        // Send cached logs immediately so new subscribers see recent history
         if !recentLogs.isEmpty {
-            for cachedLog in recentLogs {
-                _ = continuation.yield(cachedLog)
-            }
             logger.debug(
-                "Sent cached logs to new subscriber",
+                "Returning cached logs to new subscriber",
                 metadata: [
                     "id": "\(id)",
                     "logBatches": "\(recentLogs.count)",
@@ -50,7 +46,7 @@ actor TelemetryBroadcaster {
             )
         }
 
-        return (id, stream)
+        return (id, recentLogs, stream)
     }
 
     /// Unsubscribe from log broadcasts.
