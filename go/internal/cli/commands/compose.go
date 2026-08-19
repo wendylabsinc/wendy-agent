@@ -1367,11 +1367,14 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 		}
 		preserve = adjustedPreserve
 	}
+	preservedLifecycle := preservedServicesInOrder(ordered, preserve)
 	if len(preserve) > 0 {
 		ordered = filterPreservedServices(ordered, preserve)
 		if len(ordered) == 0 {
 			cliLogln("All Compose services are unchanged and running; nothing to redeploy.")
-			return nil
+			if opts.detach || opts.deploy {
+				return nil
+			}
 		}
 	}
 
@@ -1478,7 +1481,7 @@ func runComposeWithAgent(ctx context.Context, conn *grpcclient.AgentConnection, 
 	if opts.detach {
 		runErr = composeStartDetached(ctx, runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, projectName, opts)
 	} else if opts.isWatch() {
-		runErr = composeStartWatch(runCtx, conn, ordered, svcCfgs, svcLifecycleCfgs, appLevelCfg, opts)
+		runErr = composeStartWatch(runCtx, conn, ordered, preservedLifecycle, svcCfgs, svcLifecycleCfgs, appLevelCfg, opts)
 	} else {
 		// Attached mode: stream output from all containers concurrently with
 		// color-coded, column-aligned service name prefixes.
@@ -1533,9 +1536,10 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 
 // composeStartWatch starts the changed service set and returns after every
 // service has confirmed Started and first-successful-deploy lifecycle work has
-// settled. The session log stream independently includes services omitted here
-// because they are already running with the desired configuration.
-func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, opts runOptions) error {
+// settled. Preserved services are not restarted, but any host lifecycle work
+// left pending by an earlier canceled or failed attempt is retried. The session
+// log stream independently includes services omitted from the start set.
+func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, ordered, preservedLifecycle []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, opts runOptions) error {
 	runner := &serviceHookRunner{conn: conn, opts: opts}
 	cycleCtx, cycleCancel := context.WithCancel(ctx)
 	defer cycleCancel()
@@ -1580,8 +1584,13 @@ func composeStartWatch(ctx context.Context, conn *grpcclient.AgentConnection, or
 		runner.reap()
 		return cycleCtx.Err()
 	}
+	for _, name := range preservedLifecycle {
+		runner.startAsync(cycleCtx, svcLifecycleCfgs[name])
+	}
 	runner.startAsync(cycleCtx, appLevelCfg)
-	cliLogln("All services started.")
+	if len(ordered) > 0 {
+		cliLogln("All services started.")
+	}
 	runner.reap()
 	return cycleCtx.Err()
 }

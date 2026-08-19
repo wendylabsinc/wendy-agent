@@ -358,6 +358,16 @@ func filterPreservedServices(ordered []string, preserve map[string]bool) []strin
 	return changed
 }
 
+func preservedServicesInOrder(ordered []string, preserve map[string]bool) []string {
+	preserved := make([]string, 0, len(preserve))
+	for _, name := range ordered {
+		if preserve[name] {
+			preserved = append(preserved, name)
+		}
+	}
+	return preserved
+}
+
 // adjustSharedNamespacePreserve expands a primary-service redeploy to the
 // whole shared-namespace group. Secondaries bake the primary PID's namespaces
 // into their OCI specs, so they are genuinely affected when that primary is

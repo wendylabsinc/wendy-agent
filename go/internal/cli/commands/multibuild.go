@@ -491,11 +491,14 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 		cliLogln("Shared-namespace primary changed; restarting the affected service group.")
 	}
 	preserve = adjustedPreserve
+	preservedLifecycle := preservedServicesInOrder(ordered, preserve)
 	if len(preserve) > 0 {
 		ordered = filterPreservedServices(ordered, preserve)
 		if len(ordered) == 0 {
 			cliLogln("All services are unchanged and running; nothing to redeploy.")
-			return partialErr
+			if opts.detach || opts.deploy {
+				return partialErr
+			}
 		}
 	}
 
@@ -559,7 +562,7 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	// namespace join is resolved at container create time against the
 	// primary's running task, so the primary must be started before the
 	// next service is created.
-	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
+	if err := startAndStreamServices(ctx, conn, appCfg.AppID, ordered, preservedLifecycle, opts, createService, svcCfgs, svcLifecycleCfgs, appLevelCfg); err != nil {
 		return err
 	}
 	if ctx.Err() == nil {
@@ -967,13 +970,16 @@ func multiServiceContainerName(appID, serviceName string) string {
 // the agent resolves a secondary's namespace join at container create time
 // against the primary's running task.
 //
+// preservedLifecycle names unchanged running services whose host lifecycle may
+// still be pending from a canceled or failed earlier watch cycle. They are not
+// restarted; the watch-session lease makes completed lifecycle work a no-op.
 // svcCfgs supplies the full create/agent-hook config for each service, while
 // svcLifecycleCfgs supplies the private CLI lifecycle view whose entitlements
 // contain only service-declared HTTP. appLevelCfg, when non-nil, is the
 // group-level fallback fired once after every service has started. Hook work
 // does not block the sequential create→start→Started loop, which allows a
 // dependent service to join an already-running service's namespaces.
-func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
+func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered, preservedLifecycle []string, opts runOptions, createService func(name string) error, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
@@ -1065,8 +1071,13 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			startCancel()
 			runner.startAsync(runCtx, svcLifecycleCfgs[name])
 		}
+		for _, name := range preservedLifecycle {
+			runner.startAsync(runCtx, svcLifecycleCfgs[name])
+		}
 		runner.startAsync(runCtx, appLevelCfg)
-		cliLogln("App group %s started (%d services).", appID, len(ordered))
+		if len(ordered) > 0 {
+			cliLogln("App group %s started (%d services).", appID, len(ordered))
+		}
 		runner.reap()
 		return ctx.Err()
 	}

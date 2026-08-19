@@ -61,6 +61,67 @@ func TestServiceHookRunner_WatchRetriesCancellationThenRunsOnce(t *testing.T) {
 	}
 }
 
+func TestWatchPreservedServiceRetriesPendingHostLifecycle(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(context.Context, *grpcclient.AgentConnection, []string, map[string]*appconfig.AppConfig, runOptions) error
+	}{
+		{
+			name: "multi-service",
+			run: func(ctx context.Context, conn *grpcclient.AgentConnection, preserved []string, cfgs map[string]*appconfig.AppConfig, opts runOptions) error {
+				return startAndStreamServices(ctx, conn, "watch-app", nil, preserved, opts,
+					func(string) error { return errors.New("preserved service must not be recreated") },
+					cfgs, cfgs, nil)
+			},
+		},
+		{
+			name: "compose",
+			run: func(ctx context.Context, conn *grpcclient.AgentConnection, preserved []string, cfgs map[string]*appconfig.AppConfig, opts runOptions) error {
+				return composeStartWatch(ctx, conn, nil, preserved, cfgs, cfgs, nil, opts)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			browserCalls := swapBrowserOpen(t)
+			cfg := &appconfig.AppConfig{
+				AppID:       "watch-app",
+				ServiceName: "web",
+				Hooks: &appconfig.HooksConfig{
+					PostStart: &appconfig.HookCommand{OpenURL: "http://example.test"},
+				},
+			}
+			cfgs := map[string]*appconfig.AppConfig{"web": cfg}
+			fake := &hookSvcContainerClient{}
+			conn := &grpcclient.AgentConnection{
+				Host:             "127.0.0.1",
+				AgentService:     &lifecycleFakeAgentClient{},
+				ContainerService: fake,
+			}
+			opts := withWatchInvariants(runOptions{})
+
+			// Model the previous cycle being canceled after it claimed the lease.
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			(&serviceHookRunner{conn: conn, opts: opts}).runOne(canceled, canceled, cfg)
+
+			for cycle := 1; cycle <= 2; cycle++ {
+				if err := tt.run(context.Background(), conn, []string{"web"}, cfgs, opts); err != nil {
+					t.Fatalf("cycle %d: %v", cycle, err)
+				}
+			}
+
+			if got := fake.startCalls(); got != 0 {
+				t.Fatalf("StartContainer calls = %d, want 0 for a preserved service", got)
+			}
+			if got := len(*browserCalls); got != 1 {
+				t.Fatalf("browser opened %d times (%v), want one retry followed by lease suppression", got, *browserCalls)
+			}
+		})
+	}
+}
+
 type watchStartedStream struct {
 	grpc.ServerStreamingClient[agentpb.RunContainerLayersResponse]
 	recvCalls int
