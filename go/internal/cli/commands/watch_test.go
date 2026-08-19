@@ -28,6 +28,22 @@ func TestDebouncedDeployerUserCancellationStopsWatch(t *testing.T) {
 	}
 }
 
+func TestWatchAliasSupportsDetach(t *testing.T) {
+	if flag := newWatchCmd().Flags().Lookup("detach"); flag == nil {
+		t.Fatal("wendy watch is missing the --detach flag")
+	}
+}
+
+func TestWatchSessionUsesPlainProgress(t *testing.T) {
+	if watchUsesPlainProgress(context.Background()) {
+		t.Fatal("ordinary command context unexpectedly requests plain progress")
+	}
+	ctx := context.WithValue(context.Background(), watchSessionContextKey{}, struct{}{})
+	if !watchUsesPlainProgress(ctx) {
+		t.Fatal("watch context must request plain progress while logs share stdout")
+	}
+}
+
 func TestWatchShouldIgnore(t *testing.T) {
 	root := t.TempDir()
 	cases := []struct {

@@ -127,10 +127,8 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("host-side postStart hook did not run: %s was never created", path)
 }
 
-// requireFileAbsent asserts path is still missing after grace. The host-side
-// hook was historically fire-and-forget, so a bare Stat right after the call
-// could pass simply by racing it; waiting out a grace period keeps the
-// assertion meaningful.
+// requireFileAbsent waits briefly before asserting because a mistakenly
+// launched hook may create the file asynchronously.
 func requireFileAbsent(t *testing.T, path string, grace time.Duration) {
 	t.Helper()
 	time.Sleep(grace)
@@ -141,7 +139,7 @@ func requireFileAbsent(t *testing.T, path string, grace time.Duration) {
 
 // TestTryDeployFastPath_StoppedRunsPostStartHooks verifies which postStart
 // hook the fast path fires when it starts a stopped-but-unchanged app: the
-// agent-side (in-container) hook via StartContainer metadata runs, and the
+// agent-side (device-host) hook via StartContainer metadata runs, and the
 // host-side hook does NOT. The fast path only ever runs detached, and detached
 // deploys skip the readiness probe the host hook is gated on.
 func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
@@ -190,19 +188,15 @@ func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
 		t.Fatalf("agent postStart hook metadata = %#v, want [%q]", got, agentHook)
 	}
 
-	// Host-side CLI postStart hook must NOT fire: the fast path only runs
-	// detached, and detached deploys no longer block on the readiness probe
-	// that gates the host hook (see runPostStartIfReady's doc comment). The
-	// agent-side hook asserted above is what still runs.
+	// Host-side postStart actions require readiness and do not run on the
+	// detach-only fast path.
 	if runtime.GOOS != "windows" {
 		requireFileAbsent(t, sentinel, 300*time.Millisecond)
 	}
 }
 
-// TestStreamRunContainer_AttachedFiresHostPostStartHook verifies the attached
-// (default `wendy run`) chunk-diff path fires the host-side postStart hook once
-// the container reports Started (#1300: it previously only streamed logs, so
-// the hook fired only on runs that fell back to the registry-push path).
+// TestStreamRunContainer_AttachedFiresHostPostStartHook verifies that an
+// attached chunk-diff run fires its host-side postStart hook after Started.
 func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("host-side hook uses `touch`, unavailable on Windows")

@@ -500,10 +500,12 @@ func runMultiServiceWithAgent(ctx context.Context, conn *grpcclient.AgentConnect
 	}
 
 	// The app-level fallback fires the group's top-level readiness/hooks once,
-	// after ALL services have started — a guarantee that cannot hold on a subset
-	// run (--service), so disable it there.
+	// after the selected services have started. A partial watch deploy may still
+	// run it: every omitted service was independently confirmed unchanged and
+	// running, and the session lease suppresses it after the first success.
+	// An explicit --service run cannot make that whole-app guarantee.
 	appLevelCfg := appLevelLifecycleConfig(appCfg.AppID, appCfg)
-	if opts.service != "" || len(preserve) > 0 {
+	if opts.service != "" {
 		appLevelCfg = nil
 	}
 
@@ -905,17 +907,15 @@ func newServiceProgressEmitter(prog *tea.Program, name string) (func(tui.BuildSt
 }
 
 // multiServiceCreateConfig builds the per-service AppConfig transmitted to
-// the agent for a standalone multi-service app. The group identity and
-// runtime context (isolation, frameworks, shared entitlements) must travel
-// with every service: the agent keys namespace sharing, ROS 2 env injection,
-// and container naming on these fields (WDY-878, WDY-884).
+// the agent for a standalone multi-service app. Each service carries the group
+// identity and runtime context used for namespace sharing, ROS 2 environment
+// injection, and container naming.
 //
 // Only the service's OWN readiness/hooks are copied. The group's top-level
-// appCfg.Readiness/.Hooks are deliberately NOT copied here: those are the
+// appCfg.Readiness/.Hooks are deliberately not copied here: those are the
 // app-level fallback that fires once after every service has started (see
 // appLevelLifecycleConfig / startAndStreamServices), so copying them onto each
-// per-service config would run hooks.postStart.agent in every container
-// (WDY-1271).
+// per-service config would trigger hooks.postStart.agent for every container.
 func multiServiceCreateConfig(appCfg *appconfig.AppConfig, name string, svc *appconfig.ServiceConfig) *appconfig.AppConfig {
 	cfg := &appconfig.AppConfig{
 		AppID:       appCfg.AppID,
@@ -958,10 +958,9 @@ func multiServiceContainerName(appID, serviceName string) string {
 	return appID + "_" + serviceName
 }
 
-// startAndStreamServices starts all service containers and streams their
-// combined output to stdout/stderr with a "[serviceName] " prefix per line.
-// This is a best-effort multiplexer; proper per-service log routing is handled
-// by WDY-893 (multiplexed AttachContainer).
+// startAndStreamServices starts all service containers. Attached runs stream
+// their combined output with a "[serviceName] " prefix. Watch cycles return
+// after Started because the session log follower owns their output.
 // createService is invoked for each service, in dependency order, immediately
 // before that service is started — after every earlier service is already
 // running. This ordering is required for shared-ipc/shared-network groups:
@@ -971,22 +970,29 @@ func multiServiceContainerName(appID, serviceName string) string {
 // svcCfgs supplies the full create/agent-hook config for each service, while
 // svcLifecycleCfgs supplies the private CLI lifecycle view whose entitlements
 // contain only service-declared HTTP. appLevelCfg, when non-nil, is the
-// group-level fallback fired once after every service has started. Hook firing
-// is strictly non-blocking with respect to the sequential
-// create→start→Started-ack loop, which is load-bearing for shared-namespace
-// joins (WDY-1271).
+// group-level fallback fired once after every service has started. Hook work
+// does not block the sequential create→start→Started loop, which allows a
+// dependent service to join an already-running service's namespaces.
 func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnection, appID string, ordered []string, opts runOptions, createService func(name string) error, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig) error {
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 
-	runner := &serviceHookRunner{conn: conn}
+	runner := &serviceHookRunner{conn: conn, opts: opts}
 
-	// Ctrl+C stops all services.
+	// Ctrl+C stops all services. The watch loop owns the signal for the whole
+	// session and leaves the group running when it stops, so a watch cycle must
+	// not install its own handler.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt)
-	defer signal.Stop(sigCh)
+	if !opts.isWatch() {
+		signal.Notify(sigCh, os.Interrupt)
+		defer signal.Stop(sigCh)
+	}
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-runCtx.Done():
+			return
+		}
 		cliLogln("\nStopping services...")
 		runCancel()
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1021,16 +1027,48 @@ func startAndStreamServices(ctx context.Context, conn *grpcclient.AgentConnectio
 			}
 		}
 		cliLogln("App group %s running in detached mode.", appID)
-		// Every container is up: fire each service's readiness→announce→postStart
-		// sequentially in dependency order, then the app-level fallback. hookCtx
-		// is context.Background() so cli hooks outlive the detaching CLI; readiness
-		// failures only warn (non-fatal), so we still return nil. No reap: there is
-		// nothing left to wait on once we detach.
+		if opts.isWatch() {
+			// Explicit --watch --detach opts out of session logs and all host-side
+			// lifecycle work. Agent hooks still ride each StartContainer request.
+			return nil
+		}
+		// Detached service lifecycle work runs in dependency order, followed by
+		// the app-level fallback. CLI hooks use a background context so they may
+		// outlive the detaching command.
 		for _, name := range ordered {
 			runner.runOne(runCtx, context.Background(), svcLifecycleCfgs[name])
 		}
 		runner.runOne(runCtx, context.Background(), appLevelCfg)
 		return nil
+	}
+
+	if opts.isWatch() {
+		// The session log follower owns output. Each cycle creates and starts only
+		// changed services, waits for Started, runs eligible host lifecycle work,
+		// and returns.
+		for _, name := range ordered {
+			if err := createService(name); err != nil {
+				return err
+			}
+			startCtx, startCancel := context.WithCancel(runCtx)
+			stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(startCtx, svcCfgs[name]), &agentpb.StartContainerRequest{
+				AppName: multiServiceContainerName(appID, name),
+			})
+			if err != nil {
+				startCancel()
+				return fmt.Errorf("starting service %s: %w", name, err)
+			}
+			if err := awaitStarted(stream); err != nil {
+				startCancel()
+				return fmt.Errorf("waiting for service %s to start: %w", name, err)
+			}
+			startCancel()
+			runner.startAsync(runCtx, svcLifecycleCfgs[name])
+		}
+		runner.startAsync(runCtx, appLevelCfg)
+		cliLogln("App group %s started (%d services).", appID, len(ordered))
+		runner.reap()
+		return ctx.Err()
 	}
 
 	type logLine struct {
