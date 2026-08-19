@@ -57,6 +57,10 @@ actor TelemetryBroadcaster {
         }
     }
 
+    func logSubscriberCountForTesting() -> Int {
+        self.logSubscribers.count
+    }
+
     /// Broadcast logs to all subscribers and cache for new subscribers.
     func broadcastLogs(_ request: LogsRequest) {
         // Cache logs for new subscribers
