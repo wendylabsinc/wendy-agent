@@ -338,6 +338,9 @@ func cameraStreamDiagnostic(err error) error {
 		case "IP_CAMERA_NO_CREDENTIALS":
 			id := info.GetMetadata()["device_id"]
 			return fmt.Errorf("camera %s has no stored credentials. Run `wendy device camera login %s`", id, id)
+		case "CAMERA_IN_USE":
+			device := info.GetMetadata()["device"]
+			return fmt.Errorf("camera %s is held by another application on this device and could not be shared with it. Stop the app holding it, then retry", device)
 		}
 	}
 	return err

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/agent/audio"
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
@@ -478,8 +480,11 @@ type VideoService struct {
 	classifyTransport  func(base string) (camera.Transport, string)
 	enumerateLibcamera func(ctx context.Context) (map[string]string, error)
 	isJetson           func() bool
-	readTegraRelease   func() ([]byte, error)
-	dumpBootSlots      func(context.Context) ([]byte, error)
+	// findCameraSource resolves a device path to its PipeWire node serial. A
+	// seam so tests do not fork pw-dump at the host's session.
+	findCameraSource func(ctx context.Context, devicePath string) (uint64, bool)
+	readTegraRelease func() ([]byte, error)
+	dumpBootSlots    func(context.Context) ([]byte, error)
 
 	ctx    context.Context    // cancelled on Shutdown; hub contexts are derived from this
 	cancel context.CancelFunc // cancels ctx
@@ -520,6 +525,7 @@ func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 		},
 		classifyTransport:  camera.Classify,
 		enumerateLibcamera: camera.EnumerateLibcamera,
+		findCameraSource:   audio.FindCameraSource,
 		isJetson:           func() bool { return board.Detect().IsJetson() },
 		readTegraRelease:   func() ([]byte, error) { return os.ReadFile("/etc/nv_tegra_release") },
 		dumpBootSlots: func(ctx context.Context) ([]byte, error) {
@@ -917,16 +923,12 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 
 		// CSI/ribbon sensors emit raw Bayer/RGB, not encoded H.264 — skip the native
 		// V4L2 H.264 path entirely and capture via GStreamer (libcamerasrc, or
-		// nvarguscamerasrc on Jetson). USB/unknown cameras keep native-H.264-first.
+		// nvarguscamerasrc on Jetson).
 		if transport == camera.TransportCSI {
 			s.logger.Info("CSI camera detected, using GStreamer", zap.String("device", path))
-			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
+			err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID, pipeWireSource{})
 		} else {
-			err = s.streamV4L2Native(ctx, broadcast, path, req)
-			if _, ok := err.(nativeH264NotSupported); ok {
-				s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
-				err = s.streamGStreamer(ctx, broadcast, path, req, transport, libcameraID)
-			}
+			err = s.captureLocalCamera(ctx, broadcast, path, req, transport, libcameraID)
 		}
 	}
 	if err != nil && ctx.Err() == nil {
@@ -957,6 +959,83 @@ func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path strin
 	// Signal that the device fd is fully released. getOrCreateHub waits on
 	// this before opening a new producer to avoid EBUSY on reconnect.
 	close(h.done)
+}
+
+// captureLocalCamera reads a USB/unknown camera, preferring the cheapest source: raw V4L2
+// keeps MJPEG capture and the best-mode probe, so the graph is only worth its
+// raw-plus-re-encode cost once the device refuses a second streaming consumer.
+func (s *VideoService) captureLocalCamera(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) error {
+	// A second source may only take over before a frame has reached subscribers: restarting
+	// mid-stream splices a new resolution and SPS into what downstream reads as one timeline.
+	var delivered atomic.Bool
+	send := func(data []byte, tsNs uint64, codec agentpb.VideoCodec) bool {
+		ok := broadcast(data, tsNs, codec)
+		if ok && !delivered.Load() {
+			delivered.Store(true)
+		}
+		return ok
+	}
+
+	err := s.streamV4L2Native(ctx, send, path, req)
+	if _, ok := err.(nativeH264NotSupported); ok {
+		s.logger.Info("native H.264 not supported, falling back to GStreamer", zap.String("device", path))
+		err = s.streamGStreamer(ctx, send, path, req, transport, libcameraID, pipeWireSource{})
+	}
+	if !isCameraInUse(err) || delivered.Load() || ctx.Err() != nil {
+		return err
+	}
+
+	serial, ok := s.findCameraSource(ctx, path)
+	if !ok {
+		return err
+	}
+	s.logger.Info("camera held by another client, capturing through PipeWire",
+		zap.String("device", path), zap.Uint64("node_serial", serial))
+
+	// Contention stays the answer when sharing fails outright: it is the cause an operator
+	// can act on, and a graph error names a pipeline they did not ask for. Once the shared
+	// stream has shipped frames the camera is demonstrably readable, so its own error wins.
+	pwErr := s.streamGStreamer(ctx, send, path, req, transport, libcameraID, pipeWireSource{serial: serial})
+	if pwErr == nil || ctx.Err() != nil || isCameraInUse(pwErr) || delivered.Load() {
+		return pwErr
+	}
+	s.logger.Warn("PipeWire capture failed for a held camera",
+		zap.String("device", path), zap.Error(pwErr))
+	return err
+}
+
+// pipeWireProbeTimeout bounds the format probe below. A raw node yields nothing
+// to a JPEG request, so the probe ends by deadline rather than by error.
+const pipeWireProbeTimeout = 2 * time.Second
+
+// nodeServesJPEG reports whether the graph is sending MJPEG for this node. pw-dump
+// advertises only what the device supports, not what the first client negotiated, and a
+// mismatched pipeline stalls rather than fails — so the live format is read, not guessed.
+func (s *VideoService) nodeServesJPEG(ctx context.Context, gstPath string, serial uint64) bool {
+	ctx, cancel := context.WithTimeout(ctx, pipeWireProbeTimeout)
+	defer cancel()
+	cmd, err := audio.Command(ctx, gstPath, "-q",
+		"pipewiresrc", fmt.Sprintf("target-object=%d", serial), "num-buffers=1",
+		"!", "image/jpeg", "!", "fakesink")
+	if err != nil {
+		return false
+	}
+	if runErr := cmd.Run(); runErr != nil {
+		// A deadline here is inconclusive rather than a "no", and the raw pipeline it
+		// selects stalls silently on an MJPEG node, so record which of the two happened.
+		s.logger.Debug("PipeWire format probe found no MJPEG",
+			zap.Uint64("node_serial", serial),
+			zap.Bool("timed_out", ctx.Err() != nil),
+			zap.Error(runErr))
+		return false
+	}
+	return true
+}
+
+// pipeWireSource names the graph node a pipeline reads, and how.
+type pipeWireSource struct {
+	serial uint64
+	jpeg   bool
 }
 
 // maxVideoDeviceID is the upper bound for accepted device IDs.
@@ -1247,6 +1326,9 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		s.logger.Error("failed to open video device", zap.String("device", path), zap.Error(err))
+		if isBusyErrno(err) {
+			return errCameraInUse(path)
+		}
 		return status.Errorf(codes.Internal, "failed to open video device")
 	}
 	defer unix.Close(fd) //nolint:errcheck
@@ -1275,11 +1357,20 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	vfmt.PixelFormat = v4l2PixFmtH264
 	vfmt.Field = v4l2FieldNone
 
-	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocSFmt, uintptr(unsafe.Pointer(&vfmt))); errno != 0 {
+	sfmt := func() unix.Errno {
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocSFmt, uintptr(unsafe.Pointer(&vfmt)))
+		return errno
+	}
+	if errno := retryWhileBusy(ctx, sfmt); errno != 0 {
 		if errno == unix.EINVAL {
 			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
 		}
 		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
+		// Opening a V4L2 node always succeeds — the kernel only refuses the
+		// second *streaming* consumer, and it does so here, at S_FMT.
+		if isBusyErrno(errno) {
+			return errCameraInUse(path)
+		}
 		return status.Errorf(codes.Internal, "failed to configure video device")
 	}
 	if vfmt.PixelFormat != v4l2PixFmtH264 {
@@ -1511,7 +1602,7 @@ func resolveGSTBinary(name string) (string, error) {
 
 // streamGStreamer spawns gst-launch-1.0 on the device to encode via the best available
 // encoder and pipes the resulting stream back as videoFrame chunks via the broadcast callback.
-func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string) (runErr error) {
+func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byte, uint64, agentpb.VideoCodec) bool, path string, req *agentpb.StreamVideoRequest, transport camera.Transport, libcameraID string, pw pipeWireSource) (runErr error) {
 	gstPath, err := resolveGSTBinary("gst-launch-1.0")
 	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "%v", err)
@@ -1528,6 +1619,25 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		// findGStreamerEncoderFromSet handles a nil set by attempting x264enc.
 		s.logger.Debug("gst-inspect listing failed", zap.Error(listErr))
 		available = nil
+	}
+
+	if pw.serial != 0 {
+		if listErr != nil {
+			// A listing failure is not contention; saying so would send the operator
+			// after a process that does not hold the camera.
+			return status.Errorf(codes.Internal, "cannot check for gstreamer1.0-pipewire: %v", listErr)
+		}
+		// Name the missing package rather than silently opening the device this
+		// call was chosen to avoid: pipewiresrc ships separately from the daemon.
+		if !available["pipewiresrc"] {
+			s.logger.Warn("gstreamer1.0-pipewire is missing; cannot read a camera another client holds",
+				zap.String("device", path))
+			return errCameraInUse(path)
+		}
+		// Probe here, not at the call site: the element set is what says whether a
+		// jpegdec stage can be built at all, and an absent one must not reach the
+		// pipeline. Also keeps the 2s probe off the path that rejects pipewiresrc.
+		pw.jpeg = available["jpegdec"] && s.nodeServesJPEG(ctx, gstPath, pw.serial)
 	}
 
 	enc, err := findGStreamerEncoderFromSet(available)
@@ -1558,12 +1668,26 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 			zap.Int("sensor_id", sensorID), zap.String("encoder", enc.element))
 		args = buildArgusGStreamerArgs(gstPath, req, sensorID, enc.element, enc.hasH264Parse, available)
 	} else {
-		args, err = buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse, transport, libcameraID, available)
+		args, err = buildGStreamerArgs(gstPath, path, req, enc.element, enc.hasH264Parse, transport, libcameraID, pw, available)
 		if err != nil {
 			return status.Errorf(codes.Internal, "failed to build GStreamer pipeline: %v", err)
 		}
 	}
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	var cmd *exec.Cmd
+	if pw.serial != 0 {
+		// The agent runs as root outside any session, so a PipeWire client it
+		// spawns must be pointed at the wendy session. Without it the client
+		// reaches the system-wide daemon, whose graph is empty.
+		var envErr error
+		if cmd, envErr = audio.Command(ctx, args[0], args[1:]...); envErr != nil {
+			return status.Errorf(codes.Unavailable, "PipeWire session unavailable: %v", envErr)
+		}
+	} else {
+		cmd = exec.CommandContext(ctx, args[0], args[1:]...)
+	}
+	// The busy classifier reads gst's prose. LC_ALL=C is the one value glibc short-circuits
+	// ahead of LANGUAGE, so messages cannot come back translated; exec keeps the last entry.
+	cmd.Env = append(cmd.Environ(), "LC_ALL=C")
 	stderrBuf := &limitedBuffer{limit: maxStderrBytes}
 	cmd.Stderr = stderrBuf
 
@@ -1587,7 +1711,14 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 			msg := strings.TrimSpace(stderrBuf.buf.String())
 			if msg != "" {
 				s.logger.Error("GStreamer pipeline failed", zap.String("device", path), zap.String("stderr", msg))
-				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
+				// Contention is the one cause an operator can act on, and it is only ever
+				// reported as prose on stderr. Gated on the pipeline failing by itself: gst
+				// also prints busy warnings while probing modes it then recovers from.
+				if exitedOnError(waitErr) && isBusyStderr(msg, path) {
+					runErr = errCameraInUse(path)
+				} else {
+					runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
+				}
 			} else if waitErr != nil {
 				runErr = status.Errorf(codes.Internal, "GStreamer pipeline failed; see agent logs for details")
 			}
@@ -1813,7 +1944,7 @@ const leakyRawQueue = "queue max-size-buffers=2 max-size-bytes=0 max-size-time=0
 // Returns an error if any interpolated string contains GStreamer pipeline injection
 // tokens — making the security property a hard failure at construction time rather
 // than relying solely on caller-side allowlist validation.
-func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, available map[string]bool) ([]string, error) {
+func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequest, encoder string, hasH264Parse bool, transport camera.Transport, libcameraID string, pw pipeWireSource, available map[string]bool) ([]string, error) {
 	// Validate numeric request parameters here (not only at StreamVideo entry) so
 	// buildGStreamerArgs is safe regardless of call site — prevents injection via
 	// unbounded width/height/framerate values if called from a different path.
@@ -1831,7 +1962,10 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// For CSI cameras the source is libcamerasrc (with a validated camera-name);
 	// otherwise v4l2src on the device path. libcameraID is validated inside
 	// buildSourceElement, so it is not subject to the devicePath/encoder check above.
-	src := buildSourceElement(devicePath, transport, libcameraID, available)
+	src := buildSourceElement(devicePath, transport, libcameraID, pw, available)
+	usingPipeWire := strings.HasPrefix(src, "pipewiresrc")
+	// GOP is in frames. On the PipeWire path videorate only caps the rate, so a
+	// graph running slower than requested spaces keyframes further apart in time.
 	gop := keyframeIntervalFrames(req.GetFramerate())
 
 	// libcamerasrc (CSI/PiSP) must be pinned to a processed format or it
@@ -1846,28 +1980,44 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	if strings.HasPrefix(src, "libcamerasrc") {
 		capsParts = append(capsParts, "format=NV12")
 	}
-	// Same "default must not mean smallest" rule as the native path: with no
-	// width/height in the caps the source negotiates its first mode, which on UVC
-	// is the smallest. Ask the device what it has and pin the best.
-	capW, capH := req.GetWidth(), req.GetHeight()
-	if (capW == 0 || capH == 0) && !strings.HasPrefix(src, "libcamerasrc") {
-		if bw, bh := bestDefaultFrameSizeForDevice(devicePath); bw > 0 && bh > 0 {
-			if capW == 0 {
-				capW = bw
-			}
-			if capH == 0 {
-				capH = bh
+	// No dimension may be pinned on pipewiresrc: once another client is streaming, that
+	// trips "assertion 'gst_caps_is_fixed' failed". Naming the media type alone is fine.
+	// Convert after the queue instead, where videoscale and videorate take what they get.
+	var capW, capH uint32
+	var convertStages []string
+	if usingPipeWire {
+		// Rate first: the graph serves whatever the first client negotiated, so
+		// scaling ahead of videorate pays for frames it is about to drop.
+		if req.GetFramerate() > 0 {
+			convertStages = append(convertStages, fmt.Sprintf("videorate max-rate=%d", req.GetFramerate()))
+		}
+		if req.GetWidth() > 0 && req.GetHeight() > 0 {
+			convertStages = append(convertStages, "videoscale",
+				fmt.Sprintf("video/x-raw,width=%d,height=%d", req.GetWidth(), req.GetHeight()))
+		}
+	} else {
+		// "Default" must not mean "smallest": with no width/height the source
+		// negotiates its first mode, which on UVC is the smallest.
+		capW, capH = req.GetWidth(), req.GetHeight()
+		if (capW == 0 || capH == 0) && !strings.HasPrefix(src, "libcamerasrc") {
+			if bw, bh := bestDefaultFrameSizeForDevice(devicePath); bw > 0 && bh > 0 {
+				if capW == 0 {
+					capW = bw
+				}
+				if capH == 0 {
+					capH = bh
+				}
 			}
 		}
-	}
-	if capW > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
-	}
-	if capH > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("height=%d", capH))
-	}
-	if req.GetFramerate() > 0 {
-		capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
+		if capW > 0 {
+			capsParts = append(capsParts, fmt.Sprintf("width=%d", capW))
+		}
+		if capH > 0 {
+			capsParts = append(capsParts, fmt.Sprintf("height=%d", capH))
+		}
+		if req.GetFramerate() > 0 {
+			capsParts = append(capsParts, fmt.Sprintf("framerate=%d/1", req.GetFramerate()))
+		}
 	}
 
 	// Prefer compressed (MJPEG) capture from USB cameras when the device offers
@@ -1878,21 +2028,33 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 	// 720p). jpegdec is cheap relative to the H.264 encode that follows. The
 	// leaky queue sits on the compressed side so backlog is dropped before,
 	// not after, the decode work is spent.
-	useMJPEG := !strings.HasPrefix(src, "libcamerasrc") &&
+	//
+	// The PipeWire path negotiates whatever the graph serves, so it selects no
+	// capture format of its own.
+	useMJPEG := !strings.HasPrefix(src, "libcamerasrc") && !usingPipeWire &&
 		capW > 0 && capH > 0 &&
 		available["jpegdec"] &&
 		deviceSupportsMJPEGSize(devicePath, capW, capH)
 
-	var pipeline string
-	if useMJPEG {
-		caps := "image/jpeg," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! jpegdec ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
-	} else if len(capsParts) > 0 {
-		caps := "video/x-raw," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
-	} else {
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+	// The leaky queue goes as early as the source allows, so a backlog is shed
+	// before any decode or scale work is spent on it. pw.jpeg only describes a
+	// graph node, so it may not steer a pipeline that ended up on another source.
+	stages := []string{src}
+	switch {
+	case useMJPEG:
+		stages = append(stages, "image/jpeg,"+strings.Join(capsParts, ","), leakyRawQueue, "jpegdec")
+	case usingPipeWire && pw.jpeg:
+		// Name the type and decode it: videoconvert cannot take compressed input.
+		stages = append(stages, "image/jpeg", leakyRawQueue, "jpegdec")
+	default:
+		if len(capsParts) > 0 {
+			stages = append(stages, "video/x-raw,"+strings.Join(capsParts, ","))
+		}
+		stages = append(stages, leakyRawQueue)
 	}
+	stages = append(stages, convertStages...)
+	stages = append(stages, encoderSegment(encoder, hasH264Parse, gop), "fdsink fd=1")
+	pipeline := strings.Join(stages, " ! ")
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
 	return append([]string{gstPath, "-q"}, strings.Fields(pipeline)...), nil
@@ -1952,12 +2114,17 @@ func (s *VideoService) lookupLibcameraID(ctx context.Context, transport camera.T
 // injection sink. An ID that fails validation is dropped and libcamerasrc
 // auto-selects instead. (devicePath is always "/dev/video%d" formatted from a
 // uint32 device id, so it cannot contain whitespace or pipeline separators.)
-func buildSourceElement(devicePath string, transport camera.Transport, libcameraID string, available map[string]bool) string {
+func buildSourceElement(devicePath string, transport camera.Transport, libcameraID string, pw pipeWireSource, available map[string]bool) string {
 	if transport == camera.TransportCSI && available != nil && available["libcamerasrc"] {
 		if camera.IsValidLibcameraID(libcameraID) {
 			return fmt.Sprintf("libcamerasrc camera-name=%s", libcameraID)
 		}
 		return "libcamerasrc"
+	}
+	// pipewiresrc reads the camera through the graph, so the device node stays free for
+	// other consumers. streamGStreamer checks the element ships before setting pw.serial.
+	if pw.serial != 0 {
+		return fmt.Sprintf("pipewiresrc target-object=%d", pw.serial)
 	}
 	return fmt.Sprintf("v4l2src device=%s", devicePath)
 }
