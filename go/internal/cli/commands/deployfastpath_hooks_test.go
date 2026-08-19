@@ -127,12 +127,12 @@ func waitForFile(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("host-side postStart hook did not run: %s was never created", path)
 }
 
-// TestTryDeployFastPath_StoppedRunsPostStartHooks verifies which postStart
-// hook the fast path fires when it starts a stopped-but-unchanged app: the
-// agent-side (in-container) hook via StartContainer metadata runs, and the
-// host-side hook does NOT. The fast path only ever runs detached, and detached
-// deploys skip the readiness probe the host hook is gated on.
-func TestTryDeployFastPath_StoppedRunsPostStartHooks(t *testing.T) {
+// TestTryDeployFastPath_StoppedRunsAgentHookOnly verifies that when the fast
+// path starts a stopped-but-unchanged app, the agent-side (in-container) hook
+// runs via StartContainer metadata and the host-side hook does not. The fast
+// path only ever runs detached, and detached deploys skip the readiness probe
+// the host hook is gated on.
+func TestTryDeployFastPath_StoppedRunsAgentHookOnly(t *testing.T) {
 	isolateFingerprintCache(t)
 
 	const (
@@ -220,12 +220,12 @@ func TestStreamRunContainer_AttachedFiresHostPostStartHook(t *testing.T) {
 	}
 }
 
-// TestTryDeployFastPath_RunningFiresHostPostStartHook verifies that when the
+// TestTryDeployFastPath_RunningSkipsAllPostStartHooks verifies that when the
 // app is already running and unchanged, the fast path neither restarts the
-// container nor fires the host-side postStart hook. The hook is gated on a
-// readiness probe that costs the app's full boot time, which detached runs —
-// the only kind the fast path serves — must not pay.
-func TestTryDeployFastPath_RunningFiresHostPostStartHook(t *testing.T) {
+// container nor fires any postStart hook. The host hook is gated on a readiness
+// probe that costs the app's full boot time, which detached runs — the only kind
+// the fast path serves — must not pay; the agent hook requires a start RPC.
+func TestTryDeployFastPath_RunningSkipsAllPostStartHooks(t *testing.T) {
 	isolateFingerprintCache(t)
 
 	const (

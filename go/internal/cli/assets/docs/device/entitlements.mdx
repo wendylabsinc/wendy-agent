@@ -581,7 +581,7 @@ Ensure your application writes to the mounted path (e.g., `/data`) and not elsew
 
 ## Readiness Probes
 
-Readiness probes let the CLI know when your application is ready to accept traffic. When configured, `wendy run` will poll the specified port and only proceed (including running any lifecycle hooks) once the application is listening.
+Readiness probes let the CLI know when your application is ready to accept traffic. During an attached `wendy run`, the CLI polls the specified port before announcing that the app is reachable and running readiness-gated host-side lifecycle actions. Detached runs (`--detach` and `--watch`) return after the container starts without polling; deploy-only runs (`--deploy`) do not start the container.
 
 ### TCP Socket Probe
 
@@ -607,7 +607,7 @@ The TCP socket probe checks whether your application is accepting connections on
 | `tcpSocket.port` | The TCP port to probe. Must match the port your application listens on. |
 | `timeoutSeconds` | Maximum time (in seconds) to wait for the port to become available. Defaults to `30`. |
 
-The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the deployment will fail with a timeout error.
+The probe polls every 500ms with a 2-second dial timeout per attempt. If the port is not reachable within `timeoutSeconds`, the CLI prints a warning rather than failing the deployment. It suppresses the reachable-app announcement and readiness-gated host-side actions.
 
 ## Lifecycle Hooks
 
@@ -615,7 +615,9 @@ Lifecycle hooks let you run commands at specific points in your application's li
 
 ### postStart Hook
 
-The `postStart` hook runs after the readiness probe passes (or immediately after the container starts if no readiness probe is configured). It is commonly used to automatically open a browser to your application's UI. The host-side actions (`openURL` and `cli`) need an attached run: `--detach`, `--deploy` and `--watch` do not wait for readiness, so they do not fire them. `hooks.postStart.agent` runs on the device either way.
+The host-side `postStart` actions (`openURL` and `cli`) run after the readiness probe passes, or immediately after the container starts if no readiness probe is configured. They require an attached run: `--detach` and `--watch` return without firing them, while `--deploy` does not start the container at all.
+
+`hooks.postStart.agent` is different: the CLI carries it on the container start RPC, so it runs on the device whenever Wendy starts the container, in attached or detached mode. It is not gated by the CLI readiness probe and cannot run during `--deploy` because that mode only creates the container.
 
 ```json
 {

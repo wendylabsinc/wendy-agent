@@ -378,7 +378,7 @@ func tryDeployFastPath(ctx context.Context, conn *grpcclient.AgentConnection, ap
 	// Present but stopped — start it without rebuilding. Mirror the normal
 	// detached deploy path so the fast path stays a transparent optimization:
 	// attach the agent-side postStart hook to the start RPC (via context
-	// metadata), then fire the host-side postStart hook below.
+	// metadata). Detached deploys do not fire the host-side postStart hook.
 	if _, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(ctx, appCfg), &agentpb.StartContainerRequest{
 		AppName:       appCfg.AppID,
 		RestartPolicy: resolveRestartPolicy(opts),

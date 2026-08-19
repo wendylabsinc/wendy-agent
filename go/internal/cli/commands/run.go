@@ -2291,9 +2291,9 @@ func synthesizedOpenURLHook(appCfg *appconfig.AppConfig) *appconfig.HooksConfig 
 // The agent-side (in-container) hook is unaffected: it rides on the
 // RunContainer/StartContainer RPC context and still runs on the device.
 //
-// hookCtx bounds the hook's CLI child process; detached callers pass
-// context.Background() so the hook outlives the CLI. Returns the hook's cmd
-// for the caller to reap, nil when no CLI hook ran.
+// hookCtx bounds the hook's CLI child process. Attached callers pass their run
+// context so cancellation kills the hook before the CLI returns. Returns the
+// hook's cmd for the caller to reap, nil when no CLI hook ran.
 func runPostStartIfReady(ctx, hookCtx context.Context, conn *grpcclient.AgentConnection, appCfg *appconfig.AppConfig) *exec.Cmd {
 	rp := phaseTimer()
 	readiness := effectiveReadiness(appCfg)
