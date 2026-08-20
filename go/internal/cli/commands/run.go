@@ -1102,6 +1102,8 @@ func runMacOSNativeContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+	logSub := startRunLogSubscription(runCtx, conn, appCfg.AppID, os.Stdout, runLogStreamWarning)
+	defer logSub.stop()
 
 	stream, err := conn.ContainerService.StartContainer(contextWithPostStartAgentHook(runCtx, appCfg), &agentpb.StartContainerRequest{
 		AppName: appCfg.ContainerName(),
@@ -2043,6 +2045,8 @@ func startAndStreamContainer(ctx context.Context, conn *grpcclient.AgentConnecti
 	// Start and stream output using AttachContainer so stdin is forwarded.
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+	logSub := startRunLogSubscription(runCtx, conn, appCfg.AppID, os.Stdout, runLogStreamWarning)
+	defer logSub.stop()
 
 	outStream, stdinAttempted, err := openContainerStream(runCtx, conn.ContainerService, appCfg.ContainerName(), appCfg)
 	if err != nil {
@@ -2708,6 +2712,11 @@ func deployByChunkDiff(ctx context.Context, conn *grpcclient.AgentConnection, cw
 	// Carry the post-start agent-hook metadata so the agent runs the in-container
 	// hook on start, matching the registry path's StartContainer call.
 	runCtx := contextWithPostStartAgentHook(ctx, appCfg)
+	var logSub *runLogSubscription
+	if !opts.deploy && !opts.detach {
+		logSub = startRunLogSubscription(ctx, conn, appCfg.AppID, os.Stdout, runLogStreamWarning)
+		defer logSub.stop()
+	}
 	stream, err := conn.ContainerService.RunContainer(runCtx, &agentpb.RunContainerLayersRequest{
 		ImageName:      imageName,
 		AppName:        appCfg.AppID,

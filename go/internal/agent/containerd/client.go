@@ -2343,11 +2343,12 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
 // networking is in effect and the endpoint is not already configured. Besides
-// the endpoint and protocol, it sets OTEL_SERVICE_NAME and
-// OTEL_RESOURCE_ATTRIBUTES (wendy.app.name) to the appId so that telemetry
-// exported by the app matches `wendy device logs --app <id>`, which filters on
-// those resource attributes. It must be called after the image env has been
-// merged so that image-set values take precedence.
+// the endpoint and protocol, it sets OTEL_SERVICE_NAME to the single-container
+// app ID or multi-service container name, and OTEL_RESOURCE_ATTRIBUTES
+// (wendy.app.name) to the owning app ID. This keeps services distinguishable
+// while allowing `wendy device logs --app <id>` to select the whole app. It
+// must be called after the image env has been merged so that image-set values
+// take precedence.
 //
 // appID is passed explicitly (rather than read from appCfg.AppID) so the
 // caller's AppConfig struct is never mutated, which would affect concurrent or
@@ -2390,7 +2391,11 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 	// Image-set values still take precedence.
 	if appID != "" {
 		if !hasServiceName {
-			env = append(env, "OTEL_SERVICE_NAME="+appID)
+			serviceName := appID
+			if appCfg.ServiceName != "" {
+				serviceName = ContainerName(appID, appCfg.ServiceName)
+			}
+			env = append(env, "OTEL_SERVICE_NAME="+serviceName)
 		}
 		if !hasResourceAttrs {
 			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appID)

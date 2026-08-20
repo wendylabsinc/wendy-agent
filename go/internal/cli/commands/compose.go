@@ -1520,6 +1520,12 @@ func composeStartDetached(ctx, runCtx context.Context, conn *grpcclient.AgentCon
 // runCancel) stays with the caller and its ordering is unchanged.
 func composeStartAndStream(runCtx context.Context, runCancel context.CancelFunc, conn *grpcclient.AgentConnection, ordered []string, svcCfgs, svcLifecycleCfgs map[string]*appconfig.AppConfig, appLevelCfg *appconfig.AppConfig, stdoutWriters, stderrWriters map[string]*serviceLogWriter) error {
 	runner := &serviceHookRunner{conn: conn}
+	var appName string
+	if len(ordered) > 0 && svcCfgs[ordered[0]] != nil {
+		appName = svcCfgs[ordered[0]].AppID
+	}
+	logSub := startRunLogSubscription(runCtx, conn, appName, os.Stdout, runLogStreamWarning)
+	defer logSub.stop()
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(ordered))
