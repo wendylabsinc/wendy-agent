@@ -616,7 +616,9 @@ func metaTemplateNames(meta *repoMeta) string {
 	return strings.Join(names, ", ")
 }
 
-func fetchRepoMetaWithUI(branch string) (*repoMeta, error) {
+// fetchRepoMetaWithUI is a variable so tests can substitute a canned registry
+// (the real fetch hits the network).
+var fetchRepoMetaWithUI = func(branch string) (*repoMeta, error) {
 	if !isInteractiveTerminal() {
 		cliLogln("Fetching template registry...")
 		return fetchRepoMeta(context.Background(), branch)
