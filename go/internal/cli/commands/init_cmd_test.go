@@ -1633,3 +1633,43 @@ func TestInitTargetDisplayName(t *testing.T) {
 		t.Fatalf("expected raw passthrough, got %q", got)
 	}
 }
+
+func TestResolveInitTargetForTemplate_SingleTargetSkipsPicker(t *testing.T) {
+	stubNonInteractive(t) // success while non-interactive proves no picker ran
+	target, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "go2-rc"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetWendyOS {
+		t.Fatalf("expected %s, got %q", targetWendyOS, target)
+	}
+}
+
+func TestResolveInitTargetForTemplate_ExplicitSingleTarget(t *testing.T) {
+	stubNonInteractive(t)
+	target, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "mac-llm", Targets: []string{targetDarwin}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetDarwin {
+		t.Fatalf("expected %s, got %q", targetDarwin, target)
+	}
+}
+
+func TestResolveInitTargetForTemplate_NoSupportedTargetsErrors(t *testing.T) {
+	_, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "x", Targets: []string{"windows"}})
+	if err == nil || !strings.Contains(err.Error(), "not available for any supported target") {
+		t.Fatalf("expected unsupported-target error, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetForTemplate_MultiTargetNonInteractiveRequiresTarget(t *testing.T) {
+	stubNonInteractive(t)
+	_, err := resolveInitTargetForTemplate(repoMetaTemplate{Name: "x", Targets: []string{targetWendyOS, targetDarwin}})
+	if err == nil || !strings.Contains(err.Error(), "--target is required") {
+		t.Fatalf("expected --target required error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), targetWendyOS) || !strings.Contains(err.Error(), targetDarwin) {
+		t.Fatalf("error should list the template's targets, got: %v", err)
+	}
+}

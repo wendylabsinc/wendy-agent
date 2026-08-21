@@ -1075,6 +1075,31 @@ func resolveInitTarget(opts initOptions) (string, error) {
 	return pickFromItems("What is your target device?", initTargetItems)
 }
 
+// resolveInitTargetForTemplate resolves the target when a concrete --template
+// was given without --target: a single-target template pins the answer, a
+// multi-target template narrows the picker to its targets.
+func resolveInitTargetForTemplate(t repoMetaTemplate) (string, error) {
+	targets := templateTargets(t)
+	switch len(targets) {
+	case 0:
+		return "", fmt.Errorf("template %q is not available for any supported target (valid: %s, %s, %s)",
+			t.Name, targetWendyOS, targetWendyLite, targetDarwin)
+	case 1:
+		cliNotice("Template %q targets %s.", t.Name, initTargetDisplayName(targets[0]))
+		return targets[0], nil
+	}
+
+	items := initTargetItemsFor(targets)
+	if !isInteractiveTerminal() {
+		printPickerItemsPlainText("Available targets for template "+t.Name, items)
+		return "", fmt.Errorf("--target is required when running non-interactively (valid for template %q: %s)",
+			t.Name, strings.Join(targets, ", "))
+	}
+
+	fmt.Println()
+	return pickFromItems("What is your target device?", items)
+}
+
 // printPickerItemsPlainText renders picker items as a plain-text list. Used
 // as the non-interactive fallback for choices that would otherwise require a
 // Bubble Tea picker, which fails ungracefully ("could not open a new TTY")
