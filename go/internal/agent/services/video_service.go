@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -633,6 +634,10 @@ func (s *VideoService) listCameras(ctx context.Context) ([]*agentpb.VideoDevice,
 			Path:      path,
 			Transport: transportToProto(transport),
 			Driver:    driver,
+			// Best-effort: a camera held by another process still answers
+			// VIDIOC_ENUM_FRAMESIZES (read-only open), and an unreadable node
+			// simply reports no modes rather than failing the whole listing.
+			FrameSizes: enumerateFrameSizes(path),
 		}
 		if transport == camera.TransportCSI {
 			csiDeviceIdxs = append(csiDeviceIdxs, len(devices))
@@ -678,6 +683,103 @@ func (s *VideoService) listIPCameras() []*agentpb.VideoDevice {
 		})
 	}
 	return out
+}
+
+// enumerateFrameSizes reports the discrete modes a V4L2 node advertises across
+// the pixel formats the capture path can negotiate, deduplicated and ordered
+// largest-first so the most useful entry reads at the top.
+//
+// Reported verbatim, including malformed entries — some UVC firmware advertises
+// impossible geometries (4x12305, 60x3299 on a TOPDON TC001). Filtering them
+// here would make this a curated opinion rather than a description of the
+// device; callers already bound what they request.
+//
+// Returns nil when the node cannot be opened, which is the normal case for a
+// network camera or a device that has gone away.
+func enumerateFrameSizes(path string) []*agentpb.FrameSize {
+	if path == "" {
+		return nil
+	}
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil
+	}
+	defer unix.Close(fd) //nolint:errcheck
+
+	seen := map[[2]uint32]bool{}
+	var out []*agentpb.FrameSize
+	for _, pixfmt := range []uint32{v4l2PixFmtYUYV, v4l2PixFmtMJPEG} {
+		for index := uint32(0); index < 64; index++ {
+			fse := v4l2FrmSizeEnum{Index: index, PixelFormat: pixfmt}
+			if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocEnumFramesizes,
+				uintptr(unsafe.Pointer(&fse))); errno != 0 {
+				break // EINVAL marks the end of the list
+			}
+			if fse.Type != v4l2FrmsizeTypeDiscrete {
+				break // stepwise/continuous: nothing discrete to report
+			}
+			key := [2]uint32{fse.Width, fse.Height}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, &agentpb.FrameSize{Width: fse.Width, Height: fse.Height})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		ai := uint64(out[i].GetWidth()) * uint64(out[i].GetHeight())
+		aj := uint64(out[j].GetWidth()) * uint64(out[j].GetHeight())
+		if ai != aj {
+			return ai > aj
+		}
+		return out[i].GetWidth() > out[j].GetWidth()
+	})
+	return out
+}
+
+// thermalNormalizeElement is the GStreamer element that stretches a thermal
+// frame's narrow value range to fill the output. It MUST be adaptive
+// (per-frame), not a fixed brightness/contrast: a thermal scene occupies only
+// ~16 of 256 grey levels and where that band sits drifts with ambient
+// temperature, so any fixed stretch clips to a blank field within minutes.
+// Verified by comparing a per-frame stretch (readable scene) against a
+// fixed-parameter one on the same frame (uniform blue with three specks).
+//
+// frei0r's normalize0r is used rather than a bespoke element because it is a
+// maintained, packaged filter; writing our own would mean owning per-frame
+// min/max, threading and colour conversion indefinitely.
+const thermalNormalizeElement = "frei0r-filter-normalize0r"
+
+// renderSegment returns the pipeline fragment for a render mode, including its
+// trailing " ! ", or "" for RENDER_MODE_RAW.
+//
+// Rendering is lossy: a thermal frame carries per-pixel temperature in its
+// luma, and normalising then colouring it destroys the values every analytic
+// consumer needs. That is why RAW is the default and this only runs on explicit
+// request.
+func renderSegment(mode agentpb.RenderMode, available map[string]bool) (string, error) {
+	switch mode {
+	case agentpb.RenderMode_RENDER_MODE_RAW:
+		return "", nil
+	case agentpb.RenderMode_RENDER_MODE_THERMAL:
+		// Fail with a specific, actionable message rather than letting the
+		// pipeline die with "Internal data stream error" two layers down.
+		if !available[thermalNormalizeElement] {
+			return "", status.Errorf(codes.FailedPrecondition,
+				"thermal rendering needs the %s GStreamer element, which is not installed on this device",
+				thermalNormalizeElement)
+		}
+		if !available["coloreffects"] {
+			return "", status.Errorf(codes.FailedPrecondition,
+				"thermal rendering needs the coloreffects GStreamer element, which is not installed on this device")
+		}
+		// videoconvert on both sides: normalize0r wants packed RGB, coloreffects
+		// works in RGB, and the encoder wants I420 back.
+		return fmt.Sprintf("videoconvert ! %s ! coloreffects preset=heat ! videoconvert ! ",
+			thermalNormalizeElement), nil
+	default:
+		return "", status.Errorf(codes.InvalidArgument, "unsupported render mode %v", mode)
+	}
 }
 
 func (s *VideoService) ListVideoDevices(ctx context.Context, _ *agentpb.ListVideoDevicesRequest) (*agentpb.ListVideoDevicesResponse, error) {
@@ -1883,15 +1985,23 @@ func buildGStreamerArgs(gstPath, devicePath string, req *agentpb.StreamVideoRequ
 		available["jpegdec"] &&
 		deviceSupportsMJPEGSize(devicePath, capW, capH)
 
+	// Optional render stage, inserted just before the encoder so it applies
+	// however the frames were captured (raw or MJPEG). Empty for RENDER_MODE_RAW,
+	// which is the default and the only mode that preserves pixel values.
+	render, err := renderSegment(req.GetRender(), available)
+	if err != nil {
+		return nil, err
+	}
+
 	var pipeline string
 	if useMJPEG {
 		caps := "image/jpeg," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! jpegdec ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! jpegdec ! %s%s ! fdsink fd=1", src, caps, leakyRawQueue, render, encoderSegment(encoder, hasH264Parse, gop))
 	} else if len(capsParts) > 0 {
 		caps := "video/x-raw," + strings.Join(capsParts, ",")
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s ! fdsink fd=1", src, caps, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+		pipeline = fmt.Sprintf("%s ! %s ! %s ! %s%s ! fdsink fd=1", src, caps, leakyRawQueue, render, encoderSegment(encoder, hasH264Parse, gop))
 	} else {
-		pipeline = fmt.Sprintf("%s ! %s ! %s ! fdsink fd=1", src, leakyRawQueue, encoderSegment(encoder, hasH264Parse, gop))
+		pipeline = fmt.Sprintf("%s ! %s ! %s%s ! fdsink fd=1", src, leakyRawQueue, render, encoderSegment(encoder, hasH264Parse, gop))
 	}
 	// -q suppresses gst-launch's status messages (e.g. "Setting pipeline to PLAYING")
 	// from being written to stdout and corrupting the binary H264 stream.
