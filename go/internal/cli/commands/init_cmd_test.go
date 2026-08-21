@@ -1600,3 +1600,36 @@ func TestInitCommand_NoFrameworkFlagsLeavesFrameworksNil(t *testing.T) {
 		t.Fatalf("Frameworks = %+v, want nil when no --framework flags were passed", cfg.Frameworks)
 	}
 }
+
+func TestTemplateTargets_DefaultsToWendyOS(t *testing.T) {
+	targets := templateTargets(repoMetaTemplate{Name: "go2-rc"})
+	if len(targets) != 1 || targets[0] != targetWendyOS {
+		t.Fatalf("expected [%s], got %v", targetWendyOS, targets)
+	}
+}
+
+func TestTemplateTargets_DropsUnknownTargets(t *testing.T) {
+	targets := templateTargets(repoMetaTemplate{Name: "x", Targets: []string{"windows", targetDarwin}})
+	if len(targets) != 1 || targets[0] != targetDarwin {
+		t.Fatalf("expected [%s], got %v", targetDarwin, targets)
+	}
+}
+
+func TestInitTargetItemsFor_ReusesSharedItems(t *testing.T) {
+	items := initTargetItemsFor([]string{targetWendyOS, targetDarwin})
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Name != "WendyOS" || items[1].Name != "macOS" {
+		t.Fatalf("expected canonical initTargetItems entries, got %+v", items)
+	}
+}
+
+func TestInitTargetDisplayName(t *testing.T) {
+	if got := initTargetDisplayName(targetWendyOS); got != "WendyOS" {
+		t.Fatalf("expected WendyOS, got %q", got)
+	}
+	if got := initTargetDisplayName("weird"); got != "weird" {
+		t.Fatalf("expected raw passthrough, got %q", got)
+	}
+}

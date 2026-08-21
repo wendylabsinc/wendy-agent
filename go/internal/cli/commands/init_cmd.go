@@ -32,6 +32,11 @@ const (
 	assistantClaude = "claude"
 	assistantCodex  = "codex"
 	assistantSkip   = "skip"
+
+	// bareTemplatePickSentinel is the value rewriteBareTemplateFlag injects for
+	// a bare --template so cobra can parse it; the wizard treats it as "show
+	// the template picker".
+	bareTemplatePickSentinel = "_pick"
 )
 
 // Languages available per target platform.
@@ -281,7 +286,7 @@ func rewriteBareTemplateFlag() {
 			}
 			// If --template is last arg or next arg is another flag, inject sentinel.
 			if next == "" || strings.HasPrefix(next, "-") {
-				os.Args[i] = "--template=_pick"
+				os.Args[i] = "--template=" + bareTemplatePickSentinel
 			}
 		}
 	}
@@ -414,7 +419,7 @@ func resolveInitTemplateForTarget(target string, opts initOptions) (string, *rep
 			return "", nil, err
 		}
 
-		if tmpl == "_pick" {
+		if tmpl == bareTemplatePickSentinel {
 			// Bare --template (no value): show interactive picker filtered by target.
 			name, err := resolveBareTemplatePick(target, meta)
 			return name, meta, err
@@ -467,6 +472,22 @@ func templateTargetMatch(t repoMetaTemplate, target string) bool {
 		}
 	}
 	return false
+}
+
+// templateTargets returns the targets a template supports, restricted to the
+// targets `wendy init` knows about. Mirrors templateTargetMatch: an empty
+// Targets list means WendyOS only.
+func templateTargets(t repoMetaTemplate) []string {
+	if len(t.Targets) == 0 {
+		return []string{targetWendyOS}
+	}
+	var targets []string
+	for _, tgt := range t.Targets {
+		if isValidInitTarget(tgt) {
+			targets = append(targets, tgt)
+		}
+	}
+	return targets
 }
 
 // templateItemsForTarget builds the picker items for the templates available
@@ -1008,6 +1029,32 @@ var initTargetItems = []tui.PickerItem{
 	{Name: "WendyOS", Description: "Full Linux-based edge device (Jetson, Raspberry Pi, ...)", Value: targetWendyOS, SortKey: "0"},
 	{Name: "macOS", Description: "Native macOS app deployed to Wendy Agent for Mac", Value: targetDarwin, SortKey: "1"},
 	{Name: "Wendy Lite", Description: "Microcontroller running WASM (ESP32)", Value: targetWendyLite, SortKey: "2"},
+}
+
+// initTargetItemsFor filters the shared initTargetItems so a narrowed target
+// picker keeps the canonical names, descriptions, and sort order.
+func initTargetItemsFor(targets []string) []tui.PickerItem {
+	var items []tui.PickerItem
+	for _, item := range initTargetItems {
+		for _, target := range targets {
+			if item.Value.(string) == target {
+				items = append(items, item)
+				break
+			}
+		}
+	}
+	return items
+}
+
+// initTargetDisplayName maps a target value ("wendyos") to its picker display
+// name ("WendyOS"); unknown values pass through unchanged.
+func initTargetDisplayName(target string) string {
+	for _, item := range initTargetItems {
+		if item.Value.(string) == target {
+			return item.Name
+		}
+	}
+	return target
 }
 
 func resolveInitTarget(opts initOptions) (string, error) {
