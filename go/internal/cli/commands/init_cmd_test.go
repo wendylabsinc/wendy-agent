@@ -1107,9 +1107,11 @@ func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T)
 	isInteractiveTerminalFn = func() bool { return false }
 	t.Cleanup(func() { isInteractiveTerminalFn = orig })
 
+	// Two wendyos templates, so the single-template auto-select cannot kick in.
 	meta := &repoMeta{
 		Templates: []repoMetaTemplate{
 			{Name: "simple-api", Description: "Minimal HTTP API"},
+			{Name: "fullstack", Description: "Full-stack starter"},
 			{Name: "mac-llm", Description: "macOS-only template", Targets: []string{targetDarwin}},
 		},
 	}
@@ -1120,6 +1122,18 @@ func TestResolveBareTemplatePick_NonInteractivePrintsListAndErrors(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "--template requires a value") {
 		t.Fatalf("error = %q, want mention of --template", err)
+	}
+}
+
+func TestResolveBareTemplatePick_SingleTemplateAutoSelected(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{Templates: []repoMetaTemplate{{Name: "go2-rc", Description: "Go2 remote control"}}}
+	name, err := resolveBareTemplatePick(targetWendyOS, meta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if name != "go2-rc" {
+		t.Fatalf("expected go2-rc, got %q", name)
 	}
 }
 

@@ -549,15 +549,19 @@ func pickTemplateNameForTarget(target string, meta *repoMeta) (string, error) {
 // list as plain text instead of failing on the picker's TTY open. Without
 // this, a headless caller (script, CI, or an AI agent) hit
 // "picker: could not open a new TTY" with no way to discover what templates
-// exist at all.
+// exist at all. When exactly one template exists for the target it is
+// auto-selected with a notice, TTY or not.
 func resolveBareTemplatePick(target string, meta *repoMeta) (string, error) {
+	items := templateItemsForTarget(target, meta)
+	if len(items) == 0 {
+		return "", fmt.Errorf("no templates available for %s", target)
+	}
+	if len(items) == 1 {
+		name := items[0].Value.(string)
+		cliNotice("Template %q is the only template for %s.", name, initTargetDisplayName(target))
+		return name, nil
+	}
 	if !isInteractiveTerminal() {
-		// Report "no templates" the same way the picker path does rather than
-		// printing an empty list and then blaming the missing --template value.
-		items := templateItemsForTarget(target, meta)
-		if len(items) == 0 {
-			return "", fmt.Errorf("no templates available for %s", target)
-		}
 		printPickerItemsPlainText("Available templates for "+target, items)
 		return "", fmt.Errorf("--template requires a value when running non-interactively; pass --template=<name> using one of the templates listed above")
 	}
