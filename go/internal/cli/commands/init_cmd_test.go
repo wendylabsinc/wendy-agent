@@ -1775,6 +1775,26 @@ func TestResolveTemplateLanguage_SingleLanguageAutoSelected(t *testing.T) {
 	}
 }
 
+func TestInitCommand_NonInteractiveTemplateInfersTarget(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}, nil)
+
+	cmd := newInitCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--template", "go2-rc"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected an app-ID error, got success")
+	}
+	if !strings.Contains(err.Error(), "an app ID is required") {
+		t.Fatalf("expected the run to reach the app-ID step (target inferred, no --target error), got: %v", err)
+	}
+}
+
 func TestResolveTemplateLanguage_NonInteractiveMultiLanguageRequiresFlag(t *testing.T) {
 	stubNonInteractive(t)
 	meta := &repoMeta{

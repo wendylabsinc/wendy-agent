@@ -145,6 +145,10 @@ func newInitCmd() *cobra.Command {
   # Scaffold from a template (interactive language picker)
   wendy init --template simple-api
 
+  # Create a project from a template; target and language are inferred
+  # from the template's metadata when it supports exactly one of each
+  wendy init go2-app --template go2-rc
+
   # Non-interactive template scaffold with variable overrides
   wendy init --app-id my-api --template simple-api --language rust --var PORT=8080
 
