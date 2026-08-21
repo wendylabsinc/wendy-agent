@@ -1745,3 +1745,33 @@ func TestResolveInitTargetAndTemplate_TargetFlagKeepsExistingValidation(t *testi
 		t.Fatalf("expected existing target-mismatch error, got: %v", err)
 	}
 }
+
+func TestResolveTemplateLanguage_SingleLanguageAutoSelected(t *testing.T) {
+	stubNonInteractive(t) // success while non-interactive proves no picker ran
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}
+	lang, err := resolveTemplateLanguage(targetWendyOS, "go2-rc", meta, initOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if lang != langPython {
+		t.Fatalf("expected python, got %q", lang)
+	}
+}
+
+func TestResolveTemplateLanguage_NonInteractiveMultiLanguageRequiresFlag(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "multi", Languages: []string{"python", "rust"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}, {Key: "rust", Name: "Rust"}},
+	}
+	_, err := resolveTemplateLanguage(targetWendyOS, "multi", meta, initOptions{})
+	if err == nil || !strings.Contains(err.Error(), "--language is required when running non-interactively") {
+		t.Fatalf("expected --language required error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "python") || !strings.Contains(err.Error(), "rust") {
+		t.Fatalf("error should list the template's languages, got: %v", err)
+	}
+}

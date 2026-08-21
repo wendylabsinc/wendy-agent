@@ -627,15 +627,28 @@ func resolveTemplateLanguage(target, tmpl string, meta *repoMeta, opts initOptio
 		return lang, nil
 	}
 
+	if len(languages) == 1 {
+		cliNotice("Template %q uses %s.", tmpl, languages[0].Name)
+		return languages[0].Key, nil
+	}
+
+	items := templateLanguageItems(languages)
+	if !isInteractiveTerminal() {
+		printPickerItemsPlainText("Available languages for template "+tmpl, items)
+		return "", fmt.Errorf("--language is required when running non-interactively (valid for template %q: %s)",
+			tmpl, repoMetaLanguageKeys(languages))
+	}
+
 	fmt.Println()
+	return pickFromItems("What language will you use?", items)
+}
+
+func templateLanguageItems(languages []repoMetaLanguage) []tui.PickerItem {
 	var items []tui.PickerItem
 	for _, l := range languages {
-		items = append(items, tui.PickerItem{
-			Name:  l.Name,
-			Value: l.Key,
-		})
+		items = append(items, tui.PickerItem{Name: l.Name, Value: l.Key})
 	}
-	return pickFromItems("What language will you use?", items)
+	return items
 }
 
 func templateLanguageAvailable(language string, languages []repoMetaLanguage) bool {
