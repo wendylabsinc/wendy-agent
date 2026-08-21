@@ -9,9 +9,10 @@ import (
 
 	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
 // Capture failures used to collapse into "GStreamer pipeline failed", which tells an
@@ -31,12 +32,7 @@ func TestCameraInUseError_IsActionableAndMachineReadable(t *testing.T) {
 		t.Errorf("message must say what is wrong, got %q", st.Message())
 	}
 
-	var info *errdetails.ErrorInfo
-	for _, d := range st.Details() {
-		if got, ok := d.(*errdetails.ErrorInfo); ok {
-			info = got
-		}
-	}
+	info := streamreason.Info(err)
 	if info == nil {
 		t.Fatal("no ErrorInfo attached; clients cannot tell this apart from any other failure")
 	}
@@ -183,9 +179,8 @@ func TestIsCameraInUse(t *testing.T) {
 	}
 }
 
-// The kernel refuses a second consumer at different ioctls depending on the driver:
-// uvcvideo at S_FMT, vb2 drivers (bcm2835-camera, tegra-video) at REQBUFS or STREAMON.
-// Every setup site must therefore reach CAMERA_IN_USE, or sharing never engages on them.
+// Which ioctl refuses a second consumer is driver- and timing-dependent, so every setup site
+// must reach CAMERA_IN_USE, not just S_FMT.
 func TestErrCaptureSetup_ClassifiesBusyAtEverySite(t *testing.T) {
 	svc := NewVideoService(context.Background(), zap.NewNop())
 	for _, ioctl := range []string{
@@ -214,9 +209,8 @@ func TestErrCaptureSetup_OtherErrnosStayInternal(t *testing.T) {
 	}
 }
 
-// gst prints "Device or resource busy" while probing modes and then carries on. Such a
-// warning must not convict the camera when the pipeline later dies of something else --
-// the operator would be sent to stop an application that does not hold anything.
+// gst prints "Device or resource busy" while probing modes and carries on. Convicting on
+// that sends the operator to stop an application that holds nothing.
 func TestIsBusyStderr_RecoveredWarningIsNotContention(t *testing.T) {
 	msg := "WARNING: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Cannot set S_PARM: Device or resource busy\n" +
 		"Additional debug info:\n" +

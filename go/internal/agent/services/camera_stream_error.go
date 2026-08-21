@@ -10,43 +10,27 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
 // reasonCameraInUse is the ErrorInfo reason for a camera another process holds AND that
 // could not be read through the PipeWire graph either -- reaching it means sharing was
 // unavailable, not that a camera inherently allows one consumer.
-const reasonCameraInUse = "CAMERA_IN_USE"
+const reasonCameraInUse = streamreason.CameraInUse
 
 // errCameraInUse reports contention as a FailedPrecondition: the device is
 // healthy, its state is wrong, and the caller can retry once the holder stops.
 func errCameraInUse(devicePath string) error {
-	st := status.New(codes.FailedPrecondition,
-		fmt.Sprintf("camera %s is already in use by another application on this device", devicePath))
-	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
-		Reason:   reasonCameraInUse,
-		Metadata: map[string]string{"device": devicePath},
-	})
-	if err != nil {
-		return st.Err()
-	}
-	return detailed.Err()
+	return streamreason.New(codes.FailedPrecondition,
+		fmt.Sprintf("camera %s is already in use by another application on this device", devicePath),
+		reasonCameraInUse, map[string]string{"device": devicePath})
 }
 
 // isCameraInUse reports whether err is the contention error above.
 func isCameraInUse(err error) bool {
-	st, ok := status.FromError(err)
-	if !ok {
-		return false
-	}
-	for _, d := range st.Details() {
-		if info, ok := d.(*errdetails.ErrorInfo); ok && info.GetReason() == reasonCameraInUse {
-			return true
-		}
-	}
-	return false
+	return streamreason.Has(err, reasonCameraInUse)
 }
 
 // isBusyErrno reports whether a syscall failed because the device is claimed.
@@ -54,11 +38,9 @@ func isBusyErrno(err error) bool {
 	return errors.Is(err, unix.EBUSY)
 }
 
-// retryWhileBusy re-runs op briefly while it reports EBUSY, covering the lag between a dying
-// producer's hub closing and its deferred fd close actually running. The substantive wait for
-// that race belongs to getOrCreateHub (maxHubRetries x hubTeardownTimeout), so this stays at
-// one retry: when another application holds the camera it can never succeed, and every extra
-// attempt only delays the fallback and the answer.
+// retryWhileBusy re-runs op briefly while it reports EBUSY, covering the gap between a dying
+// producer's hub closing and its deferred fd close running. One retry only: getOrCreateHub
+// does the substantive waiting, and against another application retrying cannot succeed.
 func retryWhileBusy(ctx context.Context, op func() unix.Errno) unix.Errno {
 	const (
 		retries = 1
@@ -97,9 +79,8 @@ var captureElements = []string{"v4l2src", "libcamerasrc", "nvarguscamerasrc", "p
 func isBusyStderr(stderr, devicePath string) bool {
 	device := strings.ToLower(devicePath)
 	for _, record := range errorRecords(strings.ToLower(stderr)) {
-		// A warning gst recovered from is not why the pipeline died: it prints "Device or
-		// resource busy" while probing modes and carries on. Records with no marker at all
-		// stay eligible -- bare tool output is often the only evidence there is.
+		// A warning gst recovered from did not kill the pipeline; only marked errors and
+		// marker-less records (often the only evidence there is) can convict.
 		if strings.HasPrefix(strings.TrimSpace(record), "warn") {
 			continue
 		}
@@ -131,9 +112,8 @@ func exitedOnError(err error) bool {
 // errorRecords splits already-lowercased gst stderr at each error or warning marker,
 // keeping a message and the debug block that explains it together as one unit.
 //
-// An unprefixed line joins whichever record precedes it. That is deliberate -- gst's
-// "Additional debug info" block carries the decisive text and has no marker of its own -- and
-// it is why a record can be evidence without being prefixed at all.
+// An unprefixed line joins the record before it: gst's "Additional debug info" block carries
+// the decisive text and has no marker of its own.
 func errorRecords(stderr string) []string {
 	var records []string
 	var cur strings.Builder
