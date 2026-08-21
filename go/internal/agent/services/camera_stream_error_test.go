@@ -1,11 +1,13 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"strings"
 	"testing"
 
+	"go.uber.org/zap"
 	"golang.org/x/sys/unix"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -178,5 +180,92 @@ func TestIsCameraInUse(t *testing.T) {
 		if isCameraInUse(err) {
 			t.Errorf("must not match: %v", err)
 		}
+	}
+}
+
+// The kernel refuses a second consumer at different ioctls depending on the driver:
+// uvcvideo at S_FMT, vb2 drivers (bcm2835-camera, tegra-video) at REQBUFS or STREAMON.
+// Every setup site must therefore reach CAMERA_IN_USE, or sharing never engages on them.
+func TestErrCaptureSetup_ClassifiesBusyAtEverySite(t *testing.T) {
+	svc := NewVideoService(context.Background(), zap.NewNop())
+	for _, ioctl := range []string{
+		"VIDIOC_REQBUFS", "VIDIOC_QUERYBUF", "VIDIOC_QBUF", "VIDIOC_STREAMON", "VIDIOC_DQBUF",
+	} {
+		if err := svc.errCaptureSetup(ioctl, "/dev/video0", unix.EBUSY); !isCameraInUse(err) {
+			t.Errorf("%s: EBUSY must be reported as CAMERA_IN_USE, got %v", ioctl, err)
+		}
+	}
+}
+
+func TestErrCaptureSetup_OtherErrnosStayInternal(t *testing.T) {
+	svc := NewVideoService(context.Background(), zap.NewNop())
+	for _, errno := range []unix.Errno{unix.EINVAL, unix.ENOMEM, unix.ENODEV} {
+		err := svc.errCaptureSetup("VIDIOC_REQBUFS", "/dev/video0", errno)
+		if isCameraInUse(err) {
+			t.Errorf("%v must not be reported as contention", errno)
+		}
+		if got := status.Code(err); got != codes.Internal {
+			t.Errorf("%v: want codes.Internal, got %v", errno, got)
+		}
+		// The errno must not reach the client: it lets a caller enumerate the system.
+		if strings.Contains(err.Error(), errno.Error()) {
+			t.Errorf("%v: errno text leaked into the response: %q", errno, err.Error())
+		}
+	}
+}
+
+// gst prints "Device or resource busy" while probing modes and then carries on. Such a
+// warning must not convict the camera when the pipeline later dies of something else --
+// the operator would be sent to stop an application that does not hold anything.
+func TestIsBusyStderr_RecoveredWarningIsNotContention(t *testing.T) {
+	msg := "WARNING: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Cannot set S_PARM: Device or resource busy\n" +
+		"Additional debug info:\n" +
+		"gstv4l2object.c(1234): gst_v4l2_object_set_format ():\n" +
+		"ERROR: from element /GstPipeline:pipeline0/x264enc0: Could not negotiate format\n" +
+		"Additional debug info:\n" +
+		"gstvideoencoder.c(999): failed to negotiate"
+	if isBusyStderr(msg, "/dev/video0") {
+		t.Errorf("an encoder failure must not be reported as camera contention: %q", msg)
+	}
+}
+
+// The counterpart: a genuine busy ERROR must still be recognised, including when the
+// evidence sits in the debug block rather than the message line.
+func TestIsBusyStderr_FatalBusyStillCounts(t *testing.T) {
+	msg := "WARNING: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Cannot set S_PARM: Device or resource busy\n" +
+		"ERROR: from element /GstPipeline:pipeline0/GstV4l2Src:v4l2src0: Could not read from resource.\n" +
+		"Additional debug info:\n" +
+		"gstv4l2bufferpool.c(848): failed to activate bufferpool: Device or resource busy"
+	if !isBusyStderr(msg, "/dev/video0") {
+		t.Errorf("a fatal busy record must still be recognised: %q", msg)
+	}
+}
+
+// The loop must run exactly one retry, and a cancellation must not be reported as EBUSY --
+// otherwise a shutdown landing mid-retry manufactures a CAMERA_IN_USE verdict.
+func TestRetryWhileBusy(t *testing.T) {
+	calls := 0
+	if got := retryWhileBusy(context.Background(), func() unix.Errno {
+		calls++
+		return unix.EBUSY
+	}); got != unix.EBUSY {
+		t.Errorf("want EBUSY passed through, got %v", got)
+	}
+	if calls != 2 {
+		t.Errorf("want one initial call plus one retry, got %d calls", calls)
+	}
+
+	calls = 0
+	if got := retryWhileBusy(context.Background(), func() unix.Errno {
+		calls++
+		return 0
+	}); got != 0 || calls != 1 {
+		t.Errorf("a free device must cost exactly one ioctl: errno=%v calls=%d", got, calls)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := retryWhileBusy(cancelled, func() unix.Errno { return unix.EBUSY }); isBusyErrno(got) {
+		t.Errorf("a cancelled context must not report contention, got %v", got)
 	}
 }

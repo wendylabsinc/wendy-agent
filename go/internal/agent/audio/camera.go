@@ -17,6 +17,12 @@ func FindCameraSource(ctx context.Context, devicePath string) (uint64, bool) {
 }
 
 // parseCameraSource finds the Video/Source node for devicePath in a pw-dump.
+//
+// Matching on api.v4l2.path assumes WirePlumber's v4l2 monitor publishes a node for every
+// camera we capture from. That holds today: WendyOS requires monitor.v4l2, and although the
+// libcamera monitor also runs and publishes its own api.libcamera.path nodes, WirePlumber
+// ships no cross-monitor dedup, so the v4l2 node always coexists. A version that started
+// hiding it in favour of the libcamera node would silently break this lookup.
 func parseCameraSource(data []byte, devicePath string) (uint64, bool) {
 	var objects []pwObject
 	if err := json.Unmarshal(data, &objects); err != nil {

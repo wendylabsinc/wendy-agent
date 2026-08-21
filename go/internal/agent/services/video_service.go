@@ -1004,6 +1004,14 @@ func (s *VideoService) captureLocalCamera(ctx context.Context, broadcast func([]
 	return err
 }
 
+// gstInspectTimeout bounds the element listing fork.
+const gstInspectTimeout = 10 * time.Second
+
+// firstFrameTimeout bounds the wait for a pipeline's first chunk. It has to clear the whole
+// device-side cold start -- element listing, PipeWire lookup, camera and encoder warm-up --
+// which on a loaded Pi or Jetson runs to several seconds.
+const firstFrameTimeout = 20 * time.Second
+
 // pipeWireProbeTimeout bounds the format probe below. A raw node yields nothing
 // to a JPEG request, so the probe ends by deadline rather than by error.
 const pipeWireProbeTimeout = 2 * time.Second
@@ -1011,25 +1019,31 @@ const pipeWireProbeTimeout = 2 * time.Second
 // nodeServesJPEG reports whether the graph is sending MJPEG for this node. pw-dump
 // advertises only what the device supports, not what the first client negotiated, and a
 // mismatched pipeline stalls rather than fails — so the live format is read, not guessed.
-func (s *VideoService) nodeServesJPEG(ctx context.Context, gstPath string, serial uint64) bool {
-	ctx, cancel := context.WithTimeout(ctx, pipeWireProbeTimeout)
+// The second return distinguishes a definite answer from an inconclusive one. A deadline or a
+// missing session is not evidence of a raw node, and reporting it as one used to build a
+// pipeline that stalled forever. Callers can now say so rather than guess silently.
+func (s *VideoService) nodeServesJPEG(ctx context.Context, gstPath string, serial uint64) (jpeg, known bool) {
+	probeCtx, cancel := context.WithTimeout(ctx, pipeWireProbeTimeout)
 	defer cancel()
-	cmd, err := audio.Command(ctx, gstPath, "-q",
+	cmd, err := audio.Command(probeCtx, gstPath, "-q",
 		"pipewiresrc", fmt.Sprintf("target-object=%d", serial), "num-buffers=1",
 		"!", "image/jpeg", "!", "fakesink")
 	if err != nil {
-		return false
+		s.logger.Debug("PipeWire format probe could not start",
+			zap.Uint64("node_serial", serial), zap.Error(err))
+		return false, false
 	}
 	if runErr := cmd.Run(); runErr != nil {
-		// A deadline here is inconclusive rather than a "no", and the raw pipeline it
-		// selects stalls silently on an MJPEG node, so record which of the two happened.
-		s.logger.Debug("PipeWire format probe found no MJPEG",
-			zap.Uint64("node_serial", serial),
-			zap.Bool("timed_out", ctx.Err() != nil),
-			zap.Error(runErr))
-		return false
+		// Only a clean refusal is evidence. If our own deadline killed the probe, or the
+		// parent context went away, the format is simply unknown.
+		if probeCtx.Err() != nil || ctx.Err() != nil {
+			s.logger.Debug("PipeWire format probe was inconclusive",
+				zap.Uint64("node_serial", serial), zap.Error(runErr))
+			return false, false
+		}
+		return false, true
 	}
-	return true
+	return true, true
 }
 
 // pipeWireSource names the graph node a pipeline reads, and how.
@@ -1317,6 +1331,20 @@ func (s *VideoService) runIPProducer(ctx context.Context, broadcast func([]byte,
 	})
 }
 
+// errCaptureSetup classifies a buffer-setup or streaming ioctl failure. EBUSY here is the
+// same contention S_FMT reports elsewhere: vb2 drivers enforce queue ownership at REQBUFS
+// and STREAMON rather than at S_FMT, so without this the sharing fallback never runs on them.
+// The errno is logged rather than returned, matching the deliberately opaque open/S_FMT
+// messages -- returning it lets an authenticated client enumerate the system.
+func (s *VideoService) errCaptureSetup(ioctl, path string, errno unix.Errno) error {
+	if isBusyErrno(errno) {
+		return errCameraInUse(path)
+	}
+	s.logger.Error("V4L2 capture setup failed",
+		zap.String("device", path), zap.String("ioctl", ioctl), zap.Error(errno))
+	return status.Errorf(codes.Internal, "failed to start video capture")
+}
+
 // streamV4L2Native opens the V4L2 device, configures H.264 output via VIDIOC_S_FMT,
 // allocates mmap buffers, and streams frames until ctx is cancelled or an error occurs.
 // Each captured frame is delivered via the broadcast callback; if the callback returns
@@ -1366,8 +1394,9 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_S_FMT H264 rejected: %v", errno)}
 		}
 		s.logger.Error("VIDIOC_S_FMT failed", zap.String("device", path), zap.Error(errno))
-		// Opening a V4L2 node always succeeds — the kernel only refuses the
-		// second *streaming* consumer, and it does so here, at S_FMT.
+		// Where the kernel refuses a second consumer is driver-dependent: uvcvideo
+		// refuses at S_FMT, while vb2 drivers enforce queue ownership later, at
+		// REQBUFS or STREAMON. Every such site classifies EBUSY, not just this one.
 		if isBusyErrno(errno) {
 			return errCameraInUse(path)
 		}
@@ -1390,7 +1419,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	req4.Memory = v4l2MemoryMmap
 
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocReqbufs, uintptr(unsafe.Pointer(&req4))); errno != 0 {
-		return status.Errorf(codes.Internal, "VIDIOC_REQBUFS: %v", errno)
+		return s.errCaptureSetup("VIDIOC_REQBUFS", path, errno)
 	}
 	if req4.Count < 2 {
 		return status.Errorf(codes.Internal, "insufficient buffer memory on device")
@@ -1406,7 +1435,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		qbuf.setMemory(v4l2MemoryMmap)
 
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQuerybuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
-			return status.Errorf(codes.Internal, "VIDIOC_QUERYBUF[%d]: %v", i, errno)
+			return s.errCaptureSetup("VIDIOC_QUERYBUF", path, errno)
 		}
 
 		length := uint32(*(*uint32)(unsafe.Pointer(&qbuf[72]))) // length at offset 72 in v4l2_buffer
@@ -1417,7 +1446,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		mapped[i] = data
 
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
-			return status.Errorf(codes.Internal, "VIDIOC_QBUF[%d]: %v", i, errno)
+			return s.errCaptureSetup("VIDIOC_QBUF", path, errno)
 		}
 	}
 	defer func() {
@@ -1429,7 +1458,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 	// Start streaming.
 	bufType := uint32(v4l2BufTypeVideoCapture)
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocStreamon, uintptr(unsafe.Pointer(&bufType))); errno != 0 {
-		return status.Errorf(codes.Internal, "VIDIOC_STREAMON: %v", errno)
+		return s.errCaptureSetup("VIDIOC_STREAMON", path, errno)
 	}
 	defer func() {
 		unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocStreamoff, uintptr(unsafe.Pointer(&bufType))) //nolint:errcheck
@@ -1468,12 +1497,18 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			if errno == unix.EINTR || errno == unix.EAGAIN {
 				continue
 			}
+			// Contention first: EBUSY here is a held camera, not a device that cannot
+			// encode H264, so it must reach the sharing fallback rather than the
+			// software-encoder one below.
+			if isBusyErrno(errno) {
+				return errCameraInUse(path)
+			}
 			// Device accepted H264 format but failed before delivering any frame —
 			// signal the caller to fall back to the GStreamer software encoder.
 			if framesSent == 0 {
 				return nativeH264NotSupported{msg: fmt.Sprintf("VIDIOC_DQBUF failed before first frame: %v", errno)}
 			}
-			return status.Errorf(codes.Internal, "VIDIOC_DQBUF: %v", errno)
+			return s.errCaptureSetup("VIDIOC_DQBUF", path, errno)
 		}
 
 		idx := dqbuf.index()
@@ -1501,7 +1536,7 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 		qbuf.setType(v4l2BufTypeVideoCapture)
 		qbuf.setMemory(v4l2MemoryMmap)
 		if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), vidiocQbuf, uintptr(unsafe.Pointer(&qbuf))); errno != 0 {
-			return status.Errorf(codes.Internal, "VIDIOC_QBUF requeue[%d]: %v", idx, errno)
+			return s.errCaptureSetup("VIDIOC_QBUF", path, errno)
 		}
 	}
 }
@@ -1637,7 +1672,17 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 		// Probe here, not at the call site: the element set is what says whether a
 		// jpegdec stage can be built at all, and an absent one must not reach the
 		// pipeline. Also keeps the 2s probe off the path that rejects pipewiresrc.
-		pw.jpeg = available["jpegdec"] && s.nodeServesJPEG(ctx, gstPath, pw.serial)
+		if available["jpegdec"] {
+			jpeg, known := s.nodeServesJPEG(ctx, gstPath, pw.serial)
+			pw.jpeg = jpeg
+			if !known {
+				// Treated as raw, but say so: a wrong guess costs the first-frame
+				// deadline below, after which the caller reports the contention that
+				// sent us here rather than a graph error nobody asked about.
+				s.logger.Info("PipeWire node format unknown; assuming raw",
+					zap.String("device", path), zap.Uint64("node_serial", pw.serial))
+			}
+		}
 	}
 
 	enc, err := findGStreamerEncoderFromSet(available)
@@ -1728,6 +1773,19 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 	const chunkSize = 256 * 1024
 	buf := make([]byte, chunkSize)
 
+	// A mismatched pipeline does not fail, it stalls: gst stays alive producing nothing,
+	// stdout.Read blocks on a pipe with no deadline, and nothing above this loop bounds it --
+	// so `camera view` hangs with no frame and no error. Kill the pipeline instead and report
+	// it. Set below the dashboard player's own 25s budget so this specific error wins the race.
+	var timedOut atomic.Bool
+	firstChunk := time.AfterFunc(firstFrameTimeout, func() {
+		timedOut.Store(true)
+		if cmd.Process != nil {
+			cmd.Process.Kill() //nolint:errcheck
+		}
+	})
+	defer firstChunk.Stop()
+
 	// gstMaxFrameRate is the maximum number of frame allocations per second from
 	// the GStreamer read loop. A misbehaving or adversarially replaced gst-launch
 	// binary could write at arbitrarily high rate; bounding the allocation rate
@@ -1746,6 +1804,7 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 
 		n, readErr := stdout.Read(buf)
 		if n > 0 {
+			firstChunk.Stop()
 			now := time.Now()
 			passFrame := lastFrameTime.IsZero() || now.Sub(lastFrameTime) >= minFrameInterval
 			lastFrameTime = now // always update to prevent burst bypass after a gap
@@ -1761,6 +1820,10 @@ func (s *VideoService) streamGStreamer(ctx context.Context, broadcast func([]byt
 			}
 		}
 		if readErr != nil {
+			if timedOut.Load() {
+				return status.Errorf(codes.DeadlineExceeded,
+					"camera produced no video within %s", firstFrameTimeout)
+			}
 			if readErr == io.EOF {
 				return nil // normal termination; defer surfaces stderr/exit errors
 			}
@@ -1900,7 +1963,11 @@ func findGStreamerEncoderFromSet(available map[string]bool) (gstEncoderResult, e
 // listGSTElements runs gst-inspect-1.0 once and returns a set of all available element names.
 // Each output line has the form "plugin:  element: description".
 func listGSTElements(inspectPath string) (map[string]bool, error) {
-	out, err := exec.Command(inspectPath).Output()
+	// Bounded: this walks the whole plugin registry, runs on the contended-camera path where
+	// the operator is already waiting, and an unbounded fork here would hang that path.
+	ctx, cancel := context.WithTimeout(context.Background(), gstInspectTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, inspectPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("gst-inspect-1.0: %w", err)
 	}

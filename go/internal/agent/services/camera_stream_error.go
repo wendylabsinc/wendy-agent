@@ -54,18 +54,22 @@ func isBusyErrno(err error) bool {
 	return errors.Is(err, unix.EBUSY)
 }
 
-// retryWhileBusy re-runs op briefly while it reports EBUSY: a reconnect can land while the
-// agent's own previous producer still holds the device, which is not another application.
+// retryWhileBusy re-runs op briefly while it reports EBUSY, covering the lag between a dying
+// producer's hub closing and its deferred fd close actually running. The substantive wait for
+// that race belongs to getOrCreateHub (maxHubRetries x hubTeardownTimeout), so this stays at
+// one retry: when another application holds the camera it can never succeed, and every extra
+// attempt only delays the fallback and the answer.
 func retryWhileBusy(ctx context.Context, op func() unix.Errno) unix.Errno {
 	const (
-		attempts = 4
-		delay    = 150 * time.Millisecond
+		retries = 1
+		delay   = 150 * time.Millisecond
 	)
 	errno := op()
-	for i := 0; i < attempts && isBusyErrno(errno); i++ {
+	for i := 0; i < retries && isBusyErrno(errno); i++ {
 		select {
 		case <-ctx.Done():
-			return errno
+			// Not the stale EBUSY: a shutdown mid-retry must not read as contention.
+			return unix.ECANCELED
 		case <-time.After(delay):
 		}
 		errno = op()
@@ -93,6 +97,12 @@ var captureElements = []string{"v4l2src", "libcamerasrc", "nvarguscamerasrc", "p
 func isBusyStderr(stderr, devicePath string) bool {
 	device := strings.ToLower(devicePath)
 	for _, record := range errorRecords(strings.ToLower(stderr)) {
+		// A warning gst recovered from is not why the pipeline died: it prints "Device or
+		// resource busy" while probing modes and carries on. Records with no marker at all
+		// stay eligible -- bare tool output is often the only evidence there is.
+		if strings.HasPrefix(strings.TrimSpace(record), "warn") {
+			continue
+		}
 		if !containsAny(record, busyPhrases) {
 			continue
 		}
@@ -120,6 +130,10 @@ func exitedOnError(err error) bool {
 
 // errorRecords splits already-lowercased gst stderr at each error or warning marker,
 // keeping a message and the debug block that explains it together as one unit.
+//
+// An unprefixed line joins whichever record precedes it. That is deliberate -- gst's
+// "Additional debug info" block carries the decisive text and has no marker of its own -- and
+// it is why a record can be evidence without being prefixed at all.
 func errorRecords(stderr string) []string {
 	var records []string
 	var cur strings.Builder
