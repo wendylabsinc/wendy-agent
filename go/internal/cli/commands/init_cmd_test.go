@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1671,5 +1672,76 @@ func TestResolveInitTargetForTemplate_MultiTargetNonInteractiveRequiresTarget(t 
 	}
 	if !strings.Contains(err.Error(), targetWendyOS) || !strings.Contains(err.Error(), targetDarwin) {
 		t.Fatalf("error should list the template's targets, got: %v", err)
+	}
+}
+
+// stubFetchRepoMeta replaces the template-registry fetch with a canned result
+// so tests never hit the network.
+func stubFetchRepoMeta(t *testing.T, meta *repoMeta, err error) {
+	t.Helper()
+	orig := fetchRepoMetaWithUI
+	fetchRepoMetaWithUI = func(branch string) (*repoMeta, error) { return meta, err }
+	t.Cleanup(func() { fetchRepoMetaWithUI = orig })
+}
+
+func TestResolveInitTargetAndTemplate_SingleTargetTemplateInfersTarget(t *testing.T) {
+	stubNonInteractive(t)
+	meta := &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc", Languages: []string{"python"}}},
+		Languages: []repoMetaLanguage{{Key: "python", Name: "Python"}},
+	}
+	stubFetchRepoMeta(t, meta, nil)
+
+	target, tmpl, gotMeta, err := resolveInitTargetAndTemplate(initOptions{template: "go2-rc", templateSet: true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if target != targetWendyOS || tmpl != "go2-rc" || gotMeta != meta {
+		t.Fatalf("expected (wendyos, go2-rc, meta), got (%q, %q, %v)", target, tmpl, gotMeta)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_MetaFetchErrorFails(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, nil, fmt.Errorf("registry unreachable"))
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: "go2-rc", templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), "registry unreachable") {
+		t.Fatalf("expected fetch error to propagate, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_UnknownTemplateFailsBeforeTargetPrompt(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc"}},
+	}, nil)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: "nope", templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), `unknown template "nope"`) {
+		t.Fatalf("expected unknown-template error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "--target is required") {
+		t.Fatalf("unknown template must be reported before any target requirement, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_BareTemplateStillResolvesTargetFirst(t *testing.T) {
+	stubNonInteractive(t)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{template: bareTemplatePickSentinel, templateSet: true})
+	if err == nil || !strings.Contains(err.Error(), "--target is required when running non-interactively") {
+		t.Fatalf("bare --template must fall through to target resolution, got: %v", err)
+	}
+}
+
+func TestResolveInitTargetAndTemplate_TargetFlagKeepsExistingValidation(t *testing.T) {
+	stubNonInteractive(t)
+	stubFetchRepoMeta(t, &repoMeta{
+		Templates: []repoMetaTemplate{{Name: "go2-rc"}}, // WendyOS-only
+	}, nil)
+	_, _, _, err := resolveInitTargetAndTemplate(initOptions{
+		template: "go2-rc", templateSet: true,
+		target: targetDarwin, targetSet: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not available for target") {
+		t.Fatalf("expected existing target-mismatch error, got: %v", err)
 	}
 }

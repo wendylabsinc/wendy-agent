@@ -302,14 +302,9 @@ func runInitWizard(args []string, opts initOptions) error {
 		return err
 	}
 
-	// Step 1: Pick target device first so template filtering works.
-	target, err := resolveInitTarget(opts)
-	if err != nil {
-		return err
-	}
-
-	// Template flow: offer templates filtered by target, or use --template flag.
-	tmpl, meta, err := resolveInitTemplateForTarget(target, opts)
+	// Steps 1-2: target and template resolve together — a concrete --template
+	// can pin or narrow the target from registry metadata.
+	target, tmpl, meta, err := resolveInitTargetAndTemplate(opts)
 	if err != nil {
 		return err
 	}
@@ -404,6 +399,37 @@ func runInitWizard(args []string, opts initOptions) error {
 	}
 
 	return nil
+}
+
+// resolveInitTargetAndTemplate resolves steps 1 and 2 of the wizard together:
+// a concrete --template can pin or narrow the target from registry metadata,
+// so the target question is asked only when the answer is genuinely open.
+// Meta is fetched at most once on either path.
+func resolveInitTargetAndTemplate(opts initOptions) (string, string, *repoMeta, error) {
+	if opts.templateSet && !opts.targetSet {
+		if name := normalizeInitChoice(opts.template); name != bareTemplatePickSentinel {
+			meta, err := fetchRepoMetaWithUI(opts.branch)
+			if err != nil {
+				return "", "", nil, err
+			}
+			t, ok := templateByName(meta, name)
+			if !ok {
+				return "", "", nil, fmt.Errorf("unknown template %q (available: %s)", opts.template, metaTemplateNames(meta))
+			}
+			target, err := resolveInitTargetForTemplate(*t)
+			if err != nil {
+				return "", "", nil, err
+			}
+			return target, name, meta, nil
+		}
+	}
+
+	target, err := resolveInitTarget(opts)
+	if err != nil {
+		return "", "", nil, err
+	}
+	tmpl, meta, err := resolveInitTemplateForTarget(target, opts)
+	return target, tmpl, meta, err
 }
 
 // resolveInitTemplateForTarget determines which template to use, filtering by target.
