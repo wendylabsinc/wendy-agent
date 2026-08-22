@@ -32,8 +32,6 @@ You don't need any peripherals. Just your existing laptop and your target device
 
 ## Quick start
 
-![Installing WendyOS on a device with wendy os install](go/internal/cli/assets/docs/media/demo.gif)
-
 ```sh
 # 1. Install the Developer Tools
 curl -fsSL https://install.wendy.dev/cli.sh | bash
