@@ -36,6 +36,47 @@ func TestMatchAuthSelectorNoMatch(t *testing.T) {
 	}
 }
 
+// An org ID the user is not logged into is the common failure (the org exists
+// in the cloud, just not on this machine), so the error must not read as
+// "no such org" — it names the stored sessions and the command that fixes it.
+func TestMatchAuthSelectorUnknownOrgIDExplainsLogin(t *testing.T) {
+	_, err := matchAuthSelector(selectorConfig(), "75")
+	if err == nil {
+		t.Fatal("want error for an org with no stored session")
+	}
+	got := err.Error()
+	for _, want := range []string{
+		"not logged in to org 75",
+		"wendy auth login",
+		"org 7 — prod.example.com:443",
+		"org 1 — localhost:50051",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error missing %q:\n%s", want, got)
+		}
+	}
+	// It must not claim the org does not exist: this command never asks the cloud.
+	if strings.Contains(got, "does not exist") {
+		t.Errorf("error should not assert the org is missing:\n%s", got)
+	}
+}
+
+// A non-numeric selector is an endpoint substring, so the wording stays as a
+// selector miss rather than a login problem — but it still lists what exists.
+func TestMatchAuthSelectorUnknownSubstringListsSessions(t *testing.T) {
+	_, err := matchAuthSelector(selectorConfig(), "nope")
+	if err == nil {
+		t.Fatal("want error for an unmatched substring")
+	}
+	got := err.Error()
+	if !strings.Contains(got, `no auth session matches "nope"`) {
+		t.Errorf("want selector-miss wording, got:\n%s", got)
+	}
+	if !strings.Contains(got, "prod.example.com:443") {
+		t.Errorf("error should list stored sessions, got:\n%s", got)
+	}
+}
+
 func TestMatchAuthSelectorAmbiguous(t *testing.T) {
 	cfg := selectorConfig()
 	cfg.Auth[1].Certificates[0].OrganizationID = 7 // two sessions in org 7
