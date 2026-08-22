@@ -306,6 +306,12 @@ func (s *BuildService) GetBuildCapabilities(_ context.Context, _ *agentpbv2.GetB
 		Os:                runtime.GOOS,
 		CpuArchitecture:   runtime.GOARCH,
 		BuilderEnabled:    s.builderEnabled(),
+		// Constant true: this agent reads push_targets. It is advertised rather
+		// than assumed because proto3 drops unknown fields, so a newer CLI
+		// talking to an older agent would otherwise have no way to tell that its
+		// fleet of targets was discarded — and would report a deploy that went
+		// nowhere.
+		MultiTargetDelivery: true,
 	}
 	if available {
 		// Only the host's own platform is claimed native. Emulated platforms stay
@@ -416,11 +422,27 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 		return status.Error(codes.InvalidArgument, "build spec carries no build definition")
 	}
 
-	// Validate the destination BEFORE any work: a build that cannot be delivered
-	// is wasted minutes on a machine other people are sharing.
-	target := spec.GetPushTarget()
-	if err := validatePushTarget(target); err != nil {
+	// Validate EVERY destination before any work: a build that cannot be
+	// delivered is wasted minutes on a machine other people are sharing, and
+	// with a fleet that arithmetic only gets worse. One bad asset id fails the
+	// request now rather than after the last device has waited through a build.
+	targets, err := deliveryTargets(spec)
+	if err != nil {
 		return err
+	}
+	for _, t := range targets {
+		if err := validatePushTarget(t); err != nil {
+			return err
+		}
+	}
+	// Duplicates would push the same image to the same device twice and report
+	// it as two deliveries — a fleet listed as larger than it is.
+	seen := make(map[int32]struct{}, len(targets))
+	for _, t := range targets {
+		if _, dup := seen[t.GetAssetId()]; dup {
+			return status.Errorf(codes.InvalidArgument, "asset %d is listed as a delivery target more than once", t.GetAssetId())
+		}
+		seen[t.GetAssetId()] = struct{}{}
 	}
 	if s.peers == nil {
 		return status.Error(codes.FailedPrecondition, "this build host has no mesh dialer and cannot deliver an image to another device")
@@ -463,15 +485,109 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	if s.pushTLS == nil {
 		return status.Error(codes.FailedPrecondition, "this build host has no client certificate for pushing to a device registry")
 	}
-	// Pinned to the push target's asset id, so only that device can terminate
-	// the registry hop.
+
+	// One pass per device. The image is built once in any real sense: BuildKit
+	// has solved it after the first pass, so the rest are cache hits that
+	// re-export and push. That leaves only the delivery cost, which is per
+	// device and unavoidable — and layer-diffed, so the second device onwards
+	// usually transfers very little.
+	//
+	// Each pass gets its OWN proxy and its own asset-pinned TLS config. Reusing
+	// one hop for several devices would mean a single pinned identity standing
+	// in for all of them, which is exactly the property the pin exists to deny.
+	deliveries := make([]*agentpbv2.DeliveryResult, 0, len(targets))
+	multi := len(targets) > 1
+	for i, t := range targets {
+		buildErr, deliveryErr := s.buildAndDeliver(ctx, stream, spec, df, dir, t)
+
+		// A build failure on the FIRST pass is a build failure, full stop: no
+		// device can receive this image and continuing would report N identical
+		// failures for one broken Dockerfile.
+		if buildErr != nil && i == 0 {
+			return buildErr
+		}
+		if !multi {
+			// Single-target behaviour is unchanged, including the error codes a
+			// CLI built before fleet delivery already distinguishes.
+			if deliveryErr != nil {
+				return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", deliveryErr)
+			}
+			if buildErr != nil {
+				return buildErr
+			}
+			deliveries = append(deliveries, &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true})
+			break
+		}
+
+		// Past the first pass, one device's problem is one device's problem.
+		// Recording it and moving on is the whole point: a fleet deploy must not
+		// be abandoned halfway because the third camera is offline.
+		res := &agentpbv2.DeliveryResult{AssetId: t.GetAssetId(), Delivered: true}
+		switch {
+		case deliveryErr != nil:
+			res.Delivered, res.Error = false, deliveryErr.Error()
+		case buildErr != nil:
+			res.Delivered, res.Error = false, buildErr.Error()
+		}
+		deliveries = append(deliveries, res)
+	}
+
+	// The stream ends OK even when some devices failed. The per-device outcomes
+	// carry that, and the CLI decides what to say and what to exit with —
+	// because "the build succeeded, two of three devices have it" is neither a
+	// failed build nor a successful deploy, and collapsing it into one status
+	// code is how a device silently misses a change.
+	return stream.Send(&agentpbv2.BuildImageProgress{
+		Event: &agentpbv2.BuildImageProgress_Result{
+			Result: &agentpbv2.BuildImageResult{Deliveries: deliveries},
+		},
+	})
+}
+
+// deliveryTargets resolves where this build is delivered, preferring the fleet
+// field and falling back to the single one so a CLI built before fleet delivery
+// keeps working. Setting both is refused rather than resolved by precedence: it
+// means the client disagrees with itself about where an image is going, and
+// guessing is how an image reaches a device nobody asked for.
+func deliveryTargets(spec *agentpbv2.BuildSpec) ([]*agentpbv2.PushTarget, error) {
+	many, one := spec.GetPushTargets(), spec.GetPushTarget()
+	if len(many) > 0 && one != nil {
+		return nil, status.Error(codes.InvalidArgument, "set push_targets or push_target, not both")
+	}
+	if len(many) > 0 {
+		return many, nil
+	}
+	if one != nil {
+		return []*agentpbv2.PushTarget{one}, nil
+	}
+	return nil, status.Error(codes.InvalidArgument, "build spec names no delivery target")
+}
+
+// buildAndDeliver runs one buildctl pass whose output is pushed to a single
+// device, and separates the two failures that look identical from the outside.
+//
+// A failed outbound push reaches buildctl only as a reset loopback connection,
+// so its error says "exit status 1" and names nothing. When the proxy knows the
+// real reason, that is the one worth reporting: the remedies diverge — a
+// build-file fix versus mesh reachability or registry auth — so collapsing them
+// sends the developer to debug the wrong layer.
+func (s *BuildService) buildAndDeliver(
+	ctx context.Context,
+	stream agentpbv2.WendyBuildService_BuildImageServer,
+	spec *agentpbv2.BuildSpec,
+	df *agentpbv2.DockerfileBuild,
+	dir string,
+	target *agentpbv2.PushTarget,
+) (buildErr, deliveryErr error) {
+	// Pinned to this target's asset id, so only that device can terminate the
+	// registry hop.
 	tlsCfg, err := s.pushTLS(target.GetAssetId())
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "loading push credentials: %v", err)
+		return nil, fmt.Errorf("loading push credentials: %v", err)
 	}
 	proxy, err := startPushProxy(ctx, s.peers, target, tlsCfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer proxy.stop()
 
@@ -479,26 +595,24 @@ func (s *BuildService) BuildImage(stream agentpbv2.WendyBuildService_BuildImageS
 	// readable through /proc/<pid>/cmdline, so anything secret there would be
 	// readable by the local user this gate exists to stop. See
 	// dockerConfigWithPushAuth.
-	authDir := dir + dockerConfigDirSuffix
+	//
+	// Per target, because the proxy address and credential are minted per pass.
+	authDir := fmt.Sprintf("%s%s.%d", dir, dockerConfigDirSuffix, target.GetAssetId())
 	if err := dockerConfigWithPushAuth(authDir, proxy.addr, proxy.credential); err != nil {
-		return status.Errorf(codes.Internal, "%v", err)
+		return status.Errorf(codes.Internal, "%v", err), nil
 	}
 	defer os.RemoveAll(authDir)
 
 	args, err := buildctlArgs(dir, df.GetDockerfile(), spec.GetPlatform(), proxy.addr+"/"+target.GetRepository(), df.GetBuildArgs())
 	if err != nil {
-		return err
+		return err, nil
 	}
 
-	buildErr := s.runBuildctl(ctx, stream, args, authDir)
-	// A failed outbound push shows up to buildctl only as a reset loopback
-	// connection, so its error says "exit status 1" and nothing useful. When the
-	// proxy knows the real reason, report THAT — and as Unavailable, which the
-	// CLI reads as "built fine, could not deliver" rather than a build failure.
+	buildErr = s.runBuildctl(ctx, stream, args, authDir)
 	if proxyErr := proxy.firstError(); proxyErr != nil {
-		return status.Errorf(codes.Unavailable, "pushing the built image to the target device failed: %v", proxyErr)
+		return nil, proxyErr
 	}
-	return buildErr
+	return buildErr, nil
 }
 
 // reassembleContext rebuilds the context tar from its chunk manifest. Every
@@ -597,9 +711,11 @@ func (s *BuildService) runBuildctl(ctx context.Context, stream agentpbv2.WendyBu
 	if err := cmd.Wait(); err != nil {
 		return status.Errorf(codes.Internal, "build failed: %v", err)
 	}
-	return stream.Send(&agentpbv2.BuildImageProgress{
-		Event: &agentpbv2.BuildImageProgress_Result{Result: &agentpbv2.BuildImageResult{}},
-	})
+	// The result is sent by the caller, not here: with several targets this runs
+	// once per device, and a result per pass would tell the CLI the build
+	// finished N times. The caller sends exactly one, carrying every device's
+	// outcome.
+	return nil
 }
 
 // redactBuildctlArgs masks every --opt build-arg:KEY=VALUE value, keeping the

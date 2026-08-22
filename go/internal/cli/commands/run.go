@@ -481,7 +481,10 @@ type runOptions struct {
 	// buildHost names a WendyOS device that builds the image instead of this
 	// machine. Empty means build locally, and every existing local path must be
 	// unaffected when it is empty.
-	buildHost            string
+	buildHost string
+	// Devices beyond the primary --device that this build is also delivered to.
+	// Empty for every ordinary run.
+	fleetDevices         []string
 	debug                bool
 	deploy               bool
 	detach               bool
@@ -809,6 +812,27 @@ func runCommand(ctx context.Context, opts runOptions) error {
 		return err
 	}
 	opts.buildHost = buildHost
+
+	// A comma-separated --device names a fleet. Split it HERE, before anything
+	// resolves a device: deviceFlag is what target resolution and the cloud
+	// tunnel fallback look up, and "ccr1,ccr2" is not a device name. Leaving the
+	// split any later means the first lookup fails with a confusing "no device
+	// named ccr1,ccr2".
+	//
+	// deviceFlag is narrowed to the primary so every existing decision in this
+	// function -- GPU architecture, agent OS, build-arg hints -- keeps being made
+	// against exactly one device, as it always has been.
+	if strings.Contains(deviceFlag, ",") {
+		primary, extras, splitErr := splitFleetDevices(deviceFlag)
+		if splitErr != nil {
+			return splitErr
+		}
+		if err := validateFleetRun(extras, opts.buildHost, opts.detach); err != nil {
+			return err
+		}
+		deviceFlag = primary
+		opts.fleetDevices = extras
+	}
 
 	// --dockerfile implies a docker build; validate the file exists and ensure
 	// --build-type is compatible.
