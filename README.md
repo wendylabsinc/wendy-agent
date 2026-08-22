@@ -32,34 +32,18 @@ You don't need any peripherals. Just your existing laptop and your target device
 
 ## Quick start
 
-<p align="center">
-  <table>
-    <tr>
-      <td>
-        <img src="go/internal/cli/assets/docs/media/demo.gif" alt="Installing WendyOS on a device with wendy os install" width="350">
-      </td>
-      <td>
-        <table>
-          <tr>
-            <td>
-              <pre lang="sh"># 1. Install the Developer Tools<br/>curl -fsSL https://install.wendy.dev/cli.sh | bash<br/><br/># 2. Install WendyOS to your Robot, Jetson, or Raspberry Pi<br/>wendy install<br/><br/># 3. Build, deploy, and debug any (Docker) app<br/>wendy run</pre>
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <pre lang="sh"># On Windows<br/>winget install WendyLabs.Wendy --source winget</pre>
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <a href="https://docs.wendy.dev">Read the docs</a> and start building!
-            </td>
-          </tr>
-          </table>
-      </td>
-    </tr>
-  </table>
-</p>
+![Installing WendyOS on a device with wendy os install](go/internal/cli/assets/docs/media/demo.gif)
+
+```sh
+# 1. Install the Developer Tools
+curl -fsSL https://install.wendy.dev/cli.sh | bash
+
+# 2. Install WendyOS to your Robot, Jetson, or Raspberry Pi
+wendy install
+
+# 3. Build, deploy, and debug any (Docker) app
+wendy run
+```
 
 Package-specific options are available via
 [Homebrew, .deb, .rpm, and AUR](INSTALL.md).
