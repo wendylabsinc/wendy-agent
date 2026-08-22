@@ -655,6 +655,38 @@ func runWithInterruptChannel(parent context.Context, sigCh <-chan os.Signal, run
 // exist, it retries via the cloud tunnel using the device name from --device
 // or the configured default.
 func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevice, error) {
+	return resolveWithCloudFallback(ctx, "", opts...)
+}
+
+// cloudFallbackDeviceName picks which device the cloud tunnel should dial.
+//
+// An explicit name always wins, and must never be silently replaced by
+// deviceFlag: those name two different machines during `wendy run --build-host`,
+// and preferring the flag would build on the deploy target.
+func cloudFallbackDeviceName(explicit, flagValue, configDefault string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if flagValue != "" {
+		return flagValue
+	}
+	return configDefault
+}
+
+// resolveWithCloudFallback is resolveRunTarget with the cloud-tunnel device name
+// stated explicitly rather than read from the --device flag.
+//
+// cloudName must be set by any caller connecting to a device that is NOT the
+// deploy target. `wendy run --build-host` has two devices in flight, and the
+// fallback name is not interchangeable between them: with cloudName empty this
+// falls back to deviceFlag, so a build-host caller would tunnel to the TARGET
+// and build on the machine it meant to deploy to — landing the image on the
+// wrong device while reporting success, which is the exact failure mode the
+// two-explicit-flags design exists to prevent.
+//
+// An empty cloudName preserves the original behaviour for the deploy target,
+// where --device IS the device being resolved.
+func resolveWithCloudFallback(ctx context.Context, cloudName string, opts ...resolveOption) (*SelectedDevice, error) {
 	target, err := resolveTarget(ctx, opts...)
 	if err == nil {
 		return target, nil
@@ -668,10 +700,7 @@ func resolveRunTarget(ctx context.Context, opts ...resolveOption) (*SelectedDevi
 		return nil, err
 	}
 
-	deviceName := deviceFlag
-	if deviceName == "" {
-		deviceName = cfg.DefaultDevice
-	}
+	deviceName := cloudFallbackDeviceName(cloudName, deviceFlag, cfg.DefaultDevice)
 	if deviceName == "" {
 		return nil, err
 	}

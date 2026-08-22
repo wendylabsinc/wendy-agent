@@ -256,8 +256,18 @@ func runRemoteBuild(
 // connectBuildHost resolves and connects to the build host by name, reusing the
 // same connect machinery as --device so LKG cache, mDNS and cloud fallback all
 // apply unchanged.
+//
+// The cloud fallback is what makes this feature usable by the developer it was
+// written for. resolveTarget alone is direct/LAN only, so a remote developer --
+// precisely the person who does not want to build locally -- could never reach
+// a build host, while the deploy target resolved over the tunnel in the same
+// command. `wendy cloud run --build-host` was the only working spelling, and it
+// prints a deprecation notice pointing back at this one.
+//
+// host is passed explicitly: the fallback must not read --device, which names
+// the TARGET. See resolveWithCloudFallback.
 func connectBuildHost(ctx context.Context, host string) (*grpcclient.AgentConnection, error) {
-	sel, err := resolveTarget(ctx, SelectDevice(host), NonInteractive(), SuppressUpdateCheck())
+	sel, err := resolveWithCloudFallback(ctx, host, SelectDevice(host), NonInteractive(), SuppressUpdateCheck())
 	if err != nil {
 		return nil, err
 	}
