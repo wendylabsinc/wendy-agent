@@ -329,11 +329,37 @@ type StreamVideoRequest struct {
 	// For local cameras width/height/framerate configure capture. For network
 	// cameras the camera decides its own format, so width only selects which of
 	// its streams to open (sub or main) and height/framerate are ignored.
-	Width         uint32 `protobuf:"varint,2,opt,name=width,proto3" json:"width,omitempty"`         // pixels; 0 = device default
-	Height        uint32 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`       // pixels; 0 = device default
-	Framerate     uint32 `protobuf:"varint,4,opt,name=framerate,proto3" json:"framerate,omitempty"` // fps; 0 = device default
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Width     uint32 `protobuf:"varint,2,opt,name=width,proto3" json:"width,omitempty"`         // pixels; 0 = device default
+	Height    uint32 `protobuf:"varint,3,opt,name=height,proto3" json:"height,omitempty"`       // pixels; 0 = device default
+	Framerate uint32 `protobuf:"varint,4,opt,name=framerate,proto3" json:"framerate,omitempty"` // fps; 0 = device default
+	// Upper bound on how many frames per second THIS subscriber receives; 0 =
+	// every frame (the historical behaviour). Unlike width/height/framerate this
+	// is a property of one connection, not of the camera: subscribers sharing a
+	// camera may each set a different value, and none of them is rejected for
+	// disagreeing. Nothing about capture or encoding changes — the same frames
+	// are produced either way — so this saves uplink bytes, not device CPU.
+	//
+	// Delivery is anchored to keyframes, because an H.264 frame is only
+	// decodable with the frames it depends on. A limited subscriber therefore
+	// receives whole keyframe-to-keyframe groups, and its effective rate is
+	// rounded to that granularity: with the default keyframe interval of half a
+	// second, asking for 1 fps yields one group per second, not one frame. Set
+	// keyframe_interval_frames to make the granularity finer.
+	//
+	// Only applies to H.264. A VP8 stream is delivered whole regardless, because
+	// its frames are wrapped in a WebM container that cannot be cut mid-stream.
+	MaxFramerate uint32 `protobuf:"varint,5,opt,name=max_framerate,json=maxFramerate,proto3" json:"max_framerate,omitempty"`
+	// Frames between keyframes for the shared encoder; 0 = half a second's worth
+	// (framerate/2). Unlike max_framerate this reconfigures the encoder everyone
+	// shares, so it takes part in the stream-parameter compatibility check.
+	//
+	// It exists because it sets the floor on how finely max_framerate can be
+	// honoured, and how quickly a new subscriber gets a decodable picture. Short
+	// intervals cost bitrate (keyframes are large); 1 makes every frame
+	// independent and every rate exactly achievable, at the highest byte cost.
+	KeyframeIntervalFrames uint32 `protobuf:"varint,6,opt,name=keyframe_interval_frames,json=keyframeIntervalFrames,proto3" json:"keyframe_interval_frames,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *StreamVideoRequest) Reset() {
@@ -390,6 +416,20 @@ func (x *StreamVideoRequest) GetHeight() uint32 {
 func (x *StreamVideoRequest) GetFramerate() uint32 {
 	if x != nil {
 		return x.Framerate
+	}
+	return 0
+}
+
+func (x *StreamVideoRequest) GetMaxFramerate() uint32 {
+	if x != nil {
+		return x.MaxFramerate
+	}
+	return 0
+}
+
+func (x *StreamVideoRequest) GetKeyframeIntervalFrames() uint32 {
+	if x != nil {
+		return x.KeyframeIntervalFrames
 	}
 	return 0
 }
@@ -732,12 +772,14 @@ const file_wendy_agent_services_v1_wendy_agent_v1_video_service_proto_rawDesc = 
 	"\x06online\x18\v \x01(\bR\x06online\"\x19\n" +
 	"\x17ListVideoDevicesRequest\"Z\n" +
 	"\x18ListVideoDevicesResponse\x12>\n" +
-	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"}\n" +
+	"\adevices\x18\x01 \x03(\v2$.wendy.agent.services.v1.VideoDeviceR\adevices\"\xdc\x01\n" +
 	"\x12StreamVideoRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x14\n" +
 	"\x05width\x18\x02 \x01(\rR\x05width\x12\x16\n" +
 	"\x06height\x18\x03 \x01(\rR\x06height\x12\x1c\n" +
-	"\tframerate\x18\x04 \x01(\rR\tframerate\"r\n" +
+	"\tframerate\x18\x04 \x01(\rR\tframerate\x12#\n" +
+	"\rmax_framerate\x18\x05 \x01(\rR\fmaxFramerate\x128\n" +
+	"\x18keyframe_interval_frames\x18\x06 \x01(\rR\x16keyframeIntervalFrames\"r\n" +
 	"\x1bSetCameraCredentialsRequest\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\rR\bdeviceId\x12\x1a\n" +
 	"\busername\x18\x02 \x01(\tR\busername\x12\x1a\n" +

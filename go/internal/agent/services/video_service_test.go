@@ -692,7 +692,7 @@ func newTestHub(t *testing.T) (*deviceHub, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &deviceHub{
-		subs:   make(map[int]chan *videoFrame),
+		subs:   make(map[int]*subscriber),
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
@@ -704,8 +704,8 @@ func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	id1, ch1, _ := h.subscribe()
-	id2, ch2, _ := h.subscribe()
+	id1, ch1, _ := h.subscribe(0)
+	id2, ch2, _ := h.subscribe(0)
 	defer h.unsubscribe(id1)
 	defer h.unsubscribe(id2)
 
@@ -730,8 +730,8 @@ func TestDeviceHub_TwoSubscribersReceiveSameFrame(t *testing.T) {
 func TestDeviceHub_LastUnsubscribeCancelsProducer(t *testing.T) {
 	h, _ := newTestHub(t)
 
-	id1, _, _ := h.subscribe()
-	id2, _, _ := h.subscribe()
+	id1, _, _ := h.subscribe(0)
+	id2, _, _ := h.subscribe(0)
 
 	h.unsubscribe(id1)
 	if h.ctx.Err() != nil {
@@ -748,7 +748,7 @@ func TestDeviceHub_SlowSubscriberDropsFrames(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	_, ch, _ := h.subscribe()
+	_, ch, _ := h.subscribe(0)
 
 	// Send more frames than the channel buffer (capacity 4).
 	for i := 0; i < 10; i++ {
@@ -768,7 +768,7 @@ func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
 	h, cancel := newTestHub(t)
 	defer cancel()
 
-	id, _, _ := h.subscribe()
+	id, _, _ := h.subscribe(0)
 	h.unsubscribe(id)
 
 	if h.broadcast(&videoFrame{data: []byte{1}}) {
@@ -779,14 +779,14 @@ func TestDeviceHub_BroadcastReturnsFalseWithNoSubscribers(t *testing.T) {
 func TestDeviceHub_ProducerErrorPropagated(t *testing.T) {
 	h, _ := newTestHub(t)
 
-	_, ch, _ := h.subscribe()
+	_, ch, _ := h.subscribe(0)
 
 	// Simulate producer recording an error and closing the channel.
 	wantErr := status.Errorf(codes.Internal, "camera read failed: test error")
 	h.mu.Lock()
 	h.err = wantErr
-	for _, c := range h.subs {
-		close(c)
+	for _, sub := range h.subs {
+		close(sub.ch)
 	}
 	h.mu.Unlock()
 
