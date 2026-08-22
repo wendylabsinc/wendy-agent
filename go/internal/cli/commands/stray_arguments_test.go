@@ -15,7 +15,7 @@ func TestNoCommandSilentlyAcceptsStrayArguments(t *testing.T) {
 	var walk func(cmd *cobra.Command)
 	walk = func(cmd *cobra.Command) {
 		for _, c := range cmd.Commands() {
-			if c.Runnable() && !declaresPositionals(c.Use) {
+			if c.Runnable() && !c.DisableFlagParsing && !declaresPositionals(c.Use) {
 				if c.Args == nil || c.Args(c, []string{"zzstray"}) == nil {
 					unguarded = append(unguarded, c.CommandPath())
 				}
@@ -28,6 +28,18 @@ func TestNoCommandSilentlyAcceptsStrayArguments(t *testing.T) {
 	if len(unguarded) > 0 {
 		t.Errorf("%d command(s) silently accept a stray positional argument:\n  %s",
 			len(unguarded), strings.Join(unguarded, "\n  "))
+	}
+}
+
+// A command that disables Cobra flag parsing owns its complete argv. The
+// central stray-argument sweep must not reject that argv before the command's
+// parser sees it. This is the sudo re-exec boundary used by Orin recovery.
+func TestDisableFlagParsingCommandReceivesItsArguments(t *testing.T) {
+	cmd := NewRootCmd()
+	cmd.SetArgs([]string{"__t234-write", "--bogus"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown __t234-write flag "--bogus"`) {
+		t.Fatalf("Execute() error = %v; want error from __t234-write argument parser", err)
 	}
 }
 

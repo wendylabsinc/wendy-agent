@@ -270,12 +270,14 @@ func NewRootCmd() *cobra.Command {
 // A command is only treated as argument-free when its Use string declares no
 // placeholder. Anything documenting a positional, such as "logs [app]" or
 // "record [topics...]", already states its own contract and is left alone, as is
-// any command that already sets Args.
+// any command that already sets Args. Commands that disable Cobra's flag parser
+// are also left alone: their remaining argv is an application-defined protocol,
+// not a list of positional arguments for Cobra to reject.
 func rejectStrayArguments(cmd *cobra.Command) {
 	for _, child := range cmd.Commands() {
 		rejectStrayArguments(child)
 	}
-	if !cmd.Runnable() || cmd.Args != nil {
+	if !cmd.Runnable() || cmd.Args != nil || cmd.DisableFlagParsing {
 		return
 	}
 	for _, token := range strings.Fields(cmd.Use)[1:] {
