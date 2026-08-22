@@ -41,13 +41,19 @@ You don't need any peripherals. Just your existing laptop and your target device
       <td>
         <table>
           <tr>
-            <pre lang="sh"># 1. Install the Developer Tools<br/>curl -fsSL https://install.wendy.dev/cli.sh | bash<br/><br/># 2. Install WendyOS to your Robot, Jetson or Raspberry Pi wendy install<br/><br/># 3. Build, deploy, and debug any (Docker) app<br/>wendy run</pre>
+            <td>
+              <pre lang="sh"># 1. Install the Developer Tools<br/>curl -fsSL https://install.wendy.dev/cli.sh | bash<br/><br/># 2. Install WendyOS to your Robot, Jetson, or Raspberry Pi<br/>wendy install<br/><br/># 3. Build, deploy, and debug any (Docker) app<br/>wendy run</pre>
+            </td>
           </tr>
           <tr>
-            <pre lang="sh"># On Windows<br/>winget install WendyLabs.Wendys</pre>
+            <td>
+              <pre lang="sh"># On Windows<br/>winget install WendyLabs.Wendy --source winget</pre>
+            </td>
           </tr>
           <tr>
-            <a href="https://docs.wendy.dev">Read the docs</a> and start building!
+            <td>
+              <a href="https://docs.wendy.dev">Read the docs</a> and start building!
+            </td>
           </tr>
           </table>
       </td>
@@ -86,11 +92,11 @@ wendy device ros2 # Interface with ROS2
       <h3>Remote Control & Teleop</h3>
       <ul>
         <li>📱 (Mobile) Browser Support</li>
-        <li>🎮 Game Controller Support</a></li>
+        <li>🎮 Game Controller Support</li>
         <li>☁️ Works with <a href="https://cloud.wendy.sh">Wendy Cloud</a></li>
       </ul>
       <h3>Source Code</h3>
-      Start through <code>wendy init</code> or clone from Github:<br />
+      Start through <code>wendy init</code> or clone from GitHub:<br />
       <a href="https://github.com/wendylabsinc/templates/tree/main/python/g1-rc">G1 Humanoid</a> | <a href="https://github.com/wendylabsinc/templates/tree/main/python/go2-rc">Go2 Quadruped</a> | <a href="https://github.com/wendylabsinc/templates/tree/main/python/rc-car">Rosmaster Car</a>
     </td>
   </tr>
@@ -114,7 +120,7 @@ wendy device ros2 # Interface with ROS2
 
 ## Cloud
 
-All `wendy` commands can be ran across the globe with [Wendy Cloud](https://cloud.wendy.dev). Manage your fleet in seconds with OTA, remote debugging, health checks and more.
+All `wendy` commands can be run across the globe with [Wendy Cloud](https://cloud.wendy.dev). Manage your fleet in seconds with OTA, remote debugging, health checks and more.
 
 With `wendy mcp setup` - you can develop apps, manage fleet deployments and more through your favorite LLM provider.
 
@@ -125,6 +131,6 @@ wendy cloud device audio listen # Remote audio
 wendy cloud ros2 bag download # Download ROS2 recordings
 ```
 
-### Control your fleet from 30'000 feet. Literally.
+### Control your fleet from 30,000 feet. Literally.
 
-No matter where you are - you're in control. Even on the beach.
+No matter where you are, you're in control. Even on the beach.
