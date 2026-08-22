@@ -570,22 +570,19 @@ func consumeBuildProgress(recv func() (*agentpbv2.BuildImageProgress, error), ou
 
 // connectFleetDevice connects to one extra delivery target by name.
 //
-// KNOWN LIMITATION, measured rather than assumed: resolveTarget is direct/LAN
-// only, so a fleet member that is not on this network fails here with "name
-// resolver error: produced zero addresses". Deploying to ccr2,ccr1 from a
-// laptop on neither network gets as far as this call and stops.
+// The name is passed EXPLICITLY, and that is the whole subtlety. The cloud
+// fallback otherwise reads --device, which after the fleet split names the
+// PRIMARY -- so every member of the fleet would tunnel to the same machine, and
+// a deploy meant for three cameras would build one image and hand it to one
+// device three times while reporting three deliveries.
 //
-// The fix is the one connectBuildHost needs and for the same reason -- a cloud
-// fallback that takes the device name EXPLICITLY, because --device names the
-// primary and reusing it here would connect every fleet member to the same
-// machine. That is a separate change; when it lands, this becomes a one-line
-// swap rather than a second copy of the same logic.
-//
-// Until then a fleet must be LAN-reachable from the developer's machine. That
-// is a real restriction and is stated in the flag's help rather than left to be
-// discovered.
+// Before this, a fleet member not on the developer's network failed with "name
+// resolver error: produced zero addresses". Measured on main: deploying
+// ccr2,ccr1 from a laptop on neither network connected the primary and the
+// build host over the tunnel, then stopped here -- three devices, three
+// resolvers, and only this one direct-only.
 func connectFleetDevice(ctx context.Context, name string) (*grpcclient.AgentConnection, error) {
-	sel, err := resolveTarget(ctx, SelectDevice(name), NonInteractive(), SuppressUpdateCheck())
+	sel, err := resolveWithCloudFallback(ctx, name, SelectDevice(name), NonInteractive(), SuppressUpdateCheck())
 	if err != nil {
 		return nil, err
 	}
