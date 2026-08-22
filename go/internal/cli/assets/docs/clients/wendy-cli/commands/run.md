@@ -4,7 +4,7 @@ Runs your app on a Wendy-enabled device:
 2. [Queries the platform and architecture](./device/version.md) of this device
 3. Invokes a [build](./build.md) using the target triple, and injects a [debugger](../../../debugging/) if needed
 4. Uploads the artifact(s) for [Linux](../../../wendy-agent/connectivity/container-registry.md) or [macOS](../../../wendy-agent/macos/)
-5. [Starts the app](./device/apps/start.md), waits for readiness, and prints the reachable URL (when configured)
+5. [Starts the app](./device/apps/start.md), then (attached runs only) waits for readiness and prints the reachable URL
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
 ## Reachable app URLs
@@ -144,7 +144,7 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | Flag | Description |
 |------|-------------|
 | `--deploy` | Build and create the container but do not start it. |
-| `--detach` | Start the container but do not stream logs. |
+| `--detach` | Start the container and return without streaming logs, waiting for readiness, or opening the app URL. |
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
@@ -361,11 +361,10 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 
 ## postStart hooks
 
-When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it
-after the app reports readiness — regardless of which deploy path is taken
-(registry push **or** the default chunk-diff / CBC path) and regardless of
-whether `--detach` is passed. If the readiness probe fails, the hook is
-skipped (both `openURL` and `cli`) and a warning is printed instead.
+When a `postStart` hook is configured in `wendy.json`, the host-side actions
+(`openURL` and `cli`) fire after the app reports readiness, on either deploy
+path (registry push **or** the default chunk-diff / CBC path). If the readiness
+probe fails, both are skipped and a warning is printed instead.
 
 > **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 
@@ -409,9 +408,8 @@ because the container exits or because the user presses **Ctrl-C** — the hook'
 context is cancelled and the CLI waits for the child process to exit before
 returning. This prevents orphaned hook processes from outliving `wendy run`.
 
-In detached mode (`--detach`) and deploy-only mode (`--deploy`), the hook is
-fired with a long-lived background context and is not reaped on exit (matching
-the previous behaviour for those flags).
+Detached mode (`--detach`), deploy-only mode (`--deploy`), and `--watch` do not
+fire the host-side hook at all, so there is no child process to reap.
 
 ## Container image signature
 

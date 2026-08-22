@@ -30,10 +30,8 @@ type serviceHookRunner struct {
 // hookCtx is the context the postStart CLI hook is spawned under: attached
 // callers (via startAsync) pass the same runCtx as ctx, so canceling it after
 // the run ends kills the hook too — mirroring run.go's
-// `runCancel(); postStartCmd.Wait()`. Detached callers pass
-// context.Background() as hookCtx so the hook outlives the CLI process, and
-// never call reap since there is nothing left to wait on (openURL is
-// synchronous, and cli hooks deliberately keep running).
+// `runCancel(); postStartCmd.Wait()`. Detached multi-service runs do not call
+// runOne because they skip all host-side lifecycle work.
 //
 // A nil cfg, or a cfg that declares neither Readiness/Hooks nor an `http`
 // entitlement, is a no-op: most services in a multi-service app don't opt
