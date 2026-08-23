@@ -11,9 +11,16 @@
 # (the same wheel HelloONNX's Stagefile resolves with `cuda: true`).
 
 FROM python:3.11-slim-bookworm AS export
+# Ultralytics depends on the GUI opencv-python wheel, whose import needs
+# X client libraries the slim image lacks (libxcb, libGL, glib). They are
+# build-stage only; the runtime stage keeps opencv-python-headless.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxcb1 libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 # Pin the Ultralytics release; it is the model version reported in every
 # prediction record (WENDY_MODEL_VERSION) and pinned in campaign.yaml.
-RUN pip install --no-cache-dir "ultralytics==8.3.63" "onnx<2" onnxruntime
+# onnxscript backs torch.onnx.export from torch 2.13 onwards.
+RUN pip install --no-cache-dir "ultralytics==8.3.63" "onnx<2" onnxruntime onnxscript
 WORKDIR /export
 # Downloads the pinned yolov8n.pt weights and exports yolov8n.onnx.
 # opset 12 keeps the graph loadable by every onnxruntime this app targets.
