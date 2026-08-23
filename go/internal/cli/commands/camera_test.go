@@ -16,6 +16,8 @@ import (
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 )
 
 // Annex-B NAL header bytes (forbidden_zero | nal_ref_idc | nal_unit_type).
@@ -180,7 +182,7 @@ func TestPlayVideoWithGStreamer_RemoteStreamErrorPrecedesMissingGStreamer(t *tes
 func firmwareMismatchError(t *testing.T) error {
 	t.Helper()
 	st := status.New(codes.FailedPrecondition, "firmware mismatch")
-	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: "TEGRA_FIRMWARE_MISMATCH", Metadata: map[string]string{
+	with, err := st.WithDetails(&errdetails.ErrorInfo{Reason: streamreason.TegraFirmwareMismatch, Metadata: map[string]string{
 		"rootfs_l4t": "R38.2.0", "boot_firmware_l4t": "R36.4.3",
 	}})
 	if err != nil {

@@ -304,6 +304,7 @@ Hardware-dependent GPU or board-telemetry access.
 | Host hardware | Grant |
 |---------------|-------|
 | NVIDIA Jetson | NVIDIA CDI specs, CUDA env vars, `/dev/nvidia*` |
+| AMD (ROCm) | `/dev/kfd` (compute) and `/dev/dri/renderD*` (GPU), plus the `render`/`video` groups |
 | Raspberry Pi | `/dev/vcio` (VideoCore mailbox) for board telemetry — power, voltage/current, temperature, throttling, Pi 5 PMIC ADC |
 | Other | No hardware-specific grant |
 
@@ -452,7 +453,7 @@ The container must serve the [MCP Streamable HTTP](https://modelcontextprotocol.
 
 ### `http`
 
-Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
+Declares the app's primary HTTP port. The agent reports it over gRPC (`AppContainer.http_port`) for any client — including `wendy device apps` and remote management apps — to discover and open. An attached `wendy run` uses it automatically: it waits for the port to accept connections before printing "App reachable at ..." and opens it in your default browser, with no extra `hooks.postStart` configuration required. If readiness times out, the CLI warns but does not print the success message or perform this automatic browser open.
 
 ```json
 { "type": "http", "port": 8080 }

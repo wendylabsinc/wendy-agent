@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -132,19 +132,6 @@ func (f *fakeVideoStream) Send(frame *agentpb.VideoFrame) error {
 	defer f.mu.Unlock()
 	f.frames = append(f.frames, frame.GetData())
 	return nil
-}
-
-func hasErrorReason(err error, reason string) bool {
-	st, ok := status.FromError(err)
-	if !ok {
-		return false
-	}
-	for _, detail := range st.Details() {
-		if info, ok := detail.(*errdetails.ErrorInfo); ok && info.GetReason() == reason {
-			return true
-		}
-	}
-	return false
 }
 
 // newIPTestService returns a service with state under a temporary directory and
@@ -367,7 +354,7 @@ func TestStreamVideoWithoutCredentials(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
 	}
-	if !hasErrorReason(err, reasonIPCameraNoCredentials) {
+	if !streamreason.Has(err, reasonIPCameraNoCredentials) {
 		t.Fatalf("error %v missing reason %s", err, reasonIPCameraNoCredentials)
 	}
 }
@@ -872,7 +859,7 @@ func TestTestCameraCredentials_NoCredentialsReason(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("code = %v, want FailedPrecondition", status.Code(err))
 	}
-	if !hasErrorReason(err, reasonIPCameraNoCredentials) {
+	if !streamreason.Has(err, reasonIPCameraNoCredentials) {
 		t.Fatalf("error %v missing reason %s", err, reasonIPCameraNoCredentials)
 	}
 }

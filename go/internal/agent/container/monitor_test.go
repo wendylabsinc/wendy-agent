@@ -159,13 +159,8 @@ func TestContainerMonitor_ShouldRestart_OnFailure(t *testing.T) {
 	}
 }
 
-// TestContainerMonitor_ShouldRestart_Always verifies RestartAlways restarts
-// even when the container has been explicitly stopped. This is pre-existing
-// behavior (restarting after an explicit stop is the entire point of
-// "always") that fix round 2 exists specifically to preserve: restartBlocked
-// must agree with it, or an explicitly-stopped RestartAlways app gets stuck
-// in a perpetual scheduled-by-planRestarts-then-silently-skipped-by-
-// restartSingle loop.
+// TestContainerMonitor_ShouldRestart_Always verifies RestartAlways handles
+// spontaneous exits but still yields to an explicit user stop.
 func TestContainerMonitor_ShouldRestart_Always(t *testing.T) {
 	m := newTestMonitor()
 
@@ -175,44 +170,20 @@ func TestContainerMonitor_ShouldRestart_Always(t *testing.T) {
 	}
 
 	state.ExplicitStop = true
-	if !m.shouldRestart(state) {
-		t.Error("shouldRestart() = false for RestartAlways (explicitly stopped), want true — RestartAlways ignores ExplicitStop by design")
+	if m.shouldRestart(state) {
+		t.Error("shouldRestart() = true for explicitly-stopped RestartAlways, want false")
 	}
 }
 
-// TestRestartPolicyHonorsExplicitStop is a direct table test of the shared
-// predicate shouldRestart and restartBlocked both derive from, so the two
-// cannot silently drift on which policies treat an explicit stop as binding.
-func TestRestartPolicyHonorsExplicitStop(t *testing.T) {
-	tests := []struct {
-		policy RestartPolicy
-		want   bool
-	}{
-		{RestartNo, false},
-		{RestartUnlessStopped, true},
-		{RestartOnFailure, true},
-		{RestartAlways, false},
-		{RestartPolicy(99), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.policy.String(), func(t *testing.T) {
-			if got := restartPolicyHonorsExplicitStop(tt.policy); got != tt.want {
-				t.Errorf("restartPolicyHonorsExplicitStop(%v) = %v, want %v", tt.policy, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestRestartBlocked_AlwaysPolicyIgnoresExplicitStop is the regression guard
-// for the fix round 2 finding: restartBlocked's ExplicitStop arm must not
-// block a RestartAlways container just because it was explicitly stopped.
-func TestRestartBlocked_AlwaysPolicyIgnoresExplicitStop(t *testing.T) {
+// TestRestartBlocked_AlwaysPolicyHonorsExplicitStop guards the direct-start
+// race between a monitor tick and a user stop.
+func TestRestartBlocked_AlwaysPolicyHonorsExplicitStop(t *testing.T) {
 	m := newTestMonitor()
 	m.Register("com.example.app", RestartAlways, 0)
 	m.MarkExplicitStop("com.example.app")
 
-	if m.restartBlocked("com.example.app") {
-		t.Error("restartBlocked() = true for RestartAlways + ExplicitStop + not suppressed; want false (old semantics: RestartAlways restarts even after explicit stop)")
+	if !m.restartBlocked("com.example.app") {
+		t.Error("restartBlocked() = false for RestartAlways + ExplicitStop; want true")
 	}
 }
 
@@ -244,12 +215,10 @@ func TestRestartBlocked_SuppressedAlwaysStillBlocked(t *testing.T) {
 	}
 }
 
-// TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStillScheduled locks in
-// pre-round-1 behavior for RestartAlways: even explicitly stopped, a down
-// RestartAlways container must still be scheduled by planRestarts — matching
-// shouldRestart, which never gated RestartAlways on ExplicitStop — with no
-// skip and no double count of FailureCount.
-func TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStillScheduled(t *testing.T) {
+// TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStaysStopped is the group-stop
+// regression: an `always` member must not schedule a group restart after a
+// direct user stop.
+func TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStaysStopped(t *testing.T) {
 	m := newTestMonitor()
 	m.Register("com.example.app", RestartAlways, 0)
 	m.MarkExplicitStop("com.example.app")
@@ -259,15 +228,15 @@ func TestPlanRestarts_ExplicitlyStoppedAlwaysPolicyStillScheduled(t *testing.T) 
 	}
 
 	got := m.planRestarts(stopped)
-	if len(got) != 1 || got[0] != "com.example.app" {
-		t.Errorf("planRestarts = %v; want [com.example.app] (RestartAlways ignores ExplicitStop)", got)
+	if len(got) != 0 {
+		t.Errorf("planRestarts = %v; want none for explicitly-stopped RestartAlways", got)
 	}
 
 	m.mu.Lock()
 	fc := m.states["com.example.app"].FailureCount
 	m.mu.Unlock()
-	if fc != 1 {
-		t.Errorf("FailureCount = %d after one planRestarts call; want 1 (no double count)", fc)
+	if fc != 0 {
+		t.Errorf("FailureCount = %d after explicit stop; want 0", fc)
 	}
 }
 
@@ -408,6 +377,36 @@ func TestPlanRestartActions_DefersGroupWhenMemberSuppressed(t *testing.T) {
 	actions = m.planRestartActions(context.Background(), []string{"app_listener"})
 	if len(actions) != 1 || actions[0].groupAppID != "app" {
 		t.Errorf("planRestartActions after resume = %+v; want one group action for app", actions)
+	}
+}
+
+func TestPlanRestartActions_DefersGroupWhenMemberExplicitlyStopped(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+	m.Register("app_talker", RestartAlways, 0)
+	m.MarkExplicitStop("app_talker")
+
+	actions := m.planRestartActions(context.Background(), []string{"app_listener"})
+	if len(actions) != 0 {
+		t.Errorf("planRestartActions = %+v with explicitly-stopped sibling; want no action", actions)
+	}
+}
+
+func TestRestartGroup_SkipsWhenMemberStoppedAfterScheduling(t *testing.T) {
+	fake := &fakeContainerdClient{groupOf: map[string]string{
+		"app_talker":   "app",
+		"app_listener": "app",
+	}}
+	m := NewContainerMonitor(zap.NewNop(), fake, nil, time.Second)
+	m.Register("app_talker", RestartAlways, 0)
+	m.MarkExplicitStop("app_talker")
+
+	m.restartGroup(context.Background(), "app")
+	if len(fake.groupRestarts) != 0 {
+		t.Errorf("RestartGroup calls = %v; want none", fake.groupRestarts)
 	}
 }
 

@@ -122,21 +122,26 @@ run_test() {
 }
 
 # A per-run docker-container builder is shared by every integration fixture.
-# If buildkitd is OOM-killed or loses its gRPC socket, leaving that dead builder
-# in place turns one transient host failure into a long list of unrelated test
-# failures. This recovery is deliberately gated on WENDY_BUILDX_BUILDER, which
-# the CI workflows set to their disposable builder; local user builders are
-# never removed automatically.
-recover_ci_oci_builder() {
+# Retry one failed OCI export because self-hosted runners occasionally lose a
+# solve while otherwise remaining healthy. If buildkitd itself died, recreate
+# the disposable builder first so one failure does not cascade through the
+# remaining fixtures. This is deliberately gated on WENDY_BUILDX_BUILDER; local
+# user builds are never retried or removed automatically.
+prepare_ci_oci_retry() {
     local output="$1"
     [[ -n "${WENDY_BUILDX_BUILDER:-}" ]] || return 1
-    grep -qiE \
-        'failed to receive status:.*(EOF|Unavailable)|error reading from server: EOF|/run/buildkit/buildkitd\.sock: connect: connection refused|failed to list workers:.*Unavailable|ResourceExhausted:.*cannot allocate memory' \
-        <<<"$output" || return 1
 
-    local builder="${WENDY_BUILDX_BUILDER}-oci"
-    echo "    BuildKit daemon failed; recreating disposable CI builder $builder and retrying once"
-    docker buildx rm "$builder" --force >/dev/null 2>&1 || true
+    if grep -qiE \
+        'failed to receive status:.*(EOF|Unavailable)|error reading from server: EOF|/run/buildkit/buildkitd\.sock: connect: connection refused|failed to list workers:.*Unavailable|ResourceExhausted:.*cannot allocate memory' \
+        <<<"$output"; then
+        local builder="${WENDY_BUILDX_BUILDER}-oci"
+        echo "    BuildKit daemon failed; recreating disposable CI builder $builder and retrying once"
+        docker buildx rm "$builder" --force >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    grep -qF 'docker buildx build (OCI export) failed' <<<"$output" || return 1
+    echo "    OCI export failed on the disposable CI builder; retrying once"
 }
 
 # ── Container verdict ────────────────────────────────────────────────
@@ -217,7 +222,7 @@ run_container_test() {
         # short-lived app reads back as CRASH_LOOPING).
         out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
         rc=$?
-        if [[ $rc -ne 0 ]] && recover_ci_oci_builder "$out"; then
+        if [[ $rc -ne 0 ]] && prepare_ci_oci_retry "$out"; then
             echo "$out"
             out=$("$WENDY" run --device "$HOSTNAME" --prefix "$test_dir" --no-restart "$@" 2>&1)
             rc=$?

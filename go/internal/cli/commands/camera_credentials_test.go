@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/wendylabsinc/wendy/go/internal/shared/streamreason"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
@@ -76,7 +77,7 @@ func credentialsNeededError(t *testing.T, deviceID string) error {
 	t.Helper()
 	st := status.New(codes.FailedPrecondition, "camera has no stored credentials")
 	detailed, err := st.WithDetails(&errdetails.ErrorInfo{
-		Reason:   "IP_CAMERA_NO_CREDENTIALS",
+		Reason:   streamreason.IPCameraNoCredentials,
 		Metadata: map[string]string{"device_id": deviceID},
 	})
 	if err != nil {

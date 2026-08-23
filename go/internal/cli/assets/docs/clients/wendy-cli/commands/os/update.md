@@ -70,10 +70,27 @@ The verdict — including any failure reason reported by `wendyos-update commit`
 
 ```
 Update failed post-reboot healthchecks and was rolled back to WendyOS-0.10.4.
-Reason: wendyos-update commit failed: exit status 4 (health.d/50-containerd.sh exited 1)
+Reason: wendyos-update commit failed: exit status 4 (health hook "50-containerd.sh" failed: exit status 1)
 ```
 
 *(the text in parentheses is whatever `wendyos-update commit` itself reported as the failure reason)*
+
+A rollback is not always a healthcheck failure, and the first line says which it
+was. When the new OS never booted — the firmware fell back to the old slot, so
+`health.d` never ran at all — the report names that instead:
+
+```
+The new OS did not boot; the device fell back to WendyOS-0.10.4 and the update was rolled back.
+Reason: wendyos-update commit failed: exit status 1 (pending update wendyos-image-... is marked failed; run rollback)
+```
+
+If the reason is one the CLI cannot classify, it reports the rollback and the
+captured reason without attributing a cause:
+
+```
+Update was rolled back to WendyOS-0.10.4.
+Reason: wendyos-update commit failed: exit status 4 (platform verify: ESRT status 6163)
+```
 
 `wendy os update-status` reports the same record (including the `Reason:` line) after the fact, without re-running the update — useful for diagnosing a commit failure without shell access to the device. In addition to the persisted record, `wendy os update-status` queries the live wendyos-update engine snapshot, which distinguishes a committed nightly from a rolled-back one even when the OS version string is identical across builds.
 

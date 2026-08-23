@@ -52,6 +52,8 @@ import (
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
+var errAppStopping = errors.New("app is currently being stopped")
+
 // Compile-time check that *Client satisfies services.ContainerdClient.
 var _ services.ContainerdClient = (*Client)(nil)
 
@@ -1583,6 +1585,9 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		}
 	}()
 	ctx = c.withNamespace(ctx)
+	if c.appStopping[appID] {
+		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
 
 	// Start streams one container's output, so a bare appID naming a group is
 	// an error here rather than a fan-out.
@@ -1612,6 +1617,13 @@ func (c *Client) StartContainer(ctx context.Context, appName, postStartAgentComm
 		// ListBootContainers (e.g. a direct restart of a single container).
 		// c.mu is already held here (muHeld), so use the lock-free core.
 		c.hydrateIsolationLocked(appID, labels)
+	}
+	// The parsed name above can be ambiguous when app IDs contain underscores;
+	// repeat the check after authoritative labels resolve the actual app ID.
+	// Since StopContainer sets appStopping while holding this same mutex, a
+	// start is either fully ordered before the stop snapshot or rejected here.
+	if c.appStopping[appID] {
+		return nil, fmt.Errorf("%w: %q", errAppStopping, appID)
 	}
 
 	// Reboot resilience for meshed containers (C-final-review Fix 1): the
@@ -2371,11 +2383,12 @@ func buildROS2Env(appCfg *appconfig.AppConfig, appID, serviceName string) ([]str
 
 // injectOTELEnvIfNeeded appends OTEL exporter env vars to env when host
 // networking is in effect and the endpoint is not already configured. Besides
-// the endpoint and protocol, it sets OTEL_SERVICE_NAME and
-// OTEL_RESOURCE_ATTRIBUTES (wendy.app.name) to the appId so that telemetry
-// exported by the app matches `wendy device logs --app <id>`, which filters on
-// those resource attributes. It must be called after the image env has been
-// merged so that image-set values take precedence.
+// the endpoint and protocol, it sets OTEL_SERVICE_NAME to the single-container
+// app ID or multi-service container name, and OTEL_RESOURCE_ATTRIBUTES
+// (wendy.app.name) to the owning app ID. This keeps services distinguishable
+// while allowing `wendy device logs --app <id>` to select the whole app. It
+// must be called after the image env has been merged so that image-set values
+// take precedence.
 //
 // appID is passed explicitly (rather than read from appCfg.AppID) so the
 // caller's AppConfig struct is never mutated, which would affect concurrent or
@@ -2418,7 +2431,11 @@ func injectOTELEnvIfNeeded(env []string, appCfg *appconfig.AppConfig, appID stri
 	// Image-set values still take precedence.
 	if appID != "" {
 		if !hasServiceName {
-			env = append(env, "OTEL_SERVICE_NAME="+appID)
+			serviceName := appID
+			if appCfg.ServiceName != "" {
+				serviceName = ContainerName(appID, appCfg.ServiceName)
+			}
+			env = append(env, "OTEL_SERVICE_NAME="+serviceName)
 		}
 		if !hasResourceAttrs {
 			env = append(env, "OTEL_RESOURCE_ATTRIBUTES=wendy.app.name="+appID)
@@ -2823,6 +2840,9 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	if err != nil {
 		return nil, fmt.Errorf("RestartGroup: resolving service order for %q: %w", appID, err)
 	}
+	if err := c.ensureGroupRestartAllowed(ctx, appID, order...); err != nil {
+		return nil, err
+	}
 
 	// 1. Stop every member task so no secondary is left attached to a namespace
 	//    about to be recreated. Containers are kept; only tasks are deleted.
@@ -2844,6 +2864,9 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	// 3. Start the primary first so setPrimaryPID records the new live PID
 	//    before any secondary resolves its join against it.
 	primaryName := ContainerName(appID, order[0])
+	if err := c.ensureGroupRestartAllowed(ctx, appID, order[0]); err != nil {
+		return nil, err
+	}
 	primaryCh, err := c.StartContainer(ctx, primaryName, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("RestartGroup: starting primary %q: %w", primaryName, err)
@@ -2861,6 +2884,9 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 	//    then start it.
 	for _, svc := range order[1:] {
 		name := ContainerName(appID, svc)
+		if err := c.ensureGroupRestartAllowed(ctx, appID, svc); err != nil {
+			return results, err
+		}
 		if rerr := c.refreshSecondaryNamespaces(ctx, name, primaryPID, isolation); rerr != nil {
 			c.logger.Error("RestartGroup: failed to refresh secondary namespaces",
 				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(rerr))
@@ -2868,6 +2894,9 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		}
 		ch, serr := c.StartContainer(ctx, name, "", nil)
 		if serr != nil {
+			if errors.Is(serr, errAppStopping) {
+				return results, serr
+			}
 			c.logger.Error("RestartGroup: failed to start secondary",
 				zap.String(logfields.AppID, appID), zap.String(logfields.ServiceName, svc), zap.Error(serr))
 			continue
@@ -2875,6 +2904,36 @@ func (c *Client) RestartGroup(ctx context.Context, appID string) (map[string]<-c
 		results[name] = ch
 	}
 	return results, nil
+}
+
+// ensureGroupRestartAllowed prevents a stale monitor action from reviving an
+// app after a user stop. Before teardown callers pass every member so an
+// already-stopped group is left untouched. Before a start they pass only that
+// member: a user stop persists the marker on every member, while appStopping
+// covers teardown in progress, so checking the full group again would only add
+// quadratic containerd metadata reads.
+func (c *Client) ensureGroupRestartAllowed(ctx context.Context, appID string, serviceNames ...string) error {
+	c.mu.Lock()
+	stopping := c.appStopping[appID]
+	c.mu.Unlock()
+	if stopping {
+		return fmt.Errorf("%w: %q", errAppStopping, appID)
+	}
+	for _, svc := range serviceNames {
+		name := ContainerName(appID, svc)
+		ctr, err := c.client.LoadContainer(ctx, name)
+		if err != nil {
+			return fmt.Errorf("RestartGroup: checking stop state for %q: %w", name, err)
+		}
+		labels, err := ctr.Labels(ctx)
+		if err != nil {
+			return fmt.Errorf("RestartGroup: reading stop state for %q: %w", name, err)
+		}
+		if labels[labelKeyStoppedByUser] == "true" {
+			return fmt.Errorf("RestartGroup: app %q was explicitly stopped", appID)
+		}
+	}
+	return nil
 }
 
 // refreshSecondaryNamespaces rewrites a secondary container's stored OCI spec so

@@ -34,7 +34,7 @@ func TestParseTunnelArg(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.arg, func(t *testing.T) {
-			local, remote, err := parseTunnelArg(tt.arg)
+			local, remote, _, err := parseTunnelArg(tt.arg)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("parseTunnelArg(%q) expected error, got none", tt.arg)

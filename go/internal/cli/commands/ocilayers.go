@@ -462,6 +462,16 @@ func readOCILayoutDirLayers(dir, platform string) ([]localLayer, []byte, error) 
 // ("tar") instead of the persistent layout directory. Escape hatch only.
 const chunkExportModeEnv = "WENDY_CHUNK_EXPORT"
 
+// resolveOCIExportBuilder resolves the builder an OCI-layout export will use,
+// applying the on-device BuildKit default that an unset --builder gets when no
+// docker is present. Returns normalizeImageBuilder's error for unknown builders.
+func resolveOCIExportBuilder(builder string) (string, error) {
+	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
+		builder = imageBuilderBuildkit
+	}
+	return normalizeImageBuilder(builder)
+}
+
 // chunkExportPlan decides how the chunk-diff deploy exports the built image:
 // "dir" — persistent OCI layout directory (buildx tar=false, blob-deduped) —
 // for the docker backend, "tar" for backends that can only emit a tar
@@ -472,10 +482,7 @@ func chunkExportPlan(builder string) string {
 	if os.Getenv(chunkExportModeEnv) == "tar" {
 		return "tar"
 	}
-	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
-		return "tar"
-	}
-	normalized, err := normalizeImageBuilder(builder)
+	normalized, err := resolveOCIExportBuilder(builder)
 	if err != nil || normalized != imageBuilderDocker {
 		return "tar"
 	}
@@ -967,10 +974,7 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 // It mirrors the flag/cache/env setup of buildAndPushImage but skips registry
 // push entirely.
 func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest, cacheKey string, stdout, stderr io.Writer) error {
-	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
-		builder = imageBuilderBuildkit
-	}
-	normalized, err := normalizeImageBuilder(builder)
+	normalized, err := resolveOCIExportBuilder(builder)
 	if err != nil {
 		return err
 	}
