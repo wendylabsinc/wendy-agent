@@ -48,6 +48,129 @@ func TestFormatThermalZones(t *testing.T) {
 	}
 }
 
+func TestStabilizeThermalZoneOrderUsesHysteresis(t *testing.T) {
+	previous := []*agentpb.ThermalZone{
+		{Name: "go2/motor/fr-hip", TempC: 52},
+		{Name: "go2/motor/fl-hip", TempC: 51},
+		{Name: "go2/motor/rr-hip", TempC: 45},
+	}
+
+	// The agent now reports fl-hip first, but its one-degree lead is visually
+	// insignificant and should not make the dashboard rows trade places.
+	current := []*agentpb.ThermalZone{
+		{Name: "go2/motor/fl-hip", TempC: 52},
+		{Name: "go2/motor/fr-hip", TempC: 51},
+		{Name: "go2/motor/rr-hip", TempC: 45},
+	}
+	stable := stabilizeThermalZoneOrder(previous, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fr-hip,go2/motor/fl-hip,go2/motor/rr-hip" {
+		t.Fatalf("near-equal readings reordered: %s", got)
+	}
+
+	// A clear lead still promotes the genuinely hotter sensor.
+	current[0].TempC = 54
+	stable = stabilizeThermalZoneOrder(stable, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fl-hip,go2/motor/fr-hip,go2/motor/rr-hip" {
+		t.Fatalf("meaningfully hotter sensor was not promoted: %s", got)
+	}
+
+	// Crossing back by only one degree does not immediately undo that move.
+	current[0].TempC = 52
+	current[1].TempC = 53
+	stable = stabilizeThermalZoneOrder(stable, current)
+	if got := thermalZoneNames(stable); got != "go2/motor/fl-hip,go2/motor/fr-hip,go2/motor/rr-hip" {
+		t.Fatalf("order oscillated after a small reversal: %s", got)
+	}
+}
+
+func TestStabilizeThermalZoneOrderPreservesDuplicateNames(t *testing.T) {
+	current := []*agentpb.ThermalZone{
+		{Name: "x86_pkg_temp", TempC: 50},
+		{Name: "x86_pkg_temp", TempC: 49},
+	}
+	if got := stabilizeThermalZoneOrder(nil, current); len(got) != len(current) {
+		t.Fatalf("duplicate-named zones were dropped: got %d, want %d", len(got), len(current))
+	}
+}
+
+func thermalZoneNames(zones []*agentpb.ThermalZone) string {
+	names := make([]string, len(zones))
+	for i, zone := range zones {
+		names[i] = zone.GetName()
+	}
+	return strings.Join(names, ",")
+}
+
+func TestSummarizeTemperatureUsesSensorSpecificThreshold(t *testing.T) {
+	host := &agentpb.HostStats{ThermalZones: []*agentpb.ThermalZone{
+		{Name: "go2/imu", TempC: 79},
+		{Name: "go2/motor/fr-thigh", TempC: 66},
+		{Name: "cpu-thermal", TempC: 55},
+	}}
+	summary, ok := summarizeTemperature(host)
+	if !ok {
+		t.Fatal("expected a temperature summary")
+	}
+	if summary.Max.Name != "go2/imu" || summary.Max.TempC != 79 {
+		t.Fatalf("max = %+v, want 79C Go2 IMU", summary.Max)
+	}
+	if summary.Risk != thermalNear {
+		t.Fatalf("risk = %v, want near because a motor is within 5C of 70C", summary.Risk)
+	}
+	if summary.Alert.Name != "go2/motor/fr-thigh" || summary.AlertThreshold != 70 {
+		t.Fatalf("alert = %+v @ %v, want Go2 motor @ 70C", summary.Alert, summary.AlertThreshold)
+	}
+}
+
+func TestSummarizeTemperatureThresholdBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		zone *agentpb.ThermalZone
+		want thermalRisk
+	}{
+		{name: "motor below near band", zone: &agentpb.ThermalZone{Name: "go2/motor/fl-calf", TempC: 64.9}, want: thermalNormal},
+		{name: "motor at near edge", zone: &agentpb.ThermalZone{Name: "go2/motor/fl-calf", TempC: 65}, want: thermalNear},
+		{name: "motor at warning", zone: &agentpb.ThermalZone{Name: "go2/motor/fl-calf", TempC: 70}, want: thermalOver},
+		{name: "imu at near edge", zone: &agentpb.ThermalZone{Name: "go2/imu", TempC: 80}, want: thermalNear},
+		{name: "generic zone at near edge", zone: &agentpb.ThermalZone{Name: "cpu-thermal", TempC: 80}, want: thermalNear},
+		{name: "unknown Go2 sensor has no guessed threshold", zone: &agentpb.ThermalZone{Name: "go2/unknown", TempC: 100}, want: thermalNormal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			summary, ok := summarizeTemperature(&agentpb.HostStats{ThermalZones: []*agentpb.ThermalZone{tt.zone}})
+			if !ok || summary.Risk != tt.want {
+				t.Fatalf("summarizeTemperature(%+v) = risk %v, ok %v; want %v", tt.zone, summary.Risk, ok, tt.want)
+			}
+		})
+	}
+}
+
+func TestSummarizeTemperatureIncludesGPUOnlyReading(t *testing.T) {
+	temp := 81.0
+	summary, ok := summarizeTemperature(&agentpb.HostStats{Gpus: []*agentpb.GpuStats{{Index: 2, TempC: &temp}}})
+	if !ok || summary.Max.Name != "gpu/2" || summary.Max.TempC != 81 || summary.Risk != thermalNear {
+		t.Fatalf("GPU-only summary = %+v, ok %v", summary, ok)
+	}
+}
+
+func TestRenderTemperatureHeaderShowsCircleOnlyForAlert(t *testing.T) {
+	normal := renderTemperatureHeader(temperatureSummary{Max: thermalReading{Name: "go2/imu", TempC: 79}})
+	if strings.Contains(normal, "●") {
+		t.Fatalf("normal header unexpectedly has an alert circle: %q", normal)
+	}
+	near := renderTemperatureHeader(temperatureSummary{
+		Max:            thermalReading{Name: "go2/motor/fr-thigh", TempC: 66},
+		Risk:           thermalNear,
+		Alert:          thermalReading{Name: "go2/motor/fr-thigh", TempC: 66},
+		AlertThreshold: 70,
+	})
+	for _, want := range []string{"●", "Temp max", "66°C", "near 70°C warning"} {
+		if !strings.Contains(near, want) {
+			t.Fatalf("near header missing %q: %q", want, near)
+		}
+	}
+}
+
 func TestHostCPUPercent(t *testing.T) {
 	prev := topSample{host: &agentpb.HostStats{CpuTotalJiffies: 1000, CpuIdleJiffies: 800}}
 	cur := topSample{host: &agentpb.HostStats{CpuTotalJiffies: 1100, CpuIdleJiffies: 850}}
@@ -161,6 +284,45 @@ func TestBuildTopJSON(t *testing.T) {
 	}
 }
 
+func TestBuildTopJSONIncludesMaximumTemperatureAdditively(t *testing.T) {
+	temp := 84.0
+	sample := topSample{host: &agentpb.HostStats{
+		ThermalZones: []*agentpb.ThermalZone{{Name: "cpu-thermal", TempC: 72}},
+		Gpus:         []*agentpb.GpuStats{{Index: 0, TempC: &temp}},
+	}}
+	out := buildTopJSON(sample, sample, nil)
+	if out.Host.MaximumTemperature == nil {
+		t.Fatal("expected maximumTemperature")
+	}
+	if out.Host.MaximumTemperature.Name != "gpu/0" || out.Host.MaximumTemperature.TempC != 84 {
+		t.Fatalf("maximumTemperature = %+v, want gpu/0 at 84C", out.Host.MaximumTemperature)
+	}
+	if len(out.Host.ThermalZones) != 1 || out.Host.ThermalZones[0].Name != "cpu-thermal" {
+		t.Fatalf("existing thermalZones changed: %+v", out.Host.ThermalZones)
+	}
+
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"maximumTemperature":{"name":"gpu/0","tempC":84}`, `"thermalZones":[{"name":"cpu-thermal","tempC":72}]`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("JSON missing additive field %s: %s", want, data)
+		}
+	}
+}
+
+func TestBuildTopJSONOmitsMaximumTemperatureWithoutReading(t *testing.T) {
+	sample := topSample{host: &agentpb.HostStats{}}
+	data, err := json.Marshal(buildTopJSON(sample, sample, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "maximumTemperature") {
+		t.Fatalf("empty host must omit maximumTemperature: %s", data)
+	}
+}
+
 func TestWriteTopPlainSnapshotIncludesStateAndInactiveMetrics(t *testing.T) {
 	containers := []*agentpb.AppContainer{
 		{AppName: "active", RunningState: agentpb.AppRunningState_RUNNING},
@@ -202,6 +364,21 @@ func TestWriteTopPlainSnapshotIncludesStateAndInactiveMetrics(t *testing.T) {
 	}
 }
 
+func TestWriteTopPlainSnapshotIncludesMaximumTemperature(t *testing.T) {
+	sample := topSample{host: &agentpb.HostStats{
+		ThermalZones: []*agentpb.ThermalZone{{Name: "go2/motor/rr-thigh", TempC: 67}},
+	}}
+	var out bytes.Buffer
+	if err := writeTopPlainSnapshot(&out, sample, sample, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"TEMP MAX: 67°C (Go2 rr thigh)", "near 70°C warning"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("plain snapshot missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func TestTopViewMakesAllAppStatesExplicit(t *testing.T) {
 	m := topModel{
 		width:  100,
@@ -226,6 +403,28 @@ func TestTopViewMakesAllAppStatesExplicit(t *testing.T) {
 	for _, want := range []string{"1 running", "1 stopped", "1 crash-looping"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("top summary missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTopViewPutsThermalWarningInHeader(t *testing.T) {
+	m := topModel{
+		width:    100,
+		height:   24,
+		havePrev: true,
+		cur: topSample{host: &agentpb.HostStats{
+			MemTotalBytes: 100,
+			ThermalZones: []*agentpb.ThermalZone{
+				{Name: "go2/imu", TempC: 79},
+				{Name: "go2/motor/fr-thigh", TempC: 66},
+			},
+		}},
+	}
+	view := m.View()
+	firstLine := strings.Split(view, "\n")[0]
+	for _, want := range []string{"●", "Temp max", "79°C", "Go2 fr thigh 66°C", "near 70°C warning"} {
+		if !strings.Contains(firstLine, want) {
+			t.Fatalf("thermal header missing %q:\n%s", want, view)
 		}
 	}
 }

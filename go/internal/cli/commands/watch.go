@@ -2,6 +2,10 @@ package commands
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/signal"
@@ -12,6 +16,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/cobra"
+	"github.com/wendylabsinc/wendy/go/internal/shared/appconfig"
+	"github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
 
 // newWatchCmd builds the `wendy watch` command: it watches the project
@@ -66,7 +72,94 @@ func newWatchCmd() *cobra.Command {
 func withWatchInvariants(opts runOptions) runOptions {
 	opts.detach = true
 	opts.yes = true
+	if opts.watchState == nil {
+		opts.watchState = &watchDeployState{hashes: map[string]string{}}
+	}
 	return opts
+}
+
+// watchDeployState is intentionally scoped to one watch process. The first
+// deploy establishes a known-good baseline; later deploys may preserve a
+// service only when its effective desired-state hash still matches and the
+// device independently reports its container as running.
+type watchDeployState struct {
+	mu     sync.Mutex
+	hashes map[string]string
+}
+
+func (s *watchDeployState) matches(key, hash string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hashes[key] == hash
+}
+
+func (s *watchDeployState) record(key, hash string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hashes[key] = hash
+}
+
+func watchServiceKey(deviceKey, appID, service string) string {
+	return deviceKey + "/" + appID + "/" + service
+}
+
+// watchDesiredHash hashes the complete effective desired state of one service.
+// Callers include both its image/build identity and its runtime configuration,
+// so a watch cycle never preserves a container whose settings have changed.
+func watchDesiredHash(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(append([]byte("wendy-watch-service-v1\x00"), b...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+type watchServiceCandidate struct {
+	appID         string
+	containerName string
+	desiredHash   string
+}
+
+// selectPreservedWatchServices returns services that are both unchanged since
+// this watch session last deployed them and currently running on the device.
+// Either condition failing makes the service part of the next repair/deploy.
+func selectPreservedWatchServices(state *watchDeployState, deviceKey string, candidates map[string]watchServiceCandidate, deviceStates map[string]agentpb.AppRunningState) map[string]bool {
+	preserve := map[string]bool{}
+	for name, candidate := range candidates {
+		key := watchServiceKey(deviceKey, candidate.appID, name)
+		if state.matches(key, candidate.desiredHash) && deviceStates[strings.ToLower(candidate.containerName)] == agentpb.AppRunningState_RUNNING {
+			preserve[name] = true
+		}
+	}
+	return preserve
+}
+
+func filterPreservedServices(ordered []string, preserve map[string]bool) []string {
+	changed := make([]string, 0, len(ordered))
+	for _, name := range ordered {
+		if !preserve[name] {
+			changed = append(changed, name)
+		}
+	}
+	return changed
+}
+
+// adjustSharedNamespacePreserve expands a primary-service redeploy to the
+// whole shared-namespace group. Secondaries bake the primary PID's namespaces
+// into their OCI specs, so they are genuinely affected when that primary is
+// replaced even if their own desired-state hashes did not change.
+func adjustSharedNamespacePreserve(ordered []string, preserve map[string]bool, isolation string) map[string]bool {
+	if len(ordered) == 0 || !appconfig.IsSharedNamespaceIsolation(isolation) || preserve[ordered[0]] {
+		return preserve
+	}
+	return map[string]bool{}
 }
 
 func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) error {
@@ -90,19 +183,25 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var stopOnce sync.Once
+	stopWatch := func() {
+		stopOnce.Do(func() {
+			cliLogln("\nStopping watch.")
+			cancel()
+		})
+	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 	go func() {
 		select {
 		case <-sigCh:
-			cliLogln("\nStopping watch.")
-			cancel()
+			stopWatch()
 		case <-ctx.Done():
 		}
 	}()
 
-	deployer := &debouncedDeployer{opts: opts}
+	deployer := &debouncedDeployer{opts: opts, stopWatch: stopWatch}
 
 	cliLogln("Watching %s for changes (Ctrl-C to stop)...", root)
 	deployer.trigger(ctx) // initial deploy
@@ -151,9 +250,12 @@ func watchCommand(ctx context.Context, opts runOptions, debounce time.Duration) 
 // recent one.
 type debouncedDeployer struct {
 	opts      runOptions
+	stopWatch context.CancelFunc
 	mu        sync.Mutex
 	cancelCur context.CancelFunc
 }
+
+var watchRunCommand = runCommand
 
 func (d *debouncedDeployer) trigger(parent context.Context) {
 	d.mu.Lock()
@@ -167,9 +269,18 @@ func (d *debouncedDeployer) trigger(parent context.Context) {
 	go func() {
 		start := time.Now()
 		cliLogln("↻ change detected — redeploying...")
-		if err := runCommand(runCtx, d.opts); err != nil {
+		if err := watchRunCommand(runCtx, d.opts); err != nil {
 			if runCtx.Err() != nil {
 				return // superseded by a newer change or shutting down
+			}
+			if errors.Is(err, ErrUserCancelled) {
+				// Ctrl-C read by an interactive build UI arrives as a key event,
+				// not an OS signal. Treat it exactly like the signal path instead
+				// of reporting a failed deploy and continuing to watch.
+				if d.stopWatch != nil {
+					d.stopWatch()
+				}
+				return
 			}
 			cliLogln("✗ deploy failed: %v (still watching)", err)
 			return

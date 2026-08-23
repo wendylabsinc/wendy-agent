@@ -188,17 +188,6 @@ func normalizeImageBuilder(builder string) (string, error) {
 	}
 }
 
-func imageBuilderDisplayName(builder string) string {
-	switch builder {
-	case imageBuilderAppleContainer:
-		return "Apple Container"
-	case imageBuilderBuildkit:
-		return "BuildKit"
-	default:
-		return "Docker"
-	}
-}
-
 func imageBuilderWasExplicit(builder string) bool {
 	return strings.TrimSpace(builder) != ""
 }
@@ -625,6 +614,24 @@ func debugStagefileOptions(debug bool) []stagefile.Option {
 		return nil
 	}
 	return []stagefile.Option{stagefile.WithBuildProfile(stagefile.BuildProfileDebug)}
+}
+
+// frameworkStagefileOptions translates runtime framework configuration into
+// compiler inputs. The project declares ROS 2 once in wendy.json; Stagefile
+// then supplies the matching middleware package instead of making every
+// service repeat Wendy's resolved distro/RMW choice in install.apt.
+func frameworkStagefileOptions(frameworks *appconfig.FrameworksConfig) []stagefile.Option {
+	if frameworks == nil || frameworks.ROS2 == nil {
+		return nil
+	}
+	return ros2StagefileOptions(frameworks.ROS2)
+}
+
+func ros2StagefileOptions(ros2 *appconfig.ROS2Config) []stagefile.Option {
+	if ros2 == nil {
+		return nil
+	}
+	return []stagefile.Option{stagefile.WithROS2Runtime(ros2.ResolvedDistro(), ros2.ResolvedRMW())}
 }
 
 // hasContainerBuildFile reports whether dir holds any docker build source
@@ -1531,21 +1538,23 @@ func buildkitRegistryConfig(registryAddr string, plainHTTP bool, keypair *[2]str
 	return sb.String()
 }
 
-// removeBuilder removes a buildx builder, falling back to deleting the
-// instance file directly when `docker buildx rm` fails (e.g. because the
-// stored config contains IPv6 brackets that the host TOML parser rejects).
-func removeBuilder(ctx context.Context, name string) {
-	rmCmd := exec.CommandContext(ctx, "docker", "buildx", "rm", name)
-	if rmCmd.Run() == nil {
-		return
+// ensureRegistryBuilderInstance creates builderName only when it does not
+// already exist. Registry configuration changes are deliberately not handled
+// here: callers update the existing container in place so its BuildKit state
+// volume survives dynamic proxy-port and certificate changes.
+func ensureRegistryBuilderInstance(ctx context.Context, builderName string) (created bool, err error) {
+	if exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName).Run() == nil {
+		return false, nil
 	}
-	// Fallback: remove the instance file and kill the container directly.
-	home, err := os.UserHomeDir()
-	if err == nil {
-		os.Remove(filepath.Join(home, ".docker", "buildx", "instances", name))
-		os.Remove(filepath.Join(home, ".docker", "buildx", "activity", name))
+	cmd := exec.CommandContext(ctx, "docker", "buildx", "create",
+		"--name", builderName,
+		"--driver", "docker-container",
+		"--driver-opt", "network=host",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
 	}
-	exec.CommandContext(ctx, "docker", "rm", "-f", "buildx_buildkit_"+name+"0").Run()
+	return true, nil
 }
 
 // ensurePlaintextBuilder ensures the "wendy" buildx builder exists with plain
@@ -1565,27 +1574,18 @@ func ensurePlaintextBuilder(ctx context.Context, configDir, registryAddr string,
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != fullConfig
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject config into a newly created builder
 	}
 
-	// Inject the real config into the builder container and restart only when needed.
+	// Inject the real config into the existing builder container and restart only
+	// when needed. In particular, do not remove/recreate the builder when the
+	// per-run registry proxy port changes: its /var/lib/buildkit state is held in
+	// a Docker volume, and an in-place restart preserves warm image snapshots.
 	// Also re-inject if the container was destroyed (e.g. after colima restart) or
 	// was bootstrapped without config injection (default buildkitd.toml lacks http=true).
 	containerName := "buildx_buildkit_" + builderName + "0"
@@ -1670,7 +1670,7 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	// public leaf certificate. The certificate is public material; no private
 	// key material or derivative is persisted (SOC2-C1, NIST-SC-28, ISO27001-A.8).
 	// When the cert changes (rotation, new device), the digest changes and the
-	// builder is torn down and rebuilt.
+	// builder is reconfigured and restarted in place.
 	certDigest := sha256.Sum256([]byte(leafCertPEM))
 	appliedState := fullConfig +
 		"\n---CERTHASH---\n" + hex.EncodeToString(certDigest[:])
@@ -1678,27 +1678,17 @@ func ensureMTLSBuilder(ctx context.Context, configDir, registryAddr, containerCe
 	appliedConfig, _ := os.ReadFile(appliedPath)
 	configChanged := string(appliedConfig) != appliedState
 
-	cmd := exec.CommandContext(ctx, "docker", "buildx", "inspect", builderName)
-	builderExists := cmd.Run() == nil
-
-	if builderExists && configChanged {
-		removeBuilder(ctx, builderName)
-		builderExists = false
+	created, err := ensureRegistryBuilderInstance(ctx, builderName)
+	if err != nil {
+		return "", err
 	}
-
-	if !builderExists {
-		cmd = exec.CommandContext(ctx, "docker", "buildx", "create",
-			"--name", builderName,
-			"--driver", "docker-container",
-			"--driver-opt", "network=host",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return "", fmt.Errorf("creating buildx builder %q: %s: %w", builderName, string(out), err)
-		}
+	if created {
 		configChanged = true // always inject certs and config into a newly created builder
 	}
 
 	// Only copy certs and restart the builder when something actually changed.
+	// Reconfigure an existing builder in place so its /var/lib/buildkit volume —
+	// and therefore its warm image snapshots — survives per-run proxy-port changes.
 	// Restarting while another parallel build uses the same builder kills that build.
 	if configChanged {
 		if err := copyCertsToBuilder(ctx, builderName, hostCertDir, containerCertDir); err != nil {
@@ -2171,6 +2161,26 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	if err != nil {
 		return err
 	}
+
+	// Docker deployments build through the stable OCI-export builder and push
+	// from the host. BuildKit therefore never receives a deployment's temporary
+	// registry address, so one `wendy run` cannot reconfigure/restart the shared
+	// builder underneath another. Independent app/service layouts and local
+	// caches are keyed separately and may build concurrently; the same key is
+	// serialized by lockOCILayoutDir.
+	if normalized == imageBuilderDocker {
+		registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		defer cleanup()
+
+		if err := buildAndPushImageViaOCILayout(ctx, dir, registryAddr, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS); err != nil {
+			return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+		}
+		return nil
+	}
+
 	registryAddr, cleanup, useMTLS, dialErr, err := resolveRegistryForImageBuilder(ctx, conn, regPort, normalized)
 	if err != nil {
 		return err
@@ -2178,8 +2188,167 @@ func buildAndPushImageForAgentWithBuilder(ctx context.Context, conn *grpcclient.
 	defer cleanup()
 
 	registryImage := fmt.Sprintf("%s/%s:latest", registryAddr, strings.ToLower(repo))
-	cliLogln("Building and pushing image with %s for %s...", imageBuilderDisplayName(normalized), platform)
 	if err := buildAndPushImageWithBuilder(ctx, normalized, dir, registryAddr, registryImage, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, useMTLS, dialErr); err != nil {
+		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
+	}
+	return nil
+}
+
+// buildAndPushImageViaOCILayout is the concurrency-safe Docker deployment
+// path. A stable, registry-agnostic BuildKit builder writes a persistent OCI
+// layout; the host then pushes that image to the device. Per-app/service locks
+// protect the lazy OCI files while allowing unrelated deployments to overlap.
+func buildAndPushImageViaOCILayout(ctx context.Context, dir, registryAddr, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, useMTLS bool) error {
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	if cacheKey == "" {
+		cacheKey = repo
+	}
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+	})
+	if err != nil {
+		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
+	}
+
+	fmt.Fprintf(logOutput, "[registry] pushing OCI image to %s/%s:latest\n", registryAddr, repo)
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
+		return err
+	}
+	return nil
+}
+
+// buildAndPrepareComposeImageForAgent is the default Compose image path. It
+// builds into the same persistent OCI layout used by single-service chunk
+// deploys, updates Stagefile app layers natively when dependencies are stable,
+// and transfers missing content-defined chunks straight to the agent. The
+// prepared image is registered under repo:latest, so Compose's existing
+// CreateContainer orchestration can consume it without a registry round-trip.
+//
+// Agents that predate PrepareImage (or any other non-build chunk-path failure)
+// fall back to pushing this exact already-built layout to the device registry;
+// the image is never rebuilt for the fallback.
+func buildAndPrepareComposeImageForAgent(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, true)
+}
+
+func buildAndPrepareComposeImageForAgentForce(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer) error {
+	return buildAndPrepareComposeImage(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput, false)
+}
+
+func buildAndPrepareComposeImage(ctx context.Context, conn *grpcclient.AgentConnection, regPort int, agentOS, builder, dir, repo, platform, dockerfile string, buildArgs map[string]string, cacheKey string, streamOutput, logOutput io.Writer, allowRegistryFallback bool) error {
+	normalized, err := normalizeImageBuilder(builder)
+	if err != nil {
+		return err
+	}
+	if normalized != imageBuilderDocker {
+		return buildAndPushImageForAgent(ctx, conn, regPort, agentOS, builder, dir, repo, platform, dockerfile, buildArgs, cacheKey, streamOutput, logOutput)
+	}
+
+	userCache, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("finding user cache directory: %w", err)
+	}
+	repo = strings.ToLower(repo)
+	layoutDir := chunkLayoutDir(userCache, repo, platform)
+	releaseLayout, err := lockOCILayoutDir(ctx, layoutDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLayout()
+	defer func() { _ = gcOCILayoutDir(layoutDir) }()
+
+	if cacheKey == "" {
+		cacheKey = repo
+	}
+	native, err := buildOrUpdateOCILayout(dir, dockerfile, platform, buildArgs, layoutDir, func() error {
+		return buildImageToOCILayoutDirWithDocker(ctx, dir, dockerfile, platform, buildArgs, layoutDir, ociDeploymentCacheKey(cacheKey, platform), streamOutput, logOutput)
+	})
+	if err != nil {
+		return err
+	}
+	if native {
+		fmt.Fprintln(logOutput, "[stagefile] app layer(s) resolved natively; buildx and cache export skipped")
+	}
+
+	layers, imageConfig, err := readOCILayoutDirLayers(layoutDir, platform)
+	if err != nil {
+		return err
+	}
+	if reporter, ok := streamOutput.(interface{ ReportImageContent([]string) }); ok {
+		diffIDs := make([]string, 0, len(layers))
+		for _, layer := range layers {
+			if layer.DiffID == "" {
+				diffIDs = nil
+				break
+			}
+			diffIDs = append(diffIDs, layer.DiffID)
+		}
+		if len(diffIDs) > 0 {
+			reporter.ReportImageContent(diffIDs)
+		}
+	}
+	imageSignature, err := readOptionalSignature(os.Getenv(imageSignaturePathEnv))
+	if err != nil {
+		return fmt.Errorf("reading image signature from %s: %w", imageSignaturePathEnv, err)
+	}
+	if reporter, ok := streamOutput.(interface{ ReportImagePreparationQueued() }); ok {
+		reporter.ReportImagePreparationQueued()
+	}
+	releasePrepare, err := acquireComposePrepare(ctx)
+	if err != nil {
+		return err
+	}
+	defer releasePrepare()
+	// Match the reference Compose passes to CreateContainer below. PrepareImage
+	// records this exact name in containerd even though no registry is involved.
+	imageName := fmt.Sprintf("localhost:%d/%s:latest", regPort, repo)
+	prepare := func(prepareCtx context.Context, headers []*agentpb.RunContainerLayerHeader) error {
+		_, prepareErr := conn.ContainerService.PrepareImage(prepareCtx, &agentpb.RunContainerLayersRequest{
+			ImageName:      imageName,
+			Layers:         headers,
+			ImageConfig:    imageConfig,
+			ImageSignature: imageSignature,
+		})
+		return prepareErr
+	}
+	if _, chunkErr := pushLayersByChunksWithStrictPrepareOutput(ctx, conn.ContainerService, layers, prepare, streamOutput); chunkErr == nil {
+		fmt.Fprintf(logOutput, "[chunks] prepared %s from missing content\n", imageName)
+		return nil
+	} else if ctx.Err() != nil {
+		return chunkErr
+	} else if blocksChunkPrepareFallback(chunkErr) {
+		return chunkErr
+	} else if !allowRegistryFallback {
+		return fmt.Errorf("chunk-diff image preparation failed and --chunking=force disables the registry fallback: %w", chunkErr)
+	} else {
+		fmt.Fprintf(logOutput, "[chunks] prepare unavailable (%v); falling back to registry push of the existing OCI layout\n", chunkErr)
+		if reporter, ok := streamOutput.(interface{ ReportRegistryFallback(error) }); ok {
+			reporter.ReportRegistryFallback(chunkErr)
+		}
+	}
+
+	registryAddr, useMTLS, cleanup, dialErr, resolveErr := resolveRegistryForSwiftAgent(ctx, conn, regPort)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	defer cleanup()
+	if err := pushOCILayoutToRegistry(ctx, layoutDir, platform, registryAddr, repo, useMTLS); err != nil {
 		return maybeRegistryUnavailable(agentOS, conn.Host, dialErr, err)
 	}
 	return nil

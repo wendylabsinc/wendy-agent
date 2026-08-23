@@ -218,10 +218,14 @@ func newBuildCmd() *cobra.Command {
 				appID = appCfg.AppID
 			}
 
+			sfOpts := debugStagefileOptions(opts.debug)
+			if cfgErr == nil && selected.Type != "compose" {
+				sfOpts = append(sfOpts, frameworkStagefileOptions(appCfg.Frameworks)...)
+			}
 			return buildProject(cmd.Context(), cwd, selected, appID, platform, opts.builder,
 				resolveGPUArch(cmd.Context(), cwd, opts.gpuArch, agentConn(target)),
 				opts.debug,
-				debugStagefileOptions(opts.debug)...)
+				sfOpts...)
 		},
 	}
 

@@ -230,3 +230,23 @@ func TestMDNSStreamResolveAndEmitFallback(t *testing.T) {
 		}
 	})
 }
+
+func TestPreferInterfaceRoutedAddrAvoidsIPv4OnWrongInterface(t *testing.T) {
+	original := routeInterfaceForMDNSAddressFn
+	t.Cleanup(func() { routeInterfaceForMDNSAddressFn = original })
+	routeInterfaceForMDNSAddressFn = func(addr string) string {
+		switch addr {
+		case "192.168.123.18":
+			return "en0"
+		case "fdde:2b9::18":
+			return "bridge104"
+		default:
+			return ""
+		}
+	}
+
+	got := preferInterfaceRoutedAddr([]string{"192.168.123.18", "fdde:2b9::18"}, "en7")
+	if got != "fdde:2b9::18" {
+		t.Fatalf("preferInterfaceRoutedAddr = %q, want Ethernet ULA instead of wrong-interface IPv4", got)
+	}
+}

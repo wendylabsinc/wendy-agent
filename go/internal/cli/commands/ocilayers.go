@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/wendylabsinc/wendy/go/internal/shared/chunk"
 )
 
 // localLayer addresses a single image layer's COMPRESSED blob plus the metadata
@@ -760,6 +761,21 @@ func (d *decompressedLayer) Close() {
 // (a few MiB) rather than the whole layer. The returned file is positioned for
 // random access via ReadAt; the caller must Close it.
 func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
+	return decompressLayerToTempProgress(l, nil)
+}
+
+type progressWriteFunc func(int64)
+
+func (fn progressWriteFunc) Write(p []byte) (int, error) {
+	if fn != nil {
+		fn(int64(len(p)))
+	}
+	return len(p), nil
+}
+
+// decompressLayerToTempProgress is decompressLayerToTemp with byte telemetry
+// for the uncompressed stream. The callback runs on the copying goroutine.
+func decompressLayerToTempProgress(l localLayer, progress func(int64)) (*decompressedLayer, error) {
 	cr, err := l.compressedReader()
 	if err != nil {
 		return nil, err
@@ -776,7 +792,11 @@ func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
 		return nil, fmt.Errorf("create layer temp file: %w", err)
 	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
+	writers := []io.Writer{f, h}
+	if progress != nil {
+		writers = append(writers, progressWriteFunc(progress))
+	}
+	n, err := io.Copy(io.MultiWriter(writers...), r)
 	if err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
@@ -787,6 +807,41 @@ func decompressLayerToTemp(l localLayer) (*decompressedLayer, error) {
 		size:   n,
 		diffID: "sha256:" + hex.EncodeToString(h.Sum(nil)),
 	}, nil
+}
+
+// decompressAndChunkLayerToTemp fuses decompression, DiffID hashing, temp-file
+// materialization, and content indexing into one pass over the raw tar. The
+// previous cache-miss path wrote the whole layer and then reread it through
+// ChunkReaderAt, which made a multi-GiB CUDA layer pay two full disk passes
+// before upload could begin.
+func decompressAndChunkLayerToTemp(l localLayer, progress func(completed int64)) (*decompressedLayer, []chunk.Ref, error) {
+	cr, err := l.compressedReader()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cr.Close()
+	r, cleanup, err := layerTarReader(cr, l.MediaType)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
+
+	f, err := os.CreateTemp("", "wendy-layer-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create layer temp file: %w", err)
+	}
+	h := sha256.New()
+	refs, n, err := chunk.ChunkStream(io.TeeReader(r, io.MultiWriter(f, h)), progress)
+	if err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, nil, fmt.Errorf("decompress and index layer: %w", err)
+	}
+	return &decompressedLayer{
+		f:      f,
+		size:   n,
+		diffID: "sha256:" + hex.EncodeToString(h.Sum(nil)),
+	}, refs, nil
 }
 
 // digestToHex converts a "sha256:<hex>" digest string to the bare hex portion.
@@ -911,7 +966,7 @@ func buildImageToOCILayoutWithBuildkit(ctx context.Context, cwd, dockerfile, pla
 // otherwise it runs `docker buildx build` with `--output type=oci,dest=<dest>`.
 // It mirrors the flag/cache/env setup of buildAndPushImage but skips registry
 // push entirely.
-func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest string, stdout, stderr io.Writer) error {
+func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, builder, dest, cacheKey string, stdout, stderr io.Writer) error {
 	if !imageBuilderWasExplicit(builder) && shouldUseBuildkitOnDevice() {
 		builder = imageBuilderBuildkit
 	}
@@ -926,7 +981,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 		return buildImageToOCILayoutWithBuildkit(ctx, cwd, dockerfile, platform, buildArgs, dest, stdout, stderr)
 	}
 
-	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, stdout, stderr)
+	return buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, dest, false, cacheKey, stdout, stderr)
 }
 
 // buildImageToOCILayoutDirWithDocker builds with the shared buildx builder and
@@ -934,7 +989,7 @@ func buildImageToOCILayout(ctx context.Context, cwd, dockerfile, platform string
 // the tar export, BuildKit skips blobs already present at dest, so a warm
 // persistent directory turns the per-build export cost from O(image size)
 // into O(changed bytes). Callers own dest's lifecycle (locking and GC).
-func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir string, stdout, stderr io.Writer) error {
+func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, destDir, cacheKey string, stdout, stderr io.Writer) error {
 	// 0700: image layers/config can embed build-time material, and the legacy
 	// temp-tar this replaces lived in a MkdirTemp (0700) dir. Restricting the
 	// top-level dir gates traversal regardless of the modes BuildKit gives the
@@ -942,7 +997,7 @@ func buildImageToOCILayoutDirWithDocker(ctx context.Context, cwd, dockerfile, pl
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return fmt.Errorf("creating OCI layout directory: %w", err)
 	}
-	if err := buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, stdout, stderr); err != nil {
+	if err := buildImageWithBuildxOCIExport(ctx, cwd, dockerfile, platform, buildArgs, destDir, true, cacheKey, stdout, stderr); err != nil {
 		return err
 	}
 	// The export appended this build's manifest; drop every older entry so
@@ -967,13 +1022,34 @@ func chunkLayoutDir(userCacheDir, appID, platform string) string {
 		sanitizeCacheKey(appID)+"-"+sanitizeCacheKey(platform))
 }
 
+// ociDeploymentCacheKey identifies the local BuildKit cache written by one
+// independently deployable app/service on one target platform. The separator
+// makes the mapping unambiguous before buildxCacheSubdir hashes it ("ab"+"c"
+// cannot collide with "a"+"bc"). Different keys may be exported concurrently;
+// callers serialize the matching OCI layout directory for the same key.
+func ociDeploymentCacheKey(appID, platform string) string {
+	return strings.ToLower(strings.TrimSpace(appID)) + "\x00" + strings.ToLower(strings.TrimSpace(platform))
+}
+
+// legacyOCICacheKey recovers the pre-platform cache key from a current OCI
+// deployment key. It is used only as a read-through migration source: new
+// exports always remain platform-isolated, while the first build after an
+// upgrade can still consume gigabytes of valid dependency cache accumulated
+// under the former app-only namespace.
+func legacyOCICacheKey(cacheKey string) (string, bool) {
+	appID, platform, ok := strings.Cut(cacheKey, "\x00")
+	if !ok || appID == "" || platform == "" {
+		return "", false
+	}
+	return appID, true
+}
+
 // buildxOCIExportArgs assembles the `docker buildx build` argument vector for
 // an OCI export (tar or layout-dir). Pure function for testability; build-arg
 // keys are sorted for a reproducible command line.
-func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, tarFalse bool, buildArgs map[string]string, haveCacheIndex bool) []string {
+func buildxOCIExportArgs(builder, platform, dockerfile, cacheFromDir, cacheToDir, dest string, tarFalse bool, buildArgs map[string]string) []string {
 	// buildkitd inside the Linux VM appends "/index.json" to the cache src/dest,
 	// so pass forward-slash paths to avoid mixed-separator warnings on Windows.
-	cacheDirSlash := filepath.ToSlash(cacheDir)
 	args := []string{
 		"buildx", "build",
 		"--builder", builder,
@@ -983,10 +1059,10 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, t
 	if dockerfile != "" {
 		args = append(args, "-f", dockerfile)
 	}
-	if haveCacheIndex {
-		args = append(args, "--cache-from", "type=local,src="+cacheDirSlash)
+	if cacheFromDir != "" {
+		args = append(args, "--cache-from", "type=local,src="+filepath.ToSlash(cacheFromDir))
 	}
-	args = append(args, "--cache-to", "type=local,dest="+cacheDirSlash)
+	args = append(args, "--cache-to", "type=local,dest="+filepath.ToSlash(cacheToDir)+",compression=uncompressed")
 	keys := make([]string, 0, len(buildArgs))
 	for k := range buildArgs {
 		keys = append(keys, k)
@@ -995,7 +1071,13 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, t
 	for _, k := range keys {
 		args = append(args, "--build-arg", k+"="+buildArgs[k])
 	}
-	output := "type=oci,dest=" + dest
+	// The chunk-diff path consumes uncompressed layer tar streams and hashes
+	// their DiffIDs before sending only missing chunks to the agent. Asking the
+	// OCI exporter to gzip those layers first adds a full-image compression pass
+	// (especially expensive for multi-gigabyte CUDA libraries), only for the
+	// chunking path to decompress them again. Keep the persistent layout in the
+	// representation the deploy path actually consumes.
+	output := "type=oci,dest=" + dest + ",compression=uncompressed"
 	if tarFalse {
 		output += ",tar=false"
 	}
@@ -1006,24 +1088,39 @@ func buildxOCIExportArgs(builder, platform, dockerfile, cacheDir, dest string, t
 // buildImageWithBuildxOCIExport is the shared docker-buildx body behind both
 // OCI export shapes: dest is a tar path (tarFalse=false, legacy) or a layout
 // directory (tarFalse=true).
-func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, stdout, stderr io.Writer) error {
+var (
+	ensureOCIExportBuilderForBuild = ensureOCIExportBuilder
+	runBuildxOCIExportCommand      = func(ctx context.Context, cwd string, args, env []string, stdout, stderr io.Writer) error {
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		cmd.Dir = cwd
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if env != nil {
+			cmd.Env = env
+		}
+		return cmd.Run()
+	}
+)
+
+func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, tarFalse bool, cacheKey string, stdout, stderr io.Writer) error {
 	// Sub-phase timing (gated on WENDY_TIMING) to split the "build (oci export)"
 	// phase into lock acquisition, builder verification (the buildx inspect
 	// calls), and the actual buildx solve.
 	submark := phaseTimer()
 
-	// Re-use the shared buildx builder (without mTLS; we don't push to a registry).
+	// Serialize only builder discovery/bootstrap. The OCI builder has stable
+	// configuration (it never knows about a deployment's dynamic registry
+	// proxy), so BuildKit can safely execute independent solves concurrently
+	// after setup. Holding this process-wide lock for the whole solve made
+	// unrelated `wendy run` invocations queue behind one another.
 	releaseLock, err := buildLock.acquire(ctx, stderr)
 	if err != nil {
 		return err
 	}
-	defer releaseLock()
-	submark("  build: acquire lock")
+	submark("  build: acquire setup lock")
 
-	// Use a dedicated builder for OCI-layout export. It needs no registry
-	// config, so it is created once and reused without the per-run
-	// config-inject/restart cycle the registry builder pays.
-	buildxBuilder, err := ensureOCIExportBuilder(ctx, stderr)
+	buildxBuilder, err := ensureOCIExportBuilderForBuild(ctx, stderr)
+	releaseLock()
 	if err != nil {
 		return err
 	}
@@ -1033,12 +1130,11 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 	if err != nil {
 		return fmt.Errorf("finding user cache directory: %w", err)
 	}
-	// Shared base cache dir (empty key): the chunk-diff fast path builds exactly
-	// one image per invocation and holds the cross-process build lock, so nothing
-	// else exports into this dir concurrently. Per-service isolation is only
-	// needed where builds actually run in parallel (the multibuild path, WDY-1711)
-	// — should this path ever go multi-service, it must pass a cache key too.
-	cacheDir := buildxLocalCacheDir(userCache, "")
+	// Every independently runnable deployment gets an isolated local cache.
+	// BuildKit's local cache exporter is not safe for concurrent writers; this
+	// is what lets the stable OCI builder run solves concurrently without
+	// trading the old global queue for cache corruption.
+	cacheDir := buildxLocalCacheDir(userCache, cacheKey)
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -1056,33 +1152,32 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 			return err
 		}
 	}
-	_, cacheIndexErr := os.Stat(filepath.Join(cacheDir, "index.json"))
-	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheDir, dest, tarFalse, buildArgs, cacheIndexErr == nil)
+	cacheFromDir := ""
+	if _, statErr := os.Stat(filepath.Join(cacheDir, "index.json")); statErr == nil {
+		cacheFromDir = cacheDir
+	} else if legacyKey, ok := legacyOCICacheKey(cacheKey); ok {
+		legacyDir := buildxLocalCacheDir(userCache, legacyKey)
+		if _, legacyErr := os.Stat(filepath.Join(legacyDir, "index.json")); legacyErr == nil {
+			cacheFromDir = legacyDir
+			fmt.Fprintf(stderr, "[buildx] importing legacy cache %s into platform-scoped cache\n", legacyDir)
+		}
+	}
+	args := buildxOCIExportArgs(buildxBuilder, platform, resolvedDockerfile, cacheFromDir, cacheDir, dest, tarFalse, buildArgs)
 
 	submark("  build: setup (cache/env)")
 
 	fmt.Fprintf(stderr, "[buildx] starting OCI export: docker %s\n", strings.Join(redactBuildArgsForLog(args), " "))
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Dir = cwd
 	// BuildKit writes its build progress to stderr, not stdout (see
-	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Point
-	// cmd.Stderr at the *same* stdout value, not a separate writer, so
-	// os/exec collapses stdout+stderr into a single pipe/copy goroutine (the
-	// same same-writer-value trick buildAndPushImage uses, docker.go
-	// ~:2034-2038) — otherwise the whole build's progress lands in the
-	// setup-log buffer instead of the parser, which WDY-2432's synthetic
-	// builder-setup step then renders as a flood of garbled
-	// "preparing buildx builder" lines. The announce line above stays on the
-	// stderr *parameter* directly (it's genuine setup chatter, unaffected by
-	// cmd's stdout/stderr wiring).
-	cmd.Stdout = stdout
-	cmd.Stderr = stdout
-
-	if env := dockerConfigEnv(cleanDockerConfigDir); env != nil {
-		cmd.Env = env
-	}
-
-	if err := cmd.Run(); err != nil {
+	// tui/buildrawjson.go); only stdout feeds the build parser (stream). Pass
+	// the *same* stdout value for both streams so os/exec collapses
+	// stdout+stderr into a single pipe/copy goroutine (the same
+	// same-writer-value trick buildAndPushImage uses, docker.go ~:2034-2038)
+	// — otherwise the whole build's progress lands in the setup-log buffer
+	// instead of the parser, which WDY-2432's synthetic builder-setup step
+	// then renders as a flood of garbled "preparing buildx builder" lines.
+	// The announce line above stays on the stderr *parameter* directly (it's
+	// genuine setup chatter, unaffected by the command's stream wiring).
+	if err := runBuildxOCIExportCommand(ctx, cwd, args, dockerConfigEnv(cleanDockerConfigDir), stdout, stdout); err != nil {
 		return &imageBuildFailedError{fmt.Errorf("docker buildx build (OCI export) failed: %w", err)}
 	}
 	return nil
@@ -1103,14 +1198,10 @@ func buildImageWithBuildxOCIExport(ctx context.Context, cwd, dockerfile, platfor
 func buildImageToOCILayoutWithAppleContainer(ctx context.Context, cwd, dockerfile, platform string, buildArgs map[string]string, dest string, stdout, stderr io.Writer) error {
 	submark := phaseTimer()
 
-	// Serialize with the buildx OCI path so two builders never run at once.
-	releaseLock, err := buildLock.acquire(ctx, stderr)
-	if err != nil {
-		return err
-	}
-	defer releaseLock()
-	submark("  build: acquire lock")
-
+	// Apple Container owns its build scheduler and this path already uses a
+	// unique temporary image tag and destination per invocation. It does not
+	// share BuildKit's local cache exporter or the Docker builder configuration,
+	// so it must not participate in Docker's cross-process setup lock.
 	buildContext, err := appleContainerBuildContextPath(cwd)
 	if err != nil {
 		return fmt.Errorf("resolving project path: %w", err)

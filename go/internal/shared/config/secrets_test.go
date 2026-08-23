@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -544,7 +546,8 @@ func TestMigrateSecretsIfNeeded(t *testing.T) {
 
 func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	useFakeStore(t, newFakeStore())
+	store := newFakeStore()
+	useFakeStore(t, store)
 	cfg := &Config{Auth: []AuthConfig{{CloudGRPC: "g", APIKey: "tok"}}}
 
 	origDefault := secretsPlatformDefault
@@ -555,9 +558,77 @@ func TestMigrateSecretsNoOpOffPlatformAndFileMode(t *testing.T) {
 	secretsPlatformDefault = true
 	t.Setenv("WENDY_SECRET_STORE", "file")
 	if MigrateSecretsIfNeeded(cfg) {
-		t.Error("migrated despite WENDY_SECRET_STORE=file")
+		t.Error("reported migration with no Keychain references")
 	}
 	secretsPlatformDefault = origDefault
+}
+
+func TestMigrateSecretsIfNeededBackToFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	store := newFakeStore()
+	store.m["token-old"] = []byte("tok-123")
+	store.m["key-old"] = []byte("PEM-123")
+	useFakeStore(t, store)
+
+	cfg := &Config{Auth: []AuthConfig{{
+		APIKey: refPrefixV1 + "token-old",
+		Certificates: []CertificateInfo{{
+			PemPrivateKey: refPrefixV1 + "key-old",
+		}},
+	}}}
+	path, err := configPath()
+	if err != nil {
+		t.Fatalf("configPath: %v", err)
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	if !MigrateSecretsIfNeeded(cfg) {
+		t.Fatal("MigrateSecretsIfNeeded = false, want true")
+	}
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := reloaded.Auth[0].APIKey; got != "tok-123" {
+		t.Errorf("APIKey = %q, want inline token", got)
+	}
+	if got := reloaded.Auth[0].Certificates[0].PemPrivateKey; got != "PEM-123" {
+		t.Errorf("PemPrivateKey = %q, want inline key", got)
+	}
+	if MigrateSecretsIfNeeded(reloaded) {
+		t.Error("second migration reported a change")
+	}
+}
+
+func TestMigrateSecretsIfNeededKeepsUnreadableRefs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("WENDY_SECRET_STORE", "file")
+	useFakeStore(t, newFakeStore())
+
+	cfg := &Config{Auth: []AuthConfig{{APIKey: refPrefixV1 + "missing"}}}
+	if err := Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if MigrateSecretsIfNeeded(cfg) {
+		t.Error("reported a migration for an unreadable reference")
+	}
+	reloaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := reloaded.Auth[0].APIKey; got != refPrefixV1+"missing" {
+		t.Errorf("APIKey = %q, want original reference", got)
+	}
 }
 
 func TestDeleteStoredSecrets(t *testing.T) {

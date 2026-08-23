@@ -10,16 +10,16 @@ import (
 	"time"
 )
 
-// buildLock serializes `wendy build`/`wendy run` builds across separate CLI
-// processes. The Docker build path shares a single buildx builder container
-// (see ensureBuildxBuilder); a second process that reconfigures or restarts
-// that builder kills the first process's in-flight build (issue #1017).
+// buildLock protects shared buildx builder setup across separate CLI processes.
+// The legacy direct-to-registry Docker path holds it for the whole solve because
+// that builder embeds a per-run registry address; reconfiguring or restarting
+// it kills an in-flight build (issue #1017). The registry-agnostic OCI builder
+// holds it only for discovery/bootstrap, then runs independent solves in
+// parallel with isolated cache/layout state.
 //
-// The lock guarantees only one wendy process drives the shared builder at a
-// time. Within a single process, concurrent service builds (the multibuild
-// parallel path) share the lock via reference counting, so intra-build
-// parallelism is preserved — the OS-level lock is held from the first build
-// until the last concurrent build in the process finishes.
+// Within a single process, concurrent setup calls share the lock via reference
+// counting. Callers decide whether the returned handle covers setup alone or a
+// full legacy solve.
 var buildLock = &processBuildLock{}
 
 type processBuildLock struct {

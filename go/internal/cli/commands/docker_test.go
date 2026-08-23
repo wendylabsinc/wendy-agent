@@ -116,6 +116,20 @@ func TestBuildAndPushImageWithAppleContainerUsesContainerCLI(t *testing.T) {
 }
 
 func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
+	isolateBuildLockDir(t)
+	// Model a Docker deployment in another process holding the shared builder
+	// lock. Apple Container has independent scheduler/cache state and must not
+	// queue behind it.
+	holder := &processBuildLock{}
+	releaseHolder, err := holder.acquire(context.Background(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseHolder()
+	originalBuildLock := buildLock
+	buildLock = &processBuildLock{}
+	defer func() { buildLock = originalBuildLock }()
+
 	oldCommand := imageBuilderCommandContext
 	t.Cleanup(func() { imageBuilderCommandContext = oldCommand })
 	logFile := filepath.Join(t.TempDir(), "commands.log")
@@ -131,8 +145,13 @@ func TestBuildImageToOCILayoutWithAppleContainer(t *testing.T) {
 	}
 
 	// Route through the apple-container branch of the fast OCI-layout build.
-	err := buildImageToOCILayout(context.Background(), cwd, "Dockerfile", "linux/arm64",
-		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, io.Discard, io.Discard)
+	// Race instrumentation can make the fake helper subprocess noticeably
+	// slower; the deadline exists to catch an accidental lock wait, not to
+	// benchmark process startup.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err = buildImageToOCILayout(ctx, cwd, "Dockerfile", "linux/arm64",
+		map[string]string{"A": "1"}, imageBuilderAppleContainer, dest, "test-cache", io.Discard, io.Discard)
 	if err != nil {
 		t.Fatalf("buildImageToOCILayout(apple-container): %v", err)
 	}

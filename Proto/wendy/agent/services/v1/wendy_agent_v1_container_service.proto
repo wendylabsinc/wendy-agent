@@ -33,6 +33,12 @@ service WendyContainerService {
     // skip decompressing and content-chunking layers the device can reuse as-is
     // — for those layers no dedup is possible, so chunking would be pure waste.
     rpc QueryLayers(QueryLayersRequest) returns (QueryLayersResponse);
+    // PrepareImage assembles chunk-backed layers and unpacks their snapshots
+    // before RunContainer. The CLI starts this RPC before uploading missing
+    // chunks, allowing device-side assembly/unpack to overlap the transfer.
+    // RunContainer remains the source of truth and repeats these idempotent
+    // operations, so callers can fall back safely when this RPC is unavailable.
+    rpc PrepareImage(RunContainerLayersRequest) returns (PrepareImageResponse);
 }
 
 message ListContainersRequest {}
@@ -350,7 +356,7 @@ message ThermalZone {
 message GpuStats {
     uint32 index = 1;
     string name = 2;
-    double util_percent = 3;         // instantaneous utilization as reported by the sampler
+    double util_percent = 3;         // utilization over the sampler's observation window
     int64 mem_used_bytes = 4;
     int64 mem_total_bytes = 5;
     optional double temp_c = 6;
@@ -384,3 +390,5 @@ message PortEntry {
 message MCPChunk {
     bytes data = 1;
 }
+
+message PrepareImageResponse {}

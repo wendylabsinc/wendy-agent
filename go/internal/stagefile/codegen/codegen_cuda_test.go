@@ -94,6 +94,12 @@ func TestGenerateCUDARuntimeIsASeparateUnindexedInstall(t *testing.T) {
 	if strings.Contains(runtimeLine, "torch") {
 		t.Errorf("runtime install merged with the wheel group:\n%s", runtimeLine)
 	}
+	if !strings.Contains(runtimeLine, "--target '/opt/stagefile/cuda/python'") {
+		t.Errorf("runtime install is not isolated under the compiler-owned prefix:\n%s", runtimeLine)
+	}
+	if !strings.Contains(out, "COPY --link --from=stagefile-cuda-runtime-0 /opt/stagefile/cuda/python /opt/stagefile/cuda/python") {
+		t.Errorf("runtime is not promoted as an independent linked layer:\n%s", out)
+	}
 }
 
 // The runtime layer holds hundreds of megabytes and changes only when the
@@ -171,13 +177,43 @@ func TestGenerateCUDAPipCacheScopedByTheResolvedIndex(t *testing.T) {
 	if len(ids) != 3 {
 		t.Fatalf("expected 3 pip installs (wheels, runtime, app), got %d\n%s", len(ids), out)
 	}
-	// The GPU wheels resolve from the profile's index; the runtime and the app
-	// dependencies both resolve from PyPI and may share.
+	// The generated runtime stage is emitted first. It and the ordinary app
+	// dependencies resolve from PyPI and may share; the GPU wheels use the
+	// profile's vendor index and must remain separate.
+	if ids[0] != ids[2] {
+		t.Errorf("two PyPI groups landed in different caches: %q vs %q", ids[0], ids[2])
+	}
 	if ids[0] == ids[1] {
 		t.Errorf("GPU wheel group shares a cache with the PyPI runtime group (id %q)", ids[0])
 	}
-	if ids[1] != ids[2] {
-		t.Errorf("two PyPI groups landed in different caches: %q vs %q", ids[1], ids[2])
+}
+
+// The generated CUDA runtime stage must be a pure function of the pinned base,
+// target platform, and GPU profile. User APT edits belong only to the app stage
+// and therefore cannot invalidate the multi-gigabyte runtime layer.
+func TestGenerateCUDARuntimeStageIgnoresUserAPTChanges(t *testing.T) {
+	generate := func(packages ...string) string {
+		return mustGenerateCUDA(t, spec.Stage{
+			CUDA: true,
+			Install: &spec.Install{
+				Apt: &spec.AptInstall{Packages: packages},
+				Pip: []spec.PipInstall{{Packages: []string{"torch==2.8.0"}, CUDA: true}},
+			},
+		})
+	}
+	prefix := func(out string) string {
+		marker := "\nFROM ubuntu:22.04@sha256:abc123 AS app\n"
+		before, _, ok := strings.Cut(out, marker)
+		if !ok {
+			t.Fatalf("generated output missing app-stage marker:\n%s", out)
+		}
+		return before
+	}
+
+	before := prefix(generate("python3-pip"))
+	after := prefix(generate("python3-pip", "ros-humble-rmw-cyclonedds-cpp"))
+	if before != after {
+		t.Errorf("CUDA runtime stage changed after an app APT edit\n--- before ---\n%s\n--- after ---\n%s", before, after)
 	}
 }
 

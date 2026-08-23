@@ -112,7 +112,7 @@ In attached mode, each service's readiness→postStart sequence fires asynchrono
 
 When `appCfg.Services` is non-empty, `wendy run` routes to the multi-service pipeline:
 
-1. **Parallel build** — all service images are built and pushed concurrently. By default, up to 4 simultaneous builds run; for large groups (8+ services), builds throttle to 2 concurrent to protect the device registry tunnel. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). While a service builds, its row names the Dockerfile step currently running and, where that step's output exposes it, appends live progress after a `·` separator:
+1. **Parallel build** — all service images are built and pushed concurrently, with up to 4 simultaneous builds by default. Override with `--max-concurrency`. In interactive terminals a per-service spinner displays each service's status (`waiting` → `building…` → `built (Xs)` / `failed`). While a service builds, its row names the Dockerfile step currently running and, where that step's output exposes it, appends live progress after a `·` separator:
 
     ⠹ api         [4/9] RUN pip install -r requirements.txt · 61%  128.0MB/797.3MB  95.2MB/s
 
@@ -158,7 +158,7 @@ All standard `wendy run` flags apply. The following are particularly relevant fo
 | `--deploy` | Build and create all containers but do not start them. |
 | `--detach` | Start all containers but do not stream logs. |
 | `--keep-going` | Deploy services that build successfully instead of aborting the whole group on the first build/push failure. |
-| `--max-concurrency <n>` | Max service images to build+push at once. 0 = auto-throttle large groups (default). |
+| `--max-concurrency <n>` | Max service images to build+push at once. 0 = default limit of 4. |
 
 ## Example layout
 
