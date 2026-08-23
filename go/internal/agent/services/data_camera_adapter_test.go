@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
+	"go.uber.org/zap"
 )
 
 func TestCameraDeviceID(t *testing.T) {
@@ -99,6 +103,244 @@ func TestH264SegmentsWaitForSelfContainedRandomAccessUnit(t *testing.T) {
 	}
 	if offset, found := h264RandomAccessOffset(key); !found || offset != 3 {
 		t.Fatal("SPS/PPS/IDR access unit not recognized")
+	}
+}
+
+// fakeReceipt is a deterministic CLOCK_BOOTTIME source for capture tests.
+type fakeReceipt struct{ now int64 }
+
+func (f *fakeReceipt) fn() (int64, int64, int64, error) { return f.now, f.now, f.now, nil }
+
+var (
+	// testRAUFrame is an Annex-B SPS/PPS/IDR access unit (decodable standalone).
+	testRAUFrame = []byte{0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2, 0, 0, 0, 1, 0x65, 3}
+	// testInterFrame is a non-IDR slice that references earlier frames.
+	testInterFrame = []byte{0, 0, 0, 1, 0x41, 1}
+)
+
+func testH264Frame(payload []byte) *videoFrame {
+	return &videoFrame{data: payload, nativeClock: "CLOCK_REALTIME_AGENT_CAPTURE", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}
+}
+
+func newTestCameraCapture(t *testing.T, clock *fakeReceipt) *cameraCapture {
+	t.Helper()
+	dir := t.TempDir()
+	index, err := os.OpenFile(filepath.Join(dir, "index.jsonl"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mappings, err := os.OpenFile(filepath.Join(dir, "clock_samples.jsonl"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { index.Close(); mappings.Close() })
+	return &cameraCapture{source: data.Source{ID: "v4l2:/dev/video2"}, session: data.CaptureSession{RequestBootNanos: 0}, dir: dir, index: index, mappingFile: mappings, captureReceipt: clock.fn, lastSnapshotIdx: -1}
+}
+
+func TestSnapshotModeWritesOneStillPerInterval(t *testing.T) {
+	clock := &fakeReceipt{}
+	c := newTestCameraCapture(t, clock)
+	c.mode, c.interval = captureModeSnapshot, int64(time.Second)
+
+	clock.now = 100 * int64(time.Millisecond)
+	if err := c.handleFrame(testH264Frame(testInterFrame)); !errors.Is(err, errAwaitCameraRandomAccess) {
+		t.Fatalf("inter frame before the first still: %v", err)
+	}
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = 500 * int64(time.Millisecond)
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err) // same interval: discarded, not written
+	}
+	clock.now = 1300 * int64(time.Millisecond)
+	if err := c.handleFrame(testH264Frame(testInterFrame)); err != nil {
+		t.Fatal(err) // not decodable standalone: discarded
+	}
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+
+	if c.result.Count != 2 {
+		t.Fatalf("count = %d, want 2", c.result.Count)
+	}
+	for n := 1; n <= 2; n++ {
+		media, err := os.ReadFile(filepath.Join(c.dir, fmt.Sprintf("snapshot-%06d.h264", n)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(media, testRAUFrame) {
+			t.Fatalf("snapshot %d = %x", n, media)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, "snapshot-000003.h264")); err == nil {
+		t.Fatal("extra snapshot written within an interval")
+	}
+	if err := c.index.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(c.dir, "index.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSpace(contents), []byte("\n"))
+	if len(lines) != 2 {
+		t.Fatalf("index lines = %d, want 2", len(lines))
+	}
+	for i, line := range lines {
+		var record cameraIndexRecord
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.ByteOffset != 0 || record.ByteSize != len(testRAUFrame) || record.MappingSegment == "" {
+			t.Fatalf("bad snapshot index record %d: %+v", i, record)
+		}
+		want := fmt.Sprintf("snapshot-%06d.h264", i+1)
+		if !strings.HasSuffix(record.Segment, want) {
+			t.Fatalf("record %d segment = %q, want suffix %q", i, record.Segment, want)
+		}
+	}
+}
+
+func TestSnapshotModeCountsMissedIntervals(t *testing.T) {
+	clock := &fakeReceipt{}
+	c := newTestCameraCapture(t, clock)
+	c.mode, c.interval = captureModeSnapshot, int64(time.Second)
+
+	clock.now = 2500 * int64(time.Millisecond) // intervals 0 and 1 elapsed before any decodable unit
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	clock.now = 5100 * int64(time.Millisecond) // intervals 3 and 4 got no still
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	c.finishSnapshotAccounting(8200 * int64(time.Millisecond)) // intervals 6 and 7 elapsed after the last still
+
+	if c.result.Count != 2 {
+		t.Fatalf("count = %d, want 2", c.result.Count)
+	}
+	if c.result.Drops == nil || *c.result.Drops != 6 {
+		t.Fatalf("drops = %v, want 6 missed intervals", c.result.Drops)
+	}
+	if c.result.DropAccounting != "missed_snapshot_intervals" {
+		t.Fatalf("drop accounting = %q", c.result.DropAccounting)
+	}
+}
+
+func TestContinuousRateCapDropsWholeGOPs(t *testing.T) {
+	clock := &fakeReceipt{}
+	c := newTestCameraCapture(t, clock)
+	c.rateCap = 1 // hertz
+
+	written := func(at time.Duration, payload []byte) uint64 {
+		clock.now = int64(at)
+		if err := c.handleFrame(testH264Frame(payload)); err != nil {
+			t.Fatalf("frame at %s: %v", at, err)
+		}
+		return c.result.Count
+	}
+	if got := written(0, testRAUFrame); got != 1 {
+		t.Fatalf("first GOP not admitted: count %d", got)
+	}
+	if got := written(100*time.Millisecond, testInterFrame); got != 2 {
+		t.Fatalf("inter frame of the admitted GOP was dropped: count %d", got)
+	}
+	if got := written(250*time.Millisecond, testRAUFrame); got != 2 {
+		t.Fatalf("over-cap GOP admitted: count %d", got)
+	}
+	if got := written(300*time.Millisecond, testInterFrame); got != 2 {
+		t.Fatalf("inter frame of a skipped GOP written: count %d", got)
+	}
+	if got := written(2*time.Second, testRAUFrame); got != 3 {
+		t.Fatalf("back-under-cap GOP not admitted: count %d", got)
+	}
+	if c.result.Drops != nil {
+		t.Fatalf("intentionally skipped GOPs must not count as drops: %v", *c.result.Drops)
+	}
+	c.finishResultDetail()
+	if !strings.Contains(c.result.SourceDetail, "rate cap 1 Hz") || !strings.Contains(c.result.SourceDetail, "achieved 1 Hz") {
+		t.Fatalf("achieved rate not recorded: %q", c.result.SourceDetail)
+	}
+}
+
+func TestHubCollisionFallsBackToExistingParameters(t *testing.T) {
+	video := NewVideoService(context.Background(), zap.NewNop())
+	hctx, hcancel := context.WithCancel(context.Background())
+	existing := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
+	viewerID, _, err := existing.subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	video.hubs["/dev/video0"] = existing
+	adapter := &cameraDataAdapter{video: video}
+
+	req := &agentpb.StreamVideoRequest{DeviceId: 0, Width: 1280, Height: 720, Framerate: 15}
+	hub, id, ch, w, h, fps, err := adapter.subscribeHub(context.Background(), "/dev/video0", req)
+	if err != nil {
+		t.Fatalf("collision failed the episode: %v", err)
+	}
+	if hub != existing || ch == nil {
+		t.Fatal("did not join the existing hub")
+	}
+	if w != 1920 || h != 1080 || fps != 30 {
+		t.Fatalf("achieved parameters = %dx%d@%d, want the existing hub's 1920x1080@30", w, h, fps)
+	}
+	hub.unsubscribe(id)
+	existing.unsubscribe(viewerID)
+}
+
+func TestStartOneRecordsRequestedVersusAchievedOnCollision(t *testing.T) {
+	video := NewVideoService(context.Background(), zap.NewNop())
+	hctx, hcancel := context.WithCancel(context.Background())
+	existing := &deviceHub{subs: make(map[int]chan *videoFrame), subDrops: make(map[int]uint64), ctx: hctx, cancel: hcancel, done: make(chan struct{}), width: 1920, height: 1080, framerate: 30}
+	viewerID, _, err := existing.subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer existing.unsubscribe(viewerID)
+	video.hubs["/dev/video0"] = existing
+	adapter := &cameraDataAdapter{video: video}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(5 * time.Millisecond):
+				existing.broadcast(testH264Frame(testRAUFrame))
+			}
+		}
+	}()
+
+	_, origin, _, err := data.CaptureReceipt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := data.CaptureSession{Directory: t.TempDir(), RequestBootNanos: origin}
+	source := data.Source{ID: "v4l2:/dev/video0", Kind: "camera", Capture: &data.SourceCapture{Rate: 15, MaxResolution: "1280x720"}}
+	capture, err := adapter.startOne(context.Background(), session, source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := capture.Stop(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results = %d", len(results))
+	}
+	detail := results[0].SourceDetail
+	if !strings.Contains(detail, "capturing at 1920x1080 at 30 fps") || !strings.Contains(detail, "requested") {
+		t.Fatalf("requested-vs-achieved resolution not recorded: %q", detail)
+	}
+	if !strings.Contains(detail, "rate cap 15 Hz") {
+		t.Fatalf("rate cap note not recorded: %q", detail)
+	}
+	if results[0].Count == 0 {
+		t.Fatal("no frames captured through the existing hub")
 	}
 }
 

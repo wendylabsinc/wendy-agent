@@ -270,7 +270,7 @@ func (s *DataService) CampaignTrigger(ctx context.Context, req *agentpbv2.DataCa
 }
 
 func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaign, reason, expression string) (*agentpbv2.DataEpisode, error) {
-	sources, topics, err := s.manager.ResolveCampaignSources(campaign)
+	sources, topics, captures, err := s.manager.ResolveCampaignSources(campaign)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
@@ -295,6 +295,7 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 	episode, err := s.startCapture(ctx, data.StartOptions{
 		Name:                 campaign.Name,
 		Sources:              sources,
+		SourceCaptures:       captures,
 		PreRollDuration:      campaign.BufferDuration(),
 		Trigger:              data.EpisodeTrigger{Reason: reason, CampaignName: campaign.Name, CampaignRevision: campaign.Revision, Expression: expression},
 		CollectorVersion:     version.Version,

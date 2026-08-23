@@ -932,6 +932,31 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	return h, id, ch, nil
 }
 
+// subscribeExistingHub joins the live hub for path at whatever stream
+// parameters it is already running with, asserting none of its own. It returns
+// ok=false (and no error) when no live hub exists or the hub is shutting down,
+// in which case the caller should create one via getOrCreateHub. Episode
+// capture uses this to coexist with a live viewer instead of failing the
+// episode when the viewer's stream parameters differ from the campaign's caps.
+func (s *VideoService) subscribeExistingHub(path string) (h *deviceHub, id int, ch chan *videoFrame, width, height, framerate uint32, ok bool, err error) {
+	s.mu.Lock()
+	h, exists := s.hubs[path]
+	if !exists || h.ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil, 0, nil, 0, 0, 0, false, nil
+	}
+	id, ch, err = h.subscribe()
+	s.mu.Unlock()
+	if err != nil {
+		if st, _ := status.FromError(err); st.Code() == codes.Unavailable {
+			// The hub began shutting down between the map lookup and subscribe.
+			return nil, 0, nil, 0, 0, 0, false, nil
+		}
+		return nil, 0, nil, 0, 0, 0, false, err
+	}
+	return h, id, ch, h.width, h.height, h.framerate, true, nil
+}
+
 // runProducer drives the capture loop for a single device hub.
 // It tries native V4L2 H.264 first, falling back to GStreamer when unsupported.
 // When the hub loses its last subscriber the context is cancelled and this goroutine exits.

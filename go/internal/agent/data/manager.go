@@ -262,6 +262,11 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 		_ = os.Remove(dir)
 		return Manifest{}, err
 	}
+	for i := range selected {
+		if capture := opts.SourceCaptures[selected[i].ID]; capture != nil {
+			selected[i].Capture = capture
+		}
+	}
 	currentBootID := bootID()
 	trigger := opts.Trigger
 	if trigger.Reason == "" {
