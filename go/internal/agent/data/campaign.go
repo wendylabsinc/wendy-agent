@@ -26,6 +26,16 @@ const CampaignVersion = 1
 // combinations are validated so authored plans are portable, and deployment
 // reports them as not yet implemented rather than silently recording
 // continuously.
+//
+// Snapshot stills and the continuous-mode rate cap additionally require a
+// camera transport that delivers whole encoded access units, which today
+// means a local V4L2 camera with native H.264 output. IP cameras and
+// GStreamer-encoded pipelines (CSI sensors, USB cameras without native H.264)
+// deliver byte-stream chunks that cannot be cut into standalone files without
+// corruption, so those sources record continuously at the stream rate and the
+// episode manifest's source detail records that the policy was not applied.
+// Which case applies is only knowable once the stream is running, so this is
+// reported per episode rather than warned at deployment.
 type SourceCapture struct {
 	// Mode is one of continuous (default), snapshot, fragment, or threshold.
 	Mode string `json:"mode,omitempty" yaml:"mode,omitempty"`

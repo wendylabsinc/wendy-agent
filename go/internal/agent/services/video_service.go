@@ -326,6 +326,15 @@ type videoFrame struct {
 	nativeFlags   uint32
 	sequence      uint32
 	sequenceValid bool
+	// auAligned reports that data holds exactly one whole encoded access unit.
+	// Only the native V4L2 path delivers this (one V4L2 buffer per encoded
+	// frame); the GStreamer and IP camera producers read a byte stream from a
+	// pipe, so their frames are arbitrary chunk-sized slices of the stream that
+	// can begin or end mid-access-unit. Consumers that cut the stream at frame
+	// boundaries (snapshot stills, GOP-granularity rate capping) must require
+	// this flag: a chunk that merely contains an SPS/PPS/IDR prefix may still
+	// be truncated mid-IDR.
+	auAligned bool
 }
 
 type frameTimestamp struct {
@@ -335,6 +344,7 @@ type frameTimestamp struct {
 	nativeFlags   uint32
 	sequence      uint32
 	sequenceValid bool
+	auAligned     bool
 }
 
 func realtimeFrameTimestamp(now time.Time) frameTimestamp {
@@ -963,7 +973,7 @@ func (s *VideoService) subscribeExistingHub(path string) (h *deviceHub, id int, 
 func (s *VideoService) runProducer(ctx context.Context, h *deviceHub, path string, req *agentpb.StreamVideoRequest) {
 	defer s.wg.Done()
 	broadcast := func(payload []byte, stamp frameTimestamp, codec agentpb.VideoCodec) bool {
-		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid})
+		return h.broadcast(&videoFrame{data: payload, tsNs: stamp.wallNs, codec: codec, nativeNs: stamp.nativeNs, nativeClock: stamp.nativeClock, nativeFlags: stamp.nativeFlags, sequence: stamp.sequence, sequenceValid: stamp.sequenceValid, auAligned: stamp.auAligned})
 	}
 
 	// The hub key carries the source kind: network cameras key on "ip:<id>" and
@@ -1463,6 +1473,12 @@ func (s *VideoService) streamV4L2Native(ctx context.Context, broadcast func([]by
 			stamp.nativeFlags = dqbuf.flags()
 			stamp.sequence = dqbuf.sequence()
 			stamp.sequenceValid = true
+			// V4L2 compressed capture delivers exactly one encoded frame per
+			// dequeued buffer, so this is the one producer whose frames are
+			// whole access units. The maxFrameBytes cap below can truncate a
+			// pathologically large frame, in which case the alignment promise
+			// no longer holds.
+			stamp.auAligned = n == dqbuf.bytesUsed()
 			const v4l2TimestampMask = uint32(0x0000e000)
 			const v4l2TimestampMonotonic = uint32(0x00002000)
 			if stamp.nativeFlags&v4l2TimestampMask == v4l2TimestampMonotonic {

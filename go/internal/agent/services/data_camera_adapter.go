@@ -108,17 +108,22 @@ func (a *cameraDataAdapter) startOne(ctx context.Context, session data.CaptureSe
 	}
 	mode := "continuous"
 	var interval time.Duration
+	var notes []string
 	capture := source.Capture
 	if capture.EffectiveMode() == captureModeSnapshot {
 		if d := capture.IntervalDuration(); d > 0 {
 			mode, interval = captureModeSnapshot, d
+			notes = append(notes, fmt.Sprintf("snapshot mode: one still per %s", d))
+		} else {
+			notes = append(notes, "snapshot mode requested without a valid interval; recording continuously")
 		}
 	}
 	var rateCap float64
 	if capture != nil && capture.Rate > 0 {
 		rateCap = capture.Rate
 	}
-	req, notes := buildStreamRequest(devID, src, capture)
+	req, requestNotes := buildStreamRequest(devID, src, capture)
+	notes = append(notes, requestNotes...)
 	dir := filepath.Join(session.Directory, "cameras", safeCaptureName(source.ID))
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
@@ -297,10 +302,13 @@ type cameraCapture struct {
 	observedDomains    map[string]bool
 	// mode is "continuous" or captureModeSnapshot; interval is the snapshot
 	// period in nanoseconds; rateCap is the campaign's continuous-mode capture
-	// rate cap in hertz (0 when uncapped).
-	mode     string
-	interval int64
-	rateCap  float64
+	// rate cap in hertz (0 when uncapped). alignmentKnown records that the
+	// first frame has classified the transport as access-unit aligned or
+	// byte-chunked (see handleFrame).
+	mode           string
+	interval       int64
+	rateCap        float64
+	alignmentKnown bool
 	// captureReceipt is a test seam over data.CaptureReceipt (see receiptNow).
 	captureReceipt func() (int64, int64, int64, error)
 	// notes accumulates honesty notes folded into the result's source detail.
@@ -358,14 +366,14 @@ func (c *cameraCapture) run() {
 			c.notes = append([]string{"pipeline PTS unavailable; canonical time uses bounded agent receipt"}, c.notes...)
 		}
 		subscriberDrops := c.hub.unsubscribe(c.subID)
+		end := int64(0)
+		if _, receipt, _, err := c.receiptNow(); err == nil {
+			end = receipt
+		}
 		if c.mode == captureModeSnapshot {
 			// Discarding frames between intervals is the normal snapshot
 			// workflow, so subscriber-channel drops are not data loss here;
 			// the honest loss unit is an interval that produced no still.
-			end := int64(0)
-			if _, receipt, _, err := c.receiptNow(); err == nil {
-				end = receipt
-			}
 			c.finishSnapshotAccounting(end)
 		} else {
 			drops := subscriberDrops
@@ -375,7 +383,7 @@ func (c *cameraCapture) run() {
 			c.result.Drops = &drops
 			c.result.DropAccounting = "partial_known_driver_and_subscriber"
 		}
-		c.finishResultDetail()
+		c.finishResultDetail(end)
 		c.finishMapping(c.result.Count)
 		c.result.Mappings = append([]data.ClockMapping(nil), c.mappingSummaries...)
 		if c.maxCanonicalError > 0 {
@@ -419,7 +427,29 @@ func (c *cameraCapture) run() {
 }
 
 // handleFrame dispatches one hub frame to the active capture mode.
+//
+// Frame-boundary-sensitive behavior (snapshot stills, GOP-granularity rate
+// capping) requires access-unit-aligned frames, which only the native V4L2
+// producer delivers; the GStreamer and IP camera producers emit arbitrary
+// byte-stream chunks (see videoFrame.auAligned). A producer's alignment is a
+// property of its pipeline and never changes mid-stream, so the first frame
+// decides: on a chunked transport snapshot mode degrades to continuous
+// recording and the rate cap is disabled, each with an honesty note that ends
+// up in the manifest's source detail.
 func (c *cameraCapture) handleFrame(frame *videoFrame) error {
+	if !c.alignmentKnown {
+		c.alignmentKnown = true
+		if !frame.auAligned {
+			if c.mode == captureModeSnapshot {
+				c.mode = "continuous"
+				c.notes = append(c.notes, "snapshot stills require a transport that delivers whole access units (native V4L2 H.264); this stream arrives as byte chunks, so the source records continuously instead")
+			}
+			if c.rateCap > 0 {
+				c.notes = append(c.notes, fmt.Sprintf("rate cap %.3g Hz cannot be enforced at GOP granularity on this transport's byte-chunked stream without corrupting it; recording at the stream rate", c.rateCap))
+				c.rateCap = 0
+			}
+		}
+	}
 	if c.mode == captureModeSnapshot {
 		return c.writeSnapshot(frame)
 	}
@@ -488,8 +518,13 @@ func frameRandomAccess(frame *videoFrame) (int, bool) {
 // the cap is therefore best-effort at GOP granularity, and the achieved rate
 // is recorded honestly in the capture result (see finishResultDetail).
 // Intentionally skipped GOPs are not counted as drops.
+//
+// The admit/skip decision toggles only on whole random-access units: the cap
+// is disabled outright on byte-chunked transports (see handleFrame), and a
+// frame truncated by the maxFrameBytes cap keeps the current decision, since
+// its parsed prefix does not prove a GOP boundary.
 func (c *cameraCapture) gateGOP(frame *videoFrame, receipt int64) (skip bool) {
-	if _, randomAccess := frameRandomAccess(frame); randomAccess {
+	if _, randomAccess := frameRandomAccess(frame); randomAccess && frame.auAligned {
 		if c.result.Count == 0 {
 			// Always admit the first GOP so the capture starts promptly.
 			c.skipGOP = false
@@ -557,12 +592,18 @@ func (c *cameraCapture) writeFrame(frame *videoFrame) error {
 // per campaign interval.
 //
 // Format choice: snapshots are written as single H.264 random-access units
-// (snapshot-<n>.h264) rather than JPEG. The producer pipelines deliver encoded
-// H.264 (or VP8) frames only, and every H.264 keyframe here already carries
-// the SPS/PPS parameter sets needed to decode it standalone, so keyframe
-// stills need no new GStreamer JPEG pipeline; the episode file inventory
-// already classifies .h264 payloads. VP8 streams follow the segmenter's
-// existing .webm naming convention.
+// (snapshot-<n>.h264) rather than JPEG, so keyframe stills need no new
+// GStreamer JPEG pipeline; the episode file inventory already classifies
+// .h264 payloads.
+//
+// Decodability rests on two checks, both required. handleFrame only routes
+// access-unit-aligned frames here (native V4L2 H.264, one whole encoded frame
+// per buffer — byte-chunked transports degrade to continuous recording), and
+// frameRandomAccess then verifies the unit carries its own SPS/PPS/IDR trio.
+// Together they guarantee a written still is a complete, self-contained
+// access unit; a keyframe whose parameter sets the camera firmware did not
+// inline is skipped and its interval is reported as missed rather than filled
+// with an undecodable file.
 //
 // Between intervals the capture stays subscribed and discards frames instead
 // of unsubscribing: receiving and dropping a shared frame pointer is a channel
@@ -572,7 +613,9 @@ func (c *cameraCapture) writeFrame(frame *videoFrame) error {
 // for the next keyframe.
 func (c *cameraCapture) writeSnapshot(frame *videoFrame) error {
 	offset, randomAccess := frameRandomAccess(frame)
-	if !randomAccess {
+	// A frame truncated by the maxFrameBytes cap loses its alignment promise
+	// mid-stream; it must not become a still even when its head parses as one.
+	if !randomAccess || !frame.auAligned {
 		if c.result.Count == 0 {
 			return errAwaitCameraRandomAccess
 		}
@@ -651,11 +694,22 @@ func (c *cameraCapture) finishSnapshotAccounting(end int64) {
 
 // finishResultDetail folds accumulated honesty notes, including the achieved
 // rate under a capture rate cap, into the reported source detail.
-func (c *cameraCapture) finishResultDetail() {
+//
+// The achieved rate is computed over the span from the first written frame to
+// the capture's end receipt, not to the last written frame: frames arrive in
+// GOP bursts, so a capture that admitted a single GOP and then skipped to the
+// end would otherwise report the encoder's intra-GOP rate (say 30 Hz) rather
+// than the delivered rate the cap actually produced.
+func (c *cameraCapture) finishResultDetail(end int64) {
 	if c.rateCap > 0 {
 		note := fmt.Sprintf("rate cap %.3g Hz applied at GOP granularity (best effort)", c.rateCap)
-		if c.result.Count > 1 && c.rateLast > c.rateStart {
-			note += fmt.Sprintf("; achieved %.3g Hz", float64(c.result.Count-1)/(float64(c.rateLast-c.rateStart)/float64(time.Second)))
+		span := end - c.rateStart
+		if end == 0 || span <= 0 {
+			// No end receipt: fall back to the written-frame span.
+			span = c.rateLast - c.rateStart
+		}
+		if c.result.Count > 0 && span > 0 {
+			note += fmt.Sprintf("; achieved %.3g Hz", float64(c.result.Count)/(float64(span)/float64(time.Second)))
 		}
 		c.notes = append(c.notes, note)
 	}
@@ -699,9 +753,14 @@ func (c *cameraCapture) ensureSegment(codec agentpb.VideoCodec, canonical int64,
 	return 0, nil
 }
 
-// h264RandomAccessUnit reports an Annex-B access unit that includes SPS, PPS,
-// and IDR NALs. h264parse config-interval=-1 emits this trio at every keyframe,
-// so starting segments only here makes each file independently decodable.
+// h264RandomAccessOffset reports an Annex-B payload position where SPS, PPS,
+// and IDR NALs appear in order. The GStreamer pipelines emit this trio at
+// every keyframe (h264parse config-interval=-1) and UVC H.264 firmware
+// commonly inlines it too, so starting segments only here makes each file
+// begin independently decodable. Note this inspects only the bytes it is
+// given: on a byte-chunked transport a reported unit may still be truncated
+// at the payload's end, which is why snapshot stills additionally require an
+// access-unit-aligned frame (see handleFrame).
 func h264RandomAccessOffset(payload []byte) (offset int, found bool) {
 	spsOffset, ppsOffset := -1, -1
 	for i := 0; i+3 < len(payload); {

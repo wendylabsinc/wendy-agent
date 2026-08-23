@@ -118,7 +118,14 @@ var (
 	testInterFrame = []byte{0, 0, 0, 1, 0x41, 1}
 )
 
+// testH264Frame models a native V4L2 frame: one whole access unit per frame.
 func testH264Frame(payload []byte) *videoFrame {
+	return &videoFrame{data: payload, nativeClock: "CLOCK_REALTIME_AGENT_CAPTURE", codec: agentpb.VideoCodec_VIDEO_CODEC_H264, auAligned: true}
+}
+
+// testChunkedH264Frame models a GStreamer or IP camera frame: an arbitrary
+// slice of the encoded byte stream with no access-unit alignment.
+func testChunkedH264Frame(payload []byte) *videoFrame {
 	return &videoFrame{data: payload, nativeClock: "CLOCK_REALTIME_AGENT_CAPTURE", codec: agentpb.VideoCodec_VIDEO_CODEC_H264}
 }
 
@@ -258,9 +265,121 @@ func TestContinuousRateCapDropsWholeGOPs(t *testing.T) {
 	if c.result.Drops != nil {
 		t.Fatalf("intentionally skipped GOPs must not count as drops: %v", *c.result.Drops)
 	}
-	c.finishResultDetail()
+	c.finishResultDetail(3 * int64(time.Second))
 	if !strings.Contains(c.result.SourceDetail, "rate cap 1 Hz") || !strings.Contains(c.result.SourceDetail, "achieved 1 Hz") {
 		t.Fatalf("achieved rate not recorded: %q", c.result.SourceDetail)
+	}
+}
+
+func TestAchievedRateIsComputedOverTheCaptureSpanNotTheWrittenBurst(t *testing.T) {
+	clock := &fakeReceipt{}
+	c := newTestCameraCapture(t, clock)
+	c.rateCap = 1 // hertz
+
+	// One admitted GOP: a keyframe and four inter frames inside 400ms. Every
+	// later GOP stays over the cap and is skipped until the capture ends.
+	for i, payload := range [][]byte{testRAUFrame, testInterFrame, testInterFrame, testInterFrame, testInterFrame} {
+		clock.now = int64(i) * 100 * int64(time.Millisecond)
+		if err := c.handleFrame(testH264Frame(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock.now = 2 * int64(time.Second)
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	if c.result.Count != 5 {
+		t.Fatalf("count = %d, want the single admitted GOP's 5 frames", c.result.Count)
+	}
+
+	c.finishResultDetail(10 * int64(time.Second))
+	if !strings.Contains(c.result.SourceDetail, "achieved 0.5 Hz") {
+		t.Fatalf("achieved rate must cover the whole capture span (5 frames / 10s), got %q", c.result.SourceDetail)
+	}
+}
+
+func TestSnapshotModeDegradesToContinuousOnByteChunkedTransport(t *testing.T) {
+	clock := &fakeReceipt{now: 100 * int64(time.Millisecond)}
+	c := newTestCameraCapture(t, clock)
+	c.mode, c.interval = captureModeSnapshot, int64(time.Second)
+
+	// The chunk parses as a random-access prefix, but chunk boundaries are
+	// arbitrary: the same bytes could be the head of a truncated keyframe.
+	if err := c.handleFrame(testChunkedH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	if c.mode != "continuous" {
+		t.Fatalf("mode = %q, want degrade to continuous", c.mode)
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, "snapshot-000001.h264")); err == nil {
+		t.Fatal("a byte-stream chunk was written as a snapshot still")
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, "segment-000001.h264")); err != nil {
+		t.Fatalf("degraded capture did not record continuously: %v", err)
+	}
+	c.finishResultDetail(0)
+	if !strings.Contains(c.result.SourceDetail, "records continuously instead") {
+		t.Fatalf("degrade note missing from source detail: %q", c.result.SourceDetail)
+	}
+}
+
+func TestRateCapIsDisabledOnByteChunkedTransport(t *testing.T) {
+	clock := &fakeReceipt{}
+	c := newTestCameraCapture(t, clock)
+	c.rateCap = 1 // hertz
+
+	// Chunks of a byte stream cannot be skipped at GOP granularity: dropping
+	// them corrupts the stream. All three must be written despite the cap.
+	for i, payload := range [][]byte{testRAUFrame, testInterFrame, testRAUFrame} {
+		clock.now = int64(i) * 100 * int64(time.Millisecond)
+		if err := c.handleFrame(testChunkedH264Frame(payload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c.result.Count != 3 {
+		t.Fatalf("count = %d, want all 3 chunks written", c.result.Count)
+	}
+	if c.rateCap != 0 {
+		t.Fatalf("rate cap still armed on a chunked transport: %v", c.rateCap)
+	}
+	c.finishResultDetail(0)
+	if !strings.Contains(c.result.SourceDetail, "rate cap 1 Hz cannot be enforced") {
+		t.Fatalf("disabled-cap note missing: %q", c.result.SourceDetail)
+	}
+}
+
+func TestSnapshotSkipsTruncatedFrameOnAlignedTransport(t *testing.T) {
+	clock := &fakeReceipt{now: 100 * int64(time.Millisecond)}
+	c := newTestCameraCapture(t, clock)
+	c.mode, c.interval = captureModeSnapshot, int64(time.Second)
+
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	// A single frame truncated by the maxFrameBytes cap: its head still parses
+	// as SPS/PPS/IDR, but it must not become a still, and it must not degrade
+	// the whole capture either.
+	clock.now = 1500 * int64(time.Millisecond)
+	truncated := testChunkedH264Frame(testRAUFrame)
+	if err := c.handleFrame(truncated); err != nil {
+		t.Fatal(err)
+	}
+	if c.result.Count != 1 {
+		t.Fatalf("count = %d after truncated frame, want 1", c.result.Count)
+	}
+	clock.now = 1700 * int64(time.Millisecond)
+	if err := c.handleFrame(testH264Frame(testRAUFrame)); err != nil {
+		t.Fatal(err)
+	}
+	if c.mode != captureModeSnapshot || c.result.Count != 2 {
+		t.Fatalf("mode = %q count = %d, want snapshot mode intact with 2 stills", c.mode, c.result.Count)
+	}
+	media, err := os.ReadFile(filepath.Join(c.dir, "snapshot-000002.h264"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(media, testRAUFrame) {
+		t.Fatalf("snapshot 2 = %x", media)
 	}
 }
 
