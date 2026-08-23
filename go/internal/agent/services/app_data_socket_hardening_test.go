@@ -251,6 +251,64 @@ func TestAppDataPeerCredentialNoScopeRefused(t *testing.T) {
 	}
 }
 
+// TestAppDataPeerCredentialCgroupfsMatchAllowed proves the socket admits a peer
+// whose cgroupfs-driver cgroup (literal "system.slice:{svc}:{appID}" path
+// segment) resolves to the socket's own app. This exercises the full
+// verifyPeer -> appIDFromCgroup path for the cgroupfs driver, not just the
+// systemd form the other socket-level tests use.
+func TestAppDataPeerCredentialCgroupfsMatchAllowed(t *testing.T) {
+	m := newTestDataSocketManager(t)
+	m.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: 0, PID: 4242}, nil
+	}
+	m.cgroupOfPID = func(int32) (string, error) {
+		return "0::/system.slice/system.slice:edge-agent:com.example.a@worker\n", nil
+	}
+	dir, err := m.Ensure("com.example.a", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", filepath.Join(dir, DataSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	ack := sendRecord(t, conn, data.ApplicationRecord{Version: 1, Type: "event", Name: "ready", ClientBootID: "unavailable"})
+	if ack.State != "buffered" {
+		t.Fatalf("matching cgroupfs peer: state = %q, want buffered", ack.State)
+	}
+}
+
+// TestAppDataPeerCredentialCgroupfsMismatchRefused proves the socket fails
+// closed under the cgroupfs driver: a peer that belongs to a DIFFERENT app is
+// refused, exactly as it is under systemd. This is the core D6 forgery guard,
+// verified on the cgroupfs code path that PR #1755 introduces.
+func TestAppDataPeerCredentialCgroupfsMismatchRefused(t *testing.T) {
+	m := newTestDataSocketManager(t)
+	m.peerCred = func(net.Conn) (peerCredentials, error) {
+		return peerCredentials{UID: 0, PID: 4242}, nil
+	}
+	m.cgroupOfPID = func(int32) (string, error) {
+		// Attacker owns com.attacker and tries to append a victim-named child
+		// cgroup. The real (parent) scope still wins, so the peer resolves to
+		// com.attacker and is refused on the com.victim socket.
+		return "0::/system.slice/system.slice:edge-agent:com.attacker/system.slice:edge-agent:com.victim\n", nil
+	}
+	dir, err := m.Ensure("com.victim", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", filepath.Join(dir, DataSocketFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if ack := readRejectAck(t, conn); ack.State != "rejected" {
+		t.Fatalf("cgroupfs cross-app forgery: state = %q, want rejected (fail closed)", ack.State)
+	}
+}
+
 // TestAppIDFromCgroup covers the cgroup identity extraction directly.
 func TestAppIDFromCgroup(t *testing.T) {
 	cases := []struct {
@@ -263,6 +321,30 @@ func TestAppIDFromCgroup(t *testing.T) {
 		{"multi service strips suffix", "0::/system.slice/edge-agent-com.example.a@worker.scope\n", "com.example.a", true},
 		{"non-wendy process", "0::/user.slice/user-1000.slice/session-3.scope\n", "", false},
 		{"empty", "", "", false},
+		// cgroupfs driver: runc takes the "slice:prefix:name" CgroupsPath as a
+		// literal directory name instead of translating it to a systemd scope
+		// (observed on WendyOS 0.16.0 devices).
+		{"cgroupfs single service", "0::/system.slice/system.slice:edge-agent:com.example.a\n", "com.example.a", true},
+		{"cgroupfs multi service strips suffix", "0::/system.slice/system.slice:edge-agent:com.example.a@worker\n", "com.example.a", true},
+		{"cgroupfs other systemd service", "0::/system.slice/system.slice:other-agent:com.example.a\n", "", false},
+		// FORGERY ATTEMPT (cgroupfs): a peer that owns app com.attacker and has
+		// write access to its own delegated cgroup subtree creates a child
+		// cgroup literally named after the victim's scope and moves itself into
+		// it. The peer's true (parent) scope segment always precedes any child
+		// it can create, so first-match returns the attacker's real id, never
+		// the victim's. Fail closed against the mismatch downstream.
+		{"cgroupfs child cgroup forgery yields parent id", "0::/system.slice/system.slice:edge-agent:com.attacker/system.slice:edge-agent:com.victim\n", "com.attacker", true},
+		// FORGERY ATTEMPT (systemd): same delegation attack expressed as nested
+		// scope units. Parent scope still wins.
+		{"systemd child scope forgery yields parent id", "0::/system.slice/edge-agent-com.attacker.scope/edge-agent-com.victim.scope\n", "com.attacker", true},
+		// FAIL CLOSED (cgroupfs): an empty suffix is not a valid app identity;
+		// it must not resolve to any app.
+		{"cgroupfs empty suffix", "0::/system.slice/system.slice:edge-agent:\n", "", false},
+		// FAIL CLOSED (cgroupfs): empty appID with only a service suffix.
+		{"cgroupfs empty appID with service", "0::/system.slice/system.slice:edge-agent:@worker\n", "", false},
+		// FAIL CLOSED (cgroupfs): the exact-service prefix must match; a service
+		// whose name merely shares a prefix with edge-agent is not edge-agent.
+		{"cgroupfs service prefix is not a match", "0::/system.slice/system.slice:edge-agent-x:com.example.a\n", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
