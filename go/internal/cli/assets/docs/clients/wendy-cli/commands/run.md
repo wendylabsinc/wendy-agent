@@ -4,7 +4,7 @@ Runs your app on a Wendy-enabled device:
 2. [Queries the platform and architecture](./device/version.md) of this device
 3. Invokes a [build](./build.md) using the target triple, and injects a [debugger](../../../debugging/) if needed
 4. Uploads the artifact(s) for [Linux](../../../wendy-agent/connectivity/container-registry.md) or [macOS](../../../wendy-agent/macos/)
-5. [Starts the app](./device/apps/start.md), waits for readiness, and prints the reachable URL (when configured)
+5. [Starts the app](./device/apps/start.md), then (attached runs only) waits for readiness and prints the reachable URL
 6. [Attaches the logs](./device/logs.md) if needed (when `--detach` is not provided)
 
 ## Reachable app URLs
@@ -144,13 +144,14 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | Flag | Description |
 |------|-------------|
 | `--deploy` | Build and create the container but do not start it. |
-| `--detach` | Start the container but do not stream logs. |
+| `--detach` | Start the container and return without streaming logs, waiting for readiness, or opening the app URL. |
 | `--restart-unless-stopped` | Restart the container unless manually stopped. |
 | `--restart-on-failure` | Restart the container on failure. |
 | `--no-restart` | Do not restart the container on exit. |
 | `--debug` | Enable debug logging and inject debug tooling via `WENDY_DEBUG=true`. For SwiftPM projects (both native macOS and cross-compiled Linux container targets), builds with `-c debug` instead of `-c release`. |
 | `--yes` / `-y` | Accept all device-selection prompts automatically. |
-| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. |
+| `--builder <name>` | Image builder for Dockerfile/Containerfile builds: `docker` or `apple-container`. Cannot be combined with `--build-host`. |
+| `--build-host <device>` | Build the image on another WendyOS device instead of this machine. See [Remote build host](#remote-build-host). |
 | `--build-type <type>` | Override build type detection: `docker`, `swift`, or `python`. |
 | `--prefix <dir>` | Run from a project directory other than the current working directory. |
 | `--product <name>` | Swift Package Manager product to build and run (Swift projects only). |
@@ -163,6 +164,109 @@ On a **Windows host**, `wendy run` returns an actionable error for Swift project
 | `--watch` | Watch the project directory and redeploy on every change. Runs detached and non-interactive. See [Watch mode](#watch-mode). |
 | `--debounce <ms>` | Watch mode only: quiet period in milliseconds after the last change before redeploying (default `400`). |
 | `--verbose` | Watch mode only: always show build output. By default build output is hidden unless a build fails. |
+
+## Remote build host
+
+`--build-host` delegates the image build to another WendyOS device:
+
+```bash
+wendy run --build-host spark-office
+```
+
+The build runs on that device, and it pushes the finished image straight into
+the target device's registry over the mesh — LAN-direct when possible, via the
+cloud broker otherwise. The image never travels through your machine.
+
+This is worth reaching for when your laptop is the wrong machine for the job:
+CUDA-heavy builds that want a real GPU, or an arm64 target that would otherwise
+be built under QEMU emulation on an x86 host.
+
+**Your machine needs no container builder at all.** On the `--build-host` path
+the CLI never starts Docker, Apple Container, or a local BuildKit daemon — a Mac
+with no Docker Desktop installed can still `wendy run`. Because of that,
+`--builder` (which selects a *local* builder) cannot be combined with
+`--build-host`.
+
+To set a default so you do not pass the flag every time, set `defaultBuildHost`
+in the CLI config. The flag always wins over the default. This is a
+per-developer setting rather than a project one, because the right build host
+depends on which network you are on.
+
+### Requirements
+
+- **The build host must opt in:**
+
+  ```bash
+  wendy device build-host enable --device spark-office
+  wendy device build-host status --device spark-office
+  ```
+
+  A device does not become a build farm merely by being reachable. Enabling takes
+  effect immediately, with no agent restart. The RPC requires a *user*
+  certificate, so one device cannot opt another in on your behalf. See
+  [`wendy device build-host`](device/build-host.md).
+
+- **The build host must run BuildKit**, listening on
+  `/run/buildkit/buildkitd.sock`. WendyOS devices have it. An adopted Linux host —
+  a DGX Spark running Ubuntu, say — does not, and Ubuntu ships no `buildkit`
+  package, so install the release tarball and symlink `buildctl` into `/usr/bin`
+  (the agent runs it by name, and systemd units get a minimal PATH).
+  `build-host status` reports the version it finds.
+
+  A Mac cannot be a build host: the Mac agent runs Linux containers through Apple
+  Container, which has no BuildKit underneath. A Mac remains a perfectly good
+  *target*, and a perfectly good machine to run `wendy run` from.
+
+- **The target device must be provisioned**, so the build host can address it by
+  asset id. Delivery goes through the mesh dialer — LAN first, cloud broker
+  otherwise — and never resolves a hostname, so a build host that cannot resolve
+  `device-<id>.cloud.wendy.dev` still delivers.
+
+If any of these does not hold, `wendy run` fails immediately and names the host.
+It never quietly falls back to building locally — a twenty-minute local build
+you believed was running on the Spark is worse than an error.
+
+### What enabling a build host means
+
+Worth being deliberate about, because a build host is a shared machine running
+other people's instructions:
+
+- **Anyone in your organisation can build on it.** A remote build executes the
+  Dockerfile it was handed, which is the feature — but it means the builder role
+  grants code execution on that device to every *person* in your organisation.
+  Enable it on machines you would already trust that way, not on a robot in the
+  field.
+
+  Three things sit outside that grant. Cross-organisation callers are rejected by
+  the agent's mTLS organisation check. **Devices** are rejected too — submitting a
+  build requires a user certificate, so one compromised device cannot conscript
+  its peers into building for it. And the unauthenticated port the agent serves
+  before provisioning does not accept builds at all.
+- **Build contexts land on its disk.** Sources are reassembled under
+  `/var/lib/wendy/buildctx/<app>` (mode `0700`, root-owned) and are kept between
+  builds so BuildKit's local-source cache stays warm. They are cleared and
+  rewritten at the start of each build of that app, but they are not deleted
+  afterwards.
+- **Builds of the same app are serialised** on a given host; different apps build
+  concurrently. Two people building one app id would otherwise share a context
+  directory, and the second build's extraction would replace sources the first
+  was still compiling.
+- **Delivery is scoped to one build.** While a build runs, the agent exposes a
+  loopback endpoint that BuildKit pushes through, and that endpoint holds the
+  credentials for reaching the target device. It requires a password minted for
+  that build alone, so other processes on the build host cannot use it to push
+  something of their own to your device. The password is passed to BuildKit in a
+  `0600` file rather than on a command line, where any local user could read it
+  out of `/proc`.
+
+### Errors
+
+A failed remote build reports which half failed, because the fixes differ:
+
+- *build on `<host>` failed* — the problem is your Dockerfile or Stagefile.
+- *image built on `<host>` but could not be delivered* — the build was fine; look
+  at mesh reachability between the two devices, or registry credentials on the
+  build host.
 
 ## Watch mode
 
@@ -257,11 +361,10 @@ Deploy records written before this version carry no layer IDs, so they cannot be
 
 ## postStart hooks
 
-When a `postStart` hook is configured in `wendy.json`, `wendy run` fires it
-after the app reports readiness — regardless of which deploy path is taken
-(registry push **or** the default chunk-diff / CBC path) and regardless of
-whether `--detach` is passed. If the readiness probe fails, the hook is
-skipped (both `openURL` and `cli`) and a warning is printed instead.
+When a `postStart` hook is configured in `wendy.json`, the host-side actions
+(`openURL` and `cli`) fire after the app reports readiness, on either deploy
+path (registry push **or** the default chunk-diff / CBC path). If the readiness
+probe fails, both are skipped and a warning is printed instead.
 
 > **Note:** When the CLI connects to the device at an IPv6 address (for example, one discovered via mDNS), the hook targets the device's best self-reported IP address instead — the same address shown in the `App reachable at` line — for both `openURL` and `cli`. This avoids pointing at a rotating RFC 4941 temporary privacy address that may not be reachable later. If the device cannot be queried, the dialed address is used (and bracketed for URL safety in `openURL`).
 
@@ -305,9 +408,8 @@ because the container exits or because the user presses **Ctrl-C** — the hook'
 context is cancelled and the CLI waits for the child process to exit before
 returning. This prevents orphaned hook processes from outliving `wendy run`.
 
-In detached mode (`--detach`) and deploy-only mode (`--deploy`), the hook is
-fired with a long-lived background context and is not reaped on exit (matching
-the previous behaviour for those flags).
+Detached mode (`--detach`), deploy-only mode (`--deploy`), and `--watch` do not
+fire the host-side hook at all, so there is no child process to reap.
 
 ## Container image signature
 

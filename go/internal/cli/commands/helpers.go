@@ -2881,6 +2881,18 @@ type resolveConfig struct {
 	suppressProvisioningHint bool
 	suppressUpdateCheck      bool
 	nonInteractive           bool
+	device                   string
+}
+
+// SelectDevice makes device selection an explicit property of this resolve
+// call. It is primarily useful for nested connections (for example, resolving
+// a build host while a run command remains connected to its target) where
+// temporarily mutating the package-global --device value would race with other
+// in-flight commands.
+func SelectDevice(device string) resolveOption {
+	return func(c *resolveConfig) {
+		c.device = strings.TrimSpace(device)
+	}
 }
 
 // SuppressUpdateCheck prevents connectToAgent from running the automatic
@@ -2985,14 +2997,21 @@ func resolveTargetInner(ctx context.Context, opts ...resolveOption) (*SelectedDe
 	}
 
 	if cloudCfg, ok := cloudDeviceConfigFromContext(ctx); ok {
-		conn, err := connectToCloudAgent(ctx, cloudCfg.CloudGRPC, cloudCfg.DeviceName, cloudCfg.BrokerURL)
+		deviceName := cloudCfg.DeviceName
+		if cfg.device != "" {
+			deviceName = cfg.device
+		}
+		conn, err := connectToCloudAgent(ctx, cloudCfg.CloudGRPC, deviceName, cloudCfg.BrokerURL)
 		if err != nil {
 			return nil, err
 		}
 		return &SelectedDevice{Agent: conn}, nil
 	}
 
-	device := deviceFlag
+	device := cfg.device
+	if device == "" {
+		device = deviceFlag
+	}
 	isDefault := false
 	if device == "" {
 		loadedCfg, err := config.Load()

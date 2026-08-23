@@ -237,6 +237,12 @@ func detectGPUInfo() gpuInfo {
 		// Discrete NVIDIA GPU (no Tegra release file).
 		info.hasGPU = true
 		info.vendor = "nvidia"
+	} else if _, err := os.Stat("/dev/kfd"); err == nil {
+		// AMD ROCm: /dev/kfd (the compute device) is the definitive signal, and
+		// unlike a bare /dev/dri it names the vendor. Checked before the generic
+		// DRM branch so an AMD box reports "amd" rather than an unknown vendor.
+		info.hasGPU = true
+		info.vendor = "amd"
 	} else if entries, _ := os.ReadDir("/dev/dri"); len(entries) > 0 {
 		// Generic GPU via DRM — vendor unknown.
 		info.hasGPU = true

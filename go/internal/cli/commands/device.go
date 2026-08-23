@@ -79,6 +79,7 @@ func newDeviceCmd() *cobra.Command {
 		newDeviceGetDefaultCmd(),
 		newDeviceUnsetDefaultCmd(),
 		newDeviceUnpinCmd(),
+		newDeviceBuildHostCmd(),
 		newDeviceSetupCmd(),
 		newDeviceEnrollCmd(),
 		newDeviceUnenrollCmd(),
@@ -1507,6 +1508,10 @@ func printLogRecordJSON(service string, lr *logspb.LogRecord) {
 }
 
 func printLogRecord(service string, lr *logspb.LogRecord) {
+	writeLogRecord(os.Stdout, service, lr)
+}
+
+func writeLogRecord(w io.Writer, service string, lr *logspb.LogRecord) {
 	ts := time.Unix(0, int64(lr.GetTimeUnixNano())).Local().Format("15:04:05.000")
 	label, style := severityLabel(lr.GetSeverityNumber())
 
@@ -1536,7 +1541,7 @@ func printLogRecord(service string, lr *logspb.LogRecord) {
 		}
 	}
 
-	fmt.Println(b.String())
+	fmt.Fprintln(w, b.String())
 }
 
 func newDeviceTelemetryStreamCmd() *cobra.Command {

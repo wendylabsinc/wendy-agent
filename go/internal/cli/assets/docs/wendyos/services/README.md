@@ -13,7 +13,7 @@ WendyOS is a Yocto-based Linux distribution managed entirely by systemd. This do
 | `wendyos-hostname.service` | `recipes-connectivity/avahi` | Derives `hostname` from the persistent device name and sets it before Avahi starts |
 | `gadget-setup.service` | `recipes-core/gadget-setup` | Configures the USB gadget composite device (NCM or ECM network + ACM serial console) using Linux configfs |
 | `wendyos-usbgadget-unbind.service` | `recipes-core/gadget-setup` | Tears down the USB gadget on shutdown |
-| `wendyos-agent.service` | `recipes-core/wendyos-agent` | Runs the `wendy-agent` binary; provides device management, gRPC API, WiFi control, and container orchestration |
+| `wendyos-agent.service` | `recipes-core/wendyos-agent` | Runs the `wendy-agent` binary; provides device management, gRPC API, WiFi control, and container orchestration. Ordered after the boot-time identity publisher and Avahi so an explicit rename can be re-asserted without a race. |
 | `wendyos-agent-updater.service` | `recipes-core/wendyos-agent` | One-shot agent self-update (downloads from GitHub releases). Also stopped during `UpdateOS` to prevent cgroup SIGTERM propagation to the in-flight OTA (wendyos-update) process |
 | `wendyos-agent-updater.timer` | `recipes-core/wendyos-agent` | Triggers the updater 5 min after boot, then daily at 03:00 with a random 30-min jitter. Stopped for the duration of any `UpdateOS` call so the updater cannot interrupt an in-flight OTA (wendyos-update) operation; re-started when the call returns |
 | `containerd.service` | upstream (meta-virtualization) | Container runtime; `wendy-agent` requires it before starting |
@@ -62,8 +62,10 @@ local-fs.target
 wendyos-uuid-generate.service
 wendyos-device-name-generate.service
       |
-      +-- wendyos-hostname.service --> avahi-daemon.service
-      +-- wendyos-identity.service
+      +-- wendyos-hostname.service --> avahi-daemon.service --+
+      +-- wendyos-identity.service ---------------------------+
+                                                               |
+                                                     wendyos-agent.service
 ```
 
 ## systemd target dependencies
@@ -83,6 +85,7 @@ wendyos-device-name-generate.service
 3. `gadget-setup.service` runs before `systemd-networkd` so the `usb0` interface exists when networkd starts.
 4. `containerd.service` must be running and `/var/lib/containerd` must be bind-mounted before `wendyos-agent.service` starts.
 5. EEPROM services (RPi 5 only) run after `multi-user.target` and use a flag file (`/var/lib/wendyos/eeprom-updated`, `/var/lib/wendyos/eeprom-nvme-updated`) to guarantee they execute at most once.
+6. `wendyos-agent.service` runs after `wendyos-identity.service` and `avahi-daemon.service`. This ensures `ReassertHostnameAdvertisement`, which restores an explicit `wendy device rename` hostname over boot-time TXT records, runs after the publisher instead of racing it. These are ordering-only dependencies; packaged Linux installs that do not provide the WendyOS units continue to start normally.
 
 ## Checking service status
 

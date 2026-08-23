@@ -2,11 +2,13 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -346,6 +348,23 @@ func TestStopContainer_PersistsStoppedByUser(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected SetStoppedByUser(test-app, true); calls = %+v", mock.stoppedByUserCalls)
+	}
+}
+
+func TestStopContainer_RollsBackStoppedByUserWhenStopFails(t *testing.T) {
+	mock := &mockContainerdClient{
+		containers: []*agentpb.AppContainer{{AppName: "test-app"}},
+		stopErr:    errors.New("stop failed"),
+	}
+	client, cleanup := startContainerServer(t, mock)
+	defer cleanup()
+
+	if _, err := client.StopContainer(context.Background(), &agentpb.StopContainerRequest{AppName: "test-app"}); err == nil {
+		t.Fatal("StopContainer error = nil; want failure")
+	}
+	want := []stoppedByUserCall{{containerID: "test-app", stopped: true}, {containerID: "test-app", stopped: false}}
+	if !reflect.DeepEqual(mock.stoppedByUserCalls, want) {
+		t.Fatalf("SetStoppedByUser calls = %+v; want %+v", mock.stoppedByUserCalls, want)
 	}
 }
 

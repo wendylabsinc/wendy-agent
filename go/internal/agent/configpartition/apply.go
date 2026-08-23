@@ -306,8 +306,12 @@ func applyDeviceName(logger *zap.Logger, name string) error {
 		logger.Info("Hostname updated", zap.String("hostname", "wendyos-"+name))
 	}
 
-	// update-mdns-uuid.sh is a first-boot placeholder replacer and is a no-op
-	// on a running device. Update the avahi service file directly instead.
+	// update-mdns-uuid.sh runs at boot, before the agent, so it cannot publish a
+	// name applied here at runtime. Update the avahi service file directly
+	// instead. (It is no longer the one-shot placeholder replacer it once was —
+	// it now re-derives name/displayname from device-name on every boot, which is
+	// why services.ReassertHostnameAdvertisement re-applies an explicit rename
+	// over the top of it at startup.)
 	updateAvahiDeviceName(logger, name, env)
 
 	return nil
