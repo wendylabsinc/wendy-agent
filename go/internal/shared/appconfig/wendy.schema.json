@@ -221,6 +221,14 @@
               "type": "array",
               "items": { "type": "string" },
               "description": "Allowed camera device paths. Accepted for compatibility with the deprecated video entitlement."
+            },
+            "user": {
+              "type": "string",
+              "description": "Username for authenticating to a network (IP) camera."
+            },
+            "password": {
+              "type": "string",
+              "description": "Password for authenticating to a network (IP) camera."
             }
           },
           "required": ["type"],
