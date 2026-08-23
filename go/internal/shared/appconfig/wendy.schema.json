@@ -296,6 +296,20 @@
         },
         {
           "properties": {
+            "type": { "const": "mcp" },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "Port the app's Model Context Protocol (MCP) server listens on."
+            }
+          },
+          "required": ["type", "port"],
+          "additionalProperties": false,
+          "description": "Declares the app's Model Context Protocol (MCP) server port so MCP clients can discover and reach it. At most one per app."
+        },
+        {
+          "properties": {
             "type": { "const": "http" },
             "port": {
               "type": "integer",
@@ -323,6 +337,14 @@
           "required": ["type"],
           "additionalProperties": false,
           "description": "Send app-attributed Wendy Notifications through the app's private Wendy System API socket. The agent/daemon derives app, device, and organization identity; the entitlement never exposes the full Agent control plane."
+        },
+        {
+          "properties": {
+            "type": { "const": "data" }
+          },
+          "required": ["type"],
+          "additionalProperties": false,
+          "description": "Submit structured event and prediction records to Wendy Data over the app-private data socket (WENDY_DATA_SOCKET). Never exposes the administrative agent socket."
         },
         {
           "properties": {
