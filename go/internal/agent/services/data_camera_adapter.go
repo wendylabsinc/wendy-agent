@@ -14,8 +14,6 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const cameraSegmentDuration = 10 * time.Second
@@ -229,28 +227,13 @@ func describeStreamParams(w, h, fps uint32) string {
 }
 
 // subscribeHub joins the device's frame hub. When the hub already runs with
-// different stream parameters (for example a live dashboard viewer), the
-// episode must not fail: fall back to subscribing at the existing parameters
-// and let the capture reconcile adapter-side, reporting requested-vs-achieved.
+// different stream parameters (for example a live dashboard viewer or a model
+// subscriber), the episode must not fail: fall back to subscribing at the
+// existing parameters and let the capture reconcile adapter-side, reporting
+// requested-vs-achieved. The retry-and-fall-back logic is shared with the model
+// subscribe path, which needs exactly the same behavior.
 func (a *cameraDataAdapter) subscribeHub(ctx context.Context, key string, req *agentpb.StreamVideoRequest) (*deviceHub, int, chan *videoFrame, uint32, uint32, uint32, error) {
-	for attempt := 0; attempt < maxHubRetries; attempt++ {
-		hub, id, ch, err := a.video.getOrCreateHub(ctx, key, req)
-		if err == nil {
-			return hub, id, ch, req.GetWidth(), req.GetHeight(), req.GetFramerate(), nil
-		}
-		if status.Code(err) != codes.InvalidArgument {
-			return nil, 0, nil, 0, 0, 0, err
-		}
-		hub, id, ch, w, h, fps, ok, err := a.video.subscribeExistingHub(key)
-		if err != nil {
-			return nil, 0, nil, 0, 0, 0, err
-		}
-		if ok {
-			return hub, id, ch, w, h, fps, nil
-		}
-		// The conflicting hub disappeared between the two calls; retry.
-	}
-	return nil, 0, nil, 0, 0, 0, status.Error(codes.Unavailable, "video device hub churned during capture start")
+	return a.video.joinHubReportingParams(ctx, key, req)
 }
 
 type cameraCaptureGroup struct{ captures []*cameraCapture }
@@ -333,6 +316,14 @@ func (c *cameraCapture) receiptNow() (int64, int64, int64, error) {
 }
 
 type cameraIndexRecord struct {
+	// SampleID is the harness-wide identity of this frame within its source,
+	// assigned by the producer hub. It is the join key between the frame a
+	// model consumed (recorded in the episode's model-input ledger) and the
+	// bytes this episode kept for it: given a sample_id from the ledger, the
+	// index entry with the same sample_id names the segment file and byte
+	// offset holding the payload. Absent (zero) only for frames produced
+	// before the hub assigned identities, which cannot happen in production.
+	SampleID                  uint64  `json:"sample_id,omitempty"`
 	CanonicalEpisodeNanos     int64   `json:"canonical_episode_nanos"`
 	CanonicalUncertaintyNanos int64   `json:"canonical_uncertainty_nanos"`
 	NativeTimestampNanos      int64   `json:"native_timestamp_nanos,omitempty"`
@@ -571,7 +562,7 @@ func (c *cameraCapture) writeFrame(frame *videoFrame) error {
 		}
 		c.lastSequence, c.haveSequence = frame.sequence, true
 	}
-	record := cameraIndexRecord{CanonicalEpisodeNanos: canonical - c.session.RequestBootNanos, CanonicalUncertaintyNanos: uncertainty, NativeTimestampNanos: frame.nativeNs, NativeClockDomain: frame.nativeClock, NativeTimestampFlags: frame.nativeFlags, AgentCaptureRealtimeNanos: frame.tsNs, AgentReceiptBootNanos: receipt, MappingSegment: mappingID, Segment: c.segmentRel, ByteOffset: offset, ByteSize: n, Codec: frame.codec.String(), Sequence: seq}
+	record := cameraIndexRecord{SampleID: frame.sampleID, CanonicalEpisodeNanos: canonical - c.session.RequestBootNanos, CanonicalUncertaintyNanos: uncertainty, NativeTimestampNanos: frame.nativeNs, NativeClockDomain: frame.nativeClock, NativeTimestampFlags: frame.nativeFlags, AgentCaptureRealtimeNanos: frame.tsNs, AgentReceiptBootNanos: receipt, MappingSegment: mappingID, Segment: c.segmentRel, ByteOffset: offset, ByteSize: n, Codec: frame.codec.String(), Sequence: seq}
 	b, _ := json.Marshal(record)
 	if _, err := c.index.Write(append(b, '\n')); err != nil {
 		return err
@@ -663,7 +654,7 @@ func (c *cameraCapture) writeSnapshot(frame *videoFrame) error {
 		seq = &v
 	}
 	rel := filepath.ToSlash(filepath.Join("cameras", safeCaptureName(c.source.ID), name))
-	record := cameraIndexRecord{CanonicalEpisodeNanos: canonical - c.session.RequestBootNanos, CanonicalUncertaintyNanos: uncertainty, NativeTimestampNanos: frame.nativeNs, NativeClockDomain: frame.nativeClock, NativeTimestampFlags: frame.nativeFlags, AgentCaptureRealtimeNanos: frame.tsNs, AgentReceiptBootNanos: receipt, MappingSegment: mappingID, Segment: rel, ByteOffset: 0, ByteSize: n, Codec: frame.codec.String(), Sequence: seq}
+	record := cameraIndexRecord{SampleID: frame.sampleID, CanonicalEpisodeNanos: canonical - c.session.RequestBootNanos, CanonicalUncertaintyNanos: uncertainty, NativeTimestampNanos: frame.nativeNs, NativeClockDomain: frame.nativeClock, NativeTimestampFlags: frame.nativeFlags, AgentCaptureRealtimeNanos: frame.tsNs, AgentReceiptBootNanos: receipt, MappingSegment: mappingID, Segment: rel, ByteOffset: 0, ByteSize: n, Codec: frame.codec.String(), Sequence: seq}
 	b, _ := json.Marshal(record)
 	if _, err := c.index.Write(append(b, '\n')); err != nil {
 		return err

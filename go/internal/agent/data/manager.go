@@ -79,6 +79,18 @@ func (m *Manager) SetWarnLogger(warn func(string)) {
 	m.warn = warn
 }
 
+// Warnf routes an operational warning through the manager's configured logger.
+// Unlike the internal warnf it takes the lock, so it is safe to call from a
+// goroutine that holds none.
+func (m *Manager) Warnf(format string, args ...any) {
+	m.mu.Lock()
+	warn := m.warn
+	m.mu.Unlock()
+	if warn != nil {
+		warn(fmt.Sprintf(format, args...))
+	}
+}
+
 func (m *Manager) warnf(format string, args ...any) {
 	if m.warn != nil {
 		m.warn(fmt.Sprintf(format, args...))
@@ -112,14 +124,20 @@ type bufferedRecord struct {
 }
 
 type ApplicationRecord struct {
-	Version         int            `json:"version"`
-	Type            string         `json:"type"`
-	Name            string         `json:"name,omitempty"`
-	Model           string         `json:"model,omitempty"`
-	Value           any            `json:"value,omitempty"`
-	Attributes      map[string]any `json:"attributes,omitempty"`
-	ClientBootNanos int64          `json:"client_boottime_nanos"`
-	ClientBootID    string         `json:"boot_id"`
+	Version    int            `json:"version"`
+	Type       string         `json:"type"`
+	Name       string         `json:"name,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	Value      any            `json:"value,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+	// Inputs binds this record to the harness samples it was computed from, by
+	// the same (source_id, sample_id) pair the app received from
+	// SensorService.Subscribe. It is optional: a record that names no inputs is
+	// accepted exactly as before, and is counted as an outcome whose input is
+	// unknown rather than being rejected.
+	Inputs          []SampleRef `json:"inputs,omitempty"`
+	ClientBootNanos int64       `json:"client_boottime_nanos"`
+	ClientBootID    string      `json:"boot_id"`
 }
 
 type storedApplicationRecord struct {
@@ -148,6 +166,11 @@ type activeEpisode struct {
 	// capturesApplications reports whether the applications source was
 	// selected; episodes that excluded it receive no application records.
 	capturesApplications bool
+	// modelInputs is the append handle for the model-input ledger, opened on
+	// the first sample a model consumed (see openModelInputLedger). It is not
+	// fsynced per sample: at sensor rates that would dominate the write path,
+	// and a torn tail is recovered exactly like every other episode JSONL.
+	modelInputs *os.File
 }
 
 func NewManager(root string) (*Manager, error) {
@@ -174,6 +197,11 @@ func NewManager(root string) (*Manager, error) {
 	}
 	return m, nil
 }
+
+// BootID is the kernel boot identity the episode timeline belongs to. Callers
+// outside the package stamp it onto samples so a consumer can tell that a
+// CLOCK_BOOTTIME value belongs to this boot and not a previous one.
+func BootID() string { return bootID() }
 
 func bootID() string {
 	b, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
@@ -316,7 +344,7 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 	if requestedTopics == nil {
 		requestedTopics = []string{}
 	}
-	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", Device: deviceIdentity(currentBootID), CanonicalClock: "CLOCK_BOOTTIME", BootID: currentBootID, RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), Trigger: trigger, CollectorVersion: collectorVersion, ModelVersions: modelVersions, RequestedTopics: requestedTopics, UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported", Calibrations: []Calibration{}, Privacy: privacy, Upload: upload, Labeling: labeling, Files: []File{}}
+	manifest := Manifest{Version: ManifestVersion, ID: id, Name: opts.Name, State: "recording", Device: deviceIdentity(currentBootID), CanonicalClock: "CLOCK_BOOTTIME", BootID: currentBootID, RequestBootNanos: origin, StartedUnixNanos: time.Now().UnixNano(), Trigger: trigger, CollectorVersion: collectorVersion, ModelVersions: modelVersions, RequestedTopics: requestedTopics, UTCObservations: []UTCObservation{obs}, PreRollAccounting: "exact", SystemClockStatus: "system_reported", Calibrations: []Calibration{}, Privacy: privacy, Upload: upload, Labeling: labeling, Files: []File{}, ModelIO: newModelIO()}
 	if consensus != nil {
 		manifest.Roughtime = append(manifest.Roughtime, *consensus)
 		manifest.SystemClockStatus = clockAgreement(obs, *consensus)
@@ -401,6 +429,16 @@ func (m *Manager) Start(opts StartOptions) (Manifest, error) {
 // read the returned value without it.
 func snapshotManifest(v Manifest) Manifest {
 	v.Sources = append([]SourceStats(nil), v.Sources...)
+	// Model-input accounting is reached through a pointer and through a slice
+	// the manager keeps appending to, so copying the Sources slice alone would
+	// still leave the caller reading live state.
+	for i := range v.Sources {
+		if v.Sources[i].ModelInputs != nil {
+			stats := *v.Sources[i].ModelInputs
+			v.Sources[i].ModelInputs = &stats
+		}
+	}
+	v.ModelIO.Uncaptured = append([]SourceModelInputs(nil), v.ModelIO.Uncaptured...)
 	return v
 }
 
@@ -687,6 +725,7 @@ func (m *Manager) RecordApplication(appID string, record ApplicationRecord) (str
 				a.manifest.Sources[i].Count++
 			}
 		}
+		a.noteApplicationRecord(record)
 		recorded = true
 	}
 	// The pre-roll ring buffer is maintained continuously so an episode that
@@ -817,6 +856,16 @@ func (m *Manager) finalizeLocked(a *activeEpisode, state, reason string) (Manife
 		}
 	}
 	a.manifest.State, a.manifest.Interruption = state, reason
+	// The model-input ledger is appended without per-sample fsync, so it must
+	// reach the disk before its checksum is taken.
+	if a.modelInputs != nil {
+		syncErr := a.modelInputs.Sync()
+		closeErr := a.modelInputs.Close()
+		a.modelInputs = nil
+		if err := errors.Join(syncErr, closeErr); err != nil {
+			return Manifest{}, err
+		}
+	}
 	files, err := sealFiles(a.dir)
 	if err != nil {
 		return Manifest{}, err
@@ -1054,6 +1103,18 @@ func (m *Manager) recoverPartials() error {
 		}
 		mf.State, mf.Interruption = "interrupted", reason
 		mf.RecoveryActions = append(mf.RecoveryActions, "truncated incomplete JSONL tail", "recomputed sealed-file checksums")
+		// The summary counters are folded in memory and written only at seal, so
+		// an interrupted episode arrives here with all of them at zero while its
+		// ledger and outcome log are intact on disk. Publishing those zeros would
+		// be a manifest that lies about what the model consumed, so recompute
+		// them from the files that survived rather than annotating the lie.
+		reconciled, reconcileErr := reconcileModelIO(dir, &mf)
+		if reconcileErr != nil {
+			return fmt.Errorf("recovering episode %s: reconciling model input/outcome accounting: %w", mf.ID, reconcileErr)
+		}
+		if reconciled {
+			mf.RecoveryActions = append(mf.RecoveryActions, "recomputed model input/outcome counters from "+ModelInputLedgerFile+" and "+mf.ModelIO.OutcomeLog)
+		}
 		mf.Files, err = sealFiles(dir)
 		if err != nil {
 			return fmt.Errorf("recovering episode %s: %w", mf.ID, err)

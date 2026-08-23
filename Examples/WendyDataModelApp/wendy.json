@@ -5,7 +5,7 @@
     "language": "python",
     "entitlements": [
         {
-            "type": "camera"
+            "type": "sensors"
         },
         {
             "type": "data"

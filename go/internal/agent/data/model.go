@@ -56,6 +56,107 @@ type SourceStats struct {
 	MappingError    *int64         `json:"mapping_error_nanos,omitempty"`
 	Discontinuities uint64         `json:"discontinuities"`
 	Mappings        []ClockMapping `json:"clock_mappings,omitempty"`
+	// ModelInputs is present only when this source fed a model subscriber
+	// during the episode. It is absent, not zeroed, for a source no model
+	// consumed.
+	ModelInputs *SourceModelInputs `json:"model_inputs,omitempty"`
+}
+
+// Payload retention classes for samples a source handed to a model. They say
+// what the episode holds for those samples; they never claim more than the
+// capture policy can deliver.
+const (
+	// RetentionCapturePolicy means this episode captures the source with no
+	// rate cap or snapshot interval, so every sample the capture kept is in the
+	// episode. What the capture itself lost is in Drops/DropAccounting: this
+	// class is not a promise that no frame was dropped.
+	RetentionCapturePolicy = "captured_subject_to_drop_accounting"
+	// RetentionPolicySubset means the campaign's capture policy deliberately
+	// keeps less than the model consumed (a snapshot interval or a rate cap),
+	// so the episode holds payloads for only some of the referenced samples.
+	RetentionPolicySubset = "capture_policy_keeps_a_subset"
+	// RetentionNotCaptured means the source is not among this episode's
+	// sources, so the episode holds the ledger entries but no payload bytes.
+	RetentionNotCaptured = "not_captured_by_this_episode"
+)
+
+// SourceModelInputs accounts for one source's samples that were handed to a
+// model during the episode. Requested-versus-kept is explicit: Delivered counts
+// what the model consumed, PayloadRetention says what the episode retains of
+// it, and SubscriberDrops counts samples the harness produced but the model
+// never saw because it was not reading fast enough.
+type SourceModelInputs struct {
+	SourceID         string `json:"source_id"`
+	Delivered        uint64 `json:"delivered_to_models"`
+	SubscriberDrops  uint64 `json:"subscriber_drops"`
+	FirstSampleID    uint64 `json:"first_sample_id"`
+	LastSampleID     uint64 `json:"last_sample_id"`
+	PayloadRetention string `json:"payload_retention"`
+	Note             string `json:"note,omitempty"`
+}
+
+// ModelIO describes how to reconstruct (model input, model outcome) pairs from
+// this episode offline. It is the point of the whole record: an outcome without
+// its input is not training data.
+type ModelIO struct {
+	// InputLedger is the episode-relative path of the model-input ledger: one
+	// JSON object per sample handed to a model subscriber.
+	InputLedger string `json:"input_ledger"`
+	// OutcomeLog is the episode-relative path of the application records,
+	// including predictions and the samples they reference.
+	OutcomeLog string `json:"outcome_log"`
+	// JoinKeys are the ledger fields a prediction's "inputs" entries match on.
+	JoinKeys []string `json:"join_keys"`
+	// PayloadLocator explains how a ledger entry reaches its payload bytes.
+	PayloadLocator string `json:"payload_locator"`
+	// SamplesDelivered counts ledger entries across all sources.
+	SamplesDelivered uint64 `json:"samples_delivered"`
+	// Predictions counts prediction records recorded into this episode, and
+	// PredictionsWithInputs how many of those named the samples they came from.
+	// Their difference is the honest measure of unusable outcomes.
+	Predictions           uint64 `json:"predictions"`
+	PredictionsWithInputs uint64 `json:"predictions_with_inputs"`
+	// ReferencesOutsideDelivered counts sample references that name a source
+	// this episode delivered nothing for, or a sample_id outside the range it
+	// delivered. Such a reference cannot be resolved inside this episode.
+	//
+	// It is deliberately a range check over the whole episode, and it is NOT
+	// proof that a reference names a sample the referring app was actually
+	// handed: an in-range identifier that fell in a gap, or one delivered to a
+	// different app subscribed to the same source, is not counted here. A
+	// consumer that needs exact attribution must join the input ledger on
+	// app_id as well (see ModelIO.JoinKeys), because the ledger records which
+	// app each sample went to and this counter cannot.
+	ReferencesOutsideDelivered uint64 `json:"input_references_outside_delivered_range"`
+	// Uncaptured accounts for sources that fed a model during this episode but
+	// are not among the episode's own sources. The ledger records what the
+	// model consumed; the episode holds no payload bytes for them.
+	Uncaptured []SourceModelInputs `json:"uncaptured_sources,omitempty"`
+}
+
+// ModelInput is one sample handed to a model subscriber, as recorded in the
+// episode's model-input ledger. The payload bytes are NOT duplicated here: the
+// ledger references the sample by (SourceID, SampleID), which is the same
+// identifier the episode's own capture index records for the payload it kept.
+type ModelInput struct {
+	AppID            string `json:"app_id"`
+	Model            string `json:"model,omitempty"`
+	SourceID         string `json:"source_id"`
+	SampleID         uint64 `json:"sample_id"`
+	BootNanos        int64  `json:"-"`
+	EpisodeNanos     int64  `json:"episode_nanos"`
+	UncertaintyNanos int64  `json:"timestamp_uncertainty_nanos"`
+	PayloadBytes     int    `json:"payload_bytes"`
+	Encoding         string `json:"encoding,omitempty"`
+	SelfContained    bool   `json:"payload_self_contained"`
+	DroppedBefore    uint64 `json:"dropped_before"`
+}
+
+// SampleRef names one harness sample a model consumed. It is the reference a
+// prediction record carries so an outcome can be traced back to its input.
+type SampleRef struct {
+	SourceID string `json:"source_id"`
+	SampleID uint64 `json:"sample_id"`
 }
 
 // ClockMapping describes one immutable source-clock to CLOCK_BOOTTIME mapping
@@ -186,6 +287,7 @@ type Manifest struct {
 	RecoveryActions   []string                `json:"recovery_actions,omitempty"`
 	PreRollLost       uint64                  `json:"pre_roll_lost"`
 	PreRollAccounting string                  `json:"pre_roll_accounting"`
+	ModelIO           ModelIO                 `json:"model_io"`
 }
 
 type StartOptions struct {

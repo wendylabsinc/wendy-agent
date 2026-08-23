@@ -23,12 +23,17 @@ func TestShippedModelAppCampaignParses(t *testing.T) {
 	if len(campaign.Sources) != 1 || campaign.Sources[0].Camera == "" {
 		t.Fatalf("expected exactly one camera source, got %+v", campaign.Sources)
 	}
+	// The example captures the camera continuously and uncapped, so the
+	// episode holds the very frames the model consumed through the harness.
+	// A rate cap or snapshot interval here would be correct too, but the
+	// episode would then hold payload bytes for only a subset of the samples
+	// the model saw, which is a weaker demonstration of the contract.
 	capture := campaign.Sources[0].Capture
-	if capture.EffectiveMode() != "snapshot" {
-		t.Errorf("camera capture mode = %q, want snapshot", capture.EffectiveMode())
+	if capture.EffectiveMode() != "continuous" {
+		t.Errorf("camera capture mode = %q, want continuous", capture.EffectiveMode())
 	}
-	if got := capture.IntervalDuration().String(); got != "30s" {
-		t.Errorf("snapshot interval = %s, want 30s", got)
+	if capture != nil && capture.Rate != 0 {
+		t.Errorf("camera capture rate cap = %v, want none", capture.Rate)
 	}
 	if campaign.Upload.When != "always" {
 		t.Errorf("upload.when = %q, want always", campaign.Upload.When)

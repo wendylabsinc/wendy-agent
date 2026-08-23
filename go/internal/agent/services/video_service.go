@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -26,6 +27,7 @@ import (
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/board"
 	"github.com/wendylabsinc/wendy/go/internal/agent/camera"
+	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	"github.com/wendylabsinc/wendy/go/internal/agent/ipcam"
 	agentpb "github.com/wendylabsinc/wendy/go/proto/gen/agentpb"
 )
@@ -335,6 +337,19 @@ type videoFrame struct {
 	// this flag: a chunk that merely contains an SPS/PPS/IDR prefix may still
 	// be truncated mid-IDR.
 	auAligned bool
+	// sampleID is the harness-wide identity of this sample within its source,
+	// assigned by the hub at broadcast so that EVERY consumer of the frame — an
+	// app subscribing through SensorService, the episode capture adapter, a
+	// dashboard viewer — names it identically. It is what makes an episode able
+	// to say "this is the frame the model saw". The counter is owned by the
+	// VideoService per device key, not by the hub, so it does not restart when
+	// a producer is torn down and restarted mid-episode.
+	sampleID uint64
+	// receiptBootNanos is the agent's bracketed CLOCK_BOOTTIME receipt of this
+	// frame, taken once at broadcast so all consumers agree; the bracket
+	// half-width is receiptUncertaintyNanos. Zero when the clock read failed.
+	receiptBootNanos        int64
+	receiptUncertaintyNanos int64
 }
 
 type frameTimestamp struct {
@@ -367,6 +382,10 @@ type deviceHub struct {
 	// Storing scalars (not a proto pointer) prevents data races if the caller's
 	// proto message is ever mutated by middleware after the hub is created.
 	width, height, framerate uint32
+	// sampleSeq is the per-device sample counter, shared with every hub that
+	// has served the same device key. It outlives the hub so sample identities
+	// stay monotonic across producer restarts within one episode.
+	sampleSeq *atomic.Uint64
 }
 
 // maxSubscribersPerHub caps the number of concurrent gRPC streams sharing one
@@ -415,6 +434,15 @@ func (h *deviceHub) unsubscribe(id int) uint64 {
 	return drops
 }
 
+// drops reports how many frames the hub has dropped for one subscriber so far.
+// A subscriber reads it to turn the running total into a per-sample delta, so a
+// gap in sample identifiers always comes with the count that explains it.
+func (h *deviceHub) drops(id int) uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.subDrops[id]
+}
+
 // terminalErr returns the error recorded by runProducer under h.mu.
 // Reading h.err must always go through this method: StreamVideo reads h.err
 // after receiving from a closed channel, but the close/write ordering in
@@ -444,6 +472,17 @@ const maxFrameBytes = 2 * 1024 * 1024 // 2 MiB
 func (h *deviceHub) broadcast(frame *videoFrame) bool {
 	if len(frame.data) > maxFrameBytes {
 		return true // oversized frame: drop silently, keep the hub alive
+	}
+	// Stamp the identity and receipt before the frame becomes shared: it is
+	// immutable from the moment the first subscriber can see it, and every
+	// consumer must read the same values. An oversized frame is dropped above
+	// without consuming an identifier, so a gap in sample_id always means a
+	// sample that existed and was lost, never one that never existed.
+	if h.sampleSeq != nil {
+		frame.sampleID = h.sampleSeq.Add(1)
+	}
+	if before, receipt, after, err := data.CaptureReceipt(); err == nil {
+		frame.receiptBootNanos, frame.receiptUncertaintyNanos = receipt, (after-before+1)/2
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -531,6 +570,10 @@ type VideoService struct {
 
 	mu   sync.Mutex
 	hubs map[string]*deviceHub
+	// sampleSeqs holds one sample counter per device key, outliving the hubs so
+	// a producer restart does not reissue sample identities the harness has
+	// already handed out for that source.
+	sampleSeqs map[string]*atomic.Uint64
 }
 
 // NewVideoService creates a VideoService whose producer goroutines are tied to ctx.
@@ -538,10 +581,11 @@ type VideoService struct {
 func NewVideoService(ctx context.Context, logger *zap.Logger) *VideoService {
 	svcCtx, cancel := context.WithCancel(ctx)
 	svc := &VideoService{
-		logger: logger,
-		ctx:    svcCtx,
-		cancel: cancel,
-		hubs:   make(map[string]*deviceHub),
+		logger:     logger,
+		ctx:        svcCtx,
+		cancel:     cancel,
+		hubs:       make(map[string]*deviceHub),
+		sampleSeqs: make(map[string]*atomic.Uint64),
 		globDevices: func() ([]string, error) {
 			return filepath.Glob("/dev/video*")
 		},
@@ -931,6 +975,7 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 		width:     req.GetWidth(),
 		height:    req.GetHeight(),
 		framerate: req.GetFramerate(),
+		sampleSeq: s.sampleSeqLocked(path),
 	}
 	// New hub: the first subscriber is always within the cap.
 	id, ch, _ = h.subscribe()
@@ -940,6 +985,55 @@ func (s *VideoService) getOrCreateHub(ctx context.Context, path string, req *age
 	s.wg.Add(1)
 	go s.runProducer(hctx, h, path, req)
 	return h, id, ch, nil
+}
+
+// joinHub subscribes to a device's frame hub without insisting on the stream
+// parameters in req. When a hub already runs with different parameters the
+// caller must not fail — a live viewer, an episode capture, and a model
+// subscriber all legitimately want the same device — so it falls back to
+// joining the running hub as it is. Callers that care about the difference
+// compare the returned parameters against what they asked for and report it.
+func (s *VideoService) joinHub(ctx context.Context, key string, req *agentpb.StreamVideoRequest) (*deviceHub, int, chan *videoFrame, error) {
+	hub, id, ch, _, _, _, err := s.joinHubReportingParams(ctx, key, req)
+	return hub, id, ch, err
+}
+
+// joinHubReportingParams is joinHub, additionally reporting the stream
+// parameters the subscription actually runs at.
+func (s *VideoService) joinHubReportingParams(ctx context.Context, key string, req *agentpb.StreamVideoRequest) (*deviceHub, int, chan *videoFrame, uint32, uint32, uint32, error) {
+	for attempt := 0; attempt < maxHubRetries; attempt++ {
+		hub, id, ch, err := s.getOrCreateHub(ctx, key, req)
+		if err == nil {
+			return hub, id, ch, req.GetWidth(), req.GetHeight(), req.GetFramerate(), nil
+		}
+		if status.Code(err) != codes.InvalidArgument {
+			return nil, 0, nil, 0, 0, 0, err
+		}
+		hub, id, ch, w, h, fps, ok, err := s.subscribeExistingHub(key)
+		if err != nil {
+			return nil, 0, nil, 0, 0, 0, err
+		}
+		if ok {
+			return hub, id, ch, w, h, fps, nil
+		}
+		// The conflicting hub disappeared between the two calls; retry.
+	}
+	return nil, 0, nil, 0, 0, 0, status.Error(codes.Unavailable, "video device hub churned during subscription")
+}
+
+// sampleSeqLocked returns the sample counter for a device key, creating it on
+// first use. Callers must hold s.mu. Counters are never removed: a device that
+// comes back must not restart identities a consumer has already seen.
+func (s *VideoService) sampleSeqLocked(path string) *atomic.Uint64 {
+	if s.sampleSeqs == nil {
+		s.sampleSeqs = make(map[string]*atomic.Uint64)
+	}
+	seq := s.sampleSeqs[path]
+	if seq == nil {
+		seq = new(atomic.Uint64)
+		s.sampleSeqs[path] = seq
+	}
+	return seq
 }
 
 // subscribeExistingHub joins the live hub for path at whatever stream

@@ -372,21 +372,35 @@ func writeDataFrame(w io.Writer, v any) error {
 // recordKindValidator checks the kind-specific required fields of a record.
 type recordKindValidator func(data.ApplicationRecord) error
 
+// recordKind describes one accepted record kind: how to validate its own
+// fields, and whether it may bind itself to the harness samples it was computed
+// from. Sample references are a property of the kind, not of the protocol, so a
+// kind that cannot have inputs rejects them instead of silently storing them.
+type recordKind struct {
+	validate     recordKindValidator
+	allowsInputs bool
+}
+
 // applicationRecordKinds is the registry of accepted record kinds. Adding a
-// new kind is a one-line addition here; an unknown kind is rejected with a
+// new kind is a one-entry addition here; an unknown kind is rejected with a
 // clean ack rather than killing the connection.
-var applicationRecordKinds = map[string]recordKindValidator{
-	"event": func(r data.ApplicationRecord) error {
+var applicationRecordKinds = map[string]recordKind{
+	"event": {validate: func(r data.ApplicationRecord) error {
 		if r.Name == "" {
 			return errors.New("event name is required")
 		}
 		return nil
-	},
-	"prediction": func(r data.ApplicationRecord) error {
-		if r.Model == "" {
-			return errors.New("prediction model is required")
-		}
-		return nil
+	}},
+	"prediction": {
+		validate: func(r data.ApplicationRecord) error {
+			if r.Model == "" {
+				return errors.New("prediction model is required")
+			}
+			return nil
+		},
+		// A prediction is the outcome the harness exists to correlate: it may
+		// name the sample or samples the model consumed.
+		allowsInputs: true,
 	},
 }
 
@@ -394,12 +408,20 @@ func validateApplicationRecord(r data.ApplicationRecord) error {
 	if r.Version != 1 {
 		return fmt.Errorf("unsupported protocol version %d", r.Version)
 	}
-	validate, ok := applicationRecordKinds[r.Type]
+	kind, ok := applicationRecordKinds[r.Type]
 	if !ok {
 		return fmt.Errorf("unknown record kind %q", r.Type)
 	}
-	if err := validate(r); err != nil {
+	if err := kind.validate(r); err != nil {
 		return err
+	}
+	if len(r.Inputs) > 0 {
+		if !kind.allowsInputs {
+			return fmt.Errorf("record kind %q cannot reference input samples", r.Type)
+		}
+		if err := data.ValidateSampleRefs(r.Inputs); err != nil {
+			return err
+		}
 	}
 	if len(r.Attributes) > 128 {
 		return errors.New("too many attributes")

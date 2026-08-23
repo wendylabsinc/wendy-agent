@@ -49,6 +49,17 @@ const (
 	EntitlementDisplay   = "display"
 	// EntitlementData grants only the app-private episode event socket.
 	EntitlementData = "data"
+	// EntitlementSensors grants read-only subscription to agent-hosted sensor
+	// streams over an app-private socket that serves nothing else. It is the
+	// first-class model-input path: the app becomes one more subscriber of the
+	// same producer episode capture consumes, so the two never fight over a
+	// device, and every sample the app receives is recorded into the active
+	// episode under the identifier the app was given. It grants no device
+	// nodes; raw device access remains the separate "camera" entitlement. An
+	// optional allowlist restricts it to named source ids, mirroring what the
+	// camera entitlement's allowlist does for device nodes; without one the app
+	// may subscribe to any sensor source the device offers.
+	EntitlementSensors = "sensors"
 	// EntitlementNotifications grants access only to the app-attributed Wendy
 	// System Notification API. It does not expose the Agent control plane.
 	EntitlementNotifications = "notifications"
@@ -86,6 +97,7 @@ var ValidEntitlementTypes = []string{
 	EntitlementMCP,
 	EntitlementDisplay,
 	EntitlementData,
+	EntitlementSensors,
 	EntitlementNotifications,
 	EntitlementAdmin,
 	EntitlementBuild,
@@ -123,6 +135,7 @@ var allowedKeys = map[string][]string{
 	EntitlementMCP:           {"type", "port"},
 	EntitlementDisplay:       {"type"},
 	EntitlementData:          {"type"},
+	EntitlementSensors:       {"type", "allowlist"},
 	EntitlementNotifications: {"type"},
 	EntitlementAdmin:         {"type"},
 	EntitlementBuild:         {"type"},

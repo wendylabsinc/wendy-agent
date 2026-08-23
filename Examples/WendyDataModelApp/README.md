@@ -6,34 +6,69 @@ WendyOS, so a Wendy Arm demo needs nothing beyond `wendy run` and
 
 | Contract | Mechanism in this app |
 |---|---|
-| Sensors in | Webcam frames via Open Computer Vision (OpenCV) over Video4Linux2 (V4L2), granted by the `camera` entitlement |
-| Predictions out | One `prediction` record per processed frame, plus a `person_detected` event, over the app-private data socket granted by the `data` entitlement (`WENDY_DATA_SOCKET`) |
+| Sensors in | Camera frames **fed by the harness** over the app-private sensor socket granted by the `sensors` entitlement (`WENDY_SENSOR_SOCKET`). The app opens no device. |
+| Predictions out | One `prediction` record per scored frame, naming the sample identifiers it was computed from, plus a `person_detected` event, over the app-private data socket granted by the `data` entitlement (`WENDY_DATA_SOCKET`) |
 | Actuation out | A Robot Operating System 2 (ROS 2) `geometry_msgs/Twist` on `/cmd_vel` when ROS 2 is enabled; the identical control decision is logged when it is not |
 
 ```
 WendyDataModelApp/
-├── wendy.json          ← camera + data entitlements
-├── Dockerfile          ← build-time YOLOv8n ONNX export, CPU runtime
-├── app.py              ← capture, detect, record, actuate loop
+├── wendy.json          ← sensors + data entitlements (no camera device access)
+├── Dockerfile          ← YOLOv8n ONNX export + gRPC stub generation, CPU runtime
+├── app.py              ← subscribe, detect, record, actuate loop
+├── wendysensors.py     ← sensor subscribe client (gRPC + PyAV decode)
 ├── wendydata.py        ← data socket client (standard library only)
-├── test_wendydata.py   ← unit tests for framing + uncertainty formula
-└── campaign.yaml       ← flight-recorder plan armed by the app's records
+├── test_wendydata.py   ← unit tests for framing, uncertainty, input references
+├── proto/              ← build-time copy of sensor_service.proto (parity-tested)
+└── campaign.yaml       ← the single flight-recorder plan, armed by the records
 ```
+
+## The contract this app demonstrates
+
+The harness feeds the model, and the episode records exactly what it fed
+it.
+
+1. The app calls `SensorService.Subscribe` for a camera source (the same
+   identifier `wendy data sources` prints) and receives samples carrying
+   `source_id`, a monotonically increasing `sample_id`, the agent's
+   bracketed `CLOCK_BOOTTIME` receipt, and the encoded payload.
+2. Because the app subscribes rather than opening `/dev/video0`, it is one
+   more consumer of the producer the campaign's capture adapter consumes.
+   Video4Linux2 admits a single holder of a capture device; the agent is
+   that holder. **This is why the example no longer ships a
+   telemetry-only campaign variant** — there is no conflict left to work
+   around.
+3. Each `prediction` record carries `inputs: [{source_id, sample_id}]`.
+   The agent writes every delivered sample into the episode's
+   `model_inputs.jsonl` under the same identifier, and the camera
+   capture's `index.jsonl` carries that identifier on the bytes it kept.
+   Joining on `(source_id, sample_id)` reconstructs (input, outcome)
+   pairs — which is what makes the episode training data rather than a
+   log of conclusions.
 
 ## What the app does
 
-Every loop iteration (at most 5 per second, see rate limiting below):
+Per delivered frame (scoring at most 5 per second, see rate limiting
+below):
 
-1. Grabs a frame from `/dev/video0` (override with `WENDY_CAMERA_DEVICE`).
+1. Receives an encoded sample from the harness and decodes it with PyAV.
+   A decoded frame may be assembled from more than one sample on
+   transports that deliver byte-stream chunks rather than whole access
+   units, which is why `inputs` is a list.
 2. Runs YOLOv8n, exported to Open Neural Network Exchange (ONNX) at image
    build time, through onnxruntime.
 3. Sends a `prediction` record: model `yolov8n`, the pinned model version,
-   the frame's uncertainty score, and the top detections in attributes.
+   the frame's uncertainty score, the top detections, and the sample
+   identifiers the frame came from.
 4. Sends a `person_detected` event when a person newly enters the view
    (edge-triggered, so a person standing still fires the campaign once).
 5. Computes an actuation decision — turn towards the largest person and
    creep forward when centered — and publishes it as a Twist (ROS 2 mode)
    or logs it (default mode).
+
+Set `WENDY_CAMERA_SOURCE` to pick a source explicitly; by default the app
+takes the first healthy, subscribable camera the harness offers and logs
+which one. A camera the harness lists but cannot stream to models is
+reported with the reason rather than silently skipped.
 
 ### The uncertainty formula
 
@@ -50,13 +85,21 @@ current model cannot explain. The formula lives in
 
 ### Prediction rate limiting
 
-The agent rejects more than 200 records per second per connection. This
-app stays far below it by frame sampling: it processes at most
-`WENDY_PREDICTIONS_PER_SECOND` frames per second (default 5) and sends one
-prediction per processed frame. Acknowledgements are honored:
-`buffered` and `recorded` are success, `rejected` is logged with the
-agent's reason, and the client reconnects and retries once when the
+The agent rejects more than 200 records per second per app. This app stays
+far below it by skipping frames: it scores at most
+`WENDY_PREDICTIONS_PER_SECOND` of the frames it receives (default 5 per
+second) and sends one prediction per scored frame. Acknowledgements are
+honored: `buffered` and `recorded` are success, `rejected` is logged with
+the agent's reason, and the client reconnects and retries once when the
 socket drops.
+
+Skipping happens after delivery, so the episode's ledger still records
+every frame the model was handed; each prediction reports how many frames
+were skipped since the previous one in
+`attributes.frames_skipped_since_last_prediction`. If the app falls behind
+far enough that the harness has to drop samples before it, the sample
+carries `dropped_before` and the app logs a warning — a gap in the sample
+identifiers is always explained, never silent.
 
 ## Run on a dev box (no GPU, no ROS 2)
 
@@ -67,12 +110,23 @@ cd Examples/WendyDataModelApp
 wendy run
 ```
 
-The build's export stage installs Ultralytics (pinned to 8.3.63), exports
-`yolov8n.onnx` at opset 12, and discards itself; the runtime image carries
-only onnxruntime, OpenCV, and NumPy. Without a data socket (running
-outside WendyOS, or without the `data` entitlement) the app keeps running
-and logs each dropped record; without ROS 2 it logs each actuation
-decision. Nothing hard-requires the harness, the GPU, or a robot.
+The build has two throwaway stages: one installs Ultralytics (pinned to
+8.3.63) and exports `yolov8n.onnx` at opset 12, the other generates the
+Python gRPC stubs for `SensorService` from `proto/`. The runtime image
+carries onnxruntime, OpenCV, NumPy, grpcio, and PyAV.
+
+Sensor input is not optional the way the data socket is: without
+`WENDY_SENSOR_SOCKET` the app has no frames to score and exits with a
+clear message naming the missing entitlement. Without a data socket
+(running outside WendyOS, or without the `data` entitlement) it keeps
+running and logs each dropped record; without ROS 2 it logs each actuation
+decision.
+
+`proto/wendy/agent/services/v2/sensor_service.proto` is a copy of the
+canonical `Proto/wendy/agent/services/v2/sensor_service.proto`, because the
+image build context is this directory. A Go test
+(`TestExampleSensorProtoMatchesCanonical`) fails if the two drift; when the
+canonical proto changes, copy it over.
 
 Unit tests (no camera or agent needed):
 
@@ -91,6 +145,8 @@ wheel `Examples/HelloONNX` resolves with the Stagefile's `cuda: true` GPU
 profile — and add the `gpu` entitlement to `wendy.json`. The app already
 passes `ort.get_available_providers()`, so the CUDA (Compute Unified
 Device Architecture) provider is picked up automatically when present.
+Note that the `gpu` entitlement is about the model, not the camera: frames
+still arrive through the sensor socket.
 
 **ROS 2 actuation**: build from a ROS base image so `rclpy` is importable
 (for example `ros:humble` plus this Dockerfile's pip packages), set the
@@ -119,9 +175,13 @@ wendy data campaign list
 ```
 
 `campaign.yaml` arms two triggers — the `person_detected` event and
-`model.uncertainty > 0.65` — and snapshots the camera every 30 seconds.
-The `applications` source is always captured; it does not appear under
-`sources:` because it cannot be deselected.
+`model.uncertainty > 0.65` — and captures the camera continuously so the
+episode holds the frames the model actually consumed. The `applications`
+source is always captured; it does not appear under `sources:` because it
+cannot be deselected.
+
+This one campaign works with the app running, on a single-camera device.
+It replaces the pair of campaigns the example used to ship.
 
 To fire an episode without waiting for a trigger:
 
@@ -137,15 +197,49 @@ wendy data inspect <episode-id>
 ```
 
 - `events.jsonl` — the application records: the app's `prediction`
-  records (model, model_version, uncertainty, top detections) and any
+  records (model, model_version, uncertainty, top detections, and the
+  `inputs` list naming the samples each prediction came from) and any
   `person_detected` events, each stamped with agent receipt time and
   clock-uncertainty metadata. Records honor the 10-second pre-trigger
   buffer.
-- Camera snapshot stills at the 30-second interval (on a camera transport
-  that delivers whole encoded access units; other transports record
-  continuously and the manifest's source detail says so).
+- `model_inputs.jsonl` — one line per sample the harness handed to the
+  model: `source_id`, `sample_id`, `episode_nanos`, `payload_bytes`, the
+  consuming app and model, and `dropped_before`. This is the ledger of
+  what the model actually saw.
+- `cameras/<source>/segment-*.h264` plus `cameras/<source>/index.jsonl` —
+  the recorded video and, per frame, the `sample_id` together with the
+  segment file and byte offset holding its bytes. The payload is stored
+  once: the ledger references it rather than duplicating it.
 - A manifest tying sources, trigger reason (`event:person_detected` or
-  `model_uncertainty:<value>`), and the campaign revision together.
+  `model_uncertainty:<value>`), and the campaign revision together, plus a
+  `model_io` block that states the join keys, counts the predictions that
+  named their inputs, and reports per source whether the episode retains
+  payloads for every consumed sample or only the subset the capture policy
+  kept.
+
+### Reconstructing (input, outcome) pairs
+
+```python
+import json
+
+ledger = {(e["source_id"], e["sample_id"]): e
+          for e in map(json.loads, open("model_inputs.jsonl"))}
+frames = {(source, r["sample_id"]): r
+          for r in map(json.loads, open(f"cameras/{source}/index.jsonl"))}
+
+for record in map(json.loads, open("events.jsonl")):
+    if record.get("type") != "prediction":
+        continue
+    for ref in record.get("inputs", []):
+        key = (ref["source_id"], ref["sample_id"])
+        frame = frames.get(key)          # None: the capture policy kept no bytes
+        # frame["segment"], frame["byte_offset"], frame["byte_size"] locate
+        # the exact bytes the model consumed for this prediction.
+```
+
+A prediction with no `inputs`, or a reference with no matching frame, is
+not a failure to hide: the manifest's `model_io` counts both cases so a
+consumer knows how much of the episode is usable as training data.
 
 With `upload.when: always`, finished episodes upload whenever the device
 has connectivity.
