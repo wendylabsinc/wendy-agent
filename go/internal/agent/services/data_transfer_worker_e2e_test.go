@@ -26,6 +26,7 @@ package services
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -51,6 +53,17 @@ const (
 	e2eOrgID   uint64 = 7
 	e2eAssetID uint64 = 42
 )
+
+// e2eTransportCreds selects the harness transport. The local stack listens
+// plaintext; a deployed Cloud Run service terminates TLS on 443, selected by
+// WENDY_DATA_E2E_TLS=1. The worker and service code are unchanged either way;
+// the transport is a harness seam exactly like the identity header.
+func e2eTransportCreds() grpc.DialOption {
+	if os.Getenv("WENDY_DATA_E2E_TLS") == "1" {
+		return grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12}))
+	}
+	return grpc.WithTransportCredentials(insecure.NewCredentials())
+}
 
 func e2eAddr(t *testing.T) string {
 	t.Helper()
@@ -79,7 +92,7 @@ func dialWorkerClient(t *testing.T, addr string) (*grpc.ClientConn, cloudpb.Data
 		return streamer(ctx, desc, cc, method, opts...)
 	}
 	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		e2eTransportCreds(),
 		grpc.WithUnaryInterceptor(unary),
 		grpc.WithStreamInterceptor(stream),
 	)
@@ -97,7 +110,7 @@ func dialReadClient(t *testing.T, addr, token string) cloudpb.DataIngestServiceC
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		e2eTransportCreds(),
 		grpc.WithUnaryInterceptor(unary),
 	)
 	if err != nil {
