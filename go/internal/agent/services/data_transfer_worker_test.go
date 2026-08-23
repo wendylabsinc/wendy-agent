@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
@@ -41,6 +42,30 @@ type fakeIngestServer struct {
 
 	beginCalls  int
 	commitCalls int
+
+	// Incoming request metadata recorded by startFakeIngest, per call kind, so
+	// tests can assert on what the client actually put on the wire.
+	unaryMD  metadata.MD
+	streamMD metadata.MD
+}
+
+// recordMD stores the metadata seen on an incoming call.
+func (s *fakeIngestServer) recordMD(stream bool, md metadata.MD) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stream {
+		s.streamMD = md
+	} else {
+		s.unaryMD = md
+	}
+}
+
+// headerValues returns the values the client sent for key, on the unary and on
+// the streaming call respectively.
+func (s *fakeIngestServer) headerValues(key string) (unary, stream []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unaryMD.Get(key), s.streamMD.Get(key)
 }
 
 func newFakeIngestServer() *fakeIngestServer {
@@ -134,17 +159,31 @@ func (s *fakeIngestServer) CommitEpisode(_ context.Context, _ *cloudpb.CommitEpi
 }
 
 // startFakeIngest registers the fake on a bufconn gRPC server and returns a
-// connected client plus a cleanup function.
-func startFakeIngest(t *testing.T, srv *fakeIngestServer) cloudpb.DataIngestServiceClient {
+// connected client plus a cleanup function. The server records the incoming
+// metadata of every call on srv. Any clientOpts are appended to the client's
+// dial options, which lets a test exercise real client interceptors.
+func startFakeIngest(t *testing.T, srv *fakeIngestServer, clientOpts ...grpc.DialOption) cloudpb.DataIngestServiceClient {
 	t.Helper()
 	lis := bufconn.Listen(1024 * 1024)
-	g := grpc.NewServer()
+	g := grpc.NewServer(
+		grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			md, _ := metadata.FromIncomingContext(ctx)
+			srv.recordMD(false, md)
+			return handler(ctx, req)
+		}),
+		grpc.StreamInterceptor(func(v any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			md, _ := metadata.FromIncomingContext(ss.Context())
+			srv.recordMD(true, md)
+			return handler(v, ss)
+		}),
+	)
 	cloudpb.RegisterDataIngestServiceServer(g, srv)
 	go func() { _ = g.Serve(lis) }()
-	conn, err := grpc.NewClient("passthrough:///bufnet",
+	opts := append([]grpc.DialOption{
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return lis.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	}, clientOpts...)
+	conn, err := grpc.NewClient("passthrough:///bufnet", opts...)
 	if err != nil {
 		t.Fatalf("grpc.NewClient: %v", err)
 	}
@@ -440,5 +479,111 @@ func TestDataTransferWorker_AtLeastOnceDuplicateSafe(t *testing.T) {
 	}
 	if srv.commitCalls != 0 {
 		t.Errorf("commit called %d times on already-complete replay, want 0", srv.commitCalls)
+	}
+}
+
+// TestIngestHostOverride verifies that SetIngestHostOverride redirects the
+// dial target (tolerating URL-shaped input) and that clearing it restores the
+// enrolled cloud host.
+func TestIngestHostOverride(t *testing.T) {
+	w := &DataTransferWorker{}
+
+	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
+		t.Fatalf("no override: got %q, want cloud.wendy.sh", got)
+	}
+
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"https://wendy-data-dev-abc-uc.a.run.app", "wendy-data-dev-abc-uc.a.run.app"},
+		{"https://wendy-data-dev-abc-uc.a.run.app/", "wendy-data-dev-abc-uc.a.run.app"},
+		{"http://localhost:9800", "localhost:9800"},
+		{"ingest.example.com:50052", "ingest.example.com:50052"},
+		{"  ingest.example.com  ", "ingest.example.com"},
+	}
+	for _, c := range cases {
+		w.SetIngestHostOverride(c.in)
+		if got := w.ingestDialHost("cloud.wendy.sh"); got != c.want {
+			t.Errorf("override %q: got %q, want %q", c.in, got, c.want)
+		}
+	}
+
+	w.SetIngestHostOverride("")
+	if got := w.ingestDialHost("cloud.wendy.sh"); got != "cloud.wendy.sh" {
+		t.Fatalf("cleared override: got %q, want cloud.wendy.sh", got)
+	}
+}
+
+// runIdentityHeaderPass drives one real upload pass over bufconn with the dial
+// options an ingest host override of override produces, and returns the fake
+// server so the caller can inspect the metadata that reached it. orgID and
+// assetID stand in for what ProvisioningInfo reports on a real device.
+func runIdentityHeaderPass(t *testing.T, override string, orgID, assetID int32) *fakeIngestServer {
+	t.Helper()
+	mgr, root := newTestManager(t)
+	writeFixtureEpisode(t, root, "ep-identity", "", "pending", map[string][]byte{"blob.bin": []byte("payload")})
+
+	srv := newFakeIngestServer()
+	w := &DataTransferWorker{
+		logger:      zap.NewNop(),
+		manager:     mgr,
+		maxAttempts: transferMaxAttempts,
+		now:         time.Now,
+		newSleeper:  contextSleeper,
+	}
+	w.SetIngestHostOverride(override)
+	// The client is dialed with exactly the options dialFactory would pass, so
+	// the production interceptors (when there are any) run for real.
+	client := startFakeIngest(t, srv, w.ingestDialOptions(orgID, assetID)...)
+	w.factory = func(context.Context) (cloudpb.DataIngestServiceClient, uint64, uint64, func(), error) {
+		return client, uint64(orgID), uint64(assetID), func() {}, nil
+	}
+
+	if err := w.runPass(context.Background()); err != nil {
+		t.Fatalf("runPass: %v", err)
+	}
+	if got := uploadState(t, mgr, "ep-identity").State; got != uploadStateUploaded {
+		t.Fatalf("state = %q, want uploaded", got)
+	}
+	return srv
+}
+
+// TestIngestIdentityHeaderAbsentWithoutOverride is the security-relevant case.
+// On the normal enrolled path the broker sits behind Wendy's Envoy ingress,
+// which injects the certificate identity itself, and the cloud's extractor
+// prefers a client-supplied x-wendy-client-cert over Envoy's own
+// X-Forwarded-Client-Cert while production Envoy does not strip it. A device
+// that sent the header there would be self-asserting its identity, so it must
+// never appear on any call when no ingest host override is in effect.
+func TestIngestIdentityHeaderAbsentWithoutOverride(t *testing.T) {
+	if opts := (&DataTransferWorker{}).ingestDialOptions(91, 7532); opts != nil {
+		t.Errorf("no override: got %d dial options, want none", len(opts))
+	}
+
+	srv := runIdentityHeaderPass(t, "", 91, 7532)
+	unary, stream := srv.headerValues("x-wendy-client-cert")
+	if len(unary) != 0 {
+		t.Errorf("unary call carried x-wendy-client-cert %q without an override; the device must not self-assert identity on the enrolled path", unary)
+	}
+	if len(stream) != 0 {
+		t.Errorf("streaming call carried x-wendy-client-cert %q without an override; the device must not self-assert identity on the enrolled path", stream)
+	}
+}
+
+// TestIngestIdentityHeaderWithOverride pins the exact header value sent on the
+// override path: the URI form of the enrolled asset identity, built from the
+// org and asset that ProvisioningInfo reports, on both unary and streaming
+// calls.
+func TestIngestIdentityHeaderWithOverride(t *testing.T) {
+	srv := runIdentityHeaderPass(t, "https://ingest.example.com/", 91, 7532)
+	const want = "URI=urn:wendy:org:91:asset:7532"
+
+	unary, stream := srv.headerValues("x-wendy-client-cert")
+	if len(unary) != 1 || unary[0] != want {
+		t.Errorf("unary call: x-wendy-client-cert = %q, want exactly [%q]", unary, want)
+	}
+	if len(stream) != 1 || stream[0] != want {
+		t.Errorf("streaming call: x-wendy-client-cert = %q, want exactly [%q]", stream, want)
 	}
 }

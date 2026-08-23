@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/wendylabsinc/wendy/go/internal/agent/data"
 	cloudpb "github.com/wendylabsinc/wendy/go/proto/gen/cloudpb"
@@ -66,6 +67,11 @@ type DataTransferWorker struct {
 	factory         ingestClientFactory  // set in tests; production builds one from provisioningSvc
 
 	maxAttempts int
+	// ingestHostOverride, when non-empty, replaces the provisioning cloud host
+	// as the DataIngestService dial target. Enrollment is still required (the
+	// asset identity and client certificate come from provisioning); only the
+	// destination changes. Set from WENDY_DATA_INGEST_URL in main.
+	ingestHostOverride string
 	// onWiFi reports whether the device is currently on Wi-Fi, gating campaigns
 	// whose upload.when is "wifi". When nil, no network-type signal is wired and
 	// "wifi" is treated as "always" (see resolveShouldUpload).
@@ -92,6 +98,73 @@ func NewDataTransferWorker(logger *zap.Logger, manager *data.Manager, provisioni
 	return w
 }
 
+// SetIngestHostOverride points the worker's uploads at host instead of the
+// provisioning cloud host. host may be a bare host, host:port, or an
+// http(s):// URL; the scheme and any path are stripped and the default port
+// (443) is applied by the dialer. An empty host clears the override.
+func (w *DataTransferWorker) SetIngestHostOverride(host string) {
+	w.ingestHostOverride = normalizeIngestOverride(host)
+}
+
+// normalizeIngestOverride reduces an override value to the host[:port] form
+// dialCloudMTLS expects, tolerating URL-shaped input such as the Cloud Run
+// service URL copied from gcloud.
+func normalizeIngestOverride(host string) string {
+	host = strings.TrimSpace(host)
+	host = strings.TrimPrefix(host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	return host
+}
+
+// ingestDialHost resolves the host the current pass should dial: the override
+// when set, the enrolled cloud host otherwise.
+func (w *DataTransferWorker) ingestDialHost(cloudHost string) string {
+	if w.ingestHostOverride != "" {
+		return w.ingestHostOverride
+	}
+	return cloudHost
+}
+
+// ingestCertIdentityHeader carries a certificate identity in the URI= form the
+// cloud's Envoy certificate metadata extractor reads. The extractor PREFERS
+// this header over the X-Forwarded-Client-Cert (XFCC) header that Envoy itself
+// injects, and production Envoy does not strip a client-supplied one, so a
+// device that sent this header on the normal enrolled path would be
+// self-asserting its identity. It must therefore only ever be attached on the
+// override path, which does not go through Envoy at all.
+const ingestCertIdentityHeader = "x-wendy-client-cert"
+
+// ingestDialOptions returns the extra dial options for this pass.
+//
+// On the normal enrolled path it returns nil, so no certificate identity
+// header is attached: Wendy's Envoy ingress terminates mutual Transport Layer
+// Security (mTLS) in front of the broker and injects the identity itself.
+//
+// With an ingest host override in effect there is no Envoy ingress in front of
+// the endpoint to do that, so the worker attaches the identity its enrolled
+// asset certificate asserts (the same URI form the cross-repo end-to-end
+// harness injects). orgID and assetID must come from ProvisioningInfo.
+func (w *DataTransferWorker) ingestDialOptions(orgID, assetID int32) []grpc.DialOption {
+	if w.ingestHostOverride == "" {
+		return nil
+	}
+	header := fmt.Sprintf("URI=urn:wendy:org:%d:asset:%d", orgID, assetID)
+	withIdentity := func(ctx context.Context) context.Context {
+		return metadata.AppendToOutgoingContext(ctx, ingestCertIdentityHeader, header)
+	}
+	return []grpc.DialOption{
+		grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			return invoker(withIdentity(ctx), method, req, reply, cc, opts...)
+		}),
+		grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+			return streamer(withIdentity(ctx), desc, cc, method, opts...)
+		}),
+	}
+}
+
 // contextSleeper returns a sleep function that returns early when ctx is done,
 // so backoff and bandwidth pacing stay responsive to shutdown.
 func contextSleeper(ctx context.Context) func(time.Duration) {
@@ -116,9 +189,13 @@ func (w *DataTransferWorker) dialFactory(ctx context.Context) (cloudpb.DataInges
 		return nil, 0, 0, nil, errors.New("data transfer worker: not provisioned")
 	}
 	certPEM, chainPEM, keyData := w.provisioningSvc.ProvisioningCerts()
+	// The identity sent, when one is sent at all, is the one the enrolled asset
+	// certificate asserts: it comes from ProvisioningInfo above, never from the
+	// environment or from anything an app on the device can influence.
+	extraOpts := w.ingestDialOptions(orgID, assetID)
 	conn, err := func() (*grpc.ClientConn, error) {
 		defer zeroBytes(keyData)
-		return dialCloudMTLS(cloudHost, certPEM, chainPEM, keyData)
+		return dialCloudMTLS(w.ingestDialHost(cloudHost), certPEM, chainPEM, keyData, extraOpts...)
 	}()
 	if err != nil {
 		return nil, 0, 0, nil, err
