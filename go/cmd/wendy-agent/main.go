@@ -292,6 +292,7 @@ func main() {
 	dataManager.SetConsensusProvider(func(ctx context.Context) (timesync.Consensus, error) {
 		return timesync.QueryConsensus(ctx, timesync.Servers)
 	})
+	dataManager.SetWarnLogger(func(msg string) { logger.Warn(msg) })
 	dataSvc := services.NewDataService(dataManager)
 	// ROS 2 inspection requires the containerd-backed sidecar runtime; the
 	// service is only registered when containerd connected (WDY-1332).

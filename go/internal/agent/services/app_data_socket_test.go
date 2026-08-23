@@ -74,7 +74,7 @@ func TestAppDataSocketIsPrivateAndRecordsIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = capture.Stop(); err != nil {
+	if _, err = capture.Stop(data.AdHocEpisodeKey); err != nil {
 		t.Fatal(err)
 	}
 	manifest, failures, err := capture.Inspect(started.ID, true)

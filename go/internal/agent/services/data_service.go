@@ -19,12 +19,14 @@ import (
 
 type DataService struct {
 	agentpbv2.UnimplementedDataServiceServer
-	manager        *data.Manager
-	adapterMu      sync.RWMutex
-	adapters       []dataCaptureAdapter
-	captureMu      sync.Mutex
-	activeCaptures []runningDataCapture
-	autoStopCancel context.CancelFunc
+	manager   *data.Manager
+	adapterMu sync.RWMutex
+	adapters  []dataCaptureAdapter
+	captureMu sync.Mutex
+	// Concurrency is keyed per campaign name; data.AdHocEpisodeKey holds the
+	// campaign-less episode started through the Start RPC.
+	activeCaptures map[string][]runningDataCapture
+	autoStopCancel map[string]context.CancelFunc
 }
 
 type dataCaptureAdapter interface {
@@ -37,7 +39,7 @@ type runningDataCapture interface {
 }
 
 func NewDataService(m *data.Manager) *DataService {
-	s := &DataService{manager: m}
+	s := &DataService{manager: m, activeCaptures: make(map[string][]runningDataCapture), autoStopCancel: make(map[string]context.CancelFunc)}
 	m.SetSourceProvider(s.discoverAdapterSources)
 	m.SetApplicationObserver(s.observeApplicationRecord)
 	return s
@@ -97,11 +99,12 @@ func (s *DataService) Start(ctx context.Context, req *agentpbv2.DataStartRequest
 func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) (*agentpbv2.DataEpisode, error) {
 	s.captureMu.Lock()
 	defer s.captureMu.Unlock()
+	key := opts.Trigger.CampaignName
 	m, err := s.manager.Start(opts)
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	session, ok := s.manager.ActiveSession()
+	session, ok := s.manager.ActiveSession(key)
 	if !ok {
 		return nil, status.Error(codes.Internal, "episode session disappeared during capture startup")
 	}
@@ -123,44 +126,61 @@ func (s *DataService) startCapture(ctx context.Context, opts data.StartOptions) 
 			r, _ := captures[i].Stop(context.Background())
 			results = append(results, r...)
 		}
-		_ = s.manager.ApplyCaptureResults(results)
-		_, _ = s.manager.Interrupt("capture_adapter_start_failed")
+		_ = s.manager.ApplyCaptureResults(key, results)
+		_, _ = s.manager.Interrupt(key, "capture_adapter_start_failed")
 		return nil, status.Error(codes.FailedPrecondition, fmt.Sprintf("starting capture adapter: %v", startErr))
 	}
-	s.activeCaptures = captures
+	s.activeCaptures[key] = captures
 	return manifestEpisode(m), nil
 }
 
 func (s *DataService) Stop(ctx context.Context, _ *agentpbv2.DataStopRequest) (*agentpbv2.DataEpisode, error) {
-	return s.stopCapture(ctx)
+	// The Stop RPC names no episode. Prefer the ad-hoc episode; otherwise stop
+	// the single active campaign episode, and refuse when that is ambiguous.
+	keys := s.manager.ActiveEpisodeKeys()
+	key := data.AdHocEpisodeKey
+	adHoc := false
+	for _, active := range keys {
+		adHoc = adHoc || active == data.AdHocEpisodeKey
+	}
+	if !adHoc {
+		if len(keys) > 1 {
+			return nil, status.Error(codes.FailedPrecondition, "multiple campaign episodes are active; wait for their after_trigger windows or trigger-specific tooling to finish them")
+		}
+		if len(keys) == 1 {
+			key = keys[0]
+		}
+	}
+	return s.stopCapture(ctx, key)
 }
 
-func (s *DataService) stopCapture(ctx context.Context) (*agentpbv2.DataEpisode, error) {
+func (s *DataService) stopCapture(ctx context.Context, key string) (*agentpbv2.DataEpisode, error) {
 	s.captureMu.Lock()
 	defer s.captureMu.Unlock()
-	if s.autoStopCancel != nil {
-		s.autoStopCancel()
-		s.autoStopCancel = nil
+	if cancel := s.autoStopCancel[key]; cancel != nil {
+		cancel()
+		delete(s.autoStopCancel, key)
 	}
 	var results []data.CaptureResult
 	var captureErrs []error
-	for i := len(s.activeCaptures) - 1; i >= 0; i-- {
-		r, err := s.activeCaptures[i].Stop(ctx)
+	captures := s.activeCaptures[key]
+	for i := len(captures) - 1; i >= 0; i-- {
+		r, err := captures[i].Stop(ctx)
 		results = append(results, r...)
 		if err != nil {
 			captureErrs = append(captureErrs, err)
 		}
 	}
-	s.activeCaptures = nil
+	delete(s.activeCaptures, key)
 	if len(results) > 0 {
-		_ = s.manager.ApplyCaptureResults(results)
+		_ = s.manager.ApplyCaptureResults(key, results)
 	}
 	var m data.Manifest
 	var err error
 	if len(captureErrs) > 0 {
-		m, err = s.manager.Interrupt("capture_adapter_failed")
+		m, err = s.manager.Interrupt(key, "capture_adapter_failed")
 	} else {
-		m, err = s.manager.Stop()
+		m, err = s.manager.Stop(key)
 	}
 	if errors.Is(err, data.ErrNoActiveEpisode) {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
@@ -272,7 +292,10 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 	}
 	timerContext, cancel := context.WithCancel(context.Background())
 	s.captureMu.Lock()
-	s.autoStopCancel = cancel
+	if previous := s.autoStopCancel[campaign.Name]; previous != nil {
+		previous()
+	}
+	s.autoStopCancel[campaign.Name] = cancel
 	s.captureMu.Unlock()
 	go func(episodeID string, after time.Duration) {
 		timer := time.NewTimer(after)
@@ -281,31 +304,37 @@ func (s *DataService) triggerCampaign(ctx context.Context, campaign data.Campaig
 		case <-timerContext.Done():
 			return
 		case <-timer.C:
-			active := s.manager.Status()
-			if active == nil || active.ID != episodeID {
+			session, ok := s.manager.ActiveSession(campaign.Name)
+			if !ok || session.ID != episodeID {
 				return
 			}
-			_, _ = s.stopCapture(context.Background())
+			_, _ = s.stopCapture(context.Background(), campaign.Name)
 		}
 	}(episode.GetId(), campaign.AfterTriggerDuration())
 	return episode, nil
 }
 
 func (s *DataService) observeApplicationRecord(_ string, record data.ApplicationRecord) {
-	if s.manager.Status() != nil {
-		return
+	// Triggers are dropped only for campaigns that already have an active
+	// episode; other campaigns (and ad-hoc recordings) capture independently.
+	activeKeys := map[string]bool{}
+	for _, key := range s.manager.ActiveEpisodeKeys() {
+		activeKeys[key] = true
 	}
 	campaigns, err := s.manager.Campaigns()
 	if err != nil {
 		return
 	}
 	for _, campaign := range campaigns {
-		reason, expression, matched := campaign.Match(record)
-		if !matched || campaign.State != "armed" {
+		if campaign.State != "armed" || activeKeys[campaign.Name] {
 			continue
 		}
+		reason, expression, matched := campaign.Match(record)
+		if !matched {
+			continue
+		}
+		campaign := campaign
 		go func() { _, _ = s.triggerCampaign(context.Background(), campaign, reason, expression) }()
-		return
 	}
 }
 

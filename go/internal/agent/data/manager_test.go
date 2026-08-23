@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestEpisodeLifecycleUsesBoottimeAndSealsFiles(t *testing.T) {
@@ -23,7 +25,7 @@ func TestEpisodeLifecycleUsesBoottimeAndSealsFiles(t *testing.T) {
 	if len(started.UTCObservations) != 1 || started.UTCObservations[0].UncertaintyNanos < 0 {
 		t.Fatalf("bad UTC interval: %+v", started.UTCObservations)
 	}
-	stopped, err := m.Stop()
+	stopped, err := m.Stop(AdHocEpisodeKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +67,7 @@ func TestApplicationPreRollHasNegativeCanonicalOffsets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = m.Stop(); err != nil {
+	if _, err = m.Stop(AdHocEpisodeKey); err != nil {
 		t.Fatal(err)
 	}
 	dir, err := m.episodeDir(started.ID)
@@ -138,7 +140,7 @@ func TestInspectDetectsChecksumCorruption(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	done, e := m.Stop()
+	done, e := m.Stop(AdHocEpisodeKey)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -155,6 +157,175 @@ func TestInspectDetectsChecksumCorruption(t *testing.T) {
 	}
 	if len(fail) == 0 {
 		t.Fatal("expected corruption failure")
+	}
+}
+
+func setUploadState(t *testing.T, m *Manager, id, uploadState, campaignName string) {
+	t.Helper()
+	dir, err := m.episodeDir(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mf, err := readManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mf.Upload.State = uploadState
+	mf.Trigger.CampaignName = campaignName
+	if err := writeManifest(dir, mf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func episodeSize(t *testing.T, m *Manager, id string) int64 {
+	t.Helper()
+	dir, err := m.episodeDir(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int64
+	err = filepath.WalkDir(dir, func(_ string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			size += info.Size()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return size
+}
+
+func recordEpisode(t *testing.T, m *Manager, opts StartOptions) Manifest {
+	t.Helper()
+	started, err := m.Start(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := m.Stop(opts.Trigger.CampaignName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started.ID != stopped.ID {
+		t.Fatal("id changed across stop")
+	}
+	return stopped
+}
+
+func TestEnforceQuotaEvictsUploadedBeforePendingUpload(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warnings []string
+	m.SetWarnLogger(func(msg string) { warnings = append(warnings, msg) })
+	pending := recordEpisode(t, m, StartOptions{Sources: []string{"applications"}, Trigger: EpisodeTrigger{Reason: "event:test", CampaignName: "forklift"}})
+	time.Sleep(2 * time.Millisecond)
+	uploaded := recordEpisode(t, m, StartOptions{Sources: []string{"applications"}})
+	setUploadState(t, m, pending.ID, "pending", "forklift")
+	setUploadState(t, m, uploaded.ID, "uploaded", "")
+	// The quota can hold the pending episode alone. The pending episode is the
+	// OLDER of the two, so the previous strictly oldest-first order would have
+	// evicted it; upload-state ordering must sacrifice the newer uploaded
+	// episode instead.
+	m.quotaForTest = episodeSize(t, m, pending.ID) + 1
+	final := recordEpisode(t, m, StartOptions{Sources: []string{"applications"}})
+	if _, err = m.episodeDir(uploaded.ID); err == nil {
+		t.Fatal("uploaded episode was not evicted")
+	}
+	if _, err = m.episodeDir(pending.ID); err != nil {
+		t.Fatal("pending episode did not survive eviction")
+	}
+	if _, err = m.episodeDir(final.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	// Force the pending episode out as well: the quota can no longer hold it,
+	// and the eviction must warn, naming the episode and campaign.
+	m.quotaForTest = 1
+	if _, err = m.Start(StartOptions{Sources: []string{"applications"}}); err == nil {
+		if _, stopErr := m.Stop(AdHocEpisodeKey); stopErr != nil {
+			t.Fatal(stopErr)
+		}
+	}
+	if _, err = m.episodeDir(pending.ID); err == nil {
+		t.Fatal("pending episode survived a quota that cannot hold it")
+	}
+	warned := false
+	for _, warning := range warnings {
+		warned = warned || strings.Contains(warning, pending.ID) && strings.Contains(warning, "forklift")
+	}
+	if !warned {
+		t.Fatalf("missing eviction warning naming episode and campaign: %v", warnings)
+	}
+}
+
+func TestPerCampaignEpisodeConcurrency(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := m.Start(StartOptions{Sources: []string{"applications"}, Trigger: EpisodeTrigger{Reason: "event:a", CampaignName: "campaign-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := m.Start(StartOptions{Sources: []string{"applications"}, Trigger: EpisodeTrigger{Reason: "event:b", CampaignName: "campaign-b"}})
+	if err != nil {
+		t.Fatalf("second campaign could not capture concurrently: %v", err)
+	}
+	adHoc, err := m.Start(StartOptions{Sources: []string{"applications"}})
+	if err != nil {
+		t.Fatalf("ad-hoc episode could not run beside campaigns: %v", err)
+	}
+	if _, err = m.Start(StartOptions{Sources: []string{"applications"}, Trigger: EpisodeTrigger{Reason: "event:a", CampaignName: "campaign-a"}}); err == nil || !strings.Contains(err.Error(), "campaign-a") {
+		t.Fatalf("second episode for the same campaign was accepted: %v", err)
+	}
+	if _, err = m.Start(StartOptions{Sources: []string{"applications"}}); err == nil || err.Error() != "an episode is already active" {
+		t.Fatalf("second ad-hoc episode was accepted: %v", err)
+	}
+	// A record lands in every concurrently active episode.
+	if _, err = m.RecordApplication("test.app", ApplicationRecord{Version: 1, Type: "event", Name: "shared"}); err != nil {
+		t.Fatal(err)
+	}
+	keys := m.ActiveEpisodeKeys()
+	if len(keys) != 3 || keys[0] != AdHocEpisodeKey || keys[1] != "campaign-a" || keys[2] != "campaign-b" {
+		t.Fatalf("active keys: %v", keys)
+	}
+	for key, id := range map[string]string{"campaign-a": first.ID, "campaign-b": second.ID, AdHocEpisodeKey: adHoc.ID} {
+		session, ok := m.ActiveSession(key)
+		if !ok || session.ID != id {
+			t.Fatalf("session for %q = %+v, want %s", key, session, id)
+		}
+		manifest, err := m.Stop(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		counted := false
+		for _, source := range manifest.Sources {
+			if source.Source.ID == "applications" && source.Count == 1 {
+				counted = true
+			}
+		}
+		if !counted {
+			t.Fatalf("episode %s did not record the shared application record: %+v", id, manifest.Sources)
+		}
+	}
+	// Quota accounting spans the episodes of every campaign and the ad-hoc one.
+	episodes, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(episodes) != 3 {
+		t.Fatalf("episodes = %d, want 3", len(episodes))
 	}
 }
 
