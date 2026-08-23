@@ -263,6 +263,12 @@ func TestAppIDFromCgroup(t *testing.T) {
 		{"multi service strips suffix", "0::/system.slice/edge-agent-com.example.a@worker.scope\n", "com.example.a", true},
 		{"non-wendy process", "0::/user.slice/user-1000.slice/session-3.scope\n", "", false},
 		{"empty", "", "", false},
+		// cgroupfs driver: runc takes the "slice:prefix:name" CgroupsPath as a
+		// literal directory name instead of translating it to a systemd scope
+		// (observed on WendyOS 0.16.0 devices).
+		{"cgroupfs single service", "0::/system.slice/system.slice:edge-agent:com.example.a\n", "com.example.a", true},
+		{"cgroupfs multi service strips suffix", "0::/system.slice/system.slice:edge-agent:com.example.a@worker\n", "com.example.a", true},
+		{"cgroupfs other systemd service", "0::/system.slice/system.slice:other-agent:com.example.a\n", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

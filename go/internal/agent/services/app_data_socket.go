@@ -260,14 +260,26 @@ func (m *AppDataSocketManager) verifyPeer(appID string, c net.Conn) error {
 // no such scope component is present, which is the signal that the peer is not
 // a wendy-managed app container.
 func appIDFromCgroup(cgroup string) (string, bool) {
-	prefix := sharedenv.SystemdServiceName() + "-"
+	svc := sharedenv.SystemdServiceName()
+	prefix := svc + "-"
 	for _, line := range strings.Split(cgroup, "\n") {
 		for _, segment := range strings.Split(line, "/") {
 			segment = strings.TrimSuffix(segment, ".scope")
-			if !strings.HasPrefix(segment, prefix) {
+			id := ""
+			switch {
+			case strings.HasPrefix(segment, prefix):
+				// systemd cgroup driver: runc translated the
+				// "system.slice:{svc}:{suffix}" CgroupsPath into a
+				// "{svc}-{suffix}.scope" unit.
+				id = strings.TrimPrefix(segment, prefix)
+			case strings.HasPrefix(segment, "system.slice:"+svc+":"):
+				// cgroupfs cgroup driver: the same CgroupsPath is taken as a
+				// literal directory name, colons and all, so the whole
+				// "system.slice:{svc}:{suffix}" string is one path segment.
+				id = strings.TrimPrefix(segment, "system.slice:"+svc+":")
+			default:
 				continue
 			}
-			id := strings.TrimPrefix(segment, prefix)
 			if at := strings.IndexByte(id, '@'); at >= 0 {
 				id = id[:at]
 			}
