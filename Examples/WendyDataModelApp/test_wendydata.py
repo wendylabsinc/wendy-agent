@@ -343,5 +343,92 @@ class TestDecoderFollowsTheEncoding(unittest.TestCase):
         self.assertEqual([f.sample_ids for f in frames], [[2]])
 
 
+class TestSensorStreamReconnect(unittest.TestCase):
+    """A stream that ends mid-life (an agent restart, a dropped socket) must be
+    redialled, or the app exits while the campaign is still armed. Bounded, so a
+    socket that is gone for good still exits with a diagnosis."""
+
+    _sensors = staticmethod(TestSampleAttribution._sensors)
+
+    class _Client:
+        """Replays a scripted series of subscriptions, one per frames() call."""
+
+        def __init__(self, streams):
+            self.streams = list(streams)
+            self.calls = 0
+            self.closes = 0
+
+        def frames(self):
+            self.calls += 1
+            if not self.streams:
+                return
+            stream = self.streams.pop(0)
+            if isinstance(stream, Exception):
+                raise stream
+            yield from stream
+
+        def close(self):
+            self.closes += 1
+
+    def test_frames_resume_after_the_stream_ends(self):
+        sensors = self._sensors()
+        client = self._Client([["a"], ["b", "c"]])
+        slept = []
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(
+                sensors.frames_with_reconnect(client, attempts=2, delay=0.5, sleep=slept.append)
+            )
+        # The frames from before and after the drop are one stream to the caller.
+        self.assertEqual(got, ["a", "b", "c"])
+        # Redialled after each of the two scripted streams ended, and once more
+        # after the empty third: an end of stream is never assumed to be final.
+        self.assertEqual(slept, [0.5, 0.5, 0.5])
+        self.assertEqual(client.closes, 3)
+        self.assertEqual(client.calls, 4)
+
+    def test_a_failing_stream_is_retried_then_given_up_on(self):
+        sensors = self._sensors()
+        client = self._Client([RuntimeError("socket gone")] * 10)
+        slept = []
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(
+                sensors.frames_with_reconnect(client, attempts=3, delay=0.1, sleep=slept.append)
+            )
+        self.assertEqual(got, [])
+        # Three reconnects, so four subscription attempts in total, and then it
+        # stops rather than spinning on a socket that is not coming back.
+        self.assertEqual(len(slept), 3)
+        self.assertEqual(client.calls, 4)
+
+    def test_the_budget_is_refilled_by_every_frame(self):
+        sensors = self._sensors()
+        # A budget of one, spent by every drop and refilled by every frame. Three
+        # short-lived streams therefore all get through; a lifetime budget of one
+        # would have stopped after the second.
+        client = self._Client([["a"], ["b"], ["c"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a", "b", "c"])
+
+    def test_consecutive_drops_exhaust_the_budget(self):
+        sensors = self._sensors()
+        # The same budget of one, but nothing arrives to refill it: the stream
+        # that ends and the failure after it are two consecutive drops, so the
+        # third subscription is never attempted.
+        client = self._Client([["a"], RuntimeError("socket gone"), ["b"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=1, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a"])
+        self.assertEqual(client.calls, 2)
+
+    def test_zero_attempts_exits_on_the_first_end_of_stream(self):
+        sensors = self._sensors()
+        client = self._Client([["a"], ["b"]])
+        with self.assertLogs("wendysensors", level="WARNING"):
+            got = list(sensors.frames_with_reconnect(client, attempts=0, delay=0, sleep=lambda _: None))
+        self.assertEqual(got, ["a"])
+        self.assertEqual(client.calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

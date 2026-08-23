@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 
 import grpc
@@ -53,6 +54,11 @@ DEFAULT_SOCKET_PATH = "/run/wendy/sensors/sensors.sock"
 # empty encoding followed by an explicit "h264" would rebuild the decoder for
 # no reason and throw away the bytes it had buffered.
 DEFAULT_ENCODING = "h264"
+
+# How many consecutive times a dropped subscription is redialled before the
+# stream is treated as gone for good, and how long to wait between attempts.
+DEFAULT_RECONNECT_ATTEMPTS = 5
+DEFAULT_RECONNECT_DELAY_SECONDS = 2.0
 
 
 def socket_path() -> str:
@@ -237,3 +243,56 @@ def _flush_decoder(decoder, sample_ids, dropped_before, tail):
             "%d buffered sample(s) produced no frame before the encoding change",
             len(sample_ids),
         )
+
+
+def frames_with_reconnect(
+    client,
+    attempts: int = DEFAULT_RECONNECT_ATTEMPTS,
+    delay: float = DEFAULT_RECONNECT_DELAY_SECONDS,
+    sleep=time.sleep,
+):
+    """Yield frames across a subscription that ends part way through its life.
+
+    `SensorClient.frames()` ends whenever the subscription does, and a
+    subscription ends for reasons that have nothing to do with the app: the
+    agent restarted, or the socket went away with it. The data side already
+    reconnects and retries (`wendydata.DataSocketClient.send`), so the input
+    side has to as well; without it a single agent restart ends the app quietly
+    while the campaign is still armed and there is still an episode to fill.
+
+    Bounded on purpose. A socket that is gone for good has to exit with a
+    diagnosis rather than spin forever, so the budget is finite. It counts
+    *consecutive* failures and is refilled by every frame that arrives, so a
+    long-lived app is not eventually killed by unrelated restarts spread over
+    days.
+
+    The source identifier is kept across reconnects. Harness identifiers are
+    stable, and re-resolving on every drop would let a transient failure move
+    the app onto a different camera without saying so.
+    """
+    remaining = attempts
+    while True:
+        try:
+            for frame in client.frames():
+                remaining = attempts
+                yield frame
+        except Exception as exc:  # noqa: BLE001 - grpc.RpcError and transport errors alike
+            log.warning("sensor stream failed: %s", exc)
+        else:
+            log.warning("sensor stream ended")
+        if remaining <= 0:
+            log.error(
+                "the sensor stream did not come back after %d reconnect attempt(s); giving up",
+                attempts,
+            )
+            return
+        remaining -= 1
+        # Drop the channel so the next Subscribe redials rather than reusing a
+        # connection the agent has already torn down.
+        client.close()
+        log.info(
+            "reconnecting to the sensor socket in %.1fs (%d attempt(s) left after this one)",
+            delay,
+            remaining,
+        )
+        sleep(delay)
